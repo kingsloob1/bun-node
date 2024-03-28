@@ -1,6 +1,6 @@
 {
   "name": "@kingsleyweb/bun-nest",
-  "version": "0.0.0",
+  "version": "0.0.1-alpha.0",
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "homepage": "",
@@ -19,12 +19,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@kingsleyweb/bun-common": "workspace:*",
     "cors": "^2.8.5",
     "file-type": "^19.0.0",
     "lodash-es": "^4.17.21",
     "path-to-regexp": "^6.2.1",
-    "until-promise": "^0.3.0",
-    "@kingsleyweb/bun-common": "workspace:*"
+    "until-promise": "^0.3.0"
   },
   "devDependencies": {
     "@nestjs/core": "^10.3.6",
