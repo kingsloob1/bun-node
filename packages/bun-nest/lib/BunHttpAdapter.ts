@@ -449,7 +449,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
   public reply(
     response: BunResponse,
-    body: StreamableFile | string | Record<string, unknown> | null | undefined,
+    body: StreamableFile | string | Record<string, unknown> | BunResponse | Response | null | undefined,
     statusCode?: number,
   ) {
     if (statusCode) {
@@ -485,25 +485,9 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       return response.send(body.getStream());
     }
 
-    if (
-      typeof responseContentType === 'string' &&
-      !responseContentType.startsWith('application/json') &&
-      isObject(body) &&
-      (get(body, 'statusCode', 0) as number) >= HttpStatus.BAD_REQUEST
-    ) {
-      this.logger.warn(
-        "Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses",
-      );
-      response.setHeader('Content-Type', 'application/json');
-    }
+    const bodyToBeSent = body as Parameters<BunResponse['send']>[0];
 
-    if (isObject(body)) {
-      response.setHeader('Content-Type', 'application/json');
-      return response.send(JSON.stringify(body));
-    }
-
-    response.setHeader('Content-Type', 'text/plain');
-    return response.send(String(body));
+    return response.send(bodyToBeSent);
   }
 
   public status(response: BunResponse, statusCode: number) {

@@ -1,5 +1,15 @@
 import type { BunFile } from 'bun';
-import { get, isArray, isObject, isString, values, each } from 'lodash-es';
+import {
+  get,
+  isArray,
+  isObject,
+  isString,
+  values,
+  each,
+  isNull,
+  isUndefined,
+  isBoolean,
+} from 'lodash-es';
 import type { DeepWritable } from 'ts-essentials';
 import { join as joinPath } from 'node:path';
 import { formatDate, isValid as isDateValid } from 'date-fns';
@@ -7,6 +17,8 @@ import { formatDate, isValid as isDateValid } from 'date-fns';
 import type { SendFileOptions } from './types/general';
 import type { BunRequest } from './BunRequest';
 import isNumeric from 'fast-isnumeric';
+import { Readable, isReadable } from 'node:stream';
+import { fileTypeFromBuffer } from 'file-type';
 
 export class BunResponse {
   private response: Response | undefined = undefined;
@@ -36,23 +48,87 @@ export class BunResponse {
 
   public json<T extends Record<string, unknown>>(body: T): void {
     this.options.headers = this.headersObj;
+    this.options.headers.set('Content-Type', 'application/json');
     this.response = Response.json(body, this.options);
   }
 
-  send(
+  async send(
     body:
       | string
       | null
       | undefined
       | ReadableStream
       | BunFile
+      | BunResponse
+      | Response
       | ConstructorParameters<typeof Response>[0],
-  ): void {
+  ): Promise<void> {
     if (this.headersSent) {
       return;
     }
+
     this.options.headers = this.headersObj;
-    this.response = new Response(body, this.options);
+    if (body instanceof BunResponse) {
+      let response!: Response;
+
+      try {
+        const nativeRes = await body.getNativeResponse(1000);
+        if (nativeRes instanceof Response) {
+          response = nativeRes;
+        }
+      } catch {
+        //
+      }
+
+      if (!response) {
+        response = new Response(undefined, this.options);
+      }
+
+      this.response = response;
+    } else if (body instanceof Response) {
+      this.response = new Response(body.body, this.options);
+    } else if (
+      body instanceof Blob ||
+      isReadable(body as unknown as Readable)
+    ) {
+      this.response = new Response(body, this.options);
+    } else if (isObject(body) || isArray(body)) {
+      this.options.headers.set('Content-Type', 'application/json');
+
+      this.response = new Response(JSON.stringify(body), this.options);
+    } else {
+      let bodyToBeSent = body;
+      if (
+        !(
+          isNull(bodyToBeSent) ||
+          isUndefined(bodyToBeSent) ||
+          isBoolean(bodyToBeSent)
+        )
+      ) {
+        bodyToBeSent = String(bodyToBeSent);
+      }
+
+      //If no content type, Attempt to extract content type from buffer and send
+      if (!this.options.headers.get('content-type') && isString(bodyToBeSent)) {
+        let contentType = 'text/plain';
+
+        try {
+          const typeResp = await fileTypeFromBuffer(
+            Buffer.from(bodyToBeSent, 'utf-8'),
+          );
+
+          if (typeResp?.mime) {
+            contentType = typeResp?.mime;
+          }
+        } catch {
+          //
+        }
+
+        this.options.headers.set('Content-Type', contentType);
+      }
+
+      this.response = new Response(bodyToBeSent, this.options);
+    }
   }
 
   end(body: unknown) {
