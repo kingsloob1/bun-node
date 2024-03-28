@@ -8,7 +8,6 @@ import {
   each,
   isNull,
   isUndefined,
-  isBoolean,
 } from 'lodash-es';
 import type { DeepWritable } from 'ts-essentials';
 import { join as joinPath } from 'node:path';
@@ -98,18 +97,18 @@ export class BunResponse {
       this.response = new Response(JSON.stringify(body), this.options);
     } else {
       let bodyToBeSent = body;
-      if (
-        !(
-          isNull(bodyToBeSent) ||
-          isUndefined(bodyToBeSent) ||
-          isBoolean(bodyToBeSent)
-        )
-      ) {
+      if (isNull(bodyToBeSent) || isUndefined(bodyToBeSent)) {
+        bodyToBeSent = '';
+      } else {
         bodyToBeSent = String(bodyToBeSent);
       }
 
       //If no content type, Attempt to extract content type from buffer and send
-      if (!this.options.headers.get('content-type') && isString(bodyToBeSent)) {
+      if (
+        !this.options.headers.get('content-type') &&
+        isString(bodyToBeSent) &&
+        !!bodyToBeSent
+      ) {
         let contentType = 'text/plain';
 
         try {

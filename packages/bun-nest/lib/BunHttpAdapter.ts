@@ -456,10 +456,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       response = response.status(statusCode);
     }
 
-    if (isEmpty(body)) {
-      return response.send(undefined);
-    }
-
     const responseContentType = response.getHeader('Content-Type');
     if (body instanceof StreamableFile) {
       const streamHeaders = body.getHeaders();
