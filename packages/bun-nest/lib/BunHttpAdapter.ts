@@ -49,6 +49,7 @@ import { isPromise } from 'util/types';
 import { stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { fileTypeFromStream } from 'file-type';
+import pollUntil from 'until-promise';
 
 type VersionedRoute = (
   req: BunRequest,
@@ -160,6 +161,12 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     );
 
     this.setHttpServer(proxiedHttpServer as unknown as BunServer);
+  }
+
+  public async getListenAddress(){
+    await pollUntil(() => this._serverInstance?.url, (url) => !!url);
+
+    return this._serverInstance?.url;
   }
 
   //Adjust use to behave like express use

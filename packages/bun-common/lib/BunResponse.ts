@@ -15,6 +15,10 @@ export class BunResponse {
 
   constructor(public req: BunRequest) {}
 
+  public header(key: string, value: string | string[]) {
+    return this.setHeader(key, value);
+  }
+
   public status(code: number): BunResponse {
     this.options.status = code;
     return this;
