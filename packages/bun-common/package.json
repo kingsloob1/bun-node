@@ -7,6 +7,11 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.ts",
+  "private": false,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "directories": {
     "lib": "lib",
     "test": "__tests__"
@@ -48,5 +53,6 @@
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
-  }
+  },
+  "gitHead": "4b89fd26a94c158a781c7c0dac2dc1229924a99e"
 }
