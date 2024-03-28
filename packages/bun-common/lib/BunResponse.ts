@@ -86,7 +86,7 @@ export class BunResponse {
 
       this.response = response;
     } else if (body instanceof Response) {
-      this.response = new Response(body.body, this.options);
+      this.response = body;
     } else if (
       body instanceof Blob ||
       isReadable(body as unknown as Readable)
@@ -147,7 +147,8 @@ export class BunResponse {
       ? Number(Bun.env.HTTP_REQUEST_TIMEOUT)
       : undefined,
   ): Promise<Response> {
-    const enableTimeout = isNumeric(timeout);
+    const enableTimeout = isNumeric(timeout) && Number(timeout) > 0;
+
     return new Promise((resolve, reject) => {
       let elapsedTime = 0;
       const interval = setInterval(() => {

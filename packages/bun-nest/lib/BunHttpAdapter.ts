@@ -79,7 +79,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   private _hasRegisteredBodyParser = false;
 
-  constructor() {
+  constructor(private requestTimeout: number = 0) {
     const router = new BunRouter();
     super(router);
     this.instance = router;
@@ -388,7 +388,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         }
 
         if (hasNativeResponse) {
-          const nativeResponse = await res.getNativeResponse();
+          const nativeResponse = await res.getNativeResponse(that.requestTimeout);
           return nativeResponse;
         }
 
@@ -422,7 +422,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         }
 
         if (that._errorHandlers.length) {
-          const nativeResponse = await response.getNativeResponse();
+          const nativeResponse = await response.getNativeResponse(1000);
           return nativeResponse;
         } else {
           throw err;
