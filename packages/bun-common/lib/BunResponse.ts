@@ -8,10 +8,11 @@ import {
   each,
   isNull,
   isUndefined,
+  isBoolean,
 } from 'lodash-es';
 import type { DeepWritable } from 'ts-essentials';
 import { join as joinPath } from 'node:path';
-import { formatDate, isValid as isDateValid } from 'date-fns';
+import { format as formatDate, isValid as isDateValid } from 'date-fns';
 // import { formatInTimeZone } from 'date-fns-tz';
 import type { SendFileOptions } from './types/general';
 import type { BunRequest } from './BunRequest';
@@ -45,10 +46,11 @@ export class BunResponse {
     return this;
   }
 
-  public json<T extends Record<string, unknown>>(body: T): void {
+  public json<T extends Record<string, unknown>>(body: T): BunResponse {
     this.options.headers = this.headersObj;
     this.options.headers.set('Content-Type', 'application/json');
     this.response = Response.json(body, this.options);
+    return this;
   }
 
   async send(
@@ -61,9 +63,9 @@ export class BunResponse {
       | BunResponse
       | Response
       | ConstructorParameters<typeof Response>[0],
-  ): Promise<void> {
+  ): Promise<BunResponse> {
     if (this.headersSent) {
-      return;
+      return this;
     }
 
     this.options.headers = this.headersObj;
@@ -97,18 +99,18 @@ export class BunResponse {
       this.response = new Response(JSON.stringify(body), this.options);
     } else {
       let bodyToBeSent = body;
-      if (isNull(bodyToBeSent) || isUndefined(bodyToBeSent)) {
-        bodyToBeSent = '';
-      } else {
+      if (
+        !(
+          isNull(bodyToBeSent) ||
+          isUndefined(bodyToBeSent) ||
+          isBoolean(bodyToBeSent)
+        )
+      ) {
         bodyToBeSent = String(bodyToBeSent);
       }
 
       //If no content type, Attempt to extract content type from buffer and send
-      if (
-        !this.options.headers.get('content-type') &&
-        isString(bodyToBeSent) &&
-        !!bodyToBeSent
-      ) {
+      if (!this.options.headers.get('content-type') && isString(bodyToBeSent)) {
         let contentType = 'text/plain';
 
         try {
@@ -128,17 +130,20 @@ export class BunResponse {
 
       this.response = new Response(bodyToBeSent, this.options);
     }
+
+    return this;
   }
 
   end(body: unknown) {
-    this.send(body as Parameters<typeof this.send>[0]);
+    return this.send(body as Parameters<typeof this.send>[0]);
   }
 
   redirect(
     url: string,
     status: Parameters<typeof Response.redirect>[1] = 302,
-  ): void {
+  ): BunResponse {
     this.response = Response.redirect(url, status);
+    return this;
   }
 
   getNativeResponse(
@@ -189,6 +194,8 @@ export class BunResponse {
         this.headersObj.append(name, value);
       }
     }
+
+    return this;
   }
 
   setHeaders(headers: Headers | Map<string, string>) {
@@ -200,6 +207,8 @@ export class BunResponse {
         this.headersObj.set(key, value);
       }
     });
+
+    return this;
   }
 
   getHeader(name: string) {
@@ -228,10 +237,12 @@ export class BunResponse {
     value.forEach((val) => {
       this.headersObj.append(key, val);
     });
+
+    return this;
   }
 
   appendHeader(key: string, value: string | string[]) {
-    this.append(key, value);
+    return this.append(key, value);
   }
 
   hasHeader(name: string) {
@@ -240,6 +251,7 @@ export class BunResponse {
 
   removeHeader(name: string) {
     this.headersObj.delete(name);
+    return this;
   }
 
   async attachment(path?: string) {
@@ -251,11 +263,12 @@ export class BunResponse {
           `attachment; filename="${file.name}"`,
         );
         this.headersObj.set('Content-Type', file.type);
-        return;
+        return this;
       }
     }
 
     this.headersObj.set('Content-Disposition', `attachment`);
+    return this;
   }
 
   async download(
@@ -269,19 +282,23 @@ export class BunResponse {
       download: true,
       filename,
     });
+
     if (cb) {
       cb();
     }
+
+    return this;
   }
 
   async handleNotFound() {
     if (this.headersSent) {
-      return;
+      return this;
     }
 
     this.options.status = 404;
     this.options.statusText = 'Not Found';
     this.response = new Response(undefined, this.options);
+    return this;
   }
 
   async sendFile(
@@ -356,10 +373,11 @@ export class BunResponse {
     this.options.headers = this.headersObj;
 
     if (this.headersSent) {
-      return;
+      return this;
     }
 
     this.response = new Response(file, this.options);
+    return this;
   }
 
   async get(name: string, defaultVal: string | string[]) {
@@ -378,6 +396,7 @@ export class BunResponse {
 
     this.options.headers = this.headersObj;
     this.response = new Response(String(status), this.options);
+    return this;
   }
 
   public set(name: string, value: string | string[], replace = true) {

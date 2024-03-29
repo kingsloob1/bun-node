@@ -29,7 +29,6 @@ import type {
 } from '@nestjs/common/interfaces';
 import until from 'until-promise';
 import type { AddressInfo } from 'net';
-import { match } from 'path-to-regexp';
 import {
   type BunServeOptions,
   type BunServer,
@@ -186,32 +185,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
     if (this && this.instance && this.instance.use) {
       if (isString(path) && isFunction(mainHandler)) {
-        const fn = match(path, { decode: decodeURIComponent });
-        const handler =
-          mainHandler.length === 3
-            ? ((async (req, res, next) => {
-                const matchResult = fn(req.path);
-                if (!!matchResult) {
-                  await (mainHandler as RouterMiddlewareHandler)(
-                    req,
-                    res,
-                    next,
-                  );
-                }
-              }) as RouterMiddlewareHandler)
-            : ((async (err, req, res, next) => {
-                const matchResult = fn(req.path);
-                if (!!matchResult) {
-                  await (mainHandler as RouterErrorMiddlewareHandler)(
-                    err,
-                    req,
-                    res,
-                    next,
-                  );
-                }
-              }) as RouterErrorMiddlewareHandler);
-
-        this.instance.use(handler);
+        this.instance.all(path, mainHandler);
       } else {
         this.instance.use(mainHandler);
       }
