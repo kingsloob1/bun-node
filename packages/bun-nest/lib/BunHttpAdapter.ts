@@ -2,7 +2,6 @@ import { AbstractHttpAdapter } from '@nestjs/core';
 import { peek, type WebSocketHandler } from 'bun';
 import {
   get,
-  isEmpty,
   isFunction,
   isNull,
   isObject,
@@ -13,9 +12,10 @@ import {
 } from 'lodash-es';
 import {
   BadGatewayException,
-  HttpStatus,
+  HttpException,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
   RequestMethod,
   StreamableFile,
   VERSION_NEUTRAL,
@@ -45,9 +45,6 @@ import {
   type matchedRoute,
 } from '@kingsleyweb/bun-common';
 import { isPromise } from 'util/types';
-import { stat } from 'fs/promises';
-import { createReadStream } from 'fs';
-import { fileTypeFromStream } from 'file-type';
 import pollUntil from 'until-promise';
 
 type VersionedRoute = (
@@ -162,8 +159,11 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     this.setHttpServer(proxiedHttpServer as unknown as BunServer);
   }
 
-  public async getListenAddress(){
-    await pollUntil(() => this._serverInstance?.url, (url) => !!url);
+  public async getListenAddress() {
+    await pollUntil(
+      () => this._serverInstance?.url,
+      (url) => !!url,
+    );
 
     return this._serverInstance?.url;
   }
@@ -362,7 +362,9 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         }
 
         if (hasNativeResponse) {
-          const nativeResponse = await res.getNativeResponse(that.requestTimeout);
+          const nativeResponse = await res.getNativeResponse(
+            that.requestTimeout,
+          );
           return nativeResponse;
         }
 
@@ -423,7 +425,14 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
   public reply(
     response: BunResponse,
-    body: StreamableFile | string | Record<string, unknown> | BunResponse | Response | null | undefined,
+    body:
+      | StreamableFile
+      | string
+      | Record<string, unknown>
+      | BunResponse
+      | Response
+      | null
+      | undefined,
     statusCode?: number,
   ) {
     if (statusCode) {
@@ -496,32 +505,51 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   }
 
   public useStaticAssets(path: string, options: ServeStaticOptions) {
-    return this.use(options.prefix || '', (async (req, res) => {
-      if (req.method.toLowerCase() === 'get') {
-        const filePath = path + req.path;
+    const prefix = String(options.prefix || '').toLocaleLowerCase();
+
+    return this.get(
+      `${prefix}/*`,
+      async (req: BunRequest, res: BunResponse) => {
+        let properPath = req.path.toLocaleLowerCase();
+        if (properPath.startsWith(prefix)) {
+          properPath = properPath.substring(prefix.length);
+        }
+
+        if (!properPath.startsWith('/')) {
+          properPath = `/${properPath}`;
+        }
+
+        const filePath = path + properPath;
         try {
-          const fileData = await stat(filePath);
-          if (fileData.isFile()) {
-            const fileStream = createReadStream(filePath);
-            const fileType = await fileTypeFromStream(
-              fileStream as unknown as ReadableStream,
-            );
+          const file = Bun.file(filePath);
+          if (await file.exists()) {
             res.setHeader(
               'Content-Type',
-              fileType?.mime || 'application/octet-stream',
+              file.type || 'application/octet-stream',
             );
-            res.setHeader('Content-Length', String(fileData.size));
-            return res.status(200).send(fileStream);
+
+            res.setHeader('Content-Length', String(file.size));
+            return res.status(200).send(file);
+          } else {
+            throw new NotFoundException(`${req.path} cannot be found`);
           }
         } catch (e) {
+          if (!(e instanceof NotFoundException)) {
+            console.log('Error in use static assets is ====> ', e);
+          }
+
+          if (e instanceof HttpException) {
+            throw e;
+          }
+
           // cd ../
           throw new BadGatewayException(
-            'An error occurred while fetching file',
+            'An error occurred while fetching static assets file',
           );
           //
         }
-      }
-    }) as RouterMiddlewareHandler);
+      },
+    );
   }
 
   public setViewEngine(engineOrOptions: unknown) {

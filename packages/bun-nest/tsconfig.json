@@ -39,5 +39,10 @@
       "config/*": ["./src/config/*"],
       "utils/*": ["./src/utils/*"],
     }
-  }
+  },
+  "include": [
+    "./lib/**/*",
+    "./.eslintrc",
+    "./.prettierrc"
+  ]
 }

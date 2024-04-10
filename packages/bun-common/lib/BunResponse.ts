@@ -36,6 +36,11 @@ export class BunResponse {
     return this;
   }
 
+  public type(mimeType: string): BunResponse {
+    this.headersObj.set('Content-Type', mimeType);
+    return this;
+  }
+
   public option(option: ResponseInit): BunResponse {
     this.options = Object.assign(this.options, option);
     return this;
