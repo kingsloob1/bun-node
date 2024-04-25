@@ -28,7 +28,7 @@ import type {
   VersionValue,
 } from '@nestjs/common/interfaces';
 import until from 'until-promise';
-import type { AddressInfo } from 'net';
+import { isIPv4, isIPv6, type AddressInfo } from 'net';
 import {
   type BunServeOptions,
   type BunServer,
@@ -46,6 +46,7 @@ import {
 } from '@kingsleyweb/bun-common';
 import { isPromise } from 'util/types';
 import pollUntil from 'until-promise';
+import getPort from 'get-port';
 
 type VersionedRoute = (
   req: BunRequest,
@@ -95,7 +96,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
                   this._httpServerHandlers.push(handler);
                 }
               };
-              break;
             }
 
             case ['off', 'removeListener'].includes(prop as string): {
@@ -292,7 +292,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     }
 
     hostname = isFunction(hostname) ? '127.0.0.1' : hostname;
-    if (!hostname) {
+    if (!hostname || !(isIPv4(hostname) || isIPv6(hostname))) {
       hostname = '127.0.0.1';
     }
 
@@ -302,46 +302,97 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         ? callback
         : () => undefined;
 
+    port = Number(port);
+    const portsToTest: number[] = [port];
+
+    while (portsToTest.length < 10) {
+      portsToTest.push(port + portsToTest.length);
+    }
+
+    const availablePort = await getPort({
+      host: hostname,
+      port: portsToTest,
+    });
+
     this._listeningHost = hostname;
-    this._listeningPort = port;
+    this._listeningPort = availablePort;
     let isListening = false;
 
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const that = this;
-    const serverInstance = Bun.serve({
-      ...(this.serverOptions || {}),
-      port,
-      hostname,
-      development: Bun.env.NODE_ENV !== 'production',
-      async fetch(nativeRequest: Request, server) {
-        const req = new BunRequest(nativeRequest, server, {
-          canHandleUpload: true,
-        });
-
-        const res = new BunResponse(req);
-        let routeUsed: matchedRoute | undefined = undefined;
-
-        try {
-          routeUsed = await that.instance.handle({
-            requestHost: req.host,
-            requestMethod: req.method,
-            response: res,
-            request: req,
-            requestUrl: req.originalUrl,
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      const that = this;
+      const serverInstance = Bun.serve({
+        ...(this.serverOptions || {}),
+        port: this._listeningPort,
+        hostname: this._listeningHost,
+        development: Bun.env.NODE_ENV !== 'production',
+        async fetch(nativeRequest: Request, server) {
+          const req = new BunRequest(nativeRequest, server, {
+            canHandleUpload: true,
           });
-        } catch (e) {
-          if (!isObject(e)) {
-            e = new Error(String(e));
+
+          const res = new BunResponse(req);
+          let routeUsed: matchedRoute | undefined = undefined;
+
+          try {
+            routeUsed = await that.instance.handle({
+              requestHost: req.host,
+              requestMethod: req.method,
+              response: res,
+              request: req,
+              requestUrl: req.originalUrl,
+            });
+          } catch (e) {
+            if (!isObject(e)) {
+              e = new Error(String(e));
+            }
+
+            set(e as unknown as Record<string, unknown>, 'req', req);
+            throw e;
           }
 
-          set(e as unknown as Record<string, unknown>, 'req', req);
-          throw e;
-        }
+          let hasNativeResponse = false;
+          if (routeUsed) {
+            hasNativeResponse = true;
+          } else if (that._notFoundHandlers.length) {
+            let continueProcessingHandlers = true;
+            const next: NextFunction = (err) => {
+              if (!(isUndefined(err) || isNull(err))) {
+                continueProcessingHandlers = false;
+              }
+            };
 
-        let hasNativeResponse = false;
-        if (routeUsed) {
-          hasNativeResponse = true;
-        } else if (that._notFoundHandlers.length) {
+            for await (const handler of that._notFoundHandlers) {
+              if (!continueProcessingHandlers) {
+                break;
+              }
+
+              const resp = await handler(req, res, next);
+              continueProcessingHandlers = !!resp;
+            }
+
+            hasNativeResponse = true;
+          }
+
+          if (hasNativeResponse) {
+            const nativeResponse = await res.getNativeResponse(
+              that.requestTimeout,
+            );
+            return nativeResponse;
+          }
+
+          return new Response(undefined, {
+            status: 400,
+            statusText: 'Not Found',
+          });
+        },
+        websocket: this.websocketHandler,
+        async error(err) {
+          const req = get(err, 'req', undefined) as BunRequest | undefined;
+          if (!req) {
+            throw err;
+          }
+
           let continueProcessingHandlers = true;
           const next: NextFunction = (err) => {
             if (!(isUndefined(err) || isNull(err))) {
@@ -349,78 +400,45 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
             }
           };
 
-          for await (const handler of that._notFoundHandlers) {
+          const response = new BunResponse(req);
+          for await (const handler of that._errorHandlers) {
             if (!continueProcessingHandlers) {
               break;
             }
 
-            const resp = await handler(req, res, next);
+            const resp = await handler(err, req, response, next);
             continueProcessingHandlers = !!resp;
           }
 
-          hasNativeResponse = true;
-        }
-
-        if (hasNativeResponse) {
-          const nativeResponse = await res.getNativeResponse(
-            that.requestTimeout,
-          );
-          return nativeResponse;
-        }
-
-        return new Response(undefined, {
-          status: 400,
-          statusText: 'Not Found',
-        });
-      },
-      websocket: this.websocketHandler,
-      async error(err) {
-        const req = get(err, 'req', undefined) as BunRequest | undefined;
-        if (!req) {
-          throw err;
-        }
-
-        let continueProcessingHandlers = true;
-        const next: NextFunction = (err) => {
-          if (!(isUndefined(err) || isNull(err))) {
-            continueProcessingHandlers = false;
+          if (that._errorHandlers.length) {
+            const nativeResponse = await response.getNativeResponse(1000);
+            return nativeResponse;
+          } else {
+            throw err;
           }
-        };
+        },
+      });
 
-        const response = new BunResponse(req);
-        for await (const handler of that._errorHandlers) {
-          if (!continueProcessingHandlers) {
-            break;
-          }
+      isListening = true;
+      this._serverInstance = serverInstance;
 
-          const resp = await handler(err, req, response, next);
-          continueProcessingHandlers = !!resp;
-        }
+      await until(
+        () => isListening,
+        (isListening) => !!isListening,
+      );
 
-        if (that._errorHandlers.length) {
-          const nativeResponse = await response.getNativeResponse(1000);
-          return nativeResponse;
-        } else {
-          throw err;
-        }
-      },
-    });
+      this._serverInstance = serverInstance;
+      this.isServerListening = true;
 
-    isListening = true;
-    this._serverInstance = serverInstance;
-
-    await until(
-      () => isListening,
-      (isListening) => !!isListening,
-    );
-
-    this._serverInstance = serverInstance;
-    this.isServerListening = true;
-
-    if (callback) {
-      callback(serverInstance);
+      if (callback) {
+        callback(serverInstance);
+      }
+      return serverInstance;
+    } catch (e) {
+      console.log('Error while binding to listener...');
+      console.error(e);
+      process.exit(1);
     }
-    return serverInstance;
   }
 
   public reply(
@@ -593,11 +611,19 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   }
 
   public enableCors(options: CorsOptions) {
-    return this.use(
-      cors(
-        options as unknown as BunCorsOptions,
-      ) as unknown as RouterMiddlewareHandler,
-    );
+    const corsResp = cors(
+      options as unknown as BunCorsOptions,
+    ) as unknown as RouterMiddlewareHandler;
+
+    //Add Middle ware to ensure cors header is added
+    this.use(corsResp);
+
+    //Add options route Handler
+    this.options('*', (req: BunRequest, res: BunResponse, next) => {
+      return corsResp(req, res, next as NextFunction);
+    });
+
+    return this;
   }
 
   public async initHttpServer() {

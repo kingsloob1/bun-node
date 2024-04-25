@@ -27,28 +27,29 @@
     "@kingsleyweb/bun-common": "^0.0.8-alpha.0",
     "cors": "^2.8.5",
     "file-type": "^19.0.0",
+    "get-port": "^7.1.0",
     "lodash-es": "^4.17.21",
-    "path-to-regexp": "^6.2.1",
+    "path-to-regexp": "^6.2.2",
     "until-promise": "^0.3.0"
   },
   "devDependencies": {
-    "@nestjs/core": "^10.3.6",
-    "@types/bun": "^1.0.12",
+    "@nestjs/core": "^10.3.8",
+    "@types/bun": "^1.1.0",
     "@types/cors": "2.8.17",
     "@types/lodash-es": "^4.17.12",
-    "@types/node": "20.12.4",
+    "@types/node": "20.12.7",
     "@types/until-promise": "^0.3.3",
-    "@typescript-eslint/eslint-plugin": "7.5.0",
-    "@typescript-eslint/parser": "7.5.0",
+    "@typescript-eslint/eslint-plugin": "7.7.1",
+    "@typescript-eslint/parser": "7.7.1",
     "eslint": "8.57.0",
     "eslint-config-prettier": "9.1.0",
     "eslint-plugin-prettier": "5.1.3",
     "prettier": "3.2.5",
-    "ts-essentials": "^9.4.1",
-    "typescript": "5.4.4"
+    "ts-essentials": "^9.4.2",
+    "typescript": "5.4.5"
   },
   "engines": {
-    "bun": ">=1.1.1"
+    "bun": ">=1.1.4"
   },
   "gitHead": "c8f04ee9a9b291b6faeb115bd929e6fb5a6d0833",
   "trustedDependencies": [
