@@ -1,27 +1,29 @@
+import { join as joinPath } from 'node:path';
+import { type Readable, isReadable } from 'node:stream';
+import type { ReadableStreamController } from 'node:stream/web';
 import type { BunFile } from 'bun';
+import { format as formatDate, isValid as isDateValid } from 'date-fns';
+import isNumeric from 'fast-isnumeric';
+import { fileTypeFromBuffer } from 'file-type';
 import {
+  each,
   get,
   isArray,
+  isBoolean,
+  isFunction,
+  isMap,
+  isNull,
+  isNumber,
   isObject,
   isString,
-  values,
-  each,
-  isNull,
   isUndefined,
-  isBoolean,
-  isNumber,
-  isMap,
-  isFunction,
+  set,
+  values,
 } from 'lodash-es';
 import type { DeepWritable } from 'ts-essentials';
-import { join as joinPath } from 'node:path';
-import { format as formatDate, isValid as isDateValid } from 'date-fns';
+import type { BunRequest } from './BunRequest';
 // import { formatInTimeZone } from 'date-fns-tz';
 import type { SendFileOptions } from './types/general';
-import type { BunRequest } from './BunRequest';
-import isNumeric from 'fast-isnumeric';
-import { Readable, isReadable } from 'node:stream';
-import { fileTypeFromBuffer } from 'file-type';
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 
@@ -31,10 +33,11 @@ export class BunResponse {
   private headersObj = new Headers();
   private _checkConnectionTimer: ReturnType<typeof setInterval> | undefined =
     undefined;
-  private _isLongLived: boolean = false;
-  private _writeController: ReadableStreamDirectController | undefined =
+  private _isLongLived = false;
+  private _writeController: ReadableStreamController<unknown> | undefined =
     undefined;
-  private _writeDataBeforeSetupController: unknown[] = [];
+  private _writeControllerStream: ReadableStream | undefined = undefined;
+  private _writeDataBeforeSetupController: unknown[][] = [];
 
   constructor(public req: BunRequest) {}
 
@@ -199,36 +202,96 @@ export class BunResponse {
     return this;
   }
 
+  public async longLivedWrite(
+    ...args: Parameters<ReadableStreamController<unknown>['enqueue']>
+  ) {
+    if (
+      !get(this._writeControllerStream, 'done') ||
+      !!this._writeControllerStream
+    ) {
+      try {
+        await this._writeController?.enqueue(...args);
+      } catch {
+        await this.endLongLivedConnection();
+      }
+    }
+
+    return 0;
+  }
+
   public initLongLivedConnection() {
     if (this._isLongLived) return false;
     this.req.socket.setKeepAlive(true);
     this.req.socket.setNoDelay(true);
     this.req.socket.setTimeout(0);
 
-    this._checkConnectionTimer = setInterval(() => {
-      if (this.req?.request?.signal?.aborted) {
-        clearInterval(this._checkConnectionTimer);
-        this._writeController?.close();
-        this._checkConnectionTimer = undefined;
-        this._writeDataBeforeSetupController = [];
-        this._writeController?.close();
-        this._writeController = undefined;
+    this._checkConnectionTimer = setInterval(async () => {
+      const isAbortedBoolean = isBoolean(this.req?.request?.signal?.aborted);
+      if (
+        !isAbortedBoolean ||
+        (isAbortedBoolean && this.req?.request?.signal?.aborted)
+      ) {
+        await this.endLongLivedConnection();
       }
     }, 10);
 
     this._isLongLived = true;
     this.options.headers = this.headersObj;
-    this.response = new Response(
-      new ReadableStream({
-        type: 'direct',
-        pull: (controller) => {
+
+    this._writeControllerStream = new ReadableStream(
+      {
+        start: async (controller) => {
+          await controller.enqueue('Hello World');
           this._writeController = controller;
+
+          if (this._writeDataBeforeSetupController) {
+            for await (const passedArgs of this
+              ._writeDataBeforeSetupController) {
+              await this.longLivedWrite(...passedArgs);
+            }
+
+            this._writeDataBeforeSetupController = [];
+          } else {
+            await this.longLivedWrite('/n');
+          }
         },
-      }),
+        cancel: async () => {
+          await this.endLongLivedConnection();
+        },
+      },
+      {
+        highWaterMark: 1,
+        size(chunk) {
+          return chunk.length;
+        },
+      },
+    );
+
+    this.response = new Response(
+      this._writeControllerStream as ReadableStream,
       this.options,
     );
 
     return true;
+  }
+
+  async endLongLivedConnection() {
+    clearInterval(this._checkConnectionTimer);
+    try {
+      await this._writeController?.close();
+    } catch {
+      //
+    }
+
+    this._checkConnectionTimer = undefined;
+    this._writeDataBeforeSetupController = [];
+    set(
+      this._writeControllerStream as unknown as Record<string, unknown>,
+      'done',
+      true,
+    );
+    this._writeControllerStream = undefined;
+    this._writeController = undefined;
   }
 
   flushHeaders(): boolean {
@@ -238,20 +301,20 @@ export class BunResponse {
   getWritable() {
     return {
       ...this._writeController,
-      write: this.write,
+      write: this.write.bind(this),
     };
   }
 
-  write(...args: Parameters<ReadableStreamDirectController['write']>) {
+  write(...args: Parameters<ReadableStreamController<unknown>['enqueue']>) {
     if (!this._isLongLived) {
       this.initLongLivedConnection();
     }
 
     if (this._isLongLived) {
-      if (!this.getWriteController()) {
+      if (!this._writeController) {
         this._writeDataBeforeSetupController.push(args);
       } else {
-        this.getWriteController()?.write(...args);
+        this.longLivedWrite(...args);
       }
     }
 
@@ -260,7 +323,8 @@ export class BunResponse {
 
   async end(body: unknown) {
     if (this._isLongLived) {
-      return await this.getWriteController()?.end();
+      await this.endLongLivedConnection();
+      return '/n';
     }
 
     return await this.send(body as Parameters<typeof this.send>[0]);

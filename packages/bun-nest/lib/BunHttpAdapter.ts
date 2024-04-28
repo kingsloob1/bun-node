@@ -1,5 +1,39 @@
+import { type AddressInfo, isIPv4, isIPv6 } from 'net';
+import {
+  BunRequest,
+  BunResponse,
+  BunRouter,
+  type BunServeOptions,
+  type BunServer,
+  type NestExpressBodyParserOptions,
+  type NestExpressBodyParserType,
+  type NextFunction,
+  type RouterErrorMiddlewareHandler,
+  type RouterHandler,
+  type RouterMiddlewareHandler,
+  type ServeStaticOptions,
+  type matchedRoute,
+} from '@kingsleyweb/bun-common';
+import {
+  BadGatewayException,
+  HttpException,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+  type RequestMethod,
+  StreamableFile,
+  VERSION_NEUTRAL,
+  VersioningType,
+} from '@nestjs/common';
+import type {
+  VersionValue,
+  VersioningOptions,
+} from '@nestjs/common/interfaces';
+import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
 import { AbstractHttpAdapter } from '@nestjs/core';
-import { peek, type Server } from 'bun';
+import { type Server, peek } from 'bun';
+import cors, { type CorsOptions as BunCorsOptions } from 'cors';
+import getPort from 'get-port';
 import {
   get,
   isFunction,
@@ -10,43 +44,9 @@ import {
   omit,
   set,
 } from 'lodash-es';
-import {
-  BadGatewayException,
-  HttpException,
-  InternalServerErrorException,
-  Logger,
-  NotFoundException,
-  RequestMethod,
-  StreamableFile,
-  VERSION_NEUTRAL,
-  VersioningType,
-} from '@nestjs/common';
-import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface';
-import cors, { type CorsOptions as BunCorsOptions } from 'cors';
-import type {
-  VersioningOptions,
-  VersionValue,
-} from '@nestjs/common/interfaces';
 import until from 'until-promise';
-import { isIPv4, isIPv6, type AddressInfo } from 'net';
-import {
-  type BunServeOptions,
-  type BunServer,
-  type NestExpressBodyParserOptions,
-  type NestExpressBodyParserType,
-  type NextFunction,
-  type RouterErrorMiddlewareHandler,
-  type RouterHandler,
-  type RouterMiddlewareHandler,
-  type ServeStaticOptions,
-  BunResponse,
-  BunRequest,
-  BunRouter,
-  type matchedRoute,
-} from '@kingsleyweb/bun-common';
-import { isPromise } from 'util/types';
 import pollUntil from 'until-promise';
-import getPort from 'get-port';
+import { isPromise } from 'util/types';
 import { BunWebSocketAdapter } from './BunWebSocketAdapter';
 
 type VersionedRoute = (
@@ -64,7 +64,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   private readonly logger = new Logger('bun');
   private websocketAdapter!: BunWebSocketAdapter;
   private _serverInstance: BunServer | undefined = undefined;
-  private _listeningHost: string = '127.0.0.1';
+  private _listeningHost = '127.0.0.1';
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
   private serverOptions: BunServeOptions | undefined = undefined;
@@ -74,7 +74,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   private _hasRegisteredBodyParser = false;
 
   constructor(
-    private requestTimeout: number = 0,
+    private requestTimeout = 0,
     wsOptions?: ConstructorParameters<typeof BunWebSocketAdapter>[1],
   ) {
     const router = new BunRouter();
