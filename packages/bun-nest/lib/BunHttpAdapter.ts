@@ -1,5 +1,5 @@
 import { AbstractHttpAdapter } from '@nestjs/core';
-import { peek, type WebSocketHandler } from 'bun';
+import { peek, type Server } from 'bun';
 import {
   get,
   isFunction,
@@ -47,6 +47,7 @@ import {
 import { isPromise } from 'util/types';
 import pollUntil from 'until-promise';
 import getPort from 'get-port';
+import { BunWebSocketAdapter } from './BunWebSocketAdapter';
 
 type VersionedRoute = (
   req: BunRequest,
@@ -61,11 +62,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 > {
   public instance: InstanceType<typeof BunRouter>;
   private readonly logger = new Logger('bun');
-  private websocketHandler: WebSocketHandler = {
-    open: (ws) => ws.close(),
-    message: () => undefined,
-    close: () => undefined,
-  };
+  private websocketAdapter!: BunWebSocketAdapter;
   private _serverInstance: BunServer | undefined = undefined;
   private _listeningHost: string = '127.0.0.1';
   private _listeningPort: string | number = 3000;
@@ -76,7 +73,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   private _hasRegisteredBodyParser = false;
 
-  constructor(private requestTimeout: number = 0) {
+  constructor(
+    private requestTimeout: number = 0,
+    wsOptions?: ConstructorParameters<typeof BunWebSocketAdapter>[1],
+  ) {
     const router = new BunRouter();
     super(router);
     this.instance = router;
@@ -157,6 +157,22 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     );
 
     this.setHttpServer(proxiedHttpServer as unknown as BunServer);
+    this.websocketAdapter = new BunWebSocketAdapter(
+      this,
+      wsOptions || undefined,
+    );
+  }
+
+  public get isListening() {
+    return this.isServerListening;
+  }
+
+  public get listeningHost() {
+    return this._listeningHost;
+  }
+
+  public get listeningPort() {
+    return this._listeningPort;
   }
 
   public async getListenAddress() {
@@ -212,13 +228,13 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this._serverInstance;
   }
 
-  public setListenOptions(
+  public async setListenOptions(
     options: Partial<BunServeOptions> & {
       hostname?: string;
       port: string | number;
     },
     restartInstance = false,
-  ) {
+  ): Promise<Server | undefined> {
     const hostname = options.hostname || '127.0.0.1';
     const port = options.port;
 
@@ -230,7 +246,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     if (restartInstance && this.isServerListening && this._serverInstance) {
       this._serverInstance.stop(false);
       this.isServerListening = false;
-      this.listen(this._listeningPort, this._listeningHost);
+      return await this.listen(this._listeningPort, this._listeningHost);
     }
   }
 
@@ -386,7 +402,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
             statusText: 'Not Found',
           });
         },
-        websocket: this.websocketHandler,
+        websocket: this.websocketAdapter?.handlers,
         async error(err) {
           const req = get(err, 'req', undefined) as BunRequest | undefined;
           if (!req) {

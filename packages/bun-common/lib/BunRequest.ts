@@ -15,6 +15,7 @@ import {
   isBoolean,
   omit,
   first,
+  isNumber,
 } from 'lodash-es';
 import type {
   BunRequestInterface,
@@ -76,7 +77,7 @@ export class BunRequest implements BunRequestInterface {
   public subdomains: string[] = [];
 
   constructor(
-    private request: Request,
+    public request: Request,
     private server: BunServer,
     private options: {
       canHandleUpload: Boolean;
@@ -98,6 +99,44 @@ export class BunRequest implements BunRequestInterface {
     });
 
     this.extractSubdomains();
+  }
+
+  public handleWebSocketUpgrade(
+    data?: Record<string, unknown>,
+    responseHeaders?: Bun.HeadersInit,
+  ) {
+    this.server.upgrade(this.request, {
+      data: data || {},
+      headers: responseHeaders,
+    });
+
+    return undefined;
+  }
+
+  get socket() {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const that = this;
+
+    const obj = {
+      keepAlive: false,
+      setKeepAlive(value: boolean) {
+        obj.keepAlive = value;
+        return isBoolean(obj.keepAlive);
+      },
+      setNoDelay: (value: boolean) => isBoolean(value),
+      setTimeout: (value: number) => isNumber(value),
+      get localPort() {
+        return that.socketAddress?.port;
+      },
+      get localAddress() {
+        return that.ip;
+      },
+      get localFamily() {
+        return that.socketAddress?.family;
+      },
+    };
+
+    return obj;
   }
 
   get buffer() {

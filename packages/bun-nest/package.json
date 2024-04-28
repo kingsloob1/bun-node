@@ -6,7 +6,7 @@
   "homepage": "",
   "license": "MIT",
   "type": "module",
-  "main": "lib/BunHttpAdapter.ts",
+  "main": "lib/index.ts",
   "private": false,
   "publishConfig": {
     "access": "public",
@@ -25,11 +25,13 @@
   },
   "dependencies": {
     "@kingsleyweb/bun-common": "^0.0.9-alpha.0",
+    "@nestjs/websockets": "^10.3.8",
     "cors": "^2.8.5",
     "file-type": "^19.0.0",
     "get-port": "^7.1.0",
     "lodash-es": "^4.17.21",
     "path-to-regexp": "^6.2.2",
+    "rxjs": "^7.8.1",
     "until-promise": "^0.3.0"
   },
   "devDependencies": {
