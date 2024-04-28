@@ -1,6 +1,6 @@
 {
   "name": "@kingsleyweb/bun-nest",
-  "version": "0.0.9-alpha.0",
+  "version": "0.0.10-alpha.0",
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "homepage": "",
@@ -24,7 +24,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^0.0.9-alpha.0",
+    "@kingsleyweb/bun-common": "^0.0.10-alpha.0",
     "@nestjs/websockets": "^10.3.8",
     "cors": "^2.8.5",
     "file-type": "^19.0.0",
