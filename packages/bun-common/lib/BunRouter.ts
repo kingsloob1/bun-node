@@ -1,3 +1,5 @@
+import path from "node:path";
+import process from "node:process";
 import { type Route, Router, type matchedRoute } from "@routejs/router";
 import {
   get,
@@ -53,6 +55,36 @@ export class BunRouter extends Router {
 
   async getBunWebsocket() {
     return this._bunWebSocket || this.localOptions?.bunWebsocket;
+  }
+
+  setRoute(
+    option: Required<Pick<Route, "path" | "callbacks">> &
+      Partial<Pick<Route, "group" | "host" | "method" | "name">>,
+  ) {
+    const routes = this.routes();
+    if (option.name) {
+      if (routes.find((route) => route.name === option.name)) {
+        throw new Error(`Route with name "${option.name}" already exists..`);
+      }
+    }
+
+    const routeModulePath = path.join(
+      path.dirname(Bun.resolveSync("@routejs/router", process.cwd())),
+      "./src/route.mjs",
+    );
+    // eslint-disable-next-line ts/no-var-requires, ts/no-require-imports
+    const routeModule = require(routeModulePath);
+
+    if (!isFunction(routeModule.default)) {
+      throw new Error(
+        `Route module cannot be imported... API must have changed. Please create an issue on github`,
+      );
+    }
+
+    // eslint-disable-next-line new-cap
+    const route = new routeModule.default(option);
+    this.use(route);
+    return this;
   }
 
   ws(path: string, handler: WebSocketHandler<WebSocketClientData>): this {

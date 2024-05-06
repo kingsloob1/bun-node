@@ -56,6 +56,8 @@ type VersionedRoute = (
   next: () => void,
 ) => Function;
 
+type WebsocketOptions = ConstructorParameters<typeof BunWebSocketAdapter>[1];
+
 export class BunHttpAdapter extends AbstractHttpAdapter<
   BunServer,
   BunRequest,
@@ -63,7 +65,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 > {
   public override instance: InstanceType<typeof BunRouter>;
   private readonly logger = new Logger("bun");
-  private websocketAdapter!: BunWebSocketAdapter;
+  private _websocketAdapter!: BunWebSocketAdapter;
   private _serverInstance: BunServer | undefined = undefined;
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
@@ -76,18 +78,22 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
   constructor(
     private requestTimeout = 0,
-    wsOptions?: ConstructorParameters<typeof BunWebSocketAdapter>[1],
+    wsOptions?: WebsocketOptions,
   ) {
     const router = new BunRouter();
     super(router);
     this.instance = router;
     super.setInstance(router);
 
-    this.websocketAdapter = new BunWebSocketAdapter(
-      this,
-      wsOptions || undefined,
-    );
-    this.instance.setBunWebSocket(this.websocketAdapter);
+    this._websocketAdapter = new BunWebSocketAdapter(this, {
+      router,
+      newInstance: false,
+      getServer: () => {
+        return this.getBunServer();
+      },
+      ...wsOptions,
+    } as unknown as WebsocketOptions);
+    this.instance.setBunWebSocket(this._websocketAdapter);
 
     // Bypass event handlers added to httpServer and call of address
     const proxiedHttpServer = new Proxy(
@@ -171,6 +177,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     );
 
     this.setHttpServer(proxiedHttpServer as unknown as BunServer);
+  }
+
+  get webSocketAdapter() {
+    return this._websocketAdapter;
   }
 
   public get isListening() {
@@ -414,7 +424,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
             statusText: "Not Found",
           });
         },
-        websocket: this.websocketAdapter?.wsHandler,
+        websocket: that.webSocketAdapter.wsHandler,
         async error(err) {
           const req = get(err, "req", undefined) as BunRequest | undefined;
           if (!req) {

@@ -43,12 +43,12 @@ export class BunWebSocketAdapter
     private localOptions?: BunWebSocketOptions | undefined,
   ) {
     const newInstance = localOptions?.newInstance || false;
-    const getServer = async () => {
+    const getServer = () => {
       if (localOptions?.newInstance) {
-        return await this.getServer();
+        return this.getServer();
       }
 
-      return await httpAdapter.getBunServer();
+      return httpAdapter.getBunServer();
     };
 
     const superOptions = {
@@ -62,25 +62,31 @@ export class BunWebSocketAdapter
 
   // eslint-disable-next-line ts/ban-ts-comment
   // @ts-expect-error
-  async create(
+  create(
     port: number,
     options?: {
       namespace?: string;
       transport: string[];
       [key: string]: unknown;
     },
-  ): Promise<Server | undefined> {
+  ): Server | undefined {
     console.log("called websocket create with the following ====> ", {
       port,
       options,
     });
 
-    const server = await this.getServer();
-    if (server) {
-      return server;
+    this.httpAdapter.instance.ws("/*", {
+      open: () => undefined,
+      close: () => undefined,
+      message: () => undefined,
+    });
+
+    let server = this.getServer();
+    if (!server) {
+      server = this.httpAdapter.getBunServer();
     }
 
-    return undefined;
+    return server || undefined;
   }
 
   bindClientConnect(
