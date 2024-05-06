@@ -295,7 +295,6 @@ export class BunWebSocket extends EventEmitter {
               this.#getWebSocketAcceptKey(secWebsocketKey),
           };
           const success = server.upgrade(req.request, { headers, data });
-          Bun.sleepSync(2000);
 
           if (success) {
             return res
@@ -315,7 +314,6 @@ export class BunWebSocket extends EventEmitter {
     };
 
     this.router.setRoute({
-      name: "ws-handler",
       path,
       method: undefined,
       callbacks: [wsRouteHandler],

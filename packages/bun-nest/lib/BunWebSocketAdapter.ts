@@ -70,10 +70,12 @@ export class BunWebSocketAdapter
       [key: string]: unknown;
     },
   ): Server | undefined {
-    console.log("called websocket create with the following ====> ", {
-      port,
-      options,
-    });
+    if (Bun.env.NODE_ENV !== "production") {
+      console.log("called websocket create adapter with the following ====> ", {
+        port,
+        options,
+      });
+    }
 
     this.httpAdapter.instance.ws("/*", {
       open: () => undefined,
