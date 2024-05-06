@@ -1,1 +1,1 @@
-export { UploadedFile, UploadedFiles } from '@nestjs/common';
+export { UploadedFile, UploadedFiles } from "@nestjs/common";

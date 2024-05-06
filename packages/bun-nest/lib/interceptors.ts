@@ -1,19 +1,19 @@
 import {
-  mixin,
   type CallHandler,
   type ExecutionContext,
   type NestInterceptor,
   type Type,
-} from '@nestjs/common';
+  mixin,
+} from "@nestjs/common";
 import {
-  transformUploadOptions,
   type TransFormedUploadOptions,
-  type UploadOptions,
-  getMultipartRequest,
   type UploadField,
   type UploadFieldMapEntry,
-} from '@kingsleyweb/bun-common/lib/multipart';
-import { tap, type Observable } from 'rxjs';
+  type UploadOptions,
+  getMultipartRequest,
+  transformUploadOptions,
+} from "@kingsleyweb/bun-common/lib/multipart";
+import { type Observable, tap } from "rxjs";
 import {
   handleMultipartAnyFiles,
   handleMultipartFileFields,
@@ -21,7 +21,7 @@ import {
   handleMultipartSingleFile,
   handleNoFiles,
   uploadFieldsToMap,
-} from '@kingsleyweb/bun-common/lib/multipart/handlers';
+} from "@kingsleyweb/bun-common/lib/multipart/handlers";
 
 export function AnyFilesInterceptor(
   options?: UploadOptions,

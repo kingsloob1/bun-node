@@ -1,10 +1,12 @@
-import { join as joinPath } from 'node:path';
-import { type Readable, isReadable } from 'node:stream';
-import type { ReadableStreamController } from 'node:stream/web';
-import type { BunFile } from 'bun';
-import { format as formatDate, isValid as isDateValid } from 'date-fns';
-import isNumeric from 'fast-isnumeric';
-import { fileTypeFromBuffer } from 'file-type';
+import { join as joinPath } from "node:path";
+import { Buffer } from "node:buffer";
+import process from "node:process";
+import { type Readable, isReadable } from "node:stream";
+import type { ReadableStreamController } from "node:stream/web";
+import type { BunFile } from "bun";
+import { format as formatDate, isValid as isDateValid } from "date-fns";
+import isNumeric from "fast-isnumeric";
+import { fileTypeFromBuffer } from "file-type";
 import {
   each,
   get,
@@ -19,11 +21,11 @@ import {
   isUndefined,
   set,
   values,
-} from 'lodash-es';
-import type { DeepWritable } from 'ts-essentials';
-import type { BunRequest } from './BunRequest';
+} from "lodash-es";
+import type { DeepWritable } from "ts-essentials";
+import type { BunRequest } from "./BunRequest";
 // import { formatInTimeZone } from 'date-fns-tz';
-import type { SendFileOptions } from './types/general';
+import type { SendFileOptions } from "./types/general";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 
@@ -33,9 +35,11 @@ export class BunResponse {
   private headersObj = new Headers();
   private _checkConnectionTimer: ReturnType<typeof setInterval> | undefined =
     undefined;
+
   private _isLongLived = false;
   private _writeController: ReadableStreamController<unknown> | undefined =
     undefined;
+
   private _writeControllerStream: ReadableStream | undefined = undefined;
   private _writeDataBeforeSetupController: unknown[][] = [];
 
@@ -59,7 +63,7 @@ export class BunResponse {
   }
 
   public type(mimeType: string): BunResponse {
-    this.headersObj.set('Content-Type', mimeType);
+    this.headersObj.set("Content-Type", mimeType);
     return this;
   }
 
@@ -75,7 +79,7 @@ export class BunResponse {
 
   public json<T extends Record<string, unknown>>(body: T): BunResponse {
     this.options.headers = this.headersObj;
-    this.options.headers.set('Content-Type', 'application/json');
+    this.options.headers.set("Content-Type", "application/json");
     this.response = Response.json(body, this.options);
     return this;
   }
@@ -121,7 +125,7 @@ export class BunResponse {
     ) {
       this.response = new Response(body, this.options);
     } else if (isObject(body) || isArray(body)) {
-      this.options.headers.set('Content-Type', 'application/json');
+      this.options.headers.set("Content-Type", "application/json");
 
       this.response = new Response(JSON.stringify(body), this.options);
     } else {
@@ -136,13 +140,13 @@ export class BunResponse {
         bodyToBeSent = String(bodyToBeSent);
       }
 
-      //If no content type, Attempt to extract content type from buffer and send
-      if (!this.options.headers.get('content-type') && isString(bodyToBeSent)) {
-        let contentType = 'text/plain';
+      // If no content type, Attempt to extract content type from buffer and send
+      if (!this.options.headers.get("content-type") && isString(bodyToBeSent)) {
+        let contentType = "text/plain";
 
         try {
           const typeResp = await fileTypeFromBuffer(
-            Buffer.from(bodyToBeSent, 'utf-8'),
+            Buffer.from(bodyToBeSent, "utf-8"),
           );
 
           if (typeResp?.mime) {
@@ -152,7 +156,7 @@ export class BunResponse {
           //
         }
 
-        this.options.headers.set('Content-Type', contentType);
+        this.options.headers.set("Content-Type", contentType);
       }
 
       this.response = new Response(bodyToBeSent, this.options);
@@ -170,8 +174,8 @@ export class BunResponse {
   writeHead(headers: WriteHeadersInput): this;
   writeHead(...args: unknown[]) {
     let headers: WriteHeadersInput | undefined;
-    let statusCode: number | undefined = undefined;
-    let statusMessage: string | undefined = undefined;
+    let statusCode: number | undefined;
+    let statusMessage: string | undefined;
     if (args.length === 3) {
       statusCode = args[0] as number;
       statusMessage = args[1] as string;
@@ -203,10 +207,10 @@ export class BunResponse {
   }
 
   public async longLivedWrite(
-    ...args: Parameters<ReadableStreamController<unknown>['enqueue']>
+    ...args: Parameters<ReadableStreamController<unknown>["enqueue"]>
   ) {
     if (
-      !get(this._writeControllerStream, 'done') ||
+      !get(this._writeControllerStream, "done") ||
       !!this._writeControllerStream
     ) {
       try {
@@ -241,7 +245,7 @@ export class BunResponse {
     this._writeControllerStream = new ReadableStream(
       {
         start: async (controller) => {
-          await controller.enqueue('Hello World');
+          await controller.enqueue("Hello World");
           this._writeController = controller;
 
           if (this._writeDataBeforeSetupController) {
@@ -252,7 +256,7 @@ export class BunResponse {
 
             this._writeDataBeforeSetupController = [];
           } else {
-            await this.longLivedWrite('/n');
+            await this.longLivedWrite("/n");
           }
         },
         cancel: async () => {
@@ -287,7 +291,7 @@ export class BunResponse {
     this._writeDataBeforeSetupController = [];
     set(
       this._writeControllerStream as unknown as Record<string, unknown>,
-      'done',
+      "done",
       true,
     );
     this._writeControllerStream = undefined;
@@ -305,7 +309,7 @@ export class BunResponse {
     };
   }
 
-  write(...args: Parameters<ReadableStreamController<unknown>['enqueue']>) {
+  write(...args: Parameters<ReadableStreamController<unknown>["enqueue"]>) {
     if (!this._isLongLived) {
       this.initLongLivedConnection();
     }
@@ -321,10 +325,10 @@ export class BunResponse {
     return true;
   }
 
-  async end(body: unknown) {
+  async end(body: unknown | undefined = undefined) {
     if (this._isLongLived) {
       await this.endLongLivedConnection();
-      return '/n';
+      return "/n";
     }
 
     return await this.send(body as Parameters<typeof this.send>[0]);
@@ -354,7 +358,7 @@ export class BunResponse {
         } else {
           if (elapsedTime > (timeout as number)) {
             clearInterval(interval);
-            reject(new Error('Request Timedout'));
+            reject(new Error("Request Timedout"));
             return;
           }
 
@@ -367,7 +371,7 @@ export class BunResponse {
   }
 
   get headersSent() {
-    return !!this.response;
+    return !!this.response || !!this.isLongLived;
   }
 
   setHeader(name: string, value: string | string[], replace = true) {
@@ -400,7 +404,7 @@ export class BunResponse {
     if (isArray(headers)) {
       headers.forEach((header) => {
         if (isString(header)) {
-          const parts = header.split(':').map((part) => part.trim());
+          const parts = header.split(":").map((part) => part.trim());
           if (parts && parts[0] && parts[1]) {
             this.headersObj.set(parts[0], parts[1]);
           }
@@ -409,7 +413,7 @@ export class BunResponse {
     } else if (
       isMap(headers) ||
       headers instanceof Headers ||
-      ('keys' in headers && isFunction(headers['keys']))
+      ("keys" in headers && isFunction(headers.keys))
     ) {
       const list = headers as unknown as Map<string, string>;
       const keys = Array.from(list.keys());
@@ -486,15 +490,15 @@ export class BunResponse {
       const file = Bun.file(path);
       if (await file.exists()) {
         this.headersObj.set(
-          'Content-Disposition',
+          "Content-Disposition",
           `attachment; filename="${file.name}"`,
         );
-        this.headersObj.set('Content-Type', file.type);
+        this.headersObj.set("Content-Type", file.type);
         return this;
       }
     }
 
-    this.headersObj.set('Content-Disposition', `attachment`);
+    this.headersObj.set("Content-Disposition", `attachment`);
     return this;
   }
 
@@ -523,7 +527,7 @@ export class BunResponse {
     }
 
     this.options.status = 404;
-    this.options.statusText = 'Not Found';
+    this.options.statusText = "Not Found";
     this.response = new Response(undefined, this.options);
     return this;
   }
@@ -536,16 +540,16 @@ export class BunResponse {
     },
   ) {
     options = options || {};
-    const maxAge = get(options, 'maxAge', 0);
-    const root = get(options, 'root', process.cwd());
-    const lastModified = get(options, 'lastModified', true);
-    const headers = get(options, 'headers', {});
-    const download = get(options, 'download', false);
-    const filename = get(options, 'filename');
+    const maxAge = get(options, "maxAge", 0);
+    const root = get(options, "root", process.cwd());
+    const lastModified = get(options, "lastModified", true);
+    const headers = get(options, "headers", {});
+    const download = get(options, "download", false);
+    const filename = get(options, "filename");
     // const dotFiles = get(options, 'dotfiles', 'ignore');
     // const acceptRanges = get(options, 'accepRanges', true);
-    const cacheControl = get(options, 'cacheControl', true);
-    const immutable = get(options, 'immutable', false);
+    const cacheControl = get(options, "cacheControl", true);
+    const immutable = get(options, "immutable", false);
 
     const file = Bun.file(joinPath(root, path));
     const exists = await file.exists();
@@ -562,7 +566,7 @@ export class BunResponse {
 
     if (download) {
       this.headersObj.set(
-        'Content-Disposition',
+        "Content-Disposition",
         `attachment; filename="${filename || file.name}"`,
       );
     }
@@ -572,31 +576,31 @@ export class BunResponse {
       if (isDateValid(date)) {
         const formattedDateStr = formatDate(
           date,
-          'eee, dd MMM yyyy hh:mm:ss GMT',
+          "eee, dd MMM yyyy hh:mm:ss GMT",
         );
-        this.headersObj.set('Last-Modified', formattedDateStr);
+        this.headersObj.set("Last-Modified", formattedDateStr);
       }
     }
 
     if (cacheControl) {
-      this.headersObj.delete('Cache-Control');
+      this.headersObj.delete("Cache-Control");
 
-      if (maxAge && maxAge !== '0') {
-        this.headersObj.append('Cache-Control', String(maxAge));
+      if (maxAge && maxAge !== "0") {
+        this.headersObj.append("Cache-Control", String(maxAge));
       }
 
       if (immutable) {
-        this.headersObj.append('Cache-Control', 'immutable');
+        this.headersObj.append("Cache-Control", "immutable");
       }
     } else {
-      this.headersObj.delete('Cache-Control');
+      this.headersObj.delete("Cache-Control");
     }
 
     this.headersObj.set(
-      'Content-Disposition',
+      "Content-Disposition",
       `attachment; filename="${filename || file.name}"`,
     );
-    this.headersObj.set('Content-Type', file.type);
+    this.headersObj.set("Content-Type", file.type);
     this.options.headers = this.headersObj;
 
     if (this.headersSent) {

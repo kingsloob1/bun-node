@@ -1,13 +1,13 @@
 {
   "name": "@kingsleyweb/bun-nest",
+  "type": "module",
   "version": "0.0.11-alpha.0",
+  "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
-  "homepage": "",
   "license": "MIT",
-  "type": "module",
+  "homepage": "",
   "main": "lib/index.ts",
-  "private": false,
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -19,9 +19,15 @@
   "files": [
     "lib"
   ],
+  "engines": {
+    "bun": ">=1.1.7"
+  },
   "scripts": {
     "bun-version": "bun --version",
     "test": "bun test"
+  },
+  "peerDependencies": {
+    "typescript": "^5.4.5"
   },
   "dependencies": {
     "@kingsleyweb/bun-common": "^0.0.11-alpha.0",
@@ -35,23 +41,20 @@
     "until-promise": "^0.3.0"
   },
   "devDependencies": {
+    "@antfu/eslint-config": "^2.16.1",
     "@nestjs/core": "^10.3.8",
-    "@types/bun": "^1.1.0",
+    "@types/bun": "^1.1.1",
     "@types/cors": "2.8.17",
     "@types/lodash-es": "^4.17.12",
-    "@types/node": "20.12.7",
+    "@types/node": "20.12.8",
     "@types/until-promise": "^0.3.3",
-    "@typescript-eslint/eslint-plugin": "7.7.1",
-    "@typescript-eslint/parser": "7.7.1",
-    "eslint": "8.57.0",
-    "eslint-config-prettier": "9.1.0",
-    "eslint-plugin-prettier": "5.1.3",
-    "prettier": "3.2.5",
-    "ts-essentials": "^9.4.2",
+    "@typescript-eslint/eslint-plugin": "^7.8.0",
+    "eslint": "^9.2.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.3",
+    "prettier": "^3.2.5",
+    "ts-essentials": "^10.0.0",
     "typescript": "5.4.5"
-  },
-  "engines": {
-    "bun": ">=1.1.4"
   },
   "gitHead": "c8f04ee9a9b291b6faeb115bd929e6fb5a6d0833",
   "trustedDependencies": [

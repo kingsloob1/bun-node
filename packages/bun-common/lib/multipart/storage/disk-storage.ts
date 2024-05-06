@@ -1,24 +1,24 @@
-import { mkdir } from 'fs/promises';
+import { mkdir, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { createWriteStream } from "node:fs";
+import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
+import process from "node:process";
+import { isArray, isObject, isString, keys, values } from "lodash-es";
+import { BadRequestException } from "@nestjs/common";
+import { pump } from "../stream";
+import { getUniqueFilename, pathExists } from "../../utils/general";
+import type { BunRequest } from "../../BunRequest";
 import type {
   DiskStorageFile,
   RawMultipartFile,
   Storage,
   StorageExpandedFile,
-} from '..';
-import type { BunRequest } from '../../BunRequest';
-import { getUniqueFilename, pathExists } from '../../utils/general';
-import { join } from 'path';
-import { createWriteStream } from 'fs';
-import { pump } from '../stream';
-import { unlink } from 'fs/promises';
-import { tmpdir } from 'os';
-import { Readable } from 'stream';
+} from "..";
 import type {
   MultiPartExpandedFileRecord,
   MultiPartFileRecord,
-} from '../../types/general';
-import { isArray, isObject, isString, keys, values } from 'lodash-es';
-import { BadRequestException } from '@nestjs/common';
+} from "../../types/general";
 
 type DiskStorageOptionHandler =
   | ((file: RawMultipartFile, req: BunRequest) => Promise<string> | string)
@@ -35,7 +35,7 @@ const excecuteStorageHandler = (
   req: BunRequest,
   obj?: DiskStorageOptionHandler,
 ) => {
-  if (typeof obj === 'function') {
+  if (typeof obj === "function") {
     return obj(file, req);
   }
 
@@ -74,7 +74,7 @@ export class DiskStorage
     const { encoding, fieldname, mimeType: mimetype, validatedMimeType } = file;
 
     return {
-      type: 'disk' as const,
+      type: "disk" as const,
       size: stream.bytesWritten,
       dest,
       filename,
@@ -91,9 +91,9 @@ export class DiskStorage
     if (!this.options?.removeAfter && !force) return;
     if (isObject(file)) {
       if (
-        'type' in file &&
-        'path' in file &&
-        file.type === 'disk' &&
+        "type" in file &&
+        "path" in file &&
+        file.type === "disk" &&
         isString(file.path) &&
         (await pathExists(file.path))
       ) {
@@ -125,7 +125,7 @@ export class DiskStorage
   }
 
   private async handleExpandedFileValues(
-    record: MultiPartExpandedFileRecord['values'],
+    record: MultiPartExpandedFileRecord["values"],
     req: BunRequest,
   ) {
     const expandedFiles: StorageExpandedFile<DiskStorageFile> = {};
@@ -141,7 +141,7 @@ export class DiskStorage
           );
         } else if (isObject(value)) {
           expandedFiles[fieldname] = await this.handleExpandedFileValues(
-            value as unknown as MultiPartExpandedFileRecord['values'],
+            value as unknown as MultiPartExpandedFileRecord["values"],
             req,
           );
         }
@@ -155,9 +155,9 @@ export class DiskStorage
     file: MultiPartExpandedFileRecord,
     req: BunRequest,
   ) {
-    if (file.type !== 'expanded-file') {
+    if (file.type !== "expanded-file") {
       throw new BadRequestException(
-        'Only expanded files record can be handled by this method',
+        "Only expanded files record can be handled by this method",
       );
     }
 

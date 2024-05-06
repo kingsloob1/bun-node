@@ -1,6 +1,6 @@
-import type { WebSocketAdapter, WsMessageHandler } from '@nestjs/common';
+import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
+import type { Observable } from "rxjs";
 import {
-  Observable,
   filter,
   first,
   fromEvent,
@@ -8,15 +8,27 @@ import {
   mergeMap,
   share,
   takeUntil,
-} from 'rxjs';
-import type { Server, ServerWebSocket, WebSocketHandler } from 'bun';
-import type { BunHttpAdapter } from './BunHttpAdapter';
-import { EventEmitter } from 'stream';
-import { get, isArray, isFunction, isNil } from 'lodash-es';
-import { DISCONNECT_EVENT } from '@nestjs/websockets/constants';
+} from "rxjs";
+import type { Server, ServerWebSocket } from "bun";
+import { get, isArray, isFunction, isNil } from "lodash-es";
+import { DISCONNECT_EVENT } from "@nestjs/websockets/constants";
+import {
+  BunWebSocket,
+  type BunWebSocketOptions,
+} from "@kingsleyweb/bun-common";
+import type { BunHttpAdapter } from "./BunHttpAdapter";
+
+export interface WebSocketClientData {
+  path: string;
+  headers: Headers;
+  user?: Record<string, unknown>;
+  [string: string]: unknown;
+}
+
+export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
 
 export class BunWebSocketAdapter
-  extends EventEmitter
+  extends BunWebSocket
   implements
     WebSocketAdapter<
       Server | undefined,
@@ -26,54 +38,45 @@ export class BunWebSocketAdapter
       }
     >
 {
-  public handlers!: WebSocketHandler;
-
   constructor(
     private httpAdapter: BunHttpAdapter,
-    private options?: {
-      host?: string;
-      port?: number;
-      attachUpgrade?: boolean;
-    },
+    private localOptions?: BunWebSocketOptions | undefined,
   ) {
-    super();
-    this.handlers = {
-      open: (ws) => {
-        this.emit('connect', ws);
-      },
-      message: (ws, message) => {
-        this.emit('message', ws, message);
-      },
-      close: (ws) => {
-        this.emit(DISCONNECT_EVENT, ws);
-      },
-    } as WebSocketHandler;
+    const newInstance = localOptions?.newInstance || false;
+    const getServer = async () => {
+      if (localOptions?.newInstance) {
+        return await this.getServer();
+      }
+
+      return await httpAdapter.getBunServer();
+    };
+
+    const superOptions = {
+      ...(localOptions || {}),
+      newInstance,
+      getServer,
+    } as unknown as BunWebSocketOptions;
+
+    super(superOptions);
   }
 
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  create(
+  // eslint-disable-next-line ts/ban-ts-comment
+  // @ts-expect-error
+  async create(
     port: number,
     options?: {
       namespace?: string;
       transport: string[];
       [key: string]: unknown;
     },
-  ): Server | undefined {
-    const server = this.httpAdapter.getBunServer();
+  ): Promise<Server | undefined> {
+    console.log("called websocket create with the following ====> ", {
+      port,
+      options,
+    });
+
+    const server = await this.getServer();
     if (server) {
-      return server;
-    }
-
-    const host = (this.options?.host || options?.host) as unknown as string;
-    const portToUse = this.options?.port || port;
-
-    if (!this.httpAdapter.isListening) {
-      this.httpAdapter.setListenOptions({
-        hostname: host,
-        port: portToUse as number,
-      });
-
       return server;
     }
 
@@ -84,13 +87,13 @@ export class BunWebSocketAdapter
     server: Server | undefined,
     callback: (client: ServerWebSocket) => unknown,
   ) {
-    this.on('connect', (client: ServerWebSocket) => {
+    this.on("connect", (client: ServerWebSocket) => {
       callback(client);
     });
   }
 
   bindClientDisconnect(client: ServerWebSocket, callback: () => unknown) {
-    this.on('disconnect', callback);
+    this.on("disconnect", callback);
   }
 
   bindMessageHandlers(
@@ -118,9 +121,9 @@ export class BunWebSocketAdapter
       );
 
       source$.subscribe(([response, ack]) => {
-        const event = get(response, 'event');
+        const event = get(response, "event");
         if (response && event) {
-          return this.emit(event, get(response, 'data', undefined));
+          return this.emit(event, get(response, "data", undefined));
         }
         isFunction(ack) && ack(response);
       });

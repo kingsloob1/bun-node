@@ -1,27 +1,28 @@
-import type { Serve } from 'bun';
-import type { BunRequest } from '../BunRequest';
-import type { BunResponse } from '../BunResponse';
-import type { IncomingMessage } from 'http';
+import type { IncomingMessage } from "node:http";
+import type { Buffer } from "node:buffer";
+import type { Serve } from "bun";
+import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
+import type { FileTypeResult } from "file-type";
+import type { BunRequest } from "../BunRequest";
+import type { BunResponse } from "../BunResponse";
 import type {
   StorageExpandedFile,
   StorageFile,
   UploadFilterFile,
-} from '../multipart';
-import type { BusboyConfig, FieldInfo, FileInfo } from 'busboy';
-import type { FileTypeResult } from 'file-type';
+} from "../multipart";
 
 export type MultiPartOptions = BusboyConfig & {
-  inflate?: boolean; //Parse JSON string or Url encoded string
-  fieldInflator?(
+  inflate?: boolean; // Parse JSON string or Url encoded string
+  fieldInflator?: (
     fieldname: string,
     value: string,
     opts?: FieldInfo,
-  ): Promise<Record<string, unknown>>;
-  fileInflator?(
+  ) => Promise<Record<string, unknown>>;
+  fileInflator?: (
     fieldname: string,
     file: Buffer,
     opts?: FileInfo,
-  ): Promise<Record<string, unknown>>;
+  ) => Promise<Record<string, unknown>>;
 };
 
 export interface BunRequestInterface {
@@ -37,7 +38,7 @@ export interface BunRequestInterface {
   method: string;
   host: string;
   protocol: string;
-  removeHeader: (name: string) => void; //Removed header value
+  removeHeader: (name: string) => void; // Removed header value
   reusedSocket: boolean;
   setHeader: (
     name: string,
@@ -52,7 +53,7 @@ export interface BunRequestInterface {
     | null
     | undefined;
   buffer: Buffer | undefined;
-  cookies?: Record<string, unknown>; //Depends on cookie parser middleware
+  cookies?: Record<string, unknown>; // Depends on cookie parser middleware
   signedCookies: boolean;
   hostname: string;
   ip: string;
@@ -60,7 +61,7 @@ export interface BunRequestInterface {
   originalUrl: string;
   headers: Record<string, string | string[]>;
   headersDistinct: Record<string, string[]>;
-  httpVersion: '1.1' | '1.0';
+  httpVersion: "1.1" | "1.0";
   httpVersionMajor: string;
   httpVersionMinor: string;
   rawHeaders: string[];
@@ -82,14 +83,14 @@ export interface BunRequestInterface {
     | Record<string, StorageFile[]>
     | StorageExpandedFile<StorageFile>;
   storageFile: UploadFilterFile | StorageExpandedFile<StorageFile> | undefined;
-  getMultiParts(
+  getMultiParts: (
     options: BusboyConfig,
-  ): Promise<
+  ) => Promise<
     (MultiPartFileRecord | MultiPartFieldRecord | MultiPartExpandedFileRecord)[]
   >;
 }
 
-export type BunServeOptions = Omit<Serve, 'fetch' | 'websocket'>;
+export type BunServeOptions = Omit<Serve, "fetch" | "websocket">;
 
 export type BunServer = ReturnType<typeof Bun.serve>;
 
@@ -165,16 +166,16 @@ export interface ServeStaticOptions {
   prefix?: string;
 }
 
-export type SendFileOptions = {
+export interface SendFileOptions {
   maxAge?: string | number;
   root?: string;
   lastModified?: boolean;
-  dotfiles?: 'allow' | 'ignore';
+  dotfiles?: "allow" | "ignore";
   accepRanges?: boolean;
   cacheControl?: boolean;
   immutable?: boolean;
   headers?: Record<string, unknown>;
-};
+}
 
 export type NextFunction = (type?: string | undefined) => unknown;
 export type RouterMiddlewareHandler = (
@@ -214,25 +215,25 @@ export interface NestExpressBodyParserOptions {
   [key: string]: unknown;
 }
 
-export type NestExpressBodyParserType = 'json' | 'urlencoded' | 'text' | 'raw';
+export type NestExpressBodyParserType = "json" | "urlencoded" | "text" | "raw";
 
 export type MultiPartFileRecord = FileInfo & {
   fieldname: string;
   validatedMimeType: FileTypeResult | undefined;
   originalFilename: string;
   file: Buffer;
-  type: 'file';
+  type: "file";
 };
 
-export type MultiPartExpandedFileRecord = {
-  type: 'expanded-file';
+export interface MultiPartExpandedFileRecord {
+  type: "expanded-file";
   values: {
     [Key: string]: MultiPartFileRecord[] | MultiPartExpandedFileRecord;
   };
-};
+}
 
 export type MultiPartFieldRecord = FieldInfo & {
-  type: 'field';
+  type: "field";
   fieldname: string;
   value:
     | unknown[]
@@ -243,6 +244,6 @@ export type MultiPartFieldRecord = FieldInfo & {
     | undefined;
 };
 
-export type RequestStorageFiles = BunRequest['storageFiles'];
-export type RequestStorageFile = BunRequest['storageFile'];
-export { type matchedRoute } from '@routejs/router';
+export type RequestStorageFiles = BunRequest["storageFiles"];
+export type RequestStorageFile = BunRequest["storageFile"];
+export { type matchedRoute } from "@routejs/router";

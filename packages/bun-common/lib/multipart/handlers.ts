@@ -1,16 +1,16 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException } from "@nestjs/common";
+import { isArray, isEmpty, isUndefined, keys } from "lodash-es";
+import type { BunRequest } from "../BunRequest";
 import {
-  filterUpload,
-  getBusBoyConfig,
-  removeStorageFiles,
   type StorageExpandedFile,
   type StorageFile,
   type TransFormedUploadOptions,
   type UploadField,
   type UploadFieldMapEntry,
-} from '.';
-import type { BunRequest } from '../BunRequest';
-import { isArray, isEmpty, isUndefined, keys } from 'lodash-es';
+  filterUpload,
+  getBusBoyConfig,
+  removeStorageFiles,
+} from ".";
 
 export const handleMultipartAnyFiles = async (
   req: BunRequest,
@@ -19,7 +19,7 @@ export const handleMultipartAnyFiles = async (
   const parts = await req.getMultiParts(getBusBoyConfig(options));
   const body: Record<string, any> = {};
   const files: StorageFile[] = [];
-  let expandedFiles: StorageExpandedFile<StorageFile> | undefined = undefined;
+  let expandedFiles: StorageExpandedFile<StorageFile> | undefined;
 
   const removeFiles = async (error?: boolean) => {
     await removeStorageFiles(options.storage!, files, error);
@@ -30,15 +30,15 @@ export const handleMultipartAnyFiles = async (
 
   try {
     for await (const part of parts) {
-      if (part.type === 'file') {
+      if (part.type === "file") {
         const file = await options.storage!.handleFile(part, req);
 
         if (await filterUpload(options, req, file)) {
           files.push(file);
         }
-      } else if (part.type === 'expanded-file' && options.inflate) {
+      } else if (part.type === "expanded-file" && options.inflate) {
         expandedFiles = await options.storage!.handleExpandedFiles(part, req);
-      } else if (part.type === 'field') {
+      } else if (part.type === "field") {
         body[part.fieldname] = part.value;
       }
     }
@@ -68,7 +68,7 @@ export const handleMultipartFileFields = async (
   const parts = await req.getMultiParts(getBusBoyConfig(options));
   const body: Record<string, any> = {};
   const files: Record<string, StorageFile[]> = {};
-  let expandedFiles: StorageExpandedFile<StorageFile> | undefined = undefined;
+  let expandedFiles: StorageExpandedFile<StorageFile> | undefined;
 
   const removeFiles = async (error?: boolean) => {
     const allFiles = ([] as StorageFile[]).concat(...Object.values(files));
@@ -81,7 +81,7 @@ export const handleMultipartFileFields = async (
 
   try {
     for await (const part of parts) {
-      if (part.type === 'file') {
+      if (part.type === "file") {
         const fieldOptions = fieldsMap.get(part.fieldname);
 
         if (fieldOptions == null) {
@@ -105,9 +105,9 @@ export const handleMultipartFileFields = async (
         if (await filterUpload(options, req, file)) {
           files[part.fieldname].push(file);
         }
-      } else if (part.type === 'field') {
+      } else if (part.type === "field") {
         body[part.fieldname] = part.value;
-      } else if (part.type === 'expanded-file' && options.inflate) {
+      } else if (part.type === "expanded-file" && options.inflate) {
         for await (const fieldname of keys(part.values)) {
           const fieldOptions = fieldsMap.get(fieldname);
 
@@ -150,7 +150,7 @@ export const handleMultipartMultipleFiles = async (
   const parts = await req.getMultiParts(getBusBoyConfig(options));
   const body: Record<string, any> = {};
   const files: StorageFile[] = [];
-  let expandedFiles: StorageExpandedFile<StorageFile> | undefined = undefined;
+  let expandedFiles: StorageExpandedFile<StorageFile> | undefined;
 
   const removeFiles = async (error?: boolean) => {
     await removeStorageFiles(options.storage!, files, error);
@@ -161,7 +161,7 @@ export const handleMultipartMultipleFiles = async (
 
   try {
     for await (const part of parts) {
-      if (part.type === 'file') {
+      if (part.type === "file") {
         if (part.fieldname !== fieldname) {
           throw new BadRequestException(
             `Field ${part.fieldname} doesn't accept files`,
@@ -179,9 +179,9 @@ export const handleMultipartMultipleFiles = async (
         if (await filterUpload(options, req, file)) {
           files.push(file);
         }
-      } else if (part.type === 'field') {
+      } else if (part.type === "field") {
         body[part.fieldname] = part.value;
-      } else if (part.type === 'expanded-file' && options.inflate) {
+      } else if (part.type === "expanded-file" && options.inflate) {
         for await (const savedFieldName of keys(part.values)) {
           if (savedFieldName !== fieldname) {
             throw new BadRequestException(
@@ -219,8 +219,8 @@ export const handleMultipartSingleFile = async (
   const parts = await req.getMultiParts(getBusBoyConfig(options));
   const body: Record<string, any> = {};
 
-  let file: StorageFile | undefined = undefined;
-  let expandedFiles: StorageExpandedFile<StorageFile> | undefined = undefined;
+  let file: StorageFile | undefined;
+  let expandedFiles: StorageExpandedFile<StorageFile> | undefined;
 
   const removeFiles = async (error?: boolean) => {
     if (file == null) return;
@@ -232,7 +232,7 @@ export const handleMultipartSingleFile = async (
 
   try {
     for await (const part of parts) {
-      if (part.type === 'file') {
+      if (part.type === "file") {
         if (part.fieldname !== fieldname) {
           throw new BadRequestException(
             `Field ${part.fieldname} doesn't accept file`,
@@ -248,9 +248,9 @@ export const handleMultipartSingleFile = async (
         if (await filterUpload(options, req, _file)) {
           file = _file;
         }
-      } else if (part.type === 'field') {
+      } else if (part.type === "field") {
         body[part.fieldname] = part.value;
-      } else if (part.type === 'expanded-file') {
+      } else if (part.type === "expanded-file") {
         for await (const savedFieldName of keys(part.values)) {
           if (savedFieldName !== fieldname) {
             throw new BadRequestException(
@@ -303,13 +303,13 @@ export const handleNoFiles = async (
 
   try {
     for await (const part of parts) {
-      if (part.type === 'file') {
+      if (part.type === "file") {
         throw new BadRequestException(`File upload is not accepted`);
-      } else if (part.type === 'expanded-file' && options.inflate) {
+      } else if (part.type === "expanded-file" && options.inflate) {
         if (!isEmpty(part.values)) {
           throw new BadRequestException(`File upload is not accepted`);
         }
-      } else if (part.type === 'field') {
+      } else if (part.type === "field") {
         body[part.fieldname] = part.value;
       }
     }

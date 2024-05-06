@@ -1,18 +1,19 @@
-import { type FileInfo, type BusboyConfig } from 'busboy';
-import type { BunRequest } from '../BunRequest';
-import { DiskStorage, MemoryStorage } from './storage';
+import type { Buffer } from "node:buffer";
+import type { BusboyConfig, FileInfo } from "busboy";
 import {
   BadRequestException,
   InternalServerErrorException,
-} from '@nestjs/common';
-import type { HttpArgumentsHost } from '@nestjs/common/interfaces';
-import { isString, omit } from 'lodash-es';
+} from "@nestjs/common";
+import type { HttpArgumentsHost } from "@nestjs/common/interfaces";
+import { isString, omit } from "lodash-es";
+import type { FileTypeResult } from "file-type";
 import type {
   MultiPartExpandedFileRecord,
   MultiPartFileRecord,
   MultiPartOptions,
-} from '../types/general';
-import type { FileTypeResult } from 'file-type';
+} from "../types/general";
+import type { BunRequest } from "../BunRequest";
+import { DiskStorage, MemoryStorage } from "./storage";
 
 export interface StorageFile {
   size: number;
@@ -24,25 +25,25 @@ export interface StorageFile {
 }
 
 export interface DiskStorageFile extends StorageFile {
-  type: 'disk';
+  type: "disk";
   dest?: string | null;
   filename?: string | null;
   path: string;
 }
 
 export interface MemoryStorageFile extends StorageFile {
-  type: 'memory';
+  type: "memory";
   buffer: Buffer;
 }
 
 export interface CustomtorageFile extends StorageFile {
-  type: 'custom';
+  type: "custom";
   file: Buffer;
 }
 
-export type StorageExpandedFile<T extends StorageFile> = {
+export interface StorageExpandedFile<T extends StorageFile> {
   [key: string]: T[] | StorageExpandedFile<T>;
-};
+}
 
 export type RawMultipartFile = FileInfo & {
   fieldname: string;
@@ -70,18 +71,18 @@ export type UploadFilterHandler = (
 ) => Promise<boolean | string> | boolean | string;
 
 export type DiskUploadOptions = MultiPartOptions & {
-  storageType: 'disk';
+  storageType: "disk";
   dest?: string;
   filter?: UploadFilterHandler;
 };
 
 export type MemoryUploadOptions = MultiPartOptions & {
-  storageType: 'memory';
+  storageType: "memory";
   filter?: UploadFilterHandler;
 };
 
 export type CustomUploadOptions = MultiPartOptions & {
-  storageType: 'custom';
+  storageType: "custom";
   filter?: UploadFilterHandler;
   storage: Storage;
 };
@@ -92,7 +93,7 @@ export type UploadOptions =
   | CustomUploadOptions;
 
 export const DEFAULT_UPLOAD_OPTIONS: MemoryUploadOptions = {
-  storageType: 'memory',
+  storageType: "memory",
 };
 
 export const transformUploadOptions = (opts?: UploadOptions) => {
@@ -100,15 +101,15 @@ export const transformUploadOptions = (opts?: UploadOptions) => {
     opts = DEFAULT_UPLOAD_OPTIONS;
   }
 
-  let storage: DiskStorage | MemoryStorage | Storage | undefined = undefined;
-  if (opts.storageType === 'disk') {
+  let storage: DiskStorage | MemoryStorage | Storage | undefined;
+  if (opts.storageType === "disk") {
     storage = new DiskStorage(opts);
-  } else if (opts.storageType === 'memory') {
+  } else if (opts.storageType === "memory") {
     storage = new MemoryStorage();
-  } else if (opts.storageType === 'custom') {
+  } else if (opts.storageType === "custom") {
     if (!opts.storage) {
       throw new InternalServerErrorException(
-        'Ooops.. Custom file handler requires a storage handler',
+        "Ooops.. Custom file handler requires a storage handler",
       );
     }
 
@@ -137,7 +138,7 @@ export const filterUpload = async (
   try {
     const filterResp = await uploadOptions.filter(req, file);
 
-    if (typeof filterResp === 'string') {
+    if (typeof filterResp === "string") {
       throw new BadRequestException(filterResp);
     }
 
@@ -156,11 +157,11 @@ export type BunMultipartRequest = InstanceType<typeof BunRequest> & {
 export const getMultipartRequest = (ctx: HttpArgumentsHost) => {
   const req = ctx.getRequest<BunMultipartRequest>();
 
-  const contentType = req.headersObj.get('content-type');
+  const contentType = req.headersObj.get("content-type");
   if (
-    !(isString(contentType) && contentType.includes('multipart/form-data;'))
+    !(isString(contentType) && contentType.includes("multipart/form-data;"))
   ) {
-    throw new BadRequestException('Not a multipart request');
+    throw new BadRequestException("Not a multipart request");
   }
 
   return req;
@@ -181,10 +182,10 @@ export function getBusBoyConfig(
   options: TransFormedUploadOptions,
 ): BusboyConfig {
   return omit(options, [
-    'storageType',
-    'filter',
-    'storage',
-    'dest',
+    "storageType",
+    "filter",
+    "storage",
+    "dest",
   ]) as BusboyConfig;
 }
 
@@ -199,4 +200,4 @@ export interface UploadField {
   maxCount?: number;
 }
 
-export type UploadFieldMapEntry = Required<Pick<UploadField, 'maxCount'>>;
+export type UploadFieldMapEntry = Required<Pick<UploadField, "maxCount">>;

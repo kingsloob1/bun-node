@@ -1,22 +1,34 @@
-import type { SocketAddress } from 'bun';
+import { Readable } from "node:stream";
+import { Buffer } from "node:buffer";
+import type { SocketAddress } from "bun";
 import {
+  cloneDeep,
+  each,
+  first,
+  flattenDeep,
   get,
   isArray,
-  isString,
-  each,
-  cloneDeep,
+  isBoolean,
   isNull,
-  flattenDeep,
-  isUndefined,
+  isNumber,
   isObject,
+  isString,
+  isUndefined,
   keys,
   merge,
-  values,
-  isBoolean,
   omit,
-  first,
-  isNumber,
-} from 'lodash-es';
+  values,
+} from "lodash-es";
+import ucwords from "locutus/php/strings/ucwords";
+import {
+  type ParseResult,
+  ParseResultType,
+  Validation,
+  parseDomain,
+} from "parse-domain";
+import busboy from "busboy";
+import { type FileTypeResult, fileTypeFromBuffer } from "file-type";
+import qs from "qs";
 import type {
   BunRequestInterface,
   BunServer,
@@ -25,26 +37,16 @@ import type {
   MultiPartFileRecord,
   MultiPartOptions,
   NestExpressBodyParserOptions,
-} from './types/general';
-import ucwords from 'locutus/php/strings/ucwords';
-import {
-  parseDomain,
-  ParseResultType,
-  type ParseResult,
-  Validation,
-} from 'parse-domain';
-import busboy from 'busboy';
-import { fileTypeFromBuffer, type FileTypeResult } from 'file-type';
-import { Readable } from 'stream';
-import qs from 'qs';
-import { streamToBuffer } from './utils/general';
-import type { StorageExpandedFile, StorageFile } from './multipart';
+} from "./types/general";
+import { streamToBuffer } from "./utils/general";
+import type { StorageExpandedFile, StorageFile } from "./multipart";
 
 export class BunRequest implements BunRequestInterface {
   private headerNamesWithMultiple: string[] = [
-    'cache-control',
-    'X-Forwarded-For',
+    "cache-control",
+    "X-Forwarded-For",
   ];
+
   public headers: Record<string, string | string[]> = {};
   public headersObj: InstanceType<typeof Headers>;
   public parsedUrl: InstanceType<typeof URL>;
@@ -57,6 +59,7 @@ export class BunRequest implements BunRequestInterface {
     | unknown[]
     | null
     | undefined = undefined;
+
   public cookies = {};
   public signedCookies = false;
   public url: string;
@@ -66,14 +69,16 @@ export class BunRequest implements BunRequestInterface {
   private readonly socketAddress: SocketAddress | null = null;
   private readonly parsedDomainResult: ParseResult;
   private _files: Record<string, File> = {};
-  private _contentType: 'json' | 'text' | 'buffer' | 'form' | undefined =
+  private _contentType: "json" | "text" | "buffer" | "form" | undefined =
     undefined;
+
   private _isFormParsed = false;
   private _buffer: Buffer | undefined = undefined;
   private _storageFiles:
     | StorageFile[]
     | Record<string, StorageFile[]>
     | StorageExpandedFile<StorageFile> = [];
+
   public subdomains: string[] = [];
 
   constructor(
@@ -101,20 +106,8 @@ export class BunRequest implements BunRequestInterface {
     this.extractSubdomains();
   }
 
-  public handleWebSocketUpgrade(
-    data?: Record<string, unknown>,
-    responseHeaders?: Bun.HeadersInit,
-  ) {
-    this.server.upgrade(this.request, {
-      data: data || {},
-      headers: responseHeaders,
-    });
-
-    return undefined;
-  }
-
   get socket() {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    // eslint-disable-next-line ts/no-this-alias
     const that = this;
 
     const obj = {
@@ -225,7 +218,7 @@ export class BunRequest implements BunRequestInterface {
         this.parsedDomainResult.type,
       )
     ) {
-      const list = get(this.parsedDomainResult, 'labels', []);
+      const list = get(this.parsedDomainResult, "labels", []);
       subdomains = list.slice(0, -2);
     }
 
@@ -259,9 +252,9 @@ export class BunRequest implements BunRequestInterface {
       )[] = [];
       let { inflate, fileInflator, fieldInflator } = options;
       const busBoyOpts = omit(options, [
-        'inflate',
-        'fileInflator',
-        'fieldInflator',
+        "inflate",
+        "fileInflator",
+        "fieldInflator",
       ]);
 
       if (!isBoolean(inflate)) {
@@ -282,7 +275,7 @@ export class BunRequest implements BunRequestInterface {
               replacement,
               valueToReplace,
             );
-          } else if (isString(value) && value === 'x') {
+          } else if (isString(value) && value === "x") {
             obj[key] = replacement;
           }
         });
@@ -305,7 +298,7 @@ export class BunRequest implements BunRequestInterface {
             });
 
             if (isObject(parsedObj)) {
-              recursivelyReplacePlaceholder(parsedObj, file, 'x');
+              recursivelyReplacePlaceholder(parsedObj, file, "x");
               return { [fieldname]: parsedObj };
             }
 
@@ -320,10 +313,10 @@ export class BunRequest implements BunRequestInterface {
             // opts: FieldInfo,
           ) => {
             try {
-              let parsedData: Record<string, unknown> | undefined = undefined;
+              let parsedData: Record<string, unknown> | undefined;
 
               try {
-                const parsedJSONstring = value.replace(/\\\\"/g, '"');
+                const parsedJSONstring = value.replace(/\\\\"/g, `"`);
                 const parsedValue = JSON.parse(parsedJSONstring);
                 parsedData = { [fieldname]: parsedValue };
               } catch {
@@ -344,7 +337,7 @@ export class BunRequest implements BunRequestInterface {
               if (isObject(parsedData)) {
                 return parsedData;
               } else {
-                throw new Error('Failed to parse form data field');
+                throw new Error("Failed to parse form data field");
               }
             } catch {
               //
@@ -360,18 +353,18 @@ export class BunRequest implements BunRequestInterface {
         let filesState: boolean[] = [];
         let fieldState: boolean[] = [];
 
-        bb.on('file', async (name, file, info) => {
+        bb.on("file", async (name, file, info) => {
           const filesStateIndex = filesState.length;
           filesState[filesStateIndex] = false;
 
           const fileBuffer = await streamToBuffer(file as unknown as Readable);
-          let mimeTypeResp: FileTypeResult | undefined = undefined;
+          let mimeTypeResp: FileTypeResult | undefined;
 
           try {
             mimeTypeResp = await fileTypeFromBuffer(fileBuffer);
           } catch (e) {
-            if (Bun.env.NODE_ENV === 'development') {
-              console.log('Error here is =====> ', e);
+            if (Bun.env.NODE_ENV === "development") {
+              console.log("Error here is =====> ", e);
             }
 
             throw e;
@@ -389,20 +382,20 @@ export class BunRequest implements BunRequestInterface {
                 fieldname: name,
                 originalFilename: info.filename,
                 file: fileBuffer,
-                type: 'file',
+                type: "file",
               };
 
-              //Replace file buffer with file formatted data
+              // Replace file buffer with file formatted data
               recursivelyReplacePlaceholder(parsedData, fileData, fileBuffer);
               const expandedFileIndex = parts.findIndex(
-                (part) => part.type === 'expanded-file',
+                (part) => part.type === "expanded-file",
               );
 
               const expandedFileMap = (
                 expandedFileIndex > -1
                   ? parts[expandedFileIndex]
                   : {
-                      type: 'expanded-file',
+                      type: "expanded-file",
                       values: {},
                     }
               ) as MultiPartExpandedFileRecord;
@@ -433,7 +426,7 @@ export class BunRequest implements BunRequestInterface {
                   ) {
                     parsedDataValue = merge(
                       {},
-                      expandedFileData as Record<string, unknown>,
+                      expandedFileData as unknown as Record<string, unknown>,
                       parsedDataValue,
                     );
                   }
@@ -463,14 +456,14 @@ export class BunRequest implements BunRequestInterface {
               fieldname: name,
               originalFilename: info.filename,
               file: fileBuffer,
-              type: 'file',
+              type: "file",
             });
           }
 
           filesState[filesStateIndex] = true;
         });
 
-        bb.on('field', async (name, val, info) => {
+        bb.on("field", async (name, val, info) => {
           const fieldStateIndex = fieldState.length;
           fieldState[fieldStateIndex] = false;
 
@@ -492,7 +485,7 @@ export class BunRequest implements BunRequestInterface {
                     | null
                     | undefined = parsedData[key];
                   const partsIndex = parts.findIndex(
-                    (part) => part.type === 'field' && part.fieldname === key,
+                    (part) => part.type === "field" && part.fieldname === key,
                   );
                   if (partsIndex > -1) {
                     const partData = parts[partsIndex] as MultiPartFieldRecord;
@@ -516,7 +509,7 @@ export class BunRequest implements BunRequestInterface {
                     ...info,
                     fieldname: key,
                     value: parsedDataValue,
-                    type: 'field' as const,
+                    type: "field" as const,
                   };
 
                   if (partsIndex > -1) {
@@ -540,14 +533,14 @@ export class BunRequest implements BunRequestInterface {
               ...info,
               fieldname: name,
               value: val,
-              type: 'field',
+              type: "field",
             });
           }
 
           fieldState[fieldStateIndex] = true;
         });
 
-        bb.on('close', async () => {
+        bb.on("close", async () => {
           await Promise.all([
             new Promise((resolve) => {
               const interval = setInterval(() => {
@@ -578,7 +571,7 @@ export class BunRequest implements BunRequestInterface {
           resolve(parts);
         });
 
-        bb.on('error', (error) => {
+        bb.on("error", (error) => {
           parts = [];
           reject(error);
         });
@@ -603,28 +596,28 @@ export class BunRequest implements BunRequestInterface {
 
       if (isObject(parsedData) || isArray(parsedData)) {
         this._body = parsedData;
-        this._contentType = 'form';
-        this.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+        this._contentType = "form";
+        this.setHeader("Content-Type", "application/x-www-form-urlencoded");
         return true;
       }
     } catch (err) {
       //
     }
 
-    throw new Error('Oops.. Form is not url encoded');
+    throw new Error("Oops.. Form is not url encoded");
   }
 
   private async handleJsoonBodyParsing(data: string) {
     try {
       this._body = JSON.parse(data);
-      this._contentType = 'json';
-      this.setHeader('Content-Type', 'application/json');
+      this._contentType = "json";
+      this.setHeader("Content-Type", "application/json");
       return true;
     } catch (err) {
       //
     }
 
-    throw new Error('Oops.. Form is not JSON stringified');
+    throw new Error("Oops.. Form is not JSON stringified");
   }
 
   public async handleBodyParsing(): Promise<undefined>;
@@ -645,22 +638,16 @@ export class BunRequest implements BunRequestInterface {
       return;
     }
 
-    let buffer: Buffer | undefined = undefined;
-    try {
-      buffer = Buffer.from(await this.request.arrayBuffer());
-    } catch (e) {
-      throw e;
-      //
-    }
+    const buffer = Buffer.from(await this.request.arrayBuffer());
 
     if (!buffer) {
-      throw new Error('Invalid buffer object');
+      throw new Error("Invalid buffer object");
     }
 
     this._buffer = buffer;
 
     const bufferText = buffer.toString();
-    const contentTypeHeader = this.getHeader('Content-Type');
+    const contentTypeHeader = this.getHeader("Content-Type");
 
     if (!contentTypeHeader) {
       try {
@@ -671,13 +658,13 @@ export class BunRequest implements BunRequestInterface {
         } catch {
           this._body = buffer;
           this._buffer = buffer;
-          this._contentType = 'buffer';
-          this.setHeader('Content-Type', 'application/octet-stream');
+          this._contentType = "buffer";
+          this.setHeader("Content-Type", "application/octet-stream");
         }
       }
     } else {
       switch (true) {
-        case contentTypeHeader?.includes('application/json'): {
+        case contentTypeHeader?.includes("application/json"): {
           try {
             await this.handleJsoonBodyParsing(bufferText);
           } catch (err) {
@@ -686,7 +673,7 @@ export class BunRequest implements BunRequestInterface {
           break;
         }
 
-        case contentTypeHeader?.includes('application/x-www-form-urlencoded'): {
+        case contentTypeHeader?.includes("application/x-www-form-urlencoded"): {
           try {
             await this.handleUrlFormEncodingParsing(bufferText);
           } catch (err) {
@@ -695,8 +682,8 @@ export class BunRequest implements BunRequestInterface {
           break;
         }
 
-        case contentTypeHeader?.includes('multipart/form-data'): {
-          //Leave the interceptors to handle this..
+        case contentTypeHeader?.includes("multipart/form-data"): {
+          // Leave the interceptors to handle this..
           break;
         }
 
@@ -704,8 +691,8 @@ export class BunRequest implements BunRequestInterface {
           try {
             this._body = buffer;
             this._buffer = buffer;
-            this._contentType = 'buffer';
-            this.setHeader('Content-Type', 'application/octet-stream');
+            this._contentType = "buffer";
+            this.setHeader("Content-Type", "application/octet-stream");
           } catch (err) {
             //
           }
@@ -732,7 +719,7 @@ export class BunRequest implements BunRequestInterface {
   }
 
   get host() {
-    return this.parsedUrl.host || this.headersObj.get('Host') || '127.0.0.1';
+    return this.parsedUrl.host || this.headersObj.get("Host") || "127.0.0.1";
   }
 
   get protocol() {
@@ -763,10 +750,10 @@ export class BunRequest implements BunRequestInterface {
 
         if (
           isString(value) &&
-          (valLower.startsWith('accept-') ||
-            ['cache-control', 'X-Forwarded-For'].includes(valLower))
+          (valLower.startsWith("accept-") ||
+            ["cache-control", "X-Forwarded-For"].includes(valLower))
         ) {
-          value = value.split(',').map((ip) => ip.trimStart());
+          value = value.split(",").map((ip) => ip.trimStart());
         }
 
         prev[val] = value;
@@ -808,12 +795,12 @@ export class BunRequest implements BunRequestInterface {
   }
 
   get ip() {
-    return this.socketAddress?.address || '';
+    return this.socketAddress?.address || "";
   }
 
   get ips() {
-    return (this.headersObj.get('X-Forwarded-For') || '')
-      .split(',')
+    return (this.headersObj.get("X-Forwarded-For") || "")
+      .split(",")
       .map((ip) => ip.trimStart());
   }
 
@@ -831,11 +818,11 @@ export class BunRequest implements BunRequestInterface {
   }
 
   get httpVersion() {
-    return '1.1' as const;
+    return "1.1" as const;
   }
 
   private get httpVersionArr() {
-    return this.httpVersion.trim().split('.');
+    return this.httpVersion.trim().split(".");
   }
 
   get httpVersionMajor() {
@@ -851,21 +838,21 @@ export class BunRequest implements BunRequestInterface {
   }
 
   get secure() {
-    return this.protocol.toLowerCase() === 'https';
+    return this.protocol.toLowerCase() === "https";
   }
 
   get xhr() {
     return (
       String(
-        this.getHeader('X-Requested-With') ||
-          this.getHeader('x-requested-with'),
-      ) === 'XMLHttpRequest'
+        this.getHeader("X-Requested-With") ||
+          this.getHeader("x-requested-with"),
+      ) === "XMLHttpRequest"
     );
   }
 
-  //To-Do Refactor this method
+  // To-Do Refactor this method
   accepts(mime: string) {
-    return String(this.headersObj.get('Accepts') || '')
+    return String(this.headersObj.get("Accepts") || "")
       .toLowerCase()
       .includes(mime.toLowerCase());
   }
@@ -878,7 +865,7 @@ export class BunRequest implements BunRequestInterface {
     return this.getHeader(name);
   }
 
-  //To-Do Refactor this method
+  // To-Do Refactor this method
   is(mime: string) {
     return !!mime;
   }
