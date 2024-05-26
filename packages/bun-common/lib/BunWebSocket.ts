@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:stream";
-import { createHash } from "node:crypto";
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
 import isNumeric from "fast-isnumeric";
@@ -12,12 +11,17 @@ import {
   type matchedRoute,
 } from "./index";
 
-export interface WebSocketClientData {
+export interface WebSocketClientData<CustomData = unknown> {
   path: string;
   headers: Headers;
   user?: Record<string, unknown>;
-  [string: string]: unknown;
+  custom: CustomData;
 }
+
+export type BunWebsocketHandlerFor<
+  MethodName extends keyof WebSocketHandler,
+  customDataType = unknown,
+> = WebSocketHandler<WebSocketClientData<customDataType>>[MethodName];
 
 export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
 
@@ -28,6 +32,10 @@ interface BunWebSocketGeneralOptions {
   >;
   router?: BunRouter;
   newInstance: boolean;
+  customDataToWsClientFn?: (
+    req: BunRequest,
+    res: BunResponse,
+  ) => unknown | Promise<unknown>;
 }
 
 export interface BunWebSocketCreateServerOptions
@@ -52,6 +60,7 @@ export type BunWebSocketOptions =
   | BunWebSocketCreateServerOptions;
 
 export class BunWebSocket extends EventEmitter {
+  private _wsServers = new Map<number, Server>();
   private _serverInstance?: Server;
   private _getServerInstance?: () => Server | undefined;
   private _routerInstance!: BunRouter;
@@ -60,6 +69,9 @@ export class BunWebSocket extends EventEmitter {
     string,
     WebSocketHandler<WebSocketClientData>[]
   >();
+
+  private _customDataToWsClientFn: BunWebSocketGeneralOptions["customDataToWsClientFn"] =
+    undefined;
 
   constructor(private options: BunWebSocketOptions) {
     super();
@@ -71,6 +83,7 @@ export class BunWebSocket extends EventEmitter {
       ...(options?.wsOptions || {}),
       open: async (ws) => {
         this.emit("connect", ws);
+        this.emit("open", ws);
         await this.processRegisteredRouteHandlerFor("open", ws);
       },
       message: async (ws, message) => {
@@ -96,15 +109,42 @@ export class BunWebSocket extends EventEmitter {
       },
     } as WebSocketHandler<WebSocketClientData>;
     this._routerInstance = options.router || new BunRouter();
+    this._routerInstance.setBunWebSocket(this);
 
     if (options.newInstance) {
       if (!(options?.listen.port && isNumeric(options.listen.port))) {
         throw new Error("Ooops.. Port is required to start server");
       }
 
-      this._serverInstance = Bun.serve({
+      this._serverInstance = this.getOrCreateWebsocketServer(
+        options.listen.port,
+      );
+    } else {
+      this._getServerInstance = options?.getServer;
+    }
+
+    if (options.customDataToWsClientFn) {
+      this._customDataToWsClientFn = options.customDataToWsClientFn;
+    }
+  }
+
+  public getOrCreateWebsocketServer(port: number) {
+    let server = this.getServer();
+    if (server && String(server?.port) === String(port)) {
+      this._wsServers.set(port, server);
+      return server;
+    }
+
+    server = this._wsServers.get(port);
+    if (server) {
+      return server;
+    }
+
+    const options = this.options;
+    if (options.newInstance) {
+      server = Bun.serve({
         ...(options?.serverOptions || {}),
-        port: options?.listen.port,
+        port,
         hostname: options?.listen?.host,
         development: Bun.env.NODE_ENV !== "production",
         fetch: async (nativeRequest: Request, server) => {
@@ -140,6 +180,29 @@ export class BunWebSocket extends EventEmitter {
           }
 
           if (hasNativeResponse) {
+            if (res.upgradeToWsData) {
+              const success = server.upgrade(nativeRequest, {
+                data: res.upgradeToWsData,
+              });
+              if (success) {
+                return undefined;
+              }
+
+              let response = new Response(
+                "An error occurred while upgrading websocket",
+                {
+                  status: 400,
+                },
+              );
+              try {
+                response = await res.getNativeResponse(100);
+              } catch {
+                //
+              }
+
+              return response;
+            }
+
             const nativeResponse = await res.getNativeResponse(
               (options?.wsOptions?.idleTimeout || 60) * 1000,
             );
@@ -156,9 +219,26 @@ export class BunWebSocket extends EventEmitter {
           throw err;
         },
       });
-    } else {
-      this._getServerInstance = options?.getServer;
+
+      this._wsServers.set(port, server);
+      return server;
     }
+
+    return undefined;
+  }
+
+  public killServer(server: Server | undefined) {
+    if (server && server.port) {
+      try {
+        this.getOrCreateWebsocketServer(server.port)?.stop(false);
+      } catch {
+        //
+      }
+
+      this._wsServers.delete(server.port);
+    }
+
+    return this;
   }
 
   public get wsHandler() {
@@ -170,9 +250,11 @@ export class BunWebSocket extends EventEmitter {
       return this._serverInstance;
     }
 
-    if (this._getServerInstance) {
+    if (this._getServerInstance && isFunction(this._getServerInstance)) {
       return this._getServerInstance();
     }
+
+    return undefined;
   }
 
   public get router() {
@@ -218,24 +300,13 @@ export class BunWebSocket extends EventEmitter {
     return 0;
   }
 
-  #getWebSocketAcceptKey(websocketKey: string) {
-    // Predefined GUID for WebSocket handshake
-    const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-    // Concatenate the client's key with the GUID
-    const combinedKey = websocketKey + GUID;
-
-    // Compute the SHA-1 hash
-    const hash = createHash("sha1");
-    hash.update(combinedKey);
-    const hashResult = hash.digest("base64");
-
-    return hashResult;
-  }
-
   public async setRouteHandler(
     path: string,
     handler: WebSocketHandler<WebSocketClientData>,
+    customDataToWsClientFn?: (
+      req: BunRequest,
+      res: BunResponse,
+    ) => unknown | Promise<unknown>,
   ) {
     if (!isObject(handler)) {
       return false;
@@ -270,44 +341,36 @@ export class BunWebSocket extends EventEmitter {
       const secWebsocketKey = String(
         req.headersObj.get("sec-websocket-key") || "",
       );
+
       if (
         req.method?.toLowerCase() === "get" &&
         connectionHeader.startsWith("upgrade") &&
         upgradeHeader === "websocket" &&
         secWebsocketKey
       ) {
-        const server = this.getServer();
-        if (!server) {
-          return res.status(400).end();
+        let getCustomDataFn: BunWebSocketGeneralOptions["customDataToWsClientFn"];
+        if (customDataToWsClientFn && isFunction(customDataToWsClientFn)) {
+          getCustomDataFn = customDataToWsClientFn;
+        } else if (
+          this._customDataToWsClientFn &&
+          isFunction(this._customDataToWsClientFn)
+        ) {
+          getCustomDataFn = this._customDataToWsClientFn;
+        }
+
+        let customData: unknown;
+        if (getCustomDataFn) {
+          customData = await Promise.resolve(getCustomDataFn(req, res));
         }
 
         const data: WebSocketClientData = {
           path: req.path,
           headers: req.headersObj as unknown as Headers,
           user: get(req, "user", undefined),
+          custom: customData,
         };
 
-        try {
-          const headers = {
-            Upgrade: "websocket",
-            Connection: "Upgrade",
-            "Sec-WebSocket-Accept":
-              this.#getWebSocketAcceptKey(secWebsocketKey),
-          };
-          const success = server.upgrade(req.request, { headers, data });
-
-          if (success) {
-            return res
-              .status(101)
-              .statusText("Switching to WebSocket protocol")
-              .setHeaders(headers)
-              .end();
-          }
-        } catch (e) {
-          console.error(e);
-        }
-
-        return res.status(400).end();
+        return res.upgradeToWebsocket(data);
       }
 
       next();

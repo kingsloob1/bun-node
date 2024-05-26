@@ -1,20 +1,11 @@
+import { Buffer } from "node:buffer";
 import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
-import type { Observable } from "rxjs";
-import {
-  filter,
-  first,
-  fromEvent,
-  map,
-  mergeMap,
-  share,
-  takeUntil,
-} from "rxjs";
 import type { Server, ServerWebSocket } from "bun";
-import { get, isArray, isFunction, isNil } from "lodash-es";
-import { DISCONNECT_EVENT } from "@nestjs/websockets/constants";
+import { isArray, isUndefined } from "lodash-es";
 import {
   BunWebSocket,
   type BunWebSocketOptions,
+  type BunWebsocketHandlerFor,
 } from "@kingsleyweb/bun-common";
 import type { BunHttpAdapter } from "./BunHttpAdapter";
 
@@ -26,6 +17,70 @@ export interface WebSocketClientData {
 }
 
 export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
+
+export enum MessageEventTypes {
+  CONNECT = 0,
+  DISCONNECT = 1,
+  EVENT = 2,
+  ACK = 3,
+  ERROR = 4,
+  BINARY_EVENT = 5,
+  BINARY_ACK = 6,
+}
+
+export interface MessageConnectType {
+  type: MessageEventTypes.CONNECT;
+  namespace: string;
+}
+
+export interface MessageDisConnectType {
+  type: MessageEventTypes.DISCONNECT;
+  namespace: string;
+}
+
+export interface MessageEventType {
+  type: MessageEventTypes.EVENT;
+  namespace: string;
+  data: [eventName: string, eventData: string];
+}
+
+export interface MessageBinaryEventType {
+  type: MessageEventTypes.BINARY_EVENT;
+  namespace: string;
+  data: [
+    eventName: string,
+    eventData: Buffer | string | Record<string, unknown> | unknown[] | unknown,
+  ];
+}
+
+export interface MessageAckType {
+  type: MessageEventTypes.ACK;
+  namespace: string;
+  id: string | number;
+  data: [eventName: string];
+}
+
+export interface MessageErrorType {
+  type: MessageEventTypes.ERROR;
+  namespace: string;
+  data: string;
+}
+
+export interface MessageBinaryAckType {
+  type: MessageEventTypes.BINARY_ACK;
+  namespace: string;
+  id: string | number;
+  data: [eventName: string];
+}
+
+export type MessageFormat =
+  | MessageConnectType
+  | MessageDisConnectType
+  | MessageEventType
+  | MessageBinaryEventType
+  | MessageAckType
+  | MessageErrorType
+  | MessageBinaryAckType;
 
 export class BunWebSocketAdapter
   extends BunWebSocket
@@ -40,11 +95,12 @@ export class BunWebSocketAdapter
 {
   constructor(
     private httpAdapter: BunHttpAdapter,
-    private localOptions?: BunWebSocketOptions | undefined,
+    localOptions?: BunWebSocketOptions | undefined,
   ) {
     const newInstance = localOptions?.newInstance || false;
     const getServer = () => {
-      if (localOptions?.newInstance) {
+      const newInstance = localOptions?.newInstance || false;
+      if (newInstance) {
         return this.getServer();
       }
 
@@ -55,6 +111,7 @@ export class BunWebSocketAdapter
       ...(localOptions || {}),
       newInstance,
       getServer,
+      router: httpAdapter.instance,
     } as unknown as BunWebSocketOptions;
 
     super(superOptions);
@@ -77,93 +134,128 @@ export class BunWebSocketAdapter
       });
     }
 
-    this.httpAdapter.instance.ws("/*", {
-      open: () => undefined,
-      close: () => undefined,
-      message: () => undefined,
-    });
-
-    let server = this.getServer();
-    if (!server) {
-      server = this.httpAdapter.getBunServer();
-    }
-
-    return server || undefined;
+    this.httpAdapter.instance.ws(
+      options?.namespace ? options.namespace : "/*",
+      this.wsHandler,
+    );
+    const server = this.getOrCreateWebsocketServer(port);
+    return server;
   }
 
   bindClientConnect(
     server: Server | undefined,
-    callback: (client: ServerWebSocket) => unknown,
+    callback: (client: ServerWebSocket, server?: Server) => unknown,
   ) {
     this.on("connect", (client: ServerWebSocket) => {
-      callback(client);
+      callback(client, server || this.getServer());
     });
   }
 
-  bindClientDisconnect(client: ServerWebSocket, callback: () => unknown) {
-    this.on("disconnect", callback);
+  bindClientDisconnect(
+    client: ServerWebSocket,
+    callback: (client: ServerWebSocket) => unknown,
+  ) {
+    this.on("disconnect", (sentWsClient: ServerWebSocket) => {
+      callback(sentWsClient || client);
+    });
+  }
+
+  private buildMessage(obj: MessageFormat): string {
+    if (obj.type === MessageEventTypes.BINARY_EVENT) {
+      obj.data[1] = btoa(Buffer.from(String(obj.data[1])).toString("utf-8"));
+    }
+
+    return JSON.stringify(obj);
   }
 
   bindMessageHandlers(
     client: ServerWebSocket,
     handlers: WsMessageHandler<string>[],
-    transform: (
-      data: unknown | Promise<unknown> | Observable<unknown>,
-    ) => Observable<unknown>,
   ) {
-    const disconnect$ = fromEvent(this, DISCONNECT_EVENT).pipe(
-      share(),
-      first(),
-    );
+    const messageHandler: BunWebsocketHandlerFor<"message"> = (
+      wsClient,
+      data,
+    ) => {
+      wsClient = wsClient || client;
 
-    handlers.forEach((handler) => {
-      const source$ = fromEvent(this, handler.message).pipe(
-        mergeMap((payload: any) => {
-          const { data, ack } = this.mapPayload(payload);
-          return transform(handler.callback(data, ack)).pipe(
-            filter((response: unknown) => !isNil(response)),
-            map((response: unknown) => [response, ack]),
-          );
-        }),
-        takeUntil(disconnect$),
-      );
+      try {
+        const parsedData = JSON.parse(
+          Buffer.from(data).toString("utf-8"),
+        ) as MessageFormat;
+        const type = parsedData.type;
+        let handled = true;
 
-      source$.subscribe(([response, ack]) => {
-        const event = get(response, "event");
-        if (response && event) {
-          return this.emit(event, get(response, "data", undefined));
+        switch (type) {
+          case MessageEventTypes.ACK:
+          case MessageEventTypes.BINARY_ACK: {
+            wsClient.send(
+              this.buildMessage({
+                type,
+                id: parsedData.id,
+                namespace: parsedData.namespace,
+                data: parsedData.data,
+              }),
+            );
+
+            break;
+          }
+
+          case MessageEventTypes.EVENT:
+          case MessageEventTypes.BINARY_EVENT: {
+            const eventName = isArray(parsedData.data)
+              ? parsedData.data[0]
+              : undefined;
+            if (isUndefined(eventName)) {
+              handled = false;
+              break;
+            }
+
+            const eventData = MessageEventTypes.EVENT
+              ? parsedData.data[1]
+              : Buffer.from(atob(String(parsedData.data[1])));
+            const handlersForEvent = handlers.filter(
+              (handler) => handler.message === eventName,
+            );
+            handlersForEvent.forEach((handler) => {
+              handler.callback(eventData);
+            });
+            break;
+          }
+
+          case MessageEventTypes.CONNECT:
+          case MessageEventTypes.DISCONNECT:
+          case MessageEventTypes.ERROR: {
+            // To-Do Add handlers for other event types
+            break;
+          }
+
+          default: {
+            handled = false;
+          }
         }
-        isFunction(ack) && ack(response);
+
+        if (handled) {
+          return;
+        }
+      } catch (e) {
+        //
+      }
+
+      const handlersForEvent = handlers.filter(
+        (handler) => !handler.message || handler.message === "events",
+      );
+      handlersForEvent.forEach((handler) => {
+        handler.callback(wsClient, data);
       });
+    };
+
+    this.on("message", messageHandler);
+    this.on("disconnect", () => {
+      this.off("message", messageHandler);
     });
   }
 
   close(server: Server | undefined) {
-    if (server) {
-      server.stop(false);
-    }
-  }
-
-  protected mapPayload(payload: unknown): {
-    data: any;
-    ack?: Function;
-  } {
-    if (!isArray(payload)) {
-      if (isFunction(payload)) {
-        return { data: undefined, ack: payload as Function };
-      }
-      return { data: payload };
-    }
-
-    const lastElement = payload[payload.length - 1];
-    const isAck = isFunction(lastElement);
-    if (isAck) {
-      const size = payload.length - 1;
-      return {
-        data: size === 1 ? payload[0] : payload.slice(0, size),
-        ack: lastElement,
-      };
-    }
-    return { data: payload };
+    return this.killServer(server || this.getServer());
   }
 }

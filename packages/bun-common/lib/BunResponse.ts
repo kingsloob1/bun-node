@@ -30,6 +30,7 @@ import type { SendFileOptions } from "./types/general";
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 
 export class BunResponse {
+  private _upgradeToWsData: unknown | undefined = undefined;
   private response: Response | undefined = undefined;
   private options: DeepWritable<ResponseInit> = {};
   private headersObj = new Headers();
@@ -82,6 +83,15 @@ export class BunResponse {
     this.options.headers.set("Content-Type", "application/json");
     this.response = Response.json(body, this.options);
     return this;
+  }
+
+  public upgradeToWebsocket(data?: unknown) {
+    this._upgradeToWsData = data || {};
+    return this;
+  }
+
+  public get upgradeToWsData() {
+    return this._upgradeToWsData;
   }
 
   async send(
@@ -371,7 +381,7 @@ export class BunResponse {
   }
 
   get headersSent() {
-    return !!this.response || !!this.isLongLived;
+    return !!this.upgradeToWsData || !!this.response || !!this.isLongLived;
   }
 
   setHeader(name: string, value: string | string[], replace = true) {

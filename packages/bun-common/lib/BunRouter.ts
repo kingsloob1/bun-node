@@ -16,6 +16,8 @@ import {
 } from "lodash-es";
 import isNumeric from "fast-isnumeric";
 import type { WebSocketHandler } from "bun";
+import type { BunRequest } from "@kingsleyweb/bun-common/lib/BunRequest";
+import type { BunResponse } from "@kingsleyweb/bun-common/lib/BunResponse";
 import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
 import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
 
@@ -53,7 +55,7 @@ export class BunRouter extends Router {
     this._bunWebSocket = bunWebSocket;
   }
 
-  async getBunWebsocket() {
+  getBunWebsocket() {
     return this._bunWebSocket || this.localOptions?.bunWebsocket;
   }
 
@@ -87,10 +89,18 @@ export class BunRouter extends Router {
     return this;
   }
 
-  ws(path: string, handler: WebSocketHandler<WebSocketClientData>): this {
-    this.getBunWebsocket().then((webSocket) => {
-      webSocket?.setRouteHandler(path, handler);
-    });
+  ws(
+    path: string,
+    handler: WebSocketHandler<WebSocketClientData>,
+    customDataToWsClientFn?: (
+      req: BunRequest,
+      res: BunResponse,
+    ) => unknown | Promise<unknown>,
+  ): this {
+    const bunWebSocket = this.getBunWebsocket();
+    if (bunWebSocket) {
+      bunWebSocket.setRouteHandler(path, handler, customDataToWsClientFn);
+    }
 
     return this;
   }

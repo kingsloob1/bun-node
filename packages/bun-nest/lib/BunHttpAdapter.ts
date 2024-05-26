@@ -413,6 +413,30 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
           }
 
           if (hasNativeResponse) {
+            if (res.upgradeToWsData) {
+              const success = server.upgrade(nativeRequest, {
+                data: res.upgradeToWsData,
+              });
+
+              if (success) {
+                return undefined;
+              }
+
+              let response = new Response(
+                "An error occurred while upgrading websocket",
+                {
+                  status: 400,
+                },
+              );
+              try {
+                response = await res.getNativeResponse(100);
+              } catch {
+                //
+              }
+
+              return response;
+            }
+
             const nativeResponse = await res.getNativeResponse(
               that.requestTimeout,
             );
