@@ -1,14 +1,14 @@
 import { EventEmitter } from "node:stream";
-import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
-import { get, isArray, isFunction, isObject, set } from "lodash-es";
 import isNumeric from "fast-isnumeric";
+import { get, isArray, isFunction, isObject, set } from "lodash-es";
+import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import {
   BunRequest,
   BunResponse,
   BunRouter,
   type BunServeOptions,
-  type NextFunction,
   type matchedRoute,
+  type NextFunction,
 } from "./index";
 
 export interface WebSocketClientData<CustomData = unknown> {
@@ -210,7 +210,7 @@ export class BunWebSocket extends EventEmitter {
           }
 
           return new Response(undefined, {
-            status: 400,
+            status: 404,
             statusText: "Not Found",
           });
         },

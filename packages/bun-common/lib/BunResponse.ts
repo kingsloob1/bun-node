@@ -1,10 +1,12 @@
-import { join as joinPath } from "node:path";
 import { Buffer } from "node:buffer";
+import { join as joinPath } from "node:path";
 import process from "node:process";
-import { type Readable, isReadable } from "node:stream";
-import type { ReadableStreamController } from "node:stream/web";
-import type { BunFile } from "bun";
+import { isReadable, type Readable } from "node:stream";
+import { eTag } from "@tinyhttp/etag";
+import * as cookie from "cookie";
+import * as cookieSignature from "cookie-signature";
 import { format as formatDate, isValid as isDateValid } from "date-fns";
+import encodeurl from "encodeurl";
 import isNumeric from "fast-isnumeric";
 import { fileTypeFromBuffer } from "file-type";
 import {
@@ -12,6 +14,7 @@ import {
   get,
   isArray,
   isBoolean,
+  isBuffer,
   isFunction,
   isMap,
   isNull,
@@ -19,39 +22,46 @@ import {
   isObject,
   isString,
   isUndefined,
-  set,
+  merge,
   values,
 } from "lodash-es";
+import pollUntil from "until-promise";
+import vary from "vary";
+import type { BunFile } from "bun";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DeepWritable } from "ts-essentials";
+import { getMimeFromStr } from "./utils/general";
 import type { BunRequest } from "./BunRequest";
 // import { formatInTimeZone } from 'date-fns-tz';
-import type { SendFileOptions } from "./types/general";
+import type {
+  NextFunction,
+  RouterMiddlewareHandler,
+  SendFileOptions,
+} from "./types/general";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
+type CookieParams = Parameters<(typeof cookie)["serialize"]>;
 
 export class BunResponse {
   private _upgradeToWsData: unknown | undefined = undefined;
   private response: Response | undefined = undefined;
   private options: DeepWritable<ResponseInit> = {};
   private headersObj = new Headers();
-  private _checkConnectionTimer: ReturnType<typeof setInterval> | undefined =
-    undefined;
-
   private _isLongLived = false;
-  private _writeController: ReadableStreamController<unknown> | undefined =
+  #readableStream: ReadableStream | undefined = undefined;
+  #readableStreamController: ReadableStreamDefaultController | undefined =
     undefined;
 
-  private _writeControllerStream: ReadableStream | undefined = undefined;
-  private _writeDataBeforeSetupController: unknown[][] = [];
+  #readableStreamCloseInterval: ReturnType<typeof setInterval> | undefined =
+    undefined;
+
+  #readableStreamClosePromise: Promise<undefined> | undefined = undefined;
+  #readableStreamEventMap = new Map<string, string | Buffer>();
 
   constructor(public req: BunRequest) {}
 
   public get isLongLived() {
     return this.req.socket.keepAlive === true || this._isLongLived || false;
-  }
-
-  protected getWriteController() {
-    return this._writeController;
   }
 
   public header(key: string, value: string | string[]) {
@@ -63,9 +73,21 @@ export class BunResponse {
     return this;
   }
 
+  set statusCode(code: number) {
+    this.status(code);
+  }
+
+  get statusCode() {
+    return this.options.status || 200;
+  }
+
   public type(mimeType: string): BunResponse {
     this.headersObj.set("Content-Type", mimeType);
     return this;
+  }
+
+  public contentType(...args: Parameters<BunResponse["type"]>) {
+    return this.type(...args);
   }
 
   public option(option: ResponseInit): BunResponse {
@@ -110,6 +132,26 @@ export class BunResponse {
     }
 
     this.options.headers = this.headersObj;
+    this.req.setResponse(this);
+
+    // freshness
+    if (this.req.fresh) this.status(304);
+
+    // strip irrelevant headers
+    if (this.statusCode === 204 || this.statusCode === 304) {
+      this.removeHeader("Content-Type");
+      this.removeHeader("Content-Length");
+      this.removeHeader("Transfer-Encoding");
+      body = "";
+    }
+
+    // alter headers for 205
+    if (this.statusCode === 205) {
+      this.set("Content-Length", "0");
+      this.removeHeader("Transfer-Encoding");
+      body = "";
+    }
+
     if (body instanceof BunResponse) {
       let response!: Response;
 
@@ -136,8 +178,13 @@ export class BunResponse {
       this.response = new Response(body, this.options);
     } else if (isObject(body) || isArray(body)) {
       this.options.headers.set("Content-Type", "application/json");
+      const bodyToBeSent = JSON.stringify(body);
 
-      this.response = new Response(JSON.stringify(body), this.options);
+      if (!this.hasHeader("ETag")) {
+        this.setHeader("ETag", eTag(bodyToBeSent));
+      }
+
+      this.response = new Response(bodyToBeSent, this.options);
     } else {
       let bodyToBeSent = body;
       if (
@@ -148,6 +195,10 @@ export class BunResponse {
         )
       ) {
         bodyToBeSent = String(bodyToBeSent);
+      }
+
+      if (!this.hasHeader("ETag") && bodyToBeSent) {
+        this.setHeader("ETag", eTag(bodyToBeSent));
       }
 
       // If no content type, Attempt to extract content type from buffer and send
@@ -216,120 +267,133 @@ export class BunResponse {
     return this;
   }
 
-  public async longLivedWrite(
-    ...args: Parameters<ReadableStreamController<unknown>["enqueue"]>
-  ) {
-    if (
-      !get(this._writeControllerStream, "done") ||
-      !!this._writeControllerStream
-    ) {
-      try {
-        await this._writeController?.enqueue(...args);
-      } catch {
-        await this.endLongLivedConnection();
-      }
-    }
-
-    return 0;
-  }
-
-  public initLongLivedConnection() {
+  public async initLongLivedConnection() {
     if (this._isLongLived) return false;
     this.req.socket.setKeepAlive(true);
     this.req.socket.setNoDelay(true);
     this.req.socket.setTimeout(0);
 
-    this._checkConnectionTimer = setInterval(async () => {
-      const isAbortedBoolean = isBoolean(this.req?.request?.signal?.aborted);
-      if (
-        !isAbortedBoolean ||
-        (isAbortedBoolean && this.req?.request?.signal?.aborted)
-      ) {
-        await this.endLongLivedConnection();
-      }
-    }, 10);
+    this.setHeader("Content-Type", "text/event-stream");
+    this.setHeader("Cache-Control", "no-cache");
+    this.setHeader("Connection", "keep-alive");
 
     this._isLongLived = true;
     this.options.headers = this.headersObj;
-
-    this._writeControllerStream = new ReadableStream(
-      {
-        start: async (controller) => {
-          await controller.enqueue("Hello World");
-          this._writeController = controller;
-
-          if (this._writeDataBeforeSetupController) {
-            for await (const passedArgs of this
-              ._writeDataBeforeSetupController) {
-              await this.longLivedWrite(...passedArgs);
-            }
-
-            this._writeDataBeforeSetupController = [];
-          } else {
-            await this.longLivedWrite("/n");
-          }
-        },
-        cancel: async () => {
-          await this.endLongLivedConnection();
-        },
-      },
-      {
-        highWaterMark: 1,
-        size(chunk) {
-          return chunk.length;
-        },
-      },
-    );
-
-    this.response = new Response(
-      this._writeControllerStream as ReadableStream,
-      this.options,
-    );
-
+    const readableStream = this.readableStream;
+    this.response = new Response(readableStream, this.options);
     return true;
   }
 
   async endLongLivedConnection() {
-    clearInterval(this._checkConnectionTimer);
+    clearInterval(this.#readableStreamCloseInterval);
+    this.#readableStreamClosePromise = undefined;
+    this.#readableStreamCloseInterval = undefined;
+
     try {
-      await this._writeController?.close();
+      await this.getWritable().close();
     } catch {
       //
     }
 
-    this._checkConnectionTimer = undefined;
-    this._writeDataBeforeSetupController = [];
-    set(
-      this._writeControllerStream as unknown as Record<string, unknown>,
-      "done",
-      true,
-    );
-    this._writeControllerStream = undefined;
-    this._writeController = undefined;
+    this.#readableStream = undefined;
   }
 
   flushHeaders(): boolean {
-    return this.initLongLivedConnection();
+    this.initLongLivedConnection();
+    return true;
   }
 
-  getWritable() {
+  get readableStream() {
+    this._isLongLived = true;
+
+    if (this.#readableStream) {
+      return this.#readableStream;
+    }
+
+    if (!this.response && !this.#readableStream) {
+      this.#readableStreamEventMap.clear();
+
+      const encoder = new TextEncoder();
+      this.#readableStream = new ReadableStream(
+        {
+          pull: async (controller) => {
+            this.#readableStreamController = controller;
+            await pollUntil(
+              () => this.#readableStreamEventMap.size,
+              (size) => size !== 0,
+            );
+
+            for await (const key of this.#readableStreamEventMap.keys()) {
+              const value = this.#readableStreamEventMap.get(key);
+
+              await controller.enqueue(
+                isBuffer(value) ? value : encoder.encode(String(value)),
+              );
+
+              this.#readableStreamEventMap.delete(key);
+            }
+          },
+          cancel: async (reason: string) => {
+            this.req.emit("abort", reason);
+            await this.endLongLivedConnection();
+          },
+        },
+        {
+          highWaterMark: 1,
+        },
+      );
+
+      this.#readableStreamClosePromise = new Promise((resolve) => {
+        this.#readableStreamCloseInterval = setInterval(async () => {
+          if (this.req.request.signal.aborted) {
+            resolve(undefined);
+            await this.endLongLivedConnection();
+          }
+        });
+      });
+
+      return this.#readableStream;
+    }
+
+    return undefined;
+  }
+
+  private async abortWritableStream(reason: unknown) {
+    await this.#readableStream?.cancel(reason);
+  }
+
+  private async closeWritableStream() {
+    await this.#readableStreamController?.close();
+  }
+
+  private async writeToWritableStream(chunk: unknown) {
+    let key = String(Bun.nanoseconds());
+    while (this.#readableStreamEventMap.has(key)) {
+      key = `${key}${Bun.nanoseconds()}`;
+    }
+
+    await this.#readableStreamEventMap.set(key, chunk as string | Buffer);
+  }
+
+  getWritable(): WritableStreamDefaultWriter {
     return {
-      ...this._writeController,
-      write: this.write.bind(this),
+      closed: this.#readableStreamClosePromise || Promise.resolve(undefined),
+      desiredSize: this.#readableStreamController?.desiredSize || null,
+      ready: Promise.resolve(undefined),
+      abort: this.abortWritableStream.bind(this),
+      close: this.closeWritableStream.bind(this),
+      write: this.writeToWritableStream.bind(this),
+      releaseLock() {},
     };
   }
 
-  write(...args: Parameters<ReadableStreamController<unknown>["enqueue"]>) {
+  write(...args: Parameters<WritableStreamDefaultWriter["write"]>) {
     if (!this._isLongLived) {
       this.initLongLivedConnection();
     }
 
     if (this._isLongLived) {
-      if (!this._writeController) {
-        this._writeDataBeforeSetupController.push(args);
-      } else {
-        this.longLivedWrite(...args);
-      }
+      this.getWritable()?.write(...args);
     }
 
     return true;
@@ -621,7 +685,7 @@ export class BunResponse {
     return this;
   }
 
-  async get(name: string, defaultVal: string | string[]) {
+  public get(name: string, defaultVal?: string | string[]) {
     const value = this.headersObj.get(name);
     if (!isString(value)) {
       return defaultVal;
@@ -642,5 +706,122 @@ export class BunResponse {
 
   public set(name: string, value: string | string[], replace = true) {
     return this.setHeader(name, value, replace);
+  }
+
+  public location(url: string) {
+    let loc = "";
+
+    // "back" is an alias for the referrer
+    if (url === "back") {
+      let location = this.req.get("Referrer", "/") || "/";
+      if (!isString(location)) {
+        location = "/";
+      }
+
+      loc = location as string;
+    } else {
+      loc = String(url);
+    }
+
+    return this.set("Location", encodeurl(loc));
+  }
+
+  public links(links: Record<string, string>) {
+    let link = this.get("Link", "") || "";
+    if (link) link += ", ";
+
+    return this.set(
+      "Link",
+      link +
+        Object.keys(links)
+          .map(function (rel) {
+            return `<${links[rel]}>; rel="${rel}"`;
+          })
+          .join(", "),
+    );
+  }
+
+  public cookie(
+    name: CookieParams[0],
+    value: CookieParams[1],
+    opts?: cookie.CookieSerializeOptions & {
+      signed?: boolean;
+      secret?: string;
+      maxAge?: null | number | string; // Convenient option for setting the expiry time relative to the current time in milliseconds.
+    },
+  ) {
+    const options = opts || {};
+
+    let secret = options?.secret || this.req.secret;
+    if (isArray(secret)) {
+      secret = secret[0];
+    }
+
+    const signed = options?.signed;
+
+    if (signed && !secret) {
+      throw new Error(
+        "Secret is required for signed cookies... Kindly pass in the secret or update Bun request secret using this.req.secret = <secret",
+      );
+    }
+
+    let val =
+      typeof value === "object" ? `j:${JSON.stringify(value)}` : String(value);
+
+    if (signed) {
+      val = `s:${cookieSignature.sign(val, secret as string)}`;
+    }
+
+    if (isNumeric(options?.maxAge)) {
+      const maxAge = Number(options?.maxAge);
+
+      if (!Number.isNaN(maxAge)) {
+        options.expires = new Date(Date.now() + maxAge);
+        options.maxAge = Math.floor(maxAge / 1000);
+      }
+    }
+
+    if (!isString(options?.path)) {
+      options.path = "/";
+    }
+
+    this.append("Set-Cookie", cookie.serialize(name, String(val), opts));
+
+    return this;
+  }
+
+  public clearCookie(name: string, opts: Parameters<BunResponse["cookie"]>[2]) {
+    const options = merge({ expires: new Date(1), path: "/" }, opts || {});
+    return this.cookie(name, "", options);
+  }
+
+  public vary(fields: Parameters<typeof vary>[1]) {
+    vary(this as unknown as ServerResponse<IncomingMessage>, fields);
+    return this;
+  }
+
+  public format(obj: Record<string, RouterMiddlewareHandler>) {
+    const req = this.req;
+    const next = get(req, "next", () => null) as NextFunction;
+
+    const keys = Object.keys(obj).filter(function (v) {
+      return v !== "default";
+    });
+
+    const key = keys.length > 0 ? req.accepts(keys) : false;
+    const keyStr = isString(key) ? key : isArray(key) ? key[0] : "";
+    const mime = keyStr ? getMimeFromStr(keyStr) : "";
+    this.vary("Accept");
+
+    if (mime) {
+      this.set("Content-Type", mime);
+      obj[keyStr](req, this, next);
+    } else if (obj.default) {
+      obj.default(req, this, next);
+    } else {
+      next(new Error(`NO_FORMAT_TYPE_MATCHES_RESPONSE_CONTENT_TYPE`));
+    }
+
+    return this;
   }
 }

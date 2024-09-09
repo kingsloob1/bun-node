@@ -1,0 +1,29 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSE Test</title>
+</head>
+<body>
+  <h1>Server-Sent Events Example</h1>
+  <div id="messages"></div>
+
+  <script>
+    // Create a new EventSource
+    const eventSource = new EventSource('http://127.0.0.1:3000/events');
+
+    // Listen for messages from the server
+    eventSource.addEventListener('message', () => {
+      const messagesDiv = document.getElementById('messages');
+      messagesDiv.innerHTML += `<p>${event.data}</p>`;
+    });
+
+    // Handle errors
+    eventSource.addEventListener('error', (event) => {
+      console.error('EventSource failed:', event, event.returnValue);
+    });
+  </script>
+</body>
+</html>

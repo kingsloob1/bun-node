@@ -1,6 +1,25 @@
+import * as acceptsModule from "accepts";
+import * as cookieModule from "cookie";
+import * as cookieParserModule from "cookie-parser";
+import * as cookieSignatureModule from "cookie-signature";
+import * as freshModule from "fresh";
+import * as rangeParserModule from "range-parser";
+import * as typeIsModule from "type-is";
+import * as varyModule from "vary";
+
 export * from "./BunRequest";
 export * from "./BunResponse";
 export * from "./BunRouter";
-export * from "./utils/general";
-export * from "./types/general";
 export * from "./BunWebSocket";
+export * from "./types/general";
+export * from "./utils/general";
+export const { cookieParser } = { cookieParser: cookieParserModule };
+export const { cookie } = { cookie: cookieModule };
+export const { cookieSignature } = { cookieSignature: cookieSignatureModule };
+export { default as encodeUrl } from "encodeurl";
+export const { vary } = { vary: varyModule };
+export const { accepts } = { accepts: acceptsModule };
+export const { rangeParser } = { rangeParser: rangeParserModule };
+export const { typeIs } = { typeIs: typeIsModule };
+export const { fresh } = { fresh: freshModule };
+export { default as mime } from "mime";

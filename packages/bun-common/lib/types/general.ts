@@ -1,8 +1,10 @@
-import type { IncomingMessage } from "node:http";
-import type { Buffer } from "node:buffer";
 import type { Serve } from "bun";
 import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
+import type { JSONCookies } from "cookie-parser";
 import type { FileTypeResult } from "file-type";
+import type { Buffer } from "node:buffer";
+import type { IncomingMessage } from "node:http";
+import type { BunRouter } from "..";
 import type { BunRequest } from "../BunRequest";
 import type { BunResponse } from "../BunResponse";
 import type {
@@ -53,8 +55,9 @@ export interface BunRequestInterface {
     | null
     | undefined;
   buffer: Buffer | undefined;
-  cookies?: Record<string, unknown>; // Depends on cookie parser middleware
-  signedCookies: boolean;
+  secret?: string | string[];
+  cookies: ReturnType<typeof JSONCookies>; // Depends on cookie parser library
+  signedCookies: ReturnType<typeof JSONCookies>; // Depends on cookie parser library
   hostname: string;
   ip: string;
   ips: string[];
@@ -68,16 +71,14 @@ export interface BunRequestInterface {
   url: string;
   params: Record<string, string>;
   query: Record<string, unknown>;
-  route: Function | null | undefined;
+  route: Awaited<ReturnType<BunRouter["handle"]>> | null | undefined;
   secure: boolean;
   subdomains: string[];
   xhr: boolean;
-  accepts: (type: string) => boolean;
   get: (
     name: string,
     defaultVal: string | string[] | undefined,
   ) => string | string[] | null;
-  is: (type: string) => boolean;
   storageFiles:
     | UploadFilterFile[]
     | Record<string, StorageFile[]>
@@ -177,7 +178,7 @@ export interface SendFileOptions {
   headers?: Record<string, unknown>;
 }
 
-export type NextFunction = (type?: string | undefined) => unknown;
+export type NextFunction = (type?: string | Error | undefined) => unknown;
 export type RouterMiddlewareHandler = (
   req: BunRequest,
   res: BunResponse,

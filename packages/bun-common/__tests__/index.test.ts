@@ -1,6 +1,6 @@
-import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
-import { BunRequest, BunResponse } from '../lib';
-import type { Server } from 'bun';
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { Server } from "bun";
+import { BunRequest, BunResponse } from "../lib";
 
 let server!: Server;
 beforeAll(() => {
@@ -20,17 +20,17 @@ afterAll(() => {
   server.stop(true);
 });
 
-describe('Test Bun Request', () => {
-  test('Can initialize request', () => {
+describe("Test Bun Request", () => {
+  test("Can initialize request", () => {
     expect(
-      new BunRequest(new Request('https://google.com'), server),
+      new BunRequest(new Request("https://google.com"), server),
     ).toBeInstanceOf(BunRequest);
   });
 });
 
-describe('Test Bun Response', () => {
-  test('Can initialize response', () => {
-    const request = new BunRequest(new Request('https://google.com'), server);
+describe("Test Bun Response", () => {
+  test("Can initialize response", () => {
+    const request = new BunRequest(new Request("https://google.com"), server);
     expect(new BunResponse(request)).toBeInstanceOf(BunResponse);
   });
 });

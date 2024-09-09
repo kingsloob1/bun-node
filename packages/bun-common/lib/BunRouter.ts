@@ -1,6 +1,7 @@
 import path from "node:path";
 import process from "node:process";
-import { type Route, Router, type matchedRoute } from "@routejs/router";
+import { type matchedRoute, type Route, Router } from "@routejs/router";
+import isNumeric from "fast-isnumeric";
 import {
   get,
   isArray,
@@ -14,12 +15,11 @@ import {
   omit,
   orderBy,
 } from "lodash-es";
-import isNumeric from "fast-isnumeric";
-import type { WebSocketHandler } from "bun";
 import type { BunRequest } from "@kingsleyweb/bun-common/lib/BunRequest";
 import type { BunResponse } from "@kingsleyweb/bun-common/lib/BunResponse";
-import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
+import type { WebSocketHandler } from "bun";
 import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
+import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
 
 export class BunRouter extends Router {
   private _bunWebSocket?: BunWebSocket;
@@ -74,7 +74,7 @@ export class BunRouter extends Router {
       path.dirname(Bun.resolveSync("@routejs/router", process.cwd())),
       "./src/route.mjs",
     );
-    // eslint-disable-next-line ts/no-var-requires, ts/no-require-imports
+    // eslint-disable-next-line ts/no-require-imports
     const routeModule = require(routeModulePath);
 
     if (!isFunction(routeModule.default)) {

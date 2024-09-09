@@ -1,6 +1,14 @@
-import { Readable } from "node:stream";
 import { Buffer } from "node:buffer";
-import type { SocketAddress } from "bun";
+import * as process from "node:process";
+import { Readable } from "node:stream";
+import accepts from "accepts";
+import busboy from "busboy";
+import * as cookie from "cookie";
+import { JSONCookies, signedCookies } from "cookie-parser";
+import EventEmitter from "eventemitter3";
+import { fileTypeFromBuffer, type FileTypeResult } from "file-type";
+import fresh from "fresh";
+import ucwords from "locutus/php/strings/ucwords";
 import {
   cloneDeep,
   each,
@@ -19,16 +27,20 @@ import {
   omit,
   values,
 } from "lodash-es";
-import ucwords from "locutus/php/strings/ucwords";
 import {
+  parseDomain,
   type ParseResult,
   ParseResultType,
   Validation,
-  parseDomain,
 } from "parse-domain";
-import busboy from "busboy";
-import { type FileTypeResult, fileTypeFromBuffer } from "file-type";
 import qs from "qs";
+import rangeParser from "range-parser";
+import typeIs from "type-is";
+import type { SocketAddress } from "bun";
+import type { IncomingMessage } from "node:http";
+import { streamToBuffer } from "./utils/general";
+import type { BunResponse } from "./BunResponse";
+import type { StorageExpandedFile, StorageFile } from "./multipart";
 import type {
   BunRequestInterface,
   BunServer,
@@ -38,15 +50,14 @@ import type {
   MultiPartOptions,
   NestExpressBodyParserOptions,
 } from "./types/general";
-import { streamToBuffer } from "./utils/general";
-import type { StorageExpandedFile, StorageFile } from "./multipart";
 
-export class BunRequest implements BunRequestInterface {
+export class BunRequest extends EventEmitter implements BunRequestInterface {
   private headerNamesWithMultiple: string[] = [
     "cache-control",
     "X-Forwarded-For",
   ];
 
+  private bunResponse: BunResponse | undefined = undefined;
   public headers: Record<string, string | string[]> = {};
   public headersObj: InstanceType<typeof Headers>;
   public parsedUrl: InstanceType<typeof URL>;
@@ -60,12 +71,13 @@ export class BunRequest implements BunRequestInterface {
     | null
     | undefined = undefined;
 
-  public cookies = {};
-  public signedCookies = false;
+  public secret: string | string[] | undefined = undefined;
+  public cookies: BunRequestInterface["cookies"] = {};
+  public signedCookies: BunRequestInterface["signedCookies"] = {};
   public url: string;
   public params: Record<string, string> = {};
   public query: Record<string, unknown> = {};
-  public route = null;
+  public _route: BunRequestInterface["route"] | undefined = undefined;
   private readonly socketAddress: SocketAddress | null = null;
   private readonly parsedDomainResult: ParseResult;
   private _files: Record<string, File> = {};
@@ -85,11 +97,25 @@ export class BunRequest implements BunRequestInterface {
     public request: Request,
     private server: BunServer,
     private options: {
-      canHandleUpload: Boolean;
+      canHandleUpload: boolean;
+      parseCookies?: boolean;
+      cookieParseOptions?: cookie.CookieParseOptions;
     } = {
       canHandleUpload: true,
+      parseCookies: true,
     },
   ) {
+    super();
+
+    const abortEventHandler = () => {
+      this.emit("close");
+      this.emit("end");
+      this.emit("aborted");
+
+      this.request.signal.removeEventListener("abort", abortEventHandler);
+    };
+    this.request.signal.addEventListener("abort", abortEventHandler);
+
     this.headersObj = request.headers as Headers;
     this.parsedUrl = new URL(request.url);
     this.headers = this.getHeaders();
@@ -104,6 +130,21 @@ export class BunRequest implements BunRequestInterface {
     });
 
     this.extractSubdomains();
+
+    if (this.options?.parseCookies) {
+      this.parseCookies({
+        forceUpdateRequest: true,
+        secret: this.secret,
+      });
+    }
+  }
+
+  get route() {
+    return this._route;
+  }
+
+  set route(route: BunRequestInterface["route"]) {
+    this._route = route;
   }
 
   get socket() {
@@ -601,7 +642,11 @@ export class BunRequest implements BunRequestInterface {
         return true;
       }
     } catch (err) {
-      //
+      if (process.env.NODE_ENV !== "production") {
+        console.log("URL_FORM_PARSER_ERROR", err);
+      }
+
+      throw new Error("URL_FORM_PARSER_ERROR");
     }
 
     throw new Error("Oops.. Form is not url encoded");
@@ -614,10 +659,74 @@ export class BunRequest implements BunRequestInterface {
       this.setHeader("Content-Type", "application/json");
       return true;
     } catch (err) {
-      //
+      if (process.env.NODE_ENV !== "production") {
+        console.log("JSON_BODY_PARSER_ERROR", err);
+      }
+
+      throw new Error("JSON_BODY_PARSER_ERROR");
+    }
+  }
+
+  public parseCookies(opts?: {
+    forceUpdateRequest?: boolean;
+    secret?: BunRequest["secret"];
+  }): {
+    cookies: BunRequest["cookies"];
+    signedCookies: BunRequest["signedCookies"];
+  } {
+    const forceUpdateRequest = isBoolean(opts?.forceUpdateRequest)
+      ? opts?.forceUpdateRequest
+      : false;
+
+    const sentSecret = !isUndefined(opts?.secret) ? opts?.secret : "";
+
+    let reqSecret = this.secret;
+    if (!reqSecret && sentSecret) {
+      this.secret = isArray(sentSecret) ? sentSecret[0] : sentSecret;
+      reqSecret = this.secret;
     }
 
-    throw new Error("Oops.. Form is not JSON stringified");
+    const cookieStr =
+      this.getHeader("cookie") || this.getHeader("Cookie") || "";
+
+    if (!cookieStr) {
+      return {
+        cookies: {},
+        signedCookies: {},
+      };
+    }
+
+    const secrets = isArray(sentSecret)
+      ? sentSecret
+      : isString(sentSecret) && sentSecret
+        ? [sentSecret]
+        : isArray(this.secret)
+          ? this.secret
+          : isString(this.secret) && this.secret
+            ? [this.secret]
+            : [];
+
+    const cookies = cookie.parse(cookieStr, this.options.cookieParseOptions);
+    let signedCookiesObj: BunRequest["signedCookies"] = {};
+
+    if (secrets.length) {
+      const parsedSignedCookies = signedCookies(cookies, secrets);
+      signedCookiesObj = JSONCookies(
+        parsedSignedCookies as Record<string, string>,
+      );
+    }
+
+    const resp = {
+      signedCookies: signedCookiesObj,
+      cookies: JSONCookies(cookies),
+    };
+
+    if (!this.cookies || forceUpdateRequest) {
+      this.cookies = resp.cookies;
+      this.signedCookies = resp.signedCookies;
+    }
+
+    return resp;
   }
 
   public async handleBodyParsing(): Promise<undefined>;
@@ -667,7 +776,7 @@ export class BunRequest implements BunRequestInterface {
         case contentTypeHeader?.includes("application/json"): {
           try {
             await this.handleJsoonBodyParsing(bufferText);
-          } catch (err) {
+          } catch {
             //
           }
           break;
@@ -676,7 +785,7 @@ export class BunRequest implements BunRequestInterface {
         case contentTypeHeader?.includes("application/x-www-form-urlencoded"): {
           try {
             await this.handleUrlFormEncodingParsing(bufferText);
-          } catch (err) {
+          } catch {
             //
           }
           break;
@@ -693,7 +802,7 @@ export class BunRequest implements BunRequestInterface {
             this._buffer = buffer;
             this._contentType = "buffer";
             this.setHeader("Content-Type", "application/octet-stream");
-          } catch (err) {
+          } catch {
             //
           }
           break;
@@ -723,7 +832,13 @@ export class BunRequest implements BunRequestInterface {
   }
 
   get protocol() {
-    return this.parsedUrl.protocol;
+    const protocol = this.parsedUrl.protocol;
+    const protocolHeader = this.getHeader("X-Forwarded-Proto") || protocol;
+    const index = protocolHeader.indexOf(",");
+
+    return index !== -1
+      ? protocolHeader.substring(0, index).trim()
+      : protocolHeader.trim();
   }
 
   get hostname() {
@@ -841,20 +956,145 @@ export class BunRequest implements BunRequestInterface {
     return this.protocol.toLowerCase() === "https";
   }
 
-  get xhr() {
-    return (
-      String(
-        this.getHeader("X-Requested-With") ||
-          this.getHeader("x-requested-with"),
-      ) === "XMLHttpRequest"
-    );
+  public setResponse(res: BunResponse) {
+    this.bunResponse = res;
+    return this;
   }
 
-  // To-Do Refactor this method
-  accepts(mime: string) {
-    return String(this.headersObj.get("Accepts") || "")
-      .toLowerCase()
-      .includes(mime.toLowerCase());
+  get fresh() {
+    const res = this.bunResponse;
+    const method = this.method;
+
+    if (!res) {
+      return false;
+    }
+
+    const status = res.statusCode;
+
+    // GET or HEAD for weak freshness validation only
+    if (method !== "GET" && method !== "HEAD") return false;
+
+    // 2xx or 304 as per rfc2616 14.26
+    if ((status >= 200 && status < 300) || status === 304) {
+      return fresh(this.headers, {
+        etag: (res.get("ETag", "") || "") as string | string[],
+        "last-modified": res.get("Last-Modified", "") as string | string[],
+      });
+    }
+
+    return false;
+  }
+
+  get stale() {
+    return !this.fresh;
+  }
+
+  get xhr() {
+    const xHrHeader = this.getHeader("X-Requested-With") || "";
+    return isString(xHrHeader)
+      ? xHrHeader.toLowerCase() === "xmlhttprequest"
+      : false;
+  }
+
+  public accepts(): string[] | string | false;
+  public accepts(types: string[]): string[] | string | false;
+  public accepts(...types: string[]): string[] | string | false;
+  public accepts(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.types.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsTypes(): string[] | string | false;
+  public acceptsTypes(types: string[]): string[] | string | false;
+  public acceptsTypes(...types: string[]): string[] | string | false;
+  public acceptsTypes(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.types.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsType(encodings: string[]): string[] | string | false;
+  public acceptsType(...encodings: string[]): string[] | string | false;
+  public acceptsType(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.types.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsEncodings(): string[];
+  public acceptsEncodings(encodings: string[]): string | false;
+  public acceptsEncodings(...encodings: string[]): string | false;
+  public acceptsEncodings(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+
+    if (!args.length) {
+      return accept.encodings();
+    }
+
+    // eslint-disable-next-line prefer-spread
+    return accept.encodings.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsEncoding(encodings: string[]): string[] | string | false;
+  public acceptsEncoding(...encodings: string[]): string[] | string | false;
+  public acceptsEncoding(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.encodings.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsCharsets(): string[];
+  public acceptsCharsets(charsets: string[]): string | false;
+  public acceptsCharsets(...charsets: string[]): string | false;
+  public acceptsCharsets(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+
+    if (!args.length) {
+      return accept.charsets();
+    }
+
+    // eslint-disable-next-line prefer-spread
+    return accept.charsets.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsCharset(charsets: string[]): string[] | string | false;
+  public acceptsCharset(...charsets: string[]): string[] | string | false;
+  public acceptsCharset(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.charsets.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsLanguages(): string[];
+  public acceptsLanguages(languages: string[]): string | false;
+  public acceptsLanguages(...languages: string[]): string | false;
+  public acceptsLanguages(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+
+    if (!args.length) {
+      return accept.languages();
+    }
+
+    // eslint-disable-next-line prefer-spread
+    return accept.languages.apply(accept, flattenDeep(args));
+  }
+
+  public acceptsLanguage(languages: string[]): string | false;
+  public acceptsLanguage(...languages: string[]): string | false;
+  public acceptsLanguage(...args: string[] | [string[]]) {
+    const accept = accepts(this as unknown as IncomingMessage);
+    // eslint-disable-next-line prefer-spread
+    return accept.languages.apply(accept, flattenDeep(args));
+  }
+
+  public range(
+    size: Parameters<typeof rangeParser>[0],
+    opts: Parameters<typeof rangeParser>[2],
+  ) {
+    const rangeHeader = this.getHeader("Range");
+    if (!rangeHeader) return;
+    return rangeParser(size, rangeHeader, opts);
   }
 
   get(name: string, defaultVal: string | string[] | undefined = undefined) {
@@ -865,9 +1105,10 @@ export class BunRequest implements BunRequestInterface {
     return this.getHeader(name);
   }
 
-  // To-Do Refactor this method
-  is(mime: string) {
-    return !!mime;
+  public is(types: string[]): string | false | null;
+  public is(...types: string[]): string | false | null;
+  public is(...args: string[] | [string[]]) {
+    return typeIs(this as unknown as IncomingMessage, flattenDeep(args));
   }
 
   end() {

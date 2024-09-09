@@ -1,9 +1,10 @@
+import { Buffer } from "node:buffer";
 import { randomBytes as createRandomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { extname } from "node:path";
-import { type Readable, isReadable } from "node:stream";
+import { isReadable, type Readable } from "node:stream";
 import { promisify } from "node:util";
-import { Buffer } from "node:buffer";
+import mime from "mime";
 
 export function streamToBuffer(stream: Readable): Promise<Buffer> {
   if (isReadable(stream)) {
@@ -31,7 +32,7 @@ export const randomBytes = promisify(createRandomBytes);
 export const pathExists = async (path: string) => {
   try {
     await stat(path);
-  } catch (err) {
+  } catch {
     return false;
   }
 
@@ -42,4 +43,12 @@ export const getUniqueFilename = async (filename: string) => {
   const buffer = await randomBytes(16);
   const ext = extname(filename);
   return buffer.toString("hex") + ext;
+};
+
+export const isMime = (str: string) => {
+  return !!mime.getExtension(str);
+};
+
+export const getMimeFromStr = (str: string) => {
+  return isMime(str) ? str : mime.getType(str);
 };
