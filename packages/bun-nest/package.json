@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-nest",
   "type": "module",
-  "version": "0.0.16-alpha.0",
+  "version": "0.0.17-alpha.0",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -30,7 +30,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^0.0.16-alpha.0",
+    "@kingsleyweb/bun-common": "^0.0.17-alpha.0",
     "cors": "^2.8.5",
     "get-port": "^7.1.0",
     "lodash-es": "^4.17.21",
