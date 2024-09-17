@@ -20,14 +20,6 @@ afterAll(() => {
   server.stop(true);
 });
 
-describe("Test Bun Request", () => {
-  test("Can initialize request", () => {
-    expect(
-      new BunRequest(new Request("https://google.com"), server),
-    ).toBeInstanceOf(BunRequest);
-  });
-});
-
 describe("Test Bun Response", () => {
   test("Can initialize response", () => {
     const request = new BunRequest(new Request("https://google.com"), server);

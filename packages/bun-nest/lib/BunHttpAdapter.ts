@@ -366,6 +366,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         async fetch(nativeRequest: Request, server) {
           const req = new BunRequest(nativeRequest, server, {
             canHandleUpload: true,
+            parseCookies: true,
           });
 
           const res = new BunResponse(req);

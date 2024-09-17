@@ -9,11 +9,7 @@ import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import { DiskStorage, MemoryStorage } from "./storage";
 import type { BunRequest } from "../BunRequest";
-import type {
-  MultiPartExpandedFileRecord,
-  MultiPartFileRecord,
-  MultiPartOptions,
-} from "../types/general";
+import type { MultiPartFileRecord, MultiPartOptions } from "../types/general";
 
 export interface StorageFile {
   size: number;
@@ -52,10 +48,6 @@ export type RawMultipartFile = FileInfo & {
 
 export interface Storage<T extends StorageFile = StorageFile, K = any> {
   handleFile: (file: MultiPartFileRecord, req: BunRequest) => Promise<T>;
-  handleExpandedFiles: (
-    record: MultiPartExpandedFileRecord,
-    req: BunRequest,
-  ) => Promise<StorageExpandedFile<T>>;
   removeFile: (file: T | unknown, force?: boolean) => Promise<void> | void;
   options?: K;
 }

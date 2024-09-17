@@ -40,17 +40,15 @@ export function AnyFilesInterceptor(
       const ctx = context.switchToHttp();
       const req = getMultipartRequest(ctx);
 
-      const { body, files, expandedFiles, remove } =
-        await handleMultipartAnyFiles(req, this.options);
+      const { body, files, removeAll } = await handleMultipartAnyFiles(
+        req,
+        this.options,
+      );
 
       req.body = body;
-      if (options?.inflate && expandedFiles) {
-        req.setStorageFiles(expandedFiles);
-      } else if (files) {
-        req.setStorageFiles(files);
-      }
+      req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(remove));
+      return next.handle().pipe(tap(removeAll));
     }
   }
 
@@ -80,17 +78,16 @@ export function FileFieldsInterceptor(
       const ctx = context.switchToHttp();
       const req = getMultipartRequest(ctx);
 
-      const { body, files, expandedFiles, remove } =
-        await handleMultipartFileFields(req, this.fieldsMap, this.options);
+      const { body, files, removeAll } = await handleMultipartFileFields(
+        req,
+        this.fieldsMap,
+        this.options,
+      );
 
       req.body = body;
-      if (options?.inflate && expandedFiles) {
-        req.setStorageFiles(expandedFiles);
-      } else if (files) {
-        req.setStorageFiles(files);
-      }
+      req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(remove));
+      return next.handle().pipe(tap(removeAll));
     }
   }
 
@@ -117,17 +114,16 @@ export function FileInterceptor(
       const ctx = context.switchToHttp();
       const req = getMultipartRequest(ctx);
 
-      const { file, expandedFile, body, remove } =
-        await handleMultipartSingleFile(req, fieldname, this.options);
+      const { file, body, removeAll } = await handleMultipartSingleFile(
+        req,
+        fieldname,
+        this.options,
+      );
 
       req.body = body;
-      if (options?.inflate && expandedFile) {
-        req.setStorageFiles(expandedFile);
-      } else if (!options?.inflate && file) {
-        req.setStorageFiles([file]);
-      }
+      file && req.setStorageFiles([file]);
 
-      return next.handle().pipe(tap(remove));
+      return next.handle().pipe(tap(removeAll));
     }
   }
 
@@ -155,22 +151,17 @@ export function FilesInterceptor(
       const ctx = context.switchToHttp();
       const req = getMultipartRequest(ctx);
 
-      const { body, files, expandedFiles, remove } =
-        await handleMultipartMultipleFiles(
-          req,
-          fieldname,
-          maxCount,
-          this.options,
-        );
+      const { body, files, removeAll } = await handleMultipartMultipleFiles(
+        req,
+        fieldname,
+        maxCount,
+        this.options,
+      );
 
       req.body = body;
-      if (options?.inflate && expandedFiles) {
-        req.setStorageFiles(expandedFiles);
-      } else if (!options?.inflate && files) {
-        req.setStorageFiles(files);
-      }
+      req.setStorageFiles(files);
 
-      return next.handle().pipe(tap(remove));
+      return next.handle().pipe(tap(removeAll));
     }
   }
 
@@ -196,18 +187,11 @@ export function NoFilesInterceptor(
       const ctx = context.switchToHttp();
       const req = getMultipartRequest(ctx);
 
-      const { body, files, expandedFiles, remove } = await handleNoFiles(
-        req,
-        this.options,
-      );
-      req.body = body;
-      if (options?.inflate && expandedFiles) {
-        req.setStorageFiles(expandedFiles);
-      } else if (!options?.inflate && files) {
-        req.setStorageFiles(files);
-      }
+      const { body, removeAll } = await handleNoFiles(req, this.options);
 
-      return next.handle().pipe(tap(remove));
+      req.body = body;
+
+      return next.handle().pipe(tap(removeAll));
     }
   }
 

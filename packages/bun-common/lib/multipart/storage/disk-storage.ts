@@ -4,21 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { Readable } from "node:stream";
-import { BadRequestException } from "@nestjs/common";
-import { isArray, isObject, isString, keys, values } from "lodash-es";
+import { isObject, isString, values } from "lodash-es";
 import { getUniqueFilename, pathExists } from "../../utils/general";
 import { pump } from "../stream";
-import type {
-  DiskStorageFile,
-  RawMultipartFile,
-  Storage,
-  StorageExpandedFile,
-} from "..";
+import type { DiskStorageFile, RawMultipartFile, Storage } from "..";
 import type { BunRequest } from "../../BunRequest";
-import type {
-  MultiPartExpandedFileRecord,
-  MultiPartFileRecord,
-} from "../../types/general";
+import type { MultiPartFileRecord } from "../../types/general";
 
 type DiskStorageOptionHandler =
   | ((file: RawMultipartFile, req: BunRequest) => Promise<string> | string)
@@ -122,45 +113,5 @@ export class DiskStorage
     obj?: DiskStorageOptionHandler,
   ): Promise<string> {
     return excecuteStorageHandler(file, req, obj) ?? tmpdir();
-  }
-
-  private async handleExpandedFileValues(
-    record: MultiPartExpandedFileRecord["values"],
-    req: BunRequest,
-  ) {
-    const expandedFiles: StorageExpandedFile<DiskStorageFile> = {};
-    await Promise.all(
-      keys(record).map(async (fieldname) => {
-        const value = record[fieldname];
-
-        if (isArray(value)) {
-          expandedFiles[fieldname] = await Promise.all(
-            value.map(async (file: MultiPartFileRecord) =>
-              this.handleFile(file, req),
-            ),
-          );
-        } else if (isObject(value)) {
-          expandedFiles[fieldname] = await this.handleExpandedFileValues(
-            value as unknown as MultiPartExpandedFileRecord["values"],
-            req,
-          );
-        }
-      }),
-    );
-
-    return expandedFiles;
-  }
-
-  public async handleExpandedFiles(
-    file: MultiPartExpandedFileRecord,
-    req: BunRequest,
-  ) {
-    if (file.type !== "expanded-file") {
-      throw new BadRequestException(
-        "Only expanded files record can be handled by this method",
-      );
-    }
-
-    return await this.handleExpandedFileValues(file.values, req);
   }
 }

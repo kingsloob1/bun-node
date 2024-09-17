@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import * as process from "node:process";
 import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
@@ -40,12 +39,10 @@ import type { SocketAddress } from "bun";
 import type { IncomingMessage } from "node:http";
 import { streamToBuffer } from "./utils/general";
 import type { BunResponse } from "./BunResponse";
-import type { StorageExpandedFile, StorageFile } from "./multipart";
+import type { StorageFile } from "./multipart";
 import type {
   BunRequestInterface,
   BunServer,
-  MultiPartExpandedFileRecord,
-  MultiPartFieldRecord,
   MultiPartFileRecord,
   MultiPartOptions,
   NestExpressBodyParserOptions,
@@ -86,10 +83,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
   private _isFormParsed = false;
   private _buffer: Buffer | undefined = undefined;
-  private _storageFiles:
-    | StorageFile[]
-    | Record<string, StorageFile[]>
-    | StorageExpandedFile<StorageFile> = [];
+  private _storageFiles: StorageFile[] | Record<string, StorageFile[]> = [];
 
   public subdomains: string[] = [];
 
@@ -209,20 +203,18 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     }
 
     if (isObject(this._storageFiles)) {
-      return first(values(this._storageFiles)) as
-        | StorageFile
-        | StorageExpandedFile<StorageFile>;
+      const val = first(values(this._storageFiles));
+      if (isArray(val)) {
+        return first(val);
+      }
+
+      return val;
     }
 
     return undefined;
   }
 
-  set storageFiles(
-    files:
-      | StorageFile[]
-      | StorageExpandedFile<StorageFile>
-      | Record<string, StorageFile[]>,
-  ) {
+  set storageFiles(files: StorageFile[] | Record<string, StorageFile[]>) {
     this.setStorageFiles(files);
   }
 
@@ -234,12 +226,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return this.storageFile;
   }
 
-  setStorageFiles(
-    files:
-      | StorageFile[]
-      | Record<string, StorageFile[]>
-      | StorageExpandedFile<StorageFile>,
-  ) {
+  setStorageFiles(files: StorageFile[] | Record<string, StorageFile[]>) {
     if (
       (isArray(files) && files.every((file) => isObject(file))) ||
       isObject(files)
@@ -271,26 +258,22 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return this._isFormParsed;
   }
 
-  public async getMultiParts(
-    options: MultiPartOptions,
-  ): Promise<
-    (MultiPartFileRecord | MultiPartFieldRecord | MultiPartExpandedFileRecord)[]
-  > {
-    if (this._isFormParsed) {
-      return [];
-    }
-
-    if (!this.buffer) {
-      return [];
+  public async getMultiParts(options: MultiPartOptions): Promise<{
+    files: Map<MultiPartFileRecord, Set<string>>;
+    fields: Record<string, unknown>;
+  }> {
+    if (this._isFormParsed || !this.buffer) {
+      return {
+        files: new Map(),
+        fields: {},
+      };
     }
 
     const buffer = await this.buffer;
     return new Promise((resolve, reject) => {
-      let parts: (
-        | MultiPartFileRecord
-        | MultiPartFieldRecord
-        | MultiPartExpandedFileRecord
-      )[] = [];
+      const files = new Map<MultiPartFileRecord, Set<string>>();
+      const fieldNameAndValue = new Map<string, Set<string>>();
+
       let { inflate, fileInflator, fieldInflator } = options;
       const busBoyOpts = omit(options, [
         "inflate",
@@ -307,7 +290,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         replacement: unknown,
         valueToReplace: unknown,
       ) => {
-        values(obj).forEach((value, key) => {
+        each(obj, (value, key) => {
           if (value === valueToReplace) {
             obj[key] = replacement;
           } else if (isObject(value)) {
@@ -316,8 +299,6 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
               replacement,
               valueToReplace,
             );
-          } else if (isString(value) && value === "x") {
-            obj[key] = replacement;
           }
         });
       };
@@ -340,7 +321,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
             if (isObject(parsedObj)) {
               recursivelyReplacePlaceholder(parsedObj, file, "x");
-              return { [fieldname]: parsedObj };
+              return parsedObj;
             }
 
             return { [fieldname]: file };
@@ -356,14 +337,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             try {
               let parsedData: Record<string, unknown> | undefined;
 
-              try {
-                const parsedJSONstring = value.replace(/\\\\"/g, `"`);
-                const parsedValue = JSON.parse(parsedJSONstring);
-                parsedData = { [fieldname]: parsedValue };
-              } catch {
-                //
-              }
-
+              // Attempt to inflat using qs.parse
               if (!isObject(parsedData)) {
                 parsedData = qs.parse(`${fieldname}=${value}`, {
                   depth: 100,
@@ -372,6 +346,28 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
                   allowEmptyArrays: true,
                   arrayLimit: 999999999,
                   allowSparse: true,
+                });
+              }
+
+              // Attempt to inflat using JSON.parse
+              if (!isObject(parsedData)) {
+                try {
+                  const parsedJSONstring = value.replace(/\\\\"/g, `"`);
+                  const parsedJSONValue = JSON.parse(parsedJSONstring);
+                  parsedData = { [fieldname]: parsedJSONValue };
+                } catch {
+                  //
+                }
+              } else {
+                each(parsedData, (value, key) => {
+                  try {
+                    if (!!parsedData && isString(value)) {
+                      value = value.replace(/\\\\"/g, `"`);
+                      parsedData[key] = JSON.parse(value as string);
+                    }
+                  } catch {
+                    //
+                  }
                 });
               }
 
@@ -412,77 +408,51 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             //
           }
 
-          let pushFile = false;
+          const fileData: MultiPartFileRecord = {
+            ...info,
+            validatedMimeType: mimeTypeResp,
+            fieldname: name,
+            originalFilename: info.filename,
+            file: fileBuffer,
+            type: "file",
+          };
 
+          let pushFile = false;
           if (inflate && fileInflator) {
             try {
               const parsedData = await fileInflator(name, fileBuffer, info);
-              const fileData: MultiPartFileRecord = {
-                ...info,
-                validatedMimeType: mimeTypeResp,
-                fieldname: name,
-                originalFilename: info.filename,
-                file: fileBuffer,
-                type: "file",
+              const pathListInFileMap =
+                files.get(fileData) || new Set<string>();
+
+              const processNestedValuePath = (
+                obj: unknown,
+                paths: string[],
+              ) => {
+                try {
+                  if ((obj as unknown as Buffer) === fileBuffer) {
+                    const pathStr = paths.reduce(
+                      (prev, val) => `${prev}[${val}]`,
+                      ``,
+                    );
+
+                    if (!pathListInFileMap.has(pathStr)) {
+                      pathListInFileMap.add(pathStr);
+                    }
+                  } else {
+                    keys(obj).forEach((key) => {
+                      processNestedValuePath(get(obj, key) as unknown, [
+                        ...paths,
+                        String(key),
+                      ]);
+                    });
+                  }
+                } catch {
+                  //
+                }
               };
 
-              // Replace file buffer with file formatted data
-              recursivelyReplacePlaceholder(parsedData, fileData, fileBuffer);
-              const expandedFileIndex = parts.findIndex(
-                (part) => part.type === "expanded-file",
-              );
-
-              const expandedFileMap = (
-                expandedFileIndex > -1
-                  ? parts[expandedFileIndex]
-                  : {
-                      type: "expanded-file",
-                      values: {},
-                    }
-              ) as MultiPartExpandedFileRecord;
-
-              keys(parsedData).forEach((key) => {
-                if (!parsedData) {
-                  return;
-                }
-
-                let parsedDataValue:
-                  | unknown[]
-                  | unknown
-                  | Record<string, unknown>
-                  | string
-                  | null
-                  | undefined = parsedData[key];
-
-                const expandedFileData = expandedFileMap.values[key];
-                if (expandedFileData) {
-                  if (isArray(expandedFileData) && isArray(parsedDataValue)) {
-                    parsedDataValue = [
-                      ...(expandedFileData as unknown[]),
-                      ...parsedDataValue,
-                    ];
-                  } else if (
-                    isObject(expandedFileData) &&
-                    isObject(parsedDataValue)
-                  ) {
-                    parsedDataValue = merge(
-                      {},
-                      expandedFileData as unknown as Record<string, unknown>,
-                      parsedDataValue,
-                    );
-                  }
-                }
-
-                expandedFileMap.values[key] = parsedDataValue as
-                  | MultiPartExpandedFileRecord
-                  | MultiPartFileRecord[];
-              });
-
-              if (expandedFileIndex > -1) {
-                parts[expandedFileIndex] = expandedFileMap;
-              } else {
-                parts.push(expandedFileMap);
-              }
+              processNestedValuePath(parsedData, []);
+              files.set(fileData, pathListInFileMap);
             } catch {
               pushFile = true;
             }
@@ -491,94 +461,25 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
           }
 
           if (pushFile) {
-            parts.push({
-              ...info,
-              validatedMimeType: mimeTypeResp,
-              fieldname: name,
-              originalFilename: info.filename,
-              file: fileBuffer,
-              type: "file",
-            });
+            const pathListInFileMap = files.get(fileData) || new Set<string>();
+
+            if (!pathListInFileMap.has(fileData.fieldname)) {
+              pathListInFileMap.add(fileData.fieldname);
+            }
+
+            files.set(fileData, pathListInFileMap);
           }
 
           filesState[filesStateIndex] = true;
         });
 
-        bb.on("field", async (name, val, info) => {
-          const fieldStateIndex = fieldState.length;
-          fieldState[fieldStateIndex] = false;
-
-          let pushField = false;
-          if (inflate && fieldInflator) {
-            try {
-              const parsedData = await fieldInflator(name, val, info);
-              if (isObject(parsedData)) {
-                keys(parsedData).forEach((key) => {
-                  if (!parsedData) {
-                    return;
-                  }
-
-                  let parsedDataValue:
-                    | unknown[]
-                    | unknown
-                    | Record<string, unknown>
-                    | string
-                    | null
-                    | undefined = parsedData[key];
-                  const partsIndex = parts.findIndex(
-                    (part) => part.type === "field" && part.fieldname === key,
-                  );
-                  if (partsIndex > -1) {
-                    const partData = parts[partsIndex] as MultiPartFieldRecord;
-                    const value = partData.value;
-
-                    if (isArray(value) && isArray(parsedDataValue)) {
-                      parsedDataValue = [
-                        ...(value as unknown[]),
-                        ...parsedDataValue,
-                      ];
-                    } else if (isObject(value) && isObject(parsedDataValue)) {
-                      parsedDataValue = merge(
-                        {},
-                        value as Record<string, unknown>,
-                        parsedDataValue,
-                      );
-                    }
-                  }
-
-                  const data: MultiPartFieldRecord = {
-                    ...info,
-                    fieldname: key,
-                    value: parsedDataValue,
-                    type: "field" as const,
-                  };
-
-                  if (partsIndex > -1) {
-                    parts[partsIndex] = data;
-                  } else {
-                    parts.push(data);
-                  }
-                });
-              } else {
-                pushField = true;
-              }
-            } catch {
-              pushField = true;
-            }
-          } else {
-            pushField = true;
+        bb.on("field", async (name, val) => {
+          const valueList = fieldNameAndValue.get(name) || new Set<string>();
+          if (!valueList.has(val)) {
+            valueList.add(val);
           }
 
-          if (pushField) {
-            parts.push({
-              ...info,
-              fieldname: name,
-              value: val,
-              type: "field",
-            });
-          }
-
-          fieldState[fieldStateIndex] = true;
+          fieldNameAndValue.set(name, valueList);
         });
 
         bb.on("close", async () => {
@@ -609,16 +510,107 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
           filesState = [];
           fieldState = [];
-          resolve(parts);
+
+          // Remove file uploads without any pointers;
+          for (const key of files.keys()) {
+            const listOfPaths = files.get(key);
+            if (!(listOfPaths && listOfPaths.size > 0)) {
+              files.delete(key);
+            }
+          }
+
+          let fields: Record<string, unknown> = {};
+          await Promise.all(
+            Array.from(fieldNameAndValue.keys()).map(async (fieldName) => {
+              const values = fieldNameAndValue.get(fieldName);
+
+              if (values?.size) {
+                switch (true) {
+                  // When the key was repeated in form data
+                  case values.size > 1: {
+                    await Promise.all(
+                      Array.from(values.values()).map(async (value, index) => {
+                        let parsedData!: Record<string, unknown>;
+
+                        if (inflate && fieldInflator) {
+                          const name = `${fieldName}[${index}]`;
+                          parsedData = await fieldInflator(
+                            name,
+                            value,
+                            undefined,
+                          );
+                        } else {
+                          const valueArr: string[] = [];
+                          valueArr[index] = value;
+                          parsedData = {
+                            [fieldName]: valueArr,
+                          };
+                        }
+
+                        keys(parsedData).forEach((key) => {
+                          const value = get(parsedData, key);
+                          fields = merge(fields, {
+                            [key]: value,
+                          });
+                        });
+                      }),
+                    );
+                    break;
+                  }
+
+                  // When the key wasnt repeated in form data
+                  case values.size === 1: {
+                    const value = Array.from(values.values())[0];
+                    let parsedData!: Record<string, unknown>;
+
+                    if (inflate && fieldInflator) {
+                      parsedData = await fieldInflator(
+                        fieldName,
+                        value,
+                        undefined,
+                      );
+                    } else {
+                      parsedData = {
+                        [fieldName]: value,
+                      };
+                    }
+
+                    keys(parsedData).forEach((key) => {
+                      const value = get(parsedData, key);
+                      fields = merge(fields, {
+                        [key]: value,
+                      });
+                    });
+                    break;
+                  }
+
+                  default: {
+                    //
+                  }
+                }
+              }
+            }),
+          );
+
+          const returnObj = {
+            files,
+            fields,
+          };
+
+          resolve(returnObj);
+          this._isFormParsed = true;
         });
 
         bb.on("error", (error) => {
-          parts = [];
+          files.clear();
+          fieldNameAndValue.clear();
           reject(error);
         });
         Readable.from(buffer).pipe(bb);
       } catch (err) {
-        parts = [];
+        files.clear();
+        fieldNameAndValue.clear();
+
         reject(err);
       }
     });
@@ -641,15 +633,11 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         this.setHeader("Content-Type", "application/x-www-form-urlencoded");
         return true;
       }
-    } catch (err) {
-      if (process.env.NODE_ENV !== "production") {
-        console.log("URL_FORM_PARSER_ERROR", err);
-      }
-
-      throw new Error("URL_FORM_PARSER_ERROR");
+    } catch {
+      //
     }
 
-    throw new Error("Oops.. Form is not url encoded");
+    return false;
   }
 
   private async handleJsoonBodyParsing(data: string) {
@@ -658,13 +646,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       this._contentType = "json";
       this.setHeader("Content-Type", "application/json");
       return true;
-    } catch (err) {
-      if (process.env.NODE_ENV !== "production") {
-        console.log("JSON_BODY_PARSER_ERROR", err);
-      }
-
-      throw new Error("JSON_BODY_PARSER_ERROR");
+    } catch {
+      // return false;
     }
+    return false;
   }
 
   public parseCookies(opts?: {
@@ -759,35 +744,44 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     const contentTypeHeader = this.getHeader("Content-Type");
 
     if (!contentTypeHeader) {
-      try {
-        await this.handleJsoonBodyParsing(bufferText);
-      } catch {
-        try {
-          await this.handleUrlFormEncodingParsing(bufferText);
-        } catch {
-          this._body = buffer;
-          this._buffer = buffer;
-          this._contentType = "buffer";
-          this.setHeader("Content-Type", "application/octet-stream");
-        }
+      let hasParsedData = false;
+
+      // Try JSON parse
+      if (!hasParsedData) {
+        hasParsedData = await this.handleJsoonBodyParsing(bufferText);
+      }
+
+      // Try url-encoded form data parse
+      if (!hasParsedData) {
+        hasParsedData = await this.handleUrlFormEncodingParsing(bufferText);
+      }
+
+      // Leave it as buffer
+      if (!hasParsedData) {
+        this._body = buffer;
+        this._buffer = buffer;
+        this._contentType = "buffer";
+        this.setHeader("Content-Type", "application/octet-stream");
       }
     } else {
       switch (true) {
+        case contentTypeHeader?.includes("text/plain"): {
+          this._body = bufferText;
+          break;
+        }
+
+        case contentTypeHeader?.includes("application/octet-stream"): {
+          this._body = this.buffer;
+          break;
+        }
+
         case contentTypeHeader?.includes("application/json"): {
-          try {
-            await this.handleJsoonBodyParsing(bufferText);
-          } catch {
-            //
-          }
+          await this.handleJsoonBodyParsing(bufferText);
           break;
         }
 
         case contentTypeHeader?.includes("application/x-www-form-urlencoded"): {
-          try {
-            await this.handleUrlFormEncodingParsing(bufferText);
-          } catch {
-            //
-          }
+          await this.handleUrlFormEncodingParsing(bufferText);
           break;
         }
 

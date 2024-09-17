@@ -84,11 +84,10 @@ export interface BunRequestInterface {
     | Record<string, StorageFile[]>
     | StorageExpandedFile<StorageFile>;
   storageFile: UploadFilterFile | StorageExpandedFile<StorageFile> | undefined;
-  getMultiParts: (
-    options: BusboyConfig,
-  ) => Promise<
-    (MultiPartFileRecord | MultiPartFieldRecord | MultiPartExpandedFileRecord)[]
-  >;
+  getMultiParts: (options: BusboyConfig) => Promise<{
+    files: Map<MultiPartFileRecord, Set<string>>;
+    fields: Record<string, unknown>;
+  }>;
 }
 
 export type BunServeOptions = Omit<Serve, "fetch" | "websocket">;
@@ -225,13 +224,6 @@ export type MultiPartFileRecord = FileInfo & {
   file: Buffer;
   type: "file";
 };
-
-export interface MultiPartExpandedFileRecord {
-  type: "expanded-file";
-  values: {
-    [Key: string]: MultiPartFileRecord[] | MultiPartExpandedFileRecord;
-  };
-}
 
 export type MultiPartFieldRecord = FieldInfo & {
   type: "field";
