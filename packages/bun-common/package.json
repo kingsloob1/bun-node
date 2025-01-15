@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-common",
   "type": "module",
-  "version": "0.0.18-alpha.0",
+  "version": "0.0.19-alpha.0",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -30,7 +30,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@kingsleyweb/bun-nest": "^0.0.18-alpha.0",
+    "@kingsleyweb/bun-nest": "^0.0.19-alpha.0",
     "@routejs/router": "^3.0.3",
     "@tinyhttp/etag": "^2.1.2",
     "accepts": "^1.3.8",
