@@ -1,3 +1,9 @@
+/* eslint-disable ts/no-unsafe-function-type */
+import type {
+  VersioningOptions,
+  VersionValue,
+} from "@nestjs/common/interfaces";
+import type { CorsOptions } from "@nestjs/common/interfaces/external/cors-options.interface";
 import { type AddressInfo, isIPv4, isIPv6 } from "node:net";
 import process from "node:process";
 import { isPromise } from "node:util/types";
@@ -7,6 +13,7 @@ import {
   BunRouter,
   type BunServeOptions,
   type BunServer,
+  type matchedRoute,
   type NestExpressBodyParserOptions,
   type NestExpressBodyParserType,
   type NextFunction,
@@ -14,7 +21,6 @@ import {
   type RouterHandler,
   type RouterMiddlewareHandler,
   type ServeStaticOptions,
-  type matchedRoute,
 } from "@kingsleyweb/bun-common";
 import {
   BadGatewayException,
@@ -27,13 +33,8 @@ import {
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
-import type {
-  VersionValue,
-  VersioningOptions,
-} from "@nestjs/common/interfaces";
-import type { CorsOptions } from "@nestjs/common/interfaces/external/cors-options.interface";
 import { AbstractHttpAdapter } from "@nestjs/core";
-import { type Server, peek } from "bun";
+import { peek, type Server } from "bun";
 import cors, { type CorsOptions as BunCorsOptions } from "cors";
 import getPort from "get-port";
 import {
@@ -709,7 +710,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         await this._serverInstance.stop(false);
       }
     } catch (err) {
-      //
+      console.error(
+        "An error occurred while closing bun http adapter ====> ",
+        err,
+      );
     }
 
     this._serverInstance = undefined;

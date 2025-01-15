@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "bun";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { BunRequest, BunResponse } from "../lib";
 
 let server!: Server;

@@ -1,7 +1,7 @@
+import antfu from "@antfu/eslint-config";
 import eslintConfigPrettier from "eslint-config-prettier";
 import prettierPlugin from "eslint-plugin-prettier";
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended";
-import antfu from "@antfu/eslint-config";
 
 export default antfu({
   lessOpinionated: true,
@@ -34,7 +34,6 @@ export default antfu({
       "ts/explicit-function-return-type": "off",
       "ts/explicit-module-boundary-types": "off",
       "ts/no-explicit-any": "off",
-      "ts/ban-types": "off",
     },
   })
   .append({

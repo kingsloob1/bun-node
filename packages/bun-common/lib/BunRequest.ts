@@ -1,8 +1,19 @@
+import type { SocketAddress } from "bun";
+import type { IncomingMessage } from "node:http";
+import type { BunResponse } from "./BunResponse";
+import type { StorageFile } from "./multipart";
+import type {
+  BunRequestInterface,
+  BunServer,
+  MultiPartFileRecord,
+  MultiPartOptions,
+  NestExpressBodyParserOptions,
+} from "./types/general";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
-import * as cookie from "cookie";
+import { type CookieParseOptions, parse as parseCookie } from "cookie";
 import { JSONCookies, signedCookies } from "cookie-parser";
 import EventEmitter from "eventemitter3";
 import { fileTypeFromBuffer, type FileTypeResult } from "file-type";
@@ -35,18 +46,7 @@ import {
 import qs from "qs";
 import rangeParser from "range-parser";
 import typeIs from "type-is";
-import type { SocketAddress } from "bun";
-import type { IncomingMessage } from "node:http";
 import { streamToBuffer } from "./utils/general";
-import type { BunResponse } from "./BunResponse";
-import type { StorageFile } from "./multipart";
-import type {
-  BunRequestInterface,
-  BunServer,
-  MultiPartFileRecord,
-  MultiPartOptions,
-  NestExpressBodyParserOptions,
-} from "./types/general";
 
 export class BunRequest extends EventEmitter implements BunRequestInterface {
   private headerNamesWithMultiple: string[] = [
@@ -93,7 +93,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     private options: {
       canHandleUpload: boolean;
       parseCookies?: boolean;
-      cookieParseOptions?: cookie.CookieParseOptions;
+      cookieParseOptions?: CookieParseOptions;
     } = {
       canHandleUpload: true,
       parseCookies: true,
@@ -398,7 +398,9 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
           let mimeTypeResp: FileTypeResult | undefined;
 
           try {
-            mimeTypeResp = await fileTypeFromBuffer(fileBuffer);
+            mimeTypeResp = await fileTypeFromBuffer(
+              fileBuffer as unknown as ArrayBuffer,
+            );
           } catch (e) {
             if (Bun.env.NODE_ENV === "development") {
               console.log("Error here is =====> ", e);
@@ -691,7 +693,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             ? [this.secret]
             : [];
 
-    const cookies = cookie.parse(cookieStr, this.options.cookieParseOptions);
+    const cookies = parseCookie(cookieStr, this.options.cookieParseOptions);
     let signedCookiesObj: BunRequest["signedCookies"] = {};
 
     if (secrets.length) {
@@ -726,7 +728,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   ): Promise<Buffer | undefined> {
     if (this.request.bodyUsed || !this.options.canHandleUpload) {
       if (returnBuffer && this._buffer) {
-        return Buffer.from(this._buffer);
+        return Buffer.from(this._buffer as unknown as ArrayBuffer);
       }
 
       return;

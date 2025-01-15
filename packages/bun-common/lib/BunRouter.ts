@@ -1,3 +1,8 @@
+import type { BunRequest } from "@kingsleyweb/bun-common/lib/BunRequest";
+import type { BunResponse } from "@kingsleyweb/bun-common/lib/BunResponse";
+import type { WebSocketHandler } from "bun";
+import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
+import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
 import path from "node:path";
 import process from "node:process";
 import { type matchedRoute, type Route, Router } from "@routejs/router";
@@ -15,11 +20,6 @@ import {
   omit,
   orderBy,
 } from "lodash-es";
-import type { BunRequest } from "@kingsleyweb/bun-common/lib/BunRequest";
-import type { BunResponse } from "@kingsleyweb/bun-common/lib/BunResponse";
-import type { WebSocketHandler } from "bun";
-import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
-import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
 
 export class BunRouter extends Router {
   private _bunWebSocket?: BunWebSocket;

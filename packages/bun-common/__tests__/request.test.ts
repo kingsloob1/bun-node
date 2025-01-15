@@ -1,13 +1,13 @@
+import type { Server } from "bun";
+import type { RouterMiddlewareHandler } from "../lib";
 import { Buffer } from "node:buffer";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { get } from "lodash-es";
 import urlJoin from "url-join";
-import type { Server } from "bun";
 import { BunHttpAdapter } from "../../bun-nest/lib/BunHttpAdapter";
 import { BunRequest } from "../lib";
 import { transformUploadOptions } from "../lib/multipart";
 import { handleMultipartAnyFiles } from "../lib/multipart/handlers";
-import type { RouterMiddlewareHandler } from "../lib";
 
 let httpAdapter!: BunHttpAdapter;
 beforeAll(async () => {
@@ -117,7 +117,7 @@ describe("Test Bun Request", () => {
         expect(response.status).toBe(200);
         const bodyBuffer = Buffer.from(await response.arrayBuffer());
         expect(bodyBuffer).toBeInstanceOf(Buffer);
-        expect(Buffer.compare(bodyBuffer, rawData)).toBe(0);
+        expect(bodyBuffer.compare(rawData as unknown as Uint8Array)).toBe(0);
       } finally {
         await httpAdapter.close();
       }

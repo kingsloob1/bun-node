@@ -1,3 +1,4 @@
+import type { BunRequest } from "../BunRequest";
 import { BadRequestException } from "@nestjs/common";
 import { each, isArray, keys, merge, unset } from "lodash-es";
 import {
@@ -10,7 +11,6 @@ import {
   type UploadField,
   type UploadFieldMapEntry,
 } from ".";
-import type { BunRequest } from "../BunRequest";
 
 export const handleMultipartAnyFiles = async (
   req: BunRequest,

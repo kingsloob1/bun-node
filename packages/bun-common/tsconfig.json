@@ -19,6 +19,7 @@
       "config/*": ["./src/config/*"],
       "utils/*": ["./src/utils/*"]
     },
+    "typeRoots": ["./node_modules/@types", "./node_modules/bun-types"],
     "allowImportingTsExtensions": true,
     "allowJs": true,
 

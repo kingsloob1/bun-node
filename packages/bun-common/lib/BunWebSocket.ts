@@ -1,7 +1,7 @@
+import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import { EventEmitter } from "node:stream";
 import isNumeric from "fast-isnumeric";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
-import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import {
   BunRequest,
   BunResponse,

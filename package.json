@@ -6,11 +6,11 @@
     "packages/bun-nest"
   ],
   "devDependencies": {
-    "@nx/eslint": "19.6.5",
-    "lerna": "^8.1.8",
-    "nx": "19.6.5"
+    "@nx/eslint": "20.3.1",
+    "lerna": "^8.1.9",
+    "nx": "20.3.1"
   },
-  "packageManager": "yarn@1.22.19+sha1.4ba7fc5c6e704fce2066ecbfb0b0d8976fe62447",
+  "packageManager": "yarn@1.22.22",
   "engines": {
     "bun": ">=1.1.8"
   },

@@ -1,7 +1,7 @@
-import { BadRequestException } from "@nestjs/common";
-import { isBuffer, isObject, values } from "lodash-es";
 import type { MemoryStorageFile, Storage } from "..";
 import type { MultiPartFileRecord } from "../../types/general";
+import { BadRequestException } from "@nestjs/common";
+import { isBuffer, isObject, values } from "lodash-es";
 
 export class MemoryStorage implements Storage<MemoryStorageFile> {
   public async handleFile(file: MultiPartFileRecord) {

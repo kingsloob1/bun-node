@@ -1,13 +1,13 @@
-import { Buffer } from "node:buffer";
 import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
 import type { Server, ServerWebSocket } from "bun";
-import { isArray, isUndefined } from "lodash-es";
+import type { BunHttpAdapter } from "./BunHttpAdapter";
+import { Buffer } from "node:buffer";
 import {
   BunWebSocket,
-  type BunWebSocketOptions,
   type BunWebsocketHandlerFor,
+  type BunWebSocketOptions,
 } from "@kingsleyweb/bun-common";
-import type { BunHttpAdapter } from "./BunHttpAdapter";
+import { isArray, isUndefined } from "lodash-es";
 
 export interface WebSocketClientData {
   path: string;
@@ -180,7 +180,7 @@ export class BunWebSocketAdapter
 
       try {
         const parsedData = JSON.parse(
-          Buffer.from(data).toString("utf-8"),
+          (Buffer.isBuffer(data) ? data : Buffer.from(data)).toString("utf-8"),
         ) as MessageFormat;
         const type = parsedData.type;
         let handled = true;
@@ -238,7 +238,10 @@ export class BunWebSocketAdapter
           return;
         }
       } catch (e) {
-        //
+        console.error(
+          "An error occurred in bun-nest websocket message adapter ====> ",
+          e,
+        );
       }
 
       const handlersForEvent = handlers.filter(

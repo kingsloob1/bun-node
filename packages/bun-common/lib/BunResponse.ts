@@ -1,9 +1,16 @@
+import type { BunFile } from "bun";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { DeepWritable } from "ts-essentials";
+import type { BunRequest } from "./BunRequest";
 import { Buffer } from "node:buffer";
 import { join as joinPath } from "node:path";
 import process from "node:process";
 import { isReadable, type Readable } from "node:stream";
 import { eTag } from "@tinyhttp/etag";
-import * as cookie from "cookie";
+import {
+  type CookieSerializeOptions,
+  serialize as serializeCookie,
+} from "cookie";
 import * as cookieSignature from "cookie-signature";
 import { format as formatDate, isValid as isDateValid } from "date-fns";
 import encodeurl from "encodeurl";
@@ -27,11 +34,7 @@ import {
 } from "lodash-es";
 import pollUntil from "until-promise";
 import vary from "vary";
-import type { BunFile } from "bun";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import type { DeepWritable } from "ts-essentials";
 import { getMimeFromStr } from "./utils/general";
-import type { BunRequest } from "./BunRequest";
 // import { formatInTimeZone } from 'date-fns-tz';
 import type {
   NextFunction,
@@ -40,7 +43,7 @@ import type {
 } from "./types/general";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
-type CookieParams = Parameters<(typeof cookie)["serialize"]>;
+type CookieSerializeParams = Parameters<typeof serializeCookie>;
 
 export class BunResponse {
   private _upgradeToWsData: unknown | undefined = undefined;
@@ -207,7 +210,7 @@ export class BunResponse {
 
         try {
           const typeResp = await fileTypeFromBuffer(
-            Buffer.from(bodyToBeSent, "utf-8"),
+            Buffer.from(bodyToBeSent, "utf-8") as unknown as ArrayBuffer,
           );
 
           if (typeResp?.mime) {
@@ -742,9 +745,9 @@ export class BunResponse {
   }
 
   public cookie(
-    name: CookieParams[0],
-    value: CookieParams[1],
-    opts?: cookie.CookieSerializeOptions & {
+    name: CookieSerializeParams[0],
+    value: CookieSerializeParams[1],
+    opts?: CookieSerializeOptions & {
       signed?: boolean;
       secret?: string;
       maxAge?: null | number | string; // Convenient option for setting the expiry time relative to the current time in milliseconds.
@@ -785,7 +788,7 @@ export class BunResponse {
       options.path = "/";
     }
 
-    this.append("Set-Cookie", cookie.serialize(name, String(val), opts));
+    this.append("Set-Cookie", serializeCookie(name, String(val), opts));
 
     return this;
   }
