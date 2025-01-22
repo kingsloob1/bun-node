@@ -46,6 +46,12 @@ abstract class AdjustedAbstractHttpAdapter extends AbstractHttpAdapter<
 > {
   declare public instance: BunRouter;
   declare public httpServer: BunServer;
+
+  abstract override applyVersionFilter(
+    handler: Function,
+    version: VersionValue,
+    versioningOptions: VersioningOptions,
+  ): VersionedRoute;
 }
 
 export class BunNestHttpAdapter

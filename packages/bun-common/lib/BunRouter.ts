@@ -61,7 +61,7 @@ export const RouteClass = RouteModule.default;
 export class BunRouter extends Router {
   public _logger!: Logger;
   private _bunWebSocket?: BunWebSocket;
-  private _globalMiddlewares: Route[] = [];
+  private _globalMiddlewares: Map<string, Route> = new Map();
   private _hasSetGlobalMiddlewares = false;
   private routeCacheRouteMiddlewares = new Map<
     string,
@@ -390,28 +390,58 @@ export class BunRouter extends Router {
     return requestPath;
   }
 
-  protected getCacheKey(options: RouteMatchMethodOptionType) {
+  getCacheKey(options: RouteMatchMethodOptionType) {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
     return `host:${options.requestHost || "none"}:path:${requestPath}:method:${options.requestMethod}`;
   }
 
-  protected getGlobalMiddlewares() {
+  clearRouteCache() {
+    this._globalMiddlewares.clear();
+    this._hasSetGlobalMiddlewares = false;
+    this.routeCacheGlobalMiddlewares.clear();
+    this.routeCacheRouteHandlers.clear();
+
+    return this;
+  }
+
+  getGlobalMiddlewares() {
     // Build global middlewares
     if (!this._hasSetGlobalMiddlewares) {
-      const handlers = this.routes().filter(
-        (route) =>
+      this.routes().forEach((route, index) => {
+        const isGlobalMiddleware =
           (isUndefined(route.method) || isNull(route.method)) &&
-          (isUndefined(route.path) || isNull(route.path)),
-      );
+          (isUndefined(route.path) || isNull(route.path));
 
-      this._globalMiddlewares = handlers;
+        if (isGlobalMiddleware) {
+          const routeIndex = String(index);
+          this._globalMiddlewares.set(routeIndex, route);
+        }
+      });
       this._hasSetGlobalMiddlewares = true;
     }
 
-    return this._globalMiddlewares;
+    return Array.from(this._globalMiddlewares.keys())
+      .map((routeIndex) => {
+        const route = this._globalMiddlewares.get(routeIndex);
+
+        if (route) {
+          const callbacks = route.callbacks as RouterHandler[];
+
+          if (callbacks.length) {
+            return {
+              routeIndex,
+              route,
+              callbacks,
+            };
+          }
+        }
+
+        return undefined;
+      })
+      .filter((routeResp) => !!routeResp);
   }
 
-  protected getMatchedGlobalMiddlewares(
+  getMatchedGlobalMiddlewares(
     options: RouteMatchMethodOptionType,
   ): CachedRouteMatch[] {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
@@ -422,31 +452,21 @@ export class BunRouter extends Router {
       this.routeCacheGlobalMiddlewares.get(cacheKey);
 
     if (!(matchedGlobalMiddlewares && isArray(matchedGlobalMiddlewares))) {
-      const matchedGlobalMiddlewareIndexes = globalMiddlewares.map(
-        (route, index) => {
-          const match = route.match({
-            host: options.requestHost,
-            method: options.requestMethod,
-            path: requestPath,
-          }) as matchedRoute;
-
-          if (isObject(match)) {
-            return index;
-          }
-
-          return undefined;
-        },
-      );
-
       matchedGlobalMiddlewares = [];
-      (
-        matchedGlobalMiddlewareIndexes.filter((index) =>
-          isNumeric(index),
-        ) as number[]
-      ).forEach((globalMiddlewareIndex) => {
-        const callbacks =
-          globalMiddlewares[globalMiddlewareIndex]?.callbacks || [];
+      globalMiddlewares.forEach((routeResp) => {
+        const match = routeResp.route.match({
+          host: options.requestHost,
+          method: options.requestMethod,
+          path: requestPath,
+        }) as matchedRoute;
 
+        const isAMatch = isObject(match);
+
+        if (!isAMatch) {
+          return;
+        }
+
+        const callbacks = routeResp.callbacks || [];
         const callbackIndexes: string[] = callbacks.reduce(
           (list, _, callbackIndex) => {
             const indexStr = String(callbackIndex);
@@ -460,18 +480,12 @@ export class BunRouter extends Router {
         );
 
         matchedGlobalMiddlewares?.push({
-          routeIndex: String(globalMiddlewareIndex),
+          routeIndex: routeResp.routeIndex,
           callbackIndexes,
         });
       });
 
-      this.routeCacheGlobalMiddlewares.set(
-        cacheKey,
-        matchedGlobalMiddlewares as {
-          routeIndex: string;
-          callbackIndexes: string[];
-        }[],
-      );
+      this.routeCacheGlobalMiddlewares.set(cacheKey, matchedGlobalMiddlewares);
     }
 
     const routes = this.routes();
@@ -496,7 +510,7 @@ export class BunRouter extends Router {
       .filter((route) => !!route);
   }
 
-  protected getMatchedRouteMiddlewares(
+  getMatchedRouteMiddlewares(
     options: RouteMatchMethodOptionType,
   ): CachedRouteMatch[] {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
@@ -563,7 +577,7 @@ export class BunRouter extends Router {
       .filter((route) => !!route);
   }
 
-  protected getMatchedRouteHandlers(
+  getMatchedRouteHandlers(
     options: RouteMatchMethodOptionType,
   ): CachedRouteMatch[] {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
@@ -711,11 +725,7 @@ export class BunRouter extends Router {
     };
   }
 
-  // use(...callbacks: any): this;
-  // group(path: string, callback: any): this;
-  // domain(host: string, callback: any): this;
   // setName(name: string): this;
-  // routes(): Route[];
   // override route(name: string, params?: object): string | null;
 
   override async handle(options: {
