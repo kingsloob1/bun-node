@@ -177,25 +177,26 @@ export interface SendFileOptions {
   headers?: Record<string, unknown>;
 }
 
-export type NextFunction = (type?: string | Error | undefined) => unknown;
-export type RouterMiddlewareHandler = (
+export type NextFunction<R = unknown> = (
+  type?: string | Error | undefined,
+) => R | Promise<R>;
+
+export type RouterMiddlewareHandler<R = unknown> = (
   req: BunRequest,
   res: BunResponse,
   next: NextFunction,
-) => unknown;
+) => R | Promise<R>;
 
-export type RouterErrorMiddlewareHandler = (
+export type RouterErrorMiddlewareHandler<R = unknown> = (
   error: unknown,
   req: BunRequest,
   res: BunResponse,
   next: NextFunction,
-) => unknown;
+) => R | Promise<R>;
 
-export type RouterHandler =
-  | RouterMiddlewareHandler
-  | RouterErrorMiddlewareHandler;
+export type RouterHandler<R = unknown> = RouterMiddlewareHandler<R>;
 
-export interface NestExpressBodyParserOptions {
+export interface BodyParserOptions {
   /** When set to true, then deflated (compressed) bodies will be inflated; when false, deflated bodies are rejected. Defaults to true. */
   inflate?: boolean | undefined;
 
@@ -215,7 +216,7 @@ export interface NestExpressBodyParserOptions {
   [key: string]: unknown;
 }
 
-export type NestExpressBodyParserType = "json" | "urlencoded" | "text" | "raw";
+export type BodyParserType = "json" | "urlencoded" | "text" | "raw";
 
 export type MultiPartFileRecord = FileInfo & {
   fieldname: string;
@@ -240,3 +241,15 @@ export type MultiPartFieldRecord = FieldInfo & {
 export type RequestStorageFiles = BunRequest["storageFiles"];
 export type RequestStorageFile = BunRequest["storageFile"];
 export { type matchedRoute } from "@routejs/router";
+
+export interface Logger {
+  log: (...optionalParams: unknown[]) => void;
+  error: (...optionalParams: unknown[]) => void;
+  warn: (...optionalParams: unknown[]) => void;
+}
+
+export type Constructor<T = object> = T extends new (
+  ...args: infer A
+) => infer R
+  ? new (...args: A) => R
+  : new (...args: any[]) => any;

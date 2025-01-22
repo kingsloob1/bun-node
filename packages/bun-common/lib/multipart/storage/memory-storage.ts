@@ -1,14 +1,11 @@
 import type { MemoryStorageFile, Storage } from "..";
 import type { MultiPartFileRecord } from "../../types/general";
-import { BadRequestException } from "@nestjs/common";
 import { isBuffer, isObject, values } from "lodash-es";
 
 export class MemoryStorage implements Storage<MemoryStorageFile> {
   public async handleFile(file: MultiPartFileRecord) {
     if (file.type !== "file") {
-      throw new BadRequestException(
-        "Only file record can be handled by this method",
-      );
+      throw new Error("Only file record can be handled by this method");
     }
 
     const buffer = file.file;

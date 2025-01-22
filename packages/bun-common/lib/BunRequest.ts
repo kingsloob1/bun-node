@@ -3,11 +3,11 @@ import type { IncomingMessage } from "node:http";
 import type { BunResponse } from "./BunResponse";
 import type { StorageFile } from "./multipart";
 import type {
+  BodyParserOptions,
   BunRequestInterface,
   BunServer,
   MultiPartFileRecord,
   MultiPartOptions,
-  NestExpressBodyParserOptions,
 } from "./types/general";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
@@ -75,7 +75,6 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   public params: Record<string, string> = {};
   public query: Record<string, unknown> = {};
   public _route: BunRequestInterface["route"] | undefined = undefined;
-  private readonly socketAddress: SocketAddress | null = null;
   private readonly parsedDomainResult: ParseResult;
   private _files: Record<string, File> = {};
   private _contentType: "json" | "text" | "buffer" | "form" | undefined =
@@ -113,7 +112,6 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     this.headersObj = request.headers as Headers;
     this.parsedUrl = new URL(request.url);
     this.headers = this.getHeaders();
-    this.socketAddress = this.server.requestIP(this.request);
     this.url = this.request.url;
     this.parsedDomainResult = parseDomain(this.parsedUrl.hostname, {
       validation: Validation.Lax,
@@ -131,6 +129,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         secret: this.secret,
       });
     }
+  }
+
+  get socketAddress(): SocketAddress | null {
+    return this.server?.requestIP(this.request) || null;
   }
 
   get route() {
@@ -720,11 +722,11 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   public async handleBodyParsing(returnBuffer: false): Promise<undefined>;
   public async handleBodyParsing(
     returnBuffer: true,
-    options?: NestExpressBodyParserOptions,
+    options?: BodyParserOptions,
   ): Promise<Buffer>;
   public async handleBodyParsing(
     returnBuffer = false,
-    // options?: NestExpressBodyParserOptions,
+    // options?: BodyParserOptions,
   ): Promise<Buffer | undefined> {
     if (this.request.bodyUsed || !this.options.canHandleUpload) {
       if (returnBuffer && this._buffer) {

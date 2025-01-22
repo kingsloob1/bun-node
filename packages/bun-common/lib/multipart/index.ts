@@ -1,13 +1,8 @@
-import type { HttpArgumentsHost } from "@nestjs/common/interfaces";
 import type { BusboyConfig, FileInfo } from "busboy";
 import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { BunRequest } from "../BunRequest";
 import type { MultiPartFileRecord, MultiPartOptions } from "../types/general";
-import {
-  BadRequestException,
-  InternalServerErrorException,
-} from "@nestjs/common";
 import { isString, omit } from "lodash-es";
 import { DiskStorage, MemoryStorage } from "./storage";
 
@@ -32,7 +27,7 @@ export interface MemoryStorageFile extends StorageFile {
   buffer: Buffer;
 }
 
-export interface CustomtorageFile extends StorageFile {
+export interface CustomStorageFile extends StorageFile {
   type: "custom";
   file: Buffer;
 }
@@ -100,9 +95,7 @@ export const transformUploadOptions = (opts?: UploadOptions) => {
     storage = new MemoryStorage();
   } else if (opts.storageType === "custom") {
     if (!opts.storage) {
-      throw new InternalServerErrorException(
-        "Ooops.. Custom file handler requires a storage handler",
-      );
+      throw new Error("Ooops.. Custom file handler requires a storage handler");
     }
 
     storage = opts.storage;
@@ -130,8 +123,8 @@ export const filterUpload = async (
   try {
     const filterResp = await uploadOptions.filter(req, file);
 
-    if (typeof filterResp === "string") {
-      throw new BadRequestException(filterResp);
+    if (isString(filterResp)) {
+      throw new Error(filterResp);
     }
 
     return !!filterResp;
@@ -144,19 +137,6 @@ export const filterUpload = async (
 export type BunMultipartRequest = InstanceType<typeof BunRequest> & {
   storageFile?: StorageFile;
   storageFiles?: StorageFile[] | Record<string, StorageFile[]>;
-};
-
-export const getMultipartRequest = (ctx: HttpArgumentsHost) => {
-  const req = ctx.getRequest<BunMultipartRequest>();
-
-  const contentType = req.headersObj.get("content-type");
-  if (
-    !(isString(contentType) && contentType.includes("multipart/form-data;"))
-  ) {
-    throw new BadRequestException("Not a multipart request");
-  }
-
-  return req;
 };
 
 export const removeStorageFiles = async (

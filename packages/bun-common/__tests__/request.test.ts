@@ -1,35 +1,29 @@
 import type { Server } from "bun";
-import type { RouterMiddlewareHandler } from "../lib";
 import { Buffer } from "node:buffer";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { get } from "lodash-es";
 import urlJoin from "url-join";
-import { BunHttpAdapter } from "../../bun-nest/lib/BunHttpAdapter";
-import { BunRequest } from "../lib";
-import { transformUploadOptions } from "../lib/multipart";
-import { handleMultipartAnyFiles } from "../lib/multipart/handlers";
+import { handleMultipartAnyFiles, transformUploadOptions } from "../lib";
+import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRequest } from "../lib/BunRequest";
 
 let httpAdapter!: BunHttpAdapter;
 beforeAll(async () => {
   httpAdapter = new BunHttpAdapter(30000);
   httpAdapter.registerParserMiddleware(undefined, true); // Register body parsing middleware
-
-  const handler: RouterMiddlewareHandler = async (req, res) => {
+  httpAdapter.post("/test", async (req, res) => {
     return res.json(req.body as Record<string, unknown>);
-  };
+  });
 
-  httpAdapter.instance.post("/test", handler);
   await httpAdapter.listen(10000);
 });
 
-afterAll(() => {
-  httpAdapter.close();
-});
-
-const buildUrl = (path: string, adapter: BunHttpAdapter = httpAdapter) => {
+export const buildUrl = (
+  path: string,
+  adapter: BunHttpAdapter = httpAdapter,
+) => {
   const host = adapter.listeningHost;
   const port = adapter.listeningPort || 80;
-
   return urlJoin(`http://${host}:${port}`, path);
 };
 
@@ -38,7 +32,7 @@ describe("Test Bun Request", () => {
     expect(
       new BunRequest(
         new Request("https://google.com"),
-        httpAdapter.getBunServer() as Server,
+        httpAdapter.server as Server,
       ),
     ).toBeInstanceOf(BunRequest);
   });
@@ -96,11 +90,9 @@ describe("Test Bun Request", () => {
       const httpAdapter = new BunHttpAdapter(30000);
       httpAdapter.registerParserMiddleware(undefined, true); // Register body parsing middleware
 
-      const handler: RouterMiddlewareHandler = async (req, res) => {
+      httpAdapter.instance.post("/test", async (req, res) => {
         return res.send(req.body?.toString());
-      };
-
-      httpAdapter.instance.post("/test", handler);
+      });
       await httpAdapter.listen(10000);
 
       const url = buildUrl("/test", httpAdapter);
@@ -129,35 +121,30 @@ describe("Test Bun Request", () => {
       httpAdapter.registerParserMiddleware(undefined, true); // Register body parsing middleware
 
       // Add middleware to handle file upload based on options
-      const globalParseMultipartFormDataHandler: RouterMiddlewareHandler =
-        async (req, res, next) => {
-          try {
-            const { files, body } = await handleMultipartAnyFiles(
-              req,
-              transformUploadOptions({
-                storageType: "memory",
-              }),
-            );
+      httpAdapter.use(async (req, res, next) => {
+        try {
+          const { files, body } = await handleMultipartAnyFiles(
+            req,
+            transformUploadOptions({
+              storageType: "memory",
+            }),
+          );
 
-            req.setStorageFiles(files);
-            req.body = body;
-            next();
-          } catch (e) {
-            console.log("Error in parsing files =====> ", e);
-            throw e;
-          }
-        };
+          req.setStorageFiles(files);
+          req.body = body;
+          next();
+        } catch (e) {
+          console.log("Error in parsing files =====> ", e);
+          throw e;
+        }
+      });
 
-      httpAdapter.use(globalParseMultipartFormDataHandler);
-
-      const handler: RouterMiddlewareHandler = async (req, res) => {
+      httpAdapter.instance.post("/test", async (req, res) => {
         return res.json({
           files: req.files,
           body: req.body,
         });
-      };
-
-      httpAdapter.instance.post("/test", handler);
+      });
       const url = buildUrl("/test", httpAdapter);
 
       const blob1 = new Blob(["hello1"]);

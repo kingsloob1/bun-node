@@ -1,5 +1,6 @@
+import type { HttpArgumentsHost } from "@nestjs/common/interfaces";
 import {
-  getMultipartRequest,
+  type BunMultipartRequest,
   type TransFormedUploadOptions,
   transformUploadOptions,
   type UploadField,
@@ -15,13 +16,28 @@ import {
   uploadFieldsToMap,
 } from "@kingsleyweb/bun-common/lib/multipart/handlers";
 import {
+  BadRequestException,
   type CallHandler,
   type ExecutionContext,
   mixin,
   type NestInterceptor,
   type Type,
 } from "@nestjs/common";
+import { isString } from "lodash-es";
 import { type Observable, tap } from "rxjs";
+
+export const getMultipartRequest = (ctx: HttpArgumentsHost) => {
+  const req = ctx.getRequest<BunMultipartRequest>();
+
+  const contentType = req.headersObj.get("content-type");
+  if (
+    !(isString(contentType) && contentType.includes("multipart/form-data;"))
+  ) {
+    throw new BadRequestException("Not a multipart request");
+  }
+
+  return req;
+};
 
 export function AnyFilesInterceptor(
   options?: UploadOptions,

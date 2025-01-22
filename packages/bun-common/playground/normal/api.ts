@@ -1,6 +1,6 @@
+import type { matchedRoute, RouterMiddlewareHandler } from "../../lib";
 import { get, isObject, set } from "lodash-es";
 import { BunRequest, BunResponse, BunRouter } from "../../lib";
-import type { matchedRoute, RouterMiddlewareHandler } from "../../lib";
 
 const port = 3000;
 const hostname = "127.0.0.1";

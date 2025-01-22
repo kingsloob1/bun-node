@@ -1,15 +1,14 @@
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
+import type {
+  BunRouter,
+  BunServeOptions,
+  matchedRoute,
+  NextFunction,
+} from "./index";
 import { EventEmitter } from "node:stream";
 import isNumeric from "fast-isnumeric";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
-import {
-  BunRequest,
-  BunResponse,
-  BunRouter,
-  type BunServeOptions,
-  type matchedRoute,
-  type NextFunction,
-} from "./index";
+import { BunRequest, BunResponse } from "./index";
 
 export interface WebSocketClientData<CustomData = unknown> {
   path: string;
@@ -108,8 +107,10 @@ export class BunWebSocket extends EventEmitter {
         await this.processRegisteredRouteHandlerFor("drain", ws);
       },
     } as WebSocketHandler<WebSocketClientData>;
-    this._routerInstance = options.router || new BunRouter();
-    this._routerInstance.setBunWebSocket(this);
+
+    if (options.router) {
+      this.router = options.router;
+    }
 
     if (options.newInstance) {
       if (!(options?.listen.port && isNumeric(options.listen.port))) {
@@ -259,6 +260,11 @@ export class BunWebSocket extends EventEmitter {
 
   public get router() {
     return this._routerInstance;
+  }
+
+  set router(router: BunRouter) {
+    this._routerInstance = router;
+    this._routerInstance.setBunWebSocket(this);
   }
 
   private async processRegisteredRouteHandlerFor(

@@ -1,15 +1,17 @@
-import type { BunRequest } from "@kingsleyweb/bun-common/lib/BunRequest";
-import type { BunResponse } from "@kingsleyweb/bun-common/lib/BunResponse";
 import type { WebSocketHandler } from "bun";
+import type { BunRequest } from "./BunRequest";
+import type { BunResponse } from "./BunResponse";
 import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
-import type { NextFunction, RouterMiddlewareHandler } from "./types/general";
-import path from "node:path";
+import type { Logger, NextFunction, RouterHandler } from "./types/general";
+import path, { join } from "node:path";
 import process from "node:process";
 import { type matchedRoute, type Route, Router } from "@routejs/router";
 import isNumeric from "fast-isnumeric";
 import {
   get,
   isArray,
+  isBoolean,
+  isError,
   isFunction,
   isNull,
   isObject,
@@ -17,11 +19,47 @@ import {
   isUndefined,
   keys,
   lastIndexOf,
-  omit,
   orderBy,
+  pick,
 } from "lodash-es";
 
+export interface RouteMatchMethodOptionType {
+  requestHost: string;
+  requestMethod: string;
+  requestUrl: string;
+}
+
+export interface CachedRouteMatch {
+  route: Route;
+  callbacks: RouterHandler[];
+}
+
+export interface RouteConstructorOption {
+  path?: string | null;
+  callbacks: RouterHandler[];
+  name?: string | null;
+  group?: string | null;
+  host?: string | null;
+  method?: string | string[] | null;
+  caseSensitive?: boolean | null;
+}
+
+export const routeModulePath = path.join(
+  path.dirname(Bun.resolveSync("@routejs/router", process.cwd())),
+  "./src/route.mjs",
+);
+
+// eslint-disable-next-line ts/no-require-imports
+const RouteModule = require(routeModulePath) as {
+  default: {
+    new (options: RouteConstructorOption): Route;
+  };
+};
+
+export const RouteClass = RouteModule.default;
+
 export class BunRouter extends Router {
+  public _logger!: Logger;
   private _bunWebSocket?: BunWebSocket;
   private _globalMiddlewares: Route[] = [];
   private _hasSetGlobalMiddlewares = false;
@@ -44,11 +82,36 @@ export class BunRouter extends Router {
   private routeCacheRouteHandlers = new Map<string, string[]>();
 
   constructor(
-    private localOptions?: ConstructorParameters<typeof Router>[0] & {
-      bunWebsocket: BunWebSocket;
+    private localOptions?: {
+      bunWebsocket?: BunWebSocket;
+      caseSensitive?: boolean;
+      host?: string;
+      debug?: boolean;
+      logger?: Logger;
     },
   ) {
-    super(omit(localOptions, ["bunWebsocket"]));
+    super(pick(localOptions, ["caseSensitive", "host"]));
+  }
+
+  get logger() {
+    if (this._logger) {
+      return this._logger;
+    }
+
+    if (this.localOptions?.logger) {
+      return this.localOptions.logger;
+    }
+
+    return this.logger;
+  }
+
+  set logger(logger: Logger) {
+    this._logger = logger;
+  }
+
+  setLogger(logger: Logger) {
+    this.logger = logger;
+    return this;
   }
 
   setBunWebSocket(bunWebSocket: BunWebSocket) {
@@ -59,10 +122,7 @@ export class BunRouter extends Router {
     return this._bunWebSocket || this.localOptions?.bunWebsocket;
   }
 
-  setRoute(
-    option: Required<Pick<Route, "path" | "callbacks">> &
-      Partial<Pick<Route, "group" | "host" | "method" | "name">>,
-  ) {
+  setRoute(option: RouteConstructorOption) {
     const routes = this.routes();
     if (option.name) {
       if (routes.find((route) => route.name === option.name)) {
@@ -70,22 +130,61 @@ export class BunRouter extends Router {
       }
     }
 
-    const routeModulePath = path.join(
-      path.dirname(Bun.resolveSync("@routejs/router", process.cwd())),
-      "./src/route.mjs",
-    );
-    // eslint-disable-next-line ts/no-require-imports
-    const routeModule = require(routeModulePath);
+    const route = new RouteClass(option) as Route;
+    this.routes().push(route);
+    return this;
+  }
 
-    if (!isFunction(routeModule.default)) {
-      throw new Error(
-        `Route module cannot be imported... API must have changed. Please create an issue on github`,
-      );
+  private getFormattedSetRouteOption(
+    option: Pick<RouteConstructorOption, "host" | "method" | "group"> & {
+      callbacks: RouterHandler[] | Router;
+    },
+    route: Route,
+  ) {
+    return {
+      host: option?.host || route.host,
+      method: option?.method || route.method,
+      path: option?.group
+        ? route.path
+          ? join(option.group, route.path)
+          : null
+        : route.path,
+      callbacks: route.callbacks,
+      group: option.group ? join(option.group, route.group ?? "") : route.group,
+      name: route.name,
+    };
+  }
+
+  private mergeRoute(option: {
+    callbacks: RouterHandler[] | Router;
+    group?: string | null;
+    host?: string | null;
+    method?: string | string[] | null;
+  }) {
+    if (option.callbacks instanceof Router) {
+      option.callbacks.routes().forEach((route) => {
+        const opts = this.getFormattedSetRouteOption(option, route);
+        this.setRoute(opts);
+      });
+    } else if (Array.isArray(option.callbacks)) {
+      for (const route of option.callbacks) {
+        if (route instanceof RouteClass) {
+          const opts = this.getFormattedSetRouteOption(option, route);
+          this.setRoute(opts);
+        } else if (Array.isArray(route) || route instanceof Router) {
+          this.mergeRoute({
+            ...option,
+            callbacks: route,
+          });
+        } else {
+          this.setRoute(option as RouteConstructorOption);
+          break;
+        }
+      }
+    } else {
+      this.setRoute(option as RouteConstructorOption);
     }
 
-    // eslint-disable-next-line new-cap
-    const route = new routeModule.default(option);
-    this.use(route);
     return this;
   }
 
@@ -105,37 +204,229 @@ export class BunRouter extends Router {
     return this;
   }
 
-  override async handle(
-    options: Parameters<Router["handle"]>[0],
-  ): Promise<matchedRoute | true | undefined> {
-    const { requestHost, requestMethod, requestUrl, request, response } =
-      options;
+  override checkout(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "CHECKOUT", callbacks });
+  }
 
-    const routes = this.routes();
+  override copy(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "COPY", callbacks });
+  }
+
+  override delete(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "DELETE", callbacks });
+  }
+
+  override get(path: string, ...callbacks: RouterHandler[]): this {
+    return this.setRoute({ path, method: "GET", callbacks });
+  }
+
+  override head(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "HEAD", callbacks });
+  }
+
+  override lock(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "LOCK", callbacks });
+  }
+
+  override merge(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "MERGE", callbacks });
+  }
+
+  override mkactivity(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "MKACTIVITY", callbacks });
+  }
+
+  override mkcol(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "MKCOL", callbacks });
+  }
+
+  override move(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "MOVE", callbacks });
+  }
+
+  override notify(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "NOTIFY", callbacks });
+  }
+
+  override options(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "OPTIONS", callbacks });
+  }
+
+  override patch(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "PATCH", callbacks });
+  }
+
+  override post(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "POST", callbacks });
+  }
+
+  override propfind(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "PROPFIND", callbacks });
+  }
+
+  override purge(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "PURGE", callbacks });
+  }
+
+  override put(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "PUT", callbacks });
+  }
+
+  override report(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "REPORT", callbacks });
+  }
+
+  override search(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "SEARCH", callbacks });
+  }
+
+  override subscribe(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "SUBSCRIBE", callbacks });
+  }
+
+  override trace(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "TRACE", callbacks });
+  }
+
+  override unlock(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "UNLOCK", callbacks });
+  }
+
+  override unsubscribe(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "UNSUBSCRIBE", callbacks });
+  }
+
+  override view(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, method: "VIEW", callbacks });
+  }
+
+  override any(
+    methods: string | string[],
+    path: string,
+    ...callbacks: RouterHandler[]
+  ) {
+    return this.setRoute({ method: methods, path, callbacks });
+  }
+
+  override all(path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ path, callbacks });
+  }
+
+  override add(method: string, path: string, ...callbacks: RouterHandler[]) {
+    return this.setRoute({ method: method.toUpperCase(), path, callbacks });
+  }
+
+  // Adjust use to behave like express use
+  override use(...path: RouterHandler[]): this;
+  override use(path: string, ...handlers: RouterHandler[]): this;
+  override use(
+    path: string | RouterHandler,
+    ...handlers: RouterHandler[]
+  ): this {
+    const pathStr = isString(path) ? path : "";
+    const callbacks = !isString(path) ? [path, ...handlers] : handlers;
+
+    if (pathStr) {
+      this.all(pathStr, ...callbacks);
+    } else {
+      this.setRoute({
+        callbacks,
+      });
+    }
+
+    return this;
+  }
+
+  override group(path: string, callback: RouterHandler[] | Router): this;
+  override group(path: string, callback: (router: Router) => unknown): this;
+  override group(
+    path: string,
+    callback: RouterHandler[] | Router | ((router: Router) => unknown),
+  ) {
+    if (!isString(path)) {
+      throw new TypeError("group path accepts only string as an argument");
+    }
+
+    if (typeof callback === "function") {
+      const router = new Router();
+      callback(router);
+      return this.mergeRoute({ group: path, callbacks: router });
+    } else {
+      return this.mergeRoute({ group: path, callbacks: callback });
+    }
+  }
+
+  override domain(host: string, callback: RouterHandler[] | Router): this;
+  override domain(host: string, callback: (router: Router) => unknown): this;
+  override domain(
+    host: string,
+    callback: RouterHandler[] | Router | ((router: Router) => unknown),
+  ) {
+    if (!isString(host)) {
+      throw new TypeError("domain host accepts only string as an argument");
+    }
+
+    if (typeof callback === "function") {
+      const router = new Router();
+      callback(router);
+      return this.mergeRoute({ host, callbacks: router });
+    } else {
+      return this.mergeRoute({ host, callbacks: callback });
+    }
+  }
+
+  getRouteByName(name: string): Route | undefined {
+    return name
+      ? this.routes().find((route) => route?.name === name)
+      : undefined;
+  }
+
+  protected getRequestPathFromRequestURL(requestUrl: string) {
     let requestPath = requestUrl;
     if (requestUrl.includes("?")) {
       requestPath = requestUrl.slice(0, requestUrl.indexOf("?"));
     }
 
+    return requestPath;
+  }
+
+  protected getCacheKey(options: RouteMatchMethodOptionType) {
+    const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+    return `host:${options.requestHost || "none"}:path:${requestPath}:method:${options.requestMethod}`;
+  }
+
+  protected getGlobalMiddlewares() {
     // Build global middlewares
     if (!this._hasSetGlobalMiddlewares) {
-      const handlers = routes.filter(
-        (route) => isUndefined(route.method) && isUndefined(route.path),
+      const handlers = this.routes().filter(
+        (route) =>
+          (isUndefined(route.method) || isNull(route.method)) &&
+          (isUndefined(route.path) || isNull(route.path)),
       );
 
       this._globalMiddlewares = handlers;
       this._hasSetGlobalMiddlewares = true;
     }
 
-    const cacheKey = `host:${options.requestHost || "none"}:path:${options.requestUrl}:method:${options.requestMethod}`;
+    return this._globalMiddlewares;
+  }
+
+  protected getMatchedGlobalMiddlewares(
+    options: RouteMatchMethodOptionType,
+  ): CachedRouteMatch[] {
+    const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+    const cacheKey = this.getCacheKey(options);
+    const globalMiddlewares = this.getGlobalMiddlewares();
+
     let matchedGlobalMiddlewares =
       this.routeCacheGlobalMiddlewares.get(cacheKey);
-    if (!isArray(matchedGlobalMiddlewares)) {
-      const matchedGlobalMiddlewareIndexes = this._globalMiddlewares.map(
+
+    if (!(matchedGlobalMiddlewares && isArray(matchedGlobalMiddlewares))) {
+      const matchedGlobalMiddlewareIndexes = globalMiddlewares.map(
         (route, index) => {
           const match = route.match({
-            host: requestHost,
-            method: requestMethod,
+            host: options.requestHost,
+            method: options.requestMethod,
             path: requestPath,
           }) as matchedRoute;
 
@@ -154,7 +445,7 @@ export class BunRouter extends Router {
         ) as number[]
       ).forEach((globalMiddlewareIndex) => {
         const callbacks =
-          this._globalMiddlewares[globalMiddlewareIndex]?.callbacks || [];
+          globalMiddlewares[globalMiddlewareIndex]?.callbacks || [];
 
         const callbackIndexes: string[] = callbacks.reduce(
           (list, _, callbackIndex) => {
@@ -183,14 +474,46 @@ export class BunRouter extends Router {
       );
     }
 
+    const routes = this.routes();
+    return matchedGlobalMiddlewares
+      .map((record) => {
+        const route = get(routes, record.routeIndex) as Route | undefined;
+        if (route) {
+          const callbacks = route.callbacks.filter((_, index) =>
+            record.callbackIndexes.includes(String(index)),
+          ) as RouterHandler[];
+
+          if (callbacks.length) {
+            return {
+              route,
+              callbacks,
+            };
+          }
+        }
+
+        return undefined;
+      })
+      .filter((route) => !!route);
+  }
+
+  protected getMatchedRouteMiddlewares(
+    options: RouteMatchMethodOptionType,
+  ): CachedRouteMatch[] {
+    const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+    const cacheKey = this.getCacheKey(options);
+    const routes = this.routes();
+
     let matchedRouteMiddlewares = this.routeCacheRouteMiddlewares.get(cacheKey);
-    if (!isArray(matchedRouteMiddlewares)) {
+    if (!(matchedRouteMiddlewares && isArray(matchedRouteMiddlewares))) {
       matchedRouteMiddlewares = [];
       routes.forEach((route, routeIndex) => {
-        if (isString(route.path) && isUndefined(route.method)) {
+        if (
+          isString(route.path) &&
+          (isUndefined(route.method) || isNull(route.path))
+        ) {
           const match = route.match({
-            host: requestHost,
-            method: requestMethod,
+            host: options.requestHost,
+            method: options.requestMethod,
             path: requestPath,
           }) as matchedRoute;
 
@@ -219,8 +542,36 @@ export class BunRouter extends Router {
       );
     }
 
+    return matchedRouteMiddlewares
+      .map((record) => {
+        const route = get(routes, record.routeIndex) as Route | undefined;
+        if (route) {
+          const callbacks = route.callbacks.filter((_, index) =>
+            record.callbackIndexes.includes(String(index)),
+          ) as RouterHandler[];
+
+          if (callbacks.length) {
+            return {
+              route,
+              callbacks,
+            };
+          }
+        }
+
+        return undefined;
+      })
+      .filter((route) => !!route);
+  }
+
+  protected getMatchedRouteHandlers(
+    options: RouteMatchMethodOptionType,
+  ): CachedRouteMatch[] {
+    const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+    const cacheKey = this.getCacheKey(options);
+    const routes = this.routes();
+
     let matchedRouteHandlers = this.routeCacheRouteHandlers.get(cacheKey);
-    if (!isArray(matchedRouteHandlers)) {
+    if (!(matchedRouteHandlers && isArray(matchedRouteHandlers))) {
       matchedRouteHandlers = [];
 
       let matchedRoutes: {
@@ -228,11 +579,12 @@ export class BunRouter extends Router {
         route: Route;
         routeIndex: number;
       }[] = [];
+
       routes.forEach((route, routeIndex) => {
         if (isString(route.path) && isString(route.method)) {
           const match = route.match({
-            host: requestHost,
-            method: requestMethod,
+            host: options.requestHost,
+            method: options.requestMethod,
             path: requestPath,
           }) as matchedRoute;
 
@@ -330,7 +682,62 @@ export class BunRouter extends Router {
       );
     }
 
-    // Process matched gloval middlewares, route middlewares and then route handlers
+    return matchedRouteHandlers
+      .map((routeIndex) => {
+        const route = get(routes, routeIndex) as Route | undefined;
+        if (route) {
+          const callbacks = route.callbacks as RouterHandler[];
+
+          if (callbacks.length) {
+            return {
+              route,
+              callbacks,
+            };
+          }
+        }
+
+        return undefined;
+      })
+      .filter((route) => !!route);
+  }
+
+  getMatchedRoutes(options: RouteMatchMethodOptionType) {
+    return {
+      middlewares: {
+        global: this.getMatchedGlobalMiddlewares(options),
+        route: this.getMatchedRouteMiddlewares(options),
+      },
+      handlers: this.getMatchedRouteHandlers(options),
+    };
+  }
+
+  // use(...callbacks: any): this;
+  // group(path: string, callback: any): this;
+  // domain(host: string, callback: any): this;
+  // setName(name: string): this;
+  // routes(): Route[];
+  // override route(name: string, params?: object): string | null;
+
+  override async handle(options: {
+    requestHost: string;
+    requestMethod: string;
+    requestUrl: string;
+    request: BunRequest;
+    response: BunResponse;
+  }): Promise<matchedRoute | true | undefined> {
+    const { response, request } = options;
+    const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
+
+    // Get matched middlewares and route handlers
+    const {
+      handlers: matchedRouteHandlers,
+      middlewares: {
+        global: matchedGlobalMiddlewares,
+        route: matchedRouteMiddlewares,
+      },
+    } = this.getMatchedRoutes(options);
+
+    // Process matched global middlewares, route middlewares and then route handlers
     {
       let errorThrown: Error | unknown | undefined;
       let continueProcessingRouteHandlers = true;
@@ -338,29 +745,46 @@ export class BunRouter extends Router {
       let route: Route | undefined;
       let matchedRoute: matchedRoute | undefined;
 
-      const nextFnGenerator = (
-        ...args: Parameters<ConstructorParameters<typeof Promise>[0]>
+      const skipMiddleWareArr = ["next", "route", "router", "skip"];
+
+      const nextFnGenerator = <T, E>(
+        successHandler: (
+          param: "next" | "route" | "router" | "skip" | true | false | Error,
+        ) => Promise<T> | T,
+        failureHandler: (err: unknown) => Promise<E> | E,
       ) => {
-        const [resolve, reject] = args;
         const obj = {
-          handler(err: unknown) {
+          handler(
+            param: "next" | "route" | "router" | "skip" | true | false | Error,
+          ) {
             obj.callsCount += 1;
-            if (!(isUndefined(err) || isNull(err))) {
-              if (err === "next") {
-                continueProcessingMiddlewares = true;
-              } else {
-                if (err === "skip") {
-                  continueProcessingMiddlewares = false;
+
+            switch (true) {
+              case isString(param) && skipMiddleWareArr.includes(param):
+              case isBoolean(param): {
+                successHandler(continueProcessingMiddlewares);
+                return;
+              }
+
+              case !param: {
+                successHandler("next");
+                return;
+              }
+
+              // At this point it is an error
+              default: {
+                if (isError(param)) {
+                  errorThrown = param as Error;
                 } else {
-                  continueProcessingRouteHandlers = false;
+                  const err = new Error(String(param));
                   errorThrown = err;
-                  reject(err);
-                  return;
                 }
+
+                continueProcessingRouteHandlers = false;
+                continueProcessingMiddlewares = false;
+                failureHandler(errorThrown);
               }
             }
-
-            resolve(continueProcessingMiddlewares);
           },
           callsCount: 0,
           get hasBeenCalled() {
@@ -376,215 +800,275 @@ export class BunRouter extends Router {
       };
 
       // No matched route handler.. Maybe a middleware can be the handler so process middlewares
-      if (!matchedRouteHandlers.length) {
+      if (!(matchedRouteHandlers && matchedRouteHandlers.length)) {
         // Process Middlewares
+
         // Process Global Middlewares
-        globalMiddlewareIterator: for await (const obj of matchedGlobalMiddlewares) {
-          if (!continueProcessingMiddlewares) {
-            break;
-          }
-
-          const route = get(this._globalMiddlewares, obj.routeIndex) as
-            | Route
-            | undefined;
-          if (!route) {
-            continue globalMiddlewareIterator;
-          }
-
-          middleWareCallbackIterator: for await (const callbackKey of obj.callbackIndexes) {
-            const handler = get(route.callbacks, callbackKey);
-            if (!isFunction(handler)) {
-              continue;
+        if (matchedGlobalMiddlewares && matchedGlobalMiddlewares.length) {
+          globalMiddlewareIterator: for await (const matchedMiddleware of matchedGlobalMiddlewares) {
+            if (!continueProcessingMiddlewares) {
+              break;
             }
 
-            const promiseResp = await new Promise(async (resolve, reject) => {
+            const route = matchedMiddleware.route;
+            if (!route) {
+              continue globalMiddlewareIterator;
+            }
+
+            middleWareCallbackIterator: for await (const callback of matchedMiddleware.callbacks) {
+              if (!isFunction(callback)) {
+                continue;
+              }
+
               try {
-                const nextFunctionGenResp = nextFnGenerator(resolve, reject);
-                const resp = await (handler as RouterMiddlewareHandler)(
+                type StackToContinueType =
+                  | "middleWareCallbackIterator"
+                  | "breakGlobalMiddlewareIterator"
+                  | "globalMiddlewareIterator";
+
+                let stackToContinue: StackToContinueType =
+                  "middleWareCallbackIterator";
+                const nextFunctionGenResp = nextFnGenerator(
+                  (passedResp) => {
+                    switch (true) {
+                      case !passedResp: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+
+                      case response.headersSent: {
+                        stackToContinue = "breakGlobalMiddlewareIterator";
+                        break;
+                      }
+
+                      case isError(passedResp): {
+                        errorThrown = passedResp;
+                        stackToContinue = "breakGlobalMiddlewareIterator";
+                        break;
+                      }
+
+                      case isString(passedResp) &&
+                        ["route", "router", "skip"].includes(
+                          passedResp as string,
+                        ):
+                      case isBoolean(passedResp) && !passedResp: {
+                        continueProcessingMiddlewares = false;
+                        stackToContinue = "globalMiddlewareIterator";
+                        break;
+                      }
+
+                      default: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+                    }
+                  },
+                  (err) => {
+                    errorThrown = err;
+                    stackToContinue = "breakGlobalMiddlewareIterator";
+                  },
+                );
+
+                const resp = await (callback as RouterHandler)(
                   request,
                   response,
                   nextFunctionGenResp.handler,
                 );
-                const hasResp = !!resp;
 
-                switch (true) {
-                  case response.headersSent || hasResp: {
-                    if (!response.headersSent && hasResp) {
-                      await response.end(resp);
-                    }
+                if (response.headersSent) {
+                  stackToContinue = "breakGlobalMiddlewareIterator";
+                }
 
-                    resolve("end-routing");
+                if (
+                  !response.headersSent &&
+                  (!!resp || !nextFunctionGenResp.hasBeenCalled)
+                ) {
+                  await response.status(response.statusCode || 200).end(resp);
+                  stackToContinue = "breakGlobalMiddlewareIterator";
+                }
+
+                if (this.localOptions?.debug) {
+                  this.logger.log({
+                    state: "global_general_middleware",
+                    hasSentHeaders: response.headersSent,
+                    nextFnCalled: nextFunctionGenResp.hasBeenCalled,
+                    sentResp: !!resp,
+                    callback: callback.toString(),
+                    stackToContinue,
+                  });
+                }
+
+                switch (stackToContinue as StackToContinueType) {
+                  case "breakGlobalMiddlewareIterator": {
+                    continueProcessingRouteHandlers = false;
+                    continueProcessingMiddlewares = false;
+                    break globalMiddlewareIterator;
+                  }
+
+                  case "globalMiddlewareIterator": {
                     break;
                   }
 
-                  case !nextFunctionGenResp.hasBeenCalled && !hasResp:
-                  default: {
-                    resolve("normal");
-                    break;
+                  case "middleWareCallbackIterator": {
+                    continue middleWareCallbackIterator;
                   }
                 }
               } catch (err) {
                 errorThrown = err;
-                resolve("skip-middlewares");
-              }
-            });
-
-            switch (promiseResp) {
-              case "end-routing": {
-                continueProcessingMiddlewares = false;
-                continueProcessingRouteHandlers = false;
-                matchedRoute = route.match({
-                  host: requestHost,
-                  method: requestMethod,
-                  path: requestPath,
-                }) as matchedRoute;
-
-                if (matchedRoute && isObject(matchedRoute)) {
-                  request.params = matchedRoute.params;
-                  request.subdomains = matchedRoute.subdomains;
-                }
-
                 break globalMiddlewareIterator;
-              }
-
-              case "skip-middlewares": {
-                continueProcessingMiddlewares = false;
-                break globalMiddlewareIterator;
-              }
-
-              default: {
-                continue middleWareCallbackIterator;
               }
             }
           }
         }
 
-        if (errorThrown) {
-          this.throwError(errorThrown);
+        // if terminated by error or response sent then stop process
+        if (errorThrown || response.headersSent) {
+          continueProcessingMiddlewares = false;
+          continueProcessingRouteHandlers = false;
         }
 
-        // If response headers sent return matchedRoute
-        if (response.headersSent) {
-          return matchedRoute || true;
-        }
-
-        // Process Route Middlewares
-        routeMiddlewareIterator: for await (const obj of matchedRouteMiddlewares) {
-          if (!continueProcessingMiddlewares) {
-            break;
-          }
-
-          const route = get(routes, obj.routeIndex) as Route | undefined;
-          if (!route) {
-            continue routeMiddlewareIterator;
-          }
-
-          middleWareCallbackIterator: for await (const callbackKey of obj.callbackIndexes) {
-            const handler = get(route.callbacks, callbackKey);
-            if (!isFunction(handler)) {
-              continue;
+        // Process Route Middlewares// Process Global Middlewares
+        if (matchedRouteMiddlewares && matchedRouteMiddlewares.length) {
+          routeMiddlewareIterator: for await (const matchedMiddleware of matchedRouteMiddlewares) {
+            if (!continueProcessingMiddlewares) {
+              break;
             }
 
-            const promiseResp = await new Promise(async (resolve, reject) => {
+            const route = matchedMiddleware.route;
+            if (!route) {
+              continue routeMiddlewareIterator;
+            }
+
+            middleWareCallbackIterator: for await (const callback of matchedMiddleware.callbacks) {
+              if (!isFunction(callback)) {
+                continue;
+              }
+
+              type StackToContinueType =
+                | "middleWareCallbackIterator"
+                | "breakRouteMiddlewareIterator"
+                | "routeMiddlewareIterator";
+
               try {
-                const nextFunctionGenResp = nextFnGenerator(resolve, reject);
-                const resp = await (handler as RouterMiddlewareHandler)(
+                let stackToContinue: StackToContinueType =
+                  "middleWareCallbackIterator";
+
+                const nextFunctionGenResp = nextFnGenerator(
+                  (passedResp) => {
+                    switch (true) {
+                      case !passedResp: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+
+                      case response.headersSent: {
+                        stackToContinue = "breakRouteMiddlewareIterator";
+                        break;
+                      }
+
+                      case isError(passedResp): {
+                        errorThrown = passedResp as unknown as Error;
+                        stackToContinue = "breakRouteMiddlewareIterator";
+                        break;
+                      }
+
+                      case isString(passedResp) &&
+                        ["route", "router", "skip"].includes(
+                          passedResp as string,
+                        ):
+                      case isBoolean(passedResp) && !passedResp: {
+                        continueProcessingMiddlewares = false;
+                        stackToContinue = "routeMiddlewareIterator";
+                        break;
+                      }
+
+                      default: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+                    }
+                  },
+                  (err) => {
+                    errorThrown = err;
+                    stackToContinue = "breakRouteMiddlewareIterator";
+                  },
+                );
+
+                const resp = await (callback as RouterHandler)(
                   request,
                   response,
                   nextFunctionGenResp.handler,
                 );
-                const hasResp = !!resp;
 
-                switch (true) {
-                  case response.headersSent || hasResp: {
-                    if (!response.headersSent && hasResp) {
-                      await response.end(resp);
-                    }
+                if (response.headersSent) {
+                  stackToContinue = "breakRouteMiddlewareIterator";
+                }
 
-                    resolve("end-routing");
-                    break;
+                if (
+                  !response.headersSent &&
+                  (!!resp || !nextFunctionGenResp.hasBeenCalled)
+                ) {
+                  await response.status(response.statusCode || 200).end(resp);
+                  stackToContinue = "breakRouteMiddlewareIterator";
+                }
+
+                if (this.localOptions?.debug) {
+                  this.logger.log({
+                    state: "route_general_middleware",
+                    hasSentHeaders: response.headersSent,
+                    nextFnCalled: nextFunctionGenResp.hasBeenCalled,
+                    sentResp: !!resp,
+                    callback: callback.toString(),
+                    stackToContinue,
+                  });
+                }
+
+                switch (stackToContinue as StackToContinueType) {
+                  case "breakRouteMiddlewareIterator": {
+                    continueProcessingRouteHandlers = false;
+                    continueProcessingMiddlewares = false;
+                    break routeMiddlewareIterator;
                   }
 
-                  case !nextFunctionGenResp.hasBeenCalled && !hasResp:
-                  default: {
-                    resolve("normal");
-                    break;
+                  case "routeMiddlewareIterator": {
+                    continue routeMiddlewareIterator;
+                  }
+
+                  case "middleWareCallbackIterator": {
+                    continue middleWareCallbackIterator;
                   }
                 }
               } catch (err) {
                 errorThrown = err;
-                resolve("skip-middlewares");
-              }
-            });
-
-            switch (promiseResp) {
-              case "end-routing": {
-                continueProcessingMiddlewares = false;
-                continueProcessingRouteHandlers = false;
-                matchedRoute = route.match({
-                  host: requestHost,
-                  method: requestMethod,
-                  path: requestPath,
-                }) as matchedRoute;
-
-                if (matchedRoute && isObject(matchedRoute)) {
-                  request.params = matchedRoute.params;
-                  request.subdomains = matchedRoute.subdomains;
-                }
-
                 break routeMiddlewareIterator;
-              }
-
-              case "skip-middlewares": {
-                continueProcessingMiddlewares = false;
-                break routeMiddlewareIterator;
-              }
-
-              default: {
-                continue middleWareCallbackIterator;
               }
             }
           }
-        }
-
-        if (errorThrown) {
-          this.throwError(errorThrown);
-        }
-
-        // If response headers sent return matchedRoute
-        if (response.headersSent) {
-          return matchedRoute || true;
-        }
-
-        if (matchedRoute && response.headersSent) {
-          return matchedRoute;
         }
       }
 
       // Process matched route handlers
-      const routeHandlerKeys = keys(matchedRouteHandlers).map(
-        (routeHandlerKey) => String(routeHandlerKey),
-      );
-      handleIterator: for await (const routeHandlerKey of routeHandlerKeys) {
-        if (errorThrown) {
-          this.throwError(errorThrown);
+      handleIterator: for await (const routeHandler of matchedRouteHandlers) {
+        // if terminated by error or response sent then stop process
+        if (errorThrown || response.headersSent) {
+          continueProcessingMiddlewares = false;
+          continueProcessingRouteHandlers = false;
+          break handleIterator;
         }
 
         if (!continueProcessingRouteHandlers) {
-          return matchedRoute;
+          break handleIterator;
         }
 
-        route = get(
-          routes,
-          get(matchedRouteHandlers, routeHandlerKey, "-1"),
-        ) as Route | undefined;
+        route = routeHandler.route;
+
         if (!route) {
           continue;
         }
 
         const match = route.match({
-          host: requestHost,
-          method: requestMethod,
+          host: options.requestHost,
+          method: options.requestMethod,
           path: requestPath,
         }) as matchedRoute;
 
@@ -593,200 +1077,277 @@ export class BunRouter extends Router {
         }
 
         const isLastHandler =
-          routeHandlerKey === String(matchedRouteHandlers.length - 1);
-        matchedRoute = match;
+          routeHandler ===
+          matchedRouteHandlers[matchedRouteHandlers.length - 1];
 
+        matchedRoute = match;
         if (matchedRoute && isObject(matchedRoute)) {
-          request.params = matchedRoute.params;
-          request.subdomains = matchedRoute.subdomains;
+          request.params = matchedRoute.params as Record<string, string>;
+          request.subdomains = matchedRoute.subdomains as string[];
         }
 
         // Process Middlewares
         // Process Global Middlewares
-        globalMiddlewareIterator: for await (const obj of matchedGlobalMiddlewares) {
-          if (!continueProcessingMiddlewares) {
-            break;
-          }
-
-          const route = get(this._globalMiddlewares, obj.routeIndex) as
-            | Route
-            | undefined;
-          if (!route) {
-            continue globalMiddlewareIterator;
-          }
-
-          middleWareCallbackIterator: for await (const callbackKey of obj.callbackIndexes) {
-            const handler = get(route.callbacks, callbackKey);
-            if (!isFunction(handler)) {
-              continue;
+        if (matchedGlobalMiddlewares && matchedGlobalMiddlewares.length) {
+          globalMiddlewareIterator: for await (const matchedMiddleware of matchedGlobalMiddlewares) {
+            if (!continueProcessingMiddlewares) {
+              break;
             }
 
-            const promiseResp = await new Promise(async (resolve, reject) => {
+            const route = matchedMiddleware.route;
+            if (!route) {
+              continue globalMiddlewareIterator;
+            }
+
+            middleWareCallbackIterator: for await (const callback of matchedMiddleware.callbacks) {
+              if (!isFunction(callback)) {
+                continue;
+              }
+
+              type StackToContinueType =
+                | "middleWareCallbackIterator"
+                | "breakHandleIterator"
+                | "globalMiddlewareIterator";
+
               try {
-                const nextFunctionGenResp = nextFnGenerator(resolve, reject);
-                const resp = await (handler as RouterMiddlewareHandler)(
+                let stackToContinue: StackToContinueType =
+                  "middleWareCallbackIterator";
+
+                const nextFunctionGenResp = nextFnGenerator(
+                  (passedResp) => {
+                    switch (true) {
+                      case !passedResp: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+
+                      case response.headersSent: {
+                        stackToContinue = "breakHandleIterator";
+                        break;
+                      }
+
+                      case isError(passedResp): {
+                        errorThrown = passedResp as unknown as Error;
+                        stackToContinue = "breakHandleIterator";
+                        break;
+                      }
+
+                      case isString(passedResp) &&
+                        ["route", "router", "skip"].includes(
+                          passedResp as string,
+                        ):
+                      case isBoolean(passedResp) && !passedResp: {
+                        continueProcessingMiddlewares = false;
+                        stackToContinue = "globalMiddlewareIterator";
+                        break;
+                      }
+
+                      default: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+                    }
+                  },
+                  (err) => {
+                    errorThrown = err;
+                    stackToContinue = "breakHandleIterator";
+                  },
+                );
+
+                const resp = await (callback as RouterHandler)(
                   request,
                   response,
                   nextFunctionGenResp.handler,
                 );
 
-                switch (true) {
-                  case response.headersSent: {
-                    resolve("end-routing");
-                    break;
+                if (response.headersSent) {
+                  stackToContinue = "breakHandleIterator";
+                }
+
+                if (
+                  !response.headersSent &&
+                  (!!resp || !nextFunctionGenResp.hasBeenCalled)
+                ) {
+                  await response.status(response.statusCode || 200).end(resp);
+                  stackToContinue = "breakHandleIterator";
+                }
+
+                if (this.localOptions?.debug) {
+                  this.logger.log({
+                    state: "global_handler_middleware",
+                    path: matchedRoute.path,
+                    hasSentHeaders: response.headersSent,
+                    nextFnCalled: nextFunctionGenResp.hasBeenCalled,
+                    sentResp: !!resp,
+                    callback: callback.toString(),
+                    stackToContinue,
+                  });
+                }
+
+                switch (stackToContinue as StackToContinueType) {
+                  case "breakHandleIterator": {
+                    break handleIterator;
                   }
 
-                  case !nextFunctionGenResp.hasBeenCalled && !resp: {
-                    resolve("skip-middlewares");
-                    break;
+                  case "globalMiddlewareIterator": {
+                    continue globalMiddlewareIterator;
                   }
 
-                  default: {
-                    resolve("normal");
-                    break;
+                  case "middleWareCallbackIterator": {
+                    continue middleWareCallbackIterator;
                   }
                 }
               } catch (err) {
                 errorThrown = err;
-                resolve("continue-handlers");
-              }
-            });
-
-            switch (promiseResp) {
-              case "end-routing": {
-                continueProcessingMiddlewares = false;
-                continueProcessingRouteHandlers = false;
-                matchedRoute = route.match({
-                  host: requestHost,
-                  method: requestMethod,
-                  path: requestPath,
-                }) as matchedRoute;
-
-                if (matchedRoute && isObject(matchedRoute)) {
-                  request.params = matchedRoute.params;
-                  request.subdomains = matchedRoute.subdomains;
-                }
-
                 break handleIterator;
-              }
-
-              case "skip-middlewares": {
-                continueProcessingMiddlewares = false;
-                break globalMiddlewareIterator;
-              }
-
-              case "continue-handlers": {
-                continue handleIterator;
-              }
-
-              default: {
-                continue middleWareCallbackIterator;
               }
             }
           }
+        }
+
+        // if terminated by error or response sent then stop process
+        if (errorThrown || response.headersSent) {
+          break handleIterator;
         }
 
         // Process Route Middlewares
-        routeMiddlewareIterator: for await (const obj of matchedRouteMiddlewares) {
-          if (!continueProcessingMiddlewares) {
-            break;
-          }
-
-          const route = get(routes, obj.routeIndex) as Route | undefined;
-          if (!route) {
-            continue routeMiddlewareIterator;
-          }
-
-          middleWareCallbackIterator: for await (const callbackKey of obj.callbackIndexes) {
-            const handler = get(route.callbacks, callbackKey);
-            if (!isFunction(handler)) {
-              continue;
+        if (matchedRouteMiddlewares && matchedRouteMiddlewares.length) {
+          routeMiddlewareIterator: for await (const matchedMiddleware of matchedRouteMiddlewares) {
+            if (!continueProcessingMiddlewares) {
+              break;
             }
 
-            const promiseResp = await new Promise(async (resolve, reject) => {
+            const route = matchedMiddleware.route;
+            if (!route) {
+              continue routeMiddlewareIterator;
+            }
+
+            middleWareCallbackIterator: for await (const callback of matchedMiddleware.callbacks) {
+              if (!isFunction(callback)) {
+                continue;
+              }
+
+              type StackToContinueType =
+                | "middleWareCallbackIterator"
+                | "breakHandleIterator"
+                | "routeMiddlewareIterator";
+
               try {
-                const nextFunctionGenResp = nextFnGenerator(resolve, reject);
-                const resp = await (handler as RouterMiddlewareHandler)(
+                let stackToContinue: StackToContinueType =
+                  "middleWareCallbackIterator";
+
+                const nextFunctionGenResp = nextFnGenerator(
+                  (passedResp) => {
+                    switch (true) {
+                      case !passedResp: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+
+                      case response.headersSent: {
+                        stackToContinue = "breakHandleIterator";
+                        break;
+                      }
+
+                      case isError(passedResp): {
+                        errorThrown = passedResp as unknown as Error;
+                        stackToContinue = "breakHandleIterator";
+                        break;
+                      }
+
+                      case isString(passedResp) &&
+                        ["route", "router", "skip"].includes(
+                          passedResp as string,
+                        ):
+                      case isBoolean(passedResp) && !passedResp: {
+                        continueProcessingMiddlewares = false;
+                        stackToContinue = "routeMiddlewareIterator";
+                        break;
+                      }
+
+                      default: {
+                        stackToContinue = "middleWareCallbackIterator";
+                        break;
+                      }
+                    }
+                  },
+                  (err) => {
+                    errorThrown = err;
+                    stackToContinue = "breakHandleIterator";
+                  },
+                );
+
+                const resp = await (callback as RouterHandler)(
                   request,
                   response,
                   nextFunctionGenResp.handler,
                 );
 
-                switch (true) {
-                  case response.headersSent: {
-                    resolve("end-routing");
-                    break;
+                if (response.headersSent) {
+                  stackToContinue = "breakHandleIterator";
+                }
+
+                if (this.localOptions?.debug) {
+                  this.logger.log({
+                    state: "route_handler_middleware",
+                    path: matchedRoute.path,
+                    hasSentHeaders: response.headersSent,
+                    nextFnCalled: nextFunctionGenResp.hasBeenCalled,
+                    sentResp: !!resp,
+                    callback: callback.toString(),
+                    stackToContinue,
+                  });
+                }
+
+                if (
+                  !response.headersSent &&
+                  (!!resp || !nextFunctionGenResp.hasBeenCalled)
+                ) {
+                  await response.status(response.statusCode || 200).end(resp);
+                  stackToContinue = "breakHandleIterator";
+                }
+
+                switch (stackToContinue as StackToContinueType) {
+                  case "breakHandleIterator": {
+                    break handleIterator;
                   }
 
-                  case !nextFunctionGenResp.hasBeenCalled && !resp: {
-                    resolve("skip-middlewares");
-                    break;
+                  case "routeMiddlewareIterator": {
+                    continue routeMiddlewareIterator;
                   }
 
-                  default: {
-                    resolve("normal");
-                    break;
+                  case "middleWareCallbackIterator": {
+                    continue middleWareCallbackIterator;
                   }
                 }
               } catch (err) {
                 errorThrown = err;
-                resolve("continue-handlers");
-              }
-            });
-
-            switch (promiseResp) {
-              case "end-routing": {
-                continueProcessingMiddlewares = false;
-                continueProcessingRouteHandlers = false;
-                matchedRoute = route.match({
-                  host: requestHost,
-                  method: requestMethod,
-                  path: requestPath,
-                }) as matchedRoute;
-
-                if (matchedRoute && isObject(matchedRoute)) {
-                  request.params = matchedRoute.params;
-                  request.subdomains = matchedRoute.subdomains;
-                }
-
                 break handleIterator;
-              }
-
-              case "skip-middlewares": {
-                continueProcessingMiddlewares = false;
-                break routeMiddlewareIterator;
-              }
-
-              case "continue-handlers": {
-                continue handleIterator;
-              }
-
-              default: {
-                continue middleWareCallbackIterator;
               }
             }
           }
         }
 
-        // If response headers sent return matchedRoute
-        if (response.headersSent) {
-          return matchedRoute || true;
+        // if terminated by error or response sent then stop process
+        if (errorThrown || response.headersSent) {
+          break handleIterator;
+        }
+
+        if (!isArray(matchedRoute.callbacks)) {
+          matchedRoute.callbacks = [];
         }
 
         // Process Route Handlers
-        const callbackKeys = keys(matchedRoute.callbacks).map((callbackKey) =>
-          String(callbackKey),
-        );
-        handleCallbackIterator: for await (const callbackKey of callbackKeys) {
+        handleCallbackIterator: for await (const callback of matchedRoute.callbacks) {
           if (!continueProcessingRouteHandlers) {
-            return matchedRoute;
+            break handleIterator;
           }
 
-          const handler = get(matchedRoute.callbacks, callbackKey, undefined);
           const isLastCallback =
-            callbackKey === String(matchedRoute.callbacks.length - 1);
+            matchedRoute.callbacks[matchedRoute.callbacks.length - 1] ===
+            callback;
 
-          if (!isFunction(handler)) {
+          if (!isFunction(callback)) {
             if (isLastHandler && isLastCallback) {
               return matchedRoute;
             }
@@ -794,67 +1355,106 @@ export class BunRouter extends Router {
             continue;
           }
 
-          const promiseResp = await new Promise(async (resolve, reject) => {
-            try {
-              const nextFunctionGenResp = nextFnGenerator(resolve, reject);
-              const resp = await (handler as RouterMiddlewareHandler)(
-                request,
-                response,
-                nextFunctionGenResp.handler,
-              );
+          type StackToContinueType =
+            | "handleCallbackIterator"
+            | "breakHandleIterator";
 
-              switch (true) {
-                case response.headersSent:
-                case !nextFunctionGenResp.hasBeenCalled && !resp: {
-                  resolve("end-routing");
-                  break;
-                }
+          try {
+            let stackToContinue: StackToContinueType = "handleCallbackIterator";
 
-                default: {
-                  resolve(
-                    isLastCallback ? "continue-handler" : "continue-callback",
-                  );
-                  break;
+            const nextFunctionGenResp = nextFnGenerator(
+              (passedResp) => {
+                switch (true) {
+                  case !passedResp: {
+                    stackToContinue = "handleCallbackIterator";
+                    break;
+                  }
+
+                  case response.headersSent: {
+                    stackToContinue = "breakHandleIterator";
+                    break;
+                  }
+
+                  case isError(passedResp): {
+                    errorThrown = passedResp as unknown as Error;
+                    stackToContinue = "breakHandleIterator";
+                    break;
+                  }
+
+                  case isString(passedResp) &&
+                    ["route", "router", "skip"].includes(passedResp as string):
+                  case isBoolean(passedResp) && !passedResp: {
+                    continueProcessingMiddlewares = false;
+                    stackToContinue = "handleCallbackIterator";
+                    break;
+                  }
+
+                  default: {
+                    stackToContinue = "handleCallbackIterator";
+                    break;
+                  }
                 }
-              }
-            } catch (err) {
-              errorThrown = err;
-              resolve("continue-handler");
+              },
+              (err) => {
+                errorThrown = err;
+                stackToContinue = "breakHandleIterator";
+              },
+            );
+
+            const resp = await (callback as RouterHandler)(
+              request,
+              response,
+              nextFunctionGenResp.handler,
+            );
+
+            if (this.localOptions?.debug) {
+              this.logger.log({
+                state: "handler",
+                path: matchedRoute.path,
+                params: request.params,
+                hasSentHeaders: response.headersSent,
+                nextFnCalled: nextFunctionGenResp.hasBeenCalled,
+                sentResp: !!resp,
+                callback: callback.toString(),
+                stackToContinue,
+              });
             }
-          });
 
-          switch (promiseResp) {
-            case "end-routing": {
-              continueProcessingMiddlewares = false;
-              continueProcessingRouteHandlers = false;
-              matchedRoute = route.match({
-                host: requestHost,
-                method: requestMethod,
-                path: requestPath,
-              }) as matchedRoute;
-
-              if (matchedRoute && isObject(matchedRoute)) {
-                request.params = matchedRoute.params;
-                request.subdomains = matchedRoute.subdomains;
-              }
-
+            if (response.headersSent) {
               break handleIterator;
             }
 
-            case "continue-handlers": {
-              continue handleIterator;
+            if (
+              !response.headersSent &&
+              (!!resp || !nextFunctionGenResp.hasBeenCalled)
+            ) {
+              await response.status(response.statusCode || 200).end(resp);
+              break handleIterator;
             }
 
-            case "continue-callback":
-            default: {
-              continue handleCallbackIterator;
+            switch (stackToContinue as StackToContinueType) {
+              case "breakHandleIterator": {
+                break handleIterator;
+              }
+
+              case "handleCallbackIterator": {
+                continue handleCallbackIterator;
+              }
             }
+          } catch (err) {
+            errorThrown = err;
+            break handleIterator;
           }
         }
       }
 
-      if (matchedRoute && response.headersSent) {
-        return matchedRoute;
+      // Handle error if thrown
+      if (errorThrown) {
+        this.throwError(errorThrown);
+      }
+
+      if (matchedRoute || response.headersSent) {
+        return matchedRoute || true;
       }
 
       return undefined;

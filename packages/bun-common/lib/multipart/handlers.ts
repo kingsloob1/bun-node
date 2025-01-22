@@ -1,5 +1,4 @@
 import type { BunRequest } from "../BunRequest";
-import { BadRequestException } from "@nestjs/common";
 import { each, isArray, keys, merge, unset } from "lodash-es";
 import {
   filterUpload,
@@ -97,13 +96,11 @@ export const handleMultipartFileFields = async (
       const fieldOptions = fieldsMap.get(fileFieldName);
 
       if (fieldOptions == null) {
-        throw new BadRequestException(
-          `Field ${fileFieldName} doesn't accept files`,
-        );
+        throw new Error(`Field ${fileFieldName} doesn't accept files`);
       }
 
       if (files[fileFieldName].length + 1 > fieldOptions.maxCount) {
-        throw new BadRequestException(
+        throw new Error(
           `Field ${fileFieldName} accepts max ${fieldOptions.maxCount} files`,
         );
       }
@@ -162,14 +159,12 @@ export const handleMultipartMultipleFiles = async (
 
     // Handle validation checks to see if foreign file was uploaded
     if (hasInvalidFiles) {
-      throw new BadRequestException(`Only Field ${fieldname} accept files`);
+      throw new Error(`Only Field ${fieldname} accept files`);
     }
 
     // Handle validation checks
     if (files.length + 1 > maxCount) {
-      throw new BadRequestException(
-        `Field ${fieldname} accepts max ${maxCount} files`,
-      );
+      throw new Error(`Field ${fieldname} accepts max ${maxCount} files`);
     }
 
     body = merge(body, multiPartResp.fields);
@@ -223,7 +218,7 @@ export const handleMultipartSingleFile = async (
 
     // Handle validation checks to see if foreign file was uploaded
     if (hasInvalidFiles) {
-      throw new BadRequestException(`Only Field ${fieldname} accept one file`);
+      throw new Error(`Only Field ${fieldname} accept one file`);
     }
 
     body = merge(body, multiPartResp.fields);
@@ -258,7 +253,7 @@ export const handleNoFiles = async (
   try {
     // Handle validation checks to see if foreign file was uploaded
     if (multiPartResp.files.size) {
-      throw new BadRequestException(`File upload is not accepted`);
+      throw new Error(`File upload is not accepted`);
     }
 
     body = merge(body, multiPartResp.fields);
