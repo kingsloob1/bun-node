@@ -44,6 +44,7 @@
     "fast-isnumeric": "^1.1.4",
     "file-type": "^19.6.0",
     "fresh": "^0.5.2",
+    "get-port": "^7.1.0",
     "locutus": "^2.0.32",
     "lodash-es": "^4.17.21",
     "mime": "^4.0.6",
