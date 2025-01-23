@@ -13,7 +13,10 @@ import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
-import { type CookieParseOptions, parse as parseCookie } from "cookie";
+import {
+  type ParseOptions as CookieParseOptions,
+  parse as parseCookie,
+} from "cookie";
 import { JSONCookies, signedCookies } from "cookie-parser";
 import EventEmitter from "eventemitter3";
 import { fileTypeFromBuffer, type FileTypeResult } from "file-type";
@@ -117,9 +120,16 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       validation: Validation.Lax,
     });
 
-    this.parsedUrl.searchParams.forEach((v, k) => {
-      this.query[k] = v;
-    });
+    if (this.parsedUrl.search) {
+      this.query = qs.parse(this.parsedUrl.search, {
+        depth: 100,
+        ignoreQueryPrefix: true,
+        allowDots: true,
+        allowEmptyArrays: true,
+        arrayLimit: 999999999,
+        allowSparse: true,
+      });
+    }
 
     this.extractSubdomains();
 
@@ -695,7 +705,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             ? [this.secret]
             : [];
 
-    const cookies = parseCookie(cookieStr, this.options.cookieParseOptions);
+    const cookies = parseCookie(
+      cookieStr,
+      this.options.cookieParseOptions,
+    ) as Record<string, string>;
     let signedCookiesObj: BunRequest["signedCookies"] = {};
 
     if (secrets.length) {
