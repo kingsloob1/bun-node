@@ -121,6 +121,8 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       },
       ...websocketOptions,
     } as unknown as WebsocketOptions);
+
+    this.defineHttpServer();
   }
 
   get logger() {
