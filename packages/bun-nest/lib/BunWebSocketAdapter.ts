@@ -262,3 +262,5 @@ export class BunWebSocketAdapter
     return this.killServer(server || this.getServer());
   }
 }
+
+export class BunNestWebsocketAdapter extends BunWebSocketAdapter {}

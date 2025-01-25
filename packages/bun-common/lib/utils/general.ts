@@ -1,3 +1,4 @@
+import type { Constructor } from "../types/general";
 import { Buffer } from "node:buffer";
 import { randomBytes as createRandomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
@@ -52,3 +53,20 @@ export const isMime = (str: string) => {
 export const getMimeFromStr = (str: string) => {
   return isMime(str) ? str : mime.getType(str);
 };
+
+export function applyMixins<T extends Constructor>(
+  derivedCtor: T,
+  baseCtors: Constructor[],
+): void {
+  baseCtors.forEach((baseCtor) => {
+    Object.getOwnPropertyNames(baseCtor.prototype).forEach((name) => {
+      console.log(name);
+      Object.defineProperty(
+        derivedCtor.prototype,
+        name,
+        Object.getOwnPropertyDescriptor(baseCtor.prototype, name) ||
+          Object.create(null),
+      );
+    });
+  });
+}

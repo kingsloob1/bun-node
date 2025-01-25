@@ -204,175 +204,542 @@ export class BunRouter extends Router {
     return this;
   }
 
-  override checkout(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "CHECKOUT", callbacks });
+  addRoute(method: string, ...callbacks: RouterHandler[]): this;
+  addRoute(method: string, path: string, ...callbacks: RouterHandler[]): this;
+  addRoute(
+    method: string,
+    path?: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ) {
+    if (!isString(path) && path) {
+      callbacks.unshift(path);
+    }
+
+    return this.setRoute({
+      path: isString(path) ? path : undefined,
+      method: method.toUpperCase(),
+      callbacks,
+    });
   }
 
-  override copy(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "COPY", callbacks });
+  override checkout(path: string, ...callbacks: RouterHandler[]): this;
+  override checkout(...callbacks: RouterHandler[]): this;
+  override checkout(
+    path?: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("checkout", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("checkout", ...callbacks);
   }
 
-  override delete(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "DELETE", callbacks });
+  override copy(path: string, ...callbacks: RouterHandler[]): this;
+  override copy(...callbacks: RouterHandler[]): this;
+  override copy(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("copy", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("copy", ...callbacks);
   }
 
-  override get(path: string, ...callbacks: RouterHandler[]): this {
-    return this.setRoute({ path, method: "GET", callbacks });
+  override delete(path: string, ...callbacks: RouterHandler[]): this;
+  override delete(...callbacks: RouterHandler[]): this;
+  override delete(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("delete", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("delete", ...callbacks);
   }
 
-  override head(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "HEAD", callbacks });
+  override get(path: string, ...callbacks: RouterHandler[]): this;
+  override get(...callbacks: RouterHandler[]): this;
+  override get(
+    path: string | RouterHandler,
+
+    ...callbacks: RouterHandler[]
+  ): this {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("get", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("get", ...callbacks);
   }
 
-  override lock(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "LOCK", callbacks });
+  override head(path: string, ...callbacks: RouterHandler[]): this;
+  override head(...callbacks: RouterHandler[]): this;
+  override head(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("head", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("head", ...callbacks);
   }
 
-  override merge(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "MERGE", callbacks });
+  override lock(path: string, ...callbacks: RouterHandler[]): this;
+  override lock(...callbacks: RouterHandler[]): this;
+  override lock(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("lock", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("lock", ...callbacks);
   }
 
-  override mkactivity(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "MKACTIVITY", callbacks });
+  override merge(path: string, ...callbacks: RouterHandler[]): this;
+  override merge(...callbacks: RouterHandler[]): this;
+  override merge(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("merge", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("merge", ...callbacks);
   }
 
-  override mkcol(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "MKCOL", callbacks });
+  override mkactivity(path: string, ...callbacks: RouterHandler[]): this;
+  override mkactivity(...callbacks: RouterHandler[]): this;
+  override mkactivity(
+    path: string | RouterHandler,
+
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("mkactivity", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("mkactivity", ...callbacks);
   }
 
-  override move(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "MOVE", callbacks });
+  override mkcol(path: string, ...callbacks: RouterHandler[]): this;
+  override mkcol(...callbacks: RouterHandler[]): this;
+  override mkcol(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("mkcol", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("mkcol", ...callbacks);
   }
 
-  override notify(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "NOTIFY", callbacks });
+  override move(path: string, ...callbacks: RouterHandler[]): this;
+  override move(...callbacks: RouterHandler[]): this;
+  override move(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("move", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("move", ...callbacks);
   }
 
-  override options(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "OPTIONS", callbacks });
+  override notify(path: string, ...callbacks: RouterHandler[]): this;
+  override notify(...callbacks: RouterHandler[]): this;
+  override notify(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("notify", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("notify", ...callbacks);
   }
 
-  override patch(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "PATCH", callbacks });
+  override options(path: string, ...callbacks: RouterHandler[]): this;
+  override options(...callbacks: RouterHandler[]): this;
+  override options(
+    path: string | RouterHandler,
+
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("options", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("options", ...callbacks);
   }
 
-  override post(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "POST", callbacks });
+  override patch(path: string, ...callbacks: RouterHandler[]): this;
+  override patch(...callbacks: RouterHandler[]): this;
+  override patch(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("patch", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("patch", ...callbacks);
   }
 
-  override propfind(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "PROPFIND", callbacks });
+  override post(path: string, ...callbacks: RouterHandler[]): this;
+  override post(...callbacks: RouterHandler[]): this;
+  override post(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("post", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("post", ...callbacks);
   }
 
-  override purge(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "PURGE", callbacks });
+  override propfind(path: string, ...callbacks: RouterHandler[]): this;
+  override propfind(...callbacks: RouterHandler[]): this;
+  override propfind(
+    path: string | RouterHandler,
+
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("propfind", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("propfind", ...callbacks);
   }
 
-  override put(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "PUT", callbacks });
+  override purge(path: string, ...callbacks: RouterHandler[]): this;
+  override purge(...callbacks: RouterHandler[]): this;
+  override purge(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("purge", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("purge", ...callbacks);
   }
 
-  override report(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "REPORT", callbacks });
+  override put(path: string, ...callbacks: RouterHandler[]): this;
+  override put(...callbacks: RouterHandler[]): this;
+  override put(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("put", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("put", ...callbacks);
   }
 
-  override search(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "SEARCH", callbacks });
+  override report(path: string, ...callbacks: RouterHandler[]): this;
+  override report(...callbacks: RouterHandler[]): this;
+  override report(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("report", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("report", ...callbacks);
   }
 
-  override subscribe(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "SUBSCRIBE", callbacks });
+  override search(path: string, ...callbacks: RouterHandler[]): this;
+  override search(...callbacks: RouterHandler[]): this;
+  override search(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("search", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("search", ...callbacks);
   }
 
-  override trace(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "TRACE", callbacks });
+  override subscribe(path: string, ...callbacks: RouterHandler[]): this;
+  override subscribe(...callbacks: RouterHandler[]): this;
+  override subscribe(
+    path: string | RouterHandler,
+
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("subscribe", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("subscribe", ...callbacks);
   }
 
-  override unlock(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "UNLOCK", callbacks });
+  override trace(path: string, ...callbacks: RouterHandler[]): this;
+  override trace(...callbacks: RouterHandler[]): this;
+  override trace(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("trace", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("trace", ...callbacks);
   }
 
-  override unsubscribe(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "UNSUBSCRIBE", callbacks });
+  override unlock(path: string, ...callbacks: RouterHandler[]): this;
+  override unlock(...callbacks: RouterHandler[]): this;
+  override unlock(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("unlock", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("unlock", ...callbacks);
   }
 
-  override view(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, method: "VIEW", callbacks });
+  override unsubscribe(path: string, ...callbacks: RouterHandler[]): this;
+  override unsubscribe(...callbacks: RouterHandler[]): this;
+  override unsubscribe(
+    path: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("unsubscribe", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("unsubscribe", ...callbacks);
+  }
+
+  override view(path: string, ...callbacks: RouterHandler[]): this;
+  override view(...callbacks: RouterHandler[]): this;
+  override view(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute("view", path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute("view", ...callbacks);
   }
 
   override any(
-    methods: string | string[],
-    path: string,
+    methods: string | string[] | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ): this;
+  override any(
+    methods: string | string[] | RouterHandler,
+    path: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ): this;
+  override any(...callbacks: RouterHandler[]): this;
+  override any(
+    methods?: string | string[] | RouterHandler,
+    path?: string | RouterHandler,
     ...callbacks: RouterHandler[]
   ) {
-    return this.setRoute({ method: methods, path, callbacks });
+    let pathHandler: RouterHandler | undefined;
+    if (!isString(path) && path) {
+      pathHandler = path;
+    }
+
+    let validatedMethods: string | string[] | undefined;
+    if (
+      isString(methods) ||
+      (isArray(methods) && methods.every((method) => isString(method)))
+    ) {
+      validatedMethods = methods;
+
+      if (pathHandler) {
+        callbacks.unshift(pathHandler);
+      }
+    } else {
+      if (pathHandler) {
+        callbacks.unshift(methods as RouterHandler, pathHandler);
+      } else {
+        callbacks.unshift(methods as RouterHandler);
+      }
+    }
+
+    return this.setRoute({
+      method: validatedMethods,
+      path: pathHandler ? undefined : (path as string),
+      callbacks,
+    });
   }
 
-  override all(path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ path, callbacks });
+  override all(path: string, ...callbacks: RouterHandler[]): this;
+  override all(...handlers: RouterHandler[]): this;
+  override all(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+    if (!isString(path) && path) {
+      callbacks.unshift(path);
+    }
+
+    return this.setRoute({
+      path: isString(path) ? path : undefined,
+      callbacks,
+    });
   }
 
-  override add(method: string, path: string, ...callbacks: RouterHandler[]) {
-    return this.setRoute({ method: method.toUpperCase(), path, callbacks });
+  override add(method: string, ...callbacks: RouterHandler[]): this;
+  override add(
+    method: string,
+    path: string,
+    ...callbacks: RouterHandler[]
+  ): this;
+  override add(
+    method: string,
+    path?: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ) {
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.addRoute(method, path, ...callbacks);
+      }
+
+      callbacks.unshift(path);
+    }
+
+    return this.addRoute(method, ...callbacks);
   }
 
   // Adjust use to behave like express use
-  override use(...path: RouterHandler[]): this;
-  override use(path: string, ...handlers: RouterHandler[]): this;
+  override use(...callbacks: RouterHandler[]): this;
+  override use(path: string, ...callbacks: RouterHandler[]): this;
   override use(
-    path: string | RouterHandler,
-    ...handlers: RouterHandler[]
+    path?: string | RouterHandler,
+    ...callbacks: RouterHandler[]
   ): this {
-    const pathStr = isString(path) ? path : "";
-    const callbacks = !isString(path) ? [path, ...handlers] : handlers;
+    if (isString(path) || isFunction(path)) {
+      if (isString(path)) {
+        return this.all(path, ...callbacks);
+      }
 
-    if (pathStr) {
-      this.all(pathStr, ...callbacks);
-    } else {
-      this.setRoute({
-        callbacks,
-      });
+      callbacks.unshift(path);
     }
+
+    this.setRoute({
+      callbacks,
+    });
 
     return this;
   }
 
-  override group(path: string, callback: RouterHandler[] | Router): this;
-  override group(path: string, callback: (router: Router) => unknown): this;
+  override group(path: string, ...callbacks: [Router]): this;
+  override group(path: string, ...callbacks: RouterHandler[]): this;
   override group(
     path: string,
-    callback: RouterHandler[] | Router | ((router: Router) => unknown),
+    ...callbacks: [(router: Router) => unknown]
+  ): this;
+  override group(
+    path: string,
+    ...callbacks: RouterHandler[] | [Router] | [(router: Router) => unknown]
   ) {
-    if (!isString(path)) {
-      throw new TypeError("group path accepts only string as an argument");
-    }
-
-    if (typeof callback === "function") {
-      const router = new Router();
-      callback(router);
-      return this.mergeRoute({ group: path, callbacks: router });
-    } else {
+    const [callback] = callbacks;
+    if (callback instanceof Router) {
       return this.mergeRoute({ group: path, callbacks: callback });
     }
+
+    if (isFunction(callback)) {
+      const handler = callback as (router: Router) => unknown;
+      const router = new Router();
+      handler(router);
+      return this.mergeRoute({ group: path, callbacks: router });
+    }
+
+    return this.mergeRoute({
+      group: path,
+      callbacks: callbacks as RouterHandler[],
+    });
   }
 
-  override domain(host: string, callback: RouterHandler[] | Router): this;
-  override domain(host: string, callback: (router: Router) => unknown): this;
+  override domain(host: string, ...callbacks: [Router]): this;
+  override domain(host: string, ...callbacks: RouterHandler[]): this;
   override domain(
     host: string,
-    callback: RouterHandler[] | Router | ((router: Router) => unknown),
+    ...callbacks: [(router: Router) => unknown]
+  ): this;
+  override domain(
+    host: string,
+    ...callbacks: RouterHandler[] | [Router] | [(router: Router) => unknown]
   ) {
-    if (!isString(host)) {
-      throw new TypeError("domain host accepts only string as an argument");
-    }
-
-    if (typeof callback === "function") {
-      const router = new Router();
-      callback(router);
-      return this.mergeRoute({ host, callbacks: router });
-    } else {
+    const [callback] = callbacks;
+    if (callback instanceof Router) {
       return this.mergeRoute({ host, callbacks: callback });
     }
+
+    if (isFunction(callback)) {
+      const handler = callback as (router: Router) => unknown;
+      const router = new Router();
+      handler(router);
+      return this.mergeRoute({ host, callbacks: router });
+    }
+
+    return this.mergeRoute({
+      host,
+      callbacks: callbacks as RouterHandler[],
+    });
   }
 
   getRouteByName(name: string): Route | undefined {

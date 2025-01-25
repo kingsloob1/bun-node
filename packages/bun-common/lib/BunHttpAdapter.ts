@@ -1,3 +1,4 @@
+import type { BunFile, Server } from "bun";
 import type {
   BodyParserOptions,
   BodyParserType,
@@ -7,14 +8,19 @@ import type {
   matchedRoute,
   NextFunction,
   RouterErrorMiddlewareHandler,
+  RouterHandler,
   RouterMiddlewareHandler,
   ServeStaticOptions,
 } from "./index";
 import { type AddressInfo, isIPv4, isIPv6 } from "node:net";
+import { join } from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import { type BunFile, peek, type Server } from "bun";
-import cors, { type CorsOptions as BunCorsOptions } from "cors";
+import cors, {
+  type CorsOptions as BunCorsOptions,
+  type CorsOptionsDelegate,
+} from "cors";
 import EventEmitter from "eventemitter3";
 import getPort from "get-port";
 import {
@@ -38,7 +44,6 @@ export class BunHttpAdapter extends BunRouter {
   private _instance!: InstanceType<typeof BunRouter>;
   private _websocketAdapter!: BunWebSocket;
   private _serverInstance: BunServer | undefined = undefined;
-  private _httpServer: BunServer | undefined = undefined;
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
@@ -146,12 +151,27 @@ export class BunHttpAdapter extends BunRouter {
     return this.isServerListening;
   }
 
+  public get listening() {
+    return this.isListening;
+  }
+
   public get listeningHost() {
     return this._listeningHost;
   }
 
   public get listeningPort() {
     return this._listeningPort;
+  }
+
+  get timeout() {
+    return this.requestTimeout;
+  }
+
+  public setTimeout(reqTimeout: number, callback: CallableFunction) {
+    this.requestTimeout = reqTimeout;
+    callback();
+
+    return Promise.resolve(this.getBunServer() || Bun.peek(this.init()));
   }
 
   public async getListenAddress() {
@@ -169,6 +189,7 @@ export class BunHttpAdapter extends BunRouter {
 
   public appendHeader(response: BunResponse, name: string, value: string) {
     response.appendHeader(name, value);
+    return this;
   }
 
   public async setListenOptions(
@@ -201,7 +222,7 @@ export class BunHttpAdapter extends BunRouter {
     options?: BodyParserOptions,
   ) {
     if (this._hasRegisteredBodyParser) {
-      return;
+      return this;
     }
 
     const middlewareHandler: RouterMiddlewareHandler = async (req, _, next) => {
@@ -220,6 +241,8 @@ export class BunHttpAdapter extends BunRouter {
     } else {
       this.use(middlewareHandler);
     }
+
+    return this;
   }
 
   public useBodyParser(
@@ -227,7 +250,7 @@ export class BunHttpAdapter extends BunRouter {
     rawBody: boolean,
     options: BodyParserOptions,
   ) {
-    this.registerBodyParser(undefined, rawBody, options);
+    return this.registerBodyParser(undefined, rawBody, options);
   }
 
   public async listen(
@@ -274,17 +297,17 @@ export class BunHttpAdapter extends BunRouter {
     this._listeningPort = availablePort;
 
     try {
-      const httpServer = await this.init();
-      this._serverInstance = httpServer;
+      const server = await this.init();
+      this._serverInstance = server;
       this.isServerListening = true;
 
-      this.eventEmitter.emit("listening", httpServer);
+      this.eventEmitter.emit("listening", server);
 
       if (callback) {
-        callback(httpServer);
+        callback(server);
       }
 
-      return httpServer;
+      return server;
     } catch (e) {
       console.log(e);
       const errorMessage = "Error while binding to listener...";
@@ -335,7 +358,12 @@ export class BunHttpAdapter extends BunRouter {
   }
 
   public isHeadersSent(response: BunResponse) {
-    return !isPromise(peek(response.getNativeResponse()));
+    const nativeResp = Bun.peek(response.getNativeResponse());
+    if (isPromise(nativeResp)) {
+      return false;
+    }
+
+    return !!nativeResp;
   }
 
   public setHeader(response: BunResponse, name: string, value: string) {
@@ -363,7 +391,7 @@ export class BunHttpAdapter extends BunRouter {
         properPath = `/${properPath}`;
       }
 
-      const filePath = path + properPath;
+      const filePath = join(path, properPath);
       const file = Bun.file(filePath);
       if (await file.exists()) {
         res.setHeader("Content-Type", file.type || "application/octet-stream");
@@ -398,22 +426,46 @@ export class BunHttpAdapter extends BunRouter {
     return this;
   }
 
-  public enableCors(options: BunCorsOptions) {
-    const corsResp = cors(
-      options as unknown as BunCorsOptions,
-    ) as unknown as RouterMiddlewareHandler;
+  public enableCors(
+    options: BunCorsOptions | CorsOptionsDelegate<BunRequest>,
+    prefix?: string,
+  ) {
+    const handler: RouterHandler = async (
+      req: BunRequest,
+      res: BunResponse,
+      next: NextFunction,
+    ) => {
+      let corsHandler: RouterHandler | undefined;
+      if (isFunction(options)) {
+        try {
+          const promisedFn = promisify(options);
+          const corsOpts = await promisedFn(req);
 
-    // Add Middle ware to ensure cors header is added
-    this.use(corsResp);
+          corsHandler = cors(corsOpts);
+        } catch (e) {
+          return res.status(400).end(e);
+        }
+      } else {
+        corsHandler = cors(options);
+      }
 
-    // Add options route Handler
-    this.instance.options(
-      "*",
-      (req: BunRequest, res: BunResponse, next: NextFunction) => {
-        return corsResp(req, res, next);
-      },
-    );
+      if (!corsHandler) {
+        corsHandler = cors();
+      }
 
+      return corsHandler(req, res, next);
+    };
+
+    if (prefix) {
+      this.use(prefix, handler);
+      const router = new BunRouter();
+      router.options("*", handler);
+      this.instance.group(prefix, router);
+      return this;
+    }
+
+    this.use(handler);
+    this.instance.options("*", handler);
     return this;
   }
 
@@ -439,76 +491,12 @@ export class BunHttpAdapter extends BunRouter {
     return "express";
   }
 
-  get httpServer() {
-    return this.getHttpServer();
-  }
-
   get server() {
     return this._serverInstance;
   }
 
   public getBunServer() {
     return this.server;
-  }
-
-  public getHttpServer() {
-    if (this._httpServer) {
-      return this._httpServer;
-    }
-
-    // Bypass event handlers added to httpServer and call of address
-    this._httpServer = new Proxy({} as unknown as BunServer, {
-      get: (_, prop) => {
-        switch (true) {
-          case [
-            "on",
-            "once",
-            "addEventListener",
-            "off",
-            "removeListener",
-          ].includes(prop as string): {
-            return this.eventEmitter;
-          }
-
-          case prop === "then": {
-            return new Promise(async (resolve) => {
-              await pollUntil(
-                () => this._serverInstance && this.isServerListening,
-                (isReady) => !!isReady,
-              );
-
-              resolve(this._serverInstance);
-            });
-          }
-
-          default: {
-            if (Reflect.has(this, prop)) {
-              return Reflect.get(this, prop, this);
-            }
-
-            if (
-              this._serverInstance &&
-              Reflect.has(this._serverInstance, prop)
-            ) {
-              return Reflect.get(
-                this._serverInstance,
-                prop,
-                this._serverInstance,
-              );
-            }
-
-            return undefined;
-          }
-        }
-      },
-    });
-
-    return this._httpServer;
-  }
-
-  public setHttpServer(server: Server) {
-    this._httpServer = server;
-    return this;
   }
 
   public async init() {
@@ -518,7 +506,7 @@ export class BunHttpAdapter extends BunRouter {
 
     // eslint-disable-next-line ts/no-this-alias
     const that = this;
-    const httpServer = Bun.serve({
+    const serverInstance = Bun.serve({
       ...(this.serverOptions || {}),
       port: this._listeningPort,
       hostname: this._listeningHost,
@@ -642,12 +630,7 @@ export class BunHttpAdapter extends BunRouter {
       },
     });
 
-    this._serverInstance = httpServer;
-    return httpServer;
-  }
-
-  public async initHttpServer() {
-    await this.init();
-    return this.httpServer;
+    this._serverInstance = serverInstance;
+    return serverInstance;
   }
 }

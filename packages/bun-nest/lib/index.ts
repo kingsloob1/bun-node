@@ -6,6 +6,7 @@ export {
   type WebsocketOptions,
 } from "./BunHttpAdapter";
 export {
+  BunNestWebsocketAdapter,
   BunWebSocketAdapter,
   type MessageAckType,
   type MessageBinaryAckType,
