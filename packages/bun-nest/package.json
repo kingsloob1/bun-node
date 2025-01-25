@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-nest",
   "type": "module",
-  "version": "0.0.24-alpha.0",
+  "version": "0.0.25-alpha.0",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
