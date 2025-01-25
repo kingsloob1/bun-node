@@ -80,10 +80,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   BunResponse
 > {
   declare public instance: BunRouter;
+  declare public httpServer: BunServer;
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter;
   private _serverInstance: BunServer | undefined = undefined;
-  private httpServer!: BunServer;
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
@@ -535,7 +535,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this.server;
   }
 
-  public getHttpServer() {
+  public defineHttpServer() {
     if (this.httpServer) {
       return this.httpServer;
     }
@@ -597,6 +597,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     });
 
     return this.httpServer;
+  }
+
+  public getHttpServer() {
+    return this.defineHttpServer();
   }
 
   public setHttpServer(server: Server) {
@@ -736,6 +740,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     });
 
     this._serverInstance = httpServer;
+    this.defineHttpServer();
   }
 
   public async initHttpServer() {
