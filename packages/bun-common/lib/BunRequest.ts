@@ -38,6 +38,7 @@ import {
   keys,
   merge,
   omit,
+  set,
   values,
 } from "lodash-es";
 import {
@@ -51,6 +52,7 @@ import rangeParser from "range-parser";
 import typeIs from "type-is";
 import { streamToBuffer } from "./utils/general";
 
+export type QueryParserOpts = Parameters<typeof qs.parse>[1];
 export class BunRequest extends EventEmitter implements BunRequestInterface {
   private headerNamesWithMultiple: string[] = [
     "cache-control",
@@ -63,6 +65,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   public parsedUrl: InstanceType<typeof URL>;
   public maxHeadersCount = 0;
   public reusedSocket = false;
+  private _initPromises: Promise<unknown>[] = [];
   private _body:
     | string
     | Record<string, unknown>
@@ -80,25 +83,48 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   public _route: BunRequestInterface["route"] | undefined = undefined;
   private readonly parsedDomainResult: ParseResult;
   private _files: Record<string, File> = {};
-  private _contentType: "json" | "text" | "buffer" | "form" | undefined =
-    undefined;
+  private _contentType:
+    | "json"
+    | "text"
+    | "buffer"
+    | "form"
+    | "multipart"
+    | undefined = undefined;
 
-  private _isFormParsed = false;
+  #parsedMultipartResp?:
+    | {
+        files: Map<MultiPartFileRecord, Set<string>>;
+        fields: Record<string, unknown>;
+      }
+    | undefined = undefined;
+
   private _buffer: Buffer | undefined = undefined;
   private _storageFiles: StorageFile[] | Record<string, StorageFile[]> = [];
-
   public subdomains: string[] = [];
 
   constructor(
     public request: Request,
     private server: BunServer,
     private options: {
-      canHandleUpload: boolean;
+      parseBody: boolean;
       parseCookies?: boolean;
+      parseQuery?: boolean;
+      parseQueryOpts?: QueryParserOpts;
+      parseMultiPartFormDataOpts?: MultiPartOptions;
       cookieParseOptions?: CookieParseOptions;
     } = {
-      canHandleUpload: true,
+      parseBody: true,
       parseCookies: true,
+      parseQuery: true,
+      parseQueryOpts: {
+        depth: 100,
+        ignoreQueryPrefix: true,
+        allowDots: true,
+        allowEmptyArrays: true,
+        arrayLimit: 999999999,
+        allowSparse: true,
+      },
+      parseMultiPartFormDataOpts: {},
     },
   ) {
     super();
@@ -120,25 +146,36 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       validation: Validation.Lax,
     });
 
-    if (this.parsedUrl.search) {
-      this.query = qs.parse(this.parsedUrl.search, {
-        depth: 100,
-        ignoreQueryPrefix: true,
-        allowDots: true,
-        allowEmptyArrays: true,
-        arrayLimit: 999999999,
-        allowSparse: true,
-      });
+    if (this.options?.parseQuery) {
+      this._initPromises.push(Promise.resolve(this.parseQuery()));
+    }
+
+    if (this.options?.parseBody) {
+      this._initPromises.push(Promise.resolve(this.parseBody()));
     }
 
     this.extractSubdomains();
 
     if (this.options?.parseCookies) {
-      this.parseCookies({
-        forceUpdateRequest: true,
-        secret: this.secret,
-      });
+      this._initPromises.push(
+        Promise.resolve(
+          this.parseCookies({
+            forceUpdateRequest: true,
+            secret: this.secret,
+          }),
+        ),
+      );
     }
+  }
+
+  static async init(...args: ConstructorParameters<typeof BunRequest>) {
+    const req = new BunRequest(...args);
+    await req.ready();
+    return req;
+  }
+
+  async ready() {
+    return await Promise.allSettled(this._initPromises);
   }
 
   get socketAddress(): SocketAddress | null {
@@ -267,21 +304,26 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   get isFormDataParsed() {
-    return this._isFormParsed;
+    return !!this.#parsedMultipartResp;
   }
 
   public async getMultiParts(options: MultiPartOptions): Promise<{
     files: Map<MultiPartFileRecord, Set<string>>;
     fields: Record<string, unknown>;
   }> {
-    if (this._isFormParsed || !this.buffer) {
+    if (this.#parsedMultipartResp) {
+      return this.#parsedMultipartResp;
+    }
+
+    const contentTypeHeader = this.getHeader("Content-Type");
+    if (!this.buffer || !contentTypeHeader?.includes("multipart/form-data")) {
       return {
         files: new Map(),
         fields: {},
       };
     }
 
-    const buffer = await this.buffer;
+    const buffer = await Promise.resolve(this.buffer);
     return new Promise((resolve, reject) => {
       const files = new Map<MultiPartFileRecord, Set<string>>();
       const fieldNameAndValue = new Map<string, Set<string>>();
@@ -606,13 +648,13 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             }),
           );
 
-          const returnObj = {
+          this._contentType = "multipart";
+          this.#parsedMultipartResp = {
             files,
             fields,
           };
 
-          resolve(returnObj);
-          this._isFormParsed = true;
+          resolve(this.#parsedMultipartResp);
         });
 
         bb.on("error", (error) => {
@@ -664,6 +706,23 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       // return false;
     }
     return false;
+  }
+
+  public setMultipartParserOptions(opts: MultiPartOptions) {
+    set(this.options, "parseMultiPartFormDataOpts", opts);
+    return this;
+  }
+
+  public setQueryParserOptions(opts: QueryParserOpts) {
+    set(this.options, "parseQueryOpts", opts);
+    return this;
+  }
+
+  public parseQuery(opts?: QueryParserOpts) {
+    const options: QueryParserOpts = opts ||
+      this.options?.parseQueryOpts || { depth: 100 };
+    this.query = qs.parse(this.parsedUrl.search, options);
+    return this.query;
   }
 
   public parseCookies(opts?: {
@@ -731,28 +790,23 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return resp;
   }
 
-  public async handleBodyParsing(): Promise<undefined>;
-  public async handleBodyParsing(returnBuffer: false): Promise<undefined>;
-  public async handleBodyParsing(
-    returnBuffer: true,
-    options?: BodyParserOptions,
-  ): Promise<Buffer>;
-  public async handleBodyParsing(
-    returnBuffer = false,
-    // options?: BodyParserOptions,
-  ): Promise<Buffer | undefined> {
-    if (this.request.bodyUsed || !this.options.canHandleUpload) {
-      if (returnBuffer && this._buffer) {
-        return Buffer.from(this._buffer as unknown as ArrayBuffer);
-      }
-
-      return;
+  public async parseBody(fresh = false) {
+    if (!fresh && this.isBodyParsed) {
+      return {
+        body: this._body,
+        buffer: this._buffer,
+        contentType: this._contentType,
+        multipart: this.#parsedMultipartResp,
+      };
     }
 
-    const buffer = Buffer.from(await this.request.arrayBuffer());
+    let buffer = this._buffer;
+    if (!buffer && !this.request.bodyUsed) {
+      buffer = Buffer.from(await this.request.arrayBuffer());
+    }
 
     if (!buffer) {
-      throw new Error("Invalid buffer object");
+      throw new Error("Invalid body sent");
     }
 
     this._buffer = buffer;
@@ -803,7 +857,9 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         }
 
         case contentTypeHeader?.includes("multipart/form-data"): {
-          // Leave the interceptors to handle this..
+          await this.getMultiParts(
+            this.options?.parseMultiPartFormDataOpts || {},
+          );
           break;
         }
 
@@ -821,8 +877,36 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       }
     }
 
+    return {
+      body: this._body,
+      buffer: this._buffer,
+      contentType: this._contentType,
+      multipart: this.#parsedMultipartResp,
+    };
+  }
+
+  public async handleBodyParsing(): Promise<undefined>;
+  public async handleBodyParsing(returnBuffer: false): Promise<undefined>;
+  public async handleBodyParsing(
+    returnBuffer: true,
+    options?: BodyParserOptions,
+  ): Promise<Buffer>;
+  public async handleBodyParsing(
+    returnBuffer = false,
+    // options?: BodyParserOptions,
+  ): Promise<Buffer | undefined> {
+    if (this.request.bodyUsed || !this.options.parseBody) {
+      if (returnBuffer && this._buffer) {
+        return Buffer.from(this._buffer as unknown as ArrayBuffer);
+      }
+
+      return;
+    }
+
+    const parsedBodyResp = await this.parseBody();
+
     if (returnBuffer) {
-      return buffer;
+      return parsedBodyResp.buffer;
     }
   }
 

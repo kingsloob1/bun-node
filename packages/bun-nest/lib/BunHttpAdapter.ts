@@ -2,6 +2,7 @@
 
 /* eslint-disable ts/no-unsafe-function-type */
 
+import type { BunRequestOptions } from "@kingsleyweb/bun-common/lib/BunHttpAdapter";
 import type {
   CorsOptions,
   CorsOptionsDelegate,
@@ -37,7 +38,6 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter";
-import { LegacyRouteConverter } from "@nestjs/core/router/legacy-route-converter";
 import cors from "cors";
 import EventEmitter from "eventemitter3";
 import getPort from "get-port";
@@ -81,6 +81,8 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 > {
   declare public instance: BunRouter;
   declare public httpServer: BunServer;
+  #requestOpts!: BunRequestOptions;
+
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter;
   private _serverInstance: BunServer | undefined = undefined;
@@ -96,6 +98,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   constructor(
     protected requestTimeout = 0,
     options?: {
+      request?: BunRequestOptions;
       websocket?: WebsocketOptions;
       logger?: Logger;
       router?: BunRouterOptions;
@@ -112,6 +115,11 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     const logger = options?.logger || new Logger();
     this.setInstance(router);
 
+    this.requestOpts = options?.request || {
+      parseBody: true,
+      parseCookies: true,
+    };
+
     this.logger = logger;
     this.webSocketAdapter = new BunNestWebsocketAdapter(this, {
       router: this,
@@ -123,6 +131,19 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     } as unknown as WebsocketOptions);
 
     this.defineHttpServer();
+  }
+
+  get requestOpts() {
+    return this.#requestOpts;
+  }
+
+  set requestOpts(opts: BunRequestOptions) {
+    this.#requestOpts = opts;
+  }
+
+  setRequestOpts(opts: BunRequestOptions) {
+    this.requestOpts = opts;
+    return this;
   }
 
   get logger() {
@@ -142,14 +163,14 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this;
   }
 
-  get serverAddress() {
-    let port = this._listeningPort || 3000;
+  get serverAddress(): AddressInfo {
+    let port = Number(this._listeningPort || 3000);
     let hostname = this._listeningHost || "127.0.0.1";
     let address: AddressInfo | undefined;
 
     if (this.isServerListening && this._serverInstance) {
       hostname = this._serverInstance.hostname;
-      port = this._serverInstance.port;
+      port = Number(this._serverInstance.port);
       address = get(this._serverInstance, "address", undefined) as
         | AddressInfo
         | undefined;
@@ -187,7 +208,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   }
 
   public get isListening() {
-    return this.isServerListening;
+    return !!this._serverInstance?.url || this.isServerListening;
   }
 
   public get listening() {
@@ -195,11 +216,27 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   }
 
   public get listeningHost() {
+    if (this._serverInstance?.url?.hostname) {
+      return String(this._serverInstance.url.hostname);
+    }
+
+    if (this.serverAddress?.address) {
+      return String(this.serverAddress.address);
+    }
+
     return this._listeningHost;
   }
 
   public get listeningPort() {
-    return this._listeningPort;
+    if (this._serverInstance?.url?.port) {
+      return Number(this._serverInstance.url.port);
+    }
+
+    if (this.serverAddress?.port) {
+      return Number(this.serverAddress.port);
+    }
+
+    return Number(this._listeningPort);
   }
 
   get timeout() {
@@ -213,15 +250,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return Promise.resolve(this.getBunServer() || Bun.peek(this.init()));
   }
 
-  public async getListenAddress() {
-    await pollUntil(
-      () => this._serverInstance?.url,
-      (url) => !!url,
-    );
-
-    return this._serverInstance?.url;
-  }
-
   public getHeader(response: BunResponse, name: string) {
     return response.getHeader(name);
   }
@@ -229,30 +257,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   public appendHeader(response: BunResponse, name: string, value: string) {
     response.appendHeader(name, value);
     return this;
-  }
-
-  public async setListenOptions(
-    options: Partial<BunServeOptions> & {
-      hostname?: string;
-      port: string | number;
-    },
-    restartInstance = false,
-  ): Promise<Server | undefined> {
-    const hostname = options.hostname || "127.0.0.1";
-    const port = options.port;
-
-    this._listeningHost = hostname;
-    this._listeningPort = port;
-
-    this.serverOptions = omit(options, ["hostname", "port"]);
-
-    if (restartInstance && this.isServerListening && this._serverInstance) {
-      this._serverInstance.stop(false);
-      this.isServerListening = false;
-      return await this.listen(this._listeningPort, this._listeningHost);
-    }
-
-    return undefined;
   }
 
   private registerBodyParser(
@@ -292,6 +296,19 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this.registerBodyParser(undefined, rawBody, options);
   }
 
+  public async setListenOptions(
+    options: Partial<BunServeOptions> & {
+      hostname?: string;
+      port: string | number;
+    },
+  ): Promise<Server | undefined> {
+    const hostname = options.hostname || "127.0.0.1";
+    const port = options.port;
+
+    this.serverOptions = omit(options, ["hostname", "port"]);
+    return await this.listen(port, hostname);
+  }
+
   public async listen(
     port: string | number,
     callback?: (...args: unknown[]) => void,
@@ -306,10 +323,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     hostname?: string | ((...args: unknown[]) => void),
     callback?: (...args: unknown[]) => void,
   ) {
-    if (this.isServerListening || this._serverInstance) {
-      return this._serverInstance;
-    }
-
     hostname = isFunction(hostname) ? "127.0.0.1" : hostname;
     if (!hostname || !(isIPv4(hostname) || isIPv6(hostname))) {
       hostname = "127.0.0.1";
@@ -322,6 +335,20 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
         : () => undefined;
 
     port = Number(port);
+    if (!(this.listeningHost === hostname && this.listeningPort === port)) {
+      await this._serverInstance?.stop(true);
+      this._serverInstance = undefined;
+      this.isServerListening = false;
+    }
+
+    if (this.isServerListening || this._serverInstance) {
+      if (callback) {
+        await callback(this._serverInstance);
+      }
+
+      return this._serverInstance;
+    }
+
     const portsToTest: number[] = [port];
     while (portsToTest.length < 10) {
       portsToTest.push(port + portsToTest.length);
@@ -337,12 +364,19 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
     try {
       await this.init();
-      this.isServerListening = true;
+      const address = await this.getListenAddress();
 
+      if (!(address && this._serverInstance)) {
+        throw new Error(
+          `Ooops an error occurred while listening on ${this._listeningHost}:${this._listeningPort}`,
+        );
+      }
+
+      this.isServerListening = true;
       this.eventEmitter.emit("listening", this._serverInstance);
 
       if (callback) {
-        callback(this._serverInstance);
+        await callback(this._serverInstance);
       }
 
       return this._serverInstance;
@@ -353,6 +387,15 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       this.logger.log(e);
       process.exit(1);
     }
+  }
+
+  public async getListenAddress(): Promise<URL> {
+    const url = await pollUntil(
+      () => this._serverInstance?.url,
+      (url) => !!url,
+    );
+
+    return url as URL;
   }
 
   public reply(
@@ -547,13 +590,18 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       get: (_, prop) => {
         switch (true) {
           case [
+            "emit",
             "on",
             "once",
-            "addEventListener",
+            "addListener",
             "off",
             "removeListener",
+            "eventNames",
+            "listeners",
+            "listenerCount",
+            "removeAllListeners",
           ].includes(prop as string): {
-            let method = get(this.eventEmitter, "prop") as
+            let method = get(this.eventEmitter, prop) as
               | CallableFunction
               | undefined;
 
@@ -562,7 +610,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
               return method;
             }
 
-            return undefined;
+            return () => null;
           }
 
           case prop === "then": {
@@ -623,10 +671,11 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       hostname: this._listeningHost,
       development: Bun.env.NODE_ENV !== "production",
       async fetch(nativeRequest: Request, server) {
-        const req = new BunRequest(nativeRequest, server, {
-          canHandleUpload: true,
-          parseCookies: true,
-        });
+        const req = await BunRequest.init(
+          nativeRequest,
+          server,
+          that.requestOpts,
+        );
 
         const res = new BunResponse(req);
         let routeUsed: matchedRoute | true | undefined;
@@ -1042,20 +1091,12 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType {
     return ((path, callback) => {
-      try {
-        const convertedPath = LegacyRouteConverter.tryConvert(path);
-        const method = this.getRequestMethodStr(requestMethod);
-        return this.instance.add(
-          method,
-          convertedPath,
-          callback as unknown as RouterHandler,
-        );
-      } catch (e) {
-        if (e instanceof TypeError) {
-          LegacyRouteConverter.printError(path);
-        }
-        throw e;
-      }
+      const method = this.getRequestMethodStr(requestMethod);
+      return this.instance.add(
+        method,
+        path,
+        callback as unknown as RouterHandler,
+      );
     }) as MiddlewareFactoryRespType;
   }
 

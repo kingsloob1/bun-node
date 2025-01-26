@@ -15,10 +15,13 @@
 
     // Bun Specific Because It uses this for module aliasing
     "paths": {
-      "src/*": ["./src/*"],
-      "config/*": ["./src/config/*"],
-      "utils/*": ["./src/utils/*"]
+      "lib/*": ["./lib/*"]
     },
+    "typeRoots": [
+      "./node_modules/@types",
+      "../../node_modules/@types",
+      "./typings"
+    ],
     "allowImportingTsExtensions": true,
     "allowJs": true,
 
@@ -39,5 +42,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["./lib/**/*", "./.eslintrc", "./.prettierrc"]
+  "include": ["./lib/**/*", "./.eslintrc"]
 }

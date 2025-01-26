@@ -15,13 +15,12 @@
 
     // Bun Specific Because It uses this for module aliasing
     "paths": {
-      "src/*": ["./src/*"],
-      "config/*": ["./src/config/*"],
-      "utils/*": ["./src/utils/*"]
+      "lib/*": ["./lib/*"],
+      "utils/*": ["./lib/utils/*"]
     },
     "typeRoots": [
       "./node_modules/@types",
-      "./node_modules/bun-types",
+      "../../node_modules/@types",
       "./typings"
     ],
     "allowImportingTsExtensions": true,
@@ -44,5 +43,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["./lib/**/*", "eslint.config.mjs", "./.prettierrc"]
+  "include": ["./lib/**/*", "eslint.config.mjs"]
 }
