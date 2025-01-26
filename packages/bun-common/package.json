@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-common",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
