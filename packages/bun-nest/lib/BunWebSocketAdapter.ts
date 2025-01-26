@@ -9,14 +9,14 @@ import {
 } from "@kingsleyweb/bun-common";
 import { isArray, isUndefined } from "lodash-es";
 
-export interface WebSocketClientData {
+export interface WebSocketClientData<T = unknown> {
   path: string;
   headers: Headers;
   user?: Record<string, unknown>;
-  [string: string]: unknown;
+  custom: T;
 }
 
-export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
+export type WebSocketClient = ServerWebSocket<WebSocketClientData<unknown>>;
 
 export enum MessageEventTypes {
   CONNECT = 0,
@@ -87,7 +87,7 @@ export class BunWebSocketAdapter
   implements
     WebSocketAdapter<
       Server | undefined,
-      ServerWebSocket,
+      WebSocketClient,
       {
         attachUpgrade?: boolean;
       }
@@ -144,19 +144,23 @@ export class BunWebSocketAdapter
 
   bindClientConnect(
     server: Server | undefined,
-    callback: (client: ServerWebSocket, server?: Server) => unknown,
+    callback: (client: WebSocketClient, server?: Server) => unknown,
   ) {
-    this.on("connect", (client: ServerWebSocket) => {
+    this.on("connect", (client: WebSocketClient) => {
       callback(client, server || this.getServer());
     });
   }
 
   bindClientDisconnect(
-    client: ServerWebSocket,
-    callback: (client: ServerWebSocket) => unknown,
+    client: WebSocketClient,
+    callback: (
+      client: WebSocketClient,
+      code: number,
+      reason: string,
+    ) => unknown,
   ) {
-    this.on("disconnect", (sentWsClient: ServerWebSocket) => {
-      callback(sentWsClient || client);
+    this.on("disconnect", (sentWsClient: WebSocketClient, code, reason) => {
+      callback(sentWsClient || client, code, reason);
     });
   }
 
@@ -169,7 +173,7 @@ export class BunWebSocketAdapter
   }
 
   bindMessageHandlers(
-    client: ServerWebSocket,
+    client: WebSocketClient,
     handlers: WsMessageHandler<string>[],
   ) {
     const messageHandler: BunWebsocketHandlerFor<"message"> = (

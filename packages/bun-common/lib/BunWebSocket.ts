@@ -1,4 +1,6 @@
+/* eslint-disable perfectionist/sort-imports */
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
+import type TypedEventEmitter from "typed-emitter";
 import type {
   BunRouter,
   BunServeOptions,
@@ -9,6 +11,7 @@ import { EventEmitter } from "node:stream";
 import isNumeric from "fast-isnumeric";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
 import { BunRequest, BunResponse } from "./index";
+import type { BunRequestOptions } from "./BunHttpAdapter";
 
 export interface WebSocketClientData<CustomData = unknown> {
   path: string;
@@ -47,6 +50,7 @@ export interface BunWebSocketCreateServerOptions
   serverOptions?: BunServeOptions;
   request?: BunRequest;
   response?: BunResponse;
+  bunRequestOpts?: BunRequestOptions;
 }
 
 export interface BunWebSocketNormalOptions extends BunWebSocketGeneralOptions {
@@ -58,7 +62,16 @@ export type BunWebSocketOptions =
   | BunWebSocketNormalOptions
   | BunWebSocketCreateServerOptions;
 
-export class BunWebSocket extends EventEmitter {
+export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
+  connect: NonNullable<WebSocketHandler<WebSocketClientData>["open"]>;
+  open: NonNullable<WebSocketHandler<WebSocketClientData>["open"]>;
+  message: NonNullable<WebSocketHandler<WebSocketClientData>["message"]>;
+  disconnect: NonNullable<WebSocketHandler<WebSocketClientData>["close"]>;
+  close: NonNullable<WebSocketHandler<WebSocketClientData>["close"]>;
+  ping: NonNullable<WebSocketHandler<WebSocketClientData>["ping"]>;
+  pong: NonNullable<WebSocketHandler<WebSocketClientData>["pong"]>;
+  drain: NonNullable<WebSocketHandler<WebSocketClientData>["drain"]>;
+}>) {
   private _wsServers = new Map<number, Server>();
   private _serverInstance?: Server;
   private _getServerInstance?: () => Server | undefined;
@@ -80,31 +93,31 @@ export class BunWebSocket extends EventEmitter {
       idleTimeout: 30, // 30 seconds
       maxPayloadLength: 1024 * 1024, // 1 MB
       ...(options?.wsOptions || {}),
-      open: async (ws) => {
-        this.emit("connect", ws);
-        this.emit("open", ws);
-        await this.processRegisteredRouteHandlerFor("open", ws);
+      open: async (...args) => {
+        this.emit("connect", ...args);
+        this.emit("open", ...args);
+        await this.processRegisteredRouteHandlerFor("open", ...args);
       },
-      message: async (ws, message) => {
-        this.emit("message", ws, message);
-        await this.processRegisteredRouteHandlerFor("message", ws);
+      message: async (...args) => {
+        this.emit("message", ...args);
+        await this.processRegisteredRouteHandlerFor("message", ...args);
       },
-      close: async (ws) => {
-        this.emit("disconnect", ws);
-        this.emit("close", ws);
-        await this.processRegisteredRouteHandlerFor("close", ws);
+      close: async (...args) => {
+        this.emit("disconnect", ...args);
+        this.emit("close", ...args);
+        await this.processRegisteredRouteHandlerFor("close", ...args);
       },
-      ping: async (ws, data) => {
-        this.emit("ping", ws, data);
-        await this.processRegisteredRouteHandlerFor("ping", ws);
+      ping: async (...args) => {
+        this.emit("ping", ...args);
+        await this.processRegisteredRouteHandlerFor("ping", ...args);
       },
-      pong: async (ws, data) => {
-        this.emit("pong", ws, data);
-        await this.processRegisteredRouteHandlerFor("pong", ws);
+      pong: async (...args) => {
+        this.emit("pong", ...args);
+        await this.processRegisteredRouteHandlerFor("pong", ...args);
       },
-      drain: async (ws) => {
-        this.emit("drain", ws);
-        await this.processRegisteredRouteHandlerFor("drain", ws);
+      drain: async (...args) => {
+        this.emit("drain", ...args);
+        await this.processRegisteredRouteHandlerFor("drain", ...args);
       },
     } as WebSocketHandler<WebSocketClientData>;
 
@@ -151,9 +164,16 @@ export class BunWebSocket extends EventEmitter {
         fetch: async (nativeRequest: Request, server) => {
           const req =
             options.request ||
-            new BunRequest(nativeRequest, server, {
-              canHandleUpload: false,
-            });
+            (await BunRequest.init(
+              nativeRequest,
+              server,
+              options.bunRequestOpts || {
+                parseBody: true,
+                parseCookies: true,
+                parseQuery: true,
+              },
+            ));
+
           const res = options.response || new BunResponse(req);
           let routeUsed: matchedRoute | true | undefined;
 
@@ -290,8 +310,9 @@ export class BunWebSocket extends EventEmitter {
               const handlerToExecute = isObject(handler)
                 ? handler[event]
                 : undefined;
-              if (handlerToExecute && isFunction(handler)) {
-                return handler.call(bunServer, ws, ...otherArgs);
+
+              if (handlerToExecute && isFunction(handlerToExecute)) {
+                return handlerToExecute.call(bunServer, ws, ...otherArgs);
               }
 
               return undefined;

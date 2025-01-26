@@ -52,6 +52,7 @@
     "qs": "^6.14.0",
     "range-parser": "^1.2.1",
     "type-is": "^1.6.18",
+    "typed-emitter": "^2.1.0",
     "until-promise": "^0.3.0",
     "vary": "^1.1.2"
   },
