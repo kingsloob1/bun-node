@@ -210,9 +210,10 @@ export class BunHttpAdapter extends BunRouter {
 
   public setTimeout(reqTimeout: number, callback: CallableFunction) {
     this.requestTimeout = reqTimeout;
-    callback();
-
-    return Promise.resolve(this.getBunServer() || Bun.peek(this.init()));
+    return pollUntil(
+      () => this.getBunServer(),
+      (server) => !!server,
+    ).then(callback as unknown as (server: Server | undefined) => unknown);
   }
 
   public getHeader(response: BunResponse, name: string) {
@@ -328,7 +329,134 @@ export class BunHttpAdapter extends BunRouter {
     this._listeningPort = availablePort;
 
     try {
-      await this.init();
+      // eslint-disable-next-line ts/no-this-alias
+      const that = this;
+      const serverInstance = Bun.serve({
+        ...(this.serverOptions || {}),
+        port: this._listeningPort,
+        hostname: this._listeningHost,
+        development: Bun.env.NODE_ENV !== "production",
+        async fetch(nativeRequest: Request, server) {
+          const req = await BunRequest.init(
+            nativeRequest,
+            server,
+            that.requestOpts,
+          );
+
+          const res = new BunResponse(req);
+          let routeUsed: matchedRoute | true | undefined;
+
+          try {
+            routeUsed = await that.instance.handle({
+              requestHost: req.host,
+              requestMethod: req.method,
+              response: res,
+              request: req,
+              requestUrl: req.originalUrl,
+            });
+          } catch (e) {
+            let err = e;
+            if (!isObject(err)) {
+              err = new Error(String(e));
+            }
+
+            set(err as unknown as Record<string, unknown>, "req", req);
+            throw err;
+          }
+
+          let hasNativeResponse = false;
+          if (routeUsed) {
+            hasNativeResponse = true;
+          } else if (that._notFoundHandlers.length) {
+            let continueProcessingHandlers = true;
+            const next: NextFunction = (err) => {
+              if (!(isUndefined(err) || isNull(err))) {
+                continueProcessingHandlers = false;
+              }
+            };
+
+            for await (const handler of that._notFoundHandlers) {
+              if (!continueProcessingHandlers) {
+                break;
+              }
+
+              const resp = await handler(req, res, next);
+              continueProcessingHandlers = !!resp;
+            }
+
+            hasNativeResponse = true;
+          }
+
+          if (hasNativeResponse) {
+            if (res.upgradeToWsData) {
+              const success = server.upgrade(nativeRequest, {
+                data: res.upgradeToWsData,
+              });
+
+              if (success) {
+                return undefined;
+              }
+
+              let response = new Response(
+                "An error occurred while upgrading websocket",
+                {
+                  status: 400,
+                },
+              );
+              try {
+                response = await res.getNativeResponse(100);
+              } catch {
+                //
+              }
+
+              return response;
+            }
+
+            const nativeResponse = await res.getNativeResponse(
+              that.requestTimeout,
+            );
+            return nativeResponse;
+          }
+
+          return new Response(undefined, {
+            status: 404,
+            statusText: "Not Found",
+          });
+        },
+        websocket: that.webSocketAdapter.wsHandler,
+        async error(err) {
+          const req = get(err, "req", undefined) as BunRequest | undefined;
+          if (!req) {
+            throw err;
+          }
+
+          let continueProcessingHandlers = true;
+          const next: NextFunction = (err) => {
+            if (!(isUndefined(err) || isNull(err))) {
+              continueProcessingHandlers = false;
+            }
+          };
+
+          const response = new BunResponse(req);
+          for await (const handler of that._errorHandlers) {
+            if (!continueProcessingHandlers) {
+              break;
+            }
+
+            const resp = await handler(err, req, response, next);
+            continueProcessingHandlers = !!resp;
+          }
+
+          if (that._errorHandlers.length) {
+            const nativeResponse = await response.getNativeResponse(1000);
+            return nativeResponse;
+          } else {
+            throw err;
+          }
+        },
+      });
+
+      this._serverInstance = serverInstance;
       const address = await this.getListenAddress();
 
       if (!(address && this._serverInstance)) {
@@ -550,135 +678,7 @@ export class BunHttpAdapter extends BunRouter {
       return this._serverInstance;
     }
 
-    // eslint-disable-next-line ts/no-this-alias
-    const that = this;
-    const serverInstance = Bun.serve({
-      ...(this.serverOptions || {}),
-      port: this._listeningPort,
-      hostname: this._listeningHost,
-      development: Bun.env.NODE_ENV !== "production",
-      async fetch(nativeRequest: Request, server) {
-        const req = await BunRequest.init(
-          nativeRequest,
-          server,
-          that.requestOpts,
-        );
-
-        const res = new BunResponse(req);
-        let routeUsed: matchedRoute | true | undefined;
-
-        try {
-          routeUsed = await that.instance.handle({
-            requestHost: req.host,
-            requestMethod: req.method,
-            response: res,
-            request: req,
-            requestUrl: req.originalUrl,
-          });
-        } catch (e) {
-          let err = e;
-          if (!isObject(err)) {
-            err = new Error(String(e));
-          }
-
-          set(err as unknown as Record<string, unknown>, "req", req);
-          throw err;
-        }
-
-        let hasNativeResponse = false;
-        if (routeUsed) {
-          hasNativeResponse = true;
-        } else if (that._notFoundHandlers.length) {
-          let continueProcessingHandlers = true;
-          const next: NextFunction = (err) => {
-            if (!(isUndefined(err) || isNull(err))) {
-              continueProcessingHandlers = false;
-            }
-          };
-
-          for await (const handler of that._notFoundHandlers) {
-            if (!continueProcessingHandlers) {
-              break;
-            }
-
-            const resp = await handler(req, res, next);
-            continueProcessingHandlers = !!resp;
-          }
-
-          hasNativeResponse = true;
-        }
-
-        if (hasNativeResponse) {
-          if (res.upgradeToWsData) {
-            const success = server.upgrade(nativeRequest, {
-              data: res.upgradeToWsData,
-            });
-
-            if (success) {
-              return undefined;
-            }
-
-            let response = new Response(
-              "An error occurred while upgrading websocket",
-              {
-                status: 400,
-              },
-            );
-            try {
-              response = await res.getNativeResponse(100);
-            } catch {
-              //
-            }
-
-            return response;
-          }
-
-          const nativeResponse = await res.getNativeResponse(
-            that.requestTimeout,
-          );
-          return nativeResponse;
-        }
-
-        return new Response(undefined, {
-          status: 404,
-          statusText: "Not Found",
-        });
-      },
-      websocket: that.webSocketAdapter.wsHandler,
-      async error(err) {
-        const req = get(err, "req", undefined) as BunRequest | undefined;
-        if (!req) {
-          throw err;
-        }
-
-        let continueProcessingHandlers = true;
-        const next: NextFunction = (err) => {
-          if (!(isUndefined(err) || isNull(err))) {
-            continueProcessingHandlers = false;
-          }
-        };
-
-        const response = new BunResponse(req);
-        for await (const handler of that._errorHandlers) {
-          if (!continueProcessingHandlers) {
-            break;
-          }
-
-          const resp = await handler(err, req, response, next);
-          continueProcessingHandlers = !!resp;
-        }
-
-        if (that._errorHandlers.length) {
-          const nativeResponse = await response.getNativeResponse(1000);
-          return nativeResponse;
-        } else {
-          throw err;
-        }
-      },
-    });
-
-    this._serverInstance = serverInstance;
-    return serverInstance;
+    return undefined;
   }
 
   public initNodeHttpServer() {
