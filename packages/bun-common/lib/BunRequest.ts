@@ -151,6 +151,22 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       validation: Validation.Lax,
     });
 
+    if (!isBoolean(this.options?.parseBody)) {
+      set(this, "options.parseBody", true);
+    }
+
+    if (!isBoolean(this.options?.parseCookies)) {
+      set(this, "options.parseCookies", true);
+    }
+
+    if (!isBoolean(this.options?.parseQuery)) {
+      set(this, "options.parseQuery", true);
+    }
+
+    if (!isObject(this.options?.parseMultiPartFormDataOpts)) {
+      set(this, "options.parseMultiPartFormDataOpts", {});
+    }
+
     if (!this.options?.parseQueryOpts) {
       set(this, "options.parseQueryOpts", {
         ...DEFAULT_PARSE_QUERY_OPTS,
