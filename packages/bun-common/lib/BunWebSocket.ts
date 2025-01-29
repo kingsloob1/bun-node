@@ -27,7 +27,7 @@ export type BunWebsocketHandlerFor<
 
 export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
 
-interface BunWebSocketGeneralOptions {
+export interface BunWebSocketGeneralOptions {
   wsOptions?: Omit<
     WebSocketHandler<WebSocketClientData>,
     "open" | "close" | "message" | "drain" | "ping" | "pong"
@@ -312,7 +312,121 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
                 : undefined;
 
               if (handlerToExecute && isFunction(handlerToExecute)) {
-                return handlerToExecute.call(bunServer, ws, ...otherArgs);
+                switch (event) {
+                  case "open": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["open"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  case "close": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["close"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  case "drain": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["drain"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  case "message": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["message"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  case "ping": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["ping"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  case "pong": {
+                    type HandlerFnType = NonNullable<
+                      WebSocketHandler<WebSocketClientData>["pong"]
+                    >;
+                    type FnHandlerParameters = Parameters<HandlerFnType>;
+
+                    const [wsClient, ...fnArgs] = [
+                      ws,
+                      ...otherArgs,
+                    ] as unknown as FnHandlerParameters;
+
+                    return (handlerToExecute as HandlerFnType).call(
+                      bunServer,
+                      wsClient,
+                      ...fnArgs,
+                    );
+                  }
+
+                  default: {
+                    return (
+                      handlerToExecute as (ws: WebSocketClient) => unknown
+                    ).call(bunServer, ws);
+                  }
+                }
               }
 
               return undefined;

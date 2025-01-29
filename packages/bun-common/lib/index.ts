@@ -57,14 +57,26 @@ export {
 export {
   BunWebSocket,
   type BunWebSocketCreateServerOptions,
+  type BunWebSocketGeneralOptions,
   type BunWebsocketHandlerFor,
   type BunWebSocketNormalOptions,
   type BunWebSocketOptions,
   type WebSocketClientData,
 } from "./BunWebSocket";
-export { BunRequest } from "./BunRequest";
+export {
+  BunRequest,
+  DEFAULT_PARSE_QUERY_OPTS,
+  type QueryParserOpts,
+} from "./BunRequest";
 export { BunResponse } from "./BunResponse";
-export { BunRouter } from "./BunRouter";
+export {
+  BunRouter,
+  type CachedRouteMatch,
+  RouteClass,
+  type RouteConstructorOption,
+  type RouteMatchMethodOptionType,
+  routeModulePath,
+} from "./BunRouter";
 export {
   BunHttpAdapter,
   type BunRouterOptions,

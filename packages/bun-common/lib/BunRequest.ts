@@ -53,6 +53,16 @@ import typeIs from "type-is";
 import { streamToBuffer } from "./utils/general";
 
 export type QueryParserOpts = Parameters<typeof qs.parse>[1];
+
+export const DEFAULT_PARSE_QUERY_OPTS = Object.freeze({
+  depth: 100,
+  ignoreQueryPrefix: true,
+  allowDots: true,
+  allowEmptyArrays: true,
+  arrayLimit: 999999999,
+  allowSparse: true,
+});
+
 export class BunRequest extends EventEmitter implements BunRequestInterface {
   private headerNamesWithMultiple: string[] = [
     "cache-control",
@@ -117,12 +127,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       parseCookies: true,
       parseQuery: true,
       parseQueryOpts: {
-        depth: 100,
-        ignoreQueryPrefix: true,
-        allowDots: true,
-        allowEmptyArrays: true,
-        arrayLimit: 999999999,
-        allowSparse: true,
+        ...DEFAULT_PARSE_QUERY_OPTS,
       },
       parseMultiPartFormDataOpts: {},
     },
@@ -146,8 +151,16 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       validation: Validation.Lax,
     });
 
+    if (!this.options?.parseQueryOpts) {
+      set(this, "options.parseQueryOpts", {
+        ...DEFAULT_PARSE_QUERY_OPTS,
+      });
+    }
+
     if (this.options?.parseQuery) {
-      this._initPromises.push(Promise.resolve(this.parseQuery()));
+      this._initPromises.push(
+        Promise.resolve(this.parseQuery(this.options.parseQueryOpts)),
+      );
     }
 
     if (this.options?.parseBody) {
@@ -720,7 +733,8 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
   public parseQuery(opts?: QueryParserOpts) {
     const options: QueryParserOpts = opts ||
-      this.options?.parseQueryOpts || { depth: 100 };
+      this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
+
     this.query = qs.parse(this.parsedUrl.search, options);
     return this.query;
   }
