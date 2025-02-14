@@ -1,4 +1,9 @@
-import type { Serve } from "bun";
+import type {
+  ServeOptions,
+  TLSServeOptions,
+  UnixServeOptions,
+  UnixTLSServeOptions,
+} from "bun";
 import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
 import type { JSONCookies } from "cookie-parser";
 import type { FileTypeResult } from "file-type";
@@ -90,7 +95,25 @@ export interface BunRequestInterface {
   }>;
 }
 
-export type BunServeOptions = Omit<Serve, "fetch" | "websocket">;
+export type BunServeNormalOptions = Omit<
+  ServeOptions,
+  "fetch" | "port" | "hostname"
+>;
+
+export type BunServeNormalTlsOptions = Omit<
+  TLSServeOptions,
+  "fetch" | "port" | "hostname"
+>;
+
+export type BunServeUnixNormalOptions = Omit<UnixServeOptions, "fetch">;
+
+export type BunServeUnixNormalTlsOptions = Omit<UnixTLSServeOptions, "fetch">;
+
+export type BunServeOptions =
+  | BunServeNormalOptions
+  | BunServeNormalTlsOptions
+  | BunServeUnixNormalOptions
+  | BunServeUnixNormalTlsOptions;
 
 export type BunServer = ReturnType<typeof Bun.serve>;
 

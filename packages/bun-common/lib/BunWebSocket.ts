@@ -3,7 +3,8 @@ import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import type TypedEventEmitter from "typed-emitter";
 import type {
   BunRouter,
-  BunServeOptions,
+  BunServeNormalOptions,
+  BunServeNormalTlsOptions,
   matchedRoute,
   NextFunction,
 } from "./index";
@@ -47,7 +48,7 @@ export interface BunWebSocketCreateServerOptions
     host?: string;
     port: number;
   };
-  serverOptions?: BunServeOptions;
+  serverOptions?: BunServeNormalOptions | BunServeNormalTlsOptions;
   request?: BunRequest;
   response?: BunResponse;
   bunRequestOpts?: BunRequestOptions;

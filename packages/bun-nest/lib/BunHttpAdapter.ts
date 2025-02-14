@@ -21,6 +21,8 @@ import {
   BunResponse,
   BunRouter,
   type BunRouterOptions,
+  type BunServeNormalOptions,
+  type BunServeNormalTlsOptions,
   type BunServeOptions,
   type BunServer,
   type matchedRoute,
@@ -42,6 +44,7 @@ import cors from "cors";
 import EventEmitter from "eventemitter3";
 import getPort from "get-port";
 import {
+  each,
   get,
   isFunction,
   isNull,
@@ -89,7 +92,11 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
-  private serverOptions: BunServeOptions | undefined = undefined;
+  private serverOptions:
+    | BunServeNormalOptions
+    | BunServeNormalTlsOptions
+    | undefined = undefined;
+
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   private _hasRegisteredBodyParser = false;
@@ -99,9 +106,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     protected requestTimeout = 0,
     options?: {
       request?: BunRequestOptions;
-      websocket?: WebsocketOptions;
+      websocket?: Partial<WebsocketOptions>;
       logger?: Logger;
       router?: BunRouterOptions;
+      server?: BunServeNormalOptions | BunServeNormalTlsOptions;
     },
   ) {
     const websocketOptions = options?.websocket || {};
@@ -121,6 +129,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     };
 
     this.logger = logger;
+    this.serverOptions = options?.server || {};
     this.webSocketAdapter = new BunNestWebsocketAdapter(this, {
       router: this,
       newInstance: false,
@@ -306,7 +315,14 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     const hostname = options.hostname || "127.0.0.1";
     const port = options.port;
 
-    this.serverOptions = omit(options, ["hostname", "port"]);
+    const mainServeOptions = omit(options, ["hostname", "port"]);
+    const serverOptions = this.serverOptions || {};
+
+    each(mainServeOptions, (value, key) => {
+      set(serverOptions, key, value);
+    });
+
+    this.serverOptions = serverOptions;
     return await this.listen(port, hostname);
   }
 
