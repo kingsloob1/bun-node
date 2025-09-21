@@ -8,7 +8,7 @@ import type {
   matchedRoute,
   NextFunction,
 } from "./index";
-import { EventEmitter } from "node:stream";
+import { EventEmitter } from "node:events";
 import isNumeric from "fast-isnumeric";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
 import { BunRequest, BunResponse } from "./index";
