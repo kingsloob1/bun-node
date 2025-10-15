@@ -14,4 +14,5 @@ httpAdapter.eventEmitter.on("listening", (server: BunServer) => {
   });
 });
 
+// eslint-disable-next-line antfu/no-top-level-await
 await httpAdapter.listen(10000);

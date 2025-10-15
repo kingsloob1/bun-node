@@ -1,12 +1,13 @@
-import type { matchedRoute, RouterMiddlewareHandler } from "../../lib";
-import { get, isObject, set } from "lodash-es";
-import { BunRequest, BunResponse, BunRouter } from "../../lib";
+import type { RouterMiddlewareHandler } from "../../lib";
+import { Buffer } from "node:buffer";
+import * as path from "node:path";
+import { BunHttpAdapter } from "../../lib";
 
 const port = 3000;
 const hostname = "127.0.0.1";
-const router = new BunRouter();
+const httpAdapter = new BunHttpAdapter(1000);
 
-const eventsHandler: RouterMiddlewareHandler = (req, res) => {
+const apiHandler: RouterMiddlewareHandler = (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   res.send("happy Guy");
@@ -17,110 +18,50 @@ const eventsHandler: RouterMiddlewareHandler = (req, res) => {
   });
 };
 
-// SSE route
-router.get(`/api`, eventsHandler);
+httpAdapter.instance.get("/", () => {
+  return Bun.file(path.join(__dirname, "index.html"));
+});
 
-const serverInstance = Bun.serve({
-  port,
-  hostname,
-  development: Bun.env.NODE_ENV !== "production",
-  async fetch(nativeRequest: Request, server) {
-    // server.timeout(nativeRequest, 10 * 60 * 60);
-    const req = new BunRequest(nativeRequest, server, {
-      canHandleUpload: true,
-      parseCookies: true,
+// API route
+httpAdapter.instance.get("/api", apiHandler);
+
+// Websocket route
+httpAdapter.instance.ws("/websocket/main", {
+  ping(ws) {
+    console.log("Websocket ping here ====> ", { data: ws.data });
+  },
+  pong(ws) {
+    console.log("Websocket pong here ====> ", { data: ws.data });
+  },
+  open(ws) {
+    console.log("Websocket open here ====> ", { data: ws.data });
+
+    // Close after 15 seconds
+    setTimeout(() => {
+      ws.close(1000, "Time for webscoket to die");
+    }, 15000);
+  },
+  message(ws, message) {
+    console.log("Websocket message here ====> ", {
+      data: ws.data,
+      message: Buffer.from(message).toString(),
     });
 
-    const res = new BunResponse(req);
-    let routeUsed: matchedRoute | true | undefined;
-
-    try {
-      routeUsed = await router.handle({
-        requestHost: req.host,
-        requestMethod: req.method,
-        response: res,
-        request: req,
-        requestUrl: req.originalUrl,
-      });
-    } catch (e) {
-      let err = e;
-      if (!isObject(err)) {
-        err = new Error(String(e));
-      }
-
-      set(err as unknown as Record<string, unknown>, "req", req);
-      throw err;
-    }
-
-    let hasNativeResponse = false;
-    if (routeUsed) {
-      hasNativeResponse = true;
-    }
-
-    if (hasNativeResponse) {
-      if (res.upgradeToWsData) {
-        const success = server.upgrade(nativeRequest, {
-          data: res.upgradeToWsData,
-        });
-
-        if (success) {
-          return undefined;
-        }
-
-        let response = new Response(
-          "An error occurred while upgrading websocket",
-          {
-            status: 400,
-          },
-        );
-        try {
-          response = await res.getNativeResponse(100);
-        } catch {
-          //
-        }
-
-        return response;
-      }
-
-      const nativeResponse = await res.getNativeResponse(1000);
-      return nativeResponse;
-    }
-
-    return new Response(undefined, {
-      status: 404,
-      statusText: "Not Found",
-    });
-  },
-  websocket: {
-    open(ws) {
-      console.log(`OPEN WS...`, ws);
-    },
-    message(ws, message) {
-      console.log(`Message WS...`, {
-        ws,
-        message,
-      });
-    },
-    close(ws, code, reason) {
-      console.log(`Close WS...`, {
-        ws,
-        code,
-        reason,
-      });
-    },
-  },
-  async error(err) {
-    const req = get(err, "req", undefined) as BunRequest | undefined;
-    if (!req) {
-      throw err;
-    }
-
-    console.log(err);
-
-    throw err;
+    setTimeout(() => {
+      ws.sendText(`${Buffer.from(message).toString()}`);
+    }, 500);
   },
 });
 
-console.log(
-  `API server running at http://${serverInstance.hostname}:${serverInstance.port}`,
-);
+// Set not found handler
+httpAdapter.setNotFoundHandler((req, res) => {
+  const errText = `Path ${req.path} is currently not available =====> `;
+  console.log(errText);
+  return res.status(404).end(errText);
+});
+
+httpAdapter.listen(port, hostname, () => {
+  console.log(
+    `API server running at http://${httpAdapter.serverAddress.address}:${httpAdapter.serverAddress.port}`,
+  );
+});

@@ -4,20 +4,51 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSE Test</title>
+  <title>API And Websocket Test</title>
 </head>
 <body>
-  <h1>Response Using Readable Stream Example</h1>
+  <section>
+  <h1>API response test</h1>
   <div id="messages"></div>
+  </section>
 
   <script>
+    //Api Script test
     (async () => {
       try{
         // Create a new EventSource
-        const resp = await fetch('http://127.0.0.1:3000/events');
+        const resp = await fetch('http://127.0.0.1:3000/api');
         const text = await resp.text();
         const messagesDiv = document.getElementById('messages');
         messagesDiv.innerHTML += `<p>${text}</p>`;
+      } catch(e) {
+        console.error(e);
+      }
+    })();
+  </script>
+
+  <script>
+    //Websocket Script test
+    (async () => {
+      try{
+        const messagesDiv = document.getElementById('messages');
+        // Create a new Websocket
+        const ws = new WebSocket('ws://127.0.0.1:3000/websocket/main');
+        ws.addEventListener('open', function(){
+          messagesDiv.innerHTML += `<p>Websocket opened here</p>`;
+          ws.send(`Hi i am a ws client from =====> ${navigator.userAgent}`)
+        });
+
+        ws.addEventListener('message', function(messageEvent){
+          messagesDiv.innerHTML += `<p>Websocket received message here ====> <code>${messageEvent.data}</code></p>`;
+          
+          const sentNo = Number(messageEvent.data);
+          this.send(isNaN(sentNo) ? '1' : `${sentNo + 1}`);
+        });
+
+        ws.addEventListener('close', function(closeEvent){
+          messagesDiv.innerHTML += `<p>Websocket closed here ====> <code>${JSON.stringify({code: closeEvent.code, reason: closeEvent.reason ?? 'undefined', returnValue: closeEvent.returnValue ?? 'undefined'})}</code></p>`;
+        });
       } catch(e) {
         console.error(e);
       }

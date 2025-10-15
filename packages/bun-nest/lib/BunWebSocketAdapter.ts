@@ -1,22 +1,16 @@
-import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
-import type { Server, ServerWebSocket } from "bun";
-import type { BunHttpAdapter } from "./BunHttpAdapter";
-import { Buffer } from "node:buffer";
-import {
-  BunWebSocket,
-  type BunWebsocketHandlerFor,
-  type BunWebSocketOptions,
+import type {
+  BunHttpAdapter,
+  BunWebSocketCreateServerOptions,
+  BunWebsocketHandlerFor,
+  BunWebSocketNormalOptions,
+  BunWebSocketOptions,
+  BunWebSocketServerType,
+  WebSocketClient,
 } from "@kingsleyweb/bun-common";
+import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
+import { Buffer } from "node:buffer";
+import { BunWebSocket } from "@kingsleyweb/bun-common";
 import { isArray, isUndefined } from "lodash-es";
-
-export interface WebSocketClientData<T = unknown> {
-  path: string;
-  headers: Headers;
-  user?: Record<string, unknown>;
-  custom: T;
-}
-
-export type WebSocketClient = ServerWebSocket<WebSocketClientData<unknown>>;
 
 export enum MessageEventTypes {
   CONNECT = 0,
@@ -82,11 +76,47 @@ export type MessageFormat =
   | MessageErrorType
   | MessageBinaryAckType;
 
-export class BunWebSocketAdapter
-  extends BunWebSocket
+export type BunWebsocketHttpAdapter<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> = Pick<
+  InstanceType<typeof BunHttpAdapter<customWebsocketDataType, routesType>>,
+  "instance" | "getBunServer"
+>;
+
+export interface BunWebSocketAdapterOptionsFromHttpAdapter<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> {
+  httpAdapter: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
+  localOptions?: BunWebSocketOptions<customWebsocketDataType, routesType>;
+}
+
+export type BunWebSocketAdapterNormalOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> = BunWebSocketOptions<customWebsocketDataType, routesType> & {
+  httpAdapter?: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
+};
+
+export type BunWebSocketAdapterOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> =
+  | BunWebSocketAdapterOptionsFromHttpAdapter<
+      customWebsocketDataType,
+      routesType
+    >
+  | BunWebSocketAdapterNormalOptions<customWebsocketDataType, routesType>;
+
+export class BunWebSocketAdapter<
+    customWebsocketDataType = unknown,
+    routesType extends string = never,
+  >
+  extends BunWebSocket<customWebsocketDataType>
   implements
     WebSocketAdapter<
-      Server | undefined,
+      BunWebSocketServerType<customWebsocketDataType> | undefined,
       WebSocketClient,
       {
         attachUpgrade?: boolean;
@@ -94,27 +124,45 @@ export class BunWebSocketAdapter
     >
 {
   constructor(
-    private httpAdapter: BunHttpAdapter,
-    localOptions?: BunWebSocketOptions | undefined,
+    options: BunWebSocketAdapterOptions<customWebsocketDataType, routesType>,
   ) {
-    const newInstance = localOptions?.newInstance || false;
-    const getServer = () => {
-      const newInstance = localOptions?.newInstance || false;
-      if (newInstance) {
-        return this.getServer();
-      }
+    const localOptions =
+      "localOptions" in options
+        ? options.localOptions
+        : "newInstance" in options
+          ? options
+          : undefined;
 
-      return httpAdapter.getBunServer();
-    };
-
-    const superOptions = {
-      ...(localOptions || {}),
-      newInstance,
-      getServer,
-      router: httpAdapter.instance,
-    } as unknown as BunWebSocketOptions;
-
-    super(superOptions);
+    if (options.httpAdapter) {
+      super({
+        newInstance: false,
+        wsOptions: localOptions?.wsOptions,
+        router: options.httpAdapter.instance,
+        customDataToWsClientFn: localOptions?.customDataToWsClientFn,
+        getServer() {
+          return options.httpAdapter?.getBunServer();
+        },
+      } satisfies BunWebSocketNormalOptions<customWebsocketDataType>);
+    } else {
+      const createOptions =
+        "newInstance" in options && options.newInstance ? options : undefined;
+      super({
+        newInstance: true,
+        listen: createOptions?.listen ?? {
+          port: 7817,
+        },
+        serverOptions: createOptions?.serverOptions,
+        request: createOptions?.request,
+        response: createOptions?.response,
+        bunRequestOpts: createOptions?.bunRequestOpts,
+        wsOptions: localOptions?.wsOptions,
+        router: localOptions?.router,
+        customDataToWsClientFn: localOptions?.customDataToWsClientFn,
+      } satisfies BunWebSocketCreateServerOptions<
+        customWebsocketDataType,
+        routesType
+      >);
+    }
   }
 
   // eslint-disable-next-line ts/ban-ts-comment
@@ -126,7 +174,7 @@ export class BunWebSocketAdapter
       transport: string[];
       [key: string]: unknown;
     },
-  ): Server | undefined {
+  ): BunWebSocketServerType<customWebsocketDataType> | undefined {
     if (Bun.env.NODE_ENV !== "production") {
       console.log("called websocket create adapter with the following ====> ", {
         port,
@@ -134,7 +182,7 @@ export class BunWebSocketAdapter
       });
     }
 
-    this.httpAdapter.instance.ws(
+    this.router.ws(
       options?.namespace ? options.namespace : "/*",
       this.wsHandler,
     );
@@ -143,25 +191,35 @@ export class BunWebSocketAdapter
   }
 
   bindClientConnect(
-    server: Server | undefined,
-    callback: (client: WebSocketClient, server?: Server) => unknown,
+    server: BunWebSocketServerType<customWebsocketDataType> | undefined,
+    callback: (
+      client: WebSocketClient<customWebsocketDataType>,
+      server?: BunWebSocketServerType<customWebsocketDataType>,
+    ) => unknown,
   ) {
-    this.on("connect", (client: WebSocketClient) => {
+    this.on("connect", (client: WebSocketClient<customWebsocketDataType>) => {
       callback(client, server || this.getServer());
     });
   }
 
   bindClientDisconnect(
-    client: WebSocketClient,
+    client: WebSocketClient<customWebsocketDataType>,
     callback: (
-      client: WebSocketClient,
+      client: WebSocketClient<customWebsocketDataType>,
       code: number,
       reason: string,
     ) => unknown,
   ) {
-    this.on("disconnect", (sentWsClient: WebSocketClient, code, reason) => {
-      callback(sentWsClient || client, code, reason);
-    });
+    this.on(
+      "disconnect",
+      (
+        sentWsClient: WebSocketClient<customWebsocketDataType>,
+        code,
+        reason,
+      ) => {
+        callback(sentWsClient || client, code, reason);
+      },
+    );
   }
 
   private buildMessage(obj: MessageFormat): string {
@@ -173,7 +231,7 @@ export class BunWebSocketAdapter
   }
 
   bindMessageHandlers(
-    client: WebSocketClient,
+    client: WebSocketClient<customWebsocketDataType>,
     handlers: WsMessageHandler<string>[],
   ) {
     const messageHandler: BunWebsocketHandlerFor<"message"> = (
@@ -262,9 +320,20 @@ export class BunWebSocketAdapter
     });
   }
 
-  close(server: Server | undefined) {
+  close(server: BunWebSocketServerType<customWebsocketDataType> | undefined) {
     return this.killServer(server || this.getServer());
   }
 }
 
-export class BunNestWebsocketAdapter extends BunWebSocketAdapter {}
+export class BunNestWebsocketAdapter<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> extends BunWebSocketAdapter<customWebsocketDataType, routesType> {}
+
+export type {
+  BunWebsocketHandlerFor,
+  BunWebSocketOptions,
+  BunWebSocketServerType,
+  WebSocketClient,
+  WebSocketClientData,
+} from "@kingsleyweb/bun-common";

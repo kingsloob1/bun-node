@@ -1,11 +1,13 @@
-import type { BunFile, Server } from "bun";
+import type { BunFile } from "bun";
+import type { CorsOptions as BunCorsOptions, CorsOptionsDelegate } from "cors";
 import type { Server as NodeServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type {
   BodyParserOptions,
   BodyParserType,
   BunServeNormalOptions,
-  BunServeNormalTlsOptions,
   BunServer,
+  BunWebSocketServerType,
   Logger,
   matchedRoute,
   NextFunction,
@@ -13,16 +15,14 @@ import type {
   RouterHandler,
   RouterMiddlewareHandler,
   ServeStaticOptions,
+  WebSocketClientData,
 } from "./index";
-import { type AddressInfo, isIPv4, isIPv6 } from "node:net";
+import { isIPv4, isIPv6 } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import cors, {
-  type CorsOptions as BunCorsOptions,
-  type CorsOptionsDelegate,
-} from "cors";
+import cors from "cors";
 import EventEmitter from "eventemitter3";
 import getPort from "get-port";
 import {
@@ -41,21 +41,30 @@ import { BunRouter } from "./BunRouter";
 import { BunRequest, BunResponse, BunWebSocket } from "./index";
 
 export type BunRequestOptions = ConstructorParameters<typeof BunRequest>[2];
-export type WebsocketOptions = ConstructorParameters<typeof BunWebSocket>[0];
+export type WebsocketOptions<customWebsocketDataType = unknown> =
+  ConstructorParameters<typeof BunWebSocket<customWebsocketDataType>>[0];
 export type BunRouterOptions = ConstructorParameters<typeof BunRouter>[0];
 
-export class BunHttpAdapter extends BunRouter {
+export class BunHttpAdapter<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> extends BunRouter {
   #requestOpts!: BunRequestOptions;
   #nodeHttpServer!: NodeServer;
   private _instance!: InstanceType<typeof BunRouter>;
-  private _websocketAdapter!: BunWebSocket;
-  private _serverInstance: BunServer | undefined = undefined;
+  private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
+  private _serverInstance:
+    | BunServer<WebSocketClientData<customWebsocketDataType>>
+    | undefined = undefined;
+
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
   private serverOptions:
-    | BunServeNormalOptions
-    | BunServeNormalTlsOptions
+    | BunServeNormalOptions<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >
     | undefined = undefined;
 
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
@@ -67,10 +76,13 @@ export class BunHttpAdapter extends BunRouter {
     protected requestTimeout = 0,
     options?: {
       request?: BunRequestOptions;
-      websocket?: Partial<WebsocketOptions>;
+      websocket?: Partial<WebsocketOptions<customWebsocketDataType>>;
       logger?: Logger;
       router?: BunRouterOptions;
-      server?: BunServeNormalOptions | BunServeNormalTlsOptions;
+      server?: BunServeNormalOptions<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >;
     },
   ) {
     const websocketOptions = options?.websocket || {};
@@ -94,14 +106,14 @@ export class BunHttpAdapter extends BunRouter {
 
     this.logger = logger;
     this.serverOptions = options?.server || {};
-    this.webSocketAdapter = new BunWebSocket({
+    this.webSocketAdapter = new BunWebSocket<customWebsocketDataType>({
       router: this,
       newInstance: false,
       getServer: () => {
         return this.getBunServer();
       },
       ...websocketOptions,
-    } as unknown as WebsocketOptions);
+    } as unknown as WebsocketOptions<customWebsocketDataType>);
 
     this.initNodeHttpServer();
   }
@@ -142,7 +154,7 @@ export class BunHttpAdapter extends BunRouter {
     let address: AddressInfo | undefined;
 
     if (this.isServerListening && this._serverInstance) {
-      hostname = this._serverInstance.hostname;
+      hostname = this._serverInstance.hostname ?? hostname;
       port = Number(this._serverInstance.port);
       address = get(this._serverInstance, "address", undefined) as
         | AddressInfo
@@ -175,7 +187,7 @@ export class BunHttpAdapter extends BunRouter {
     return this._websocketAdapter;
   }
 
-  set webSocketAdapter(adapter: BunWebSocket) {
+  set webSocketAdapter(adapter: BunWebSocket<customWebsocketDataType>) {
     this._websocketAdapter = adapter;
     this.instance.setBunWebSocket(this.webSocketAdapter);
   }
@@ -221,7 +233,13 @@ export class BunHttpAdapter extends BunRouter {
     return pollUntil(
       () => this.getBunServer(),
       (server) => !!server,
-    ).then(callback as unknown as (server: Server | undefined) => unknown);
+    ).then(
+      callback as unknown as (
+        server:
+          | BunServer<WebSocketClientData<customWebsocketDataType>>
+          | undefined,
+      ) => unknown,
+    );
   }
 
   public getHeader(response: BunResponse, name: string) {
@@ -271,11 +289,16 @@ export class BunHttpAdapter extends BunRouter {
   }
 
   public async setListenOptions(
-    options: Partial<BunServeNormalOptions | BunServeNormalTlsOptions> & {
+    options: Partial<
+      BunServeNormalOptions<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >
+    > & {
       hostname?: string;
       port: string | number;
     },
-  ): Promise<Server | undefined> {
+  ): Promise<BunWebSocketServerType<customWebsocketDataType> | undefined> {
     const hostname = options.hostname || "127.0.0.1";
     const port = options.port;
 
@@ -346,7 +369,10 @@ export class BunHttpAdapter extends BunRouter {
     try {
       // eslint-disable-next-line ts/no-this-alias
       const that = this;
-      const serverInstance = Bun.serve({
+      const serverInstance = Bun.serve<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >({
         ...(this.serverOptions || {}),
         port: this._listeningPort,
         hostname: this._listeningHost,
@@ -358,7 +384,7 @@ export class BunHttpAdapter extends BunRouter {
             that.requestOpts,
           );
 
-          const res = new BunResponse(req);
+          const res = new BunResponse<customWebsocketDataType>(req);
           let routeUsed: matchedRoute | true | undefined;
 
           try {

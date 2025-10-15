@@ -1,37 +1,39 @@
-/* eslint-disable ts/ban-ts-comment */
-
 /* eslint-disable ts/no-unsafe-function-type */
 
-import type { BunRequestOptions } from "@kingsleyweb/bun-common/lib/BunHttpAdapter";
+import type {
+  BodyParserOptions,
+  BodyParserType,
+  BunRequestOptions,
+  BunRouterOptions,
+  BunServeNormalOptions,
+  BunServeOptions,
+  BunServer,
+  BunWebSocketNormalOptions,
+  BunWebSocketServerType,
+  matchedRoute,
+  NextFunction,
+  RouterErrorMiddlewareHandler,
+  RouterHandler,
+  RouterMiddlewareHandler,
+  ServeStaticOptions,
+} from "@kingsleyweb/bun-common";
 import type {
   CorsOptions,
   CorsOptionsDelegate,
 } from "@nestjs/common/interfaces/external/cors-options.interface";
-import type { BunFile, Server } from "bun";
+import type { BunFile } from "bun";
 import type { CorsOptions as MainCorsOptions } from "cors";
-import { type AddressInfo, isIPv4, isIPv6 } from "node:net";
+import type { AddressInfo } from "node:net";
+import type {
+  BunWebSocketAdapterOptions,
+  WebSocketClientData,
+} from "./BunWebSocketAdapter";
+import { isIPv4, isIPv6 } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import {
-  type BodyParserOptions,
-  type BodyParserType,
-  BunRequest,
-  BunResponse,
-  BunRouter,
-  type BunRouterOptions,
-  type BunServeNormalOptions,
-  type BunServeNormalTlsOptions,
-  type BunServeOptions,
-  type BunServer,
-  type matchedRoute,
-  type NextFunction,
-  type RouterErrorMiddlewareHandler,
-  type RouterHandler,
-  type RouterMiddlewareHandler,
-  type ServeStaticOptions,
-} from "@kingsleyweb/bun-common";
+import { BunRequest, BunResponse, BunRouter } from "@kingsleyweb/bun-common";
 import {
   InternalServerErrorException,
   Logger,
@@ -63,9 +65,10 @@ export type VersionedRoute = (
   next: NextFunction,
 ) => Function;
 
-export type WebsocketOptions = ConstructorParameters<
-  typeof BunNestWebsocketAdapter
->[1];
+export type WebsocketOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> = BunWebSocketAdapterOptions<customWebsocketDataType, routesType>;
 
 export type MiddlewareFactoryRespType = (
   path: string,
@@ -76,25 +79,35 @@ type ApplyVersionFilterParameters = Parameters<
   AbstractHttpAdapter["applyVersionFilter"]
 >;
 
-// @ts-ignore
-export class BunHttpAdapter extends AbstractHttpAdapter<
-  BunServer,
+export const man = 1;
+
+export class BunHttpAdapter<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> extends AbstractHttpAdapter<
+  BunWebSocketServerType<customWebsocketDataType>,
   BunRequest,
-  BunResponse
+  BunResponse<customWebsocketDataType>
 > {
   declare public instance: BunRouter;
-  declare public httpServer: BunServer;
+  declare public httpServer: BunWebSocketServerType<customWebsocketDataType>;
+
   #requestOpts!: BunRequestOptions;
 
   public _logger!: Logger;
-  private _websocketAdapter!: BunNestWebsocketAdapter;
-  private _serverInstance: BunServer | undefined = undefined;
+  private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
+  private _serverInstance:
+    | BunWebSocketServerType<customWebsocketDataType>
+    | undefined = undefined;
+
   private _listeningHost = "127.0.0.1";
   private _listeningPort: string | number = 3000;
   protected isServerListening = false;
   private serverOptions:
-    | BunServeNormalOptions
-    | BunServeNormalTlsOptions
+    | BunServeNormalOptions<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >
     | undefined = undefined;
 
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
@@ -106,13 +119,17 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     protected requestTimeout = 0,
     options?: {
       request?: BunRequestOptions;
-      websocket?: Partial<WebsocketOptions>;
+      websocket?: Partial<
+        WebsocketOptions<customWebsocketDataType, routesType>
+      >;
       logger?: Logger;
       router?: BunRouterOptions;
-      server?: BunServeNormalOptions | BunServeNormalTlsOptions;
+      server?: BunServeNormalOptions<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >;
     },
   ) {
-    const websocketOptions = options?.websocket || {};
     const routerOptions = options?.router || {
       caseSensitive: true,
       debug: false,
@@ -130,14 +147,48 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
 
     this.logger = logger;
     this.serverOptions = options?.server || {};
-    this.webSocketAdapter = new BunNestWebsocketAdapter(this, {
-      router: this,
-      newInstance: false,
-      getServer: () => {
-        return this.getBunServer();
+
+    const websocketOptions = options?.websocket || {};
+    const websocketLocalOptions =
+      "localOptions" in websocketOptions
+        ? websocketOptions.localOptions
+        : "newInstance" in websocketOptions
+          ? omit(websocketOptions, ["httpAdapter"])
+          : undefined;
+    const websocketHttpAdapter = websocketOptions?.httpAdapter ?? this;
+
+    this.webSocketAdapter = new BunNestWebsocketAdapter<
+      customWebsocketDataType,
+      routesType
+    >({
+      httpAdapter: websocketHttpAdapter,
+      localOptions: {
+        router: websocketHttpAdapter.instance,
+        newInstance: false,
+        wsOptions: websocketLocalOptions?.wsOptions,
+        customDataToWsClientFn: websocketLocalOptions?.customDataToWsClientFn,
+        getServer() {
+          const noNewInstanceWsOptions =
+            websocketLocalOptions &&
+            "newInstance" in websocketLocalOptions &&
+            !websocketLocalOptions.newInstance
+              ? (websocketLocalOptions as unknown as BunWebSocketNormalOptions<customWebsocketDataType>)
+              : undefined;
+
+          return noNewInstanceWsOptions
+            ? noNewInstanceWsOptions.getServer()
+            : websocketHttpAdapter.getBunServer();
+        },
       },
-      ...websocketOptions,
-    } as unknown as WebsocketOptions);
+
+      // httpAd
+      // router: this,
+      // newInstance: false,
+      // getServer: () => {
+      //   return this.getBunServer();
+      // },
+      // ...websocketOptions,
+    });
 
     this.defineHttpServer();
   }
@@ -178,7 +229,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     let address: AddressInfo | undefined;
 
     if (this.isServerListening && this._serverInstance) {
-      hostname = this._serverInstance.hostname;
+      hostname = this._serverInstance.hostname ?? hostname;
       port = Number(this._serverInstance.port);
       address = get(this._serverInstance, "address", undefined) as
         | AddressInfo
@@ -211,7 +262,9 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this._websocketAdapter;
   }
 
-  set webSocketAdapter(adapter: BunNestWebsocketAdapter) {
+  set webSocketAdapter(
+    adapter: BunNestWebsocketAdapter<customWebsocketDataType>,
+  ) {
     this._websocketAdapter = adapter;
     this.instance.setBunWebSocket(this.webSocketAdapter);
   }
@@ -257,7 +310,11 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return pollUntil(
       () => this.getBunServer(),
       (server) => !!server,
-    ).then(callback as unknown as (server: Server | undefined) => unknown);
+    ).then(
+      callback as unknown as (
+        server: BunWebSocketServerType<customWebsocketDataType> | undefined,
+      ) => unknown,
+    );
   }
 
   public getHeader(response: BunResponse, name: string) {
@@ -311,7 +368,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
       hostname?: string;
       port: string | number;
     },
-  ): Promise<Server | undefined> {
+  ): Promise<BunWebSocketServerType<customWebsocketDataType> | undefined> {
     const hostname = options.hostname || "127.0.0.1";
     const port = options.port;
 
@@ -382,7 +439,10 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     try {
       // eslint-disable-next-line ts/no-this-alias
       const that = this;
-      const httpServer = Bun.serve({
+      const httpServer = Bun.serve<
+        WebSocketClientData<customWebsocketDataType>,
+        routesType
+      >({
         ...(this.serverOptions || {}),
         port: this._listeningPort,
         hostname: this._listeningHost,
@@ -394,7 +454,7 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
             that.requestOpts,
           );
 
-          const res = new BunResponse(req);
+          const res = new BunResponse<customWebsocketDataType>(req);
           let routeUsed: matchedRoute | true | undefined;
 
           try {
@@ -797,7 +857,9 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
     return this.defineHttpServer();
   }
 
-  public setHttpServer(server: Server) {
+  public setHttpServer(
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ) {
     this.httpServer = server;
     return this;
   }
@@ -1270,4 +1332,6 @@ export class BunHttpAdapter extends AbstractHttpAdapter<
   }
 }
 
-export class BunNestHttpAdapter extends BunHttpAdapter {}
+export class BunNestHttpAdapter<
+  customWebsocketDataType = unknown,
+> extends BunHttpAdapter<customWebsocketDataType> {}

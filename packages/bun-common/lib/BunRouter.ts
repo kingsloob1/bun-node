@@ -1,3 +1,4 @@
+import type { matchedRoute, Route } from "@routejs/router";
 import type { WebSocketHandler } from "bun";
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
@@ -5,7 +6,7 @@ import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
 import type { Logger, NextFunction, RouterHandler } from "./types/general";
 import path, { join } from "node:path";
 import process from "node:process";
-import { type matchedRoute, type Route, Router } from "@routejs/router";
+import { Router } from "@routejs/router";
 import isNumeric from "fast-isnumeric";
 import {
   get,
@@ -22,6 +23,8 @@ import {
   orderBy,
   pick,
 } from "lodash-es";
+
+export type { matchedRoute } from "@routejs/router";
 
 export interface RouteMatchMethodOptionType {
   requestHost: string;

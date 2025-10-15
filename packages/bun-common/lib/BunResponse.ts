@@ -1,16 +1,22 @@
 import type { BunFile } from "bun";
+import type { SerializeOptions as CookieSerializeOptions } from "cookie";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Readable } from "node:stream";
 import type { DeepWritable } from "ts-essentials";
 import type { BunRequest } from "./BunRequest";
+import type { WebSocketClientData } from "./BunWebSocket";
+// import { formatInTimeZone } from 'date-fns-tz';
+import type {
+  NextFunction,
+  RouterMiddlewareHandler,
+  SendFileOptions,
+} from "./types/general";
 import { Buffer } from "node:buffer";
 import { join as joinPath } from "node:path";
 import process from "node:process";
-import { isReadable, type Readable } from "node:stream";
+import { isReadable } from "node:stream";
 import { eTag } from "@tinyhttp/etag";
-import {
-  type CookieSerializeOptions,
-  serialize as serializeCookie,
-} from "cookie";
+import { serialize as serializeCookie } from "cookie";
 import * as cookieSignature from "cookie-signature";
 import { format as formatDate, isValid as isDateValid } from "date-fns";
 import encodeurl from "encodeurl";
@@ -30,23 +36,19 @@ import {
   isString,
   isUndefined,
   merge,
-  values,
 } from "lodash-es";
 import pollUntil from "until-promise";
 import vary from "vary";
 import { getMimeFromStr } from "./utils/general";
-// import { formatInTimeZone } from 'date-fns-tz';
-import type {
-  NextFunction,
-  RouterMiddlewareHandler,
-  SendFileOptions,
-} from "./types/general";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 type CookieSerializeParams = Parameters<typeof serializeCookie>;
 
-export class BunResponse {
-  private _upgradeToWsData: unknown | undefined = undefined;
+export class BunResponse<customWebsocketDataType = unknown> {
+  private _upgradeToWsData:
+    | WebSocketClientData<customWebsocketDataType>
+    | undefined = undefined;
+
   private response: Response | undefined = undefined;
   private options: DeepWritable<ResponseInit> = {};
   private headersObj = new Headers();
@@ -110,8 +112,17 @@ export class BunResponse {
     return this;
   }
 
-  public upgradeToWebsocket(data?: unknown) {
-    this._upgradeToWsData = data || {};
+  public upgradeToWebsocket(
+    data?: WebSocketClientData<customWebsocketDataType>,
+  ) {
+    this._upgradeToWsData =
+      data ||
+      ({
+        path: this.req.path,
+        headers: this.req.headersObj,
+        user: get(this.req, "user", undefined),
+        custom: {} as customWebsocketDataType,
+      } satisfies WebSocketClientData<customWebsocketDataType>);
     return this;
   }
 
@@ -413,9 +424,11 @@ export class BunResponse {
 
   redirect(
     url: string,
-    status: Parameters<typeof Response.redirect>[1] = 302,
+    status: ResponseInit | number | undefined = 302,
   ): BunResponse {
-    this.response = Response.redirect(url, status);
+    this.response = Number.isFinite(status)
+      ? Response.redirect(url, status as number)
+      : Response.redirect(url, status as ResponseInit | undefined);
     return this;
   }
 
@@ -694,7 +707,7 @@ export class BunResponse {
       return defaultVal;
     }
 
-    return values;
+    return value;
   }
 
   public sendStatus(status: number) {

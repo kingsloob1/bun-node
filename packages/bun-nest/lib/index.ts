@@ -8,6 +8,13 @@ export {
 export {
   BunNestWebsocketAdapter,
   BunWebSocketAdapter,
+  type BunWebSocketAdapterNormalOptions,
+  type BunWebSocketAdapterOptions,
+  type BunWebSocketAdapterOptionsFromHttpAdapter,
+  type BunWebsocketHandlerFor,
+  type BunWebsocketHttpAdapter,
+  type BunWebSocketOptions,
+  type BunWebSocketServerType,
   type MessageAckType,
   type MessageBinaryAckType,
   type MessageBinaryEventType,

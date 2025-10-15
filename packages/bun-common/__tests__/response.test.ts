@@ -2,7 +2,7 @@ import type { Server } from "bun";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { BunRequest, BunResponse } from "../lib";
 
-let server!: Server;
+let server!: Server<unknown>;
 beforeAll(() => {
   server = Bun.serve({
     fetch() {},

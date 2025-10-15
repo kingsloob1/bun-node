@@ -1,17 +1,12 @@
-import type {
-  ServeOptions,
-  TLSServeOptions,
-  UnixServeOptions,
-  UnixTLSServeOptions,
-} from "bun";
+import type { Server as BunServerType, Serve as BunServeType } from "bun";
 import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
 import type { JSONCookies } from "cookie-parser";
 import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
-import type { BunRouter } from "..";
 import type { BunRequest } from "../BunRequest";
 import type { BunResponse } from "../BunResponse";
+import type { BunRouter } from "../BunRouter";
 import type {
   StorageExpandedFile,
   StorageFile,
@@ -95,27 +90,33 @@ export interface BunRequestInterface {
   }>;
 }
 
-export type BunServeNormalOptions = Omit<
-  ServeOptions,
+export type BunServeNormalOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> = Omit<
+  BunServeType.FetchOrRoutes<customWebsocketDataType, routesType> &
+    BunServeType.HostnamePortServeOptions<customWebsocketDataType>,
   "fetch" | "port" | "hostname"
 >;
 
-export type BunServeNormalTlsOptions = Omit<
-  TLSServeOptions,
-  "fetch" | "port" | "hostname"
+export type BunServeUnixNormalOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> = Omit<
+  BunServeType.FetchOrRoutes<customWebsocketDataType, routesType> &
+    BunServeType.UnixServeOptions<customWebsocketDataType>,
+  "fetch"
 >;
 
-export type BunServeUnixNormalOptions = Omit<UnixServeOptions, "fetch">;
+export type BunServeOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> =
+  | BunServeNormalOptions<customWebsocketDataType, routesType>
+  | BunServeUnixNormalOptions<customWebsocketDataType, routesType>;
 
-export type BunServeUnixNormalTlsOptions = Omit<UnixTLSServeOptions, "fetch">;
-
-export type BunServeOptions =
-  | BunServeNormalOptions
-  | BunServeNormalTlsOptions
-  | BunServeUnixNormalOptions
-  | BunServeUnixNormalTlsOptions;
-
-export type BunServer = ReturnType<typeof Bun.serve>;
+export type BunServer<customWebsocketDataType = unknown> =
+  BunServerType<customWebsocketDataType>;
 
 export interface ServeStaticOptions {
   /**
@@ -263,7 +264,6 @@ export type MultiPartFieldRecord = FieldInfo & {
 
 export type RequestStorageFiles = BunRequest["storageFiles"];
 export type RequestStorageFile = BunRequest["storageFile"];
-export { type matchedRoute } from "@routejs/router";
 
 export interface Logger {
   log: (...optionalParams: unknown[]) => void;

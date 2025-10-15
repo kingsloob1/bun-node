@@ -57,10 +57,14 @@ export {
 export {
   BunWebSocket,
   type BunWebSocketCreateServerOptions,
+  type BunWebSocketEventHandlersType,
   type BunWebSocketGeneralOptions,
   type BunWebsocketHandlerFor,
+  type BunWebSocketHandlerType,
   type BunWebSocketNormalOptions,
   type BunWebSocketOptions,
+  type BunWebSocketServerType,
+  type WebSocketClient,
   type WebSocketClientData,
 } from "./BunWebSocket";
 export {
@@ -72,6 +76,7 @@ export { BunResponse } from "./BunResponse";
 export {
   BunRouter,
   type CachedRouteMatch,
+  type matchedRoute,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
@@ -79,6 +84,7 @@ export {
 } from "./BunRouter";
 export {
   BunHttpAdapter,
+  type BunRequestOptions,
   type BunRouterOptions,
   type WebsocketOptions,
 } from "./BunHttpAdapter";
@@ -87,14 +93,11 @@ export {
   type BodyParserType,
   type BunRequestInterface,
   type BunServeNormalOptions,
-  type BunServeNormalTlsOptions,
   type BunServeOptions,
   type BunServer,
   type BunServeUnixNormalOptions,
-  type BunServeUnixNormalTlsOptions,
   type Constructor,
   type Logger,
-  type matchedRoute,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
   type MultiPartOptions,

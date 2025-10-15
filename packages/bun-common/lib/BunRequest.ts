@@ -1086,6 +1086,14 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return this;
   }
 
+  /**
+   * Check if the request is fresh, aka
+   * Last-Modified or the ETag
+   * still match.
+   *
+   * @return {boolean}
+   * @public
+   */
   get fresh() {
     const res = this.bunResponse;
     const method = this.method;
@@ -1110,6 +1118,14 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return false;
   }
 
+  /**
+   * Check if the request is stale, aka
+   * Last-Modified or the ETag
+   * doesn't match.
+   *
+   * @return {boolean}
+   * @public
+   */
   get stale() {
     return !this.fresh;
   }
@@ -1229,6 +1245,32 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
     return this.getHeader(name);
   }
+
+  /**
+   * Check if the incoming request contains the "Content-Type"
+   * header field, and it contains the given mime `type`.
+   *
+   * Examples:
+   *
+   *      // With Content-Type: text/html; charset=utf-8
+   *      req.is('html');
+   *      req.is('text/html');
+   *      req.is('text/*');
+   *      // => true
+   *
+   *      // When Content-Type is application/json
+   *      req.is('json');
+   *      req.is('application/json');
+   *      req.is('application/*');
+   *      // => true
+   *
+   *      req.is('html');
+   *      // => false
+   *
+   * @param {string | Array} types...
+   * @return {string | false | null}
+   * @public
+   */
 
   public is(types: string[]): string | false | null;
   public is(...types: string[]): string | false | null;

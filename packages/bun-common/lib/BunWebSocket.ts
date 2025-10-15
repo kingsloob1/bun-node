@@ -1,18 +1,21 @@
-/* eslint-disable perfectionist/sort-imports */
-import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
+import type {
+  Server as BunServerType,
+  ServerWebSocket,
+  WebSocketHandler,
+} from "bun";
 import type TypedEventEmitter from "typed-emitter";
+import type { BunRequestOptions } from "./BunHttpAdapter";
 import type {
   BunRouter,
   BunServeNormalOptions,
-  BunServeNormalTlsOptions,
   matchedRoute,
   NextFunction,
 } from "./index";
 import { EventEmitter } from "node:events";
 import isNumeric from "fast-isnumeric";
 import { get, isArray, isFunction, isObject, set } from "lodash-es";
-import { BunRequest, BunResponse } from "./index";
-import type { BunRequestOptions } from "./BunHttpAdapter";
+import { BunRequest } from "./BunRequest";
+import { BunResponse } from "./BunResponse";
 
 export interface WebSocketClientData<CustomData = unknown> {
   path: string;
@@ -21,16 +24,23 @@ export interface WebSocketClientData<CustomData = unknown> {
   custom: CustomData;
 }
 
+export type BunWebSocketServerType<customWebsocketDataType = unknown> =
+  BunServerType<WebSocketClientData<customWebsocketDataType>>;
+
+export type BunWebSocketHandlerType<customWebsocketDataType = unknown> =
+  WebSocketHandler<WebSocketClientData<customWebsocketDataType>>;
+
 export type BunWebsocketHandlerFor<
-  MethodName extends keyof WebSocketHandler,
-  customDataType = unknown,
-> = WebSocketHandler<WebSocketClientData<customDataType>>[MethodName];
+  MethodName extends keyof WebSocketHandler<unknown>,
+  customWebsocketDataType = unknown,
+> = BunWebSocketHandlerType<customWebsocketDataType>[MethodName];
 
-export type WebSocketClient = ServerWebSocket<WebSocketClientData>;
+export type WebSocketClient<customWebsocketDataType = unknown> =
+  ServerWebSocket<WebSocketClientData<customWebsocketDataType>>;
 
-export interface BunWebSocketGeneralOptions {
+export interface BunWebSocketGeneralOptions<customWebsocketDataType = unknown> {
   wsOptions?: Omit<
-    WebSocketHandler<WebSocketClientData>,
+    BunWebSocketHandlerType<customWebsocketDataType>,
     "open" | "close" | "message" | "drain" | "ping" | "pong"
   >;
   router?: BunRouter;
@@ -38,55 +48,87 @@ export interface BunWebSocketGeneralOptions {
   customDataToWsClientFn?: (
     req: BunRequest,
     res: BunResponse,
-  ) => unknown | Promise<unknown>;
+  ) => customWebsocketDataType | Promise<customWebsocketDataType>;
 }
 
-export interface BunWebSocketCreateServerOptions
-  extends Omit<BunWebSocketGeneralOptions, "server"> {
+export interface BunWebSocketCreateServerOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> extends Omit<BunWebSocketGeneralOptions<customWebsocketDataType>, "server"> {
   newInstance: true;
   listen: {
     host?: string;
     port: number;
   };
-  serverOptions?: BunServeNormalOptions | BunServeNormalTlsOptions;
+  serverOptions?: BunServeNormalOptions<
+    WebSocketClientData<customWebsocketDataType>,
+    routesType
+  >;
   request?: BunRequest;
-  response?: BunResponse;
+  response?: BunResponse<customWebsocketDataType>;
   bunRequestOpts?: BunRequestOptions;
 }
 
-export interface BunWebSocketNormalOptions extends BunWebSocketGeneralOptions {
+export interface BunWebSocketNormalOptions<customWebsocketDataType = unknown>
+  extends BunWebSocketGeneralOptions<customWebsocketDataType> {
   newInstance: false;
-  getServer: () => Server | undefined;
+  getServer: () => BunWebSocketServerType<customWebsocketDataType> | undefined;
 }
 
-export type BunWebSocketOptions =
-  | BunWebSocketNormalOptions
-  | BunWebSocketCreateServerOptions;
+export type BunWebSocketOptions<
+  customWebsocketDataType = unknown,
+  routesType extends string = never,
+> =
+  | BunWebSocketNormalOptions<customWebsocketDataType>
+  | BunWebSocketCreateServerOptions<customWebsocketDataType, routesType>;
 
-export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
-  connect: NonNullable<WebSocketHandler<WebSocketClientData>["open"]>;
-  open: NonNullable<WebSocketHandler<WebSocketClientData>["open"]>;
-  message: NonNullable<WebSocketHandler<WebSocketClientData>["message"]>;
-  disconnect: NonNullable<WebSocketHandler<WebSocketClientData>["close"]>;
-  close: NonNullable<WebSocketHandler<WebSocketClientData>["close"]>;
-  ping: NonNullable<WebSocketHandler<WebSocketClientData>["ping"]>;
-  pong: NonNullable<WebSocketHandler<WebSocketClientData>["pong"]>;
-  drain: NonNullable<WebSocketHandler<WebSocketClientData>["drain"]>;
-}>) {
-  private _wsServers = new Map<number, Server>();
-  private _serverInstance?: Server;
-  private _getServerInstance?: () => Server | undefined;
-  private _routerInstance!: BunRouter;
-  private _wsHandler!: WebSocketHandler<WebSocketClientData>;
-  private _routeHandlers = new Map<
-    string,
-    WebSocketHandler<WebSocketClientData>[]
+export type BunWebSocketEventHandlersType<customWebsocketDataType = unknown> =
+  TypedEventEmitter<{
+    connect: NonNullable<
+      BunWebSocketHandlerType<customWebsocketDataType>["open"]
+    >;
+    open: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["open"]>;
+    message: NonNullable<
+      BunWebSocketHandlerType<customWebsocketDataType>["message"]
+    >;
+    disconnect: NonNullable<
+      BunWebSocketHandlerType<customWebsocketDataType>["close"]
+    >;
+    close: NonNullable<
+      BunWebSocketHandlerType<customWebsocketDataType>["close"]
+    >;
+    ping: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["ping"]>;
+    pong: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["pong"]>;
+    drain: NonNullable<
+      BunWebSocketHandlerType<customWebsocketDataType>["drain"]
+    >;
+  }>;
+
+export class BunWebSocket<
+  customWebsocketDataType = unknown,
+> extends (EventEmitter as new () => BunWebSocketEventHandlersType) {
+  private _wsServers = new Map<
+    number,
+    BunWebSocketServerType<customWebsocketDataType>
   >();
 
-  private _customDataToWsClientFn: BunWebSocketGeneralOptions["customDataToWsClientFn"] =
+  private _serverInstance?: BunWebSocketServerType<customWebsocketDataType>;
+  private _getServerInstance?: () =>
+    | BunWebSocketServerType<customWebsocketDataType>
+    | undefined;
+
+  private _routerInstance!: BunRouter;
+  private _wsHandler!: BunWebSocketHandlerType<customWebsocketDataType>;
+
+  private _routeHandlers = new Map<
+    string,
+    BunWebSocketHandlerType<customWebsocketDataType>[]
+  >();
+
+  private _customDataToWsClientFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"] =
     undefined;
 
-  constructor(private options: BunWebSocketOptions) {
+  constructor(private options: BunWebSocketOptions<customWebsocketDataType>) {
     super();
 
     this._wsHandler = {
@@ -120,7 +162,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
         this.emit("drain", ...args);
         await this.processRegisteredRouteHandlerFor("drain", ...args);
       },
-    } as WebSocketHandler<WebSocketClientData>;
+    } as BunWebSocketHandlerType<customWebsocketDataType>;
 
     if (options.router) {
       this.router = options.router;
@@ -157,7 +199,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
     const options = this.options;
     if (options.newInstance) {
-      server = Bun.serve({
+      server = Bun.serve<WebSocketClientData<customWebsocketDataType>>({
         ...(options?.serverOptions || {}),
         port,
         hostname: options?.listen?.host,
@@ -175,7 +217,8 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
               },
             ));
 
-          const res = options.response || new BunResponse(req);
+          const res =
+            options.response || new BunResponse<customWebsocketDataType>(req);
           let routeUsed: matchedRoute | true | undefined;
 
           try {
@@ -249,7 +292,9 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
     return undefined;
   }
 
-  public killServer(server: Server | undefined) {
+  public killServer(
+    server: BunWebSocketServerType<customWebsocketDataType> | undefined,
+  ) {
     if (server && server.port) {
       try {
         this.getOrCreateWebsocketServer(server.port)?.stop(false);
@@ -290,7 +335,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
   private async processRegisteredRouteHandlerFor(
     event: "open" | "close" | "drain" | "message" | "ping" | "pong",
-    ws: ServerWebSocket<WebSocketClientData>,
+    ws: WebSocketClient<customWebsocketDataType>,
     ...otherArgs: unknown[]
   ) {
     const path = ws.data?.path;
@@ -316,7 +361,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
                 switch (event) {
                   case "open": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["open"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["open"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -334,7 +379,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   case "close": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["close"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["close"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -352,7 +397,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   case "drain": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["drain"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["drain"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -370,7 +415,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   case "message": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["message"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["message"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -388,7 +433,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   case "ping": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["ping"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["ping"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -406,7 +451,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   case "pong": {
                     type HandlerFnType = NonNullable<
-                      WebSocketHandler<WebSocketClientData>["pong"]
+                      BunWebSocketHandlerType<customWebsocketDataType>["pong"]
                     >;
                     type FnHandlerParameters = Parameters<HandlerFnType>;
 
@@ -424,7 +469,9 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
                   default: {
                     return (
-                      handlerToExecute as (ws: WebSocketClient) => unknown
+                      handlerToExecute as (
+                        ws: WebSocketClient<customWebsocketDataType>,
+                      ) => unknown
                     ).call(bunServer, ws);
                   }
                 }
@@ -444,11 +491,8 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
 
   public async setRouteHandler(
     path: string,
-    handler: WebSocketHandler<WebSocketClientData>,
-    customDataToWsClientFn?: (
-      req: BunRequest,
-      res: BunResponse,
-    ) => unknown | Promise<unknown>,
+    handler: BunWebSocketHandlerType<customWebsocketDataType>,
+    customDataToWsClientFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"],
   ) {
     if (!isObject(handler)) {
       return false;
@@ -490,7 +534,7 @@ export class BunWebSocket extends (EventEmitter as new () => TypedEventEmitter<{
         upgradeHeader === "websocket" &&
         secWebsocketKey
       ) {
-        let getCustomDataFn: BunWebSocketGeneralOptions["customDataToWsClientFn"];
+        let getCustomDataFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"];
         if (customDataToWsClientFn && isFunction(customDataToWsClientFn)) {
           getCustomDataFn = customDataToWsClientFn;
         } else if (

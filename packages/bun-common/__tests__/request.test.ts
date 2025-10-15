@@ -1,4 +1,3 @@
-import type { Server } from "bun";
 import { Buffer } from "node:buffer";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { get } from "lodash-es";
@@ -29,12 +28,13 @@ export const buildUrl = (
 
 describe("Test Bun Request", () => {
   it("Should be able to initialize request", () => {
-    expect(
-      new BunRequest(
-        new Request("https://google.com"),
-        httpAdapter.server as Server,
-      ),
-    ).toBeInstanceOf(BunRequest);
+    expect(httpAdapter.server).toBeDefined();
+
+    if (httpAdapter.server) {
+      expect(
+        new BunRequest(new Request("https://google.com"), httpAdapter.server),
+      ).toBeInstanceOf(BunRequest);
+    }
   });
 
   describe("Request body parsing with Content-Type Header", () => {
@@ -181,7 +181,7 @@ describe("Test Bun Request", () => {
         expect(jsonResp).toBeObject();
         expect(jsonResp).toContainAllKeys(["files", "body"]);
 
-        const files = get(jsonResp, "files");
+        const files = get(jsonResp, "files") as File[];
         expect(files).toBeArray();
         expect(files).toBeArrayOfSize(2);
         expect(files).toSatisfy((files) => {

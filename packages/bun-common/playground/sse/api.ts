@@ -1,6 +1,10 @@
+import type {
+  matchedRoute,
+  RouterMiddlewareHandler,
+  WebSocketClientData,
+} from "../../lib";
 import { get, isObject, set } from "lodash-es";
 import { BunRequest, BunResponse, BunRouter } from "../../lib";
-import type { matchedRoute, RouterMiddlewareHandler } from "../../lib";
 
 // server.js
 const port = 3000;
@@ -33,14 +37,14 @@ const eventsHandler: RouterMiddlewareHandler = (req, res) => {
 // SSE route
 router.get(`/events`, eventsHandler);
 
-const serverInstance = Bun.serve({
+const serverInstance = Bun.serve<WebSocketClientData<unknown>>({
   port,
   hostname,
   development: Bun.env.NODE_ENV !== "production",
   async fetch(nativeRequest: Request, server) {
     // server.timeout(nativeRequest, 10 * 60 * 60);
     const req = new BunRequest(nativeRequest, server, {
-      canHandleUpload: true,
+      parseBody: true,
       parseCookies: true,
     });
 
