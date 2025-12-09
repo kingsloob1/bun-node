@@ -8,6 +8,7 @@
   "license": "MIT",
   "homepage": "",
   "main": "lib/index.ts",
+  "types": "lib/index.ts",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

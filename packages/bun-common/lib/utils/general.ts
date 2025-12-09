@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { randomBytes as createRandomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { extname } from "node:path";
-import { isReadable, type Readable } from "node:stream";
+import { isReadable, Readable } from "node:stream";
 import { promisify } from "node:util";
 import mime from "mime";
 
@@ -69,4 +69,14 @@ export function applyMixins<T extends Constructor>(
       );
     });
   });
+}
+
+export function isNodeReadableStream(value: any): value is Readable {
+  return (
+    value instanceof Readable ||
+    (value !== null &&
+      typeof value === "object" &&
+      typeof value.pipe === "function" &&
+      typeof value.read === "function")
+  );
 }

@@ -14,7 +14,7 @@ import type {
 import { Buffer } from "node:buffer";
 import { join as joinPath } from "node:path";
 import process from "node:process";
-import { isReadable } from "node:stream";
+import { ReadableStream } from "node:stream/web";
 import { eTag } from "@tinyhttp/etag";
 import { serialize as serializeCookie } from "cookie";
 import * as cookieSignature from "cookie-signature";
@@ -39,7 +39,7 @@ import {
 } from "lodash-es";
 import pollUntil from "until-promise";
 import vary from "vary";
-import { getMimeFromStr } from "./utils/general";
+import { getMimeFromStr, isNodeReadableStream } from "./utils/general";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 type CookieSerializeParams = Parameters<typeof serializeCookie>;
@@ -136,6 +136,8 @@ export class BunResponse<customWebsocketDataType = unknown> {
       | null
       | undefined
       | ReadableStream
+      | Readable
+      | object
       | BunFile
       | BunResponse
       | Response
@@ -166,6 +168,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
       body = "";
     }
 
+    let wasResponseInitSet = false;
     if (body instanceof BunResponse) {
       let response!: Response;
 
@@ -180,6 +183,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
 
       if (!response) {
         response = new Response(undefined, this.options);
+        wasResponseInitSet = true;
       }
 
       this.response = response;
@@ -187,8 +191,10 @@ export class BunResponse<customWebsocketDataType = unknown> {
       this.response = body;
     } else if (
       body instanceof Blob ||
-      isReadable(body as unknown as Readable)
+      body instanceof ReadableStream ||
+      isNodeReadableStream(body)
     ) {
+      wasResponseInitSet = true;
       this.response = new Response(body, this.options);
     } else if (isObject(body) || isArray(body)) {
       this.options.headers.set("Content-Type", "application/json");
@@ -198,6 +204,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
         this.setHeader("ETag", eTag(bodyToBeSent));
       }
 
+      wasResponseInitSet = true;
       this.response = new Response(bodyToBeSent, this.options);
     } else {
       let bodyToBeSent = body;
@@ -234,7 +241,23 @@ export class BunResponse<customWebsocketDataType = unknown> {
         this.options.headers.set("Content-Type", contentType);
       }
 
+      wasResponseInitSet = true;
       this.response = new Response(bodyToBeSent, this.options);
+    }
+
+    if (this.response && !wasResponseInitSet) {
+      const respHeaders = this.response.headers;
+      const headers = this.nativeResponseOptions?.headers as
+        | Headers
+        | undefined;
+
+      if (headers) {
+        headers.forEach((headerValue, key) => {
+          if (!respHeaders.has(key)) {
+            respHeaders.set(key, headerValue);
+          }
+        });
+      }
     }
 
     return this;
@@ -430,6 +453,10 @@ export class BunResponse<customWebsocketDataType = unknown> {
       ? Response.redirect(url, status as number)
       : Response.redirect(url, status as ResponseInit | undefined);
     return this;
+  }
+
+  public get nativeResponseOptions(): ResponseInit | undefined {
+    return this.options;
   }
 
   getNativeResponse(
