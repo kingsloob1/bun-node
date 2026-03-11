@@ -974,21 +974,11 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   getHeaders() {
-    return Array.from(this.headersObj.keys()).reduce(
+    const arr = Array.from(this.headersObj.keys()).reduce(
       (prev, val) => {
-        let value: string | string[] | null = this.headersObj.get(val);
-        const valLower = val.toLowerCase().trim();
-
+        const value: string | string[] | null = this.headersObj.get(val);
         if (isNull(value)) {
           return prev;
-        }
-
-        if (
-          isString(value) &&
-          (valLower.startsWith("accept-") ||
-            ["cache-control", "X-Forwarded-For"].includes(valLower))
-        ) {
-          value = value.split(",").map((ip) => ip.trimStart());
         }
 
         prev[val] = value;
@@ -996,6 +986,8 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       },
       {} as Record<string, string[] | string>,
     );
+
+    return arr;
   }
 
   getRawHeaderNames() {
