@@ -1,5 +1,8 @@
 import type { SocketAddress } from "bun";
+import type { ParseOptions as CookieParseOptions } from "cookie";
+import type { FileTypeResult } from "file-type";
 import type { IncomingMessage } from "node:http";
+import type { ParseResult } from "parse-domain";
 import type { BunResponse } from "./BunResponse";
 import type { StorageFile } from "./multipart";
 import type {
@@ -13,13 +16,10 @@ import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
-import {
-  type ParseOptions as CookieParseOptions,
-  parse as parseCookie,
-} from "cookie";
+import { parse as parseCookie } from "cookie";
 import { JSONCookies, signedCookies } from "cookie-parser";
 import EventEmitter from "eventemitter3";
-import { fileTypeFromBuffer, type FileTypeResult } from "file-type";
+import { fileTypeFromBuffer } from "file-type";
 import fresh from "fresh";
 import ucwords from "locutus/php/strings/ucwords";
 import {
@@ -41,12 +41,7 @@ import {
   set,
   values,
 } from "lodash-es";
-import {
-  parseDomain,
-  type ParseResult,
-  ParseResultType,
-  Validation,
-} from "parse-domain";
+import { parseDomain, ParseResultType, Validation } from "parse-domain";
 import qs from "qs";
 import rangeParser from "range-parser";
 import typeIs from "type-is";

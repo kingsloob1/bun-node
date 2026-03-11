@@ -1160,6 +1160,10 @@ export class BunHttpAdapter<
       return method;
     }
 
+    if (String(method) === "-1") {
+      return "all";
+    }
+
     throw new InternalServerErrorException(
       `An invalid request method was encountered with value ${requestMethod}`,
     );
