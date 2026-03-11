@@ -57,7 +57,7 @@
     "supertest": "^7.1.4",
     "typescript": "^5.9.3"
   },
-  "gitHead": "dc1060f8730ab5364c1697a05ee1d4847ff90551",
+  "gitHead": "58f50ad7df6fde1d9853b1a23b7b2f8a3967b8a1",
   "trustedDependencies": [
     "@nestjs/core"
   ]
