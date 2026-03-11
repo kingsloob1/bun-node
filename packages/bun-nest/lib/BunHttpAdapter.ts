@@ -1160,7 +1160,7 @@ export class BunHttpAdapter<
       return method;
     }
 
-    if (String(method) === "-1") {
+    if (String(requestMethod) === "-1") {
       return "all";
     }
 
