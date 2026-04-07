@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-nest",
   "type": "module",
-  "version": "1.0.5",
+  "version": "1.0.6-alpha.0",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -31,7 +31,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^1.0.5",
+    "@kingsleyweb/bun-common": "^1.0.6-alpha.0",
     "@nestjs/common": "^11.0.3",
     "cors": "^2.8.5",
     "eventemitter3": "^5.0.1",
