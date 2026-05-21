@@ -13,6 +13,7 @@ import type {
 } from "@nestjs/common";
 import type { HttpArgumentsHost } from "@nestjs/common/interfaces";
 import type { Observable } from "rxjs";
+import { isString } from "@kingsleyweb/bun-common";
 import { transformUploadOptions } from "@kingsleyweb/bun-common/lib/multipart";
 import {
   handleMultipartAnyFiles,
@@ -23,7 +24,6 @@ import {
   uploadFieldsToMap,
 } from "@kingsleyweb/bun-common/lib/multipart/handlers";
 import { BadRequestException, mixin } from "@nestjs/common";
-import { isString } from "lodash-es";
 import { tap } from "rxjs";
 
 export const getMultipartRequest = (ctx: HttpArgumentsHost) => {

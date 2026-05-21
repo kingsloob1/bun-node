@@ -3,7 +3,6 @@ import type {
   ServerWebSocket,
   WebSocketHandler,
 } from "bun";
-import type TypedEventEmitter from "typed-emitter";
 import type { BunRequestOptions } from "./BunHttpAdapter";
 import type {
   BunRouter,
@@ -12,10 +11,51 @@ import type {
   NextFunction,
 } from "./index";
 import { EventEmitter } from "node:events";
-import isNumeric from "fast-isnumeric";
-import { get, isArray, isFunction, isObject, set } from "lodash-es";
 import { BunRequest } from "./BunRequest";
 import { BunResponse } from "./BunResponse";
+import {
+  get,
+  isArray,
+  isFunction,
+  isNumeric,
+  isObject,
+  set,
+} from "./utils/native";
+
+/**
+ * Minimal strongly-typed `EventEmitter` surface — replaces the `typed-emitter`
+ * package without any runtime footprint.
+ */
+export interface TypedEmitter<
+  Events extends Record<string, (...args: any[]) => any>,
+> {
+  addListener: <E extends keyof Events>(event: E, listener: Events[E]) => this;
+  on: <E extends keyof Events>(event: E, listener: Events[E]) => this;
+  once: <E extends keyof Events>(event: E, listener: Events[E]) => this;
+  prependListener: <E extends keyof Events>(
+    event: E,
+    listener: Events[E],
+  ) => this;
+  prependOnceListener: <E extends keyof Events>(
+    event: E,
+    listener: Events[E],
+  ) => this;
+  off: <E extends keyof Events>(event: E, listener: Events[E]) => this;
+  removeAllListeners: <E extends keyof Events>(event?: E) => this;
+  removeListener: <E extends keyof Events>(
+    event: E,
+    listener: Events[E],
+  ) => this;
+  emit: <E extends keyof Events>(
+    event: E,
+    ...args: Parameters<Events[E]>
+  ) => boolean;
+  eventNames: () => (keyof Events | string | symbol)[];
+  listeners: <E extends keyof Events>(event: E) => Events[E][];
+  listenerCount: <E extends keyof Events>(event: E) => number;
+  getMaxListeners: () => number;
+  setMaxListeners: (maxListeners: number) => this;
+}
 
 export interface WebSocketClientData<CustomData = unknown> {
   path: string;
@@ -83,7 +123,7 @@ export type BunWebSocketOptions<
   | BunWebSocketCreateServerOptions<customWebsocketDataType, routesType>;
 
 export type BunWebSocketEventHandlersType<customWebsocketDataType = unknown> =
-  TypedEventEmitter<{
+  TypedEmitter<{
     connect: NonNullable<
       BunWebSocketHandlerType<customWebsocketDataType>["open"]
     >;

@@ -3,7 +3,7 @@ import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { BunRequest } from "../BunRequest";
 import type { MultiPartFileRecord, MultiPartOptions } from "../types/general";
-import { isString, omit } from "lodash-es";
+import { isString, omit } from "../utils/native";
 import { DiskStorage, MemoryStorage } from "./storage";
 
 export interface StorageFile {

@@ -1,6 +1,6 @@
 import type { MemoryStorageFile, Storage } from "..";
 import type { MultiPartFileRecord } from "../../types/general";
-import { isBuffer, isObject, values } from "lodash-es";
+import { isBuffer, isObject, values } from "../../utils/native";
 
 export class MemoryStorage implements Storage<MemoryStorageFile> {
   public async handleFile(file: MultiPartFileRecord) {

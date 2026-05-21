@@ -10,6 +10,7 @@ import type {
   BunServer,
   BunWebSocketNormalOptions,
   BunWebSocketServerType,
+  CorsOptions as MainCorsOptions,
   matchedRoute,
   NextFunction,
   RouterErrorMiddlewareHandler,
@@ -17,23 +18,40 @@ import type {
   RouterMiddlewareHandler,
   ServeStaticOptions,
 } from "@kingsleyweb/bun-common";
+import type { NestApplicationOptions } from "@nestjs/common";
 import type {
   CorsOptions,
   CorsOptionsDelegate,
 } from "@nestjs/common/interfaces/external/cors-options.interface";
 import type { BunFile } from "bun";
-import type { CorsOptions as MainCorsOptions } from "cors";
 import type { AddressInfo } from "node:net";
 import type {
   BunWebSocketAdapterOptions,
   WebSocketClientData,
 } from "./BunWebSocketAdapter";
+import { EventEmitter } from "node:events";
 import { isIPv4, isIPv6 } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import { BunRequest, BunResponse, BunRouter } from "@kingsleyweb/bun-common";
+import {
+  BunRequest,
+  BunResponse,
+  BunRouter,
+  cors,
+  each,
+  get,
+  getPort,
+  isFunction,
+  isNull,
+  isObject,
+  isString,
+  isUndefined,
+  omit,
+  set,
+  waitUntil,
+} from "@kingsleyweb/bun-common";
 import {
   InternalServerErrorException,
   Logger,
@@ -42,21 +60,6 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter";
-import cors from "cors";
-import EventEmitter from "eventemitter3";
-import getPort from "get-port";
-import {
-  each,
-  get,
-  isFunction,
-  isNull,
-  isObject,
-  isString,
-  isUndefined,
-  omit,
-  set,
-} from "lodash-es";
-import pollUntil from "until-promise";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
 
 export type VersionedRoute = (
@@ -113,6 +116,8 @@ export class BunHttpAdapter<
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   private _hasRegisteredBodyParser = false;
+  /** When true, every response computes an `ETag`. Opt-in (off by default). */
+  protected etagEnabled = false;
   public readonly eventEmitter = new EventEmitter();
 
   constructor(
@@ -124,6 +129,8 @@ export class BunHttpAdapter<
       >;
       logger?: Logger;
       router?: BunRouterOptions;
+      /** Enable automatic `ETag` generation for every response. */
+      etag?: boolean;
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
@@ -145,6 +152,7 @@ export class BunHttpAdapter<
       parseCookies: true,
     };
 
+    this.etagEnabled = options?.etag ?? false;
     this.logger = logger;
     this.serverOptions = options?.server || {};
 
@@ -206,12 +214,14 @@ export class BunHttpAdapter<
     return this;
   }
 
-  get logger() {
+  get logger(): Logger {
     if (this._logger) {
       return this._logger;
     }
 
-    return this.logger;
+    // Lazily create a logger rather than recursing into this getter.
+    this._logger = new Logger(BunHttpAdapter.name);
+    return this._logger;
   }
 
   set logger(logger: Logger) {
@@ -307,7 +317,7 @@ export class BunHttpAdapter<
 
   public setTimeout(reqTimeout: number, callback: CallableFunction) {
     this.requestTimeout = reqTimeout;
-    return pollUntil(
+    return waitUntil(
       () => this.getBunServer(),
       (server) => !!server,
     ).then(
@@ -352,6 +362,8 @@ export class BunHttpAdapter<
       this.use(middlewareHandler);
     }
 
+    // Mark as registered so a second call does not stack a duplicate parser.
+    this._hasRegisteredBodyParser = true;
     return this;
   }
 
@@ -454,7 +466,9 @@ export class BunHttpAdapter<
             that.requestOpts,
           );
 
-          const res = new BunResponse<customWebsocketDataType>(req);
+          const res = new BunResponse<customWebsocketDataType>(req, {
+            etag: that.etagEnabled,
+          });
           let routeUsed: matchedRoute | true | undefined;
 
           try {
@@ -548,7 +562,7 @@ export class BunHttpAdapter<
             }
           };
 
-          const response = new BunResponse(req);
+          const response = new BunResponse(req, { etag: that.etagEnabled });
           for await (const handler of that._errorHandlers) {
             if (!continueProcessingHandlers) {
               break;
@@ -585,7 +599,6 @@ export class BunHttpAdapter<
 
       return this._serverInstance;
     } catch (e) {
-      console.log(e);
       const errorMessage = "Error while binding to listener...";
       this.logger.log(errorMessage);
       this.logger.log(e);
@@ -594,7 +607,7 @@ export class BunHttpAdapter<
   }
 
   public async getListenAddress(): Promise<URL> {
-    const url = await pollUntil(
+    const url = await waitUntil(
       () => this._serverInstance?.url,
       (url) => !!url,
     );
@@ -655,11 +668,19 @@ export class BunHttpAdapter<
     response.setHeader(name, value);
   }
 
-  public setErrorHandler(handler: RouterErrorMiddlewareHandler) {
+  // `prefix` is accepted for `AbstractHttpAdapter` signature parity; these
+  // handlers are applied globally as a final fallback (see `listen`).
+  public setErrorHandler(
+    handler: RouterErrorMiddlewareHandler,
+    _prefix?: string,
+  ) {
     this._errorHandlers.push(handler);
   }
 
-  public setNotFoundHandler(handler: RouterMiddlewareHandler) {
+  public setNotFoundHandler(
+    handler: RouterMiddlewareHandler,
+    _prefix?: string,
+  ) {
     this._notFoundHandlers.push(handler);
   }
 
@@ -757,10 +778,12 @@ export class BunHttpAdapter<
   public async close() {
     try {
       if (this._serverInstance && this.isServerListening) {
-        await this._serverInstance.stop(false);
+        // Force-close active (keep-alive) connections so the port is fully
+        // released; a graceful stop can leave the listener lingering.
+        await this._serverInstance.stop(true);
       }
     } catch (err) {
-      console.error(
+      this.logger.error(
         "An error occurred while closing bun http adapter ====> ",
         err,
       );
@@ -805,7 +828,7 @@ export class BunHttpAdapter<
             "listenerCount",
             "removeAllListeners",
           ].includes(prop as string): {
-            let method = get(this.eventEmitter, prop) as
+            let method = get(this.eventEmitter, prop as string) as
               | CallableFunction
               | undefined;
 
@@ -819,7 +842,7 @@ export class BunHttpAdapter<
 
           case prop === "then": {
             return new Promise(async (resolve) => {
-              await pollUntil(
+              await waitUntil(
                 () => this._serverInstance && this.isServerListening,
                 (isReady) => !!isReady,
               );
@@ -872,199 +895,148 @@ export class BunHttpAdapter<
     this.defineHttpServer();
   }
 
-  public async initHttpServer() {
+  // `options` is accepted for `AbstractHttpAdapter` signature parity; the Bun
+  // server is configured via the constructor's `server` option / setListenOptions.
+  public async initHttpServer(_options?: NestApplicationOptions) {
     await this.init();
     return this.httpServer;
   }
 
+  /**
+   * Delegates an HTTP-verb route registration to the underlying
+   * {@link BunRouter}. Centralises the `(path?, ...callbacks)` argument
+   * shuffling shared by every verb override below.
+   */
+  private registerVerb(
+    verb:
+      | "use"
+      | "get"
+      | "post"
+      | "head"
+      | "delete"
+      | "put"
+      | "patch"
+      | "propfind"
+      | "proppatch"
+      | "mkcol"
+      | "copy"
+      | "move"
+      | "lock"
+      | "unlock"
+      | "all"
+      | "search"
+      | "options",
+    path: string | RouterHandler | undefined,
+    callbacks: RouterHandler[],
+  ): this {
+    const args: (string | RouterHandler)[] =
+      path == null ? callbacks : [path, ...callbacks];
+    (this.instance[verb] as (...a: (string | RouterHandler)[]) => unknown)(
+      ...args,
+    );
+    return this;
+  }
+
   override use(...callbacks: RouterHandler[]): this;
   override use(path: string, ...callbacks: RouterHandler[]): this;
-  override use(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.use(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.use(...callbacks);
-    return this;
+  override use(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("use", p, c);
   }
 
   override get(path: string, ...callbacks: RouterHandler[]): this;
   override get(...callbacks: RouterHandler[]): this;
-  override get(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.get(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.get(...callbacks);
-    return this;
+  override get(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("get", p, c);
   }
 
   override post(path: string, ...callbacks: RouterHandler[]): this;
   override post(...callbacks: RouterHandler[]): this;
-  override post(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.post(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.post(...callbacks);
-    return this;
+  override post(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("post", p, c);
   }
 
   override head(path: string, ...callbacks: RouterHandler[]): this;
   override head(...callbacks: RouterHandler[]): this;
-  override head(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.head(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.head(...callbacks);
-    return this;
+  override head(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("head", p, c);
   }
 
   override delete(path: string, ...callbacks: RouterHandler[]): this;
   override delete(...callbacks: RouterHandler[]): this;
-  override delete(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.delete(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.delete(...callbacks);
-    return this;
+  override delete(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("delete", p, c);
   }
 
   override put(path: string, ...callbacks: RouterHandler[]): this;
   override put(...callbacks: RouterHandler[]): this;
-  override put(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.put(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.put(...callbacks);
-    return this;
+  override put(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("put", p, c);
   }
 
   override patch(path: string, ...callbacks: RouterHandler[]): this;
   override patch(...callbacks: RouterHandler[]): this;
-  override patch(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.patch(path, ...callbacks);
-        return this;
-      }
+  override patch(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("patch", p, c);
+  }
 
-      callbacks.unshift(path);
-    }
+  override propfind(path: string, ...callbacks: RouterHandler[]): this;
+  override propfind(...callbacks: RouterHandler[]): this;
+  override propfind(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("propfind", p, c);
+  }
 
-    this.instance.patch(...callbacks);
-    return this;
+  override proppatch(path: string, ...callbacks: RouterHandler[]): this;
+  override proppatch(...callbacks: RouterHandler[]): this;
+  override proppatch(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("proppatch", p, c);
+  }
+
+  override mkcol(path: string, ...callbacks: RouterHandler[]): this;
+  override mkcol(...callbacks: RouterHandler[]): this;
+  override mkcol(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("mkcol", p, c);
+  }
+
+  override copy(path: string, ...callbacks: RouterHandler[]): this;
+  override copy(...callbacks: RouterHandler[]): this;
+  override copy(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("copy", p, c);
+  }
+
+  override move(path: string, ...callbacks: RouterHandler[]): this;
+  override move(...callbacks: RouterHandler[]): this;
+  override move(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("move", p, c);
+  }
+
+  override lock(path: string, ...callbacks: RouterHandler[]): this;
+  override lock(...callbacks: RouterHandler[]): this;
+  override lock(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("lock", p, c);
+  }
+
+  override unlock(path: string, ...callbacks: RouterHandler[]): this;
+  override unlock(...callbacks: RouterHandler[]): this;
+  override unlock(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("unlock", p, c);
   }
 
   override all(path: string, ...callbacks: RouterHandler[]): this;
   override all(...callbacks: RouterHandler[]): this;
-  override all(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.all(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.all(...callbacks);
-    return this;
+  override all(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("all", p, c);
   }
 
   override search(path: string, ...callbacks: RouterHandler[]): this;
   override search(...callbacks: RouterHandler[]): this;
-  override search(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.search(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.search(...callbacks);
-    return this;
+  override search(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("search", p, c);
   }
 
   override options(path: string, ...callbacks: RouterHandler[]): this;
   override options(...callbacks: RouterHandler[]): this;
-  override options(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
-  ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        this.instance.options(path, ...callbacks);
-        return this;
-      }
-
-      callbacks.unshift(path);
-    }
-
-    this.instance.options(...callbacks);
-    return this;
+  override options(p?: string | RouterHandler, ...c: RouterHandler[]): this {
+    return this.registerVerb("options", p, c);
   }
 
   public setViewEngine(engine: string) {

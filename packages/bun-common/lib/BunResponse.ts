@@ -1,69 +1,103 @@
 import type { BunFile } from "bun";
-import type { SerializeOptions as CookieSerializeOptions } from "cookie";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Buffer } from "node:buffer";
 import type { Readable } from "node:stream";
-import type { DeepWritable } from "ts-essentials";
 import type { BunRequest } from "./BunRequest";
 import type { WebSocketClientData } from "./BunWebSocket";
-// import { formatInTimeZone } from 'date-fns-tz';
 import type {
   NextFunction,
   RouterMiddlewareHandler,
   SendFileOptions,
 } from "./types/general";
-import { Buffer } from "node:buffer";
+import type { CookieSerializeOptions, Deferred } from "./utils/native";
 import { join as joinPath } from "node:path";
 import process from "node:process";
 import { ReadableStream } from "node:stream/web";
-import { eTag } from "@tinyhttp/etag";
-import { serialize as serializeCookie } from "cookie";
-import * as cookieSignature from "cookie-signature";
-import { format as formatDate, isValid as isDateValid } from "date-fns";
-import encodeurl from "encodeurl";
-import isNumeric from "fast-isnumeric";
-import { fileTypeFromBuffer } from "file-type";
+import { getMimeFromStr, isNodeReadableStream } from "./utils/general";
 import {
+  appendVary,
+  createDeferred,
   each,
+  encodeUrl,
+  etag,
   get,
   isArray,
   isBoolean,
   isBuffer,
+  isDateValid,
   isFunction,
   isMap,
   isNull,
   isNumber,
+  isNumeric,
   isObject,
   isString,
   isUndefined,
   merge,
-} from "lodash-es";
-import pollUntil from "until-promise";
-import vary from "vary";
-import { getMimeFromStr, isNodeReadableStream } from "./utils/general";
+  serializeCookie,
+  signCookie,
+  toHttpDate,
+} from "./utils/native";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 type CookieSerializeParams = Parameters<typeof serializeCookie>;
+/** Writable view of `ResponseInit`, since its members are `readonly`. */
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 export class BunResponse<customWebsocketDataType = unknown> {
   private _upgradeToWsData:
     | WebSocketClientData<customWebsocketDataType>
     | undefined = undefined;
 
-  private response: Response | undefined = undefined;
-  private options: DeepWritable<ResponseInit> = {};
+  #nativeResponse: Response | undefined = undefined;
+  /** Resolvers awaiting the native `Response` (see {@link getNativeResponse}). */
+  #responseWaiters: ((response: Response) => void)[] = [];
+  private options: Writable<ResponseInit> = {};
   private headersObj = new Headers();
   private _isLongLived = false;
   #readableStream: ReadableStream | undefined = undefined;
   #readableStreamController: ReadableStreamDefaultController | undefined =
     undefined;
 
-  #readableStreamCloseInterval: ReturnType<typeof setInterval> | undefined =
-    undefined;
-
   #readableStreamClosePromise: Promise<undefined> | undefined = undefined;
+  #readableStreamCloseResolve: (() => void) | undefined = undefined;
   #readableStreamEventMap = new Map<string, string | Buffer>();
+  /** Notifies a parked stream `pull` that data is available to enqueue. */
+  #streamWriteNotifier: Deferred<void> | undefined = undefined;
 
-  constructor(public req: BunRequest) {}
+  /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
+  #etagEnabled: boolean;
+
+  constructor(
+    public req: BunRequest,
+    options?: { etag?: boolean },
+  ) {
+    this.#etagEnabled = options?.etag ?? false;
+  }
+
+  /**
+   * Enables (or disables) automatic `ETag` generation for this response.
+   * ETag is **opt-in** — hashing every body has a measurable per-request cost.
+   */
+  public setEtag(enabled = true): BunResponse {
+    this.#etagEnabled = enabled;
+    return this;
+  }
+
+  /** The native `Response`; assigning notifies any {@link getNativeResponse} waiters. */
+  private get response(): Response | undefined {
+    return this.#nativeResponse;
+  }
+
+  private set response(value: Response | undefined) {
+    this.#nativeResponse = value;
+    if (value && this.#responseWaiters.length) {
+      const waiters = this.#responseWaiters;
+      this.#responseWaiters = [];
+      for (const waiter of waiters) {
+        waiter(value);
+      }
+    }
+  }
 
   public get isLongLived() {
     return this.req.socket.keepAlive === true || this._isLongLived || false;
@@ -130,7 +164,14 @@ export class BunResponse<customWebsocketDataType = unknown> {
     return this._upgradeToWsData;
   }
 
-  async send(
+  /**
+   * Builds the native response from `body`. Synchronous — no `await` is on the
+   * hot path, so the router can dispatch a sync handler without a microtask
+   * hop. (Sending a {@link BunResponse} whose response is not yet ready is the
+   * one case that cannot resolve synchronously; it falls back to an empty
+   * body — build that response before sending it.)
+   */
+  send(
     body:
       | string
       | null
@@ -142,7 +183,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
       | BunResponse
       | Response
       | ConstructorParameters<typeof Response>[0],
-  ): Promise<BunResponse> {
+  ): BunResponse {
     if (this.headersSent) {
       return this;
     }
@@ -170,18 +211,12 @@ export class BunResponse<customWebsocketDataType = unknown> {
 
     let wasResponseInitSet = false;
     if (body instanceof BunResponse) {
-      let response!: Response;
-
-      try {
-        const nativeRes = await body.getNativeResponse(1000);
-        if (nativeRes instanceof Response) {
-          response = nativeRes;
-        }
-      } catch {
-        //
-      }
-
-      if (!response) {
+      // Use the already-produced native response when available.
+      const peeked = Bun.peek(body.getNativeResponse(0));
+      let response: Response;
+      if (peeked instanceof Response) {
+        response = peeked;
+      } else {
         response = new Response(undefined, this.options);
         wasResponseInitSet = true;
       }
@@ -200,8 +235,8 @@ export class BunResponse<customWebsocketDataType = unknown> {
       this.options.headers.set("Content-Type", "application/json");
       const bodyToBeSent = JSON.stringify(body);
 
-      if (!this.hasHeader("ETag")) {
-        this.setHeader("ETag", eTag(bodyToBeSent));
+      if (this.#etagEnabled && !this.hasHeader("ETag")) {
+        this.setHeader("ETag", etag(bodyToBeSent));
       }
 
       wasResponseInitSet = true;
@@ -218,27 +253,14 @@ export class BunResponse<customWebsocketDataType = unknown> {
         bodyToBeSent = String(bodyToBeSent);
       }
 
-      if (!this.hasHeader("ETag") && bodyToBeSent) {
-        this.setHeader("ETag", eTag(bodyToBeSent));
+      if (this.#etagEnabled && !this.hasHeader("ETag") && bodyToBeSent) {
+        this.setHeader("ETag", etag(bodyToBeSent));
       }
 
-      // If no content type, Attempt to extract content type from buffer and send
+      // A string body is text — default to `text/plain`. (Magic-byte
+      // sniffing here would cost a `file-type` scan on every response.)
       if (!this.options.headers.get("content-type") && isString(bodyToBeSent)) {
-        let contentType = "text/plain";
-
-        try {
-          const typeResp = await fileTypeFromBuffer(
-            Buffer.from(bodyToBeSent, "utf-8") as unknown as ArrayBuffer,
-          );
-
-          if (typeResp?.mime) {
-            contentType = typeResp?.mime;
-          }
-        } catch {
-          //
-        }
-
-        this.options.headers.set("Content-Type", contentType);
+        this.options.headers.set("Content-Type", "text/plain");
       }
 
       wasResponseInitSet = true;
@@ -322,9 +344,9 @@ export class BunResponse<customWebsocketDataType = unknown> {
   }
 
   async endLongLivedConnection() {
-    clearInterval(this.#readableStreamCloseInterval);
+    this.#readableStreamCloseResolve?.();
     this.#readableStreamClosePromise = undefined;
-    this.#readableStreamCloseInterval = undefined;
+    this.#readableStreamCloseResolve = undefined;
 
     try {
       await this.getWritable().close();
@@ -355,15 +377,18 @@ export class BunResponse<customWebsocketDataType = unknown> {
         {
           pull: async (controller) => {
             this.#readableStreamController = controller;
-            await pollUntil(
-              () => this.#readableStreamEventMap.size,
-              (size) => size !== 0,
-            );
 
-            for await (const key of this.#readableStreamEventMap.keys()) {
+            // Park until a write notifies us instead of busy-polling.
+            if (this.#readableStreamEventMap.size === 0) {
+              this.#streamWriteNotifier = createDeferred<void>();
+              await this.#streamWriteNotifier.promise;
+              this.#streamWriteNotifier = undefined;
+            }
+
+            for (const key of this.#readableStreamEventMap.keys()) {
               const value = this.#readableStreamEventMap.get(key);
 
-              await controller.enqueue(
+              controller.enqueue(
                 isBuffer(value) ? value : encoder.encode(String(value)),
               );
 
@@ -381,12 +406,21 @@ export class BunResponse<customWebsocketDataType = unknown> {
       );
 
       this.#readableStreamClosePromise = new Promise((resolve) => {
-        this.#readableStreamCloseInterval = setInterval(async () => {
-          if (this.req.request.signal.aborted) {
-            resolve(undefined);
-            await this.endLongLivedConnection();
-          }
-        });
+        this.#readableStreamCloseResolve = () => resolve(undefined);
+        const signal = this.req.request.signal;
+        if (signal.aborted) {
+          resolve(undefined);
+          void this.endLongLivedConnection();
+        } else {
+          signal.addEventListener(
+            "abort",
+            () => {
+              resolve(undefined);
+              void this.endLongLivedConnection();
+            },
+            { once: true },
+          );
+        }
       });
 
       return this.#readableStream;
@@ -409,7 +443,9 @@ export class BunResponse<customWebsocketDataType = unknown> {
       key = `${key}${Bun.nanoseconds()}`;
     }
 
-    await this.#readableStreamEventMap.set(key, chunk as string | Buffer);
+    this.#readableStreamEventMap.set(key, chunk as string | Buffer);
+    // Wake any `pull` parked waiting for data.
+    this.#streamWriteNotifier?.resolve();
   }
 
   getWritable(): WritableStreamDefaultWriter {
@@ -442,7 +478,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
       return "/n";
     }
 
-    return await this.send(body as Parameters<typeof this.send>[0]);
+    return this.send(body as Parameters<typeof this.send>[0]);
   }
 
   redirect(
@@ -459,31 +495,43 @@ export class BunResponse<customWebsocketDataType = unknown> {
     return this.options;
   }
 
+  /**
+   * Resolves with the native `Response` once it has been produced. Resolves
+   * immediately when one already exists; otherwise parks until {@link send}
+   * (or another producer) sets it. Rejects after `timeout` ms when positive.
+   */
   getNativeResponse(
     timeout = isNumeric(Bun.env.HTTP_REQUEST_TIMEOUT)
       ? Number(Bun.env.HTTP_REQUEST_TIMEOUT)
       : undefined,
   ): Promise<Response> {
+    if (this.#nativeResponse) {
+      return Promise.resolve(this.#nativeResponse);
+    }
+
     const enableTimeout = isNumeric(timeout) && Number(timeout) > 0;
 
-    return new Promise((resolve, reject) => {
-      let elapsedTime = 0;
-      const interval = setInterval(() => {
-        if (this.response) {
-          clearInterval(interval);
-          resolve(this.response);
-        } else {
-          if (elapsedTime > (timeout as number)) {
-            clearInterval(interval);
-            reject(new Error("Request Timedout"));
-            return;
-          }
+    return new Promise<Response>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
 
-          if (enableTimeout) {
-            elapsedTime += 1;
-          }
+      const waiter = (response: Response) => {
+        if (timer) {
+          clearTimeout(timer);
         }
-      }, 1);
+        resolve(response);
+      };
+
+      this.#responseWaiters.push(waiter);
+
+      if (enableTimeout) {
+        timer = setTimeout(() => {
+          const index = this.#responseWaiters.indexOf(waiter);
+          if (index !== -1) {
+            this.#responseWaiters.splice(index, 1);
+          }
+          reject(new Error("Request Timedout"));
+        }, Number(timeout));
+      }
     });
   }
 
@@ -691,11 +739,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
     if (lastModified) {
       const date = new Date(file.lastModified * 1000);
       if (isDateValid(date)) {
-        const formattedDateStr = formatDate(
-          date,
-          "eee, dd MMM yyyy hh:mm:ss GMT",
-        );
-        this.headersObj.set("Last-Modified", formattedDateStr);
+        this.headersObj.set("Last-Modified", toHttpDate(date));
       }
     }
 
@@ -713,10 +757,8 @@ export class BunResponse<customWebsocketDataType = unknown> {
       this.headersObj.delete("Cache-Control");
     }
 
-    this.headersObj.set(
-      "Content-Disposition",
-      `attachment; filename="${filename || file.name}"`,
-    );
+    // `Content-Disposition: attachment` is only set above when `download` is
+    // requested; a plain sendFile serves the file inline.
     this.headersObj.set("Content-Type", file.type);
     this.options.headers = this.headersObj;
 
@@ -766,7 +808,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
       loc = String(url);
     }
 
-    return this.set("Location", encodeurl(loc));
+    return this.set("Location", encodeUrl(loc));
   }
 
   public links(links: Record<string, string>) {
@@ -812,7 +854,7 @@ export class BunResponse<customWebsocketDataType = unknown> {
       typeof value === "object" ? `j:${JSON.stringify(value)}` : String(value);
 
     if (signed) {
-      val = `s:${cookieSignature.sign(val, secret as string)}`;
+      val = `s:${signCookie(val, secret as string)}`;
     }
 
     if (isNumeric(options?.maxAge)) {
@@ -828,7 +870,9 @@ export class BunResponse<customWebsocketDataType = unknown> {
       options.path = "/";
     }
 
-    this.append("Set-Cookie", serializeCookie(name, String(val), opts));
+    // Serialize with the normalized `options` (path/expires/maxAge applied
+    // above) — passing the raw `opts` would drop them when `opts` was omitted.
+    this.append("Set-Cookie", serializeCookie(name, String(val), options));
 
     return this;
   }
@@ -838,8 +882,12 @@ export class BunResponse<customWebsocketDataType = unknown> {
     return this.cookie(name, "", options);
   }
 
-  public vary(fields: Parameters<typeof vary>[1]) {
-    vary(this as unknown as ServerResponse<IncomingMessage>, fields);
+  public vary(fields: string | string[]) {
+    const current = this.headersObj.get("Vary") || "";
+    const next = appendVary(current, fields);
+    if (next) {
+      this.headersObj.set("Vary", next);
+    }
     return this;
   }
 
