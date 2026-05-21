@@ -63,7 +63,20 @@ export default antfu({
     "unused-imports/no-unused-imports": "error",
     "unused-imports/no-unused-imports-ts": "error",
     "unused-imports/no-unused-vars-ts": "error",
-    "unused-imports/no-unused-vars": "error",
+    // Keep antfu's `^_` ignore pattern: a leading underscore marks a
+    // deliberately-unused binding (e.g. the mandatory 4th `next` parameter of
+    // an Express-style error handler, kept for arity detection).
+    "unused-imports/no-unused-vars": [
+      "error",
+      {
+        args: "after-used",
+        argsIgnorePattern: "^_",
+        caughtErrorsIgnorePattern: "^_",
+        ignoreRestSiblings: true,
+        vars: "all",
+        varsIgnorePattern: "^_",
+      },
+    ],
     "no-console": "warn",
     "no-labels": "off",
     "no-restricted-syntax": "off",

@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { Readable } from "node:stream";
-import { isObject, isString, values } from "lodash-es";
 import { getUniqueFilename, pathExists } from "../../utils/general";
+import { isObject, isString, values } from "../../utils/native";
 import { pump } from "../stream";
 
 type DiskStorageOptionHandler =
@@ -21,7 +21,7 @@ export interface DiskStorageOptions {
   removeAfter?: boolean;
 }
 
-const excecuteStorageHandler = (
+const executeStorageHandler = (
   file: RawMultipartFile,
   req: BunRequest,
   obj?: DiskStorageOptionHandler,
@@ -103,7 +103,7 @@ export class DiskStorage
     obj?: DiskStorageOptionHandler,
   ): Promise<string> {
     return (
-      excecuteStorageHandler(file, req, obj) ?? getUniqueFilename(file.filename)
+      executeStorageHandler(file, req, obj) ?? getUniqueFilename(file.filename)
     );
   }
 
@@ -112,6 +112,6 @@ export class DiskStorage
     req: BunRequest,
     obj?: DiskStorageOptionHandler,
   ): Promise<string> {
-    return excecuteStorageHandler(file, req, obj) ?? tmpdir();
+    return executeStorageHandler(file, req, obj) ?? tmpdir();
   }
 }

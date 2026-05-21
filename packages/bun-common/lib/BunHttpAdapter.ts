@@ -1,7 +1,10 @@
 import type { BunFile } from "bun";
-import type { CorsOptions as BunCorsOptions, CorsOptionsDelegate } from "cors";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import type {
+  CorsOptions as BunCorsOptions,
+  CorsOptionsDelegate,
+} from "./cors";
 import type {
   BodyParserOptions,
   BodyParserType,
@@ -17,17 +20,19 @@ import type {
   ServeStaticOptions,
   WebSocketClientData,
 } from "./index";
+import { EventEmitter } from "node:events";
 import { isIPv4, isIPv6 } from "node:net";
 import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import cors from "cors";
-import EventEmitter from "eventemitter3";
-import getPort from "get-port";
+import { BunRouter } from "./BunRouter";
+import { cors } from "./cors";
+import { BunRequest, BunResponse, BunWebSocket } from "./index";
 import {
   each,
   get,
+  getPort,
   isFunction,
   isNull,
   isObject,
@@ -35,10 +40,8 @@ import {
   isUndefined,
   omit,
   set,
-} from "lodash-es";
-import pollUntil from "until-promise";
-import { BunRouter } from "./BunRouter";
-import { BunRequest, BunResponse, BunWebSocket } from "./index";
+  waitUntil,
+} from "./utils/native";
 
 export type BunRequestOptions = ConstructorParameters<typeof BunRequest>[2];
 export type WebsocketOptions<customWebsocketDataType = unknown> =
@@ -70,6 +73,8 @@ export class BunHttpAdapter<
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
   private _hasRegisteredBodyParser = false;
+  /** When true, every response computes an `ETag`. Opt-in (off by default). */
+  protected etagEnabled = false;
   public readonly eventEmitter = new EventEmitter();
 
   constructor(
@@ -79,6 +84,8 @@ export class BunHttpAdapter<
       websocket?: Partial<WebsocketOptions<customWebsocketDataType>>;
       logger?: Logger;
       router?: BunRouterOptions;
+      /** Enable automatic `ETag` generation for every response. */
+      etag?: boolean;
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
@@ -104,6 +111,7 @@ export class BunHttpAdapter<
       parseCookies: true,
     };
 
+    this.etagEnabled = options?.etag ?? false;
     this.logger = logger;
     this.serverOptions = options?.server || {};
     this.webSocketAdapter = new BunWebSocket<customWebsocketDataType>({
@@ -230,7 +238,7 @@ export class BunHttpAdapter<
 
   public setTimeout(reqTimeout: number, callback: CallableFunction) {
     this.requestTimeout = reqTimeout;
-    return pollUntil(
+    return waitUntil(
       () => this.getBunServer(),
       (server) => !!server,
     ).then(
@@ -277,6 +285,8 @@ export class BunHttpAdapter<
       this.use(middlewareHandler);
     }
 
+    // Mark as registered so a second call does not stack a duplicate parser.
+    this._hasRegisteredBodyParser = true;
     return this;
   }
 
@@ -384,7 +394,9 @@ export class BunHttpAdapter<
             that.requestOpts,
           );
 
-          const res = new BunResponse<customWebsocketDataType>(req);
+          const res = new BunResponse<customWebsocketDataType>(req, {
+            etag: that.etagEnabled,
+          });
           let routeUsed: matchedRoute | true | undefined;
 
           try {
@@ -478,7 +490,7 @@ export class BunHttpAdapter<
             }
           };
 
-          const response = new BunResponse(req);
+          const response = new BunResponse(req, { etag: that.etagEnabled });
           for await (const handler of that._errorHandlers) {
             if (!continueProcessingHandlers) {
               break;
@@ -515,7 +527,6 @@ export class BunHttpAdapter<
 
       return this._serverInstance;
     } catch (e) {
-      console.log(e);
       const errorMessage = "Error while binding to listener...";
       this.logger.log(errorMessage);
       this.logger.log(e);
@@ -524,7 +535,7 @@ export class BunHttpAdapter<
   }
 
   public async getListenAddress(): Promise<URL> {
-    const url = await pollUntil(
+    const url = await waitUntil(
       () => this._serverInstance?.url,
       (url) => !!url,
     );
@@ -687,10 +698,12 @@ export class BunHttpAdapter<
   public async close() {
     try {
       if (this._serverInstance && this.isServerListening) {
-        await this._serverInstance.stop(false);
+        // Force-close active (keep-alive) connections so the port is fully
+        // released; a graceful stop can leave the listener lingering.
+        await this._serverInstance.stop(true);
       }
     } catch (err) {
-      console.error(
+      this.logger.error(
         "An error occurred while closing bun http adapter ====> ",
         err,
       );
@@ -743,7 +756,7 @@ export class BunHttpAdapter<
             "listenerCount",
             "removeAllListeners",
           ].includes(prop as string): {
-            let method = get(this.eventEmitter, prop) as
+            let method = get(this.eventEmitter, prop as string) as
               | CallableFunction
               | undefined;
 
@@ -757,7 +770,7 @@ export class BunHttpAdapter<
 
           case prop === "then": {
             return new Promise(async (resolve) => {
-              await pollUntil(
+              await waitUntil(
                 () => this._serverInstance && this.isServerListening,
                 (isReady) => !!isReady,
               );

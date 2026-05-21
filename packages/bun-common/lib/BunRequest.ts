@@ -1,8 +1,6 @@
 import type { SocketAddress } from "bun";
-import type { ParseOptions as CookieParseOptions } from "cookie";
 import type { FileTypeResult } from "file-type";
 import type { IncomingMessage } from "node:http";
-import type { ParseResult } from "parse-domain";
 import type { BunResponse } from "./BunResponse";
 import type { StorageFile } from "./multipart";
 import type {
@@ -12,21 +10,24 @@ import type {
   MultiPartFileRecord,
   MultiPartOptions,
 } from "./types/general";
+import type { CookieParseOptions } from "./utils/native";
 import { Buffer } from "node:buffer";
+import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import accepts from "accepts";
 import busboy from "busboy";
-import { parse as parseCookie } from "cookie";
-import { JSONCookies, signedCookies } from "cookie-parser";
-import EventEmitter from "eventemitter3";
 import { fileTypeFromBuffer } from "file-type";
-import fresh from "fresh";
-import ucwords from "locutus/php/strings/ucwords";
+import { parseDomain, ParseResultType, Validation } from "parse-domain";
+import { parse as parseQueryString } from "picoquery";
+import typeIs from "type-is";
+import { streamToBuffer } from "./utils/general";
 import {
   cloneDeep,
   each,
+  extractSignedCookies,
   first,
   flattenDeep,
+  fresh,
   get,
   isArray,
   isBoolean,
@@ -35,42 +36,49 @@ import {
   isObject,
   isString,
   isUndefined,
+  jsonCookies,
   keys,
   merge,
   omit,
+  parseCookie,
+  rangeParser,
   set,
+  ucwords,
   values,
-} from "lodash-es";
-import { parseDomain, ParseResultType, Validation } from "parse-domain";
-import qs from "qs";
-import rangeParser from "range-parser";
-import typeIs from "type-is";
-import { streamToBuffer } from "./utils/general";
+} from "./utils/native";
 
-export type QueryParserOpts = Parameters<typeof qs.parse>[1];
+export type QueryParserOpts = Parameters<typeof parseQueryString>[1];
 
-export const DEFAULT_PARSE_QUERY_OPTS = Object.freeze({
-  depth: 100,
-  ignoreQueryPrefix: true,
-  allowDots: true,
-  allowEmptyArrays: true,
-  arrayLimit: 999999999,
-  allowSparse: true,
+/**
+ * Default `picoquery` parse options. `nestingSyntax: "js"` accepts both dotted
+ * (`a.b`) and bracketed (`a[b]`) keys, and `arrayRepeat` collapses repeated
+ * keys into arrays — together approximating the previous `qs` behaviour.
+ */
+export const DEFAULT_PARSE_QUERY_OPTS: QueryParserOpts = Object.freeze({
+  nesting: true,
+  nestingSyntax: "js",
+  arrayRepeat: true,
+  arrayRepeatSyntax: "repeat",
 });
 
-export class BunRequest extends EventEmitter implements BunRequestInterface {
-  private headerNamesWithMultiple: string[] = [
-    "cache-control",
-    "X-Forwarded-For",
-  ];
+/** Strips a leading `?` so query strings parse cleanly. */
+function stripQueryPrefix(search: string): string {
+  return search.charCodeAt(0) === 63 ? search.slice(1) : search;
+}
 
+export class BunRequest extends EventEmitter implements BunRequestInterface {
   private bunResponse: BunResponse | undefined = undefined;
-  public headers: Record<string, string | string[]> = {};
   public headersObj: InstanceType<typeof Headers>;
-  public parsedUrl: InstanceType<typeof URL>;
+  /** Lazily-built plain-object header view (see the `headers` getter). */
+  #headers: Record<string, string | string[]> | undefined = undefined;
+  /** Lazily-parsed request URL (see the `parsedUrl` getter). */
+  #parsedUrl: URL | undefined = undefined;
+  /** Memoized `{ host, path }` split of the request URL (no `new URL`). */
+  #urlSplit: { host: string; path: string } | undefined = undefined;
   public maxHeadersCount = 0;
   public reusedSocket = false;
-  private _initPromises: Promise<unknown>[] = [];
+  /** Init promises, lazily allocated only when body/cookie/query parsing runs. */
+  #initPromises: Promise<unknown>[] | undefined = undefined;
   private _body:
     | string
     | Record<string, unknown>
@@ -80,14 +88,14 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     | undefined = undefined;
 
   public secret: string | string[] | undefined = undefined;
-  public cookies: BunRequestInterface["cookies"] = {};
-  public signedCookies: BunRequestInterface["signedCookies"] = {};
+  // `cookies`/`signedCookies`/`params`/`query` are lazily allocated — a
+  // routing-only request that never reads them pays no allocation.
+  #cookies: BunRequestInterface["cookies"] | undefined = undefined;
+  #signedCookies: BunRequestInterface["signedCookies"] | undefined = undefined;
   public url: string;
-  public params: Record<string, string> = {};
-  public query: Record<string, unknown> = {};
+  #params: Record<string, string> | undefined = undefined;
+  #query: Record<string, unknown> | undefined = undefined;
   public _route: BunRequestInterface["route"] | undefined = undefined;
-  private readonly parsedDomainResult: ParseResult;
-  private _files: Record<string, File> = {};
   private _contentType:
     | "json"
     | "text"
@@ -104,8 +112,28 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     | undefined = undefined;
 
   private _buffer: Buffer | undefined = undefined;
-  private _storageFiles: StorageFile[] | Record<string, StorageFile[]> = [];
-  public subdomains: string[] = [];
+  /** Uploaded files — lazily allocated; only multipart requests populate it. */
+  #storageFiles: StorageFile[] | Record<string, StorageFile[]> | undefined =
+    undefined;
+
+  /**
+   * Lazily-computed subdomains. `parseDomain` (a public-suffix-list lookup) is
+   * comparatively expensive, so it runs only on first access of `subdomains`.
+   */
+  #subdomains: string[] | undefined = undefined;
+
+  /** Memoized Node-compatible socket shim (see the `socket` getter). */
+  #socket:
+    | {
+        keepAlive: boolean;
+        setKeepAlive: (value: boolean) => boolean;
+        setNoDelay: (value: boolean) => boolean;
+        setTimeout: (value: number) => boolean;
+        readonly localPort: number | undefined;
+        readonly localAddress: string;
+        readonly localFamily: SocketAddress["family"] | undefined;
+      }
+    | undefined = undefined;
 
   constructor(
     public request: Request,
@@ -139,49 +167,42 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     this.request.signal.addEventListener("abort", abortEventHandler);
 
     this.headersObj = request.headers as Headers;
-    this.parsedUrl = new URL(request.url);
-    this.headers = this.getHeaders();
     this.url = this.request.url;
-    this.parsedDomainResult = parseDomain(this.parsedUrl.hostname, {
-      validation: Validation.Lax,
-    });
 
-    if (!isBoolean(this.options?.parseBody)) {
-      set(this, "options.parseBody", true);
+    // Normalize options with direct assignment — `set()`'s path parsing is
+    // wasted work for these known, fixed property names.
+    if (!isBoolean(this.options.parseBody)) {
+      this.options.parseBody = true;
     }
 
-    if (!isBoolean(this.options?.parseCookies)) {
-      set(this, "options.parseCookies", true);
+    if (!isBoolean(this.options.parseCookies)) {
+      this.options.parseCookies = true;
     }
 
-    if (!isBoolean(this.options?.parseQuery)) {
-      set(this, "options.parseQuery", true);
+    if (!isBoolean(this.options.parseQuery)) {
+      this.options.parseQuery = true;
     }
 
-    if (!isObject(this.options?.parseMultiPartFormDataOpts)) {
-      set(this, "options.parseMultiPartFormDataOpts", {});
+    if (!isObject(this.options.parseMultiPartFormDataOpts)) {
+      this.options.parseMultiPartFormDataOpts = {};
     }
 
-    if (!this.options?.parseQueryOpts) {
-      set(this, "options.parseQueryOpts", {
-        ...DEFAULT_PARSE_QUERY_OPTS,
-      });
+    if (!this.options.parseQueryOpts) {
+      this.options.parseQueryOpts = { ...DEFAULT_PARSE_QUERY_OPTS };
     }
 
     if (this.options?.parseQuery) {
-      this._initPromises.push(
+      (this.#initPromises ??= []).push(
         Promise.resolve(this.parseQuery(this.options.parseQueryOpts)),
       );
     }
 
     if (this.options?.parseBody) {
-      this._initPromises.push(Promise.resolve(this.parseBody()));
+      (this.#initPromises ??= []).push(Promise.resolve(this.parseBody()));
     }
 
-    this.extractSubdomains();
-
     if (this.options?.parseCookies) {
-      this._initPromises.push(
+      (this.#initPromises ??= []).push(
         Promise.resolve(
           this.parseCookies({
             forceUpdateRequest: true,
@@ -199,7 +220,59 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   async ready() {
-    return await Promise.allSettled(this._initPromises);
+    // Avoid the `Promise.allSettled` allocation when nothing was scheduled.
+    if (!this.#initPromises || this.#initPromises.length === 0) {
+      return [];
+    }
+    return await Promise.allSettled(this.#initPromises);
+  }
+
+  /** Parsed cookies — lazily allocated on first access. */
+  get cookies(): BunRequestInterface["cookies"] {
+    return (this.#cookies ??= {});
+  }
+
+  set cookies(value: BunRequestInterface["cookies"]) {
+    this.#cookies = value;
+  }
+
+  /** Verified signed cookies — lazily allocated on first access. */
+  get signedCookies(): BunRequestInterface["signedCookies"] {
+    return (this.#signedCookies ??= {});
+  }
+
+  set signedCookies(value: BunRequestInterface["signedCookies"]) {
+    this.#signedCookies = value;
+  }
+
+  /** Matched route params — lazily allocated; the router assigns the real set. */
+  get params(): Record<string, string> {
+    return (this.#params ??= {});
+  }
+
+  set params(value: Record<string, string>) {
+    this.#params = value;
+  }
+
+  /** Parsed query string — lazily allocated on first access. */
+  get query(): Record<string, unknown> {
+    return (this.#query ??= {});
+  }
+
+  set query(value: Record<string, unknown>) {
+    this.#query = value;
+  }
+
+  /**
+   * Parsed request URL. `new URL()` is deferred until first access, so a
+   * `BunRequest` whose URL is never inspected pays no parsing cost.
+   */
+  get parsedUrl(): URL {
+    return (this.#parsedUrl ??= new URL(this.request.url));
+  }
+
+  set parsedUrl(value: URL) {
+    this.#parsedUrl = value;
   }
 
   get socketAddress(): SocketAddress | null {
@@ -215,6 +288,12 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   get socket() {
+    // Memoized: the shim is stateful (`keepAlive`) and read on every
+    // `response.headersSent` check, so it must be a single stable instance.
+    if (this.#socket) {
+      return this.#socket;
+    }
+
     // eslint-disable-next-line ts/no-this-alias
     const that = this;
 
@@ -237,6 +316,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       },
     };
 
+    this.#socket = obj;
     return obj;
   }
 
@@ -267,16 +347,21 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   get storageFiles() {
-    return this._storageFiles;
+    return (this.#storageFiles ??= []);
   }
 
   get storageFile() {
-    if (isArray(this._storageFiles)) {
-      return first(this._storageFiles);
+    const storageFiles = this.#storageFiles;
+    if (storageFiles === undefined) {
+      return undefined;
     }
 
-    if (isObject(this._storageFiles)) {
-      const val = first(values(this._storageFiles));
+    if (isArray(storageFiles)) {
+      return first(storageFiles);
+    }
+
+    if (isObject(storageFiles)) {
+      const val = first(values(storageFiles));
       if (isArray(val)) {
         return first(val);
       }
@@ -304,27 +389,43 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       (isArray(files) && files.every((file) => isObject(file))) ||
       isObject(files)
     ) {
-      this._storageFiles = files;
+      this.#storageFiles = files;
     }
   }
 
-  private extractSubdomains() {
-    let subdomains: string[] = [];
-    if (this.parsedDomainResult.type === ParseResultType.Listed) {
-      subdomains = this.parsedDomainResult.subDomains;
+  /**
+   * Host subdomains. Lazily computed via `parseDomain` on first read (the
+   * public-suffix lookup is skipped entirely when never accessed); the router
+   * may override this with the matched route's subdomains.
+   */
+  get subdomains(): string[] {
+    if (this.#subdomains === undefined) {
+      this.#subdomains = this.extractSubdomains();
+    }
+    return this.#subdomains;
+  }
+
+  set subdomains(value: string[]) {
+    this.#subdomains = value;
+  }
+
+  private extractSubdomains(): string[] {
+    const parsed = parseDomain(this.parsedUrl.hostname, {
+      validation: Validation.Lax,
+    });
+
+    if (parsed.type === ParseResultType.Listed) {
+      return parsed.subDomains;
     }
 
     if (
-      [ParseResultType.NotListed, ParseResultType.Reserved].includes(
-        this.parsedDomainResult.type,
-      )
+      parsed.type === ParseResultType.NotListed ||
+      parsed.type === ParseResultType.Reserved
     ) {
-      const list = get(this.parsedDomainResult, "labels", []);
-      subdomains = list.slice(0, -2);
+      return (get(parsed, "labels", []) as string[]).slice(0, -2);
     }
 
-    this.subdomains = subdomains;
-    return subdomains;
+    return [];
   }
 
   get isFormDataParsed() {
@@ -388,14 +489,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             file: Buffer,
             // opts: FileInfo,
           ) => {
-            const parsedObj = qs.parse(`${fieldname}=x`, {
-              depth: 100,
-              ignoreQueryPrefix: true,
-              allowDots: true,
-              allowEmptyArrays: true,
-              arrayLimit: 999999999,
-              allowSparse: true,
-            });
+            const parsedObj = parseQueryString(
+              `${fieldname}=x`,
+              DEFAULT_PARSE_QUERY_OPTS,
+            );
 
             if (isObject(parsedObj)) {
               recursivelyReplacePlaceholder(parsedObj, file, "x");
@@ -415,16 +512,12 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
             try {
               let parsedData: Record<string, unknown> | undefined;
 
-              // Attempt to inflat using qs.parse
+              // Attempt to inflate using the query-string parser
               if (!isObject(parsedData)) {
-                parsedData = qs.parse(`${fieldname}=${value}`, {
-                  depth: 100,
-                  ignoreQueryPrefix: true,
-                  allowDots: true,
-                  allowEmptyArrays: true,
-                  arrayLimit: 999999999,
-                  allowSparse: true,
-                });
+                parsedData = parseQueryString(
+                  `${fieldname}=${value}`,
+                  DEFAULT_PARSE_QUERY_OPTS,
+                ) as Record<string, unknown>;
               }
 
               // Attempt to inflat using JSON.parse
@@ -465,95 +558,86 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
       try {
         const bb = busboy({ ...busBoyOpts, headers: this.headers });
-        let filesState: boolean[] = [];
-        let fieldState: boolean[] = [];
+        // Track each file handler's promise so the `close` event can await
+        // completion deterministically instead of polling state arrays.
+        const filePromises: Promise<void>[] = [];
 
-        bb.on("file", async (name, file, info) => {
-          const filesStateIndex = filesState.length;
-          filesState[filesStateIndex] = false;
+        bb.on("file", (name, file, info) => {
+          filePromises.push(
+            (async () => {
+              const fileBuffer = await streamToBuffer(
+                file as unknown as Readable,
+              );
+              const mimeTypeResp: FileTypeResult | undefined =
+                await fileTypeFromBuffer(fileBuffer as unknown as ArrayBuffer);
 
-          const fileBuffer = await streamToBuffer(file as unknown as Readable);
-          let mimeTypeResp: FileTypeResult | undefined;
-
-          try {
-            mimeTypeResp = await fileTypeFromBuffer(
-              fileBuffer as unknown as ArrayBuffer,
-            );
-          } catch (e) {
-            if (Bun.env.NODE_ENV === "development") {
-              console.log("Error here is =====> ", e);
-            }
-
-            throw e;
-            //
-          }
-
-          const fileData: MultiPartFileRecord = {
-            ...info,
-            validatedMimeType: mimeTypeResp,
-            fieldname: name,
-            originalFilename: info.filename,
-            file: fileBuffer,
-            type: "file",
-          };
-
-          let pushFile = false;
-          if (inflate && fileInflator) {
-            try {
-              const parsedData = await fileInflator(name, fileBuffer, info);
-              const pathListInFileMap =
-                files.get(fileData) || new Set<string>();
-
-              const processNestedValuePath = (
-                obj: unknown,
-                paths: string[],
-              ) => {
-                try {
-                  if ((obj as unknown as Buffer) === fileBuffer) {
-                    const pathStr = paths.reduce(
-                      (prev, val) => `${prev}[${val}]`,
-                      ``,
-                    );
-
-                    if (!pathListInFileMap.has(pathStr)) {
-                      pathListInFileMap.add(pathStr);
-                    }
-                  } else {
-                    keys(obj).forEach((key) => {
-                      processNestedValuePath(get(obj, key) as unknown, [
-                        ...paths,
-                        String(key),
-                      ]);
-                    });
-                  }
-                } catch {
-                  //
-                }
+              const fileData: MultiPartFileRecord = {
+                ...info,
+                validatedMimeType: mimeTypeResp,
+                fieldname: name,
+                originalFilename: info.filename,
+                file: fileBuffer,
+                type: "file",
               };
 
-              processNestedValuePath(parsedData, []);
-              files.set(fileData, pathListInFileMap);
-            } catch {
-              pushFile = true;
-            }
-          } else {
-            pushFile = true;
-          }
+              let pushFile = false;
+              if (inflate && fileInflator) {
+                try {
+                  const parsedData = await fileInflator(name, fileBuffer, info);
+                  const pathListInFileMap =
+                    files.get(fileData) || new Set<string>();
 
-          if (pushFile) {
-            const pathListInFileMap = files.get(fileData) || new Set<string>();
+                  const processNestedValuePath = (
+                    obj: unknown,
+                    paths: string[],
+                  ) => {
+                    try {
+                      if ((obj as unknown as Buffer) === fileBuffer) {
+                        const pathStr = paths.reduce(
+                          (prev, val) => `${prev}[${val}]`,
+                          ``,
+                        );
 
-            if (!pathListInFileMap.has(fileData.fieldname)) {
-              pathListInFileMap.add(fileData.fieldname);
-            }
+                        if (!pathListInFileMap.has(pathStr)) {
+                          pathListInFileMap.add(pathStr);
+                        }
+                      } else {
+                        keys(obj).forEach((key) => {
+                          processNestedValuePath(get(obj, key) as unknown, [
+                            ...paths,
+                            String(key),
+                          ]);
+                        });
+                      }
+                    } catch {
+                      //
+                    }
+                  };
 
-            files.set(fileData, pathListInFileMap);
-          }
+                  processNestedValuePath(parsedData, []);
+                  files.set(fileData, pathListInFileMap);
+                } catch {
+                  pushFile = true;
+                }
+              } else {
+                pushFile = true;
+              }
 
-          filesState[filesStateIndex] = true;
+              if (pushFile) {
+                const pathListInFileMap =
+                  files.get(fileData) || new Set<string>();
+
+                if (!pathListInFileMap.has(fileData.fieldname)) {
+                  pathListInFileMap.add(fileData.fieldname);
+                }
+
+                files.set(fileData, pathListInFileMap);
+              }
+            })(),
+          );
         });
 
-        bb.on("field", async (name, val) => {
+        bb.on("field", (name, val) => {
           const valueList = fieldNameAndValue.get(name) || new Set<string>();
           if (!valueList.has(val)) {
             valueList.add(val);
@@ -563,33 +647,16 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         });
 
         bb.on("close", async () => {
-          await Promise.all([
-            new Promise((resolve) => {
-              const interval = setInterval(() => {
-                if (
-                  fieldState.length === 0 ||
-                  fieldState.findIndex((state) => state === false) === -1
-                ) {
-                  clearInterval(interval);
-                  resolve(true);
-                }
-              }, 1);
-            }),
-            new Promise((resolve) => {
-              const interval = setInterval(() => {
-                if (
-                  filesState.length === 0 ||
-                  filesState.findIndex((state) => state === false) === -1
-                ) {
-                  clearInterval(interval);
-                  resolve(true);
-                }
-              }, 1);
-            }),
-          ]);
-
-          filesState = [];
-          fieldState = [];
+          const fileResults = await Promise.allSettled(filePromises);
+          const failedFile = fileResults.find(
+            (result) => result.status === "rejected",
+          );
+          if (failedFile && failedFile.status === "rejected") {
+            files.clear();
+            fieldNameAndValue.clear();
+            reject(failedFile.reason);
+            return;
+          }
 
           // Remove file uploads without any pointers;
           for (const key of files.keys()) {
@@ -698,14 +765,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
   private async handleUrlFormEncodingParsing(data: string) {
     try {
-      const parsedData = qs.parse(data, {
-        depth: 100,
-        ignoreQueryPrefix: true,
-        allowDots: true,
-        allowEmptyArrays: true,
-        arrayLimit: 999999999,
-        allowSparse: true,
-      });
+      const parsedData = parseQueryString(
+        stripQueryPrefix(data),
+        DEFAULT_PARSE_QUERY_OPTS,
+      );
 
       if (isObject(parsedData) || isArray(parsedData)) {
         this._body = parsedData;
@@ -720,7 +783,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return false;
   }
 
-  private async handleJsoonBodyParsing(data: string) {
+  private async handleJsonBodyParsing(data: string) {
     try {
       this._body = JSON.parse(data);
       this._contentType = "json";
@@ -746,7 +809,10 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     const options: QueryParserOpts = opts ||
       this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
 
-    this.query = qs.parse(this.parsedUrl.search, options);
+    this.query = parseQueryString(
+      stripQueryPrefix(this.parsedUrl.search),
+      options,
+    );
     return this.query;
   }
 
@@ -796,15 +862,13 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     let signedCookiesObj: BunRequest["signedCookies"] = {};
 
     if (secrets.length) {
-      const parsedSignedCookies = signedCookies(cookies, secrets);
-      signedCookiesObj = JSONCookies(
-        parsedSignedCookies as Record<string, string>,
-      );
+      const parsedSignedCookies = extractSignedCookies(cookies, secrets);
+      signedCookiesObj = jsonCookies(parsedSignedCookies);
     }
 
     const resp = {
       signedCookies: signedCookiesObj,
-      cookies: JSONCookies(cookies),
+      cookies: jsonCookies(cookies),
     };
 
     if (!this.cookies || forceUpdateRequest) {
@@ -844,7 +908,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
       // Try JSON parse
       if (!hasParsedData) {
-        hasParsedData = await this.handleJsoonBodyParsing(bufferText);
+        hasParsedData = await this.handleJsonBodyParsing(bufferText);
       }
 
       // Try url-encoded form data parse
@@ -872,7 +936,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
         }
 
         case contentTypeHeader?.includes("application/json"): {
-          await this.handleJsoonBodyParsing(bufferText);
+          await this.handleJsonBodyParsing(bufferText);
           break;
         }
 
@@ -939,8 +1003,48 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
     return !!this._contentType;
   }
 
+  /**
+   * Splits the absolute request URL into `{ host, path }` by a single string
+   * scan, avoiding a `new URL()` for the hot routing reads (`host`, `path`,
+   * `originalUrl`). `path` is `pathname + search + hash` exactly as received
+   * (Express-style — not normalized).
+   */
+  private splitRequestUrl(): { host: string; path: string } {
+    if (this.#urlSplit) {
+      return this.#urlSplit;
+    }
+
+    const url = this.request.url;
+    const schemeEnd = url.indexOf("://");
+    const hostStart = schemeEnd === -1 ? 0 : schemeEnd + 3;
+
+    let cut = url.length;
+    for (let i = hostStart; i < url.length; i++) {
+      const code = url.charCodeAt(i);
+      // First of '/' (47), '?' (63), '#' (35) ends the authority.
+      if (code === 47 || code === 63 || code === 35) {
+        cut = i;
+        break;
+      }
+    }
+
+    let host = url.slice(hostStart, cut);
+    const at = host.lastIndexOf("@");
+    if (at !== -1) {
+      host = host.slice(at + 1); // drop any userinfo
+    }
+
+    let path = cut >= url.length ? "/" : url.slice(cut);
+    if (path.charCodeAt(0) !== 47) {
+      path = `/${path}`; // a bare `?query`/`#hash` implies pathname "/"
+    }
+
+    this.#urlSplit = { host, path };
+    return this.#urlSplit;
+  }
+
   get path() {
-    return `${this.parsedUrl.pathname}${this.parsedUrl.search}${this.parsedUrl.hash}`;
+    return this.splitRequestUrl().path;
   }
 
   get method() {
@@ -948,11 +1052,15 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   get host() {
-    return this.parsedUrl.host || this.headersObj.get("Host") || "127.0.0.1";
+    return (
+      this.splitRequestUrl().host || this.headersObj.get("Host") || "127.0.0.1"
+    );
   }
 
   get protocol() {
-    const protocol = this.parsedUrl.protocol;
+    // `URL.protocol` includes a trailing ":" ("https:"); strip it so the
+    // value matches Express (`"https"`) and `secure` compares correctly.
+    const protocol = this.parsedUrl.protocol.replace(/:$/, "");
     const protocolHeader = this.getHeader("X-Forwarded-Proto") || protocol;
     const index = protocolHeader.indexOf(",");
 
@@ -971,6 +1079,21 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
   getHeaderNames() {
     return Array.from(this.headersObj.keys());
+  }
+
+  /**
+   * Plain-object view of the request headers. Built lazily on first access —
+   * a routing-only request that never inspects headers pays nothing.
+   */
+  get headers(): Record<string, string | string[]> {
+    if (this.#headers === undefined) {
+      this.#headers = this.getHeaders();
+    }
+    return this.#headers;
+  }
+
+  set headers(value: Record<string, string | string[]>) {
+    this.#headers = value;
   }
 
   getHeaders() {
@@ -1000,7 +1123,8 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
   removeHeader(name: string) {
     this.headersObj.delete(name);
-    this.headers = this.getHeaders();
+    // Invalidate the cached view; it rebuilds on next access.
+    this.#headers = undefined;
   }
 
   setHeader(name: string, value: string | string[], replace = true) {
@@ -1061,7 +1185,7 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
   }
 
   get rawHeaders() {
-    return flattenDeep(Object.entries(this.headers));
+    return flattenDeep<string>(Object.entries(this.headers));
   }
 
   get secure() {
@@ -1096,10 +1220,20 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
 
     // 2xx or 304 as per rfc2616 14.26
     if ((status >= 200 && status < 300) || status === 304) {
-      return fresh(this.headers, {
-        etag: (res.get("ETag", "") || "") as string | string[],
-        "last-modified": res.get("Last-Modified", "") as string | string[],
-      });
+      // Read the three conditional headers straight from `headersObj` so the
+      // freshness check never forces the lazy `headers` view to be built.
+      return fresh(
+        {
+          "if-modified-since":
+            this.headersObj.get("if-modified-since") ?? undefined,
+          "if-none-match": this.headersObj.get("if-none-match") ?? undefined,
+          "cache-control": this.headersObj.get("cache-control") ?? undefined,
+        },
+        {
+          etag: (res.get("ETag", "") || "") as string | string[],
+          "last-modified": res.get("Last-Modified", "") as string | string[],
+        },
+      );
     }
 
     return false;

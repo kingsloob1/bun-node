@@ -1,6 +1,5 @@
 import type { Server as BunServerType, Serve as BunServeType } from "bun";
 import type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
-import type { JSONCookies } from "cookie-parser";
 import type { FileTypeResult } from "file-type";
 import type { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
@@ -56,8 +55,8 @@ export interface BunRequestInterface {
     | undefined;
   buffer: Buffer | undefined;
   secret?: string | string[];
-  cookies: ReturnType<typeof JSONCookies>; // Depends on cookie parser library
-  signedCookies: ReturnType<typeof JSONCookies>; // Depends on cookie parser library
+  cookies: Record<string, unknown>;
+  signedCookies: Record<string, unknown>;
   hostname: string;
   ip: string;
   ips: string[];
@@ -276,3 +275,10 @@ export type Constructor<T = object> = T extends new (
 ) => infer R
   ? new (...args: A) => R
   : new (...args: any[]) => any;
+
+export type Shift<AT = unknown, T extends AT[] = AT[]> = T extends [
+  infer _,
+  ...infer Rest,
+]
+  ? Rest
+  : never;
