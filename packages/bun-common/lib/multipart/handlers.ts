@@ -1,15 +1,13 @@
-import type { BunRequest } from "../BunRequest";
-import { each, isArray, keys, merge, unset } from "lodash-es";
-import {
-  filterUpload,
-  getBusBoyConfig,
-  removeStorageFiles,
-  type StorageExpandedFile,
-  type StorageFile,
-  type TransFormedUploadOptions,
-  type UploadField,
-  type UploadFieldMapEntry,
+import type {
+  StorageExpandedFile,
+  StorageFile,
+  TransFormedUploadOptions,
+  UploadField,
+  UploadFieldMapEntry,
 } from ".";
+import type { BunRequest } from "../BunRequest";
+import { filterUpload, getBusBoyConfig, removeStorageFiles } from ".";
+import { each, isArray, keys, merge, unset } from "../utils/native";
 
 export const handleMultipartAnyFiles = async (
   req: BunRequest,
@@ -99,7 +97,7 @@ export const handleMultipartFileFields = async (
         throw new Error(`Field ${fileFieldName} doesn't accept files`);
       }
 
-      if (files[fileFieldName].length + 1 > fieldOptions.maxCount) {
+      if (files[fileFieldName].length > fieldOptions.maxCount) {
         throw new Error(
           `Field ${fileFieldName} accepts max ${fieldOptions.maxCount} files`,
         );
@@ -163,7 +161,7 @@ export const handleMultipartMultipleFiles = async (
     }
 
     // Handle validation checks
-    if (files.length + 1 > maxCount) {
+    if (files.length > maxCount) {
       throw new Error(`Field ${fieldname} accepts max ${maxCount} files`);
     }
 

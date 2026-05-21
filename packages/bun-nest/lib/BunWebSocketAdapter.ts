@@ -9,8 +9,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
 import { Buffer } from "node:buffer";
-import { BunWebSocket } from "@kingsleyweb/bun-common";
-import { isArray, isUndefined } from "lodash-es";
+import { BunWebSocket, isArray, isUndefined } from "@kingsleyweb/bun-common";
 
 export enum MessageEventTypes {
   CONNECT = 0,
@@ -175,13 +174,6 @@ export class BunWebSocketAdapter<
       [key: string]: unknown;
     },
   ): BunWebSocketServerType<customWebsocketDataType> | undefined {
-    if (Bun.env.NODE_ENV !== "production") {
-      console.log("called websocket create adapter with the following ====> ", {
-        port,
-        options,
-      });
-    }
-
     this.router.ws(
       options?.namespace ? options.namespace : "/*",
       this.wsHandler,
@@ -272,9 +264,10 @@ export class BunWebSocketAdapter<
               break;
             }
 
-            const eventData = MessageEventTypes.EVENT
-              ? parsedData.data[1]
-              : Buffer.from(atob(String(parsedData.data[1])));
+            const eventData =
+              type === MessageEventTypes.EVENT
+                ? parsedData.data[1]
+                : Buffer.from(atob(String(parsedData.data[1])));
             const handlersForEvent = handlers.filter(
               (handler) => handler.message === eventName,
             );

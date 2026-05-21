@@ -10,6 +10,7 @@ let bunRequest!: BunRequest;
 
 beforeAll(async () => {
   bunServer = Bun.serve({
+    port: 0,
     fetch() {
       return new Response("hi");
     },

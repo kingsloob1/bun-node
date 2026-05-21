@@ -1,12 +1,16 @@
 /* eslint-disable perfectionist/sort-exports */
 import * as acceptsModule from "accepts";
-import * as cookieModule from "cookie";
-import * as cookieParserModule from "cookie-parser";
-import * as cookieSignatureModule from "cookie-signature";
-import * as freshModule from "fresh";
-import * as rangeParserModule from "range-parser";
 import * as typeIsModule from "type-is";
-import * as varyModule from "vary";
+import {
+  appendVary,
+  etag,
+  extractSignedCookies,
+  jsonCookies,
+  parseCookie,
+  serializeCookie,
+  signCookie,
+  unsignCookie,
+} from "./utils/native";
 
 export {
   getMimeFromStr,
@@ -16,12 +20,14 @@ export {
   randomBytes,
   streamToBuffer,
 } from "./utils/general";
-export { pump } from "../lib/multipart/stream";
+export * from "./utils/native";
+export { cors, type CorsOptions, type CorsOptionsDelegate } from "./cors";
+export { pump } from "./multipart/stream";
 export {
   DiskStorage,
   type DiskStorageOptions,
-} from "../lib/multipart/storage/disk-storage";
-export { MemoryStorage } from "../lib/multipart/storage/memory-storage";
+} from "./multipart/storage/disk-storage";
+export { MemoryStorage } from "./multipart/storage/memory-storage";
 export {
   handleMultipartAnyFiles,
   handleMultipartFileFields,
@@ -29,7 +35,7 @@ export {
   handleMultipartSingleFile,
   handleNoFiles,
   uploadFieldsToMap,
-} from "../lib/multipart/handlers";
+} from "./multipart/handlers";
 export {
   type BunMultipartRequest,
   type CustomStorageFile,
@@ -53,7 +59,7 @@ export {
   type UploadFilterFile,
   type UploadFilterHandler,
   type UploadOptions,
-} from "../lib/multipart/index";
+} from "./multipart/index";
 export {
   BunWebSocket,
   type BunWebSocketCreateServerOptions,
@@ -64,6 +70,7 @@ export {
   type BunWebSocketNormalOptions,
   type BunWebSocketOptions,
   type BunWebSocketServerType,
+  type TypedEmitter,
   type WebSocketClient,
   type WebSocketClientData,
 } from "./BunWebSocket";
@@ -110,13 +117,21 @@ export {
   type SendFileOptions,
   type ServeStaticOptions,
 } from "./types/general";
-export const { cookieParser } = { cookieParser: cookieParserModule };
-export const { cookie } = { cookie: cookieModule };
-export const { cookieSignature } = { cookieSignature: cookieSignatureModule };
-export const { vary } = { vary: varyModule };
+
+/* ------------------------------------------------------------------ *
+ * Compatibility helpers — native replacements grouped under the same
+ * names previously re-exported from third-party packages. The underlying
+ * functions (`parseCookie`, `etag`, `fresh`, `rangeParser`, ...) are also
+ * exported individually via `export * from "./utils/native"`.
+ * ------------------------------------------------------------------ */
+export const cookie = { parse: parseCookie, serialize: serializeCookie };
+export const cookieSignature = { sign: signCookie, unsign: unsignCookie };
+export const cookieParser = {
+  JSONCookies: jsonCookies,
+  signedCookies: extractSignedCookies,
+};
+export const vary = appendVary;
+export const eTag = etag;
 export const { accepts } = { accepts: acceptsModule };
-export const { rangeParser } = { rangeParser: rangeParserModule };
 export const { typeIs } = { typeIs: typeIsModule };
-export const { fresh } = { fresh: freshModule };
-export { default as encodeUrl } from "encodeurl";
 export { default as mime } from "mime";
