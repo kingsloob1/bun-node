@@ -408,7 +408,7 @@ describe("BunRequest: IncomingMessage-style events", () => {
     expect(req.listenerCount("close")).toBe(0);
   });
 
-  it("emits aborted, close and end when the connection aborts", async () => {
+  it("emits aborted then close when the connection aborts before a response", async () => {
     const controller = new AbortController();
     const request = new Request("http://localhost/stream", {
       signal: controller.signal,
@@ -422,11 +422,94 @@ describe("BunRequest: IncomingMessage-style events", () => {
     const order: string[] = [];
     req.on("aborted", () => order.push("aborted"));
     req.on("close", () => order.push("close"));
-    req.on("end", () => order.push("end"));
 
     controller.abort();
     await Bun.sleep(1);
-    expect(order).toEqual(["aborted", "close", "end"]);
+    expect(order).toEqual(["aborted", "close"]);
+    expect(req.aborted).toBe(true);
+  });
+
+  it("emits only close (not aborted) once a response has been produced", async () => {
+    const controller = new AbortController();
+    const request = new Request("http://localhost/stream", {
+      signal: controller.signal,
+    });
+    const req = await BunRequest.init(request, testServer, {
+      parseBody: false,
+      parseCookies: false,
+      parseQuery: false,
+    });
+
+    const order: string[] = [];
+    req.on("aborted", () => order.push("aborted"));
+    req.on("close", () => order.push("close"));
+
+    // A response was produced — a later drop is a close, not an abort.
+    req.markResponded();
+    controller.abort();
+    await Bun.sleep(1);
+    expect(order).toEqual(["close"]);
+    expect(req.aborted).toBe(false);
+  });
+
+  it("BunResponse producing a response marks the request as responded", async () => {
+    const controller = new AbortController();
+    const request = new Request("http://localhost/stream", {
+      signal: controller.signal,
+    });
+    const req = await BunRequest.init(request, testServer, {
+      parseBody: false,
+      parseCookies: false,
+      parseQuery: false,
+    });
+    const res = new BunResponse(req);
+
+    let aborted = false;
+    req.on("aborted", () => {
+      aborted = true;
+    });
+
+    res.json({ ok: true });
+    await res.getNativeResponse(1000);
+    controller.abort();
+    await Bun.sleep(1);
+    // The response certified the request — the drop is not an abort.
+    expect(aborted).toBe(false);
+    expect(req.aborted).toBe(false);
+  });
+
+  it("streams the request body as data then end events", async () => {
+    const req = await makeRequest({ method: "POST", body: "hello body" });
+
+    const chunks: string[] = [];
+    let ended = false;
+    req.on("data", (chunk) => chunks.push(chunk.toString()));
+    req.on("end", () => {
+      ended = true;
+    });
+
+    await Bun.sleep(1);
+    expect(chunks.join("")).toBe("hello body");
+    expect(ended).toBe(true);
+    expect(req.complete).toBe(true);
+  });
+
+  it("replays body events to a listener that subscribes late", async () => {
+    const req = await makeRequest({ method: "POST", body: "late body" });
+    // The body has long finished parsing by now — a fresh subscriber still
+    // receives the data/end replay.
+    await Bun.sleep(1);
+
+    const chunks: string[] = [];
+    let ended = false;
+    req.on("data", (chunk) => chunks.push(chunk.toString()));
+    req.on("end", () => {
+      ended = true;
+    });
+
+    await Bun.sleep(1);
+    expect(chunks.join("")).toBe("late body");
+    expect(ended).toBe(true);
   });
 
   it("fires a once listener a single time", async () => {

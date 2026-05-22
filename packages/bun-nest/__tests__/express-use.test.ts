@@ -91,7 +91,7 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
     });
   });
 
-  it("createMiddlewareFactory registers a route via registerVerb", async () => {
+  it("createMiddlewareFactory registers method-scoped middleware via useMethod", async () => {
     adapter = new BunHttpAdapter(5000);
 
     const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
@@ -104,5 +104,49 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ via: "middleware-factory" });
+  });
+
+  it("createMiddlewareFactory registers middleware, not a route handler", async () => {
+    adapter = new BunHttpAdapter(5000);
+    const order: string[] = [];
+
+    // Middleware registered via the factory must run as middleware — before
+    // the route handler — and pass control on with next().
+    const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
+    factory("/checkpoint", ((_req, _res, next) => {
+      order.push("factory-middleware");
+      (next as NextFunction)();
+    }) as unknown as RouterHandler);
+    adapter.get("/checkpoint", (async (_req, res) => {
+      order.push("route");
+      return res.json({ order });
+    }) as RouterHandler);
+
+    await adapter.listen(0);
+    const response = await fetch(
+      `http://${adapter.listeningHost}:${adapter.listeningPort}/checkpoint`,
+    );
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["factory-middleware", "route"]);
+  });
+
+  it("createMiddlewareFactory scopes middleware to the chosen method", async () => {
+    adapter = new BunHttpAdapter(5000);
+    let ran = false;
+
+    const factory = adapter.createMiddlewareFactory(RequestMethod.POST);
+    factory("/scoped", ((_req, _res, next) => {
+      ran = true;
+      (next as NextFunction)();
+    }) as unknown as RouterHandler);
+    adapter.all("/scoped", (async (_req, res) =>
+      res.json({ ok: true })) as RouterHandler);
+
+    await adapter.listen(0);
+    // A GET request must not trigger the POST-scoped middleware.
+    await fetch(
+      `http://${adapter.listeningHost}:${adapter.listeningPort}/scoped`,
+    );
+    expect(ran).toBe(false);
   });
 });

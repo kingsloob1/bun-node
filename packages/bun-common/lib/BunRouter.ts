@@ -885,6 +885,40 @@ export class BunRouter extends Router {
     }
   }
 
+  /**
+   * Registers **method-scoped middleware** — like {@link use}, but it runs
+   * only for a given HTTP method. The route keeps the middleware semantics of
+   * `use` (it is **not** an endpoint: `isEndpoint` stays `false`, so it keeps
+   * registration order and is never specificity-sorted, exactly like `use`).
+   *
+   * A falsy method or `"ALL"` makes it method-agnostic, identical to `use`.
+   * With a path it is a prefix match, like `use(path, ...)`.
+   */
+  useMethod(method: string, ...callbacks: RouterHandler[]): this;
+  useMethod(method: string, path: string, ...callbacks: RouterHandler[]): this;
+  useMethod(
+    method: string,
+    path?: string | RouterHandler,
+    ...callbacks: RouterHandler[]
+  ): this {
+    if (!isString(path) && path) {
+      callbacks.unshift(path);
+      path = undefined;
+    }
+
+    const normalized = isString(method) ? method.trim().toUpperCase() : "";
+    // `setRoute` leaves `#pendingEndpoint` false, so the route is middleware
+    // (not a route handler) — it is excluded from specificity ordering.
+    this.setRoute({
+      method: normalized && normalized !== "ALL" ? normalized : undefined,
+      // `group` is a prefix match, mirroring `use(path, ...)`.
+      group: isString(path) ? path : undefined,
+      callbacks,
+    });
+
+    return this;
+  }
+
   override group(path: string, ...callbacks: [Router]): this;
   override group(path: string, ...callbacks: RouterHandler[]): this;
   override group(
@@ -1057,13 +1091,11 @@ export class BunRouter extends Router {
           routeIndex,
           route,
           matched,
-          // Verb routes and `all` are route handlers; `use` middleware is
-          // not. `isEndpoint` is the explicit tag; the method check is a
-          // fallback for routes added via a raw `setRoute({ method })`.
-          isRouteHandler:
-            tagged.isEndpoint === true ||
-            isString(route.method) ||
-            isArray(route.method),
+          // Verb routes and `all` are route handlers; `use`/`useMethod`
+          // middleware is not. The `isEndpoint` tag is the sole source of
+          // truth, so method-scoped middleware (`useMethod`) is never treated
+          // as a route handler even though it carries an HTTP method.
+          isRouteHandler: tagged.isEndpoint === true,
           // 0 = this router's own routes; > 0 = a mounted sub-router.
           routerId: tagged.routerGroupId ?? 0,
         };

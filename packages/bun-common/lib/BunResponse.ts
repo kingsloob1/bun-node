@@ -106,6 +106,13 @@ export class BunResponse<customWebsocketDataType = unknown>
   #finishEmitted = false;
   #closeEmitted = false;
 
+  /**
+   * The response body, captured for inspection — see {@link getBody}. Holds
+   * the value passed to `json`/`send`/`sendStatus`/`end`, or, for a streamed
+   * response, the array of chunks written so far.
+   */
+  #sentBody: unknown = undefined;
+
   constructor(
     public req: BunRequest,
     options?: { etag?: boolean },
@@ -267,6 +274,11 @@ export class BunResponse<customWebsocketDataType = unknown>
 
   private set response(value: Response | undefined) {
     this.#nativeResponse = value;
+    // Certify to the request that a response has been produced — a later
+    // connection drop is then a `close`, not an `aborted` (see BunRequest).
+    if (value) {
+      this.req.markResponded();
+    }
     if (value && this.#responseWaiters.length) {
       const waiters = this.#responseWaiters;
       this.#responseWaiters = [];
@@ -325,6 +337,7 @@ export class BunResponse<customWebsocketDataType = unknown>
   public json<T extends Record<string, unknown>>(body: T): BunResponse {
     this.options.headers = this.headersObj;
     this.options.headers.set("Content-Type", "application/json");
+    this.#sentBody = body;
     this.response = Response.json(body, this.options);
     return this;
   }
@@ -370,6 +383,10 @@ export class BunResponse<customWebsocketDataType = unknown>
     if (this.headersSent) {
       return this;
     }
+
+    // Capture the body for inspection (see `getBody`) before any 204/304
+    // stripping or serialisation rewrites it.
+    this.#sentBody = body;
 
     this.options.headers = this.headersObj;
     this.req.setResponse(this);
@@ -633,6 +650,11 @@ export class BunResponse<customWebsocketDataType = unknown>
     }
 
     this.#readableStreamEventMap.set(key, chunk as string | Buffer);
+    // Accumulate streamed chunks so `getBody()` can report them too.
+    if (!Array.isArray(this.#sentBody)) {
+      this.#sentBody = [];
+    }
+    (this.#sentBody as unknown[]).push(chunk);
     // Wake any `pull` parked waiting for data.
     this.#streamWriteNotifier?.resolve();
     // The write buffer is unbounded, so the writer is always ready for more.
@@ -816,6 +838,19 @@ export class BunResponse<customWebsocketDataType = unknown>
     );
   }
 
+  /**
+   * The response body that was sent — the value passed to
+   * `json`/`send`/`sendStatus`/`end`, or, for a streamed response, the array
+   * of chunks written so far. `undefined` until a body is produced.
+   *
+   * Together with {@link getHeaders} and {@link statusCode} this lets logging
+   * middleware (e.g. `pino-http`) report the full response, the way Node's
+   * `http` response headers and body can be inspected.
+   */
+  getBody(): unknown {
+    return this.#sentBody;
+  }
+
   append(key: string, value: string | string[]) {
     if (!isArray(value)) {
       value = [value];
@@ -976,6 +1011,7 @@ export class BunResponse<customWebsocketDataType = unknown>
     }
 
     this.options.headers = this.headersObj;
+    this.#sentBody = String(status);
     this.response = new Response(String(status), this.options);
     return this;
   }

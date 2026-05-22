@@ -327,3 +327,58 @@ describe("BunResponse: ServerResponse-style events", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("BunResponse: response introspection for logging", () => {
+  it("getBody returns the object passed to json", async () => {
+    const res = await makeResponse();
+    res.json({ user: "ada" });
+    expect(res.getBody()).toEqual({ user: "ada" });
+  });
+
+  it("getBody returns the body passed to send", async () => {
+    const res = await makeResponse();
+    res.send("plain text");
+    expect(res.getBody()).toBe("plain text");
+  });
+
+  it("getBody returns the status string for sendStatus", async () => {
+    const res = await makeResponse();
+    res.sendStatus(404);
+    expect(res.getBody()).toBe("404");
+  });
+
+  it("getBody is undefined before a response is produced", async () => {
+    const res = await makeResponse();
+    expect(res.getBody()).toBeUndefined();
+  });
+
+  it("exposes status, headers and body together (pino-http style)", async () => {
+    const res = await makeResponse();
+    res.setHeader("X-Trace", "abc123");
+    res.status(201).json({ created: true });
+
+    // The shape a logging middleware reads to report the response.
+    expect(res.statusCode).toBe(201);
+    const headers = res.getHeaders();
+    expect(headers["x-trace"]).toBe("abc123");
+    expect(headers["content-type"]).toContain("application/json");
+    expect(res.getBody()).toEqual({ created: true });
+  });
+
+  it("getBody accumulates the chunks of a streamed response", async () => {
+    const res = await makeResponse();
+    res.write("chunk-1");
+    res.write("chunk-2");
+    expect(res.getBody()).toEqual(["chunk-1", "chunk-2"]);
+  });
+
+  it("a finish listener can read the full response", async () => {
+    const res = await makeResponse();
+    let logged: { status: number; body: unknown } | undefined;
+    res.on("finish", () => {
+      logged = { status: res.statusCode, body: res.getBody() };
+    });
+    res.status(200).json({ ok: true });
+    expect(logged).toEqual({ status: 200, body: { ok: true } });
+  });
+});

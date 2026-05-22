@@ -1154,15 +1154,17 @@ export class BunHttpAdapter<
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType {
     return ((path, callback) => {
-      // `getRequestMethodStr` only ever yields verb names handled by
-      // `registerVerb`, so the registration funnels through the same path
-      // as every other verb override.
-      const verb = this.getRequestMethodStr(requestMethod) as Parameters<
-        BunHttpAdapter["registerVerb"]
-      >[0];
-      return this.registerVerb(verb, path, [
+      // NestJS middleware must behave like middleware — not a route handler.
+      // `useMethod` registers it method-scoped but with `isEndpoint` false,
+      // so it keeps registration order and is excluded from route
+      // specificity ordering. `RequestMethod.ALL` maps to method-agnostic.
+      const method = this.getRequestMethodStr(requestMethod);
+      this.instance.useMethod(
+        method,
+        path,
         callback as unknown as RouterHandler,
-      ]);
+      );
+      return this;
     }) as MiddlewareFactoryRespType;
   }
 

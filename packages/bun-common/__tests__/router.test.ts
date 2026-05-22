@@ -974,3 +974,88 @@ describe("BunRouter: routeSpecificity option", () => {
     expect(await afterNative.json()).toEqual({ which: "static" });
   });
 });
+
+describe("BunRouter: useMethod — method-scoped middleware", () => {
+  async function exec(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const result = await router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+    });
+    return { result, response };
+  }
+
+  it("registers a layer that is middleware, not a route handler", () => {
+    const router = new BunRouter();
+    router.useMethod("GET", "/x", () => {});
+
+    const [layer] = layersFor(router, "GET", "/x");
+    expect(layer).toBeDefined();
+    // Like use(): isEndpoint stays false — it is not a route handler.
+    expect(layer.isRouteHandler).toBe(false);
+  });
+
+  it("matches only the given HTTP method", () => {
+    const router = new BunRouter();
+    router.useMethod("POST", "/x", () => {});
+
+    expect(layersFor(router, "POST", "/x").length).toBeGreaterThan(0);
+    expect(layersFor(router, "GET", "/x")).toHaveLength(0);
+  });
+
+  it("ALL makes it method-agnostic, exactly like use()", () => {
+    const router = new BunRouter();
+    router.useMethod("ALL", () => {});
+
+    expect(layersFor(router, "GET", "/anything").length).toBeGreaterThan(0);
+    expect(layersFor(router, "POST", "/anything").length).toBeGreaterThan(0);
+  });
+
+  it("runs as middleware before the route handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.useMethod("GET", (_req, _res, next) => {
+      order.push("mw");
+      next();
+    });
+    router.get("/x", (_req, res) => {
+      order.push("route");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["mw", "route"]);
+  });
+
+  it("keeps registration order even when specificity is enabled", async () => {
+    const router = new BunRouter({ routeSpecificity: true });
+    const order: string[] = [];
+    router.useMethod("GET", (_req, _res, next) => {
+      order.push("mw");
+      next();
+    });
+    // Param route registered before the static one.
+    router.get("/users/:id", (_req, _res, next) => {
+      order.push("param");
+      next();
+    });
+    router.get("/users/me", (_req, res) => {
+      order.push("static");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/users/me");
+    await response.getNativeResponse(1000);
+    // The route handlers are specificity-sorted (static first); the
+    // useMethod middleware keeps its registration slot at the front.
+    expect(order).toEqual(["mw", "static"]);
+  });
+});

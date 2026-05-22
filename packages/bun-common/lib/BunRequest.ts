@@ -74,12 +74,19 @@ function stripQueryPrefix(search: string): string {
  */
 // eslint-disable-next-line ts/consistent-type-definitions
 export type BunRequestEvents = {
-  /** The client aborted the underlying connection. */
+  /**
+   * The connection was aborted **before a response was produced**. Once a
+   * response has been sent, a dropped connection emits `close` instead.
+   */
   aborted: () => void;
   /** The request connection has closed. */
   close: () => void;
-  /** The request body stream has ended. */
+  /** A chunk of the request body. */
+  data: (chunk: Buffer) => void;
+  /** The request body has been fully received. */
   end: () => void;
+  /** An error occurred while receiving/parsing the request body. */
+  error: (error: unknown) => void;
   /** A streaming response bound to this request was cancelled. */
   abort: (reason?: unknown) => void;
 };
@@ -149,11 +156,25 @@ export class BunRequest
 
   /**
    * Lazily-created event bus mirroring Node's `IncomingMessage` events
-   * (`aborted`, `close`, `end`, …). It is built only when the first listener
-   * is registered — a routing-only request nobody listens to costs nothing,
-   * and the connection-abort bridge is wired only then.
+   * (`aborted`, `close`, `data`, `end`, …). It is built only when the first
+   * listener is registered — a routing-only request nobody listens to costs
+   * nothing, and the connection-abort bridge is wired only then.
    */
   #emitter: EventEmitter | undefined = undefined;
+
+  /**
+   * Set by {@link BunResponse} (via {@link markResponded}) once a response
+   * has been produced. A connection drop after this point is a normal
+   * `close`, not an `aborted`.
+   */
+  #responded = false;
+
+  /** Lifecycle of the request body, driving the `data`/`end`/`error` events. */
+  #bodyState: "pending" | "ended" | "errored" = "pending";
+  /** The error captured when {@link #bodyState} is `"errored"`. */
+  #bodyError: unknown = undefined;
+  /** True once the `data`/`end`/`error` body events have been emitted. */
+  #bodyEventsEmitted = false;
 
   /** Memoized Node-compatible socket shim (see the `socket` getter). */
   #socket:
@@ -220,7 +241,21 @@ export class BunRequest
     }
 
     if (this.options?.parseBody) {
-      (this.#initPromises ??= []).push(Promise.resolve(this.parseBody()));
+      (this.#initPromises ??= []).push(
+        Promise.resolve(this.parseBody()).then(
+          () => {
+            // The body has been fully received — release the `data`/`end`
+            // events to any listener (or arm them for a later subscriber).
+            this.#bodyState = "ended";
+            this.#flushBodyEvents();
+          },
+          (error: unknown) => {
+            this.#bodyState = "errored";
+            this.#bodyError = error;
+            this.#flushBodyEvents();
+          },
+        ),
+      );
     }
 
     if (this.options?.parseCookies) {
@@ -264,17 +299,20 @@ export class BunRequest
       emitter.setMaxListeners(0);
       this.#emitter = emitter;
 
-      // Bridge a dropped connection to `aborted`/`close`/`end` (Node emits
-      // these when the request socket terminates). Wired only once, only
-      // when listened to.
+      // Bridge a dropped connection to `aborted`/`close` (Node emits these
+      // when the request socket terminates). `aborted` fires only for a
+      // *genuine* abort — one that happens before a response was produced;
+      // once responded, a drop is reported solely as `close`. Wired once,
+      // only when listened to.
       const signal = this.request.signal;
       if (!signal.aborted) {
         signal.addEventListener(
           "abort",
           () => {
-            emitter.emit("aborted");
+            if (!this.#responded) {
+              emitter.emit("aborted");
+            }
             emitter.emit("close");
-            emitter.emit("end");
           },
           { once: true },
         );
@@ -283,8 +321,73 @@ export class BunRequest
     return this.#emitter;
   }
 
+  /**
+   * Marks the request as having received a response. Called by
+   * {@link BunResponse} so a later connection drop is reported as `close`
+   * rather than `aborted`, and {@link aborted} reads `false`.
+   */
+  markResponded(): this {
+    this.#responded = true;
+    return this;
+  }
+
+  /**
+   * `true` when the connection was aborted **before** a response was produced
+   * — a genuine client abort, not a normal post-response close. Mirrors
+   * Node's `IncomingMessage.aborted`.
+   */
+  get aborted(): boolean {
+    return this.request.signal.aborted && !this.#responded;
+  }
+
+  /** `true` once the request body has been fully received (Node `complete`). */
+  get complete(): boolean {
+    return this.#bodyState === "ended";
+  }
+
+  /**
+   * Emits the buffered request body as Node-style `data`/`end` events (or
+   * `error` if parsing failed) — exactly once, and only once both the body
+   * has finished parsing and an emitter exists.
+   */
+  #flushBodyEvents(): void {
+    if (
+      this.#bodyEventsEmitted ||
+      !this.#emitter ||
+      this.#bodyState === "pending"
+    ) {
+      return;
+    }
+    this.#bodyEventsEmitted = true;
+
+    if (this.#bodyState === "errored") {
+      this.#emitter.emit("error", this.#bodyError);
+      return;
+    }
+
+    if (this._buffer && this._buffer.length > 0) {
+      this.#emitter.emit("data", this._buffer);
+    }
+    this.#emitter.emit("end");
+  }
+
+  /**
+   * When a body-stream listener (`data`/`end`/`error`) is registered, arms a
+   * deferred body-event flush. The microtask hop lets the caller finish
+   * attaching all of its listeners before any event fires.
+   */
+  #scheduleBodyFlush(event: ReqEventName | string | symbol): void {
+    if (
+      !this.#bodyEventsEmitted &&
+      (event === "data" || event === "end" || event === "error")
+    ) {
+      queueMicrotask(() => this.#flushBodyEvents());
+    }
+  }
+
   public on<E extends ReqEventName>(event: E, listener: ReqListener<E>): this {
     this.events.on(event, listener as (...args: any[]) => void);
+    this.#scheduleBodyFlush(event);
     return this;
   }
 
@@ -293,6 +396,7 @@ export class BunRequest
     listener: ReqListener<E>,
   ): this {
     this.events.addListener(event, listener as (...args: any[]) => void);
+    this.#scheduleBodyFlush(event);
     return this;
   }
 
@@ -301,6 +405,7 @@ export class BunRequest
     listener: ReqListener<E>,
   ): this {
     this.events.once(event, listener as (...args: any[]) => void);
+    this.#scheduleBodyFlush(event);
     return this;
   }
 
@@ -309,6 +414,7 @@ export class BunRequest
     listener: ReqListener<E>,
   ): this {
     this.events.prependListener(event, listener as (...args: any[]) => void);
+    this.#scheduleBodyFlush(event);
     return this;
   }
 
@@ -320,6 +426,7 @@ export class BunRequest
       event,
       listener as (...args: any[]) => void,
     );
+    this.#scheduleBodyFlush(event);
     return this;
   }
 
