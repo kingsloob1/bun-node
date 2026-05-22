@@ -86,6 +86,11 @@ export class BunHttpAdapter<
       router?: BunRouterOptions;
       /** Enable automatic `ETag` generation for every response. */
       etag?: boolean;
+      /**
+       * Upper bound on the router's matched-pipeline cache before FIFO
+       * eviction. Forwarded to {@link BunRouter}; defaults to 2000.
+       */
+      routeCacheMax?: number;
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
@@ -103,6 +108,9 @@ export class BunHttpAdapter<
     super({
       caseSensitive: false,
       ...routerOptions,
+      ...(options?.routeCacheMax !== undefined
+        ? { routeCacheMax: options.routeCacheMax }
+        : {}),
       logger,
     });
 

@@ -364,3 +364,613 @@ describe("BunRouter: handle", () => {
     );
   });
 });
+
+describe("BunRouter: route cache (routeCacheMax)", () => {
+  it("serves a cache hit as the same array reference (zero-allocation)", () => {
+    const router = new BunRouter();
+    router.get("/cached", () => {});
+
+    const first = layersFor(router, "GET", "/cached");
+    const second = layersFor(router, "GET", "/cached");
+    expect(second).toBe(first);
+  });
+
+  it("accepts a custom routeCacheMax and still routes correctly", () => {
+    const router = new BunRouter({ routeCacheMax: 1 });
+    router.get("/a", () => {});
+    router.get("/b", () => {});
+
+    expect(layersFor(router, "GET", "/a")).toHaveLength(1);
+    expect(layersFor(router, "GET", "/b")).toHaveLength(1);
+    expect(layersFor(router, "GET", "/a")).toHaveLength(1);
+  });
+
+  it("evicts the oldest entry once routeCacheMax is exceeded (FIFO)", () => {
+    const router = new BunRouter({ routeCacheMax: 1 });
+    router.get("/x", () => {});
+    router.get("/y", () => {});
+
+    const x1 = layersFor(router, "GET", "/x");
+    // Caching a second distinct signature evicts "/x" (max = 1).
+    layersFor(router, "GET", "/y");
+    const x2 = layersFor(router, "GET", "/x");
+
+    // "/x" was recomputed (not served from cache) — a fresh, equal array.
+    expect(x2).not.toBe(x1);
+    expect(x2).toEqual(x1);
+  });
+
+  it("falls back to the default cap for an invalid routeCacheMax", () => {
+    // 0 is non-positive — rejected in favour of the 2000 default, so a
+    // re-requested signature is still served from cache.
+    const router = new BunRouter({ routeCacheMax: 0 });
+    router.get("/z", () => {});
+
+    const z1 = layersFor(router, "GET", "/z");
+    const z2 = layersFor(router, "GET", "/z");
+    expect(z2).toBe(z1);
+  });
+});
+
+describe("BunRouter: pipeline advances only via next()", () => {
+  async function exec(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const result = await router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+    });
+    return { result, response };
+  }
+
+  it("a verb handler that calls next() advances to the next verb handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", (_req, _res, next) => {
+      order.push("first");
+      next();
+    });
+    router.get("/a", (_req, res) => {
+      order.push("second");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    const native = await response.getNativeResponse(1000);
+    expect(order).toEqual(["first", "second"]);
+    expect(await native.json()).toEqual({ order: ["first", "second"] });
+  });
+
+  it("a verb handler that calls next() advances to middleware", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", (_req, _res, next) => {
+      order.push("verb");
+      next();
+    });
+    router.use((_req, res) => {
+      order.push("middleware");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["verb", "middleware"]);
+  });
+
+  it("an all() handler that calls next() advances to a verb handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.all("/a", (_req, _res, next) => {
+      order.push("all");
+      next();
+    });
+    router.get("/a", (_req, res) => {
+      order.push("get");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["all", "get"]);
+  });
+
+  it("runs a chain of verb and all handlers in order when each calls next()", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", (_req, _res, next) => {
+      order.push("get1");
+      next();
+    });
+    router.all("/a", (_req, _res, next) => {
+      order.push("all");
+      next();
+    });
+    router.post("/a", (_req, _res, next) => {
+      // Different method — must not run for a GET request.
+      order.push("post");
+      next();
+    });
+    router.get("/a", (_req, res) => {
+      order.push("get2");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["get1", "all", "get2"]);
+  });
+
+  it("hangs when a verb handler neither sends a response nor calls next()", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", () => {
+      order.push("stuck");
+    });
+    router.get("/a", (_req, res) => {
+      order.push("never");
+      res.json({ order });
+    });
+
+    const { result, response } = await exec(router, "GET", "/a");
+    // The first handler ran but never advanced the pipeline.
+    expect(order).toEqual(["stuck"]);
+    // handle() resolves truthy (not a 404) — the request is left in flight.
+    expect(result).toBeTruthy();
+    expect(response.headersSent).toBe(false);
+    // No response will ever be produced — the request hangs until timeout.
+    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
+  });
+
+  it("hangs when an async verb handler forgets to respond or call next()", async () => {
+    const router = new BunRouter();
+    router.get("/a", async () => {
+      // Forgot to send a response or call next().
+    });
+
+    const { result, response } = await exec(router, "GET", "/a");
+    expect(result).toBeTruthy();
+    expect(response.headersSent).toBe(false);
+    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
+  });
+
+  it("hangs when an all() handler neither sends a response nor calls next()", async () => {
+    const router = new BunRouter();
+    router.all("/a", () => {
+      // No response, no next().
+    });
+
+    const { result, response } = await exec(router, "GET", "/a");
+    expect(result).toBeTruthy();
+    expect(response.headersSent).toBe(false);
+    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
+  });
+
+  it("hangs when a middleware neither sends a response nor calls next()", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.use(() => {
+      order.push("middleware");
+    });
+    router.get("/a", (_req, res) => {
+      order.push("route");
+      res.json({ order });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    // The middleware never called next() — the route handler is unreachable.
+    expect(order).toEqual(["middleware"]);
+    expect(response.headersSent).toBe(false);
+    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
+  });
+
+  it("ignores a handler's return value — a returned body does not respond", async () => {
+    const router = new BunRouter();
+    router.get("/a", () => ({ returned: true }));
+
+    const { response } = await exec(router, "GET", "/a");
+    // Returning a value is not sending a response — the request hangs.
+    expect(response.headersSent).toBe(false);
+    await expect(response.getNativeResponse(20)).rejects.toThrow("Timedout");
+  });
+
+  it("stops the pipeline once a verb handler sends a response", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", (_req, res) => {
+      order.push("first");
+      res.json({ winner: "first" });
+    });
+    router.get("/a", (_req, res) => {
+      order.push("second");
+      res.json({ winner: "second" });
+    });
+
+    const { response } = await exec(router, "GET", "/a");
+    const native = await response.getNativeResponse(1000);
+    expect(order).toEqual(["first"]);
+    expect(await native.json()).toEqual({ winner: "first" });
+  });
+
+  it("returns undefined (404-able) when the last handler calls next()", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/a", (_req, _res, next) => {
+      order.push("one");
+      next();
+    });
+    router.get("/a", (_req, _res, next) => {
+      order.push("two");
+      next();
+    });
+
+    const { result } = await exec(router, "GET", "/a");
+    // Every handler passed via next() and nothing responded — unhandled.
+    expect(order).toEqual(["one", "two"]);
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("BunRouter: use(router) — mounted sub-routers", () => {
+  async function exec(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const result = await router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+    });
+    return { result, response };
+  }
+
+  it("use(router) mounts a sub-router's routes", async () => {
+    const sub = new BunRouter();
+    sub.get("/hello", (_req, res) => res.json({ from: "sub" }));
+
+    const app = new BunRouter();
+    app.use(sub);
+
+    const { response } = await exec(app, "GET", "/hello");
+    const native = await response.getNativeResponse(1000);
+    expect(await native.json()).toEqual({ from: "sub" });
+  });
+
+  it("use(path, router) mounts a sub-router under a path prefix", async () => {
+    const sub = new BunRouter();
+    sub.get("/users/:id", (req, res) => res.json({ id: req.params.id }));
+
+    const app = new BunRouter();
+    app.use("/api", sub);
+
+    const mounted = await exec(app, "GET", "/api/users/42");
+    const native = await mounted.response.getNativeResponse(1000);
+    expect(await native.json()).toEqual({ id: "42" });
+
+    // The un-prefixed path must not resolve.
+    const unmounted = await exec(app, "GET", "/users/42");
+    expect(unmounted.result).toBeUndefined();
+  });
+
+  it("runs middleware inside a mounted sub-router and advances via next()", async () => {
+    const sub = new BunRouter();
+    const order: string[] = [];
+    sub.use((_req, _res, next) => {
+      order.push("sub-mw");
+      next();
+    });
+    sub.get("/x", (_req, res) => {
+      order.push("sub-route");
+      res.json({ order });
+    });
+
+    const app = new BunRouter();
+    app.use(sub);
+
+    const { response } = await exec(app, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["sub-mw", "sub-route"]);
+  });
+
+  it("use(middleware, router) preserves registration order", async () => {
+    const order: string[] = [];
+    const sub = new BunRouter();
+    sub.get("/x", (_req, res) => {
+      order.push("sub");
+      res.json({ order });
+    });
+
+    const app = new BunRouter();
+    app.use((_req, _res, next) => {
+      order.push("mw");
+      next();
+    }, sub);
+
+    const { response } = await exec(app, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["mw", "sub"]);
+  });
+
+  it("next('router') exits the current mount and runs the next matching router", async () => {
+    const order: string[] = [];
+    const routerA = new BunRouter();
+    routerA.get("/x", (_req, _res, next) => {
+      order.push("A1");
+      next("router");
+    });
+    routerA.get("/x", (_req, res) => {
+      // Must be skipped — its router was exited.
+      order.push("A2");
+      res.json({ order });
+    });
+
+    const routerB = new BunRouter();
+    routerB.get("/x", (_req, res) => {
+      order.push("B");
+      res.json({ order });
+    });
+
+    const app = new BunRouter();
+    app.use(routerA);
+    app.use(routerB);
+
+    const { response } = await exec(app, "GET", "/x");
+    const native = await response.getNativeResponse(1000);
+    expect(order).toEqual(["A1", "B"]);
+    expect(await native.json()).toEqual({ order: ["A1", "B"] });
+  });
+
+  it("next('router') skips a mounted router's error handlers too", async () => {
+    const order: string[] = [];
+    const routerA = new BunRouter();
+    routerA.get("/x", (_req, _res, next) => {
+      order.push("A");
+      next("router");
+    });
+    routerA.use(
+      (_err: unknown, _req: unknown, _res: unknown, _next: unknown) => {
+        // A's error handler must not run — the router was exited.
+        order.push("A-error");
+      },
+    );
+
+    const routerB = new BunRouter();
+    routerB.get("/x", (_req, res) => {
+      order.push("B");
+      res.json({ order });
+    });
+
+    const app = new BunRouter();
+    app.use(routerA);
+    app.use(routerB);
+
+    const { response } = await exec(app, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["A", "B"]);
+  });
+
+  it("next('router') hands off correctly after specificity reordering", async () => {
+    const order: string[] = [];
+    // routerB's static `/x` is more specific than routerA's `/:id`, so it
+    // runs first even though routerA was mounted first.
+    const routerA = new BunRouter();
+    routerA.get("/:id", (_req, res) => {
+      order.push("A");
+      res.json({ order });
+    });
+
+    const routerB = new BunRouter();
+    routerB.get("/x", (_req, _res, next) => {
+      order.push("B");
+      next("router");
+    });
+
+    // Specificity ordering is opt-in — enable it on the handling router.
+    const app = new BunRouter({ routeSpecificity: true });
+    app.use(routerA);
+    app.use(routerB);
+
+    const { response } = await exec(app, "GET", "/x");
+    await response.getNativeResponse(1000);
+    // B runs first (more specific), exits its router, A then responds.
+    expect(order).toEqual(["B", "A"]);
+  });
+
+  it("next('router') from the router's own route abandons the pipeline", async () => {
+    const order: string[] = [];
+    const app = new BunRouter();
+    app.get("/x", (_req, _res, next) => {
+      order.push("own");
+      next("router");
+    });
+    app.get("/x", (_req, res) => {
+      order.push("after");
+      res.json({ order });
+    });
+
+    const { result } = await exec(app, "GET", "/x");
+    // next('router') from a non-mounted route abandons everything.
+    expect(order).toEqual(["own"]);
+    expect(result).toBeUndefined();
+  });
+
+  it("a verb handler in a mounted router can still advance via plain next()", async () => {
+    const order: string[] = [];
+    const sub = new BunRouter();
+    sub.get("/x", (_req, _res, next) => {
+      order.push("sub1");
+      next();
+    });
+    sub.get("/x", (_req, res) => {
+      order.push("sub2");
+      res.json({ order });
+    });
+
+    const app = new BunRouter();
+    app.use(sub);
+
+    const { response } = await exec(app, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["sub1", "sub2"]);
+  });
+});
+
+describe("BunRouter: routeSpecificity option", () => {
+  async function exec(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const result = await router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+    });
+    return { result, response };
+  }
+
+  it("defaults to registration order (Express semantics)", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    // Param route registered first; with the default it runs first.
+    router.get("/users/:id", (_req, res) => {
+      order.push("param");
+      res.json({ order });
+    });
+    router.get("/users/me", (_req, res) => {
+      order.push("static");
+      res.json({ order });
+    });
+
+    await exec(router, "GET", "/users/me");
+    expect(order).toEqual(["param"]);
+  });
+
+  it("routeSpecificity: true prefers the more specific route handler", async () => {
+    const router = new BunRouter({ routeSpecificity: true });
+    const order: string[] = [];
+    router.get("/users/:id", (_req, res) => {
+      order.push("param");
+      res.json({ order });
+    });
+    router.get("/users/me", (_req, res) => {
+      order.push("static");
+      res.json({ order });
+    });
+
+    await exec(router, "GET", "/users/me");
+    // Static beats param regardless of registration order.
+    expect(order).toEqual(["static"]);
+  });
+
+  it("accepts a custom comparator that sorts route handlers", async () => {
+    // A custom rule: param routes run before static ones — the opposite of
+    // both registration order and the built-in ranking, proving it is used.
+    const paramFirst = (
+      a: { route: { path?: string | null } },
+      b: { route: { path?: string | null } },
+    ) => {
+      const aParam = String(a.route.path ?? "").includes(":");
+      const bParam = String(b.route.path ?? "").includes(":");
+      return Number(bParam) - Number(aParam);
+    };
+
+    const router = new BunRouter({ routeSpecificity: paramFirst });
+    const order: string[] = [];
+    // Static registered first — the comparator still puts the param first.
+    router.get("/users/me", (_req, res) => {
+      order.push("static");
+      res.json({ order });
+    });
+    router.get("/users/:id", (_req, res) => {
+      order.push("param");
+      res.json({ order });
+    });
+
+    await exec(router, "GET", "/users/me");
+    expect(order).toEqual(["param"]);
+  });
+
+  it("keeps use() middleware in registration order while reordering routes", async () => {
+    const router = new BunRouter({ routeSpecificity: true });
+    const order: string[] = [];
+    router.use((_req, _res, next) => {
+      order.push("mw1");
+      next();
+    });
+    // Param route registered before the static route.
+    router.get("/users/:id", (_req, res) => {
+      order.push("param");
+      res.json({ order });
+    });
+    router.use((_req, _res, next) => {
+      order.push("mw2");
+      next();
+    });
+    router.get("/users/me", (_req, _res, next) => {
+      order.push("static");
+      next();
+    });
+
+    await exec(router, "GET", "/users/me");
+    // Middleware keeps its slots (mw1 first, mw2 third); the route handlers
+    // are specificity-reordered, so `static` runs before `param`.
+    expect(order).toEqual(["mw1", "static", "mw2", "param"]);
+  });
+
+  it("includes all() route handlers in specificity ordering", async () => {
+    const router = new BunRouter({ routeSpecificity: true });
+    const order: string[] = [];
+    // all() registered first; the static get() is still more specific.
+    router.all("/thing/:id", (_req, _res, next) => {
+      order.push("all-param");
+      next();
+    });
+    router.get("/thing/exact", (_req, res) => {
+      order.push("get-static");
+      res.json({ order });
+    });
+
+    await exec(router, "GET", "/thing/exact");
+    expect(order).toEqual(["get-static"]);
+  });
+
+  it("exposes route params to an all() handler", async () => {
+    const router = new BunRouter();
+    router.all("/users/:id", (req, res) => res.json({ id: req.params.id }));
+
+    const { response } = await exec(router, "GET", "/users/7");
+    const native = await response.getNativeResponse(1000);
+    expect(await native.json()).toEqual({ id: "7" });
+  });
+
+  it("setRouteSpecificity() switches ordering and drops the cache", async () => {
+    const router = new BunRouter();
+    router.get("/p/:id", (_req, res) => res.json({ which: "param" }));
+    router.get("/p/exact", (_req, res) => res.json({ which: "static" }));
+
+    // Default: registration order — the param route (registered first) wins.
+    const before = await exec(router, "GET", "/p/exact");
+    const beforeNative = await before.response.getNativeResponse(1000);
+    expect(await beforeNative.json()).toEqual({ which: "param" });
+
+    // Enabling specificity drops the cache so the new ordering takes effect.
+    expect(router.setRouteSpecificity(true)).toBe(router);
+    const after = await exec(router, "GET", "/p/exact");
+    const afterNative = await after.response.getNativeResponse(1000);
+    expect(await afterNative.json()).toEqual({ which: "static" });
+  });
+});

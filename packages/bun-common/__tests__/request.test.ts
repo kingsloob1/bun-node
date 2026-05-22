@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { handleMultipartAnyFiles, transformUploadOptions } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
-import { makeRequest } from "./helpers";
+import { BunResponse } from "../lib/BunResponse";
+import { makeRequest, testServer } from "./helpers";
 
 let httpAdapter!: BunHttpAdapter;
 
@@ -386,5 +387,87 @@ describe("BunRequest: body parsing over HTTP", () => {
     } finally {
       await adapter.close();
     }
+  });
+});
+
+describe("BunRequest: IncomingMessage-style events", () => {
+  it("emit returns false when nothing is listening", async () => {
+    const req = await makeRequest();
+    expect(req.emit("close")).toBe(false);
+  });
+
+  it("on returns the request for chaining", async () => {
+    const req = await makeRequest();
+    expect(req.on("close", () => {})).toBe(req);
+  });
+
+  it("does not allocate an emitter until a listener is registered", async () => {
+    const req = await makeRequest();
+    // No listeners yet — introspection works without forcing an emitter.
+    expect(req.eventNames()).toHaveLength(0);
+    expect(req.listenerCount("close")).toBe(0);
+  });
+
+  it("emits aborted, close and end when the connection aborts", async () => {
+    const controller = new AbortController();
+    const request = new Request("http://localhost/stream", {
+      signal: controller.signal,
+    });
+    const req = await BunRequest.init(request, testServer, {
+      parseBody: false,
+      parseCookies: false,
+      parseQuery: false,
+    });
+
+    const order: string[] = [];
+    req.on("aborted", () => order.push("aborted"));
+    req.on("close", () => order.push("close"));
+    req.on("end", () => order.push("end"));
+
+    controller.abort();
+    await Bun.sleep(1);
+    expect(order).toEqual(["aborted", "close", "end"]);
+  });
+
+  it("fires a once listener a single time", async () => {
+    const req = await makeRequest();
+    let calls = 0;
+    req.once("close", () => {
+      calls++;
+    });
+    req.emit("close");
+    req.emit("close");
+    expect(calls).toBe(1);
+  });
+
+  it("emits abort when a streaming response bound to it is cancelled", async () => {
+    const req = await makeRequest();
+    const res = new BunResponse(req);
+
+    let abortReason: unknown;
+    req.on("abort", (reason) => {
+      abortReason = reason;
+    });
+
+    // Open the response's writable stream, then abort it.
+    res.write("data");
+    await res.getWritable().abort("client gone");
+
+    expect(abortReason).toBe("client gone");
+  });
+
+  it("supports listener introspection and removal", async () => {
+    const req = await makeRequest();
+    const listener = () => {};
+    req.on("close", listener);
+    expect(req.listenerCount("close")).toBe(1);
+    expect(req.eventNames()).toContain("close");
+
+    req.off("close", listener);
+    expect(req.listenerCount("close")).toBe(0);
+
+    req.once("end", () => {});
+    req.removeAllListeners();
+    expect(req.eventNames()).toHaveLength(0);
   });
 });

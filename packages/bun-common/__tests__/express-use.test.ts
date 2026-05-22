@@ -260,7 +260,8 @@ describe("Express 5 use: next('route') and next('router')", () => {
 
 describe("BunRouter: route specificity", () => {
   it("prefers a static route over a param route regardless of registration order", async () => {
-    const router = new BunRouter();
+    // Specificity ordering is opt-in (default is registration order).
+    const router = new BunRouter({ routeSpecificity: true });
     const hit: string[] = [];
 
     // Param route registered FIRST; the static route is still more specific.

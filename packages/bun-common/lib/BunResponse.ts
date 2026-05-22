@@ -2,13 +2,14 @@ import type { BunFile } from "bun";
 import type { Buffer } from "node:buffer";
 import type { Readable } from "node:stream";
 import type { BunRequest } from "./BunRequest";
-import type { WebSocketClientData } from "./BunWebSocket";
+import type { TypedEmitter, WebSocketClientData } from "./BunWebSocket";
 import type {
   NextFunction,
   RouterMiddlewareHandler,
   SendFileOptions,
 } from "./types/general";
 import type { CookieSerializeOptions, Deferred } from "./utils/native";
+import { EventEmitter } from "node:events";
 import { join as joinPath } from "node:path";
 import process from "node:process";
 import { ReadableStream } from "node:stream/web";
@@ -43,7 +44,35 @@ type CookieSerializeParams = Parameters<typeof serializeCookie>;
 /** Writable view of `ResponseInit`, since its members are `readonly`. */
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
-export class BunResponse<customWebsocketDataType = unknown> {
+/**
+ * The lifecycle events emitted by {@link BunResponse}, mirroring Node's
+ * `http.ServerResponse`. Declared as a `type` (not an `interface`) so it
+ * satisfies `TypedEmitter`'s `Record<string, …>` constraint.
+ */
+// eslint-disable-next-line ts/consistent-type-definitions
+export type BunResponseEvents = {
+  /** The response body has been fully produced. */
+  finish: () => void;
+  /** The response (and its connection) has closed. */
+  close: () => void;
+  /** A stream error occurred while producing the response. */
+  error: (error: unknown) => void;
+  /** The write buffer drained and is ready to accept more data. */
+  drain: () => void;
+  /** A readable stream was piped into the response. */
+  pipe: (source: Readable) => void;
+  /** A previously-piped readable stream was unpiped from the response. */
+  unpipe: (source: Readable) => void;
+};
+
+/** A {@link BunResponse} event name. */
+type ResEventName = keyof BunResponseEvents;
+/** The listener signature for a given {@link BunResponse} event. */
+type ResListener<E extends ResEventName> = BunResponseEvents[E];
+
+export class BunResponse<customWebsocketDataType = unknown>
+  implements TypedEmitter<BunResponseEvents>
+{
   private _upgradeToWsData:
     | WebSocketClientData<customWebsocketDataType>
     | undefined = undefined;
@@ -67,6 +96,16 @@ export class BunResponse<customWebsocketDataType = unknown> {
   /** When true, {@link send} computes an `ETag` for the body. Opt-in. */
   #etagEnabled: boolean;
 
+  /**
+   * Lazily-created event bus mirroring Node's `http.ServerResponse` events
+   * (`finish`, `close`, `error`, `pipe`, `unpipe`, `drain`, …). It is built
+   * only when the first listener is registered, so a response nobody listens
+   * to costs nothing.
+   */
+  #emitter: EventEmitter | undefined = undefined;
+  #finishEmitted = false;
+  #closeEmitted = false;
+
   constructor(
     public req: BunRequest,
     options?: { etag?: boolean },
@@ -83,6 +122,144 @@ export class BunResponse<customWebsocketDataType = unknown> {
     return this;
   }
 
+  /* ---------------------------------------------------------------- *
+   * Node `http.ServerResponse`-style events
+   *
+   * `BunResponse` is not an `EventEmitter` subclass (that would add a
+   * per-request cost). Instead the emitter is created lazily on the first
+   * `on`/`once`/... call; `emit` is a no-op while none exists.
+   * ---------------------------------------------------------------- */
+
+  /** Returns the emitter, creating (and wiring lifecycle bridges) on demand. */
+  private get events(): EventEmitter {
+    if (!this.#emitter) {
+      const emitter = new EventEmitter();
+      emitter.setMaxListeners(0);
+      this.#emitter = emitter;
+
+      // Bridge a dropped connection to a `close` event (Node emits `close`
+      // when the socket terminates). Wired only once, only when listened to.
+      const signal = this.req.request.signal;
+      if (!signal.aborted) {
+        signal.addEventListener("abort", () => this.emitClose(), {
+          once: true,
+        });
+      }
+    }
+    return this.#emitter;
+  }
+
+  /** Emits `finish` exactly once, then schedules `close` (Node ordering). */
+  private emitFinish(): void {
+    if (this.#finishEmitted || !this.#emitter) {
+      return;
+    }
+    this.#finishEmitted = true;
+    this.#emitter.emit("finish");
+    queueMicrotask(() => this.emitClose());
+  }
+
+  /** Emits `close` exactly once. */
+  private emitClose(): void {
+    if (this.#closeEmitted || !this.#emitter) {
+      return;
+    }
+    this.#closeEmitted = true;
+    this.#emitter.emit("close");
+  }
+
+  /** Emits an `error` event (no-op when nothing is listening). */
+  public emitError(error: unknown): void {
+    this.#emitter?.emit("error", error);
+  }
+
+  public on<E extends ResEventName>(event: E, listener: ResListener<E>): this {
+    this.events.on(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public addListener<E extends ResEventName>(
+    event: E,
+    listener: ResListener<E>,
+  ): this {
+    this.events.addListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public once<E extends ResEventName>(
+    event: E,
+    listener: ResListener<E>,
+  ): this {
+    this.events.once(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependListener<E extends ResEventName>(
+    event: E,
+    listener: ResListener<E>,
+  ): this {
+    this.events.prependListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependOnceListener<E extends ResEventName>(
+    event: E,
+    listener: ResListener<E>,
+  ): this {
+    this.events.prependOnceListener(
+      event,
+      listener as (...args: any[]) => void,
+    );
+    return this;
+  }
+
+  public off<E extends ResEventName>(event: E, listener: ResListener<E>): this {
+    this.#emitter?.off(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeListener<E extends ResEventName>(
+    event: E,
+    listener: ResListener<E>,
+  ): this {
+    this.#emitter?.removeListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeAllListeners<E extends ResEventName>(event?: E): this {
+    this.#emitter?.removeAllListeners(event);
+    return this;
+  }
+
+  /** Emits an event; returns `false` when there is no emitter/listener. */
+  public emit<E extends ResEventName>(
+    event: E,
+    ...args: Parameters<ResListener<E>>
+  ): boolean {
+    return this.#emitter ? this.#emitter.emit(event, ...args) : false;
+  }
+
+  public listeners<E extends ResEventName>(event: E): ResListener<E>[] {
+    return (this.#emitter?.listeners(event) ?? []) as ResListener<E>[];
+  }
+
+  public listenerCount<E extends ResEventName>(event: E): number {
+    return this.#emitter?.listenerCount(event) ?? 0;
+  }
+
+  public eventNames(): (ResEventName | string | symbol)[] {
+    return this.#emitter?.eventNames() ?? [];
+  }
+
+  public setMaxListeners(max: number): this {
+    this.events.setMaxListeners(max);
+    return this;
+  }
+
+  public getMaxListeners(): number {
+    return this.#emitter?.getMaxListeners() ?? EventEmitter.defaultMaxListeners;
+  }
+
   /** The native `Response`; assigning notifies any {@link getNativeResponse} waiters. */
   private get response(): Response | undefined {
     return this.#nativeResponse;
@@ -96,6 +273,12 @@ export class BunResponse<customWebsocketDataType = unknown> {
       for (const waiter of waiters) {
         waiter(value);
       }
+    }
+
+    // A produced response = `finish`. Streaming (long-lived) responses finish
+    // when the stream ends — see `endLongLivedConnection`.
+    if (value && !this._isLongLived) {
+      this.emitFinish();
     }
   }
 
@@ -355,6 +538,8 @@ export class BunResponse<customWebsocketDataType = unknown> {
     }
 
     this.#readableStream = undefined;
+    // A streaming response finishes when its stream ends.
+    this.emitFinish();
   }
 
   flushHeaders(): boolean {
@@ -397,6 +582,10 @@ export class BunResponse<customWebsocketDataType = unknown> {
           },
           cancel: async (reason: string) => {
             this.req.emit("abort", reason);
+            // A cancel with a reason is a stream error on the response.
+            if (reason != null) {
+              this.emitError(reason);
+            }
             await this.endLongLivedConnection();
           },
         },
@@ -446,6 +635,8 @@ export class BunResponse<customWebsocketDataType = unknown> {
     this.#readableStreamEventMap.set(key, chunk as string | Buffer);
     // Wake any `pull` parked waiting for data.
     this.#streamWriteNotifier?.resolve();
+    // The write buffer is unbounded, so the writer is always ready for more.
+    this.#emitter?.emit("drain");
   }
 
   getWritable(): WritableStreamDefaultWriter {

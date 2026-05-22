@@ -122,35 +122,52 @@ export type BunWebSocketOptions<
   | BunWebSocketNormalOptions<customWebsocketDataType>
   | BunWebSocketCreateServerOptions<customWebsocketDataType, routesType>;
 
-export type BunWebSocketEventHandlersType<customWebsocketDataType = unknown> =
-  TypedEmitter<{
-    connect: NonNullable<
-      BunWebSocketHandlerType<customWebsocketDataType>["open"]
-    >;
-    open: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["open"]>;
-    message: NonNullable<
-      BunWebSocketHandlerType<customWebsocketDataType>["message"]
-    >;
-    disconnect: NonNullable<
-      BunWebSocketHandlerType<customWebsocketDataType>["close"]
-    >;
-    close: NonNullable<
-      BunWebSocketHandlerType<customWebsocketDataType>["close"]
-    >;
-    ping: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["ping"]>;
-    pong: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["pong"]>;
-    drain: NonNullable<
-      BunWebSocketHandlerType<customWebsocketDataType>["drain"]
-    >;
-  }>;
+/**
+ * The event map emitted by {@link BunWebSocket}. Declared as a `type` (not an
+ * `interface`) so it satisfies `TypedEmitter`'s `Record<string, …>` constraint
+ * — interfaces are open to augmentation and so lack an implicit index sig.
+ */
+// eslint-disable-next-line ts/consistent-type-definitions
+export type BunWebSocketEvents<customWebsocketDataType = unknown> = {
+  connect: NonNullable<
+    BunWebSocketHandlerType<customWebsocketDataType>["open"]
+  >;
+  open: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["open"]>;
+  message: NonNullable<
+    BunWebSocketHandlerType<customWebsocketDataType>["message"]
+  >;
+  disconnect: NonNullable<
+    BunWebSocketHandlerType<customWebsocketDataType>["close"]
+  >;
+  close: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["close"]>;
+  ping: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["ping"]>;
+  pong: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["pong"]>;
+  drain: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["drain"]>;
+};
 
-export class BunWebSocket<
-  customWebsocketDataType = unknown,
-> extends (EventEmitter as new () => BunWebSocketEventHandlersType) {
+export type BunWebSocketEventHandlersType<customWebsocketDataType = unknown> =
+  TypedEmitter<BunWebSocketEvents<customWebsocketDataType>>;
+
+/** A {@link BunWebSocket} event name. */
+type WsEventName<T> = keyof BunWebSocketEvents<T>;
+/** The listener signature for a given {@link BunWebSocket} event. */
+type WsListener<T, E extends WsEventName<T>> = BunWebSocketEvents<T>[E];
+
+export class BunWebSocket<customWebsocketDataType = unknown>
+  implements BunWebSocketEventHandlersType<customWebsocketDataType>
+{
   private _wsServers = new Map<
     number,
     BunWebSocketServerType<customWebsocketDataType>
   >();
+
+  /**
+   * Lazily-created event bus. `BunWebSocket` is not an `EventEmitter`
+   * subclass; the emitter is built on the first `on`/`once`/... call so an
+   * instance nobody listens to costs nothing, and `emit` is a no-op until
+   * then.
+   */
+  #emitter: EventEmitter | undefined = undefined;
 
   private _serverInstance?: BunWebSocketServerType<customWebsocketDataType>;
   private _getServerInstance?: () =>
@@ -169,8 +186,6 @@ export class BunWebSocket<
     undefined;
 
   constructor(private options: BunWebSocketOptions<customWebsocketDataType>) {
-    super();
-
     this._wsHandler = {
       perMessageDeflate: true,
       idleTimeout: 30, // 30 seconds
@@ -223,6 +238,126 @@ export class BunWebSocket<
     if (options.customDataToWsClientFn) {
       this._customDataToWsClientFn = options.customDataToWsClientFn;
     }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * `TypedEmitter` surface — lazily backed by a `node:events` emitter.
+   * ---------------------------------------------------------------- */
+
+  /** Returns the emitter, creating it on demand. */
+  private get events(): EventEmitter {
+    if (!this.#emitter) {
+      const emitter = new EventEmitter();
+      emitter.setMaxListeners(0);
+      this.#emitter = emitter;
+    }
+    return this.#emitter;
+  }
+
+  public addListener<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.events.addListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public on<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.events.on(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public once<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.events.once(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependListener<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.events.prependListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependOnceListener<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.events.prependOnceListener(
+      event,
+      listener as (...args: any[]) => void,
+    );
+    return this;
+  }
+
+  public off<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.#emitter?.off(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeListener<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    listener: WsListener<customWebsocketDataType, E>,
+  ): this {
+    this.#emitter?.removeListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeAllListeners<E extends WsEventName<customWebsocketDataType>>(
+    event?: E,
+  ): this {
+    this.#emitter?.removeAllListeners(event);
+    return this;
+  }
+
+  /** Emits an event; returns `false` when there is no emitter/listener. */
+  public emit<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+    ...args: Parameters<WsListener<customWebsocketDataType, E>>
+  ): boolean {
+    return this.#emitter ? this.#emitter.emit(event, ...args) : false;
+  }
+
+  public listeners<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+  ): WsListener<customWebsocketDataType, E>[] {
+    return (this.#emitter?.listeners(event) ?? []) as WsListener<
+      customWebsocketDataType,
+      E
+    >[];
+  }
+
+  public listenerCount<E extends WsEventName<customWebsocketDataType>>(
+    event: E,
+  ): number {
+    return this.#emitter?.listenerCount(event) ?? 0;
+  }
+
+  public eventNames(): (
+    | WsEventName<customWebsocketDataType>
+    | string
+    | symbol
+  )[] {
+    return this.#emitter?.eventNames() ?? [];
+  }
+
+  public getMaxListeners(): number {
+    return this.#emitter?.getMaxListeners() ?? EventEmitter.defaultMaxListeners;
+  }
+
+  public setMaxListeners(maxListeners: number): this {
+    this.events.setMaxListeners(maxListeners);
+    return this;
   }
 
   public getOrCreateWebsocketServer(port: number) {

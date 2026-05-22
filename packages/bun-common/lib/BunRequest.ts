@@ -2,6 +2,7 @@ import type { SocketAddress } from "bun";
 import type { FileTypeResult } from "file-type";
 import type { IncomingMessage } from "node:http";
 import type { BunResponse } from "./BunResponse";
+import type { TypedEmitter } from "./BunWebSocket";
 import type { StorageFile } from "./multipart";
 import type {
   BodyParserOptions,
@@ -66,7 +67,31 @@ function stripQueryPrefix(search: string): string {
   return search.charCodeAt(0) === 63 ? search.slice(1) : search;
 }
 
-export class BunRequest extends EventEmitter implements BunRequestInterface {
+/**
+ * The lifecycle events emitted by {@link BunRequest}, mirroring Node's
+ * `IncomingMessage`. Declared as a `type` (not an `interface`) so it satisfies
+ * `TypedEmitter`'s `Record<string, …>` constraint.
+ */
+// eslint-disable-next-line ts/consistent-type-definitions
+export type BunRequestEvents = {
+  /** The client aborted the underlying connection. */
+  aborted: () => void;
+  /** The request connection has closed. */
+  close: () => void;
+  /** The request body stream has ended. */
+  end: () => void;
+  /** A streaming response bound to this request was cancelled. */
+  abort: (reason?: unknown) => void;
+};
+
+/** A {@link BunRequest} event name. */
+type ReqEventName = keyof BunRequestEvents;
+/** The listener signature for a given {@link BunRequest} event. */
+type ReqListener<E extends ReqEventName> = BunRequestEvents[E];
+
+export class BunRequest
+  implements BunRequestInterface, TypedEmitter<BunRequestEvents>
+{
   private bunResponse: BunResponse | undefined = undefined;
   public headersObj: InstanceType<typeof Headers>;
   /** Lazily-built plain-object header view (see the `headers` getter). */
@@ -122,6 +147,14 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
    */
   #subdomains: string[] | undefined = undefined;
 
+  /**
+   * Lazily-created event bus mirroring Node's `IncomingMessage` events
+   * (`aborted`, `close`, `end`, …). It is built only when the first listener
+   * is registered — a routing-only request nobody listens to costs nothing,
+   * and the connection-abort bridge is wired only then.
+   */
+  #emitter: EventEmitter | undefined = undefined;
+
   /** Memoized Node-compatible socket shim (see the `socket` getter). */
   #socket:
     | {
@@ -155,17 +188,6 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       parseMultiPartFormDataOpts: {},
     },
   ) {
-    super();
-
-    const abortEventHandler = () => {
-      this.emit("close");
-      this.emit("end");
-      this.emit("aborted");
-
-      this.request.signal.removeEventListener("abort", abortEventHandler);
-    };
-    this.request.signal.addEventListener("abort", abortEventHandler);
-
     this.headersObj = request.headers as Headers;
     this.url = this.request.url;
 
@@ -225,6 +247,127 @@ export class BunRequest extends EventEmitter implements BunRequestInterface {
       return [];
     }
     return await Promise.allSettled(this.#initPromises);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Node `IncomingMessage`-style events
+   *
+   * `BunRequest` is not an `EventEmitter` subclass (that would add a
+   * per-request cost). The emitter is created lazily on the first
+   * `on`/`once`/... call; `emit` is a no-op while none exists.
+   * ---------------------------------------------------------------- */
+
+  /** Returns the emitter, creating (and wiring the abort bridge) on demand. */
+  private get events(): EventEmitter {
+    if (!this.#emitter) {
+      const emitter = new EventEmitter();
+      emitter.setMaxListeners(0);
+      this.#emitter = emitter;
+
+      // Bridge a dropped connection to `aborted`/`close`/`end` (Node emits
+      // these when the request socket terminates). Wired only once, only
+      // when listened to.
+      const signal = this.request.signal;
+      if (!signal.aborted) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            emitter.emit("aborted");
+            emitter.emit("close");
+            emitter.emit("end");
+          },
+          { once: true },
+        );
+      }
+    }
+    return this.#emitter;
+  }
+
+  public on<E extends ReqEventName>(event: E, listener: ReqListener<E>): this {
+    this.events.on(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public addListener<E extends ReqEventName>(
+    event: E,
+    listener: ReqListener<E>,
+  ): this {
+    this.events.addListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public once<E extends ReqEventName>(
+    event: E,
+    listener: ReqListener<E>,
+  ): this {
+    this.events.once(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependListener<E extends ReqEventName>(
+    event: E,
+    listener: ReqListener<E>,
+  ): this {
+    this.events.prependListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public prependOnceListener<E extends ReqEventName>(
+    event: E,
+    listener: ReqListener<E>,
+  ): this {
+    this.events.prependOnceListener(
+      event,
+      listener as (...args: any[]) => void,
+    );
+    return this;
+  }
+
+  public off<E extends ReqEventName>(event: E, listener: ReqListener<E>): this {
+    this.#emitter?.off(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeListener<E extends ReqEventName>(
+    event: E,
+    listener: ReqListener<E>,
+  ): this {
+    this.#emitter?.removeListener(event, listener as (...args: any[]) => void);
+    return this;
+  }
+
+  public removeAllListeners<E extends ReqEventName>(event?: E): this {
+    this.#emitter?.removeAllListeners(event);
+    return this;
+  }
+
+  /** Emits an event; returns `false` when there is no emitter/listener. */
+  public emit<E extends ReqEventName>(
+    event: E,
+    ...args: Parameters<ReqListener<E>>
+  ): boolean {
+    return this.#emitter ? this.#emitter.emit(event, ...args) : false;
+  }
+
+  public listeners<E extends ReqEventName>(event: E): ReqListener<E>[] {
+    return (this.#emitter?.listeners(event) ?? []) as ReqListener<E>[];
+  }
+
+  public listenerCount<E extends ReqEventName>(event: E): number {
+    return this.#emitter?.listenerCount(event) ?? 0;
+  }
+
+  public eventNames(): (ReqEventName | string | symbol)[] {
+    return this.#emitter?.eventNames() ?? [];
+  }
+
+  public setMaxListeners(max: number): this {
+    this.events.setMaxListeners(max);
+    return this;
+  }
+
+  public getMaxListeners(): number {
+    return this.#emitter?.getMaxListeners() ?? EventEmitter.defaultMaxListeners;
   }
 
   /** Parsed cookies — lazily allocated on first access. */

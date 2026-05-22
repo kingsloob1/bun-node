@@ -131,15 +131,24 @@ export class BunHttpAdapter<
       router?: BunRouterOptions;
       /** Enable automatic `ETag` generation for every response. */
       etag?: boolean;
+      /**
+       * Upper bound on the router's matched-pipeline cache before FIFO
+       * eviction. Forwarded to {@link BunRouter}; defaults to 2000.
+       */
+      routeCacheMax?: number;
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
       >;
     },
   ) {
-    const routerOptions = options?.router || {
+    const routerOptions: BunRouterOptions = {
       caseSensitive: true,
       debug: false,
+      ...(options?.router ?? {}),
+      ...(options?.routeCacheMax !== undefined
+        ? { routeCacheMax: options.routeCacheMax }
+        : {}),
     };
     const router = new BunRouter(routerOptions);
     super(router);
@@ -1145,12 +1154,15 @@ export class BunHttpAdapter<
     requestMethod: RequestMethod,
   ): MiddlewareFactoryRespType {
     return ((path, callback) => {
-      const method = this.getRequestMethodStr(requestMethod);
-      return this.instance.add(
-        method,
-        path,
+      // `getRequestMethodStr` only ever yields verb names handled by
+      // `registerVerb`, so the registration funnels through the same path
+      // as every other verb override.
+      const verb = this.getRequestMethodStr(requestMethod) as Parameters<
+        BunHttpAdapter["registerVerb"]
+      >[0];
+      return this.registerVerb(verb, path, [
         callback as unknown as RouterHandler,
-      );
+      ]);
     }) as MiddlewareFactoryRespType;
   }
 

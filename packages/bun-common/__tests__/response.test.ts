@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
 import { makeRequest, makeResponse } from "./helpers";
@@ -208,5 +209,121 @@ describe("BunResponse: headersSent", () => {
     await res.send("second");
     const native = await res.getNativeResponse(1000);
     expect(await native.text()).toBe("first");
+  });
+});
+
+describe("BunResponse: ServerResponse-style events", () => {
+  it("emit returns false when nothing is listening", async () => {
+    const res = await makeResponse();
+    expect(res.emit("finish")).toBe(false);
+  });
+
+  it("on returns the response for chaining", async () => {
+    const res = await makeResponse();
+    expect(res.on("finish", () => {})).toBe(res);
+  });
+
+  it("emits finish when the response is produced", async () => {
+    const res = await makeResponse();
+    let finished = false;
+    res.on("finish", () => {
+      finished = true;
+    });
+    res.send("ok");
+    expect(finished).toBe(true);
+  });
+
+  it("emits close after finish", async () => {
+    const res = await makeResponse();
+    const order: string[] = [];
+    res.on("finish", () => order.push("finish"));
+    res.on("close", () => order.push("close"));
+    res.send("ok");
+    await Bun.sleep(1);
+    expect(order).toEqual(["finish", "close"]);
+  });
+
+  it("emits close when the request connection aborts", async () => {
+    const controller = new AbortController();
+    const request = new Request("http://localhost/stream", {
+      signal: controller.signal,
+    });
+    const { BunRequest } = await import("../lib/BunRequest");
+    const { testServer } = await import("./helpers");
+    const req = await BunRequest.init(request, testServer, {
+      parseBody: false,
+      parseCookies: false,
+      parseQuery: false,
+    });
+    const res = new BunResponse(req);
+
+    let closed = false;
+    res.on("close", () => {
+      closed = true;
+    });
+    controller.abort();
+    await Bun.sleep(1);
+    expect(closed).toBe(true);
+  });
+
+  it("emits error via emitError", async () => {
+    const res = await makeResponse();
+    let received: unknown;
+    res.on("error", (error: unknown) => {
+      received = error;
+    });
+    const failure = new Error("stream failure");
+    res.emitError(failure);
+    expect(received).toBe(failure);
+  });
+
+  it("emits drain when a chunk is written to a streaming response", async () => {
+    const res = await makeResponse();
+    let drained = false;
+    res.on("drain", () => {
+      drained = true;
+    });
+    res.write("chunk");
+    expect(drained).toBe(true);
+  });
+
+  it("emits pipe and unpipe for stream piping", async () => {
+    const res = await makeResponse();
+    const events: string[] = [];
+    res.on("pipe", () => events.push("pipe"));
+    res.on("unpipe", () => events.push("unpipe"));
+
+    const source = Readable.from(["chunk"]);
+    source.pipe(res as unknown as NodeJS.WritableStream);
+    source.unpipe(res as unknown as NodeJS.WritableStream);
+    source.destroy();
+
+    expect(events).toEqual(["pipe", "unpipe"]);
+  });
+
+  it("supports listener introspection and removal", async () => {
+    const res = await makeResponse();
+    const listener = () => {};
+    res.on("finish", listener);
+    expect(res.listenerCount("finish")).toBe(1);
+    expect(res.eventNames()).toContain("finish");
+
+    res.off("finish", listener);
+    expect(res.listenerCount("finish")).toBe(0);
+
+    res.once("close", () => {});
+    res.removeAllListeners();
+    expect(res.eventNames()).toHaveLength(0);
+  });
+
+  it("fires a once listener a single time", async () => {
+    const res = await makeResponse();
+    let calls = 0;
+    res.once("drain", () => {
+      calls++;
+    });
+    res.emit("drain");
+    res.emit("drain");
+    expect(calls).toBe(1);
   });
 });

@@ -203,3 +203,39 @@ describe("Http Adapter Routing - Complex Paths", () => {
 
   // Add more cases as needed for edge conditions.
 });
+
+describe("BunHttpAdapter: routeCacheMax option", () => {
+  it("forwards routeCacheMax to the router (FIFO eviction)", () => {
+    const adapter = new BunHttpAdapter(0, { routeCacheMax: 1 });
+    adapter.get("/x", () => {});
+    adapter.get("/y", () => {});
+
+    const match = (path: string) =>
+      adapter.getMatchedLayers({
+        requestHost: "localhost",
+        requestMethod: "GET",
+        requestUrl: path,
+      });
+
+    const x1 = match("/x");
+    match("/y"); // evicts "/x" — cache cap is 1
+    expect(match("/x")).not.toBe(x1);
+  });
+
+  it("keeps the signature cached when routeCacheMax is unset (default)", () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.get("/x", () => {});
+    adapter.get("/y", () => {});
+
+    const match = (path: string) =>
+      adapter.getMatchedLayers({
+        requestHost: "localhost",
+        requestMethod: "GET",
+        requestUrl: path,
+      });
+
+    const x1 = match("/x");
+    match("/y");
+    expect(match("/x")).toBe(x1);
+  });
+});

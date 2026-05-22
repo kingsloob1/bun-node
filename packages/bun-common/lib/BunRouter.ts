@@ -35,6 +35,29 @@ export interface RouteMatchMethodOptionType {
   requestUrl: string;
 }
 
+/** A matched route handler passed to a custom route-specificity comparator. */
+export interface RouteSpecificityEntry {
+  /** The registered route. */
+  route: Route;
+  /** The match result (params/subdomains) for the current request. */
+  matched: matchedRoute;
+}
+
+/**
+ * Controls how competing **route handlers** (verb methods and `all`) are
+ * ordered when several match the same request. Middleware registered with
+ * `use` always keeps its registration order regardless of this option.
+ *
+ * - `false` (default) — keep registration order, exactly like Express.
+ * - `true` — use BunRouter's built-in specificity ranking (static beats
+ *   param, fewer params / more regexp constraints win).
+ * - a comparator `(a, b) => number` — a custom rule; it is applied with a
+ *   stable sort, so handlers it rates equal keep their registration order.
+ */
+export type RouteSpecificityOption =
+  | boolean
+  | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
+
 export interface CachedRouteMatch {
   route: Route;
   callbacks: RouterHandler[];
@@ -53,6 +76,12 @@ export interface MatchedLayerRecord {
   isErrorHandler: boolean;
   /** True when the owning route declares an HTTP method (a route handler). */
   isRouteHandler: boolean;
+  /**
+   * Id of the mounted sub-router this layer belongs to — `0` for the router's
+   * own routes, a positive id for each `use(subRouter)` mount. `next('router')`
+   * exits a mount by skipping every layer that shares its id.
+   */
+  routerId: number;
   /** The route match result (params/subdomains) for this request. */
   matched: matchedRoute;
 }
@@ -86,12 +115,27 @@ const RouteModule = require(routeModulePath) as {
 
 export const RouteClass = RouteModule.default;
 
+/**
+ * A `@routejs/router` `Route` tagged with BunRouter metadata:
+ * - `routerGroupId` — `undefined`/`0` for the router's own routes, a positive
+ *   id for routes flattened in by `use(subRouter)`;
+ * - `isEndpoint` — `true` for verb/`all` route handlers (specificity-sortable,
+ *   they set `request.params`); `false`/absent for `use` middleware.
+ */
+type RouteWithGroup = Route & {
+  routerGroupId?: number;
+  isEndpoint?: boolean;
+};
+
 export class BunRouter extends Router {
   public _logger!: Logger;
   private _bunWebSocket?: BunWebSocket;
 
-  /** Upper bound on {@link routeCacheLayers} entries (FIFO eviction). */
-  private static readonly ROUTE_CACHE_MAX = 1000;
+  /**
+   * Upper bound on {@link routeCacheLayers} entries before FIFO eviction.
+   * Set via the `routeCacheMax` constructor option; defaults to 2000.
+   */
+  private readonly routeCacheMax: number;
 
   /**
    * Cache of the fully-resolved, request-matched pipeline for a request
@@ -102,6 +146,23 @@ export class BunRouter extends Router {
    */
   private routeCacheLayers = new Map<string, MatchedLayer[]>();
 
+  /** Allocates a fresh group id for the next `use(subRouter)` mount. */
+  #nextRouterGroupId = 1;
+  /**
+   * Group id stamped onto routes created while a `use(subRouter)` mount is in
+   * progress. `0` means "the router's own routes" (the default).
+   */
+  #activeRouterGroupId = 0;
+
+  /**
+   * Stamped onto the next route {@link setRoute} creates, marking it a
+   * verb/`all` endpoint (vs `use` middleware). Consumed (reset) by `setRoute`.
+   */
+  #pendingEndpoint = false;
+
+  /** How competing route handlers are ordered — see {@link RouteSpecificityOption}. */
+  #routeSpecificity: RouteSpecificityOption;
+
   constructor(
     private localOptions?: {
       bunWebsocket?: BunWebSocket;
@@ -109,9 +170,37 @@ export class BunRouter extends Router {
       host?: string;
       debug?: boolean;
       logger?: Logger;
+      /**
+       * Upper bound on the matched-pipeline cache before FIFO eviction kicks
+       * in. Defaults to 2000; a non-positive or invalid value falls back to
+       * the default.
+       */
+      routeCacheMax?: number;
+      /**
+       * How competing route handlers are ordered. Defaults to `false` —
+       * registration order, like Express. See {@link RouteSpecificityOption}.
+       */
+      routeSpecificity?: RouteSpecificityOption;
     },
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
+
+    const max = localOptions?.routeCacheMax;
+    this.routeCacheMax =
+      isNumeric(max) && Number(max) > 0 ? Math.floor(Number(max)) : 2000;
+
+    this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
+  }
+
+  /**
+   * Sets how competing route handlers are ordered (see
+   * {@link RouteSpecificityOption}) and drops the matched-pipeline cache so
+   * the new ordering takes effect immediately.
+   */
+  setRouteSpecificity(value: RouteSpecificityOption): this {
+    this.#routeSpecificity = value ?? false;
+    this.clearRouteCache();
+    return this;
   }
 
   get logger(): Logger {
@@ -145,6 +234,11 @@ export class BunRouter extends Router {
   }
 
   setRoute(option: RouteConstructorOption) {
+    // Consume the endpoint flag up-front so a thrown duplicate-name error
+    // cannot leak it onto the next route registered.
+    const isEndpoint = this.#pendingEndpoint;
+    this.#pendingEndpoint = false;
+
     const routes = this.routes();
     if (option.name) {
       if (routes.find((route) => route.name === option.name)) {
@@ -152,7 +246,13 @@ export class BunRouter extends Router {
       }
     }
 
-    const route = new RouteClass(option) as Route;
+    const route = new RouteClass(option) as RouteWithGroup;
+    // Stamp the active mount's group id (0 = this router's own routes) so
+    // `next('router')` can later identify and skip a whole mounted sub-router.
+    route.routerGroupId = this.#activeRouterGroupId;
+    // Mark verb/`all` endpoints so specificity ordering and param-binding
+    // treat them as route handlers, not `use` middleware.
+    route.isEndpoint = isEndpoint;
     routes.push(route);
     // The route table changed — drop the matched-pipeline cache so a route
     // registered after the first request is still picked up.
@@ -191,12 +291,16 @@ export class BunRouter extends Router {
     if (option.callbacks instanceof Router) {
       option.callbacks.routes().forEach((route) => {
         const opts = this.getFormattedSetRouteOption(option, route);
+        // Preserve the source route's verb/`all` endpoint status across the
+        // flatten so specificity ordering still treats it correctly.
+        this.#pendingEndpoint = (route as RouteWithGroup).isEndpoint === true;
         this.setRoute(opts);
       });
     } else if (Array.isArray(option.callbacks)) {
       for (const route of option.callbacks) {
         if (route instanceof RouteClass) {
           const opts = this.getFormattedSetRouteOption(option, route);
+          this.#pendingEndpoint = (route as RouteWithGroup).isEndpoint === true;
           this.setRoute(opts);
         } else if (Array.isArray(route) || route instanceof Router) {
           this.mergeRoute({
@@ -242,6 +346,8 @@ export class BunRouter extends Router {
       callbacks.unshift(path);
     }
 
+    // A verb route is a route handler — eligible for specificity ordering.
+    this.#pendingEndpoint = true;
     return this.setRoute({
       path: isString(path) ? path : undefined,
       method: method.toUpperCase(),
@@ -665,6 +771,8 @@ export class BunRouter extends Router {
       }
     }
 
+    // `any` registers a route handler for the given verbs.
+    this.#pendingEndpoint = true;
     return this.setRoute({
       method: validatedMethods,
       path: pathHandler ? undefined : (path as string),
@@ -679,6 +787,9 @@ export class BunRouter extends Router {
       callbacks.unshift(path);
     }
 
+    // `all` is a method-agnostic route handler — it is specificity-sortable
+    // alongside the verb routes, unlike `use` middleware.
+    this.#pendingEndpoint = true;
     return this.setRoute({
       path: isString(path) ? path : undefined,
       callbacks,
@@ -707,34 +818,71 @@ export class BunRouter extends Router {
     return this.addRoute(method, ...callbacks);
   }
 
-  // Adjust use to behave like express use
-  override use(...callbacks: RouterHandler[]): this;
-  override use(path: string, ...callbacks: RouterHandler[]): this;
+  // Adjust use to behave like Express 5 `use` — it accepts middleware
+  // functions and/or mounted sub-routers, with an optional leading path.
+  override use(...handlers: (RouterHandler | Router)[]): this;
+  override use(path: string, ...handlers: (RouterHandler | Router)[]): this;
   override use(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    pathOrHandler?: string | RouterHandler | Router,
+    ...rest: (RouterHandler | Router)[]
   ): this {
-    if (isString(path) || isFunction(path)) {
-      if (isString(path)) {
-        // Express `use(path, ...)` is a path *prefix* match, not an exact
-        // match. Registering with `group` (instead of `path`) makes
-        // `@routejs/router` compile a prefix regex for the middleware.
-        this.setRoute({
-          group: path,
-          callbacks,
-        });
+    let path: string | undefined;
+    const items: (RouterHandler | Router)[] = [];
 
-        return this;
-      }
-
-      callbacks.unshift(path);
+    if (isString(pathOrHandler)) {
+      path = pathOrHandler;
+    } else if (pathOrHandler !== undefined) {
+      items.push(pathOrHandler);
     }
+    items.push(...rest);
 
-    this.setRoute({
-      callbacks,
-    });
+    // Buffer consecutive middleware functions into a single route so their
+    // registration order relative to any mounted sub-routers is preserved.
+    let pending: RouterHandler[] = [];
+    const flushPending = () => {
+      if (!pending.length) {
+        return;
+      }
+      // Express `use(path, ...)` is a path *prefix* match, not an exact match.
+      // Registering with `group` makes `@routejs/router` compile a prefix
+      // regex; a bare `use(...)` matches every path.
+      this.setRoute(
+        path ? { group: path, callbacks: pending } : { callbacks: pending },
+      );
+      pending = [];
+    };
+
+    for (const item of items) {
+      if (item instanceof Router) {
+        // A mounted sub-router (Express 5 `use(router)` / `use(path, router)`).
+        flushPending();
+        this.mountRouter(item, path);
+      } else {
+        pending.push(item);
+      }
+    }
+    flushPending();
 
     return this;
+  }
+
+  /**
+   * Flattens a sub-router's routes into this router — Express 5
+   * `use(router)` / `use(path, router)`. Every flattened route is tagged with
+   * a fresh group id so `next('router')` can later skip the whole mount as a
+   * unit and hand off to the next matching router.
+   */
+  private mountRouter(router: Router, path?: string) {
+    const groupId = this.#nextRouterGroupId++;
+    const previous = this.#activeRouterGroupId;
+    this.#activeRouterGroupId = groupId;
+    try {
+      this.mergeRoute(
+        path ? { group: path, callbacks: router } : { callbacks: router },
+      );
+    } finally {
+      this.#activeRouterGroupId = previous;
+    }
   }
 
   override group(path: string, ...callbacks: [Router]): this;
@@ -820,9 +968,9 @@ export class BunRouter extends Router {
   }
 
   /**
-   * Specificity comparators for matched route handlers, applied (most specific
-   * first) when several routes match the same request. Middleware ordering is
-   * untouched — only the relative order of competing route handlers changes.
+   * BunRouter's built-in specificity ranking — the comparators used when the
+   * `routeSpecificity` option is `true`. Orders matched route handlers most
+   * specific first; middleware ordering is untouched.
    */
   private routeSpecificityIteratees(options: RouteMatchMethodOptionType): {
     iteratees: ((entry: { route: Route; matched: matchedRoute }) => unknown)[];
@@ -869,9 +1017,9 @@ export class BunRouter extends Router {
 
   /**
    * Resolves the ordered list of pipeline layers (every callback of every
-   * matched route) for a request. Middleware/error handlers keep
-   * route-registration order (Express semantics); when several route handlers
-   * match, they are ordered by specificity.
+   * matched route) for a request. Middleware keeps registration order
+   * (Express semantics); competing route handlers (verb methods + `all`) are
+   * reordered only when the `routeSpecificity` option is enabled.
    *
    * The result is cached per request signature: a cache hit returns the exact
    * cached array with zero allocation. The returned array and its layers must
@@ -904,30 +1052,51 @@ export class BunRouter extends Router {
           return undefined;
         }
 
+        const tagged = route as RouteWithGroup;
         return {
           routeIndex,
           route,
           matched,
-          isRouteHandler: isString(route.method) || isArray(route.method),
+          // Verb routes and `all` are route handlers; `use` middleware is
+          // not. `isEndpoint` is the explicit tag; the method check is a
+          // fallback for routes added via a raw `setRoute({ method })`.
+          isRouteHandler:
+            tagged.isEndpoint === true ||
+            isString(route.method) ||
+            isArray(route.method),
+          // 0 = this router's own routes; > 0 = a mounted sub-router.
+          routerId: tagged.routerGroupId ?? 0,
         };
       })
       .filter((entry) => !!entry);
 
-    // 2. Order the matched route handlers by specificity; `orderBy` is a
-    //    stable sort, so equally-specific handlers keep registration order.
-    const { iteratees, orders } = this.routeSpecificityIteratees(options);
-    const orderedHandlers = orderBy(
-      entries.filter((entry) => entry.isRouteHandler),
-      iteratees,
-      orders,
-    );
+    // 2. Order the matched route handlers (verb methods + `all`). Middleware
+    //    registered via `use` always keeps its registration order; route
+    //    handlers are reordered only when the `routeSpecificity` option is
+    //    set (default: registration order, like Express).
+    const specificity = this.#routeSpecificity;
+    let orderedEntries = entries;
+    if (specificity) {
+      const routeHandlers = entries.filter((entry) => entry.isRouteHandler);
+      let ordered: typeof routeHandlers;
+      if (typeof specificity === "function") {
+        // Custom comparator — `Array.prototype.sort` is stable, so handlers
+        // it rates equal keep their registration order.
+        ordered = routeHandlers.sort(specificity);
+      } else {
+        // `true` → BunRouter's built-in specificity ranking (`orderBy` is a
+        // stable sort, so equally-specific handlers keep registration order).
+        const { iteratees, orders } = this.routeSpecificityIteratees(options);
+        ordered = orderBy(routeHandlers, iteratees, orders);
+      }
 
-    // 3. Rebuild: middleware entries keep their slot; route-handler slots
-    //    are filled from the specificity-ordered list.
-    let handlerCursor = 0;
-    const orderedEntries = entries.map((entry) =>
-      entry.isRouteHandler ? orderedHandlers[handlerCursor++] : entry,
-    );
+      // 3. Rebuild: middleware entries keep their slot; route-handler slots
+      //    are filled from the ordered list.
+      let handlerCursor = 0;
+      orderedEntries = entries.map((entry) =>
+        entry.isRouteHandler ? ordered[handlerCursor++] : entry,
+      );
+    }
 
     // 4. Flatten each route's callbacks into fully-resolved layers.
     const layers: MatchedLayer[] = [];
@@ -949,6 +1118,7 @@ export class BunRouter extends Router {
           // Express identifies error handlers purely by arity (4 params).
           isErrorHandler: callback.length === 4,
           isRouteHandler: entry.isRouteHandler,
+          routerId: entry.routerId,
           matched: entry.matched,
           callback,
         });
@@ -956,7 +1126,7 @@ export class BunRouter extends Router {
     }
 
     // 5. Cache, evicting the least-recently-used entry when full.
-    if (cache.size >= BunRouter.ROUTE_CACHE_MAX) {
+    if (cache.size >= this.routeCacheMax) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) {
         cache.delete(oldest);
@@ -978,7 +1148,14 @@ export class BunRouter extends Router {
    * - an error handler that calls `next()` with no argument clears the error
    *   and resumes normal processing; `next(err)` keeps propagating;
    * - `next('route')` skips the rest of the current route's callbacks;
-   *   `next('router')` abandons the router;
+   * - `next('router')` exits the current mounted sub-router and hands off to
+   *   the next matching router (a sibling mount, or the parent's own routes);
+   *   from the router's own routes it abandons the whole pipeline;
+   * - `next()` is the **only** way to advance the pipeline (Express/Fastify
+   *   semantics): a middleware or verb/`all` handler that neither sends a
+   *   response nor calls `next()` leaves the request **hanging** until its
+   *   timeout fires — it is not auto-responded, does not fall through, and is
+   *   not turned into a 404. A handler's return value is ignored;
    * - an unhandled error is re-thrown for the adapter's final error handler.
    */
   override async handle(options: {
@@ -994,6 +1171,12 @@ export class BunRouter extends Router {
     let hasError = false;
     let currentError: unknown;
     let matchedRoute: matchedRoute | undefined;
+    // Set when a layer stops without responding or calling next() — the
+    // request is then left hanging (see case 7 below).
+    let hung = false;
+    // Ids of mounted sub-routers exited via next('router'); lazily allocated
+    // since next('router') is rare — no cost on the common path.
+    let exitedRouters: Set<number> | undefined;
 
     for (let index = 0; index < layers.length; index++) {
       if (response.headersSent) {
@@ -1001,6 +1184,12 @@ export class BunRouter extends Router {
       }
 
       const layer = layers[index];
+
+      // A sub-router exited via next('router') is fully skipped — including
+      // its error handlers — wherever specificity ordering placed its layers.
+      if (exitedRouters !== undefined && exitedRouters.has(layer.routerId)) {
+        continue;
+      }
 
       // Error-mode gate: regular layers run only when there is no active
       // error; error handlers run only when there is one.
@@ -1074,9 +1263,17 @@ export class BunRouter extends Router {
         break;
       }
 
-      // 3. next('router') — abandon the entire router.
+      // 3. next('router') — exit the current router. From a mounted
+      //    sub-router (routerId > 0) this skips every remaining layer of that
+      //    mount and hands off to the next matching router / the parent's own
+      //    routes. From the router's own routes (routerId 0) it abandons the
+      //    whole pipeline, exactly like Express.
       if (nextArg === "router") {
-        break;
+        if (layer.routerId === 0) {
+          break;
+        }
+        (exitedRouters ??= new Set<number>()).add(layer.routerId);
+        continue;
       }
 
       // 4. next('route') — skip the remaining callbacks of the current route.
@@ -1110,10 +1307,12 @@ export class BunRouter extends Router {
         continue;
       }
 
-      // 7. The layer neither responded nor called next(): treat its return
-      //    value as the response body.
-      hasError = false;
-      await response.status(response.statusCode || 200).end(returned as never);
+      // 7. The handler neither sent a response nor called next(). Express /
+      //    Fastify semantics: `next()` is the *only* way to advance the
+      //    pipeline, so the request is left hanging — no auto-response, no
+      //    fall-through, no 404. It resolves only when the request timeout
+      //    fires. The handler's return value is intentionally ignored.
+      hung = true;
       break;
     }
 
@@ -1125,6 +1324,15 @@ export class BunRouter extends Router {
       this.throwError(currentError);
     }
 
+    if (hung) {
+      // A handler stopped without responding or calling next(). Return a
+      // truthy result so the adapter keeps awaiting the (never-produced)
+      // response instead of 404ing — the request hangs until it times out.
+      return matchedRoute ?? true;
+    }
+
+    // The pipeline ran to exhaustion via next() (or nothing matched): the
+    // request is genuinely unhandled — the adapter turns this into a 404.
     return undefined;
   }
 

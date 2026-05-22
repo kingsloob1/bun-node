@@ -106,3 +106,50 @@ describe("BunWebSocket: standalone server", () => {
     }
   });
 });
+
+describe("BunWebSocket: lazy emitter", () => {
+  it("emit returns false when nothing is listening", () => {
+    const ws = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+    expect(ws.emit("drain", undefined as never)).toBe(false);
+  });
+
+  it("on returns the instance and supports introspection/removal", () => {
+    const ws = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+
+    const listener = () => {};
+    expect(ws.on("ping", listener)).toBe(ws);
+    expect(ws.listenerCount("ping")).toBe(1);
+    expect(ws.eventNames()).toContain("ping");
+
+    ws.off("ping", listener);
+    expect(ws.listenerCount("ping")).toBe(0);
+
+    ws.once("pong", () => {});
+    ws.removeAllListeners();
+    expect(ws.eventNames()).toHaveLength(0);
+  });
+
+  it("fires a once listener a single time", () => {
+    const ws = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+
+    let calls = 0;
+    ws.once("drain", () => {
+      calls++;
+    });
+    ws.emit("drain", undefined as never);
+    ws.emit("drain", undefined as never);
+    expect(calls).toBe(1);
+  });
+});

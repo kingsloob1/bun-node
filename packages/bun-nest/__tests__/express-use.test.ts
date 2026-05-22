@@ -3,6 +3,7 @@ import type {
   NextFunction,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
+import { RequestMethod } from "@nestjs/common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 
@@ -88,5 +89,20 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
     expect(await response.json()).toEqual({
       message: "rejected by middleware",
     });
+  });
+
+  it("createMiddlewareFactory registers a route via registerVerb", async () => {
+    adapter = new BunHttpAdapter(5000);
+
+    const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
+    factory("/factory-route", ((_req, res) =>
+      res.json({ via: "middleware-factory" })) as RouterHandler);
+
+    await adapter.listen(0);
+    const response = await fetch(
+      `http://${adapter.listeningHost}:${adapter.listeningPort}/factory-route`,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ via: "middleware-factory" });
   });
 });
