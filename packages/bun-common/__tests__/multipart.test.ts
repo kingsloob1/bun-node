@@ -175,7 +175,7 @@ describe("multipart: storage", () => {
       req,
       transformUploadOptions({ storageType: "memory" }),
     );
-    const file = files[0] as { type: string; buffer?: Buffer };
+    const file = files[0] as unknown as { type: string; buffer?: Buffer };
     expect(file.type).toBe("memory");
     expect(file.buffer?.toString()).toBe("payload");
 
@@ -192,7 +192,7 @@ describe("multipart: storage", () => {
       dest: tmp,
     });
     const { files } = await handleMultipartAnyFiles(req, options);
-    const file = files[0] as { type: string; path: string };
+    const file = files[0] as unknown as { type: string; path: string };
     expect(file.type).toBe("disk");
     expect(await Bun.file(file.path).exists()).toBe(true);
 

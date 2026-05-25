@@ -164,8 +164,8 @@ describe("native: collection helpers", () => {
 describe("native: get / set", () => {
   it("get resolves dotted and bracket paths", () => {
     const obj = { a: { b: [{ c: 5 }] } };
-    expect(get(obj, "a.b[0].c")).toBe(5);
-    expect(get(obj, ["a", "b", 0, "c"])).toBe(5);
+    expect(get<number>(obj, "a.b[0].c")).toBe(5);
+    expect(get<number>(obj, ["a", "b", 0, "c"])).toBe(5);
     expect(get(obj, "a.missing.deep", "fallback")).toBe("fallback");
     expect(get(undefined, "a.b", "d")).toBe("d");
   });
@@ -183,7 +183,12 @@ describe("native: get / set", () => {
 
 describe("native: merge", () => {
   it("deep merges plain objects", () => {
-    expect(merge({ a: { x: 1 } }, { a: { y: 2 } }, { b: 3 })).toEqual({
+    expect(
+      merge({ a: { x: 1 } }, { a: { y: 2 } }, { b: 3 }) as Record<
+        string,
+        unknown
+      >,
+    ).toEqual({
       a: { x: 1, y: 2 },
       b: 3,
     });

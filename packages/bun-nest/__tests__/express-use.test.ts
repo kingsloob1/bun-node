@@ -115,8 +115,8 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
     const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
     factory("/checkpoint", ((_req, _res, next) => {
       order.push("factory-middleware");
-      (next as NextFunction)();
-    }) as unknown as RouterHandler);
+      next();
+    }) satisfies RouterHandler);
     adapter.get("/checkpoint", (async (_req, res) => {
       order.push("route");
       return res.json({ order });
@@ -137,8 +137,8 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
     const factory = adapter.createMiddlewareFactory(RequestMethod.POST);
     factory("/scoped", ((_req, _res, next) => {
       ran = true;
-      (next as NextFunction)();
-    }) as unknown as RouterHandler);
+      next();
+    }) satisfies RouterHandler);
     adapter.all("/scoped", (async (_req, res) =>
       res.json({ ok: true })) as RouterHandler);
 

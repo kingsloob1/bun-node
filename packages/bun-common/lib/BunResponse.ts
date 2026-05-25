@@ -490,6 +490,7 @@ export class BunResponse<customWebsocketDataType = unknown>
     statusMessage: string,
     headers: WriteHeadersInput,
   ): this;
+  writeHead(statusCode: number, headers: WriteHeadersInput): this;
   writeHead(statusMessage: string, headers: WriteHeadersInput): this;
   writeHead(headers: WriteHeadersInput): this;
   writeHead(...args: unknown[]) {

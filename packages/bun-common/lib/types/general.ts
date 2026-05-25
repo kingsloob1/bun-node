@@ -204,6 +204,17 @@ export type NextFunction<R = unknown> = (
   type?: string | Error | undefined,
 ) => R | Promise<R>;
 
+/** A request-only handler — e.g. `(req) => res.json(...)` shorthands. */
+export type RouterRequestOnlyHandler<R = unknown> = (
+  req: BunRequest,
+) => R | Promise<R>;
+
+/** A request/response handler that doesn't need `next`. */
+export type RouterRequestResponseHandler<R = unknown> = (
+  req: BunRequest,
+  res: BunResponse,
+) => R | Promise<R>;
+
 export type RouterMiddlewareHandler<R = unknown> = (
   req: BunRequest,
   res: BunResponse,
@@ -218,6 +229,20 @@ export type RouterErrorMiddlewareHandler<R = unknown> = (
 ) => R | Promise<R>;
 
 export type RouterHandler<R = unknown> = RouterMiddlewareHandler<R>;
+
+/**
+ * Any callback registrable on a route. The router accepts handlers of every
+ * arity it has to dispatch — 1-arg (`req` only), 2-arg (`req`, `res`), the
+ * regular 3-arg `(req, res, next)` middleware/route handler, and the 4-arg
+ * `(err, req, res, next)` Express-style error handler. Listing each arity as
+ * an explicit member of the union lets TypeScript pick the right contextual
+ * signature for an untyped arrow at the call site.
+ */
+export type RouterCallback<R = unknown> =
+  | RouterRequestOnlyHandler<R>
+  | RouterRequestResponseHandler<R>
+  | RouterHandler<R>
+  | RouterErrorMiddlewareHandler<R>;
 
 export interface BodyParserOptions {
   /** When set to true, then deflated (compressed) bodies will be inflated; when false, deflated bodies are rejected. Defaults to true. */

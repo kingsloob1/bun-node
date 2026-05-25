@@ -1,4 +1,7 @@
-import type { RouterHandler } from "../lib/types/general";
+import type {
+  RouterErrorMiddlewareHandler,
+  RouterHandler,
+} from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
 import { BunRouter } from "../lib/BunRouter";
@@ -737,12 +740,10 @@ describe("BunRouter: use(router) — mounted sub-routers", () => {
       order.push("A");
       next("router");
     });
-    routerA.use(
-      (_err: unknown, _req: unknown, _res: unknown, _next: unknown) => {
-        // A's error handler must not run — the router was exited.
-        order.push("A-error");
-      },
-    );
+    routerA.use(((_err, _req, _res, _next) => {
+      // A's error handler must not run — the router was exited.
+      order.push("A-error");
+    }) satisfies RouterErrorMiddlewareHandler);
 
     const routerB = new BunRouter();
     routerB.get("/x", (_req, res) => {
@@ -1057,5 +1058,184 @@ describe("BunRouter: useMethod — method-scoped middleware", () => {
     // The route handlers are specificity-sorted (static first); the
     // useMethod middleware keeps its registration slot at the front.
     expect(order).toEqual(["mw", "static"]);
+  });
+});
+
+describe("BunRouter: verb/all/use accept 4-arg error handlers", () => {
+  async function exec(router: BunRouter, method: string, path: string) {
+    const request = await makeRequest({
+      url: `http://localhost${path}`,
+      method,
+    });
+    const response = new BunResponse(request);
+    const result = await router.handle({
+      requestHost: "localhost",
+      requestMethod: method,
+      requestUrl: path,
+      request,
+      response,
+    });
+    return { result, response };
+  }
+
+  it("a verb method (get) accepts an error handler alongside a thrower", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    const thrower: RouterHandler = () => {
+      order.push("thrown");
+      throw new Error("boom");
+    };
+    const errHandler: RouterErrorMiddlewareHandler = (
+      err,
+      _req,
+      res,
+      _next,
+    ) => {
+      order.push(`caught:${(err as Error).message}`);
+      res.json({ order });
+    };
+
+    router.get("/x", thrower, errHandler);
+
+    const { response } = await exec(router, "GET", "/x");
+    const native = await response.getNativeResponse(1000);
+    expect(order).toEqual(["thrown", "caught:boom"]);
+    expect(await native.json()).toEqual({ order: ["thrown", "caught:boom"] });
+  });
+
+  it("router.use accepts a 4-arg error handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/x", () => {
+      order.push("h");
+      throw new Error("from-route");
+    });
+    router.use(((err, _req, res, _next) => {
+      order.push(`use-err:${(err as Error).message}`);
+      res.json({ order });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const { response } = await exec(router, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["h", "use-err:from-route"]);
+  });
+
+  it("router.all accepts a 4-arg error handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/x", () => {
+      throw new Error("blast");
+    });
+    router.all("/x", ((err, _req, res, _next) => {
+      order.push(`all-err:${(err as Error).message}`);
+      res.json({ order });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const { response } = await exec(router, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["all-err:blast"]);
+  });
+
+  it("router.useMethod accepts a 4-arg error handler", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.get("/x", () => {
+      throw new Error("scoped");
+    });
+    router.useMethod("GET", ((err, _req, res, _next) => {
+      order.push(`um-err:${(err as Error).message}`);
+      res.json({ order });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const { response } = await exec(router, "GET", "/x");
+    await response.getNativeResponse(1000);
+    expect(order).toEqual(["um-err:scoped"]);
+  });
+});
+
+describe("BunRouter: Express 5 catch-all path normalisation", () => {
+  it("use('*splat', mw) matches every path", () => {
+    const router = new BunRouter();
+    router.use("*splat", () => {});
+    expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
+    expect(layersFor(router, "GET", "/").length).toBeGreaterThan(0);
+  });
+
+  it("use('{*splat}', mw) matches every path", () => {
+    const router = new BunRouter();
+    router.use("{*splat}", () => {});
+    expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
+  });
+
+  it("use('/*splat', mw) matches every absolute path", () => {
+    const router = new BunRouter();
+    router.use("/*splat", () => {});
+    expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
+  });
+
+  it("use('/api/{*rest}', mw) matches under the prefix but not other roots", () => {
+    const router = new BunRouter();
+    router.use("/api/{*rest}", () => {});
+    expect(layersFor(router, "GET", "/api/foo").length).toBeGreaterThan(0);
+    expect(layersFor(router, "GET", "/api/v1/users").length).toBeGreaterThan(0);
+    expect(layersFor(router, "GET", "/other")).toHaveLength(0);
+  });
+
+  it("normalises catch-all in verb methods too (get('*splat', h))", () => {
+    const router = new BunRouter();
+    router.get("*splat", () => {});
+    expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
+  });
+
+  it("leaves a normal path with params unchanged", () => {
+    const router = new BunRouter();
+    router.use("/users/:id", () => {});
+    expect(layersFor(router, "GET", "/users/123").length).toBeGreaterThan(0);
+  });
+
+  it("leaves a bare star unchanged", () => {
+    const router = new BunRouter();
+    router.use("*", () => {});
+    expect(layersFor(router, "GET", "/anywhere").length).toBeGreaterThan(0);
+  });
+});
+
+describe("BunRouter: accepts a typed RouterErrorMiddlewareHandler", () => {
+  // `RouterErrorMiddlewareHandler`-typed handlers compile cleanly on every
+  // callback-accepting method (the err/req/res/next types come from the
+  // explicit annotation; TS cannot dispatch overloads by an untyped arrow's
+  // arity, so prefer `satisfies RouterErrorMiddlewareHandler` for inline
+  // error handlers).
+
+  it("accepts an annotated error handler on a verb method", () => {
+    const router = new BunRouter();
+    router.get("/x", ((err, _req, _res, _next) => {
+      void err;
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect(router.routes().length).toBe(1);
+  });
+
+  it("accepts an annotated error handler on use()", () => {
+    const router = new BunRouter();
+    router.use(((err, _req, _res, _next) => {
+      void err;
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect(router.routes().length).toBe(1);
+  });
+
+  it("accepts an annotated error handler on all()", () => {
+    const router = new BunRouter();
+    router.all("/x", ((err, _req, _res, _next) => {
+      void err;
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect(router.routes().length).toBe(1);
+  });
+
+  it("accepts an annotated error handler on useMethod()", () => {
+    const router = new BunRouter();
+    router.useMethod("GET", ((err, _req, _res, _next) => {
+      void err;
+    }) satisfies RouterErrorMiddlewareHandler);
+    expect(router.routes().length).toBe(1);
   });
 });

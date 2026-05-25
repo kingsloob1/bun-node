@@ -6,6 +6,7 @@ import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
 import type {
   Logger,
   NextFunction,
+  RouterCallback,
   RouterErrorMiddlewareHandler,
   RouterHandler,
 } from "./types/general";
@@ -60,7 +61,7 @@ export type RouteSpecificityOption =
 
 export interface CachedRouteMatch {
   route: Route;
-  callbacks: RouterHandler[];
+  callbacks: RouterCallback[];
 }
 
 /**
@@ -88,12 +89,12 @@ export interface MatchedLayerRecord {
 
 /** A {@link MatchedLayerRecord} resolved against the live callback reference. */
 export interface MatchedLayer extends MatchedLayerRecord {
-  callback: RouterHandler | RouterErrorMiddlewareHandler;
+  callback: RouterCallback | RouterErrorMiddlewareHandler;
 }
 
 export interface RouteConstructorOption {
   path?: string | null;
-  callbacks: RouterHandler[];
+  callbacks: RouterCallback[];
   name?: string | null;
   group?: string | null;
   host?: string | null;
@@ -114,6 +115,24 @@ const RouteModule = require(routeModulePath) as {
 };
 
 export const RouteClass = RouteModule.default;
+
+/**
+ * Matches Express 5 catch-all path syntax — `{*name}`, `*name` (at the start
+ * of the path or after a `/`), and the bare `{*}` form. Used to normalise
+ * those into the routejs-compatible `*` wildcard.
+ */
+const EXPRESS5_CATCHALL_RE =
+  /\{\*[a-z_$][\w$]*\}|(?<=^|\/)\*[a-z_$][\w$]*|\{\*\}/gi;
+
+/**
+ * Express 5 changed catch-all paths from a bare `*` to named wildcards
+ * (`*name`, `{*name}`). routejs still expects the bare `*`, so we collapse
+ * the Express 5 variants to `*` before registration. Non-catch-all paths
+ * (`/users/:id`, `/api/v1`, …) pass through unchanged.
+ */
+function normalizeCatchAllPath(path: string): string {
+  return path.replace(EXPRESS5_CATCHALL_RE, "*");
+}
 
 /**
  * A `@routejs/router` `Route` tagged with BunRouter metadata:
@@ -239,6 +258,15 @@ export class BunRouter extends Router {
     const isEndpoint = this.#pendingEndpoint;
     this.#pendingEndpoint = false;
 
+    // Express 5 catch-all syntax (`*name` / `{*name}`) → routejs's `*`.
+    // Idempotent — non-catch-all paths pass through unchanged.
+    if (option.path != null) {
+      option.path = normalizeCatchAllPath(option.path);
+    }
+    if (option.group != null) {
+      option.group = normalizeCatchAllPath(option.group);
+    }
+
     const routes = this.routes();
     if (option.name) {
       if (routes.find((route) => route.name === option.name)) {
@@ -264,7 +292,7 @@ export class BunRouter extends Router {
 
   private getFormattedSetRouteOption(
     option: Pick<RouteConstructorOption, "host" | "method" | "group"> & {
-      callbacks: RouterHandler[] | Router;
+      callbacks: RouterCallback[] | Router;
     },
     route: Route,
   ) {
@@ -283,7 +311,7 @@ export class BunRouter extends Router {
   }
 
   private mergeRoute(option: {
-    callbacks: RouterHandler[] | Router;
+    callbacks: RouterCallback[] | Router;
     group?: string | null;
     host?: string | null;
     method?: string | string[] | null;
@@ -337,10 +365,18 @@ export class BunRouter extends Router {
 
   addRoute(method: string, ...callbacks: RouterHandler[]): this;
   addRoute(method: string, path: string, ...callbacks: RouterHandler[]): this;
+  addRoute(method: string, ...callbacks: RouterErrorMiddlewareHandler[]): this;
   addRoute(
     method: string,
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  addRoute(method: string, ...callbacks: RouterCallback[]): this;
+  addRoute(method: string, path: string, ...callbacks: RouterCallback[]): this;
+  addRoute(
+    method: string,
+    path?: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ) {
     if (!isString(path) && path) {
       callbacks.unshift(path);
@@ -358,8 +394,15 @@ export class BunRouter extends Router {
   override checkout(path: string, ...callbacks: RouterHandler[]): this;
   override checkout(...callbacks: RouterHandler[]): this;
   override checkout(
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override checkout(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override checkout(path: string, ...callbacks: RouterCallback[]): this;
+  override checkout(...callbacks: RouterCallback[]): this;
+  override checkout(
+    path?: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -374,7 +417,14 @@ export class BunRouter extends Router {
 
   override copy(path: string, ...callbacks: RouterHandler[]): this;
   override copy(...callbacks: RouterHandler[]): this;
-  override copy(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override copy(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override copy(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override copy(path: string, ...callbacks: RouterCallback[]): this;
+  override copy(...callbacks: RouterCallback[]): this;
+  override copy(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("copy", path, ...callbacks);
@@ -388,7 +438,17 @@ export class BunRouter extends Router {
 
   override delete(path: string, ...callbacks: RouterHandler[]): this;
   override delete(...callbacks: RouterHandler[]): this;
-  override delete(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override delete(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override delete(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override delete(path: string, ...callbacks: RouterCallback[]): this;
+  override delete(...callbacks: RouterCallback[]): this;
+  override delete(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("delete", path, ...callbacks);
@@ -403,9 +463,16 @@ export class BunRouter extends Router {
   override get(path: string, ...callbacks: RouterHandler[]): this;
   override get(...callbacks: RouterHandler[]): this;
   override get(
-    path: string | RouterHandler,
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override get(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override get(path: string, ...callbacks: RouterCallback[]): this;
+  override get(...callbacks: RouterCallback[]): this;
+  override get(
+    path: string | RouterCallback,
 
-    ...callbacks: RouterHandler[]
+    ...callbacks: RouterCallback[]
   ): this {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -420,7 +487,14 @@ export class BunRouter extends Router {
 
   override head(path: string, ...callbacks: RouterHandler[]): this;
   override head(...callbacks: RouterHandler[]): this;
-  override head(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override head(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override head(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override head(path: string, ...callbacks: RouterCallback[]): this;
+  override head(...callbacks: RouterCallback[]): this;
+  override head(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("head", path, ...callbacks);
@@ -434,7 +508,14 @@ export class BunRouter extends Router {
 
   override lock(path: string, ...callbacks: RouterHandler[]): this;
   override lock(...callbacks: RouterHandler[]): this;
-  override lock(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override lock(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override lock(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override lock(path: string, ...callbacks: RouterCallback[]): this;
+  override lock(...callbacks: RouterCallback[]): this;
+  override lock(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("lock", path, ...callbacks);
@@ -448,7 +529,17 @@ export class BunRouter extends Router {
 
   override merge(path: string, ...callbacks: RouterHandler[]): this;
   override merge(...callbacks: RouterHandler[]): this;
-  override merge(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override merge(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override merge(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override merge(path: string, ...callbacks: RouterCallback[]): this;
+  override merge(...callbacks: RouterCallback[]): this;
+  override merge(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("merge", path, ...callbacks);
@@ -463,9 +554,16 @@ export class BunRouter extends Router {
   override mkactivity(path: string, ...callbacks: RouterHandler[]): this;
   override mkactivity(...callbacks: RouterHandler[]): this;
   override mkactivity(
-    path: string | RouterHandler,
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override mkactivity(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override mkactivity(path: string, ...callbacks: RouterCallback[]): this;
+  override mkactivity(...callbacks: RouterCallback[]): this;
+  override mkactivity(
+    path: string | RouterCallback,
 
-    ...callbacks: RouterHandler[]
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -480,7 +578,17 @@ export class BunRouter extends Router {
 
   override mkcol(path: string, ...callbacks: RouterHandler[]): this;
   override mkcol(...callbacks: RouterHandler[]): this;
-  override mkcol(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override mkcol(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override mkcol(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override mkcol(path: string, ...callbacks: RouterCallback[]): this;
+  override mkcol(...callbacks: RouterCallback[]): this;
+  override mkcol(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("mkcol", path, ...callbacks);
@@ -494,7 +602,14 @@ export class BunRouter extends Router {
 
   override move(path: string, ...callbacks: RouterHandler[]): this;
   override move(...callbacks: RouterHandler[]): this;
-  override move(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override move(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override move(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override move(path: string, ...callbacks: RouterCallback[]): this;
+  override move(...callbacks: RouterCallback[]): this;
+  override move(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("move", path, ...callbacks);
@@ -508,7 +623,17 @@ export class BunRouter extends Router {
 
   override notify(path: string, ...callbacks: RouterHandler[]): this;
   override notify(...callbacks: RouterHandler[]): this;
-  override notify(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override notify(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override notify(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override notify(path: string, ...callbacks: RouterCallback[]): this;
+  override notify(...callbacks: RouterCallback[]): this;
+  override notify(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("notify", path, ...callbacks);
@@ -523,9 +648,16 @@ export class BunRouter extends Router {
   override options(path: string, ...callbacks: RouterHandler[]): this;
   override options(...callbacks: RouterHandler[]): this;
   override options(
-    path: string | RouterHandler,
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override options(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override options(path: string, ...callbacks: RouterCallback[]): this;
+  override options(...callbacks: RouterCallback[]): this;
+  override options(
+    path: string | RouterCallback,
 
-    ...callbacks: RouterHandler[]
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -540,7 +672,17 @@ export class BunRouter extends Router {
 
   override patch(path: string, ...callbacks: RouterHandler[]): this;
   override patch(...callbacks: RouterHandler[]): this;
-  override patch(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override patch(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override patch(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override patch(path: string, ...callbacks: RouterCallback[]): this;
+  override patch(...callbacks: RouterCallback[]): this;
+  override patch(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("patch", path, ...callbacks);
@@ -554,7 +696,14 @@ export class BunRouter extends Router {
 
   override post(path: string, ...callbacks: RouterHandler[]): this;
   override post(...callbacks: RouterHandler[]): this;
-  override post(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override post(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override post(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override post(path: string, ...callbacks: RouterCallback[]): this;
+  override post(...callbacks: RouterCallback[]): this;
+  override post(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("post", path, ...callbacks);
@@ -569,9 +718,16 @@ export class BunRouter extends Router {
   override propfind(path: string, ...callbacks: RouterHandler[]): this;
   override propfind(...callbacks: RouterHandler[]): this;
   override propfind(
-    path: string | RouterHandler,
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override propfind(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override propfind(path: string, ...callbacks: RouterCallback[]): this;
+  override propfind(...callbacks: RouterCallback[]): this;
+  override propfind(
+    path: string | RouterCallback,
 
-    ...callbacks: RouterHandler[]
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -588,7 +744,11 @@ export class BunRouter extends Router {
   // delegated `proppatch` (a WebDAV verb) resolves to a real method.
   proppatch(path: string, ...callbacks: RouterHandler[]): this;
   proppatch(...callbacks: RouterHandler[]): this;
-  proppatch(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  proppatch(path: string, ...callbacks: RouterErrorMiddlewareHandler[]): this;
+  proppatch(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  proppatch(path: string, ...callbacks: RouterCallback[]): this;
+  proppatch(...callbacks: RouterCallback[]): this;
+  proppatch(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("proppatch", path, ...callbacks);
@@ -602,7 +762,17 @@ export class BunRouter extends Router {
 
   override purge(path: string, ...callbacks: RouterHandler[]): this;
   override purge(...callbacks: RouterHandler[]): this;
-  override purge(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override purge(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override purge(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override purge(path: string, ...callbacks: RouterCallback[]): this;
+  override purge(...callbacks: RouterCallback[]): this;
+  override purge(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("purge", path, ...callbacks);
@@ -616,7 +786,14 @@ export class BunRouter extends Router {
 
   override put(path: string, ...callbacks: RouterHandler[]): this;
   override put(...callbacks: RouterHandler[]): this;
-  override put(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override put(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override put(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override put(path: string, ...callbacks: RouterCallback[]): this;
+  override put(...callbacks: RouterCallback[]): this;
+  override put(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("put", path, ...callbacks);
@@ -630,7 +807,17 @@ export class BunRouter extends Router {
 
   override report(path: string, ...callbacks: RouterHandler[]): this;
   override report(...callbacks: RouterHandler[]): this;
-  override report(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override report(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override report(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override report(path: string, ...callbacks: RouterCallback[]): this;
+  override report(...callbacks: RouterCallback[]): this;
+  override report(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("report", path, ...callbacks);
@@ -644,7 +831,17 @@ export class BunRouter extends Router {
 
   override search(path: string, ...callbacks: RouterHandler[]): this;
   override search(...callbacks: RouterHandler[]): this;
-  override search(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override search(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override search(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override search(path: string, ...callbacks: RouterCallback[]): this;
+  override search(...callbacks: RouterCallback[]): this;
+  override search(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("search", path, ...callbacks);
@@ -659,9 +856,16 @@ export class BunRouter extends Router {
   override subscribe(path: string, ...callbacks: RouterHandler[]): this;
   override subscribe(...callbacks: RouterHandler[]): this;
   override subscribe(
-    path: string | RouterHandler,
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override subscribe(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override subscribe(path: string, ...callbacks: RouterCallback[]): this;
+  override subscribe(...callbacks: RouterCallback[]): this;
+  override subscribe(
+    path: string | RouterCallback,
 
-    ...callbacks: RouterHandler[]
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -676,7 +880,17 @@ export class BunRouter extends Router {
 
   override trace(path: string, ...callbacks: RouterHandler[]): this;
   override trace(...callbacks: RouterHandler[]): this;
-  override trace(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override trace(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override trace(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override trace(path: string, ...callbacks: RouterCallback[]): this;
+  override trace(...callbacks: RouterCallback[]): this;
+  override trace(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("trace", path, ...callbacks);
@@ -690,7 +904,17 @@ export class BunRouter extends Router {
 
   override unlock(path: string, ...callbacks: RouterHandler[]): this;
   override unlock(...callbacks: RouterHandler[]): this;
-  override unlock(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override unlock(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override unlock(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override unlock(path: string, ...callbacks: RouterCallback[]): this;
+  override unlock(...callbacks: RouterCallback[]): this;
+  override unlock(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
+  ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("unlock", path, ...callbacks);
@@ -705,8 +929,15 @@ export class BunRouter extends Router {
   override unsubscribe(path: string, ...callbacks: RouterHandler[]): this;
   override unsubscribe(...callbacks: RouterHandler[]): this;
   override unsubscribe(
-    path: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override unsubscribe(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override unsubscribe(path: string, ...callbacks: RouterCallback[]): this;
+  override unsubscribe(...callbacks: RouterCallback[]): this;
+  override unsubscribe(
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -721,7 +952,14 @@ export class BunRouter extends Router {
 
   override view(path: string, ...callbacks: RouterHandler[]): this;
   override view(...callbacks: RouterHandler[]): this;
-  override view(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override view(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override view(...callbacks: RouterErrorMiddlewareHandler[]): this;
+  override view(path: string, ...callbacks: RouterCallback[]): this;
+  override view(...callbacks: RouterCallback[]): this;
+  override view(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
         return this.addRoute("view", path, ...callbacks);
@@ -734,21 +972,21 @@ export class BunRouter extends Router {
   }
 
   override any(
-    methods: string | string[] | RouterHandler,
-    ...callbacks: RouterHandler[]
+    methods: string | string[] | RouterCallback,
+    ...callbacks: RouterCallback[]
   ): this;
   override any(
-    methods: string | string[] | RouterHandler,
-    path: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    methods: string | string[] | RouterCallback,
+    path: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ): this;
-  override any(...callbacks: RouterHandler[]): this;
+  override any(...callbacks: RouterCallback[]): this;
   override any(
-    methods?: string | string[] | RouterHandler,
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    methods?: string | string[] | RouterCallback,
+    path?: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ) {
-    let pathHandler: RouterHandler | undefined;
+    let pathHandler: RouterCallback | undefined;
     if (!isString(path) && path) {
       pathHandler = path;
     }
@@ -765,9 +1003,9 @@ export class BunRouter extends Router {
       }
     } else {
       if (pathHandler) {
-        callbacks.unshift(methods as RouterHandler, pathHandler);
+        callbacks.unshift(methods as RouterCallback, pathHandler);
       } else {
-        callbacks.unshift(methods as RouterHandler);
+        callbacks.unshift(methods as RouterCallback);
       }
     }
 
@@ -782,7 +1020,14 @@ export class BunRouter extends Router {
 
   override all(path: string, ...callbacks: RouterHandler[]): this;
   override all(...handlers: RouterHandler[]): this;
-  override all(path: string | RouterHandler, ...callbacks: RouterHandler[]) {
+  override all(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  override all(...handlers: RouterErrorMiddlewareHandler[]): this;
+  override all(path: string, ...callbacks: RouterCallback[]): this;
+  override all(...handlers: RouterCallback[]): this;
+  override all(path: string | RouterCallback, ...callbacks: RouterCallback[]) {
     if (!isString(path) && path) {
       callbacks.unshift(path);
     }
@@ -802,10 +1047,16 @@ export class BunRouter extends Router {
     path: string,
     ...callbacks: RouterHandler[]
   ): this;
+  override add(method: string, ...callbacks: RouterCallback[]): this;
   override add(
     method: string,
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    path: string,
+    ...callbacks: RouterCallback[]
+  ): this;
+  override add(
+    method: string,
+    path?: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ) {
     if (isString(path) || isFunction(path)) {
       if (isString(path)) {
@@ -822,12 +1073,16 @@ export class BunRouter extends Router {
   // functions and/or mounted sub-routers, with an optional leading path.
   override use(...handlers: (RouterHandler | Router)[]): this;
   override use(path: string, ...handlers: (RouterHandler | Router)[]): this;
+  override use(...handlers: RouterErrorMiddlewareHandler[]): this;
+  override use(path: string, ...handlers: RouterErrorMiddlewareHandler[]): this;
+  override use(...handlers: (RouterCallback | Router)[]): this;
+  override use(path: string, ...handlers: (RouterCallback | Router)[]): this;
   override use(
-    pathOrHandler?: string | RouterHandler | Router,
-    ...rest: (RouterHandler | Router)[]
+    pathOrHandler?: string | RouterCallback | Router,
+    ...rest: (RouterCallback | Router)[]
   ): this {
     let path: string | undefined;
-    const items: (RouterHandler | Router)[] = [];
+    const items: (RouterCallback | Router)[] = [];
 
     if (isString(pathOrHandler)) {
       path = pathOrHandler;
@@ -838,7 +1093,7 @@ export class BunRouter extends Router {
 
     // Buffer consecutive middleware functions into a single route so their
     // registration order relative to any mounted sub-routers is preserved.
-    let pending: RouterHandler[] = [];
+    let pending: RouterCallback[] = [];
     const flushPending = () => {
       if (!pending.length) {
         return;
@@ -896,10 +1151,18 @@ export class BunRouter extends Router {
    */
   useMethod(method: string, ...callbacks: RouterHandler[]): this;
   useMethod(method: string, path: string, ...callbacks: RouterHandler[]): this;
+  useMethod(method: string, ...callbacks: RouterErrorMiddlewareHandler[]): this;
   useMethod(
     method: string,
-    path?: string | RouterHandler,
-    ...callbacks: RouterHandler[]
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
+  useMethod(method: string, ...callbacks: RouterCallback[]): this;
+  useMethod(method: string, path: string, ...callbacks: RouterCallback[]): this;
+  useMethod(
+    method: string,
+    path?: string | RouterCallback,
+    ...callbacks: RouterCallback[]
   ): this {
     if (!isString(path) && path) {
       callbacks.unshift(path);
@@ -920,14 +1183,14 @@ export class BunRouter extends Router {
   }
 
   override group(path: string, ...callbacks: [Router]): this;
-  override group(path: string, ...callbacks: RouterHandler[]): this;
+  override group(path: string, ...callbacks: RouterCallback[]): this;
   override group(
     path: string,
     ...callbacks: [(router: Router) => unknown]
   ): this;
   override group(
     path: string,
-    ...callbacks: RouterHandler[] | [Router] | [(router: Router) => unknown]
+    ...callbacks: RouterCallback[] | [Router] | [(router: Router) => unknown]
   ) {
     const [callback] = callbacks;
     if (callback instanceof Router) {
@@ -943,19 +1206,19 @@ export class BunRouter extends Router {
 
     return this.mergeRoute({
       group: path,
-      callbacks: callbacks as RouterHandler[],
+      callbacks: callbacks as RouterCallback[],
     });
   }
 
   override domain(host: string, ...callbacks: [Router]): this;
-  override domain(host: string, ...callbacks: RouterHandler[]): this;
+  override domain(host: string, ...callbacks: RouterCallback[]): this;
   override domain(
     host: string,
     ...callbacks: [(router: Router) => unknown]
   ): this;
   override domain(
     host: string,
-    ...callbacks: RouterHandler[] | [Router] | [(router: Router) => unknown]
+    ...callbacks: RouterCallback[] | [Router] | [(router: Router) => unknown]
   ) {
     const [callback] = callbacks;
     if (callback instanceof Router) {
@@ -971,7 +1234,7 @@ export class BunRouter extends Router {
 
     return this.mergeRoute({
       host,
-      callbacks: callbacks as RouterHandler[],
+      callbacks: callbacks as RouterCallback[],
     });
   }
 
@@ -1133,7 +1396,7 @@ export class BunRouter extends Router {
     // 4. Flatten each route's callbacks into fully-resolved layers.
     const layers: MatchedLayer[] = [];
     for (const entry of orderedEntries) {
-      const callbacks = (entry.route.callbacks || []) as RouterHandler[];
+      const callbacks = (entry.route.callbacks || []) as RouterCallback[];
       for (
         let callbackIndex = 0;
         callbackIndex < callbacks.length;

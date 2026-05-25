@@ -37,6 +37,20 @@ noise — ignore it. There may be a couple of intentional `no-console` ESLint
 *warnings* (error logging in catch blocks with no logger in scope); warnings
 do not fail lint.
 
+**Test files are not in `tsconfig`'s `include`** (`./lib/**/*` only), so
+`bunx tsc --noEmit` doesn't catch type errors in `__tests__/`. The IDE does,
+and an explicit pass does too — when you've changed test files, also run:
+
+```bash
+bunx tsc --noEmit --skipLibCheck --target ESNext --module ESNext \
+  --moduleResolution bundler --strict --allowImportingTsExtensions \
+  --types bun-types __tests__/*.ts
+```
+
+The single-file flags will surface unrelated errors in `lib/BunResponse.ts`
+(stream-type incompatibilities Bun papers over with its global types) —
+those are noise; only `__tests__/...` lines are signal.
+
 ## Dependency policy
 
 Prefer native/Bun APIs and the in-repo helpers over third-party libraries;
@@ -98,6 +112,22 @@ matched route.
   also locks recently-handed-out ports for ~1s for the same reason.
 - Writing tests has repeatedly surfaced real bugs here — keep test coverage
   thorough, and keep every existing test green.
+- **Inline 4-arg error handlers need a hint.** TypeScript overload
+  resolution cannot dispatch by arrow arity, so an untyped
+  `(err, req, res, next) => …` inside `router.use/get/all/useMethod(...)`
+  resolves through the wider overload and all four params infer as `any`
+  (the IDE flags this even when CLI `tsc` doesn't, since CLI tsc doesn't
+  cover tests). Use `satisfies RouterErrorMiddlewareHandler` to give the
+  arrow a contextual type:
+
+  ```ts
+  router.use(((err, _req, res, _next) => {
+    res.status(500).json({ error: String(err) });
+  }) satisfies RouterErrorMiddlewareHandler);
+  ```
+
+  `RouterErrorMiddlewareHandler` is exported from
+  `packages/bun-common/lib/types/general.ts`.
 
 ## Working preferences
 

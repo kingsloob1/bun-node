@@ -7,7 +7,7 @@ import { BunRequest } from "@kingsleyweb/bun-common";
 import { of } from "rxjs";
 
 /** A loopback server reused as the `server` argument for requests. */
-export const testServer: Server = Bun.serve({
+export const testServer: Server<unknown> = Bun.serve({
   port: 0,
   fetch: () => new Response("ok"),
 });
