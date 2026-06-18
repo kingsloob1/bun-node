@@ -348,7 +348,11 @@ export class BunResponse<customWebsocketDataType = unknown>
     this._upgradeToWsData =
       data ||
       ({
+        host: this.req.host,
         path: this.req.path,
+        search: this.req.search,
+        hash: this.req.hash,
+        originalUrl: this.req.originalUrl,
         headers: this.req.headersObj,
         user: get(this.req, "user", undefined),
         custom: {} as customWebsocketDataType,

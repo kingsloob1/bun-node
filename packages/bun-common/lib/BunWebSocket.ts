@@ -58,7 +58,17 @@ export interface TypedEmitter<
 }
 
 export interface WebSocketClientData<CustomData = unknown> {
+  /**
+   * The components of the upgrade request URL, mirroring what
+   * `BunRequest.splitRequestUrl()` exposes: `host` (authority), `path`
+   * (pathname only), `search` (`?…` or `""`), and `hash` (`#…` or `""`).
+   * `originalUrl` is the full `path + search + hash` (`BunRequest.originalUrl`).
+   */
+  host: string;
   path: string;
+  search: string;
+  hash: string;
+  originalUrl: string;
   headers: Headers;
   user?: Record<string, unknown>;
   custom: CustomData;
@@ -361,110 +371,124 @@ export class BunWebSocket<customWebsocketDataType = unknown>
   }
 
   public getOrCreateWebsocketServer(port: number) {
-    let server = this.getServer();
-    if (server && String(server?.port) === String(port)) {
-      this._wsServers.set(port, server);
-      return server;
+    const sharedServer = this.getServer();
+    if (sharedServer && String(sharedServer.port) === String(port)) {
+      this._wsServers.set(port, sharedServer);
+      return sharedServer;
     }
 
-    server = this._wsServers.get(port);
-    if (server) {
-      return server;
+    const cached = this._wsServers.get(port);
+    if (cached) {
+      return cached;
     }
 
+    // Port `0` / unspecified means "ride on the existing (shared) server" — e.g.
+    // a NestJS `@WebSocketGateway()` with no port shares the HTTP adapter's
+    // server (which may not be listening yet, hence possibly `undefined`).
+    if (!port || Number(port) <= 0) {
+      return sharedServer;
+    }
+
+    // A specific port was requested (a standalone `newInstance` adapter, or a
+    // `@WebSocketGateway(port)` declaring a non-shared port): bind a dedicated
+    // server that listens on exactly that port.
+    const server = this.buildWebsocketServer(port);
+    this._wsServers.set(port, server);
+    return server;
+  }
+
+  /**
+   * Builds a Bun server (HTTP + WebSocket) bound to `port`, routing requests
+   * through this instance's router and upgrading matched WS routes. Used both
+   * for standalone (`newInstance`) adapters and for gateways that declare an
+   * explicit port distinct from the shared HTTP server.
+   */
+  private buildWebsocketServer(port: number) {
     const options = this.options;
-    if (options.newInstance) {
-      server = Bun.serve<WebSocketClientData<customWebsocketDataType>>({
-        ...(options?.serverOptions || {}),
-        port,
-        hostname: options?.listen?.host,
-        development: Bun.env.NODE_ENV !== "production",
-        fetch: async (nativeRequest: Request, server) => {
-          const req =
-            options.request ||
-            (await BunRequest.init(
-              nativeRequest,
-              server,
-              options.bunRequestOpts || {
-                parseBody: true,
-                parseCookies: true,
-                parseQuery: true,
-              },
-            ));
+    const createOpts = options.newInstance ? options : undefined;
 
-          const res =
-            options.response || new BunResponse<customWebsocketDataType>(req);
-          let routeUsed: matchedRoute | true | undefined;
+    return Bun.serve<WebSocketClientData<customWebsocketDataType>>({
+      ...(createOpts?.serverOptions || {}),
+      port,
+      hostname: createOpts?.listen?.host,
+      development: Bun.env.NODE_ENV !== "production",
+      fetch: async (nativeRequest: Request, server) => {
+        const req =
+          createOpts?.request ||
+          (await BunRequest.init(
+            nativeRequest,
+            server,
+            createOpts?.bunRequestOpts || {
+              parseBody: true,
+              parseCookies: true,
+              parseQuery: true,
+            },
+          ));
 
-          try {
-            routeUsed = await this._routerInstance?.handle({
-              requestHost: req.host,
-              requestMethod: req.method,
-              response: res,
-              request: req,
-              requestUrl: req.originalUrl,
-            });
-          } catch (e) {
-            let err = e;
-            if (!isObject(err)) {
-              err = new Error(String(e));
-            }
+        const res =
+          createOpts?.response || new BunResponse<customWebsocketDataType>(req);
+        let routeUsed: matchedRoute | true | undefined;
 
-            set(err as unknown as Record<string, unknown>, "req", req);
-            throw err;
-          }
-
-          let hasNativeResponse = false;
-          if (routeUsed) {
-            hasNativeResponse = true;
-          }
-
-          if (hasNativeResponse) {
-            if (res.upgradeToWsData) {
-              const success = server.upgrade(nativeRequest, {
-                data: res.upgradeToWsData,
-              });
-              if (success) {
-                return undefined;
-              }
-
-              let response = new Response(
-                "An error occurred while upgrading websocket",
-                {
-                  status: 400,
-                },
-              );
-              try {
-                response = await res.getNativeResponse(100);
-              } catch {
-                //
-              }
-
-              return response;
-            }
-
-            const nativeResponse = await res.getNativeResponse(
-              (options?.wsOptions?.idleTimeout || 60) * 1000,
-            );
-            return nativeResponse;
-          }
-
-          return new Response(undefined, {
-            status: 404,
-            statusText: "Not Found",
+        try {
+          routeUsed = await this._routerInstance?.handle({
+            requestHost: req.host,
+            requestMethod: req.method,
+            response: res,
+            request: req,
+            requestUrl: req.originalUrl,
           });
-        },
-        websocket: this._wsHandler,
-        async error(err) {
+        } catch (e) {
+          let err = e;
+          if (!isObject(err)) {
+            err = new Error(String(e));
+          }
+
+          set(err as unknown as Record<string, unknown>, "req", req);
           throw err;
-        },
-      });
+        }
 
-      this._wsServers.set(port, server);
-      return server;
-    }
+        const hasNativeResponse = !!routeUsed;
 
-    return undefined;
+        if (hasNativeResponse) {
+          if (res.upgradeToWsData) {
+            const success = server.upgrade(nativeRequest, {
+              data: res.upgradeToWsData,
+            });
+            if (success) {
+              return undefined;
+            }
+
+            let response = new Response(
+              "An error occurred while upgrading websocket",
+              {
+                status: 400,
+              },
+            );
+            try {
+              response = await res.getNativeResponse(100);
+            } catch {
+              //
+            }
+
+            return response;
+          }
+
+          const nativeResponse = await res.getNativeResponse(
+            (options?.wsOptions?.idleTimeout || 60) * 1000,
+          );
+          return nativeResponse;
+        }
+
+        return new Response(undefined, {
+          status: 404,
+          statusText: "Not Found",
+        });
+      },
+      websocket: this._wsHandler,
+      async error(err) {
+        throw err;
+      },
+    });
   }
 
   public killServer(
@@ -527,6 +551,14 @@ export class BunWebSocket<customWebsocketDataType = unknown>
 
         await Promise.allSettled(
           handlersArr
+            // Never re-invoke this instance's own aggregate handler: the Bun
+            // server's `websocket` is already bound to `_wsHandler` (which both
+            // emits events *and* calls this method), so a route registered with
+            // `router.ws(path, this.wsHandler)` — as the NestJS adapter does —
+            // would recurse infinitely once `path` matches the connection's
+            // path (e.g. a gateway `namespace`). Per-route *user* handlers
+            // (the normal `router.ws` use) are unaffected.
+            .filter((handler) => handler !== this._wsHandler)
             .map((handler) => {
               const handlerToExecute = isObject(handler)
                 ? handler[event]
@@ -725,7 +757,11 @@ export class BunWebSocket<customWebsocketDataType = unknown>
         }
 
         const data: WebSocketClientData = {
+          host: req.host,
           path: req.path,
+          search: req.search,
+          hash: req.hash,
+          originalUrl: req.originalUrl,
           headers: req.headersObj as unknown as Headers,
           user: get(req, "user", undefined),
           custom: customData,
