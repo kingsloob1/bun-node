@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-nest",
   "type": "module",
-  "version": "2.0.0-alpha.3",
+  "version": "2.0.0-alpha.4",
   "private": false,
   "description": "> TODO: description",
   "author": "okafor obinna <kingsloob1@gmail.com>",
@@ -32,7 +32,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^2.0.0-alpha.3",
+    "@kingsleyweb/bun-common": "^2.0.0-alpha.4",
     "@nestjs/common": "^11.1.27",
     "rxjs": "^7.8.1"
   },
