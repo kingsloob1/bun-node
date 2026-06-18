@@ -418,16 +418,20 @@ export class BunHttpAdapter<
     hostname?: string | ((...args: unknown[]) => void),
     callback?: (...args: unknown[]) => void,
   ) {
-    hostname = isFunction(hostname) ? "127.0.0.1" : hostname;
-    if (!hostname || !(isIPv4(hostname) || isIPv6(hostname))) {
-      hostname = "127.0.0.1";
-    }
-
+    // The callback may arrive as the 2nd argument (`listen(port, cb)`, the form
+    // NestJS's `app.listen()` uses) or the 3rd (`listen(port, host, cb)`).
+    // Resolve it *before* normalising `hostname`, otherwise the 2nd-arg form
+    // loses the callback and `app.listen()` never resolves.
     callback = isFunction(hostname)
       ? hostname
       : isFunction(callback)
         ? callback
         : () => undefined;
+
+    hostname =
+      typeof hostname === "string" && (isIPv4(hostname) || isIPv6(hostname))
+        ? hostname
+        : "127.0.0.1";
 
     port = Number(port);
     if (!(this.listeningHost === hostname && this.listeningPort === port)) {
