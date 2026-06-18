@@ -105,8 +105,15 @@ export class BunRequest
   #headers: Record<string, string | string[]> | undefined = undefined;
   /** Lazily-parsed request URL (see the `parsedUrl` getter). */
   #parsedUrl: URL | undefined = undefined;
-  /** Memoized `{ host, path }` split of the request URL (no `new URL`). */
-  #urlSplit: { host: string; path: string } | undefined = undefined;
+  /**
+   * Memoized `{ host, path, search, hash }` split of the request URL (no
+   * `new URL`). `path` is the pathname only; `search`/`hash` keep their
+   * leading `?`/`#` (or are `""` when absent), matching WHATWG `URL`.
+   */
+  #urlSplit:
+    | { host: string; path: string; search: string; hash: string }
+    | undefined = undefined;
+
   public maxHeadersCount = 0;
   public reusedSocket = false;
   /** Init promises, lazily allocated only when body/cookie/query parsing runs. */
@@ -1060,7 +1067,7 @@ export class BunRequest
       this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
 
     this.query = parseQueryString(
-      stripQueryPrefix(this.parsedUrl.search),
+      stripQueryPrefix(this.splitRequestUrl().search),
       options,
     );
     return this.query;
@@ -1254,12 +1261,18 @@ export class BunRequest
   }
 
   /**
-   * Splits the absolute request URL into `{ host, path }` by a single string
-   * scan, avoiding a `new URL()` for the hot routing reads (`host`, `path`,
-   * `originalUrl`). `path` is `pathname + search + hash` exactly as received
-   * (Express-style — not normalized).
+   * Splits the absolute request URL into `{ host, path, search, hash }` by a
+   * single string scan, avoiding a `new URL()` for the hot routing reads
+   * (`host`, `path`, `originalUrl`). `path` is the pathname only (Express-style
+   * `req.path` — not normalized); `search` and `hash` keep their leading
+   * `?`/`#` (or are `""` when absent), matching WHATWG `URL.search`/`URL.hash`.
    */
-  private splitRequestUrl(): { host: string; path: string } {
+  private splitRequestUrl(): {
+    host: string;
+    path: string;
+    search: string;
+    hash: string;
+  } {
     if (this.#urlSplit) {
       return this.#urlSplit;
     }
@@ -1268,33 +1281,69 @@ export class BunRequest
     const schemeEnd = url.indexOf("://");
     const hostStart = schemeEnd === -1 ? 0 : schemeEnd + 3;
 
-    let cut = url.length;
+    let authorityEnd = url.length;
     for (let i = hostStart; i < url.length; i++) {
       const code = url.charCodeAt(i);
       // First of '/' (47), '?' (63), '#' (35) ends the authority.
       if (code === 47 || code === 63 || code === 35) {
-        cut = i;
+        authorityEnd = i;
         break;
       }
     }
 
-    let host = url.slice(hostStart, cut);
+    let host = url.slice(hostStart, authorityEnd);
     const at = host.lastIndexOf("@");
     if (at !== -1) {
       host = host.slice(at + 1); // drop any userinfo
     }
 
-    let path = cut >= url.length ? "/" : url.slice(cut);
+    // Scan the remainder for the query ('?') and fragment ('#') boundaries.
+    // '#' always ends the query; a '?' after a '#' is part of the fragment.
+    let queryStart = -1;
+    let hashStart = -1;
+    for (let i = authorityEnd; i < url.length; i++) {
+      const code = url.charCodeAt(i);
+      if (code === 35) {
+        hashStart = i;
+        break;
+      }
+      if (code === 63 && queryStart === -1) {
+        queryStart = i;
+      }
+    }
+
+    const searchEnd = hashStart === -1 ? url.length : hashStart;
+    const pathEnd = queryStart === -1 ? searchEnd : queryStart;
+
+    let path = url.slice(authorityEnd, pathEnd);
     if (path.charCodeAt(0) !== 47) {
       path = `/${path}`; // a bare `?query`/`#hash` implies pathname "/"
     }
 
-    this.#urlSplit = { host, path };
+    const search = queryStart === -1 ? "" : url.slice(queryStart, searchEnd);
+    const hash = hashStart === -1 ? "" : url.slice(hashStart);
+
+    this.#urlSplit = { host, path, search, hash };
     return this.#urlSplit;
   }
 
   get path() {
     return this.splitRequestUrl().path;
+  }
+
+  /** Query string including the leading `?` (or `""` when absent). */
+  get search() {
+    return this.splitRequestUrl().search;
+  }
+
+  /** Query string without the leading `?` (Express `req.querystring`-style). */
+  get querystring() {
+    return stripQueryPrefix(this.splitRequestUrl().search);
+  }
+
+  /** URL fragment including the leading `#` (or `""` when absent). */
+  get hash() {
+    return this.splitRequestUrl().hash;
   }
 
   get method() {
@@ -1406,7 +1455,8 @@ export class BunRequest
   }
 
   get originalUrl() {
-    return this.path;
+    const { path, search, hash } = this.splitRequestUrl();
+    return `${path}${search}${hash}`;
   }
 
   get headersDistinct() {

@@ -29,7 +29,7 @@ describe("BunRequest: construction & basics", () => {
     const req = await makeRequest({ url: "http://localhost/path?x=1" });
     expect(req).toBeInstanceOf(BunRequest);
     expect(req.method).toBe("GET");
-    expect(req.path).toBe("/path?x=1");
+    expect(req.path).toBe("/path");
     expect(req.hostname).toBe("localhost");
   });
 
@@ -94,26 +94,53 @@ describe("BunRequest: URL parsing with diverse characters", () => {
     expect(req.host).toBe("localhost");
   });
 
-  it("keeps the query string in path / originalUrl", async () => {
+  it("keeps the path query-free but exposes it via search / originalUrl", async () => {
     const req = await makeRequest({ url: "http://localhost/search?q=bun" });
-    expect(req.path).toBe("/search?q=bun");
+    expect(req.path).toBe("/search");
+    expect(req.search).toBe("?q=bun");
+    expect(req.querystring).toBe("q=bun");
+    expect(req.hash).toBe("");
     expect(req.originalUrl).toBe("/search?q=bun");
   });
 
   it("handles a query string with no path", async () => {
     const req = await makeRequest({ url: "http://localhost?q=1" });
-    expect(req.path).toBe("/?q=1");
+    expect(req.path).toBe("/");
+    expect(req.search).toBe("?q=1");
+    expect(req.originalUrl).toBe("/?q=1");
     expect(req.query).toEqual({ q: "1" });
   });
 
-  it("keeps a hash fragment in the path", async () => {
+  it("splits a hash fragment out of the path", async () => {
     const req = await makeRequest({ url: "http://localhost/page#section" });
-    expect(req.path).toBe("/page#section");
+    expect(req.path).toBe("/page");
+    expect(req.search).toBe("");
+    expect(req.hash).toBe("#section");
+    expect(req.originalUrl).toBe("/page#section");
   });
 
-  it("keeps query and hash together", async () => {
+  it("splits query and hash out of the path, keeping order in originalUrl", async () => {
     const req = await makeRequest({ url: "http://localhost/p?a=1#frag" });
-    expect(req.path).toBe("/p?a=1#frag");
+    expect(req.path).toBe("/p");
+    expect(req.search).toBe("?a=1");
+    expect(req.querystring).toBe("a=1");
+    expect(req.hash).toBe("#frag");
+    expect(req.originalUrl).toBe("/p?a=1#frag");
+  });
+
+  it("treats a '?' after a '#' as part of the fragment", async () => {
+    const req = await makeRequest({ url: "http://localhost/p#frag?notquery" });
+    expect(req.path).toBe("/p");
+    expect(req.search).toBe("");
+    expect(req.hash).toBe("#frag?notquery");
+    expect(req.query).toEqual({});
+  });
+
+  it("reports empty search / hash for a plain path", async () => {
+    const req = await makeRequest({ url: "http://localhost/users" });
+    expect(req.search).toBe("");
+    expect(req.querystring).toBe("");
+    expect(req.hash).toBe("");
   });
 
   it("preserves percent-encoded characters in the path", async () => {
@@ -199,7 +226,12 @@ describe("BunRequest: URL parsing with diverse characters", () => {
       url: "http://localhost:9000/a/b?x=1&y=2#h",
     });
     const parsed = req.parsedUrl;
-    expect(req.path).toBe(`${parsed.pathname}${parsed.search}${parsed.hash}`);
+    expect(req.path).toBe(parsed.pathname);
+    expect(req.search).toBe(parsed.search);
+    expect(req.hash).toBe(parsed.hash);
+    expect(req.originalUrl).toBe(
+      `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    );
     expect(req.host).toBe(parsed.host);
   });
 });
