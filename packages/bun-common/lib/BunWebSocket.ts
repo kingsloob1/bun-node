@@ -89,12 +89,30 @@ export type WebSocketClient<customWebsocketDataType = unknown> =
   ServerWebSocket<WebSocketClientData<customWebsocketDataType>>;
 
 export interface BunWebSocketGeneralOptions<customWebsocketDataType = unknown> {
+  /**
+   * Bun `WebSocketHandler` config (e.g. `idleTimeout`, `maxPayloadLength`,
+   * `perMessageDeflate`). The lifecycle callbacks (`open`/`message`/`close`/…)
+   * are omitted — this class supplies and dispatches those itself.
+   */
   wsOptions?: Omit<
     BunWebSocketHandlerType<customWebsocketDataType>,
     "open" | "close" | "message" | "drain" | "ping" | "pong"
   >;
+  /**
+   * The {@link BunRouter} this adapter registers WebSocket upgrade routes on
+   * (via {@link BunWebSocket.setRouteHandler}). Usually the HTTP server's
+   * router, so upgrades flow through the same routing pipeline as HTTP.
+   */
   router?: BunRouter;
+  /**
+   * Whether this adapter owns a dedicated `Bun.serve` server (`true`) or rides
+   * on an existing one supplied via `getServer` (`false`).
+   */
   newInstance: boolean;
+  /**
+   * Maps an upgrade request to the per-connection `custom` payload stored on
+   * `ws.data.custom`. Runs at upgrade time; may be async.
+   */
   customDataToWsClientFn?: (
     req: BunRequest,
     res: BunResponse,
@@ -105,23 +123,37 @@ export interface BunWebSocketCreateServerOptions<
   customWebsocketDataType = unknown,
   routesType extends string = never,
 > extends Omit<BunWebSocketGeneralOptions<customWebsocketDataType>, "server"> {
+  /** Discriminant: this adapter creates and owns its own server. */
   newInstance: true;
+  /** Address the dedicated server binds to (`host` optional, `port` required). */
   listen: {
     host?: string;
     port: number;
   };
+  /**
+   * Base `Bun.serve` options for the dedicated server (TLS, body limits, etc.);
+   * `port`/`hostname`/`fetch`/`websocket` are managed by this class.
+   */
   serverOptions?: BunServeNormalOptions<
     WebSocketClientData<customWebsocketDataType>,
     routesType
   >;
+  /** Pre-built {@link BunRequest} to reuse instead of constructing one per fetch. */
   request?: BunRequest;
+  /** Pre-built {@link BunResponse} to reuse instead of constructing one per fetch. */
   response?: BunResponse<customWebsocketDataType>;
+  /** Parsing options for requests the dedicated server constructs itself. */
   bunRequestOpts?: BunRequestOptions;
 }
 
 export interface BunWebSocketNormalOptions<customWebsocketDataType = unknown>
   extends BunWebSocketGeneralOptions<customWebsocketDataType> {
+  /** Discriminant: this adapter rides on an existing, externally-owned server. */
   newInstance: false;
+  /**
+   * Returns the shared server to ride on (e.g. the HTTP adapter's). May return
+   * `undefined` before that server has started listening.
+   */
   getServer: () => BunWebSocketServerType<customWebsocketDataType> | undefined;
 }
 
@@ -195,7 +227,16 @@ export class BunWebSocket<customWebsocketDataType = unknown>
   private _customDataToWsClientFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"] =
     undefined;
 
-  constructor(private options: BunWebSocketOptions<customWebsocketDataType>) {
+  constructor(
+    /**
+     * Adapter configuration. The `newInstance` discriminant selects the mode:
+     * `true` ({@link BunWebSocketCreateServerOptions}) binds a dedicated server
+     * on `listen.port`; `false` ({@link BunWebSocketNormalOptions}) rides on the
+     * server returned by `getServer`. Shared fields are documented on
+     * {@link BunWebSocketGeneralOptions}.
+     */
+    private options: BunWebSocketOptions<customWebsocketDataType>,
+  ) {
     this._wsHandler = {
       perMessageDeflate: true,
       idleTimeout: 30, // 30 seconds

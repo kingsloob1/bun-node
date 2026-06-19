@@ -8,6 +8,7 @@ import type {
   BunServeNormalOptions,
   BunServeOptions,
   BunServer,
+  BunWebSocketHandlerType,
   BunWebSocketNormalOptions,
   BunWebSocketServerType,
   CorsOptions as MainCorsOptions,
@@ -121,13 +122,33 @@ export class BunHttpAdapter<
   public readonly eventEmitter = new EventEmitter();
 
   constructor(
+    /**
+     * Per-request timeout in milliseconds applied when finalising a response
+     * (passed to {@link BunResponse.getNativeResponse}). `0` means no timeout.
+     */
     protected requestTimeout = 0,
     options?: {
+      /**
+       * Request-parsing options forwarded to every {@link BunRequest}
+       * (body/cookie/query parsing, size caps, etc.). Defaults to
+       * `{ parseBody: true, parseCookies: true }`.
+       */
       request?: BunRequestOptions;
+      /**
+       * Overrides for the built-in NestJS WebSocket adapter. Merged over the
+       * defaults that bind the adapter to this HTTP adapter (its router and
+       * shared `Bun.serve` server). A custom adapter can also be supplied later
+       * via `app.useWebSocketAdapter()`.
+       */
       websocket?: Partial<
         WebsocketOptions<customWebsocketDataType, routesType>
       >;
+      /** NestJS {@link Logger} used for adapter diagnostics. */
       logger?: Logger;
+      /**
+       * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
+       * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
+       */
       router?: BunRouterOptions;
       /** Enable automatic `ETag` generation for every response. */
       etag?: boolean;
@@ -136,6 +157,11 @@ export class BunHttpAdapter<
        * eviction. Forwarded to {@link BunRouter}; defaults to 2000.
        */
       routeCacheMax?: number;
+      /**
+       * Base `Bun.serve` options merged into the server created in `listen()`
+       * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
+       * are managed by the adapter and override anything set here.
+       */
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
@@ -479,6 +505,12 @@ export class BunHttpAdapter<
             that.requestOpts,
           );
 
+          // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
+          // rejected with 413 before any route handler or middleware runs.
+          if (req.isPayloadTooLarge) {
+            return BunRequest.payloadTooLargeResponse(req);
+          }
+
           const res = new BunResponse<customWebsocketDataType>(req, {
             etag: that.etagEnabled,
           });
@@ -561,7 +593,7 @@ export class BunHttpAdapter<
             statusText: "Not Found",
           });
         },
-        websocket: that.webSocketAdapter.wsHandler,
+        websocket: that.buildServerWebSocketHandler(),
         async error(err) {
           const req = get(err, "req", undefined) as BunRequest | undefined;
           if (!req) {
@@ -818,6 +850,59 @@ export class BunHttpAdapter<
 
   public getBunServer() {
     return this.server;
+  }
+
+  /**
+   * Resolves the WebSocket adapter currently registered on the router. NestJS's
+   * `app.useWebSocketAdapter(customAdapter)` swaps the active adapter by calling
+   * `instance.setBunWebSocket(customAdapter)` (via the adapter's constructor),
+   * so `instance.getBunWebsocket()` is the source of truth — the custom adapter
+   * when one was supplied, otherwise this adapter's built-in one.
+   */
+  private resolveWebSocketAdapter() {
+    return this.instance.getBunWebsocket() ?? this.webSocketAdapter;
+  }
+
+  /**
+   * Builds the `websocket` handler handed to `Bun.serve`. `Bun.serve` reads the
+   * handler object once at `listen()` time, but NestJS can swap the active
+   * WebSocket adapter beforehand via `app.useWebSocketAdapter()`. Hard-wiring
+   * the built-in adapter's handler here would bypass a custom adapter entirely
+   * (gateway connect/message bindings live on *its* emitter and route table),
+   * which is the bug this fixes. So every lifecycle callback is delegated to
+   * whichever adapter is active on the router at call time; the one-time config
+   * fields (idleTimeout, maxPayloadLength, …) are taken from the active adapter
+   * at bind time, matching Bun's one-time read of those props.
+   */
+  private buildServerWebSocketHandler(): BunWebSocketHandlerType<customWebsocketDataType> {
+    const base = this.resolveWebSocketAdapter().wsHandler;
+    const handler = {
+      ...base,
+    } as BunWebSocketHandlerType<customWebsocketDataType>;
+
+    const lifecycleEvents = [
+      "open",
+      "message",
+      "close",
+      "drain",
+      "ping",
+      "pong",
+    ] as const;
+
+    for (const event of lifecycleEvents) {
+      (handler as unknown as Record<string, unknown>)[event] = (
+        ...args: unknown[]
+      ) => {
+        const active = this.resolveWebSocketAdapter()
+          .wsHandler as unknown as Record<
+          string,
+          ((...callArgs: unknown[]) => unknown) | undefined
+        >;
+        return active[event]?.(...args);
+      };
+    }
+
+    return handler;
   }
 
   public defineHttpServer() {

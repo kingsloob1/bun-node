@@ -89,6 +89,44 @@ export function isNumeric(value: unknown): boolean {
   return false;
 }
 
+/**
+ * Binary byte-size units accepted by {@link parseByteSize}. Mirrors the `bytes`
+ * library's unit set (powers of 1024), so `"1kb" === 1024`.
+ */
+const BYTE_SIZE_UNITS: Record<string, number> = {
+  b: 1,
+  kb: 1024,
+  mb: 1024 ** 2,
+  gb: 1024 ** 3,
+  tb: 1024 ** 4,
+  pb: 1024 ** 5,
+};
+
+/**
+ * Parses a human byte-size into a number of bytes. Accepts a plain number
+ * (returned as-is when finite and non-negative) or a string like `"100kb"`,
+ * `"5mb"`, `"1.5gb"` (case-insensitive, optional unit defaults to bytes).
+ * Returns `undefined` for anything unparseable or negative.
+ */
+export function parseByteSize(value: number | string): number | undefined {
+  if (isNumber(value)) {
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+
+  if (!isString(value)) {
+    return undefined;
+  }
+
+  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|pb)?$/i.exec(value.trim());
+  if (!match) {
+    return undefined;
+  }
+
+  const amount = Number.parseFloat(match[1]);
+  const unit = (match[2] || "b").toLowerCase();
+  return Math.floor(amount * BYTE_SIZE_UNITS[unit]);
+}
+
 /* ------------------------------------------------------------------ *
  * Collection helpers (lodash-es replacements)
  * ------------------------------------------------------------------ */
@@ -528,7 +566,13 @@ export function rangeParser(
   return options?.combine ? combineRanges(ranges) : ranges;
 }
 
-function combineRanges(ranges: RangesSpecifier): RangesSpecifier {
+/**
+ * Merges overlapping/adjacent byte ranges into the smallest equivalent set,
+ * preserving the original request order on the result (`rangeParser` calls this
+ * when its `combine` option is set). Each input/output entry is an inclusive
+ * `{ start, end }` byte range.
+ */
+export function combineRanges(ranges: RangesSpecifier): RangesSpecifier {
   const ordered = ranges
     .map((range, index) => ({ ...range, index }))
     .sort((a, b) => a.start - b.start);
@@ -864,4 +908,344 @@ export async function getPort(options?: {
   }
 
   throw new Error("No available port found");
+}
+
+/* ------------------------------------------------------------------ *
+ * XML parsing (native; no third-party dependency)
+ *
+ * Parses an XML document into a plain JS object suitable for use as a
+ * request body. Element attributes are exposed under `attributeNamePrefix`
+ * (default `"@_"`); a leaf element's text becomes its value, while an
+ * element that also has attributes/children keeps its text under
+ * `textNodeName` (default `"#text"`). Repeated sibling elements collapse
+ * into an array. The XML/processing-instruction declarations, comments and
+ * DOCTYPE are ignored; CDATA sections are treated as text.
+ * ------------------------------------------------------------------ */
+
+export interface ParseXmlOptions {
+  /** Prefix used for attribute keys. Defaults to `"@_"`. */
+  attributeNamePrefix?: string;
+  /**
+   * Key holding an element's text when it also carries attributes or child
+   * elements. Defaults to `"#text"`.
+   */
+  textNodeName?: string;
+  /** When `false`, attributes are dropped entirely. Defaults to `true`. */
+  ignoreAttributes?: boolean;
+  /**
+   * When `true`, text that looks like a number/boolean is coerced to a
+   * `number`/`boolean`. Defaults to `true`.
+   */
+  parsePrimitives?: boolean;
+}
+
+const XML_NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * Decodes the XML predefined entities (`&amp; &lt; &gt; &quot; &apos;`) and
+ * numeric character references (`&#nn;` / `&#xhh;`) in `text`. Unknown
+ * entities are left untouched.
+ */
+export function decodeXmlEntities(text: string): string {
+  if (!text.includes("&")) {
+    return text;
+  }
+
+  return text.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (match, body: string) => {
+    if (body[0] === "#") {
+      const codePoint =
+        body[1] === "x" || body[1] === "X"
+          ? Number.parseInt(body.slice(2), 16)
+          : Number.parseInt(body.slice(1), 10);
+      return Number.isNaN(codePoint) ? match : String.fromCodePoint(codePoint);
+    }
+    const decoded = XML_NAMED_ENTITIES[body.toLowerCase()];
+    return decoded === undefined ? match : decoded;
+  });
+}
+
+/**
+ * Coerces XML text to a primitive: `"true"`/`"false"` become booleans and
+ * numeric text becomes a `number` (after trimming). When `parsePrimitives` is
+ * `false`, the trimmed string is returned as-is.
+ */
+export function coerceXmlPrimitive(
+  text: string,
+  parsePrimitives: boolean,
+): unknown {
+  const trimmed = text.trim();
+  if (!parsePrimitives) {
+    return trimmed;
+  }
+  if (trimmed === "true") {
+    return true;
+  }
+  if (trimmed === "false") {
+    return false;
+  }
+  if (trimmed !== "" && isNumeric(trimmed)) {
+    return Number(trimmed);
+  }
+  return trimmed;
+}
+
+/** Whether `code` is an XML whitespace char (space, tab, LF, CR). */
+export function isXmlWhitespace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13;
+}
+
+/**
+ * Whether `text` is empty or contains only XML whitespace. Avoids the
+ * allocation of `text.trim() === ""` by scanning char codes in place.
+ */
+function isXmlBlank(text: string): boolean {
+  for (let j = 0; j < text.length; j++) {
+    if (!isXmlWhitespace(text.charCodeAt(j))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Parses an XML string into a plain object keyed by the root element name.
+ * Throws if no XML element is present.
+ *
+ * Implemented as a single forward pass that builds the result object directly
+ * (no intermediate node tree, no second walk) and scans with `charCodeAt` to
+ * avoid per-character string allocations — both meaningfully faster than the
+ * naive two-pass approach on large documents.
+ */
+export function parseXmlToObject(
+  xml: string,
+  options?: ParseXmlOptions,
+): Record<string, unknown> {
+  const attributeNamePrefix = options?.attributeNamePrefix ?? "@_";
+  const textNodeName = options?.textNodeName ?? "#text";
+  const ignoreAttributes = options?.ignoreAttributes ?? false;
+  const parsePrimitives = options?.parsePrimitives ?? true;
+
+  let i = 0;
+  const len = xml.length;
+  // The most recently parsed element's name, returned out-of-band from
+  // `parseElement` so a parent can key the child's value without an extra
+  // wrapper object allocation per element.
+  let lastName = "";
+
+  const value = (text: string): unknown =>
+    coerceXmlPrimitive(text, parsePrimitives);
+
+  // Parses one element (cursor positioned just after its opening `<`) and
+  // returns its value; leaves the element's name in `lastName`.
+  function parseElement(): unknown {
+    const nameStart = i;
+    while (i < len) {
+      const c = xml.charCodeAt(i);
+      if (isXmlWhitespace(c) || c === 47 /* / */ || c === 62 /* > */) {
+        break;
+      }
+      i++;
+    }
+    const name = xml.slice(nameStart, i);
+    let obj: Record<string, unknown> | null = null;
+
+    // Attributes (up to the closing `>` or self-closing `/>`).
+    for (;;) {
+      while (i < len && isXmlWhitespace(xml.charCodeAt(i))) {
+        i++;
+      }
+      const c = xml.charCodeAt(i);
+      if (c === 47 /* / */) {
+        while (i < len && xml.charCodeAt(i) !== 62) {
+          i++;
+        }
+        i++; // skip '>'
+        lastName = name;
+        return obj ?? value("");
+      }
+      if (c === 62 /* > */) {
+        i++; // skip '>'
+        break;
+      }
+      const attrNameStart = i;
+      while (i < len) {
+        const cc = xml.charCodeAt(i);
+        if (
+          isXmlWhitespace(cc) ||
+          cc === 61 /* = */ ||
+          cc === 47 /* / */ ||
+          cc === 62 /* > */
+        ) {
+          break;
+        }
+        i++;
+      }
+      const attrName = xml.slice(attrNameStart, i);
+      while (i < len && isXmlWhitespace(xml.charCodeAt(i))) {
+        i++;
+      }
+      let attrValue = "";
+      let attrHasEntity = false;
+      if (xml.charCodeAt(i) === 61 /* = */) {
+        i++; // skip '='
+        while (i < len && isXmlWhitespace(xml.charCodeAt(i))) {
+          i++;
+        }
+        const quote = xml.charCodeAt(i);
+        if (quote === 34 /* " */ || quote === 39 /* ' */) {
+          i++; // skip opening quote
+          const valStart = i;
+          while (i < len) {
+            const cc = xml.charCodeAt(i);
+            if (cc === quote) {
+              break;
+            }
+            if (cc === 38 /* & */) {
+              attrHasEntity = true;
+            }
+            i++;
+          }
+          attrValue = xml.slice(valStart, i);
+          i++; // skip closing quote
+        } else {
+          const valStart = i;
+          while (i < len) {
+            const cc = xml.charCodeAt(i);
+            if (isXmlWhitespace(cc) || cc === 62 /* > */) {
+              break;
+            }
+            if (cc === 38 /* & */) {
+              attrHasEntity = true;
+            }
+            i++;
+          }
+          attrValue = xml.slice(valStart, i);
+        }
+      }
+      if (attrName && !ignoreAttributes) {
+        (obj ??= {})[`${attributeNamePrefix}${attrName}`] = value(
+          attrHasEntity ? decodeXmlEntities(attrValue) : attrValue,
+        );
+      }
+    }
+
+    // Children and text content, until this element's closing tag.
+    let text = "";
+    for (;;) {
+      if (i >= len) {
+        break;
+      }
+      if (xml.charCodeAt(i) === 60 /* < */) {
+        const c1 = xml.charCodeAt(i + 1);
+        if (c1 === 47 /* / */) {
+          // closing tag — consume up to '>' and finish this element
+          i += 2;
+          while (i < len && xml.charCodeAt(i) !== 62) {
+            i++;
+          }
+          i++; // skip '>'
+          break;
+        } else if (c1 === 33 /* ! */) {
+          const c2 = xml.charCodeAt(i + 2);
+          if (c2 === 45 /* - */) {
+            // comment
+            const end = xml.indexOf("-->", i + 4);
+            i = end === -1 ? len : end + 3;
+          } else if (c2 === 91 /* [ */) {
+            // CDATA — raw text
+            const end = xml.indexOf("]]>", i + 9);
+            text += xml.slice(i + 9, end === -1 ? len : end);
+            i = end === -1 ? len : end + 3;
+          } else {
+            // DOCTYPE or other declaration
+            while (i < len && xml.charCodeAt(i) !== 62) {
+              i++;
+            }
+            i++; // skip '>'
+          }
+        } else if (c1 === 63 /* ? */) {
+          // processing instruction
+          const end = xml.indexOf("?>", i + 2);
+          i = end === -1 ? len : end + 2;
+        } else {
+          i++; // skip '<'
+          const childValue = parseElement();
+          const childName = lastName;
+          const o = (obj ??= {});
+          const existing = o[childName];
+          if (existing === undefined) {
+            o[childName] = childValue;
+          } else if (isArray(existing)) {
+            existing.push(childValue);
+          } else {
+            o[childName] = [existing, childValue];
+          }
+        }
+      } else {
+        const textStart = i;
+        let textHasEntity = false;
+        while (i < len) {
+          const c = xml.charCodeAt(i);
+          if (c === 60 /* < */) {
+            break;
+          }
+          if (c === 38 /* & */) {
+            textHasEntity = true;
+          }
+          i++;
+        }
+        const chunk = xml.slice(textStart, i);
+        text += textHasEntity ? decodeXmlEntities(chunk) : chunk;
+      }
+    }
+
+    lastName = name;
+    if (obj === null) {
+      return value(text);
+    }
+    if (!isXmlBlank(text)) {
+      obj[textNodeName] = value(text);
+    }
+    return obj;
+  }
+
+  // Skip the prolog (declaration, comments, DOCTYPE) up to the root element.
+  for (;;) {
+    while (i < len && xml.charCodeAt(i) !== 60) {
+      i++;
+    }
+    if (i >= len) {
+      break;
+    }
+    const c1 = xml.charCodeAt(i + 1);
+    if (c1 === 63 /* ? */) {
+      const end = xml.indexOf("?>", i + 2);
+      i = end === -1 ? len : end + 2;
+    } else if (c1 === 33 /* ! */) {
+      if (xml.charCodeAt(i + 2) === 45 /* - */) {
+        const end = xml.indexOf("-->", i + 4);
+        i = end === -1 ? len : end + 3;
+      } else {
+        while (i < len && xml.charCodeAt(i) !== 62) {
+          i++;
+        }
+        i++; // skip '>'
+      }
+    } else {
+      break;
+    }
+  }
+
+  if (i >= len) {
+    throw new Error("No XML element found");
+  }
+  i++; // skip the root element's opening '<'
+  const rootValue = parseElement();
+  return { [lastName]: rootValue };
 }

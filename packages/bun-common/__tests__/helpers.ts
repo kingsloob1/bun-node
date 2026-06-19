@@ -6,6 +6,9 @@ import type { Server } from "bun";
 import { BunRequest } from "../lib/BunRequest";
 import { BunResponse } from "../lib/BunResponse";
 
+/** The options object accepted by {@link BunRequest}'s constructor. */
+type BunRequestOptions = ConstructorParameters<typeof BunRequest>[2];
+
 /** A long-lived loopback server reused as the `server` argument for requests. */
 export const testServer: Server<unknown> = Bun.serve({
   port: 0,
@@ -23,6 +26,8 @@ export interface MakeRequestInit {
   method?: string;
   headers?: Record<string, string>;
   body?: BodyInit;
+  /** Extra {@link BunRequest} options, merged over the helper defaults. */
+  options?: Partial<NonNullable<BunRequestOptions>>;
 }
 
 /** Builds and fully initialises a {@link BunRequest}. */
@@ -39,6 +44,7 @@ export async function makeRequest(
     parseBody: !!init.body,
     parseCookies: true,
     parseQuery: true,
+    ...init.options,
   });
 }
 

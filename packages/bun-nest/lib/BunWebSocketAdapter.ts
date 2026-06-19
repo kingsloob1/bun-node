@@ -121,7 +121,16 @@ export interface BunWebSocketAdapterOptionsFromHttpAdapter<
   customWebsocketDataType = unknown,
   routesType extends string = never,
 > {
+  /**
+   * The HTTP adapter to ride on. The adapter sources its router and shared
+   * `Bun.serve` server from it, so gateway upgrades flow through the app's
+   * existing server.
+   */
   httpAdapter: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
+  /**
+   * Extra {@link BunWebSocket} options layered on top of the ones derived from
+   * `httpAdapter` (e.g. `wsOptions`, `customDataToWsClientFn`).
+   */
   localOptions?: BunWebSocketOptions<customWebsocketDataType, routesType>;
 }
 
@@ -129,6 +138,11 @@ export type BunWebSocketAdapterNormalOptions<
   customWebsocketDataType = unknown,
   routesType extends string = never,
 > = BunWebSocketOptions<customWebsocketDataType, routesType> & {
+  /**
+   * Optional HTTP adapter to source the router from. With `newInstance: true`
+   * the adapter still binds its own server on `listen.port`, but defaults its
+   * router to `httpAdapter.instance` when no explicit `router` is given.
+   */
   httpAdapter?: BunWebsocketHttpAdapter<customWebsocketDataType, routesType>;
 };
 
@@ -157,6 +171,14 @@ export class BunWebSocketAdapter<
     >
 {
   constructor(
+    /**
+     * Adapter configuration. Two shapes are accepted:
+     * {@link BunWebSocketAdapterOptionsFromHttpAdapter} (`{ httpAdapter,
+     * localOptions? }`) rides on the HTTP adapter's shared server, while
+     * {@link BunWebSocketAdapterNormalOptions} with `newInstance: true` binds a
+     * dedicated server on its own `listen.port` (optionally sourcing its router
+     * from an `httpAdapter`).
+     */
     options: BunWebSocketAdapterOptions<customWebsocketDataType, routesType>,
   ) {
     const localOptions =
@@ -166,7 +188,35 @@ export class BunWebSocketAdapter<
           ? options
           : undefined;
 
-    if (options.httpAdapter) {
+    // A `newInstance` adapter owns a dedicated server on its own port. It is
+    // resolved *before* the shared-server branch so `{ newInstance: true,
+    // listen, httpAdapter }` listens on its own port while still sourcing its
+    // router from the HTTP adapter (rather than being treated as shared).
+    const createOptions =
+      "newInstance" in options && options.newInstance ? options : undefined;
+
+    if (createOptions) {
+      super({
+        newInstance: true,
+        listen: createOptions.listen ?? {
+          port: 7817,
+        },
+        serverOptions: createOptions.serverOptions,
+        request: createOptions.request,
+        response: createOptions.response,
+        bunRequestOpts: createOptions.bunRequestOpts,
+        wsOptions: localOptions?.wsOptions,
+        // When no router is supplied, fall back to the HTTP adapter's router so
+        // a NestJS-driven `newInstance` adapter can still register its upgrade
+        // routes (and reach the app's middleware). Without this it would have no
+        // router at all and `create()` would throw / every upgrade 404.
+        router: localOptions?.router ?? options.httpAdapter?.instance,
+        customDataToWsClientFn: localOptions?.customDataToWsClientFn,
+      } satisfies BunWebSocketCreateServerOptions<
+        customWebsocketDataType,
+        routesType
+      >);
+    } else if (options.httpAdapter) {
       super({
         newInstance: false,
         wsOptions: localOptions?.wsOptions,
@@ -177,17 +227,11 @@ export class BunWebSocketAdapter<
         },
       } satisfies BunWebSocketNormalOptions<customWebsocketDataType>);
     } else {
-      const createOptions =
-        "newInstance" in options && options.newInstance ? options : undefined;
       super({
         newInstance: true,
-        listen: createOptions?.listen ?? {
+        listen: {
           port: 7817,
         },
-        serverOptions: createOptions?.serverOptions,
-        request: createOptions?.request,
-        response: createOptions?.response,
-        bunRequestOpts: createOptions?.bunRequestOpts,
         wsOptions: localOptions?.wsOptions,
         router: localOptions?.router,
         customDataToWsClientFn: localOptions?.customDataToWsClientFn,

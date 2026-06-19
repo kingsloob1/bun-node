@@ -11,7 +11,7 @@ import type {
   MultiPartFileRecord,
   MultiPartOptions,
 } from "./types/general";
-import type { CookieParseOptions } from "./utils/native";
+import type { CookieParseOptions, ParseXmlOptions } from "./utils/native";
 import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -41,7 +41,9 @@ import {
   keys,
   merge,
   omit,
+  parseByteSize,
   parseCookie,
+  parseXmlToObject,
   rangeParser,
   set,
   ucwords,
@@ -49,6 +51,172 @@ import {
 } from "./utils/native";
 
 export type QueryParserOpts = Parameters<typeof parseQueryString>[1];
+
+/**
+ * The kinds of request body a {@link BunRequest} knows how to parse, keyed by
+ * the media type they handle:
+ *
+ * - `"json"`        — `application/json` (and `+json` suffixes)
+ * - `"urlencoded"`  — `application/x-www-form-urlencoded`
+ * - `"xml"`         — `application/xml`, `text/xml` (and `+xml` suffixes)
+ * - `"multipart"`   — `multipart/form-data`
+ * - `"text"`        — `text/plain`
+ * - `"raw"`         — `application/octet-stream` / binary streams
+ *
+ * Used by the `allowedContentTypes` request option to restrict which body
+ * types are parsed; a body whose media type maps to a disallowed kind is left
+ * untouched as a raw `Buffer`.
+ */
+export type ContentParserType =
+  | "json"
+  | "urlencoded"
+  | "xml"
+  | "multipart"
+  | "text"
+  | "raw";
+
+/**
+ * The recognized {@link ContentParserType} kinds, used to filter out invalid
+ * entries from an allowlist — an allowlist that is empty after filtering means
+ * "no restriction" (every kind is parsed) rather than "block everything".
+ */
+const VALID_PARSER_KINDS: ReadonlySet<ContentParserType> = new Set([
+  "json",
+  "urlencoded",
+  "xml",
+  "multipart",
+  "text",
+  "raw",
+]);
+
+/**
+ * The parser-option shape forwarded to each {@link ContentParserType}, used by
+ * the per-content-type `opts` field of {@link ParseBodyConfig}. Keying by kind
+ * gives `parseBody.contentTypes.<kind>.opts` precise IntelliSense.
+ */
+export interface ContentTypeParserOptsMap {
+  /** `JSON.parse` reviver applied to a JSON body. */
+  json: {
+    reviver?: (this: unknown, key: string, value: unknown) => unknown;
+  };
+  /** `picoquery` options for an `x-www-form-urlencoded` body. */
+  urlencoded: QueryParserOpts;
+  /** XML-to-object parser options. */
+  xml: ParseXmlOptions;
+  /** `busboy`/multipart parser options. */
+  multipart: MultiPartOptions;
+  /** Buffer decoding for a `text/plain` body (defaults to `utf-8`). */
+  text: { encoding?: BufferEncoding };
+  /** No options — a raw body is left as a `Buffer`. */
+  raw: Record<string, never>;
+}
+
+/**
+ * Per-content-type entry of {@link ParseBodyConfig.contentTypes}. Supplying an
+ * object both **allows** the kind and configures it; `opts` are forwarded to
+ * the kind's parser and `maxContentLength` overrides the config-level cap for
+ * that kind only.
+ */
+export interface ParseBodyContentTypeConfig<
+  K extends ContentParserType = ContentParserType,
+> {
+  /** Parser options forwarded to this content type's parser. */
+  opts?: ContentTypeParserOptsMap[K];
+  /**
+   * Maximum body size for this content type, in bytes or a human string
+   * (`"5mb"`). Overrides {@link ParseBodyConfig.maxContentLength}.
+   */
+  maxContentLength?: number | string;
+}
+
+/**
+ * The `contentTypes` allowlist map. Each {@link ContentParserType} key is
+ * **allowed** when set to `true` or a {@link ParseBodyContentTypeConfig}, and
+ * **disallowed** when set to `false` or omitted (a body of an omitted kind is
+ * left as a raw `Buffer`).
+ */
+export type ParseBodyContentTypesMap = {
+  [K in ContentParserType]?: boolean | ParseBodyContentTypeConfig<K>;
+};
+
+/**
+ * Object form of the `parseBody` request option. Enables body parsing with a
+ * DDoS-hardening size cap and a per-content-type allowlist/config.
+ */
+export interface ParseBodyConfig {
+  /**
+   * Maximum overall request body size, in bytes or a human string (`"100kb"`,
+   * `"5mb"`). A request whose declared `Content-Length` — or whose actual
+   * streamed size — exceeds this is rejected with **HTTP 413** before the body
+   * is parsed (and, for a missing/chunked `Content-Length`, the stream read is
+   * aborted the moment the cap is crossed).
+   *
+   * When omitted, the object form falls back to per-kind defaults: **100kb**
+   * for most kinds, **10mb** for `multipart` and `raw` (see
+   * {@link DEFAULT_MAX_CONTENT_LENGTH} / {@link DEFAULT_MAX_CONTENT_LENGTH_BY_KIND}).
+   * A per-content-type `maxContentLength` overrides this; boolean
+   * `parseBody: true` stays uncapped.
+   */
+  maxContentLength?: number | string;
+  /**
+   * Which content types to parse. `"all"` parses every supported kind (the
+   * default); an object form is an allowlist whose keys are the kinds to parse
+   * — each mapped to `true`, or to a {@link ParseBodyContentTypeConfig} for
+   * per-kind parser options and size caps.
+   */
+  contentTypes?: "all" | ParseBodyContentTypesMap;
+}
+
+/**
+ * The `parseBody` request option. `true` parses every body of any size
+ * (no cap); `false` disables body parsing; a {@link ParseBodyConfig} object
+ * enables parsing with a size cap and per-content-type configuration.
+ */
+export type ParseBodyOption = boolean | ParseBodyConfig;
+
+/**
+ * Default body-size cap (100kb) applied to most kinds when the object form of
+ * `parseBody` omits `maxContentLength`. Boolean `parseBody: true` stays
+ * uncapped. See {@link DEFAULT_MAX_CONTENT_LENGTH_BY_KIND} for the kinds that
+ * default higher.
+ */
+export const DEFAULT_MAX_CONTENT_LENGTH = 100 * 1024;
+
+/**
+ * Per-kind default body-size caps, used when neither a per-content-type nor a
+ * config-level `maxContentLength` is set. `multipart` (file uploads) and `raw`
+ * (binary payloads) default to **10mb**; every other kind falls back to
+ * {@link DEFAULT_MAX_CONTENT_LENGTH} (100kb).
+ */
+export const DEFAULT_MAX_CONTENT_LENGTH_BY_KIND: Partial<
+  Record<ContentParserType, number>
+> = {
+  multipart: 10 * 1024 * 1024,
+  raw: 10 * 1024 * 1024,
+};
+
+/**
+ * Thrown by {@link BunRequest.parseBody} when a request body exceeds its
+ * configured `maxContentLength`. Carries `statusCode = 413` so adapters and
+ * error handlers can map it to an HTTP **413 Payload Too Large** response.
+ */
+export class PayloadTooLargeError extends Error {
+  public readonly statusCode = 413 as const;
+  /** The configured byte cap that was exceeded. */
+  public readonly limit: number;
+  /** The observed body size in bytes, when known. */
+  public readonly length: number | undefined;
+
+  constructor(limit: number, length?: number) {
+    const received = length !== undefined ? ` (received ${length} bytes)` : "";
+    super(
+      `Request body exceeds the maximum allowed size of ${limit} bytes${received}`,
+    );
+    this.name = "PayloadTooLargeError";
+    this.limit = limit;
+    this.length = length;
+  }
+}
 
 /**
  * Default `picoquery` parse options. `nestingSyntax: "js"` accepts both dotted
@@ -96,6 +264,17 @@ type ReqEventName = keyof BunRequestEvents;
 /** The listener signature for a given {@link BunRequest} event. */
 type ReqListener<E extends ReqEventName> = BunRequestEvents[E];
 
+/**
+ * Internal, non-`@deprecated` view of the legacy request options. The public
+ * option fields carry `@deprecated` tags so editors warn callers; the library
+ * reads its own fallbacks through this view to avoid flagging that internal use.
+ */
+interface LegacyBodyOptions {
+  allowedContentTypes?: ContentParserType[];
+  parseXmlOpts?: ParseXmlOptions;
+  parseMultiPartFormDataOpts?: MultiPartOptions;
+}
+
 export class BunRequest
   implements BunRequestInterface, TypedEmitter<BunRequestEvents>
 {
@@ -140,8 +319,45 @@ export class BunRequest
     | "text"
     | "buffer"
     | "form"
+    | "xml"
     | "multipart"
     | undefined = undefined;
+
+  /**
+   * Normalized set of body-parser kinds permitted by `allowedContentTypes` or
+   * by `parseBody.contentTypes`. `undefined` means "no restriction" — every
+   * kind is parsed (the default).
+   */
+  #allowedParsers: Set<ContentParserType> | undefined = undefined;
+
+  /**
+   * `true` when the object form of `parseBody` is in effect, so body-size caps
+   * apply. Boolean `parseBody` leaves this `false` (parsing is uncapped).
+   */
+  #bodyCapsEnabled = false;
+
+  /**
+   * The explicit config-level `parseBody.maxContentLength` in bytes, or
+   * `undefined` when unset (in which case the per-kind defaults apply — see
+   * {@link DEFAULT_MAX_CONTENT_LENGTH_BY_KIND}).
+   */
+  #maxContentLength: number | undefined = undefined;
+
+  /**
+   * Per-content-type parser `opts` and `maxContentLength` overrides, parsed
+   * from the object form of `parseBody.contentTypes`. Lazily allocated — only
+   * present when at least one kind supplies an object config.
+   */
+  #perTypeConfig:
+    | Map<ContentParserType, { opts?: unknown; maxContentLength?: number }>
+    | undefined = undefined;
+
+  /**
+   * Set when {@link parseBody} aborts because the body exceeded its cap. The
+   * adapter reads {@link isPayloadTooLarge} after `init` to short-circuit with
+   * an HTTP 413 before routing.
+   */
+  #payloadTooLarge: { limit: number; length?: number } | undefined = undefined;
 
   #parsedMultipartResp?:
     | {
@@ -197,14 +413,64 @@ export class BunRequest
     | undefined = undefined;
 
   constructor(
+    /** The native Bun/Web `Request` this instance wraps. */
     public request: Request,
+    /**
+     * The owning `Bun.serve` server — used for connection info (`requestIP`,
+     * local address/port) and to upgrade the request to a WebSocket.
+     */
     private server: BunServer,
     private options: {
-      parseBody: boolean;
+      /**
+       * Controls request-body parsing. `true` parses every body of any size
+       * (no cap); `false` disables parsing; a {@link ParseBodyConfig} object
+       * enables parsing with a `maxContentLength` size cap (DDoS hardening) and
+       * a per-content-type allowlist/config (`contentTypes`).
+       *
+       * The object form's `maxContentLength` defaults to **100kb** (and
+       * **10mb** for `multipart`/`raw`) when unset. Use
+       * {@link BunRequest.setParseBodyOptions} to change this at runtime (e.g.
+       * from a middleware, before the body is parsed).
+       */
+      parseBody: ParseBodyOption;
+      /** Parse the `Cookie` header into `req.cookies`. Defaults to `true`. */
       parseCookies?: boolean;
+      /**
+       * Parse the URL query string into `req.query`. Defaults to `true`.
+       */
       parseQuery?: boolean;
+      /**
+       * Options for the query-string parser (`picoquery`). Defaults to
+       * {@link DEFAULT_PARSE_QUERY_OPTS} (`nestingSyntax: "js"`,
+       * `arrayRepeat: true`).
+       */
       parseQueryOpts?: QueryParserOpts;
+      /**
+       * Multipart/`busboy` parser options.
+       *
+       * @deprecated Prefer `parseBody.contentTypes.multipart.opts`. Still
+       * honoured as a fallback when the new config omits multipart options.
+       */
       parseMultiPartFormDataOpts?: MultiPartOptions;
+      /**
+       * XML parser options.
+       *
+       * @deprecated Prefer `parseBody.contentTypes.xml.opts`. Still honoured as
+       * a fallback when the new config omits XML options.
+       */
+      parseXmlOpts?: ParseXmlOptions;
+      /**
+       * Restricts which body media types are parsed. When provided, only the
+       * listed {@link ContentParserType} kinds are decoded; a body whose media
+       * type maps to an omitted kind is left as a raw `Buffer`. When omitted,
+       * every supported kind is parsed (backwards-compatible default).
+       *
+       * @deprecated Prefer `parseBody.contentTypes` (an allowlist that also
+       * carries per-kind parser options and size caps). Honoured only when
+       * `parseBody.contentTypes` is absent.
+       */
+      allowedContentTypes?: ContentParserType[];
+      /** Options for the cookie parser, applied when `parseCookies` is on. */
       cookieParseOptions?: CookieParseOptions;
     } = {
       parseBody: true,
@@ -220,8 +486,12 @@ export class BunRequest
     this.url = this.request.url;
 
     // Normalize options with direct assignment — `set()`'s path parsing is
-    // wasted work for these known, fixed property names.
-    if (!isBoolean(this.options.parseBody)) {
+    // wasted work for these known, fixed property names. `parseBody` may be a
+    // boolean or a config object; anything else falls back to `true`.
+    if (
+      !isBoolean(this.options.parseBody) &&
+      !isObject(this.options.parseBody)
+    ) {
       this.options.parseBody = true;
     }
 
@@ -233,13 +503,17 @@ export class BunRequest
       this.options.parseQuery = true;
     }
 
-    if (!isObject(this.options.parseMultiPartFormDataOpts)) {
-      this.options.parseMultiPartFormDataOpts = {};
+    if (!isObject(this.legacyOptions.parseMultiPartFormDataOpts)) {
+      this.legacyOptions.parseMultiPartFormDataOpts = {};
     }
 
     if (!this.options.parseQueryOpts) {
       this.options.parseQueryOpts = { ...DEFAULT_PARSE_QUERY_OPTS };
     }
+
+    // Resolve the `parseBody` config (size caps + per-content-type allowlist),
+    // honouring the deprecated `allowedContentTypes` as a fallback.
+    this.normalizeParseBodyOptions();
 
     if (this.options?.parseQuery) {
       (this.#initPromises ??= []).push(
@@ -1024,7 +1298,7 @@ export class BunRequest
     try {
       const parsedData = parseQueryString(
         stripQueryPrefix(data),
-        DEFAULT_PARSE_QUERY_OPTS,
+        this.getParserOpts("urlencoded") ?? DEFAULT_PARSE_QUERY_OPTS,
       );
 
       if (isObject(parsedData) || isArray(parsedData)) {
@@ -1042,7 +1316,7 @@ export class BunRequest
 
   private async handleJsonBodyParsing(data: string) {
     try {
-      this._body = JSON.parse(data);
+      this._body = JSON.parse(data, this.getParserOpts("json")?.reviver);
       this._contentType = "json";
       this.setHeader("Content-Type", "application/json");
       return true;
@@ -1052,8 +1326,327 @@ export class BunRequest
     return false;
   }
 
+  private async handleXmlBodyParsing(data: string) {
+    try {
+      this._body = parseXmlToObject(
+        data,
+        this.getParserOpts("xml") ?? this.legacyOptions.parseXmlOpts,
+      );
+      this._contentType = "xml";
+      this.setHeader("Content-Type", "application/xml");
+      return true;
+    } catch {
+      // return false;
+    }
+    return false;
+  }
+
+  /**
+   * Non-`@deprecated` view of the legacy options, used by the library's own
+   * fallback reads so they don't trip the deprecation warning that the public
+   * option fields carry for callers.
+   */
+  private get legacyOptions(): LegacyBodyOptions {
+    return this.options;
+  }
+
+  /**
+   * Resolves the object form of `parseBody` into the internal `#allowedParsers`
+   * allowlist, `#maxContentLength` cap and `#perTypeConfig` overrides. The
+   * deprecated `allowedContentTypes` option is honoured as a fallback when the
+   * new `contentTypes` map is absent.
+   */
+  private normalizeParseBodyOptions(): void {
+    // Reset derived state so this is safe to re-run (see setParseBodyOptions).
+    this.#allowedParsers = undefined;
+    this.#perTypeConfig = undefined;
+    this.#maxContentLength = undefined;
+    this.#bodyCapsEnabled = false;
+
+    // Deprecated allowlist fallback (overridden below by `contentTypes`).
+    // Invalid/empty entries are dropped; an allowlist that filters down to
+    // nothing means "no restriction" rather than "block every kind".
+    const legacyAllowed = this.legacyOptions.allowedContentTypes;
+    if (isArray(legacyAllowed)) {
+      const allowed = new Set(
+        legacyAllowed.filter((kind) => VALID_PARSER_KINDS.has(kind)),
+      );
+      this.#allowedParsers = allowed.size ? allowed : undefined;
+    }
+
+    const parseBody = this.options.parseBody;
+    // Boolean form (or default): uncapped, every kind allowed.
+    if (!isObject(parseBody) || isArray(parseBody)) {
+      return;
+    }
+
+    const config = parseBody as ParseBodyConfig;
+
+    // Object form: body-size caps apply. Store the explicit config-level cap
+    // (if any); when unset, the per-kind defaults are used at resolve time.
+    this.#bodyCapsEnabled = true;
+    this.#maxContentLength =
+      config.maxContentLength !== undefined
+        ? parseByteSize(config.maxContentLength)
+        : undefined;
+
+    const contentTypes = config.contentTypes;
+    // `"all"` (or omitted) → no kind restriction beyond any deprecated
+    // allowlist already resolved above.
+    if (contentTypes === undefined || contentTypes === "all") {
+      return;
+    }
+
+    if (!isObject(contentTypes)) {
+      return;
+    }
+
+    const allowed = new Set<ContentParserType>();
+    const perType = new Map<
+      ContentParserType,
+      { opts?: unknown; maxContentLength?: number }
+    >();
+
+    for (const key of keys(contentTypes) as ContentParserType[]) {
+      // Ignore unrecognized keys entirely.
+      if (!VALID_PARSER_KINDS.has(key)) {
+        continue;
+      }
+
+      const value = (contentTypes as Record<string, unknown>)[key];
+      // `false`/`null`/`undefined` → kind explicitly disallowed.
+      if (value === false || isNull(value) || isUndefined(value)) {
+        continue;
+      }
+
+      allowed.add(key);
+
+      // An object entry both allows the kind and configures it.
+      if (isObject(value) && !isBoolean(value)) {
+        const typeConfig = value as ParseBodyContentTypeConfig;
+        const max =
+          typeConfig.maxContentLength !== undefined
+            ? parseByteSize(typeConfig.maxContentLength)
+            : undefined;
+        perType.set(key, { opts: typeConfig.opts, maxContentLength: max });
+      }
+    }
+
+    this.#allowedParsers = allowed;
+    if (perType.size) {
+      this.#perTypeConfig = perType;
+    }
+  }
+
+  /**
+   * Resolves the effective byte cap for a body of the given parser kind, in
+   * precedence order:
+   * 1. the kind's own `maxContentLength` (`parseBody.contentTypes.<kind>`);
+   * 2. the config-level `parseBody.maxContentLength`;
+   * 3. the per-kind default (10mb for `multipart`/`raw`, else 100kb).
+   *
+   * Returns `undefined` (uncapped) for the boolean `parseBody` form.
+   */
+  private resolveContentLimit(
+    kind: ContentParserType | undefined,
+  ): number | undefined {
+    if (!this.#bodyCapsEnabled) {
+      return undefined;
+    }
+
+    if (kind && this.#perTypeConfig) {
+      const typeConfig = this.#perTypeConfig.get(kind);
+      if (typeConfig && typeConfig.maxContentLength !== undefined) {
+        return typeConfig.maxContentLength;
+      }
+    }
+
+    if (this.#maxContentLength !== undefined) {
+      return this.#maxContentLength;
+    }
+
+    const kindDefault = kind
+      ? DEFAULT_MAX_CONTENT_LENGTH_BY_KIND[kind]
+      : undefined;
+    return kindDefault ?? DEFAULT_MAX_CONTENT_LENGTH;
+  }
+
+  /**
+   * Returns the per-content-type parser `opts` configured for the given kind
+   * via `parseBody.contentTypes.<kind>.opts`, or `undefined` when unset.
+   */
+  private getParserOpts<K extends ContentParserType>(
+    kind: K,
+  ): ContentTypeParserOptsMap[K] | undefined {
+    return this.#perTypeConfig?.get(kind)?.opts as
+      | ContentTypeParserOptsMap[K]
+      | undefined;
+  }
+
+  /**
+   * Reads the request body into a `Buffer` while enforcing a byte cap. When
+   * `limit` is set, the declared `Content-Length` is checked first (rejecting
+   * an oversized body before a single byte is buffered); then the body stream
+   * is read chunk-by-chunk, aborting the moment the accumulated size crosses
+   * the cap — so a missing or dishonest `Content-Length` (chunked uploads)
+   * cannot bypass it. An uncapped `limit` reads the whole body in one shot.
+   *
+   * @throws {PayloadTooLargeError} when the body exceeds `limit`.
+   */
+  private async readBodyWithLimit(limit: number | undefined): Promise<Buffer> {
+    if (limit !== undefined) {
+      const declared = this.getHeader("Content-Length");
+      if (declared) {
+        const declaredLength = Number(declared);
+        if (Number.isFinite(declaredLength) && declaredLength > limit) {
+          throw new PayloadTooLargeError(limit, declaredLength);
+        }
+      }
+    }
+
+    const stream = this.request.body;
+    // No cap, or no readable stream (empty body): one-shot read.
+    if (limit === undefined || !stream) {
+      return Buffer.from(await this.request.arrayBuffer());
+    }
+
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (value) {
+          total += value.byteLength;
+          if (total > limit) {
+            await reader.cancel();
+            throw new PayloadTooLargeError(limit, total);
+          }
+          chunks.push(value);
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        //
+      }
+    }
+
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Maps a `Content-Type` header to the {@link ContentParserType} that would
+   * handle it, or `undefined` for an unrecognized media type.
+   */
+  private detectParserKind(contentType: string): ContentParserType | undefined {
+    const ct = contentType.toLowerCase();
+    switch (true) {
+      case ct.includes("application/json") || ct.includes("+json"):
+        return "json";
+      case ct.includes("application/x-www-form-urlencoded"):
+        return "urlencoded";
+      case ct.includes("multipart/form-data"):
+        return "multipart";
+      case ct.includes("application/xml") ||
+        ct.includes("text/xml") ||
+        ct.includes("+xml"):
+        return "xml";
+      case ct.includes("text/plain"):
+        return "text";
+      case ct.includes("application/octet-stream"):
+        return "raw";
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Whether the given parser kind is permitted by `allowedContentTypes`. The
+   * `"raw"` kind is always allowed — it is the fallback for everything else.
+   */
+  private isParserAllowed(type: ContentParserType): boolean {
+    if (type === "raw" || !this.#allowedParsers) {
+      return true;
+    }
+    return this.#allowedParsers.has(type);
+  }
+
+  /**
+   * Leaves the body untouched as a raw `Buffer`. When `rewriteContentType` is
+   * `true` the header is normalized to `application/octet-stream`; otherwise
+   * the original `Content-Type` is preserved (used when a recognized media
+   * type was deliberately excluded via `allowedContentTypes`).
+   */
+  private leaveBodyAsRaw(buffer: Buffer, rewriteContentType: boolean) {
+    this._body = buffer;
+    this._buffer = buffer;
+    this._contentType = "buffer";
+    if (rewriteContentType) {
+      this.setHeader("Content-Type", "application/octet-stream");
+    }
+  }
+
+  /**
+   * Replaces the `parseBody` option at runtime and re-resolves the derived
+   * allowlist, size caps and per-content-type config. Useful from a middleware
+   * to tailor body handling per route — e.g. raise the cap for an upload
+   * endpoint, or restrict the allowed content types.
+   *
+   * Changing the size cap only affects a body that has **not** been read yet
+   * (the raw buffer is cached after the first read). To apply new options to an
+   * already-buffered body, follow this with {@link parseBody} (passing `true`
+   * to re-parse), or use {@link parseBodyWithOptions} which does both.
+   */
+  public setParseBodyOptions(parseBody: ParseBodyOption) {
+    this.options.parseBody = parseBody;
+    this.normalizeParseBodyOptions();
+    return this;
+  }
+
+  /**
+   * Applies `parseBody` options (via {@link setParseBodyOptions}) and then
+   * parses the body with them in a single call. `fresh` forces a re-parse of an
+   * already-parsed body (its cached buffer is reused — the size cap is only
+   * enforced on the initial network read). Returns the same shape as
+   * {@link parseBody}.
+   *
+   * @throws {PayloadTooLargeError} when an unread body exceeds the cap (the
+   * {@link isPayloadTooLarge} flag is set before the throw).
+   */
+  public async parseBodyWithOptions(parseBody: ParseBodyOption, fresh = false) {
+    this.setParseBodyOptions(parseBody);
+    return this.parseBody(fresh);
+  }
+
   public setMultipartParserOptions(opts: MultiPartOptions) {
     set(this.options, "parseMultiPartFormDataOpts", opts);
+    return this;
+  }
+
+  public setXmlParserOptions(opts: ParseXmlOptions) {
+    set(this.options, "parseXmlOpts", opts);
+    return this;
+  }
+
+  /**
+   * Restricts which body media types are parsed (see `allowedContentTypes`).
+   * Pass `undefined` to remove the restriction and parse every supported kind.
+   */
+  public setAllowedContentTypes(types: ContentParserType[] | undefined) {
+    this.legacyOptions.allowedContentTypes = types;
+    if (isArray(types)) {
+      const allowed = new Set(
+        types.filter((kind) => VALID_PARSER_KINDS.has(kind)),
+      );
+      this.#allowedParsers = allowed.size ? allowed : undefined;
+    } else {
+      this.#allowedParsers = undefined;
+    }
     return this;
   }
 
@@ -1146,9 +1739,25 @@ export class BunRequest
       };
     }
 
+    const contentTypeHeader = this.getHeader("Content-Type");
+
     let buffer = this._buffer;
     if (!buffer && !this.request.bodyUsed) {
-      buffer = Buffer.from(await this.request.arrayBuffer());
+      // Resolve the size cap from the declared content type up front, then read
+      // the body under that cap — rejecting an oversized payload before (or
+      // while) it is buffered. See {@link readBodyWithLimit}.
+      const declaredKind = contentTypeHeader
+        ? this.detectParserKind(contentTypeHeader)
+        : undefined;
+      const limit = this.resolveContentLimit(declaredKind);
+      try {
+        buffer = await this.readBodyWithLimit(limit);
+      } catch (error) {
+        if (error instanceof PayloadTooLargeError) {
+          this.#payloadTooLarge = { limit: error.limit, length: error.length };
+        }
+        throw error;
+      }
     }
 
     if (!buffer) {
@@ -1158,67 +1767,85 @@ export class BunRequest
     this._buffer = buffer;
 
     const bufferText = buffer.toString();
-    const contentTypeHeader = this.getHeader("Content-Type");
 
     if (!contentTypeHeader) {
       let hasParsedData = false;
 
       // Try JSON parse
-      if (!hasParsedData) {
+      if (!hasParsedData && this.isParserAllowed("json")) {
         hasParsedData = await this.handleJsonBodyParsing(bufferText);
       }
 
+      // Try XML parse (only when the payload actually looks like XML) — this
+      // runs before the url-encoded attempt, which would otherwise greedily
+      // accept arbitrary text.
+      if (
+        !hasParsedData &&
+        this.isParserAllowed("xml") &&
+        bufferText.trimStart().startsWith("<")
+      ) {
+        hasParsedData = await this.handleXmlBodyParsing(bufferText);
+      }
+
       // Try url-encoded form data parse
-      if (!hasParsedData) {
+      if (!hasParsedData && this.isParserAllowed("urlencoded")) {
         hasParsedData = await this.handleUrlFormEncodingParsing(bufferText);
       }
 
       // Leave it as buffer
       if (!hasParsedData) {
-        this._body = buffer;
-        this._buffer = buffer;
-        this._contentType = "buffer";
-        this.setHeader("Content-Type", "application/octet-stream");
+        this.leaveBodyAsRaw(buffer, true);
       }
     } else {
-      switch (true) {
-        case contentTypeHeader?.includes("text/plain"): {
-          this._body = bufferText;
-          break;
-        }
+      const kind = this.detectParserKind(contentTypeHeader);
 
-        case contentTypeHeader?.includes("application/octet-stream"): {
-          this._body = this.buffer;
-          break;
-        }
-
-        case contentTypeHeader?.includes("application/json"): {
-          await this.handleJsonBodyParsing(bufferText);
-          break;
-        }
-
-        case contentTypeHeader?.includes("application/x-www-form-urlencoded"): {
-          await this.handleUrlFormEncodingParsing(bufferText);
-          break;
-        }
-
-        case contentTypeHeader?.includes("multipart/form-data"): {
-          await this.getMultiParts(
-            this.options?.parseMultiPartFormDataOpts || {},
-          );
-          break;
-        }
-
-        default: {
-          try {
-            this._body = buffer;
-            this._buffer = buffer;
-            this._contentType = "buffer";
-            this.setHeader("Content-Type", "application/octet-stream");
-          } catch {
-            //
+      // A recognized media type whose parser was excluded via
+      // `allowedContentTypes`/`parseBody.contentTypes` is left as a raw buffer,
+      // preserving its header.
+      if (kind && !this.isParserAllowed(kind)) {
+        this.leaveBodyAsRaw(buffer, false);
+      } else {
+        switch (kind) {
+          case "text": {
+            const encoding = this.getParserOpts("text")?.encoding;
+            this._body = encoding ? buffer.toString(encoding) : bufferText;
+            this._contentType = "text";
+            break;
           }
-          break;
+
+          case "raw": {
+            this.leaveBodyAsRaw(buffer, false);
+            break;
+          }
+
+          case "json": {
+            await this.handleJsonBodyParsing(bufferText);
+            break;
+          }
+
+          case "urlencoded": {
+            await this.handleUrlFormEncodingParsing(bufferText);
+            break;
+          }
+
+          case "xml": {
+            await this.handleXmlBodyParsing(bufferText);
+            break;
+          }
+
+          case "multipart": {
+            await this.getMultiParts(
+              this.getParserOpts("multipart") ??
+                this.legacyOptions.parseMultiPartFormDataOpts ??
+                {},
+            );
+            break;
+          }
+
+          default: {
+            this.leaveBodyAsRaw(buffer, true);
+            break;
+          }
         }
       }
     }
@@ -1258,6 +1885,47 @@ export class BunRequest
 
   get isBodyParsed() {
     return !!this._contentType;
+  }
+
+  /**
+   * `true` when {@link parseBody} aborted because the body exceeded its
+   * configured `maxContentLength`. Adapters read this after `init` to respond
+   * with HTTP 413 before any route handler runs.
+   */
+  get isPayloadTooLarge(): boolean {
+    return !!this.#payloadTooLarge;
+  }
+
+  /**
+   * Details of the cap that was exceeded (`limit`, and the observed `length`
+   * when known), or `undefined` when the body was within its cap.
+   */
+  get payloadTooLarge(): { limit: number; length?: number } | undefined {
+    return this.#payloadTooLarge;
+  }
+
+  /**
+   * Builds the canonical **413 Payload Too Large** `Response` for a request
+   * whose body exceeded its cap. Shared by the HTTP adapters so an oversized
+   * body is rejected uniformly, before routing.
+   */
+  static payloadTooLargeResponse(req: BunRequest): Response {
+    const limit = req.payloadTooLarge?.limit;
+    return new Response(
+      JSON.stringify({
+        statusCode: 413,
+        error: "Payload Too Large",
+        message:
+          limit !== undefined
+            ? `Request body exceeds the maximum allowed size of ${limit} bytes`
+            : "Request body is too large",
+      }),
+      {
+        status: 413,
+        statusText: "Payload Too Large",
+        headers: { "Content-Type": "application/json" },
+      },
+    );
   }
 
   /**

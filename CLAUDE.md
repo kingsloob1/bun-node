@@ -138,3 +138,9 @@ matched route.
   `unused-imports/no-unused-vars`: a leading underscore marks a deliberately
   unused binding (e.g. the mandatory 4th `next` param of an error handler).
 - Add tests for every change.
+- **Always document properties with a JSDoc description** — when creating a
+  new class field, constructor parameter, or options/interface property, AND
+  when editing an existing one that lacks a description. This includes
+  positional constructor params and every field of inline or named options
+  objects. Match the existing concise `/** … */` style (what the property is,
+  its default, and any gotcha). Don't leave a public property undescribed.

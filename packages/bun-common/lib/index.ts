@@ -21,6 +21,33 @@ export {
   streamToBuffer,
 } from "./utils/general";
 export * from "./utils/native";
+// `getPort` (also covered by the wildcard above; re-exported explicitly here
+// for discoverability — it's the OS-assigned-port helper tests/adapters use).
+export { getPort } from "./utils/native";
+// Deferred / wait helpers and HTTP `Range`/cookie option types & parsers (also
+// covered by the wildcard above; re-exported explicitly here for
+// discoverability).
+export {
+  combineRanges,
+  type CookieParseOptions,
+  type CookieSerializeOptions,
+  createDeferred,
+  type Deferred,
+  type Range,
+  rangeParser,
+  type RangeParserResult,
+  type RangesSpecifier,
+  waitUntil,
+} from "./utils/native";
+// XML utilities & types (also covered by the wildcard above; re-exported
+// explicitly here for discoverability).
+export {
+  coerceXmlPrimitive,
+  decodeXmlEntities,
+  isXmlWhitespace,
+  type ParseXmlOptions,
+  parseXmlToObject,
+} from "./utils/native";
 export { cors, type CorsOptions, type CorsOptionsDelegate } from "./cors";
 export { pump } from "./multipart/stream";
 export {
@@ -76,7 +103,16 @@ export {
 } from "./BunWebSocket";
 export {
   BunRequest,
+  type ContentParserType,
+  type ContentTypeParserOptsMap,
+  DEFAULT_MAX_CONTENT_LENGTH,
+  DEFAULT_MAX_CONTENT_LENGTH_BY_KIND,
   DEFAULT_PARSE_QUERY_OPTS,
+  type ParseBodyConfig,
+  type ParseBodyContentTypeConfig,
+  type ParseBodyContentTypesMap,
+  type ParseBodyOption,
+  PayloadTooLargeError,
   type QueryParserOpts,
 } from "./BunRequest";
 export { BunResponse } from "./BunResponse";

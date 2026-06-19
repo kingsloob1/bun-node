@@ -422,6 +422,130 @@ describe("BunRequest: body parsing over HTTP", () => {
   });
 });
 
+describe("BunRequest: XML body parsing", () => {
+  it("parses an application/xml body", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/xml" },
+      body: "<note><to>Tove</to><from>Jani</from></note>",
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("xml");
+    expect(req.body).toEqual({ note: { to: "Tove", from: "Jani" } });
+  });
+
+  it("parses a text/xml body", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "text/xml" },
+      body: `<list><item>a</item><item>b</item></list>`,
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("xml");
+    expect(req.body).toEqual({ list: { item: ["a", "b"] } });
+  });
+
+  it("parses a +xml suffixed media type", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/rss+xml" },
+      body: `<rss version="2.0"><channel>news</channel></rss>`,
+    });
+    expect((await req.parseBody()).contentType).toBe("xml");
+    expect(req.body).toEqual({
+      rss: { "@_version": 2, channel: "news" },
+    });
+  });
+
+  it("honours custom XML parser options", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/xml" },
+      body: `<a x="1"><b>2</b></a>`,
+      options: { parseXmlOpts: { ignoreAttributes: true } },
+    });
+    await req.parseBody();
+    expect(req.body).toEqual({ a: { b: 2 } });
+  });
+
+  it("auto-detects an XML body without a Content-Type", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      body: "<root><a>1</a></root>",
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("xml");
+    expect(req.body).toEqual({ root: { a: 1 } });
+  });
+});
+
+describe("BunRequest: allowedContentTypes", () => {
+  it("leaves a disallowed XML body as a raw buffer, preserving its header", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/xml" },
+      body: "<a>1</a>",
+      options: { allowedContentTypes: ["json", "urlencoded"] },
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("buffer");
+    expect(Buffer.isBuffer(req.body)).toBe(true);
+    expect((req.body as Buffer).toString()).toBe("<a>1</a>");
+    expect(req.getHeader("Content-Type")).toContain("application/xml");
+  });
+
+  it("leaves a disallowed JSON body unparsed", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ a: 1 }),
+      options: { allowedContentTypes: ["xml"] },
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("buffer");
+    expect(Buffer.isBuffer(req.body)).toBe(true);
+    expect((req.body as Buffer).toString()).toBe(`{"a":1}`);
+  });
+
+  it("still parses an allowed content type", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ a: 1 }),
+      options: { allowedContentTypes: ["json"] },
+    });
+    await req.parseBody();
+    expect(req.body).toEqual({ a: 1 });
+  });
+
+  it("skips auto-detection for omitted kinds without a Content-Type", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      body: JSON.stringify({ a: 1 }),
+      options: { allowedContentTypes: ["xml"] },
+    });
+    const parsed = await req.parseBody();
+    expect(parsed.contentType).toBe("buffer");
+    expect(Buffer.isBuffer(req.body)).toBe(true);
+  });
+
+  it("can be toggled at runtime via setAllowedContentTypes", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ a: 1 }),
+      options: { allowedContentTypes: ["xml"] },
+    });
+    // Initially disallowed → raw buffer.
+    expect((await req.parseBody()).contentType).toBe("buffer");
+    // Re-allow JSON and re-parse from scratch.
+    req.setAllowedContentTypes(["json"]);
+    const parsed = await req.parseBody(true);
+    expect(parsed.contentType).toBe("json");
+    expect(req.body).toEqual({ a: 1 });
+  });
+});
+
 describe("BunRequest: IncomingMessage-style events", () => {
   it("emit returns false when nothing is listening", async () => {
     const req = await makeRequest();

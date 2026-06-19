@@ -1,0 +1,12 @@
+{
+  // Root config consulted by tooling that resolves a tsconfig from the repo
+  // root (e.g. `bun test` run from the monorepo root, which transpiles files
+  // across both packages in one process). The per-package `tsconfig.json`s are
+  // the source of truth for building/typechecking each package; this only needs
+  // to carry the decorator options so NestJS's legacy decorators transpile
+  // correctly when the run's cwd is the root rather than a package dir.
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}

@@ -33,6 +33,7 @@ import {
   omit,
   orderBy,
   parseCookie,
+  parseXmlToObject,
   pick,
   rangeParser,
   serializeCookie,
@@ -435,5 +436,84 @@ describe("native: getPort", () => {
     const preferred = await getPort();
     const result = await getPort({ port: [preferred + 1] });
     expect(typeof result).toBe("number");
+  });
+});
+
+describe("native: parseXmlToObject", () => {
+  it("parses nested elements keyed by the root name", () => {
+    const result = parseXmlToObject(
+      "<note><to>Tove</to><from>Jani</from></note>",
+    );
+    expect(result).toEqual({ note: { to: "Tove", from: "Jani" } });
+  });
+
+  it("coerces numeric and boolean leaf text", () => {
+    const result = parseXmlToObject("<v><n>42</n><b>true</b><s>hi</s></v>");
+    expect(result).toEqual({ v: { n: 42, b: true, s: "hi" } });
+  });
+
+  it("can disable primitive coercion", () => {
+    const result = parseXmlToObject("<v><n>42</n></v>", {
+      parsePrimitives: false,
+    });
+    expect(result).toEqual({ v: { n: "42" } });
+  });
+
+  it("exposes attributes under the configured prefix", () => {
+    const result = parseXmlToObject(
+      `<user id="42" admin="true"><name>Jane</name></user>`,
+    );
+    expect(result).toEqual({
+      user: { "@_id": 42, "@_admin": true, name: "Jane" },
+    });
+  });
+
+  it("honours a custom attribute prefix and can ignore attributes", () => {
+    expect(
+      parseXmlToObject(`<a x="1"><b>2</b></a>`, { attributeNamePrefix: "$" }),
+    ).toEqual({ a: { $x: 1, b: 2 } });
+    expect(
+      parseXmlToObject(`<a x="1"><b>2</b></a>`, { ignoreAttributes: true }),
+    ).toEqual({ a: { b: 2 } });
+  });
+
+  it("collapses repeated sibling elements into an array", () => {
+    const result = parseXmlToObject(
+      "<list><item>a</item><item>b</item></list>",
+    );
+    expect(result).toEqual({ list: { item: ["a", "b"] } });
+  });
+
+  it("handles self-closing elements", () => {
+    const result = parseXmlToObject(`<root><br/><img src="x"/></root>`);
+    expect(result).toEqual({ root: { br: "", img: { "@_src": "x" } } });
+  });
+
+  it("decodes named and numeric entities", () => {
+    const result = parseXmlToObject("<m>a &amp; b &lt; c &#65; &#x42;</m>");
+    expect(result).toEqual({ m: "a & b < c A B" });
+  });
+
+  it("treats CDATA as raw text and skips comments", () => {
+    const result = parseXmlToObject(
+      "<root><!-- comment --><![CDATA[<b>raw</b>]]></root>",
+    );
+    expect(result).toEqual({ root: "<b>raw</b>" });
+  });
+
+  it("skips the XML declaration and DOCTYPE prolog", () => {
+    const result = parseXmlToObject(
+      `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root><root><a>1</a></root>`,
+    );
+    expect(result).toEqual({ root: { a: 1 } });
+  });
+
+  it("keeps text alongside attributes under #text", () => {
+    const result = parseXmlToObject(`<p class="lead">hello</p>`);
+    expect(result).toEqual({ p: { "@_class": "lead", "#text": "hello" } });
+  });
+
+  it("throws when there is no XML element", () => {
+    expect(() => parseXmlToObject("   ")).toThrow();
   });
 });

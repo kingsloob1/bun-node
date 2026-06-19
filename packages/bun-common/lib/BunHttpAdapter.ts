@@ -78,11 +78,33 @@ export class BunHttpAdapter<
   public readonly eventEmitter = new EventEmitter();
 
   constructor(
+    /**
+     * Per-request timeout in milliseconds applied when finalising a response
+     * (passed to {@link BunResponse.getNativeResponse}). `0` means no timeout.
+     */
     protected requestTimeout = 0,
     options?: {
+      /**
+       * Request-parsing options forwarded to every {@link BunRequest}
+       * (body/cookie/query parsing, size caps, etc.). Defaults to
+       * `{ parseBody: true, parseCookies: true }`.
+       */
       request?: BunRequestOptions;
+      /**
+       * Overrides for the built-in {@link BunWebSocket} adapter (e.g.
+       * `wsOptions`, `customDataToWsClientFn`). Merged over the defaults that
+       * bind the adapter to this HTTP server's router and shared server.
+       */
       websocket?: Partial<WebsocketOptions<customWebsocketDataType>>;
+      /**
+       * Logger used for adapter diagnostics; also passed to the underlying
+       * {@link BunRouter}. Defaults to the global `console`.
+       */
       logger?: Logger;
+      /**
+       * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
+       * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
+       */
       router?: BunRouterOptions;
       /** Enable automatic `ETag` generation for every response. */
       etag?: boolean;
@@ -91,6 +113,11 @@ export class BunHttpAdapter<
        * eviction. Forwarded to {@link BunRouter}; defaults to 2000.
        */
       routeCacheMax?: number;
+      /**
+       * Base `Bun.serve` options merged into the server created in `listen()`
+       * (TLS, `maxRequestBodySize`, etc.). `port`/`hostname`/`fetch`/`websocket`
+       * are managed by the adapter and override anything set here.
+       */
       server?: BunServeNormalOptions<
         WebSocketClientData<customWebsocketDataType>,
         routesType
@@ -401,6 +428,12 @@ export class BunHttpAdapter<
             server,
             that.requestOpts,
           );
+
+          // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
+          // rejected with 413 before any route handler or middleware runs.
+          if (req.isPayloadTooLarge) {
+            return BunRequest.payloadTooLargeResponse(req);
+          }
 
           const res = new BunResponse<customWebsocketDataType>(req, {
             etag: that.etagEnabled,

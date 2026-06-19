@@ -114,8 +114,16 @@ export class BunResponse<customWebsocketDataType = unknown>
   #sentBody: unknown = undefined;
 
   constructor(
+    /** The {@link BunRequest} this response is paired with (one per request). */
     public req: BunRequest,
-    options?: { etag?: boolean },
+    options?: {
+      /**
+       * Enable automatic `ETag` generation for this response. Opt-in because
+       * hashing every body has a measurable per-request cost; defaults to
+       * `false`. Can also be toggled later via {@link setEtag}.
+       */
+      etag?: boolean;
+    },
   ) {
     this.#etagEnabled = options?.etag ?? false;
   }
