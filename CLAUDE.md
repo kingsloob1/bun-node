@@ -72,6 +72,26 @@ keep the dependency surface small.
 Before adding any dependency, check whether a Bun API or `native.ts` already
 covers it; add new helpers to `native.ts` rather than new deps.
 
+### Packaging types (both packages ship raw `.ts`)
+
+`main`/`types` point at `lib/index.ts`, so a **consumer compiles our source**.
+Two rules follow, and must hold for every dependency you add:
+
+- **`@types/*` backing a shipped `lib/**` import must be a runtime
+  `dependency`, not a `devDependency`.** In devDependencies it is absent from
+  the consumer's tree, so the type collapses to `any`/error for them.
+  `@types/accepts`, `@types/busboy`, `@types/type-is` are therefore
+  `dependencies`. Exceptions: `@types/bun` stays a devDep (runtime-env types the
+  consumer already provides; pinning it risks a version clash), and libs that
+  bundle their own types (`file-type`, `mime`, `parse-domain`) need no `@types`.
+- **Re-export third-party types that appear in the public type surface.**
+  `lib/index.ts` has `export type { BusboyConfig, FieldInfo, FileInfo } from
+  "busboy"` because `MultiPartOptions`/`MultiPartFileRecord`/
+  `MultiPartFieldRecord`/`getMultiParts` are built from them. Without it a
+  consumer can *use* the composed types but cannot *name* the base types, and TS
+  declaration emit raises `TS2742` "cannot be named". bun-nest inherits
+  bun-common's types transitively, so fixing bun-common usually suffices.
+
 ## Router — Express 5 semantics
 
 `BunRouter.handle()` (`packages/bun-common/lib/BunRouter.ts`) is a single-pass

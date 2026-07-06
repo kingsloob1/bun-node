@@ -50,7 +50,48 @@ import {
   values,
 } from "./utils/native";
 
-export type QueryParserOpts = Parameters<typeof parseQueryString>[1];
+/**
+ * bun-common-specific query-parse options layered on top of picoquery's native
+ * {@link parseQueryString} options.
+ */
+export interface QueryParserExtraOpts {
+  /**
+   * When `true`, {@link globalThis.decodeURIComponent} is applied to the whole
+   * (prefix-stripped) query string *before* it is handed to picoquery.
+   * Defaults to `false` — and you very rarely need it.
+   *
+   * picoquery decodes each key and value's *content* itself, but it detects the
+   * nesting/array **structure** *before* decoding. The encoded nesting brackets
+   * (`%5B`/`%5D`) are already handled safely and by default (see
+   * {@link parseSearchString}); this flag is the heavier escape hatch for the
+   * rare case where the pair (`&`) or key/value (`=`) **delimiters** are
+   * themselves percent-encoded and you need them surfaced too.
+   *
+   * The trade-off is that a full decode **double-decodes** ordinary content: a
+   * value with a genuinely-encoded delimiter (e.g. `q=a%26b`, whose `%26` should
+   * stay a literal `&`) would instead split into two keys. A malformed
+   * percent-sequence that `decodeURIComponent` cannot decode falls back to the
+   * raw string. Prefer leaving this off and relying on the default bracket
+   * decoding.
+   */
+  decodeURIComponent?: boolean;
+
+  /**
+   * Custom decoder applied to the whole (prefix-stripped) query string before
+   * it is handed to picoquery. When provided it takes **full control** of the
+   * pre-parse decoding step — the default nesting-bracket decode and the
+   * {@link QueryParserExtraOpts.decodeURIComponent} flag are both bypassed.
+   * Reach for it when neither the safe default nor a blanket decode fits (e.g.
+   * a bespoke encoding, or normalising only a specific subset of tokens).
+   * Receives the leading-`?`-stripped query string and must return the string
+   * to parse; if it throws, parsing falls back to the default bracket decode.
+   */
+  decode?: (query: string) => string;
+}
+
+export type QueryParserOpts =
+  | (NonNullable<Parameters<typeof parseQueryString>[1]> & QueryParserExtraOpts)
+  | undefined;
 
 /**
  * The kinds of request body a {@link BunRequest} knows how to parse, keyed by
@@ -233,6 +274,73 @@ export const DEFAULT_PARSE_QUERY_OPTS: QueryParserOpts = Object.freeze({
 /** Strips a leading `?` so query strings parse cleanly. */
 function stripQueryPrefix(search: string): string {
   return search.charCodeAt(0) === 63 ? search.slice(1) : search;
+}
+
+/**
+ * Percent-encoded forms of picoquery's structural nesting brackets (`%5B` = `[`,
+ * `%5D` = `]`, either case). Matched so {@link decodeNestingBrackets} can surface
+ * them ahead of parsing.
+ */
+const ENCODED_NESTING_BRACKETS = /%5[bd]/gi;
+
+/**
+ * Decode only the encoded nesting brackets in a query string, leaving every
+ * other percent-sequence untouched.
+ *
+ * picoquery detects the array/object structure *before* it URI-decodes, so a
+ * client that encodes the brackets themselves — e.g.
+ * `payrollrunid%5B0%5D=1&payrollrunid%5B1%5D=2` — defeats nesting and yields
+ * literal keys (`{ "payrollrunid[0]": "1", … }`). Surfacing just `[`/`]` fixes
+ * that with **no** double-decode hazard: unlike a blanket
+ * {@link globalThis.decodeURIComponent}, it never touches the pair (`&`) or
+ * key/value (`=`) delimiters, so a value that legitimately contains an encoded
+ * delimiter is preserved. And because picoquery already decodes `%5B`/`%5D`
+ * inside *values*, doing it early cannot change any value — it only lets the key
+ * parser see the structure it was going to ignore.
+ */
+function decodeNestingBrackets(input: string): string {
+  return input.replace(ENCODED_NESTING_BRACKETS, (match) => {
+    return match.toLowerCase() === "%5b" ? "[" : "]";
+  });
+}
+
+/**
+ * Parse a raw query (or `x-www-form-urlencoded`) string into an object,
+ * honouring bun-common's {@link QueryParserExtraOpts}. It strips a leading `?`,
+ * then decodes the string ahead of picoquery using, in precedence order:
+ *
+ * - a user-supplied `decode` function, if given, which takes full control
+ *   (falling back to the bracket decode below if it throws);
+ * - otherwise a full {@link globalThis.decodeURIComponent} when
+ *   `decodeURIComponent` is enabled (falling back to the bracket decode if the
+ *   string is malformed);
+ * - otherwise, by default, only {@link decodeNestingBrackets} — so
+ *   encoded-bracket arrays parse correctly with no risk of double-decoding
+ *   delimiters.
+ *
+ * The custom `decode`/`decodeURIComponent` options are stripped before the
+ * actual parse is handed to picoquery.
+ */
+function parseSearchString(raw: string, opts?: QueryParserOpts) {
+  const { decodeURIComponent: shouldDecode, decode, ...picoOpts } = opts ?? {};
+  const stripped = stripQueryPrefix(raw);
+  let input = decodeNestingBrackets(stripped);
+
+  if (typeof decode === "function") {
+    try {
+      input = decode(stripped);
+    } catch {
+      // User decoder threw — keep the safe bracket-only decode above.
+    }
+  } else if (shouldDecode) {
+    try {
+      input = decodeURIComponent(stripped);
+    } catch {
+      // Malformed percent-encoding — keep the safe bracket-only decode above.
+    }
+  }
+
+  return parseQueryString(input, picoOpts);
 }
 
 /**
@@ -1296,8 +1404,8 @@ export class BunRequest
 
   private async handleUrlFormEncodingParsing(data: string) {
     try {
-      const parsedData = parseQueryString(
-        stripQueryPrefix(data),
+      const parsedData = parseSearchString(
+        data,
         this.getParserOpts("urlencoded") ?? DEFAULT_PARSE_QUERY_OPTS,
       );
 
@@ -1659,10 +1767,7 @@ export class BunRequest
     const options: QueryParserOpts = opts ||
       this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
 
-    this.query = parseQueryString(
-      stripQueryPrefix(this.splitRequestUrl().search),
-      options,
-    );
+    this.query = parseSearchString(this.splitRequestUrl().search, options);
     return this.query;
   }
 

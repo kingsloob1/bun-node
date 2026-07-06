@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { handleMultipartAnyFiles, transformUploadOptions } from "../lib";
+import {
+  DEFAULT_PARSE_QUERY_OPTS,
+  handleMultipartAnyFiles,
+  transformUploadOptions,
+} from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
 import { BunResponse } from "../lib/BunResponse";
@@ -54,6 +58,161 @@ describe("BunRequest: construction & basics", () => {
   it("returns an empty object for a request without a query string", async () => {
     const req = await makeRequest({ url: "http://localhost/path" });
     expect(req.query).toEqual({});
+  });
+
+  // A client that percent-encodes the array *structure* itself (`%5B` = `[`,
+  // `%5D` = `]`). picoquery detects nesting before decoding, so bun-common
+  // decodes just these brackets up front — safely, by default.
+  const encodedArrayUrl =
+    "http://localhost/?payrollrunid%5B0%5D=10186&payrollrunid%5B1%5D=10188&payrollrunid%5B2%5D=10190";
+
+  it("builds arrays from encoded brackets by default (no option needed)", async () => {
+    const req = await makeRequest({ url: encodedArrayUrl });
+    expect(req.query).toEqual({
+      payrollrunid: ["10186", "10188", "10190"],
+    });
+  });
+
+  it("decodes encoded brackets identically when full decodeURIComponent is on", async () => {
+    const req = await makeRequest({
+      url: encodedArrayUrl,
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decodeURIComponent: true,
+        },
+      },
+    });
+    expect(req.query).toEqual({
+      payrollrunid: ["10186", "10188", "10190"],
+    });
+  });
+
+  it("does not double-decode a value's encoded delimiter under the default", async () => {
+    // `%26` is a genuinely-encoded literal `&`. The default bracket-only decode
+    // leaves it alone, so it stays part of the value (unlike a blanket decode).
+    const req = await makeRequest({ url: "http://localhost/?q=a%26b" });
+    expect(req.query).toEqual({ q: "a&b" });
+  });
+
+  it("leaves encoded brackets in a value unchanged (structure only)", async () => {
+    // Brackets in the value position are not nesting syntax; the result is the
+    // same whether or not they are pre-decoded.
+    const req = await makeRequest({ url: "http://localhost/?q=%5Bx%5D" });
+    expect(req.query).toEqual({ q: "[x]" });
+  });
+
+  it("honours the full decodeURIComponent flag via parseQuery()", async () => {
+    const req = await makeRequest({
+      url: encodedArrayUrl,
+      options: { parseQuery: false },
+    });
+    // Default parse already builds the array from the encoded brackets.
+    expect(req.parseQuery()).toEqual({
+      payrollrunid: ["10186", "10188", "10190"],
+    });
+    // The full-decode escape hatch yields the same result here.
+    expect(
+      req.parseQuery({
+        ...DEFAULT_PARSE_QUERY_OPTS,
+        decodeURIComponent: true,
+      }),
+    ).toEqual({ payrollrunid: ["10186", "10188", "10190"] });
+  });
+
+  it("double-decodes encoded delimiters only when decodeURIComponent is on", async () => {
+    // The documented trade-off: `%26` is a genuinely-encoded literal `&`.
+    // Without the option it stays part of the value; with it, it splits.
+    const encodedDelimiterUrl = "http://localhost/?q=a%26b";
+
+    const off = await makeRequest({ url: encodedDelimiterUrl });
+    expect(off.query).toEqual({ q: "a&b" });
+
+    const on = await makeRequest({
+      url: encodedDelimiterUrl,
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decodeURIComponent: true,
+        },
+      },
+    });
+    expect(on.query).toEqual({ q: "a", b: "" });
+  });
+
+  it("falls back to the raw string on a malformed percent-sequence", async () => {
+    // `%E0%A4%A` is an incomplete UTF-8 sequence — decodeURIComponent throws,
+    // so parsing must not blow up and should use the raw string instead.
+    const req = await makeRequest({
+      url: "http://localhost/?bad=%E0%A4%A&ok=1",
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decodeURIComponent: true,
+        },
+      },
+    });
+    expect(req.query).toEqual({ bad: "%E0%A4%A", ok: "1" });
+  });
+
+  it("uses a custom decode function when provided", async () => {
+    // A bespoke decoder that swaps a `~` separator for `&` before parsing.
+    const req = await makeRequest({
+      url: "http://localhost/?a=1~b=2",
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decode: (query) => query.replace(/~/g, "&"),
+        },
+      },
+    });
+    expect(req.query).toEqual({ a: "1", b: "2" });
+  });
+
+  it("lets the custom decode function override decodeURIComponent", async () => {
+    // Both are set; `decode` wins, so `%26` is left encoded (not split).
+    const req = await makeRequest({
+      url: "http://localhost/?q=a%26b",
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decodeURIComponent: true,
+          decode: (query) => query,
+        },
+      },
+    });
+    expect(req.query).toEqual({ q: "a&b" });
+  });
+
+  it("falls back to the default bracket decode when custom decode throws", async () => {
+    const req = await makeRequest({
+      url: encodedArrayUrl,
+      options: {
+        parseQueryOpts: {
+          ...DEFAULT_PARSE_QUERY_OPTS,
+          decode: () => {
+            throw new Error("boom");
+          },
+        },
+      },
+    });
+    // The thrown decoder is ignored; encoded brackets still build the array.
+    expect(req.query).toEqual({
+      payrollrunid: ["10186", "10188", "10190"],
+    });
+  });
+
+  it("honours a custom decode function passed straight to parseQuery()", async () => {
+    const req = await makeRequest({
+      url: "http://localhost/?a=1~b=2",
+      options: { parseQuery: false },
+    });
+    expect(
+      req.parseQuery({
+        ...DEFAULT_PARSE_QUERY_OPTS,
+        decode: (query) => query.replace(/~/g, "&"),
+      }),
+    ).toEqual({ a: "1", b: "2" });
   });
 
   it("derives protocol from X-Forwarded-Proto", async () => {

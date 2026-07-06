@@ -49,6 +49,12 @@ export {
   parseXmlToObject,
 } from "./utils/native";
 export { cors, type CorsOptions, type CorsOptionsDelegate } from "./cors";
+// Re-export the `busboy` types that appear in bun-common's public type surface
+// (`MultiPartOptions`, `MultiPartFileRecord`, `MultiPartFieldRecord`,
+// `getMultiParts`, ...). Without this a consumer can use those composed types
+// but cannot name the base types directly, and TypeScript declaration emit can
+// raise TS2742 "cannot be named" portability errors referencing them.
+export type { BusboyConfig, FieldInfo, FileInfo } from "busboy";
 export { pump } from "./multipart/stream";
 export {
   DiskStorage,
