@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
@@ -58,6 +59,217 @@ describe("BunResponse: status & body", () => {
     res.sendStatus(404);
     const native = await res.getNativeResponse(1000);
     expect(await native.text()).toBe("404");
+  });
+});
+
+describe("BunResponse: send with Bun-native body types", () => {
+  it("send delivers a Buffer verbatim as application/octet-stream", async () => {
+    const res = await makeResponse();
+    const buffer = Buffer.from([0x00, 0xff, 0x10, 0x42]);
+    res.send(buffer);
+
+    const native = await res.getNativeResponse(1000);
+    expect(native.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(new Uint8Array(await native.arrayBuffer())).toEqual(
+      new Uint8Array(buffer),
+    );
+  });
+
+  it("send delivers a Uint8Array", async () => {
+    const res = await makeResponse();
+    res.send(new TextEncoder().encode("hello bytes"));
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("hello bytes");
+  });
+
+  it("send honours a typed array's byteOffset/byteLength window", async () => {
+    const res = await makeResponse();
+    // A view over the middle of a larger buffer — only those bytes must ship.
+    const view = new Uint8Array([1, 2, 3, 4, 5]).subarray(1, 4);
+    res.send(view);
+
+    const native = await res.getNativeResponse(1000);
+    expect(new Uint8Array(await native.arrayBuffer())).toEqual(
+      new Uint8Array([2, 3, 4]),
+    );
+  });
+
+  it("send delivers a non-byte typed array's raw bytes", async () => {
+    const res = await makeResponse();
+    res.send(new Uint16Array([0x0201, 0x0403]));
+
+    const native = await res.getNativeResponse(1000);
+    expect(new Uint8Array(await native.arrayBuffer()).byteLength).toBe(4);
+  });
+
+  it("send delivers a DataView", async () => {
+    const res = await makeResponse();
+    const bytes = new Uint8Array([9, 8, 7]);
+    res.send(new DataView(bytes.buffer));
+
+    const native = await res.getNativeResponse(1000);
+    expect(new Uint8Array(await native.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("send delivers an ArrayBuffer", async () => {
+    const res = await makeResponse();
+    const bytes = new TextEncoder().encode("array buffer");
+    res.send(bytes.buffer as ArrayBuffer);
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("array buffer");
+  });
+
+  it("send delivers a SharedArrayBuffer", async () => {
+    const res = await makeResponse();
+    const shared = new SharedArrayBuffer(3);
+    new Uint8Array(shared).set([1, 2, 3]);
+    res.send(shared);
+
+    const native = await res.getNativeResponse(1000);
+    expect(new Uint8Array(await native.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+  });
+
+  it("send does not JSON-stringify binary bodies", async () => {
+    const res = await makeResponse();
+    res.send(Buffer.from("hi"));
+
+    const native = await res.getNativeResponse(1000);
+    // The old object path produced `{"0":104,"1":105}`.
+    expect(await native.text()).toBe("hi");
+  });
+
+  it("an explicit Content-Type wins over the binary default", async () => {
+    const res = await makeResponse();
+    res.type("image/png").send(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const native = await res.getNativeResponse(1000);
+    expect(native.headers.get("Content-Type")).toBe("image/png");
+  });
+
+  it("send computes an ETag over the bytes when opted in", async () => {
+    const first = await makeResponse();
+    first.setEtag(true).send(Buffer.from("same bytes"));
+    const second = await makeResponse();
+    second.setEtag(true).send(Buffer.from("same bytes"));
+    const other = await makeResponse();
+    other.setEtag(true).send(Buffer.from("other bytes!"));
+
+    const firstTag = (await first.getNativeResponse(1000)).headers.get("ETag");
+    const secondTag = (await second.getNativeResponse(1000)).headers.get(
+      "ETag",
+    );
+    const otherTag = (await other.getNativeResponse(1000)).headers.get("ETag");
+
+    expect(firstTag).toBeTruthy();
+    expect(secondTag).toBe(firstTag as string);
+    expect(otherTag).not.toBe(firstTag as string);
+  });
+
+  it("send does not set an ETag for binary bodies by default", async () => {
+    const res = await makeResponse();
+    res.send(Buffer.from("bytes"));
+    const native = await res.getNativeResponse(1000);
+    expect(native.headers.get("ETag")).toBeNull();
+  });
+
+  it("send delivers a Blob with its own type", async () => {
+    const res = await makeResponse();
+    res.send(new Blob(["blob body"], { type: "text/csv" }));
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("blob body");
+  });
+
+  it("send delivers FormData with a generated multipart boundary", async () => {
+    const res = await makeResponse();
+    const form = new FormData();
+    form.append("field", "value");
+    res.send(form);
+
+    const native = await res.getNativeResponse(1000);
+    const contentType = native.headers.get("Content-Type") || "";
+    expect(contentType).toContain("multipart/form-data");
+    expect(contentType).toContain("boundary=");
+    expect((await native.formData()).get("field")).toBe("value");
+  });
+
+  it("send delivers URLSearchParams as urlencoded", async () => {
+    const res = await makeResponse();
+    res.send(new URLSearchParams({ a: "1", b: "two" }));
+
+    const native = await res.getNativeResponse(1000);
+    expect(native.headers.get("Content-Type")).toContain(
+      "application/x-www-form-urlencoded",
+    );
+    expect(await native.text()).toBe("a=1&b=two");
+  });
+
+  it("send streams an async generator function", async () => {
+    const res = await makeResponse();
+    res.send(async function* () {
+      yield "chunk-1|";
+      yield "chunk-2";
+    });
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("chunk-1|chunk-2");
+  });
+
+  it("send streams an async iterable", async () => {
+    const res = await makeResponse();
+    res.send({
+      async *[Symbol.asyncIterator]() {
+        yield new TextEncoder().encode("iter-");
+        yield new TextEncoder().encode("able");
+      },
+    });
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("iter-able");
+  });
+
+  it("getBody returns the binary body untouched", async () => {
+    const res = await makeResponse();
+    const buffer = Buffer.from("bytes");
+    res.send(buffer);
+    expect(res.getBody()).toBe(buffer);
+  });
+
+  it("end sends a binary body", async () => {
+    const res = await makeResponse();
+    await res.end(Buffer.from("ended"));
+
+    const native = await res.getNativeResponse(1000);
+    expect(await native.text()).toBe("ended");
+  });
+
+  it("write streams binary chunks without stringifying them", async () => {
+    const res = await makeResponse();
+    res.write(Buffer.from([104, 105]));
+    res.write(new Uint8Array([33]));
+    res.write(new Uint8Array([63]).buffer as ArrayBuffer);
+
+    const native = await res.getNativeResponse(1000);
+    const reader = (
+      native.body as unknown as ReadableStream<Uint8Array>
+    ).getReader();
+
+    // Each queued chunk is enqueued individually, so one read drains one.
+    const chunks: Uint8Array[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { value } = await reader.read();
+      if (value) chunks.push(value);
+    }
+    await reader.cancel();
+
+    const text = chunks
+      .map((chunk) => new TextDecoder().decode(chunk))
+      .join("");
+    expect(text).toBe("hi!?");
   });
 });
 

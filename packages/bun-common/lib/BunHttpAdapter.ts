@@ -1,4 +1,3 @@
-import type { BunFile } from "bun";
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type {
@@ -586,23 +585,20 @@ export class BunHttpAdapter<
 
   public reply(
     response: BunResponse,
-    body:
-      | ReadableStream
-      | BunFile
-      | string
-      | Record<string, unknown>
-      | BunResponse
-      | Response
-      | null
-      | undefined,
+    /**
+     * The body to send. Anything {@link BunResponse.send} accepts — text,
+     * objects (JSON), binary (`Buffer`/typed array/`ArrayBuffer`), `BunFile`,
+     * streams, `FormData`/`URLSearchParams` and async iterables.
+     */
+    body: Parameters<BunResponse["send"]>[0],
+    /** Optional status code applied before sending. */
     statusCode?: number,
   ) {
     if (statusCode) {
       response = response.status(statusCode);
     }
 
-    const bodyToBeSent = body as Parameters<BunResponse["send"]>[0];
-    return response.send(bodyToBeSent);
+    return response.send(body);
   }
 
   public status(response: BunResponse, statusCode: number) {

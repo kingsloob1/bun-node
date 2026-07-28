@@ -1,5 +1,4 @@
 import type { BunFile } from "bun";
-import type { Buffer } from "node:buffer";
 import type { Readable } from "node:stream";
 import type { BunRequest } from "./BunRequest";
 import type { TypedEmitter, WebSocketClientData } from "./BunWebSocket";
@@ -21,9 +20,13 @@ import {
   encodeUrl,
   etag,
   get,
+  isAnyArrayBuffer,
   isArray,
+  isArrayBufferView,
+  isAsyncGeneratorFunction,
+  isAsyncIterable,
+  isBinaryBody,
   isBoolean,
-  isBuffer,
   isDateValid,
   isFunction,
   isMap,
@@ -89,7 +92,16 @@ export class BunResponse<customWebsocketDataType = unknown>
 
   #readableStreamClosePromise: Promise<undefined> | undefined = undefined;
   #readableStreamCloseResolve: (() => void) | undefined = undefined;
-  #readableStreamEventMap = new Map<string, string | Buffer>();
+  /**
+   * Chunks written but not yet enqueued on {@link readableStream}, keyed by an
+   * arrival-ordered token. Values are text or binary (`Buffer`, typed array,
+   * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
+   */
+  #readableStreamEventMap = new Map<
+    string,
+    string | ArrayBufferView | ArrayBufferLike
+  >();
+
   /** Notifies a parked stream `pull` that data is available to enqueue. */
   #streamWriteNotifier: Deferred<void> | undefined = undefined;
 
@@ -378,6 +390,23 @@ export class BunResponse<customWebsocketDataType = unknown>
    * hop. (Sending a {@link BunResponse} whose response is not yet ready is the
    * one case that cannot resolve synchronously; it falls back to an empty
    * body — build that response before sending it.)
+   *
+   * Every body type `Bun.serve` can write is accepted:
+   *
+   * - `string` — sent as `text/plain` unless a Content-Type is already set.
+   * - plain objects / arrays — serialised as `application/json`.
+   * - binary: `Buffer`, any typed array, `DataView`, `ArrayBuffer`,
+   *   `SharedArrayBuffer` — sent verbatim (only the view's byte window),
+   *   defaulting to `application/octet-stream`.
+   * - `Blob` / `BunFile` — streamed, carrying the blob's own type.
+   * - `FormData` / `URLSearchParams` — encoded by Bun with the matching
+   *   Content-Type (a multipart boundary is generated, so never pre-set it).
+   * - `ReadableStream`, Node `Readable`, async iterables and
+   *   `async function*` — streamed to the client.
+   * - a `Response` or another {@link BunResponse} — passed through.
+   *
+   * With ETag enabled ({@link setEtag}) the tag is computed over the bytes of
+   * a string, JSON or binary body; streamed bodies are never hashed.
    */
   send(
     body:
@@ -386,6 +415,13 @@ export class BunResponse<customWebsocketDataType = unknown>
       | undefined
       | ReadableStream
       | Readable
+      | ArrayBufferView
+      | ArrayBufferLike
+      | Blob
+      | FormData
+      | URLSearchParams
+      | AsyncIterable<unknown>
+      | (() => AsyncGenerator<unknown>)
       | object
       | BunFile
       | BunResponse
@@ -443,6 +479,39 @@ export class BunResponse<customWebsocketDataType = unknown>
     ) {
       wasResponseInitSet = true;
       this.response = new Response(body, this.options);
+    } else if (isBinaryBody(body)) {
+      // Binary bodies (Buffer, any typed array, DataView, ArrayBuffer,
+      // SharedArrayBuffer) go to the socket verbatim — Bun writes the bytes
+      // and sets Content-Length itself.
+      if (this.#etagEnabled && !this.hasHeader("ETag")) {
+        this.setHeader("ETag", etag(body));
+      }
+
+      // Express defaults a binary body to `application/octet-stream`; be
+      // explicit rather than relying on Bun's own fallback.
+      if (!this.options.headers.get("content-type")) {
+        this.options.headers.set("Content-Type", "application/octet-stream");
+      }
+
+      wasResponseInitSet = true;
+      this.response = new Response(
+        body as ConstructorParameters<typeof Response>[0],
+        this.options,
+      );
+    } else if (
+      body instanceof FormData ||
+      body instanceof URLSearchParams ||
+      isAsyncIterable(body) ||
+      isAsyncGeneratorFunction(body)
+    ) {
+      // Bodies Bun serialises natively. `FormData`/`URLSearchParams` carry
+      // their own Content-Type (a multipart one needs the generated boundary,
+      // so never pre-set it); async iterables and `async function*` stream.
+      wasResponseInitSet = true;
+      this.response = new Response(
+        body as ConstructorParameters<typeof Response>[0],
+        this.options,
+      );
     } else if (isObject(body) || isArray(body)) {
       this.options.headers.set("Content-Type", "application/json");
       const bodyToBeSent = JSON.stringify(body);
@@ -603,8 +672,14 @@ export class BunResponse<customWebsocketDataType = unknown>
             for (const key of this.#readableStreamEventMap.keys()) {
               const value = this.#readableStreamEventMap.get(key);
 
+              // Binary chunks (Buffer, typed array, DataView, ArrayBuffer)
+              // are enqueued as bytes; anything else is text-encoded.
               controller.enqueue(
-                isBuffer(value) ? value : encoder.encode(String(value)),
+                isArrayBufferView(value)
+                  ? value
+                  : isAnyArrayBuffer(value)
+                    ? new Uint8Array(value)
+                    : encoder.encode(String(value)),
               );
 
               this.#readableStreamEventMap.delete(key);
@@ -662,7 +737,10 @@ export class BunResponse<customWebsocketDataType = unknown>
       key = `${key}${Bun.nanoseconds()}`;
     }
 
-    this.#readableStreamEventMap.set(key, chunk as string | Buffer);
+    this.#readableStreamEventMap.set(
+      key,
+      chunk as string | ArrayBufferView | ArrayBufferLike,
+    );
     // Accumulate streamed chunks so `getBody()` can report them too.
     if (!Array.isArray(this.#sentBody)) {
       this.#sentBody = [];

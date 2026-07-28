@@ -20,27 +20,92 @@ export {
   randomBytes,
   streamToBuffer,
 } from "./utils/general";
+/* ------------------------------------------------------------------ *
+ * Native utilities (`lib/utils/native.ts`) — the dependency-free helpers
+ * that replaced lodash-es, cookie, etag, fresh, range-parser, get-port, …
+ *
+ * The wildcard keeps future additions exported automatically; the blocks
+ * below name every current helper and type explicitly, grouped by concern,
+ * so they are discoverable from an editor's auto-import and from the
+ * generated API surface.
+ * ------------------------------------------------------------------ */
 export * from "./utils/native";
-// `getPort` (also covered by the wildcard above; re-exported explicitly here
-// for discoverability — it's the OS-assigned-port helper tests/adapters use).
-export { getPort } from "./utils/native";
-// Deferred / wait helpers and HTTP `Range`/cookie option types & parsers (also
-// covered by the wildcard above; re-exported explicitly here for
-// discoverability).
+// Type guards.
 export {
+  isAnyArrayBuffer,
+  isArray,
+  isArrayBufferView,
+  isAsyncGeneratorFunction,
+  isAsyncIterable,
+  isBinaryBody,
+  isBoolean,
+  isBuffer,
+  isError,
+  isFunction,
+  isMap,
+  isNull,
+  isNumber,
+  isNumeric,
+  isObject,
+  isString,
+  isUndefined,
+} from "./utils/native";
+// Object / collection helpers.
+export {
+  cloneDeep,
+  each,
+  first,
+  flattenDeep,
+  get,
+  keys,
+  lastIndexOf,
+  merge,
+  omit,
+  orderBy,
+  pick,
+  set,
+  unset,
+  values,
+} from "./utils/native";
+// String, number and date helpers.
+export {
+  encodeUrl,
+  isDateValid,
+  parseByteSize,
+  toHttpDate,
+  ucwords,
+} from "./utils/native";
+// HTTP helpers: caching/validation, `Vary`, and `Range` parsing & types.
+export {
+  appendVary,
   combineRanges,
-  type CookieParseOptions,
-  type CookieSerializeOptions,
-  createDeferred,
-  type Deferred,
+  etag,
+  fresh,
   type Range,
   rangeParser,
   type RangeParserResult,
   type RangesSpecifier,
+} from "./utils/native";
+// Cookie parsing, serialisation, signing and their option types.
+export {
+  type CookieParseOptions,
+  type CookieSerializeOptions,
+  extractSignedCookies,
+  jsonCookies,
+  parseCookie,
+  serializeCookie,
+  signCookie,
+  unsignCookie,
+} from "./utils/native";
+// Async helpers — deferreds, polling, and the OS-assigned-port helper that
+// tests and adapters use.
+export {
+  createDeferred,
+  type Deferred,
+  getPort,
   waitUntil,
 } from "./utils/native";
-// XML utilities & types (also covered by the wildcard above; re-exported
-// explicitly here for discoverability).
+// XML utilities & types.
 export {
   coerceXmlPrimitive,
   decodeXmlEntities,

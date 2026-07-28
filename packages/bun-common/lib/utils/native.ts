@@ -66,6 +66,59 @@ export function isMap(value: unknown): value is Map<unknown, unknown> {
   return value instanceof Map;
 }
 
+/**
+ * True for any view over an `ArrayBuffer` — every typed array (including
+ * `Buffer`, which is a `Uint8Array`) plus `DataView`.
+ */
+export function isArrayBufferView(value: unknown): value is ArrayBufferView {
+  return ArrayBuffer.isView(value);
+}
+
+/**
+ * True for a raw binary buffer: `ArrayBuffer` or `SharedArrayBuffer`.
+ * `SharedArrayBuffer` is feature-detected — it is absent when the runtime
+ * disables it (e.g. without cross-origin isolation).
+ */
+export function isAnyArrayBuffer(value: unknown): value is ArrayBufferLike {
+  return (
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== "undefined" &&
+      value instanceof SharedArrayBuffer)
+  );
+}
+
+/**
+ * True for a binary body Bun can write to the socket verbatim: a typed array,
+ * a `DataView`, an `ArrayBuffer` or a `SharedArrayBuffer`.
+ */
+export function isBinaryBody(
+  value: unknown,
+): value is ArrayBufferView | ArrayBufferLike {
+  return isArrayBufferView(value) || isAnyArrayBuffer(value);
+}
+
+/** True for an object implementing `Symbol.asyncIterator` (streamable body). */
+export function isAsyncIterable(
+  value: unknown,
+): value is AsyncIterable<unknown> {
+  return (
+    isObject(value) &&
+    isFunction((value as AsyncIterable<unknown>)[Symbol.asyncIterator])
+  );
+}
+
+/**
+ * True for an `async function*` declaration itself (not a running generator).
+ * Bun's `Response` accepts one directly and pulls the body from it lazily.
+ */
+export function isAsyncGeneratorFunction(
+  value: unknown,
+): value is () => AsyncGenerator<unknown> {
+  return (
+    isFunction(value) && value.constructor?.name === "AsyncGeneratorFunction"
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Numeric detection (fast-isnumeric replacement)
  * ------------------------------------------------------------------ */
@@ -398,17 +451,21 @@ export function toHttpDate(date: Date): string {
  * Generates a strong ETag for a string or buffer using Bun's fast non-crypto
  * hash, encoding both byte length and a content hash.
  */
-export function etag(entity: string | Buffer | ArrayBufferView): string {
+export function etag(
+  entity: string | Buffer | ArrayBufferView | ArrayBufferLike,
+): string {
   const buf =
     typeof entity === "string"
       ? Buffer.from(entity, "utf8")
       : Buffer.isBuffer(entity)
         ? entity
-        : Buffer.from(
-            (entity as ArrayBufferView).buffer,
-            (entity as ArrayBufferView).byteOffset,
-            (entity as ArrayBufferView).byteLength,
-          );
+        : isAnyArrayBuffer(entity)
+          ? Buffer.from(entity as ArrayBuffer)
+          : Buffer.from(
+              (entity as ArrayBufferView).buffer as ArrayBuffer,
+              (entity as ArrayBufferView).byteOffset,
+              (entity as ArrayBufferView).byteLength,
+            );
 
   if (buf.length === 0) {
     return '"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';

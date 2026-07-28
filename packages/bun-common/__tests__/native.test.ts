@@ -13,7 +13,12 @@ import {
   fresh,
   get,
   getPort,
+  isAnyArrayBuffer,
   isArray,
+  isArrayBufferView,
+  isAsyncGeneratorFunction,
+  isAsyncIterable,
+  isBinaryBody,
   isBoolean,
   isBuffer,
   isDateValid,
@@ -99,6 +104,54 @@ describe("native: type guards", () => {
     expect(isBuffer("x")).toBe(false);
     expect(isMap(new Map())).toBe(true);
     expect(isMap({})).toBe(false);
+  });
+
+  it("isArrayBufferView covers typed arrays and DataView", () => {
+    expect(isArrayBufferView(new Uint8Array(1))).toBe(true);
+    expect(isArrayBufferView(Buffer.from("x"))).toBe(true);
+    expect(isArrayBufferView(new Float64Array(1))).toBe(true);
+    expect(isArrayBufferView(new DataView(new ArrayBuffer(1)))).toBe(true);
+    expect(isArrayBufferView(new ArrayBuffer(1))).toBe(false);
+    expect(isArrayBufferView("x")).toBe(false);
+  });
+
+  it("isAnyArrayBuffer covers ArrayBuffer and SharedArrayBuffer", () => {
+    expect(isAnyArrayBuffer(new ArrayBuffer(1))).toBe(true);
+    expect(isAnyArrayBuffer(new SharedArrayBuffer(1))).toBe(true);
+    expect(isAnyArrayBuffer(new Uint8Array(1))).toBe(false);
+    expect(isAnyArrayBuffer({})).toBe(false);
+  });
+
+  it("isBinaryBody covers both views and raw buffers", () => {
+    expect(isBinaryBody(Buffer.from("x"))).toBe(true);
+    expect(isBinaryBody(new DataView(new ArrayBuffer(1)))).toBe(true);
+    expect(isBinaryBody(new ArrayBuffer(1))).toBe(true);
+    expect(isBinaryBody(new SharedArrayBuffer(1))).toBe(true);
+    expect(isBinaryBody("x")).toBe(false);
+    expect(isBinaryBody({ length: 1 })).toBe(false);
+  });
+
+  it("isAsyncIterable", () => {
+    expect(
+      isAsyncIterable({
+        async *[Symbol.asyncIterator]() {
+          yield 1;
+        },
+      }),
+    ).toBe(true);
+    // A running async generator is itself async-iterable.
+    expect(isAsyncIterable((async function* () {})())).toBe(true);
+    expect(isAsyncIterable([1, 2])).toBe(false);
+    expect(isAsyncIterable("abc")).toBe(false);
+  });
+
+  it("isAsyncGeneratorFunction only matches async generator declarations", () => {
+    expect(isAsyncGeneratorFunction(async function* () {})).toBe(true);
+    expect(isAsyncGeneratorFunction(function* () {})).toBe(false);
+    expect(isAsyncGeneratorFunction(async () => {})).toBe(false);
+    expect(isAsyncGeneratorFunction(() => {})).toBe(false);
+    // The generator object, not the function, is not a match.
+    expect(isAsyncGeneratorFunction((async function* () {})())).toBe(false);
   });
 });
 
@@ -262,6 +315,23 @@ describe("native: etag", () => {
   it("differs for different content and handles empty input", () => {
     expect(etag("a")).not.toBe(etag("b"));
     expect(etag("")).toBe('"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"');
+  });
+
+  it("hashes typed arrays, DataViews and ArrayBuffers by their bytes", () => {
+    const expected = etag(Buffer.from("hello world"));
+    const bytes = new TextEncoder().encode("hello world");
+    expect(etag(bytes)).toBe(expected);
+    expect(etag(new DataView(bytes.buffer as ArrayBuffer))).toBe(expected);
+    expect(etag(bytes.buffer as ArrayBuffer)).toBe(expected);
+
+    const shared = new SharedArrayBuffer(bytes.byteLength);
+    new Uint8Array(shared).set(bytes);
+    expect(etag(shared)).toBe(expected);
+  });
+
+  it("hashes only a view's window of its buffer", () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    expect(etag(bytes.subarray(1, 4))).toBe(etag(new Uint8Array([2, 3, 4])));
   });
 });
 

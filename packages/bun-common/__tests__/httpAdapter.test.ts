@@ -1,4 +1,5 @@
 import type { App } from "supertest/types";
+import { Buffer } from "node:buffer";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import request from "supertest";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
@@ -68,6 +69,36 @@ beforeAll(async () => {
 
   httpAdapter.get("/api/v1/users/:other(.*)", (req, res) => {
     res.status(404).json({ message: "Catch all for USERS API endpoint" });
+  });
+
+  // Bun-native body types sent straight through `res.send`.
+  httpAdapter.get("/native/buffer", (req, res) => {
+    res.send(Buffer.from([0x00, 0x01, 0x02, 0xff]));
+  });
+
+  httpAdapter.get("/native/typed-array", (req, res) => {
+    res.send(new TextEncoder().encode("typed array body"));
+  });
+
+  httpAdapter.get("/native/array-buffer", (req, res) => {
+    res.send(
+      new TextEncoder().encode("array buffer body").buffer as ArrayBuffer,
+    );
+  });
+
+  httpAdapter.get("/native/png", (req, res) => {
+    res.type("image/png").send(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  });
+
+  httpAdapter.get("/native/urlencoded", (req, res) => {
+    res.send(new URLSearchParams({ a: "1", b: "two" }));
+  });
+
+  httpAdapter.get("/native/async-generator", (req, res) => {
+    res.send(async function* () {
+      yield "streamed-";
+      yield "body";
+    });
   });
 
   httpAdapter.setNotFoundHandler((req, res) => {
@@ -237,5 +268,58 @@ describe("BunHttpAdapter: routeCacheMax option", () => {
     const x1 = match("/x");
     match("/y");
     expect(match("/x")).toBe(x1);
+  });
+});
+
+describe("BunHttpAdapter: Bun-native response bodies", () => {
+  it("serves a Buffer as application/octet-stream", async () => {
+    const response = await request(app).get("/native/buffer");
+
+    expect(response.status).toEqual(200);
+    expect(response.headers["content-type"]).toContain(
+      "application/octet-stream",
+    );
+    expect(Buffer.from(response.body)).toEqual(
+      Buffer.from([0x00, 0x01, 0x02, 0xff]),
+    );
+  });
+
+  it("serves a typed array", async () => {
+    const response = await request(app).get("/native/typed-array");
+
+    expect(response.status).toEqual(200);
+    expect(Buffer.from(response.body).toString()).toBe("typed array body");
+  });
+
+  it("serves an ArrayBuffer", async () => {
+    const response = await request(app).get("/native/array-buffer");
+
+    expect(response.status).toEqual(200);
+    expect(Buffer.from(response.body).toString()).toBe("array buffer body");
+  });
+
+  it("keeps an explicit Content-Type for a binary body", async () => {
+    const response = await request(app).get("/native/png");
+
+    expect(response.headers["content-type"]).toContain("image/png");
+    expect(Buffer.from(response.body)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+  });
+
+  it("serves URLSearchParams as urlencoded", async () => {
+    const response = await request(app).get("/native/urlencoded");
+
+    expect(response.headers["content-type"]).toContain(
+      "application/x-www-form-urlencoded",
+    );
+    expect(response.text).toBe("a=1&b=two");
+  });
+
+  it("streams an async generator body", async () => {
+    const response = await request(app).get("/native/async-generator");
+
+    expect(response.status).toEqual(200);
+    expect(response.text).toBe("streamed-body");
   });
 });
