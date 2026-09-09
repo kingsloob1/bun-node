@@ -187,6 +187,20 @@ export {
   type QueryParserOpts,
 } from "./BunRequest";
 export { BunResponse } from "./BunResponse";
+export {
+  BunValidate,
+  type BunValidateOptions,
+  type InferValidatedShape,
+  type TargetHooks,
+  validate,
+  ValidationError,
+  type ValidationFailureMode,
+  type ValidationIssue,
+  type ValidationSchemas,
+  type ValidationTarget,
+  type ValidatorMiddleware,
+} from "./BunValidate";
+export type { StandardSchemaV1 } from "./types/standardSchema";
 export { createServeStaticHandler } from "./serveStatic";
 export type { ExtractRouteParams } from "./types/routeParams";
 export {

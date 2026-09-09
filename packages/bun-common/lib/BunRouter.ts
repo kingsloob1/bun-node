@@ -1671,6 +1671,10 @@ export class BunRouter extends Router {
     // Ids of mounted sub-routers exited via next('router'); lazily allocated
     // since next('router') is rare — no cost on the common path.
     let exitedRouters: Set<number> | undefined;
+    // Index of the route whose params are currently bound to the request, so
+    // params are rebound when the pipeline moves to a different route and not
+    // between callbacks of the same one. `-1` means nothing is bound yet.
+    let paramsBoundToRoute = -1;
 
     for (let index = 0; index < layers.length; index++) {
       if (response.headersSent) {
@@ -1692,8 +1696,20 @@ export class BunRouter extends Router {
       }
 
       if (layer.isRouteHandler) {
-        request.params = layer.matched.params as Record<string, string>;
-        request.subdomains = layer.matched.subdomains as string[];
+        // Bind params once per *route*, not once per callback. Express sets
+        // them when a route is entered and lets that route's callbacks share
+        // them, so a middleware may replace `req.params` for the handlers that
+        // follow it in the same route — re-binding on every callback would
+        // silently undo that.
+        //
+        // Note the bound object comes from the matched-pipeline cache and is
+        // therefore shared by every request with the same signature: replace
+        // `req.params` wholesale, never mutate it in place.
+        if (layer.routeIndex !== paramsBoundToRoute) {
+          request.params = layer.matched.params as Record<string, string>;
+          request.subdomains = layer.matched.subdomains as string[];
+          paramsBoundToRoute = layer.routeIndex;
+        }
         matchedRoute = layer.matched;
       }
 
