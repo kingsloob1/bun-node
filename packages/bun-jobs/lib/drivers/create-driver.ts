@@ -1,5 +1,6 @@
 import type { DriverConfig, JobsDriver } from "./driver";
 import { ConfigError } from "../shared/errors";
+import { FileDriver } from "./file-driver";
 import { MemoryDriver } from "./memory-driver";
 
 /**
@@ -19,6 +20,7 @@ export function createDriver(config: DriverConfig): JobsDriver {
     case "memory":
       return new MemoryDriver();
     case "file":
+      return new FileDriver({ root: config.root });
     case "redis":
     case "sql":
       throw new ConfigError(

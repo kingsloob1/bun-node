@@ -27,6 +27,8 @@ export {
   type DriverLifecycle,
   type ExecutionMode,
   type FailOutcome,
+  FileDriver,
+  type FileDriverOptions,
   type JobRecord,
   type JobsDriver,
   type JobState,

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunRunner, MemoryDriver } from "../lib/index";
-import { testNamespace, waitFor } from "./helpers";
+import { testNamespace } from "./helpers";
 
 /**
  * The three execution modes, asserted to be interchangeable.

@@ -93,6 +93,18 @@ export class BunRunner<
   readonly #active = new Map<string, RunHandle>();
   /** Triggers parked locally (parallel mode only; single mode uses the driver). */
   readonly #localQueue: { id: string; args?: TArgs }[] = [];
+  /**
+   * Bookkeeping still being written for runs that have already left
+   * {@link #active}.
+   *
+   * A run leaves `#active` as soon as its handler settles, because the drain
+   * that follows must see an empty map to know it may start what is queued.
+   * That leaves a window where history, counters and the lock release are
+   * still in flight, and a `stop()` that ignored it would let the process
+   * exit mid-write — losing the record and, on the file driver, stranding
+   * the lock it was holding.
+   */
+  readonly #settling = new Set<Promise<unknown>>();
 
   /** The schedule ticker, while started. */
   #ticker: Ticker | undefined;
@@ -238,6 +250,8 @@ export class BunRunner<
     }
 
     await Promise.allSettled([...this.#active.values()].map((run) => run.done));
+    // Then whatever is still being written for runs that already settled.
+    await Promise.allSettled([...this.#settling]);
 
     this.#clearHeartbeat();
     await this.#releaseLock();
@@ -321,16 +335,16 @@ export class BunRunner<
       if (source === "manual") {
         throw new RunnerStoppedError(this.id);
       }
-      return this.#skip("stopped");
+      return await this.#skip("stopped");
     }
 
     if (this.#paused && !options?.force) {
-      return this.#skip("paused");
+      return await this.#skip("paused");
     }
 
     if (this.options.runMode === "parallel") {
       if (this.#active.size >= this.options.maxConcurrency) {
-        return this.#queueLocally(args, "max-concurrency");
+        return await this.#queueLocally(args, "max-concurrency");
       }
       return { outcome: "started", runId: await this.#startRun(args, source) };
     }
@@ -583,32 +597,39 @@ export class BunRunner<
     }
   }
 
-  /** Records a skipped trigger and reports it. */
-  #skip(
+  /**
+   * Records a skipped trigger and reports it.
+   *
+   * The counter write is awaited rather than fired and forgotten: an
+   * unawaited driver write can still be mid-flight when the process exits,
+   * which loses the count and — on the file driver — strands the lock it was
+   * holding until the stale window expires.
+   */
+  async #skip(
     reason: (TriggerOutcome & { outcome: "skipped" })["reason"],
-  ): TriggerOutcome {
+  ): Promise<TriggerOutcome> {
     const outcome = { outcome: "skipped", reason } as const;
-    void this.#bump({ skipped: 1 });
+    await this.#bump({ skipped: 1 });
     this.safeEmit("skipped", outcome);
     return outcome;
   }
 
   /** Parks a trigger in this process (parallel mode). */
-  #queueLocally(
+  async #queueLocally(
     args: TArgs | undefined,
     reason: (TriggerOutcome & { outcome: "skipped" })["reason"],
-  ): TriggerOutcome {
+  ): Promise<TriggerOutcome> {
     if (!this.options.queueRuns) {
-      return this.#skip(reason);
+      return await this.#skip(reason);
     }
 
     if (this.#localQueue.length >= this.options.maxQueuedRuns) {
-      return this.#skip("queue-full");
+      return await this.#skip("queue-full");
     }
 
     const trigger = { id: newId(), args };
     this.#localQueue.push(trigger);
-    void this.#bump({ queued: 1 });
+    await this.#bump({ queued: 1 });
     this.safeEmit("queued", trigger);
 
     return { outcome: "queued", position: this.#localQueue.length };
@@ -624,7 +645,7 @@ export class BunRunner<
     reason: (TriggerOutcome & { outcome: "skipped" })["reason"],
   ): Promise<TriggerOutcome> {
     if (!this.options.queueRuns) {
-      return this.#skip(reason);
+      return await this.#skip(reason);
     }
 
     const trigger = {
@@ -644,7 +665,7 @@ export class BunRunner<
     );
 
     if (!queued) {
-      return this.#skip("queue-full");
+      return await this.#skip("queue-full");
     }
 
     void this.#bump({ queued: 1 });
@@ -780,7 +801,7 @@ export class BunRunner<
       lastRunId: runId,
       lastStatus: "running",
     });
-    void this.#bump({ total: 1 });
+    await this.#bump({ total: 1 });
 
     const controller = new AbortController();
     const context = this.#buildContext(
@@ -813,6 +834,10 @@ export class BunRunner<
     });
 
     const settle = this.#finish(runId, record, handle);
+    const tracked = settle.finally(() => {
+      this.#settling.delete(tracked);
+    });
+    this.#settling.add(tracked);
 
     this.#active.set(runId, {
       record,

@@ -27,4 +27,5 @@ export type {
   RunStatus,
   StoredSchedule,
 } from "./driver";
+export { FileDriver, type FileDriverOptions } from "./file-driver";
 export { MemoryDriver } from "./memory-driver";
