@@ -207,6 +207,39 @@ Three constraints discovered while building this, all verified by spike:
   TypeScript no single signature to contextually type an inline arrow against,
   and its parameters land on implicit `any`.
 
+### Validation libraries
+
+`BunValidate` accepts any [Standard Schema](https://standardschema.dev), so
+nothing needs adapting. Verified against the real libraries, each passed in
+directly, in `__tests__/bunValidate.libraries.test.ts` (runtime) and
+`__tests__/bunValidate.libraries.type-test.ts` (inference):
+
+| Library | Version | `~standard` |
+|---|---|---|
+| zod | 4 | native |
+| yup | 1.7 | native |
+| valibot | 1 | native |
+| arktype | 2 | native |
+| superstruct | 2 | **none** — wrap it |
+
+They are **devDependencies of bun-common only** — the library imports none of
+them, and the runtime dependency surface is unchanged. They exist so the
+"works with any Standard Schema" claim is checked against four independent
+implementations rather than asserted.
+
+- **Inference is the point.** After `validate({ query: schema })` the
+  handler's `req.query` is the *library's* inferred output: `z.coerce.number()`
+  gives `number`, not `string`. The type test carries a negative control —
+  flip one assertion and it must fail.
+- **Issues follow the spec.** A failure is normalised to
+  `{ target, message, path }`, where `path` is the spec's segments (plain or
+  `{ key }`) joined with dots. Every library's messages arrive intact.
+- **For a library without `~standard`**, `toStandardSchema(validate, { vendor })`
+  wraps a plain (sync or async) validate function into a real Standard Schema,
+  usable anywhere one is accepted. `superstruct` is covered that way.
+- arktype gotcha: a bound cannot follow a morph, so `"string.integer.parse >= 1"`
+  is a parse error — express the range inside the definition instead.
+
 ### Mounted sub-routers
 
 A sub-router declares the path it will be mounted at, so its routes can see the

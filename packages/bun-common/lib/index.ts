@@ -258,6 +258,7 @@ export {
   type BunValidateOptions,
   type InferValidatedShape,
   type TargetHooks,
+  toStandardSchema,
   validate,
   ValidationError,
   type ValidationFailureMode,
