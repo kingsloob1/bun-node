@@ -594,3 +594,35 @@ describe("BunResponse: response introspection for logging", () => {
     expect(logged).toEqual({ status: 200, body: { ok: true } });
   });
 });
+
+describe("BunResponse: keep-alive detection", () => {
+  it("reports isLongLived only once setKeepAlive(true) is called", async () => {
+    const res = await makeResponse();
+
+    // Untouched socket: the shim is never built, and the response is not
+    // long-lived — this is the path `headersSent` takes on every request.
+    expect(res.isLongLived).toBe(false);
+    expect(res.headersSent).toBe(false);
+
+    res.req.socket.setKeepAlive(true);
+    expect(res.req.isKeepAlive).toBe(true);
+    expect(res.isLongLived).toBe(true);
+    expect(res.headersSent).toBe(true);
+  });
+
+  it("setKeepAlive(false) leaves the response short-lived", async () => {
+    const res = await makeResponse();
+    res.req.socket.setKeepAlive(false);
+
+    expect(res.req.isKeepAlive).toBe(false);
+    expect(res.isLongLived).toBe(false);
+  });
+
+  it("isKeepAlive stays false while the socket shim is untouched", async () => {
+    const res = await makeResponse();
+    expect(res.req.isKeepAlive).toBe(false);
+    // Reading the shim must not change the answer.
+    expect(res.req.socket.keepAlive).toBe(false);
+    expect(res.req.isKeepAlive).toBe(false);
+  });
+});
