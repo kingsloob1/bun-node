@@ -2,6 +2,7 @@ import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
 import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import { afterAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRouter } from "../lib/BunRouter";
 import { BunValidate, validate, ValidationError } from "../lib/BunValidate";
 
 /**
@@ -400,5 +401,92 @@ describe("ValidationError", () => {
     expect(error.message).toContain("body.title: title is required");
     expect(error.targets).toEqual(["query", "body"]);
     expect(error).toBeInstanceOf(Error);
+  });
+});
+
+describe("BunValidate: mounted sub-routers", () => {
+  it("merges the mount's params with the sub-route's own", async () => {
+    const sub = new BunRouter<"/users/:id">();
+    sub.get("/posts/:postId", (req, res) => {
+      res.json({ params: req.params });
+    });
+
+    const base = await serve((adapter) => {
+      adapter.use("/users/:id", sub);
+    });
+
+    expect(await (await fetch(`${base}/users/42/posts/99`)).json()).toEqual({
+      params: { id: "42", postId: "99" },
+    });
+  });
+
+  it("carries a mount validator's query and body into the sub-router", async () => {
+    const sub = new BunRouter<"/orgs/:org", { query: { page: number } }>();
+    sub.get("/members", (req, res) => {
+      res.json({ page: req.query.page, type: typeof req.query.page });
+    });
+
+    const base = await serve((adapter) => {
+      adapter.use("/orgs/:org", validate({ query: PageQuery }), sub);
+    });
+
+    expect(
+      await (await fetch(`${base}/orgs/acme/members?page=3`)).json(),
+    ).toEqual({ page: 3, type: "number" });
+  });
+
+  it("does NOT carry a mount validator's params into the sub-router", async () => {
+    // Two independent reasons, which is why the types drop the mount's
+    // `params` entirely:
+    //   1. `use()` middleware is not a route handler, so the pipeline never
+    //      binds params for it — a mount validator sees `{}`, not `{ id }`.
+    //   2. Params are rebound on entering each matched route, so even a
+    //      replacement made there would be overwritten before the sub-route.
+    const seenAtMount: unknown[] = [];
+    const Observing = schema<Record<string, string>>((value) => {
+      seenAtMount.push({ ...(value as Record<string, string>) });
+      return { value: { id: "replaced-at-mount" } };
+    });
+
+    const sub = new BunRouter<"/users/:id">();
+    sub.get("/posts", (req, res) => {
+      res.json({ id: req.params.id, type: typeof req.params.id });
+    });
+
+    const base = await serve((adapter) => {
+      adapter.use("/users/:id", validate({ params: Observing }), sub);
+    });
+
+    // The sub-route sees the path's own params, not the mount's replacement.
+    expect(await (await fetch(`${base}/users/42/posts`)).json()).toEqual({
+      id: "42",
+      type: "string",
+    });
+    // And the mount validator never saw the mount params in the first place.
+    expect(seenAtMount).toEqual([{}]);
+  });
+
+  it("chains validators: a sub-route's sees the mount's output, not the raw query", async () => {
+    // Each validator replaces `req.query` wholesale, so a sub-route validator
+    // is handed what the mount produced. A sub-route schema therefore has to
+    // be written against the mount's output shape, not the raw query string.
+    const Doubling = schema<{ page: number; doubled: number }>((value) => {
+      const page = Number((value as Record<string, unknown>).page);
+      return { value: { page, doubled: page * 2 } };
+    });
+
+    const sub = new BunRouter<"/a/:x", { query: { page: number } }>();
+    sub.get("/b", validate({ query: Doubling }), (req, res) => {
+      res.json({ query: req.query });
+    });
+
+    const base = await serve((adapter) => {
+      adapter.use("/a/:x", validate({ query: PageQuery }), sub);
+    });
+
+    // `cursor` is gone: the mount validator dropped it before the sub-route ran.
+    expect(
+      await (await fetch(`${base}/a/1/b?cursor=abc&page=9`)).json(),
+    ).toEqual({ query: { page: 9, doubled: 18 } });
   });
 });

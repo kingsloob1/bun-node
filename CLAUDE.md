@@ -155,9 +155,50 @@ Three constraints discovered while building this, all verified by spike:
   TypeScript no single signature to contextually type an inline arrow against,
   and its parameters land on implicit `any`.
 
-Compile-time assertions live in `__tests__/verbTyping.type-test.ts` and
+### Mounted sub-routers
+
+A sub-router declares the path it will be mounted at, so its routes can see the
+mount's params:
+
+```ts
+const users = new BunRouter<"/users/:id">();
+users.get("/posts/:postId", (req) => req.params); // { id, postId }
+adapter.use("/users/:id", users);
+```
+
+With a validator at the mount, its `query`/`body` reach the sub-router too, and
+the declaration must include them:
+
+```ts
+const orgs = new BunRouter<"/orgs/:org", { query: { page: number } }>();
+adapter.use("/orgs/:org", validate({ query: PageQuery }), orgs);
+```
+
+`use()` requires the declaration and the actual mount to agree — a wrong path,
+a wrong shape, or a declared shape mounted without its validator are all
+compile errors. Three details make that work, each easy to undo by accident:
+
+- `NoInfer` on the router argument. Without it `TPath` also infers from the
+  router, and TypeScript reconciles the two candidates by widening to their
+  union — which both then satisfy, so a mismatch passes.
+- A phantom `__mount` field (`declare`, so it emits nothing). Without it two
+  differently-mounted routers are structurally identical and nothing to
+  compare.
+- The untyped `use` overloads take `UnmountedRouter`, not `Router`. Otherwise
+  they swallow any mismatch the typed overloads reject.
+
+**Mount `params` deliberately do not propagate into the types**, because they
+do not propagate at runtime: `use()` middleware is not a route handler, so the
+pipeline never binds params for it (a mount validator sees `{}`), and params
+are rebound on entering each matched route regardless. Validators also chain —
+each replaces `req.query` wholesale, so a sub-route's schema receives the
+mount's *output*, not the raw query.
+
+Compile-time assertions live in `__tests__/verbTyping.type-test.ts`,
+`__tests__/mountTyping.type-test.ts` and
 `packages/bun-nest/__tests__/nestVerbTyping.type-test.ts`; they are checked by
-the tests typecheck, not `bun test`.
+the tests typecheck, not `bun test`. Runtime coverage for mounting is in
+`__tests__/bunValidate.test.ts`.
 
 ## Testing conventions & gotchas
 

@@ -205,6 +205,8 @@ export { createServeStaticHandler } from "./serveStatic";
 export type { ExtractRouteParams } from "./types/routeParams";
 export type {
   EmptyShape,
+  MergeShape,
+  MountedHandler,
   ResolveBody,
   ResolvedHandler,
   ResolveParams,
@@ -220,6 +222,7 @@ export {
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
   routeModulePath,
+  type UnmountedRouter,
 } from "./BunRouter";
 export {
   BunHttpAdapter,

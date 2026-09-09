@@ -54,3 +54,39 @@ export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
   ResolveQuery<S>,
   ResolveBody<S>
 >;
+
+/**
+ * Combines a mount's validated shape with a route's own, the route winning on
+ * any key both declare.
+ *
+ * `params` is dropped from the mount's shape deliberately. At runtime the
+ * pipeline rebinds `req.params` when it enters each matched route, so a
+ * validator mounted with `use()` has its *params* replacement overwritten
+ * before a sub-router's handler runs — while its `query` and `body`
+ * replacements survive, since those are never rebound. Carrying mount params
+ * into the types would promise a coercion the request never receives.
+ */
+export type MergeShape<TMountShape, TShape> = Omit<
+  Omit<TMountShape, "params">,
+  keyof TShape
+> &
+  TShape;
+
+/**
+ * The handler type for a route registered at `TPath` on a router mounted at
+ * `TMountPath`.
+ *
+ * Params come from both paths concatenated, matching the runtime, which merges
+ * the mount's matched params with the route's own. `TMountPath` defaults to the
+ * empty string for an unmounted router, so concatenation is the identity there.
+ */
+export type MountedHandler<
+  TMountPath extends string,
+  TMountShape,
+  TPath extends string,
+  TShape,
+> = TypedRouteHandler<
+  ResolveParams<`${TMountPath}${TPath}`, TShape>,
+  ResolveQuery<MergeShape<TMountShape, TShape>>,
+  ResolveBody<MergeShape<TMountShape, TShape>>
+>;

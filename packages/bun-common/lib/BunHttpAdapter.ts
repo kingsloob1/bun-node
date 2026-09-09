@@ -53,7 +53,7 @@ export class BunHttpAdapter<
 > extends BunRouter {
   #requestOpts!: BunRequestOptions;
   #nodeHttpServer!: NodeServer;
-  private _instance!: InstanceType<typeof BunRouter>;
+  private _instance!: BunRouter;
   private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
   private _serverInstance:
     | BunServer<WebSocketClientData<customWebsocketDataType>>
@@ -180,7 +180,7 @@ export class BunHttpAdapter<
     return this;
   }
 
-  get instance(): InstanceType<typeof BunRouter> {
+  get instance(): BunRouter {
     return this._instance || this;
   }
 
