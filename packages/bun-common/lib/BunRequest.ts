@@ -8,6 +8,7 @@ import type {
   BodyParserOptions,
   BunRequestInterface,
   BunServer,
+  DefaultRequestBody,
   MultiPartFileRecord,
   MultiPartOptions,
 } from "./types/general";
@@ -383,8 +384,23 @@ interface LegacyBodyOptions {
   parseMultiPartFormDataOpts?: MultiPartOptions;
 }
 
-export class BunRequest
-  implements BunRequestInterface, TypedEmitter<BunRequestEvents>
+export class BunRequest<
+    /**
+     * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
+     * a route registered with a path literal narrows it to that path's params.
+     */
+    TParams = Record<string, string>,
+    /**
+     * Shape of `req.query`. Defaults to the parser's untyped output; a validator
+     * narrows it to its parsed result.
+     */
+    TQuery = Record<string, unknown>,
+    /** Shape of `req.body`. Defaults to the union the body parsers produce. */
+    TBody = DefaultRequestBody,
+  >
+  implements
+    BunRequestInterface<TParams, TQuery, TBody>,
+    TypedEmitter<BunRequestEvents>
 {
   private bunResponse: BunResponse | undefined = undefined;
   public headersObj: InstanceType<typeof Headers>;
@@ -405,13 +421,11 @@ export class BunRequest
   public reusedSocket = false;
   /** Init promises, lazily allocated only when body/cookie/query parsing runs. */
   #initPromises: Promise<unknown>[] | undefined = undefined;
-  private _body:
-    | string
-    | Record<string, unknown>
-    | Buffer
-    | unknown[]
-    | null
-    | undefined = undefined;
+  /**
+   * The parsed body. Widened to {@link DefaultRequestBody} so the generic
+   * `TBody` view can be cast in and out without narrowing the storage.
+   */
+  private _body: DefaultRequestBody = undefined;
 
   public secret: string | string[] | undefined = undefined;
   // `cookies`/`signedCookies`/`params`/`query` are lazily allocated — a
@@ -903,22 +917,25 @@ export class BunRequest
     this.#signedCookies = value;
   }
 
-  /** Matched route params — lazily allocated; the router assigns the real set. */
-  get params(): Record<string, string> {
-    return (this.#params ??= {});
+  /**
+   * Matched route params — lazily allocated; the router assigns the real set.
+   * Typed as `TParams`, which a path literal or a validator narrows.
+   */
+  get params(): TParams {
+    return (this.#params ??= {}) as TParams;
   }
 
-  set params(value: Record<string, string>) {
-    this.#params = value;
+  set params(value: TParams) {
+    this.#params = value as Record<string, string>;
   }
 
   /** Parsed query string — lazily allocated on first access. */
-  get query(): Record<string, unknown> {
-    return (this.#query ??= {});
+  get query(): TQuery {
+    return (this.#query ??= {}) as TQuery;
   }
 
-  set query(value: Record<string, unknown>) {
-    this.#query = value;
+  set query(value: TQuery) {
+    this.#query = value as Record<string, unknown>;
   }
 
   /**
@@ -996,26 +1013,12 @@ export class BunRequest
     return this._buffer;
   }
 
-  get body():
-    | string
-    | Record<string, unknown>
-    | Buffer
-    | unknown[]
-    | null
-    | undefined {
-    return this._body;
+  get body(): TBody {
+    return this._body as TBody;
   }
 
-  set body(
-    data:
-      | string
-      | Record<string, unknown>
-      | Buffer
-      | unknown[]
-      | null
-      | undefined,
-  ) {
-    this._body = data;
+  set body(data: TBody) {
+    this._body = data as DefaultRequestBody;
   }
 
   get storageFiles() {
@@ -1800,7 +1803,11 @@ export class BunRequest
     const options: QueryParserOpts = opts ||
       this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
 
-    this.query = parseSearchString(this.splitRequestUrl().search, options);
+    // The parser returns the untyped shape; `TQuery` is the caller's view of it.
+    this.query = parseSearchString(
+      this.splitRequestUrl().search,
+      options,
+    ) as TQuery;
     return this.query;
   }
 

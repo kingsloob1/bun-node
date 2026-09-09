@@ -26,7 +26,24 @@ export type MultiPartOptions = BusboyConfig & {
   ) => Promise<Record<string, unknown>>;
 };
 
-export interface BunRequestInterface {
+/**
+ * The body shape a request carries when nothing narrower is known — the union
+ * the body parsers can produce. Used as the default for the `TBody` type
+ * parameter so untyped code keeps its current behaviour.
+ */
+export type DefaultRequestBody =
+  | string
+  | Record<string, unknown>
+  | ArrayBufferView
+  | unknown[]
+  | null
+  | undefined;
+
+export interface BunRequestInterface<
+  TParams = Record<string, string>,
+  TQuery = Record<string, unknown>,
+  TBody = DefaultRequestBody,
+> {
   parsedUrl: InstanceType<typeof URL>;
   headersObj: InstanceType<typeof Headers>;
   getHeader: (name: string) => string | null;
@@ -46,13 +63,7 @@ export interface BunRequestInterface {
     value: string | string[],
     replace?: boolean,
   ) => void;
-  body:
-    | string
-    | Record<string, unknown>
-    | ArrayBufferView
-    | unknown[]
-    | null
-    | undefined;
+  body: TBody;
   buffer: Buffer | undefined;
   secret?: string | string[];
   cookies: Record<string, unknown>;
@@ -68,8 +79,8 @@ export interface BunRequestInterface {
   httpVersionMinor: string;
   rawHeaders: string[];
   url: string;
-  params: Record<string, string>;
-  query: Record<string, unknown>;
+  params: TParams;
+  query: TQuery;
   route: Awaited<ReturnType<BunRouter["handle"]>> | null | undefined;
   secure: boolean;
   subdomains: string[];
@@ -247,6 +258,26 @@ export type RouterErrorMiddlewareHandler<R = unknown> = (
 ) => R | Promise<R>;
 
 export type RouterHandler<R = unknown> = RouterMiddlewareHandler<R>;
+
+/**
+ * A route handler whose request is narrowed to a specific route's shapes.
+ *
+ * `TParams` comes from the registered path literal (see `ExtractRouteParams`)
+ * unless a validator in the same chain declares its own; `TQuery` and `TBody`
+ * come from a validator, or from explicit type arguments on the verb method.
+ * Existing untyped handlers keep working — the defaults are exactly the types
+ * `RouterHandler` has always used.
+ */
+export type TypedRouteHandler<
+  TParams = Record<string, string>,
+  TQuery = Record<string, unknown>,
+  TBody = DefaultRequestBody,
+  R = unknown,
+> = (
+  req: BunRequest<TParams, TQuery, TBody>,
+  res: BunResponse,
+  next: NextFunction,
+) => R | Promise<R>;
 
 /**
  * Any callback registrable on a route. The router accepts handlers of every

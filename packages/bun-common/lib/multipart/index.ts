@@ -134,7 +134,10 @@ export const filterUpload = async (
   }
 };
 
-export type BunMultipartRequest = InstanceType<typeof BunRequest> & {
+// `BunRequest` rather than `InstanceType<typeof BunRequest>`: the latter
+// resolves the class's type parameters to their constraints instead of their
+// defaults, which would leave `params`/`query`/`body` as `unknown`.
+export type BunMultipartRequest = BunRequest & {
   storageFile?: StorageFile;
   storageFiles?: StorageFile[] | Record<string, StorageFile[]>;
 };

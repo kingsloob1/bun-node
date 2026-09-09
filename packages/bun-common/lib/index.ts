@@ -214,6 +214,7 @@ export {
   type BunServer,
   type BunServeUnixNormalOptions,
   type Constructor,
+  type DefaultRequestBody,
   type Logger,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
@@ -226,6 +227,7 @@ export {
   type RouterMiddlewareHandler,
   type SendFileOptions,
   type ServeStaticOptions,
+  type TypedRouteHandler,
 } from "./types/general";
 
 /* ------------------------------------------------------------------ *
