@@ -4,7 +4,7 @@ Project knowledge for Claude Code and contributors. Auto-loaded each session.
 
 ## What this repo is
 
-`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with two
+`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with three
 published packages under `packages/`:
 
 - **`@kingsleyweb/bun-common`** — an Express-like HTTP layer for `Bun.serve`:
@@ -14,10 +14,23 @@ published packages under `packages/`:
 - **`@kingsleyweb/bun-nest`** — a NestJS adapter built on bun-common:
   `BunHttpAdapter` (extends NestJS `AbstractHttpAdapter`),
   `BunWebSocketAdapter`, file interceptors, decorators.
+- **`@kingsleyweb/bun-jobs`** — background work on top of bun-common's
+  primitives: `BunRunner` (run a JS/TS file on a schedule or on demand, in a
+  child process, a `Worker` or in-process), `BunQueue`/`BunQueueWorker` (a
+  job queue across processes and services) and the per-service `BunJobs`
+  context, over pluggable drivers (memory, file, Redis, SQL). Being
+  assembled in phases — see its `README.md` for what has landed.
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
-typecheck, ESLint via `@antfu/eslint-config`. Runtime is Bun. Source ships as
-raw `.ts` (`main`/`types` point at `lib/index.ts`).
+typecheck, ESLint via `@antfu/eslint-config`. Source ships as raw `.ts`
+(`main`/`types` point at `lib/index.ts`).
+
+Runtime is **Bun ≥ 1.4.2**: `engines.bun` says so in the root and in every
+package, `bun-types`/`@types/bun` devDeps are `^1.4.2`, and each package
+declares an optional `@types/bun >=1.4.2` peer so a consumer on older types
+is warned instead of hitting opaque type errors. The floor matters because
+bun-jobs' Redis and SQL drivers use `RedisClient.eval`/`xadd`/… and
+`sql.listen`, which 1.4.2 is the first `bun-types` release to declare.
 
 bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
@@ -31,8 +44,8 @@ bunx eslint lib __tests__  # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
 
-After changing bun-common, also run bun-nest's checks (it depends on
-bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
+After changing bun-common, also run bun-nest's and bun-jobs' checks (both
+depend on bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
 noise — ignore it. There may be a couple of intentional `no-console` ESLint
 *warnings* (error logging in catch blocks with no logger in scope); warnings
 do not fail lint.
@@ -82,7 +95,9 @@ Two rules follow, and must hold for every dependency you add:
   the consumer's tree, so the type collapses to `any`/error for them.
   `@types/accepts`, `@types/busboy`, `@types/type-is` are therefore
   `dependencies`. Exceptions: `@types/bun` stays a devDep (runtime-env types the
-  consumer already provides; pinning it risks a version clash), and libs that
+  consumer already provides; pinning it risks a version clash) — the minimum
+  is expressed instead as an *optional* peer range,
+  `peerDependencies["@types/bun"] = ">=1.4.2"`, never a pin — and libs that
   bundle their own types (`file-type`, `mime`, `parse-domain`) need no `@types`.
 - **Re-export third-party types that appear in the public type surface.**
   `lib/index.ts` has `export type { BusboyConfig, FieldInfo, FileInfo } from
