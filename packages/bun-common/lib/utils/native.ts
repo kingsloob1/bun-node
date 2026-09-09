@@ -912,6 +912,447 @@ export async function waitUntil<T>(
   }
 }
 
+/** Options for {@link sleep}. */
+export interface SleepOptions {
+  /**
+   * Cuts the wait short. The promise then rejects with the signal's `reason`
+   * when it carries one, otherwise with an `Error` named `"AbortError"`.
+   */
+  signal?: AbortSignal;
+  /**
+   * When `true` the timer does not keep the process alive (`timer.unref()`).
+   * Defaults to `false`.
+   */
+  unref?: boolean;
+}
+
+/**
+ * Builds the error an aborted wait rejects with: the signal's own `reason`
+ * when it has one (a `DOMException` in the standard case), else an `Error`
+ * named `"AbortError"` so {@link isAbortError} recognises it either way.
+ */
+function toAbortError(reason: unknown, message: string): Error {
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Promise-based `setTimeout`. Prefer it over hand-rolled timers so aborts and
+ * `unref` behave consistently.
+ */
+export function sleep(ms: number, options?: SleepOptions): Promise<void> {
+  const signal = options?.signal;
+
+  if (signal?.aborted) {
+    return Promise.reject(toAbortError(signal.reason, "The wait was aborted"));
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(
+      () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      Math.max(0, ms),
+    );
+
+    if (options?.unref) {
+      timer.unref?.();
+    }
+
+    function onAbort() {
+      clearTimeout(timer);
+      reject(toAbortError(signal?.reason, "The wait was aborted"));
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * True when `error` is an abort — either a `DOMException`/`Error` named
+ * `"AbortError"` or one carrying the `ABORT_ERR` code. Use it to tell "the
+ * caller cancelled" apart from a genuine failure.
+ */
+export function isAbortError(error: unknown): boolean {
+  if (!isObject(error)) {
+    return false;
+  }
+
+  const { name, code } = error as { name?: unknown; code?: unknown };
+  return name === "AbortError" || code === "ABORT_ERR" || code === 20;
+}
+
+/** Raised by {@link withTimeout} when the work outlives its budget. */
+export class TimeoutError extends Error {
+  /** The budget that elapsed, in milliseconds. */
+  readonly ms: number;
+
+  constructor(ms: number, message?: string) {
+    super(message ?? `Timed out after ${ms}ms`);
+    this.name = "TimeoutError";
+    this.ms = ms;
+  }
+}
+
+/** Options for {@link withTimeout}. */
+export interface WithTimeoutOptions {
+  /** Message for the raised {@link TimeoutError}. Defaults to `Timed out after <ms>ms`. */
+  message?: string;
+  /**
+   * Called once when the budget elapses, before the returned promise rejects.
+   * The place to abort an `AbortController` driving the work.
+   */
+  onTimeout?: () => void;
+  /**
+   * When `true` the timeout timer does not keep the process alive. Defaults
+   * to `true`, since a pending timeout is never itself a reason to stay up.
+   */
+  unref?: boolean;
+}
+
+/**
+ * Rejects with a {@link TimeoutError} when `work` has not settled within `ms`.
+ *
+ * `ms <= 0` means "no timeout" and simply awaits the work. The original
+ * promise keeps a terminal handler either way, so a rejection arriving *after*
+ * the timeout can never surface as an `unhandledRejection`.
+ */
+export function withTimeout<T>(
+  work: Promise<T> | (() => Promise<T> | T),
+  ms: number,
+  options?: WithTimeoutOptions,
+): Promise<T> {
+  const promise = Promise.resolve(isFunction(work) ? work() : work);
+
+  if (!(ms > 0)) {
+    return promise;
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      options?.onTimeout?.();
+      reject(new TimeoutError(ms, options?.message));
+    }, ms);
+
+    if (options?.unref !== false) {
+      timer.unref?.();
+    }
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          resolve(value);
+        }
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+        // Otherwise the timeout already rejected and this handler is the
+        // terminal one that keeps the late rejection from going unhandled.
+      },
+    );
+  });
+}
+
+/** Shape of a backoff schedule, shared by {@link computeBackoff} and {@link retry}. */
+export interface BackoffOptions {
+  /** `"fixed"` waits `delay` every time; `"exponential"` grows it. Defaults to `"fixed"`. */
+  type?: "fixed" | "exponential";
+  /** Base delay in milliseconds. Defaults to `1000`. */
+  delay?: number;
+  /** Growth factor for `"exponential"`. Defaults to `2`. */
+  factor?: number;
+  /** Upper bound on the delay before jitter, in milliseconds. Defaults to `Infinity`. */
+  max?: number;
+  /**
+   * Randomises the delay by ±fraction to avoid a thundering herd. `true` means
+   * `0.1` (±10%); a number is the fraction itself. Defaults to `0` (none).
+   */
+  jitter?: number | boolean;
+}
+
+/**
+ * Delay before attempt `attempt + 1`, given that `attempt` (1-based) just
+ * failed. A plain number is shorthand for `{ type: "fixed", delay }`.
+ *
+ * The cap applies to the computed delay; jitter is then applied on top, so a
+ * jittered value may sit slightly above `max` (never below zero).
+ */
+export function computeBackoff(
+  attempt: number,
+  options?: BackoffOptions | number,
+): number {
+  const resolved: BackoffOptions = isNumber(options)
+    ? { type: "fixed", delay: options }
+    : (options ?? {});
+
+  const base = resolved.delay ?? 1000;
+  const factor = resolved.factor ?? 2;
+  const max = resolved.max ?? Number.POSITIVE_INFINITY;
+  const step = Math.max(1, Math.floor(attempt));
+
+  const raw =
+    resolved.type === "exponential" ? base * factor ** (step - 1) : base;
+  const capped = Math.min(raw, max);
+
+  const jitter =
+    resolved.jitter === true
+      ? 0.1
+      : isNumber(resolved.jitter)
+        ? resolved.jitter
+        : 0;
+
+  if (!jitter) {
+    return Math.max(0, capped);
+  }
+
+  const spread = capped * jitter;
+  return Math.max(0, capped + (Math.random() * 2 - 1) * spread);
+}
+
+/** Options for {@link retry}. */
+export interface RetryOptions {
+  /** Total attempts, including the first. Defaults to `3`. */
+  attempts?: number;
+  /** Delay schedule between attempts. Defaults to `{ type: "fixed", delay: 1000 }`. */
+  backoff?: BackoffOptions | number;
+  /** Decides whether a given failure is worth another attempt. Defaults to always. */
+  shouldRetry?: (error: unknown, attempt: number) => boolean;
+  /** Called before each wait, with the error that caused it. */
+  onRetry?: (error: unknown, attempt: number, delayMs: number) => void;
+  /** Aborts between attempts and is forwarded to `fn`. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Runs `fn` until it succeeds or the attempts run out, waiting
+ * {@link computeBackoff} between tries. Re-throws the last error.
+ */
+export async function retry<T>(
+  fn: (attempt: number, signal?: AbortSignal) => Promise<T> | T,
+  options?: RetryOptions,
+): Promise<T> {
+  const attempts = Math.max(1, Math.floor(options?.attempts ?? 3));
+  const signal = options?.signal;
+
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (signal?.aborted) {
+      throw toAbortError(signal.reason, "The retry was aborted");
+    }
+
+    try {
+      return await fn(attempt, signal);
+    } catch (error) {
+      lastError = error;
+
+      const isLast = attempt >= attempts;
+      const retryable = options?.shouldRetry?.(error, attempt) ?? true;
+      if (isLast || !retryable) {
+        break;
+      }
+
+      const delay = computeBackoff(attempt, options?.backoff);
+      options?.onRetry?.(error, attempt, delay);
+      await sleep(delay, { signal, unref: true });
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * A non-reentrant in-process lock. Bun has no `Mutex`, and serialising
+ * read-modify-write sequences (a JSON state file, a SQLite transaction) needs
+ * one. Waiters are served FIFO.
+ */
+export class Mutex {
+  /** Resolvers of the queued `acquire()` calls, in arrival order. */
+  readonly #queue: (() => void)[] = [];
+  /** Whether the lock is currently held. */
+  #locked = false;
+
+  /** Whether the lock is currently held. */
+  get locked(): boolean {
+    return this.#locked;
+  }
+
+  /** How many callers are waiting for the lock. */
+  get waiting(): number {
+    return this.#queue.length;
+  }
+
+  /**
+   * Waits for the lock and resolves with its release function. Calling the
+   * release function more than once is a no-op.
+   */
+  acquire(): Promise<() => void> {
+    if (!this.#locked) {
+      this.#locked = true;
+      return Promise.resolve(this.#createRelease());
+    }
+
+    return new Promise<() => void>((resolve) => {
+      this.#queue.push(() => resolve(this.#createRelease()));
+    });
+  }
+
+  /** Runs `fn` while holding the lock, releasing it however `fn` settles. */
+  async runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+    const release = await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /** Builds a single-use release function for the current holder. */
+  #createRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+
+      const next = this.#queue.shift();
+      if (next) {
+        // Hand the lock straight to the next waiter — never unlocked in
+        // between, so ordering cannot be jumped by a fresh caller.
+        next();
+      } else {
+        this.#locked = false;
+      }
+    };
+  }
+}
+
+/**
+ * Counting semaphore, for bounding concurrency (in-flight jobs, open file
+ * handles). Waiters are served FIFO.
+ */
+export class Semaphore {
+  /** Resolvers of the queued `acquire()` calls, in arrival order. */
+  readonly #queue: (() => void)[] = [];
+  /** Permits currently free. */
+  #available: number;
+  /** Total permits, adjustable via {@link setPermits}. */
+  #permits: number;
+
+  constructor(
+    /** How many holders may run concurrently. Must be at least `1`. */
+    permits: number,
+  ) {
+    this.#permits = Math.max(1, Math.floor(permits));
+    this.#available = this.#permits;
+  }
+
+  /** Permits currently free. */
+  get available(): number {
+    return this.#available;
+  }
+
+  /** How many callers are waiting for a permit. */
+  get waiting(): number {
+    return this.#queue.length;
+  }
+
+  /** Total permits. */
+  get permits(): number {
+    return this.#permits;
+  }
+
+  /**
+   * Waits for a permit and resolves with its release function. Calling the
+   * release function more than once is a no-op.
+   */
+  acquire(): Promise<() => void> {
+    const immediate = this.tryAcquire();
+    if (immediate) {
+      return Promise.resolve(immediate);
+    }
+
+    return new Promise<() => void>((resolve) => {
+      this.#queue.push(() => resolve(this.#createRelease()));
+    });
+  }
+
+  /** Takes a permit if one is free, else returns `null` without waiting. */
+  tryAcquire(): (() => void) | null {
+    if (this.#available <= 0) {
+      return null;
+    }
+
+    this.#available--;
+    return this.#createRelease();
+  }
+
+  /** Runs `fn` holding a permit, releasing it however `fn` settles. */
+  async runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+    const release = await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Changes the permit count at runtime. Raising it wakes waiters
+   * immediately; lowering it never revokes a permit already held, so the
+   * limit takes effect as holders release.
+   */
+  setPermits(permits: number): void {
+    const next = Math.max(1, Math.floor(permits));
+    const delta = next - this.#permits;
+    this.#permits = next;
+    this.#available += delta;
+
+    while (this.#available > 0 && this.#queue.length > 0) {
+      this.#available--;
+      this.#queue.shift()?.();
+    }
+  }
+
+  /** Builds a single-use release function for one permit. */
+  #createRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+
+      const next = this.#queue.shift();
+      if (next) {
+        // Pass the permit straight on; `#available` stays as-is.
+        next();
+      } else {
+        this.#available = Math.min(this.#permits, this.#available + 1);
+      }
+    };
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Free port discovery (get-port replacement)
  * ------------------------------------------------------------------ */
@@ -1305,4 +1746,188 @@ export function parseXmlToObject(
   i++; // skip the root element's opening '<'
   const rootValue = parseElement();
   return { [lastName]: rootValue };
+}
+
+/* ------------------------------------------------------------------ *
+ * Errors & structured cloning
+ *
+ * Errors do not survive `JSON.stringify` (an `Error` serialises to `{}`) and
+ * do not survive a process/worker boundary, so anything that reports a
+ * failure across one has to flatten it first. These helpers do that
+ * losslessly enough to rebuild a real `Error` on the far side.
+ * ------------------------------------------------------------------ */
+
+/** A plain-object form of an `Error`, safe to `JSON.stringify`. */
+export interface SerializedError {
+  /** The error's `name` (`"Error"`, `"TypeError"`, a custom class name, ...). */
+  name: string;
+  /** The error's `message`. */
+  message: string;
+  /** The stack trace, truncated to `maxStackBytes`. */
+  stack?: string;
+  /** A `code` property when the error carried one (`"ENOENT"`, `"LOCK_LOST"`, ...). */
+  code?: string | number;
+  /** The serialised `cause`, up to `maxDepth` levels deep. */
+  cause?: SerializedError;
+  /** Remaining own enumerable properties, JSON-cloned. */
+  data?: Record<string, unknown>;
+}
+
+/** Options for {@link serializeError}. */
+export interface SerializeErrorOptions {
+  /** How many `cause` levels to follow. Defaults to `5`. */
+  maxDepth?: number;
+  /** Byte cap on the retained stack. Defaults to `8192`. */
+  maxStackBytes?: number;
+}
+
+/** Properties handled explicitly, so they never land in `data`. */
+const SERIALIZED_ERROR_KEYS = new Set([
+  "name",
+  "message",
+  "stack",
+  "code",
+  "cause",
+]);
+
+/**
+ * Flattens any thrown value into a {@link SerializedError}.
+ *
+ * A non-`Error` (a string, an object, `undefined`) becomes
+ * `{ name: "NonError", message: String(value) }` rather than being dropped —
+ * throwing a non-error is a bug worth seeing, not worth losing. Own
+ * enumerable properties beyond the standard ones are kept under `data`, with
+ * anything unserialisable omitted.
+ */
+export function serializeError(
+  error: unknown,
+  options?: SerializeErrorOptions,
+): SerializedError {
+  const maxDepth = options?.maxDepth ?? 5;
+  const maxStackBytes = options?.maxStackBytes ?? 8192;
+
+  if (!isError(error)) {
+    return {
+      name: "NonError",
+      message: typeof error === "string" ? error : safeStringify(error),
+    };
+  }
+
+  const source = error as Error & {
+    code?: string | number;
+    cause?: unknown;
+  };
+
+  const serialized: SerializedError = {
+    name: source.name || "Error",
+    message: source.message || "",
+  };
+
+  if (source.stack) {
+    serialized.stack =
+      source.stack.length > maxStackBytes
+        ? `${source.stack.slice(0, maxStackBytes)}\n… (stack truncated)`
+        : source.stack;
+  }
+
+  if (isString(source.code) || isNumber(source.code)) {
+    serialized.code = source.code;
+  }
+
+  if (source.cause !== undefined && maxDepth > 0) {
+    serialized.cause = serializeError(source.cause, {
+      maxDepth: maxDepth - 1,
+      maxStackBytes,
+    });
+  }
+
+  const data: Record<string, unknown> = {};
+  let hasData = false;
+  for (const key of Object.keys(source)) {
+    if (SERIALIZED_ERROR_KEYS.has(key)) {
+      continue;
+    }
+
+    const value = (source as unknown as Record<string, unknown>)[key];
+    const cloned = tryJsonClone(value);
+    if (cloned !== undefined) {
+      data[key] = cloned;
+      hasData = true;
+    }
+  }
+
+  if (hasData) {
+    serialized.data = data;
+  }
+
+  return serialized;
+}
+
+/**
+ * Rebuilds an `Error` from {@link serializeError}'s output, restoring `name`,
+ * `stack`, `code`, `cause` and any `data` properties. The result is a real
+ * `Error` instance whose `name` is the original one — not the original class,
+ * which cannot cross a process boundary.
+ */
+export function deserializeError(input: SerializedError): Error {
+  const error = new Error(input.message) as Error & {
+    code?: string | number;
+    cause?: unknown;
+  };
+
+  error.name = input.name;
+
+  if (input.stack) {
+    error.stack = input.stack;
+  }
+
+  if (input.code !== undefined) {
+    error.code = input.code;
+  }
+
+  if (input.cause) {
+    error.cause = deserializeError(input.cause);
+  }
+
+  if (input.data) {
+    Object.assign(error, input.data);
+  }
+
+  return error;
+}
+
+/**
+ * Round-trips `value` through JSON, giving the exact object a JSON driver,
+ * an IPC channel or a database column would hand back.
+ *
+ * Lossy by design, and deliberately so — the loss is what crosses the wire:
+ * `undefined` properties are dropped, a `Date` becomes an ISO string, a
+ * `Map`/`Set`/class instance becomes a plain object, and a `BigInt` or a
+ * cycle throws `TypeError`. Use it at a boundary so the value a handler sees
+ * locally matches what it would see remotely.
+ */
+export function jsonClone<T>(value: T): T {
+  const json = JSON.stringify(value);
+  if (json === undefined) {
+    return undefined as T;
+  }
+  return JSON.parse(json) as T;
+}
+
+/** {@link jsonClone} that yields `undefined` instead of throwing. */
+function tryJsonClone(value: unknown): unknown {
+  try {
+    return jsonClone(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `String(value)` that survives a throwing `toString`/getter. */
+function safeStringify(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
 }

@@ -73,7 +73,9 @@ keep the dependency surface small.
   **`packages/bun-common/lib/utils/native.ts`** (type guards, `get/set/merge/
   cloneDeep/orderBy/omit/pick/each`, `etag`, cookie parse/serialize/sign,
   `fresh`, `rangeParser`, `appendVary`, `encodeUrl`, `getPort`,
-  `createDeferred`, `waitUntil`) and **`lib/cors.ts`** (native CORS).
+  `createDeferred`, `waitUntil`, `sleep`, `withTimeout`, `computeBackoff`,
+  `retry`, `serializeError`/`deserializeError`, `jsonClone`, `Mutex`,
+  `Semaphore`) and **`lib/cors.ts`** (native CORS).
   `lib/index.ts` re-exports them via `export * from "./utils/native"`.
 - `qs` → `picoquery` for query parsing (`DEFAULT_PARSE_QUERY_OPTS` uses
   `nestingSyntax: "js"`, `arrayRepeat: true`; strip a leading `?` before
@@ -106,6 +108,41 @@ Two rules follow, and must hold for every dependency you add:
   consumer can *use* the composed types but cannot *name* the base types, and TS
   declaration emit raises `TS2742` "cannot be named". bun-nest inherits
   bun-common's types transitively, so fixing bun-common usually suffices.
+
+## Logging (`packages/bun-common/lib/logging.ts`)
+
+`Logger` is **structured, not console-shaped**: six levels (`trace` `debug`
+`info` `warn` `error` `fatal`), each `(message: string | Error, fields?)`,
+plus `log` (alias of `info`), `child(bindings, { name?, level? })` and
+`isLevelEnabled(level)`. No variadic `unknown[]` anywhere — that was the old
+shape, and it typed nothing.
+
+- `createLogger({ level, name, bindings, sink, enabled, time })` is the only
+  implementation; sinks are `consoleSink({ console, format: "pretty"|"json" })`,
+  `multiSink`, `collectSink`. `noopLogger` drops everything;
+  `createTestLogger()` returns `{ logger, events }` for assertions.
+- An `Error` logged as the message, or passed as `fields.error`, is lifted
+  onto `LogEvent.error` — a sink has one place to look.
+- **Options accept `LoggerLike`, not `Logger`**: a `Logger`, a bare `LogSink`
+  function, or a pino / bunyan / winston / consola / log4js / tslog / NestJS /
+  console-like logger. `resolveLogger(input?, fallback?)` returns a `Logger`
+  as-is and otherwise detects the shape in a fixed order (pino → bunyan →
+  winston → consola → log4js → tslog → Nest → console) and wraps it. Name the
+  adapter (`fromPino`, `fromWinston`, ...) to skip detection.
+- Adapters are **structural** — nothing imports those libraries. Each builds a
+  `LogSink` and reuses `createLogger`, so `child()`, level filtering and error
+  handling behave identically underneath any of them; bindings are passed in
+  the library's structured slot (pino/bunyan's object argument, winston's
+  meta), and adapters default to `level: "trace"` so the wrapped library stays
+  the authority on its own threshold, delegating via `isLevelEnabled` when it
+  has one.
+- `BunRouter.logger` resolves once on first access; `setLogger`/`set logger`
+  accept any `LoggerLike`. Call sites use `logger.error("message", { error })`,
+  never `logger.error("message", err)`.
+
+Compile-time guarantees are asserted in `__tests__/logging.type-test.ts`
+(checked by the tests typecheck, not `bun test`); runtime behaviour and every
+adapter's call mapping in `__tests__/logging.test.ts`.
 
 ## Router — Express 5 semantics
 

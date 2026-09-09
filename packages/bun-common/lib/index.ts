@@ -100,10 +100,31 @@ export {
 // Async helpers — deferreds, polling, and the OS-assigned-port helper that
 // tests and adapters use.
 export {
+  type BackoffOptions,
+  computeBackoff,
   createDeferred,
   type Deferred,
   getPort,
+  isAbortError,
+  Mutex,
+  retry,
+  type RetryOptions,
+  Semaphore,
+  sleep,
+  type SleepOptions,
+  TimeoutError,
   waitUntil,
+  withTimeout,
+  type WithTimeoutOptions,
+} from "./utils/native";
+// Error flattening and JSON round-tripping, for anything that crosses a
+// process, worker or database boundary.
+export {
+  deserializeError,
+  jsonClone,
+  type SerializedError,
+  serializeError,
+  type SerializeErrorOptions,
 } from "./utils/native";
 // XML utilities & types.
 export {
@@ -113,6 +134,51 @@ export {
   type ParseXmlOptions,
   parseXmlToObject,
 } from "./utils/native";
+/* ------------------------------------------------------------------ *
+ * Structured logging (`lib/logging.ts`) — the `Logger` contract every
+ * option object accepts, the default implementation and its sinks, and
+ * adapters that turn an existing pino/bunyan/winston/consola/log4js/tslog/
+ * NestJS/console logger into one.
+ * ------------------------------------------------------------------ */
+export {
+  type AdapterOptions,
+  type BunyanLike,
+  collectSink,
+  type ConsolaLike,
+  type ConsoleLike,
+  consoleSink,
+  type ConsoleSinkOptions,
+  createLogger,
+  type CreateLoggerOptions,
+  createTestLogger,
+  fromBunyan,
+  fromConsola,
+  fromConsole,
+  fromLog4js,
+  fromNestLogger,
+  fromPino,
+  fromTslog,
+  fromWinston,
+  isLogger,
+  type Log4jsLike,
+  LOG_LEVEL_VALUES,
+  LOG_LEVELS,
+  type LogEvent,
+  type LogFields,
+  type Logger,
+  type LoggerLike,
+  type LogLevel,
+  type LogLevelThreshold,
+  type LogSink,
+  mergeLogFields,
+  multiSink,
+  type NestLoggerLike,
+  noopLogger,
+  type PinoLike,
+  resolveLogger,
+  type TslogLike,
+  type WinstonLike,
+} from "./logging";
 export { cors, type CorsOptions, type CorsOptionsDelegate } from "./cors";
 // Re-export the `busboy` types that appear in bun-common's public type surface
 // (`MultiPartOptions`, `MultiPartFileRecord`, `MultiPartFieldRecord`,
@@ -243,7 +309,6 @@ export {
   type BunServeUnixNormalOptions,
   type Constructor,
   type DefaultRequestBody,
-  type Logger,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
   type MultiPartOptions,

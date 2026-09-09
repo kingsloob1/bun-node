@@ -338,11 +338,15 @@ export type MultiPartFieldRecord = FieldInfo & {
 export type RequestStorageFiles = BunRequest["storageFiles"];
 export type RequestStorageFile = BunRequest["storageFile"];
 
-export interface Logger {
-  log: (...optionalParams: unknown[]) => void;
-  error: (...optionalParams: unknown[]) => void;
-  warn: (...optionalParams: unknown[]) => void;
-}
+/**
+ * The structured logging contract, defined in `lib/logging.ts`. Re-exported
+ * here because every option object in the repo referred to `Logger` from this
+ * module before logging grew its own file.
+ *
+ * @see {@link LoggerLike} for what an option accepts, and `resolveLogger` for
+ * turning one into a `Logger`.
+ */
+export type { Logger, LoggerLike } from "../logging";
 
 export type Constructor<T = object> = T extends new (
   ...args: infer A
