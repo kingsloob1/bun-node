@@ -116,6 +116,49 @@ matched route.
   `@routejs/router` compiles a **prefix** regex (Express prefix matching);
   plain `path:` routes are exact-match.
 
+## Typed routes (generated overloads)
+
+`BunRouter` and both `BunHttpAdapter`s carry **generated** verb overloads that
+narrow a handler's request:
+
+- `req.params` from the path literal — `get("/home/:name/:id?", h)` gives
+  `{ name: string; id?: string }`. `*name` yields both the positional key and
+  the name, matching what the matcher emits.
+- `req.query` / `req.body` / `req.params` from a `BunValidate` middleware
+  registered ahead of the handler in the same call, via a phantom `__shape`
+  type it carries.
+
+They live between `/* --- BEGIN generated typed overloads: <verb> --- */`
+markers. **Do not edit them by hand** — regenerate:
+
+```bash
+cd packages/bun-common
+bun scripts/generate-verb-overloads.ts          # rewrite both packages
+bun scripts/generate-verb-overloads.ts --check  # CI: fail if stale
+```
+
+Three constraints discovered while building this, all verified by spike:
+
+- They must be **generated per verb, inside the class, ahead of the existing
+  overloads**. A single variadic overload cannot work (each position's type
+  depends on the previous ones, leaving TypeScript no inference site), and
+  declaring the set once and merging it via an interface fails because merged
+  members are appended *after* the class's own — the wide
+  `(path, ...callbacks)` signature then wins and the handler degrades to `any`.
+- Exactly **one** position carries a shape: the validator immediately before
+  the handler. Letting every position carry one worked in isolation but
+  collapsed in the real class — as soon as a shape position received a
+  non-validator, the overload was discarded and the call fell through to the
+  untyped signature. `BunValidate` takes every target in one call, so this
+  costs nothing in practice.
+- Preceding positions are typed `RouterHandler`, not a union — a union gives
+  TypeScript no single signature to contextually type an inline arrow against,
+  and its parameters land on implicit `any`.
+
+Compile-time assertions live in `__tests__/verbTyping.type-test.ts` and
+`packages/bun-nest/__tests__/nestVerbTyping.type-test.ts`; they are checked by
+the tests typecheck, not `bun test`.
+
 ## Testing conventions & gotchas
 
 - Reuse the test helpers: `packages/bun-common/__tests__/helpers.ts`

@@ -203,6 +203,14 @@ export {
 export type { StandardSchemaV1 } from "./types/standardSchema";
 export { createServeStaticHandler } from "./serveStatic";
 export type { ExtractRouteParams } from "./types/routeParams";
+export type {
+  EmptyShape,
+  ResolveBody,
+  ResolvedHandler,
+  ResolveParams,
+  ResolveQuery,
+  ValidationShape,
+} from "./types/routeTyping";
 export {
   BunRouter,
   type CachedRouteMatch,
