@@ -14,7 +14,17 @@ export type {
   RunOutcome,
 } from "./executors/executor";
 export { InProcessExecutor } from "./executors/in-process";
+export { SpawnExecutor } from "./executors/spawn";
+export { WorkerExecutor } from "./executors/worker";
 export { resolveRunnerOptions } from "./options";
+export {
+  CHILD_ENV,
+  type ChildToParent,
+  isRunnerChild,
+  type ParentToChild,
+  PROTOCOL_VERSION,
+  type SerializableContext,
+} from "./protocol";
 export {
   type BunRunnerEvents,
   type BunRunnerOptions,

@@ -75,6 +75,11 @@ export interface ExecutorStartOptions<TArgs = unknown> {
   killTimeout: number;
   /** Whether the run should keep the process alive. */
   waitToExit: boolean;
+  /**
+   * Whether a child's `ctx.logger` records should be forwarded to the parent
+   * as `log` events instead of going to the child's own stdout.
+   */
+  forwardLogs: boolean;
   /** Callbacks for events the run produces. */
   events: ExecutorEvents;
 }

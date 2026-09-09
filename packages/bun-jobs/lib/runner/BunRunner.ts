@@ -35,6 +35,8 @@ import {
   normalizeSchedule,
 } from "../shared/schedule";
 import { InProcessExecutor } from "./executors/in-process";
+import { SpawnExecutor } from "./executors/spawn";
+import { WorkerExecutor } from "./executors/worker";
 import { resolveRunnerOptions } from "./options";
 
 /**
@@ -370,7 +372,7 @@ export class BunRunner<
       : [...this.#active.values()];
 
     for (const run of targets) {
-      run.abort(reason);
+      run.abort(reason, { force: options?.force });
     }
 
     await Promise.allSettled(targets.map((run) => run.done));
@@ -488,10 +490,10 @@ export class BunRunner<
     switch (this.options.executionMode) {
       case "in-process":
         return new InProcessExecutor(this.options.inProcess);
+      case "worker":
+        return new WorkerExecutor(this.options.worker);
       default:
-        // spawn and worker land in the next phase; until then in-process is
-        // the honest fallback rather than a mode that silently does nothing.
-        return new InProcessExecutor(this.options.inProcess);
+        return new SpawnExecutor(this.options.spawn);
     }
   }
 
@@ -796,6 +798,7 @@ export class BunRunner<
       closeTimeout: this.options.closeTimeout,
       killTimeout: this.options.killTimeout,
       waitToExit: this.options.waitToExit,
+      forwardLogs: this.options.forwardLogs,
       events: {
         onProgress: (value) => this.safeEmit("progress", record, value),
         onMessage: (data) => this.safeEmit("message", record, data),
@@ -813,7 +816,7 @@ export class BunRunner<
 
     this.#active.set(runId, {
       record,
-      abort: (reason) => handle.stop(reason),
+      abort: (reason, abortOptions) => handle.stop(reason, abortOptions),
       send: (message) => handle.send(message),
       done: settle,
     });

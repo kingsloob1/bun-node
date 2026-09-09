@@ -165,8 +165,8 @@ export type RunnerStatus = "idle" | "running" | "paused" | "stopped";
 export interface RunHandle {
   /** The run's record, updated as it progresses. */
   record: RunRecord;
-  /** Aborts the run. */
-  abort: (reason: string) => void;
+  /** Aborts the run; `force` skips to the end of the kill escalation. */
+  abort: (reason: string, options?: { force?: boolean }) => void;
   /** Sends a message to the running handler. */
   send: (message: unknown) => boolean;
   /** Resolves when the run settles. */
