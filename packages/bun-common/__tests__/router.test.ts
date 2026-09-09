@@ -1362,3 +1362,60 @@ describe("BunRouter: accepts a typed RouterErrorMiddlewareHandler", () => {
     expect(router.routes().length).toBe(1);
   });
 });
+
+describe("BunRouter: Express 5 named wildcards", () => {
+  /** Params captured by `path` when `url` is matched. */
+  function paramsFor(path: string, url: string): Record<string, string> {
+    const router = new BunRouter();
+    router.get(path, () => {});
+    const layers = layersFor(router, "GET", url);
+    expect(layers).toHaveLength(1);
+    return layers[0].matched.params as Record<string, string>;
+  }
+
+  it("exposes *name as req.params.name, keeping the positional key", () => {
+    expect(paramsFor("/assets/*splat", "/assets/css/site/app.css")).toEqual({
+      "0": "css/site/app.css",
+      splat: "css/site/app.css",
+    });
+  });
+
+  it("supports the braced {*name} form", () => {
+    expect(paramsFor("/assets/{*splat}", "/assets/a/b.css")).toEqual({
+      "0": "a/b.css",
+      splat: "a/b.css",
+    });
+  });
+
+  it("leaves a bare * positional only", () => {
+    expect(paramsFor("/assets/*", "/assets/a/b.css")).toEqual({
+      "0": "a/b.css",
+    });
+  });
+
+  it("maps several named wildcards positionally", () => {
+    expect(paramsFor("/f/*a/g/*b", "/f/one/g/two")).toEqual({
+      "0": "one",
+      "1": "two",
+      a: "one",
+      b: "two",
+    });
+  });
+
+  it("names a wildcard alongside a regexp-constrained param", () => {
+    expect(paramsFor("/n/:id(\\d+)/*rest", "/n/42/x/y")).toEqual({
+      "0": "x/y",
+      id: "42",
+      rest: "x/y",
+    });
+  });
+
+  it("withholds names when a bare regexp group shares the counter", () => {
+    // routejs numbers bare groups and wildcards from one counter, so the nth
+    // numeric key is not reliably the nth wildcard — binding a name here could
+    // attach it to the wrong capture, so only positional keys are published.
+    const params = paramsFor("/n/(\\d+)/*rest", "/n/42/x/y");
+    expect(params).toEqual({ "0": "42", "1": "x/y" });
+    expect(params).not.toHaveProperty("rest");
+  });
+});

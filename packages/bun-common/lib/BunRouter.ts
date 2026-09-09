@@ -135,6 +135,45 @@ function normalizeCatchAllPath(path: string): string {
 }
 
 /**
+ * A bare regexp group — `(\d+)` not attached to a preceding `:param`.
+ * routejs assigns these a numeric param key from the *same* counter it uses
+ * for wildcards, so a path containing one makes "nth numeric key" and "nth
+ * wildcard" disagree.
+ */
+const BARE_REGEX_GROUP_RE = /(?:^|[^\w$)])\(/;
+
+/**
+ * Extracts the names of Express 5 named wildcards (`*name`, `{*name}`), in the
+ * order they appear, so matches can expose `req.params.name` the way Express 5
+ * does — routejs only ever produces the positional numeric key.
+ *
+ * Returns `undefined` when the path has no named wildcards, or when it also
+ * contains a bare regexp group. In that second case routejs's numeric counter
+ * covers both wildcards and groups, so the nth numeric key is not reliably the
+ * nth wildcard; rather than risk binding a name to the wrong capture, the
+ * positional keys are left as the only output.
+ */
+function extractWildcardNames(
+  path: string,
+): (string | undefined)[] | undefined {
+  const matches = path.match(EXPRESS5_CATCHALL_RE);
+  if (!matches) {
+    return undefined;
+  }
+
+  const names = matches.map((token) => {
+    const name = token.replace(/^\{?\*/, "").replace(/\}$/, "");
+    return name || undefined;
+  });
+
+  if (!names.some((name) => name !== undefined)) {
+    return undefined;
+  }
+
+  return BARE_REGEX_GROUP_RE.test(path) ? undefined : names;
+}
+
+/**
  * Default cap on the matched-pipeline cache (`routeCacheMax`).
  *
  * The cache is keyed by *resolved path*, so a route carrying an id consumes one
@@ -157,6 +196,12 @@ export const DEFAULT_ROUTE_CACHE_MAX = 50_000;
 type RouteWithGroup = Route & {
   routerGroupId?: number;
   isEndpoint?: boolean;
+  /**
+   * Names of the Express 5 named wildcards in this path, positionally. Set
+   * only when the names can be mapped to routejs's numeric keys unambiguously
+   * (see {@link extractWildcardNames}).
+   */
+  wildcardNames?: (string | undefined)[];
 };
 
 export class BunRouter extends Router {
@@ -286,11 +331,15 @@ export class BunRouter extends Router {
     this.#pendingEndpoint = false;
 
     // Express 5 catch-all syntax (`*name` / `{*name}`) → routejs's `*`.
-    // Idempotent — non-catch-all paths pass through unchanged.
+    // Idempotent — non-catch-all paths pass through unchanged. The names are
+    // captured first so matches can expose them as Express 5 does.
+    let wildcardNames: (string | undefined)[] | undefined;
     if (option.path != null) {
+      wildcardNames = extractWildcardNames(option.path);
       option.path = normalizeCatchAllPath(option.path);
     }
     if (option.group != null) {
+      wildcardNames ??= extractWildcardNames(option.group);
       option.group = normalizeCatchAllPath(option.group);
     }
 
@@ -308,6 +357,7 @@ export class BunRouter extends Router {
     // Mark verb/`all` endpoints so specificity ordering and param-binding
     // treat them as route handlers, not `use` middleware.
     route.isEndpoint = isEndpoint;
+    route.wildcardNames = wildcardNames;
     routes.push(route);
     // The route table changed — drop the matched-pipeline cache so a route
     // registered after the first request is still picked up.
@@ -1366,11 +1416,28 @@ export class BunRouter extends Router {
     const params: Record<string, string> = {};
     const paramNames = route.params;
     if (pathMatch.length > 1 && paramNames && paramNames.length > 0) {
+      // Names of this route's Express 5 named wildcards, positionally.
+      const wildcardNames = (route as RouteWithGroup).wildcardNames;
+      let wildcardOrdinal = 0;
+
       for (let i = 1; i < pathMatch.length; i++) {
         const name = paramNames[i - 1];
         const value = pathMatch[i];
-        if (name !== undefined && value !== undefined) {
-          params[name] = decodeURIComponent(value);
+        if (name === undefined || value === undefined) {
+          continue;
+        }
+
+        const decoded = decodeURIComponent(value);
+        params[name] = decoded;
+
+        // routejs keys wildcards positionally (`"0"`, `"1"`, …). Express 5
+        // exposes `*name` as `req.params.name`, so publish that alias too,
+        // keeping the positional key for backwards compatibility.
+        if (wildcardNames !== undefined && isNumeric(name)) {
+          const wildcardName = wildcardNames[wildcardOrdinal++];
+          if (wildcardName !== undefined) {
+            params[wildcardName] = decoded;
+          }
         }
       }
     }

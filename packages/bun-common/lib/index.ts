@@ -188,6 +188,7 @@ export {
 } from "./BunRequest";
 export { BunResponse } from "./BunResponse";
 export { createServeStaticHandler } from "./serveStatic";
+export type { ExtractRouteParams } from "./types/routeParams";
 export {
   BunRouter,
   type CachedRouteMatch,
