@@ -367,7 +367,15 @@ export class BunWebSocket<customWebsocketDataType = unknown>
   public removeAllListeners<E extends WsEventName<customWebsocketDataType>>(
     event?: E,
   ): this {
-    this.#emitter?.removeAllListeners(event);
+    // `EventEmitter#removeAllListeners` branches on `arguments.length`, not on
+    // the argument's value: forwarding `undefined` explicitly makes it look
+    // like "remove listeners for the event named `undefined`", which removes
+    // nothing. The no-argument case has to call it with no argument.
+    if (event === undefined) {
+      this.#emitter?.removeAllListeners();
+    } else {
+      this.#emitter?.removeAllListeners(event);
+    }
     return this;
   }
 

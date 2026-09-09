@@ -153,3 +153,37 @@ describe("BunWebSocket: lazy emitter", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("BunWebSocket: removeAllListeners argument handling", () => {
+  it("detaches everything when called with no argument", () => {
+    const ws = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+    ws.on("ping", () => {});
+    ws.once("pong", () => {});
+
+    ws.removeAllListeners();
+
+    // A long-lived socket is where a leaked listener actually accumulates.
+    expect(ws.eventNames()).toHaveLength(0);
+    expect(ws.listenerCount("ping")).toBe(0);
+    expect(ws.listenerCount("pong")).toBe(0);
+  });
+
+  it("removes only the named event when given one", () => {
+    const ws = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+    ws.on("ping", () => {});
+    ws.on("pong", () => {});
+
+    ws.removeAllListeners("ping");
+
+    expect(ws.listenerCount("ping")).toBe(0);
+    expect(ws.listenerCount("pong")).toBe(1);
+  });
+});
