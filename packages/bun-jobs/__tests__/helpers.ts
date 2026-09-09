@@ -84,7 +84,18 @@ export function makeJob(overrides: Partial<JobRecord> = {}): JobRecord {
 /** Waits until `predicate` holds, or fails the test after `timeout`. */
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  options?: { timeout?: number; interval?: number; message?: string },
+  options?: {
+    /** How long to keep trying. Defaults to 2000ms. */
+    timeout?: number;
+    /** How long to wait between attempts. Defaults to 5ms. */
+    interval?: number;
+    /**
+     * The failure message. A function is called only on failure, so a test
+     * can gather the state that explains it without paying for that on the
+     * happy path.
+     */
+    message?: string | (() => string | Promise<string>);
+  },
 ): Promise<void> {
   const timeout = options?.timeout ?? 2000;
   const interval = options?.interval ?? 5;
@@ -97,5 +108,10 @@ export async function waitFor(
     await Bun.sleep(interval);
   }
 
-  throw new Error(options?.message ?? `Condition not met within ${timeout}ms`);
+  const message =
+    typeof options?.message === "function"
+      ? await options.message()
+      : options?.message;
+
+  throw new Error(message ?? `Condition not met within ${timeout}ms`);
 }

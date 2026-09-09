@@ -15,6 +15,12 @@
  */
 
 /* ------------------------------------------------------------------ *
+ * The per-service context — a namespace and a backend, set once, with
+ * every runner, queue and worker derived from it.
+ * ------------------------------------------------------------------ */
+export { BunJobs, type BunJobsOptions, jobsFromContext } from "./BunJobs";
+
+/* ------------------------------------------------------------------ *
  * Storage drivers — the contract both subsystems are built on, and the
  * backends implementing it.
  * ------------------------------------------------------------------ */
@@ -47,6 +53,32 @@ export {
   type RunStatus,
   type StoredSchedule,
 } from "./drivers/index";
+
+/* ------------------------------------------------------------------ *
+ * The queue — producers, consumers and the job they exchange.
+ * ------------------------------------------------------------------ */
+export {
+  BunQueue,
+  type BunQueueEvents,
+  type BunQueueOptions,
+  BunQueueWorker,
+  type BunQueueWorkerEvents,
+  type BunQueueWorkerOptions,
+  DEFAULT_JOB_OPTIONS,
+  Job,
+  type JobOptions,
+  type JobProcessor,
+  nextOccurrence,
+  type ProcessorContext,
+  type Repeatable,
+  repeatJobId,
+  repeatKeyFor,
+  type RepeatOptions,
+  resolveJobOptions,
+  resolveRunAt,
+  retentionExpiry,
+  toRepeatRecord,
+} from "./queue/index";
 
 /* ------------------------------------------------------------------ *
  * The runner — run a JS/TS file on a schedule or on demand.

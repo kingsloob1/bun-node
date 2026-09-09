@@ -1,4 +1,14 @@
-export { BunRunner, FileDriver, MemoryDriver } from "../../../lib/index";
+export {
+  BunJobs,
+  BunQueue,
+  BunQueueWorker,
+  BunRunner,
+  createDriver,
+  type DriverConfig,
+  FileDriver,
+  type JobsDriver,
+  MemoryDriver,
+} from "../../../lib/index";
 /**
  * What the test processes import.
  *

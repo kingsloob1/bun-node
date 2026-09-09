@@ -749,9 +749,14 @@ export class MemoryDriver implements JobsDriver {
   ): Promise<void> {
     const queue = this.#queue(q);
 
-    const claimable = [...queue.jobs.values()].some(
-      (job) => PENDING_STATES.includes(job.state) && job.runAt <= Date.now(),
-    );
+    // A paused queue has nothing claimable however many jobs are waiting;
+    // saying otherwise turns a caller's wait loop into a busy loop.
+    const claimable =
+      !queue.paused &&
+      [...queue.jobs.values()].some(
+        (job) => PENDING_STATES.includes(job.state) && job.runAt <= Date.now(),
+      );
+
     if (claimable || signal?.aborted || timeoutMs <= 0) {
       return;
     }
