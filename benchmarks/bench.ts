@@ -6,6 +6,7 @@
  *   - BunRouter      — `@kingsleyweb/bun-common`'s `BunHttpAdapter`
  *   - Express 5      — the Express 5 router on Bun
  *   - Bun.serve      — Bun's native `routes` table
+ *   - Bun.serve      — a hand-written dispatcher in `fetch` (the dispatch floor)
  *   - Elysia         — the Elysia framework
  *   - Hono           — the Hono framework (served via `Bun.serve`)
  *
@@ -74,6 +75,7 @@ const ALL_FRAMEWORK_IDS = [
   "bun-router",
   "express",
   "bun-serve",
+  "bun-fetch",
   "elysia",
   "hono",
 ] as const;
@@ -110,7 +112,7 @@ Options:
   -r, --route <names>        Scenario(s): comma list or 'all'(default: static)
                              static|param|deep|wildcard|middleware|notfound|mixed
   -f, --frameworks <ids>     Framework(s): comma list or 'all'
-                             bun-router|express|bun-serve|elysia|hono
+                             bun-router|express|bun-serve|bun-fetch|elysia|hono
       --method <verb>        HTTP method                     (default: GET)
       --middleware-count <n> Middlewares in the chain route  (default: 5)
       --workers <n>          autocannon worker threads       (default: 0)
@@ -233,9 +235,86 @@ const bunRouterFramework: Framework = {
   },
 };
 
+/**
+ * Extracts the pathname without allocating a `URL` — `new URL(req.url).pathname`
+ * costs ~213ns against ~54ns for a string scan, and would otherwise dominate a
+ * hand-written dispatcher's per-request cost.
+ */
+function pathnameOf(url: string): string {
+  const authority = url.indexOf("//");
+  const start = url.indexOf("/", authority < 0 ? 0 : authority + 2);
+  if (start < 0) {
+    return "/";
+  }
+  const query = url.indexOf("?", start);
+  return query < 0 ? url.slice(start) : url.slice(start, query);
+}
+
+/**
+ * A hand-written dispatcher inside `fetch` — no router at all. This is the
+ * floor for dispatch cost on Bun: every other entry pays some abstraction over
+ * what this does directly.
+ */
+const bunFetchFramework: Framework = {
+  id: "bun-fetch",
+  label: "Bun.serve (fetch)",
+  async start(port, middlewareCount) {
+    // The `/chain` scenario runs the same number of pass-through hops as the
+    // router-based entries, so the comparison stays like-for-like.
+    const middlewares = Array.from({ length: middlewareCount }, () => () => {});
+
+    const server = Bun.serve({
+      port,
+      fetch(request) {
+        const pathname = pathnameOf(request.url);
+
+        if (pathname === "/ping") {
+          return new Response("ok");
+        }
+        if (pathname === "/chain") {
+          for (const middleware of middlewares) {
+            middleware();
+          }
+          return new Response("ok");
+        }
+
+        const segments = pathname.slice(1).split("/");
+        switch (segments[0]) {
+          case "user":
+            if (segments.length === 2 && segments[1]) {
+              return new Response(segments[1]);
+            }
+            break;
+          case "api":
+            if (
+              segments.length === 6 &&
+              segments[1] === "v1" &&
+              segments[2] === "users" &&
+              segments[4] === "books"
+            ) {
+              return new Response(`${segments[3]}/${segments[5]}`);
+            }
+            break;
+          case "assets":
+            if (segments.length > 1) {
+              return new Response("ok");
+            }
+            break;
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    return {
+      url: `http://127.0.0.1:${server.port}`,
+      stop: () => server.stop(true),
+    };
+  },
+};
+
 const bunServeFramework: Framework = {
   id: "bun-serve",
-  label: "Bun.serve (native routes)",
+  label: "Bun.serve (routes)",
   async start(port) {
     // Bun's native route table has no per-route middleware concept, so the
     // `/chain` route is a plain route here.
@@ -349,6 +428,7 @@ const FRAMEWORKS: Record<string, Framework> = {
   "bun-router": bunRouterFramework,
   "express": expressFramework,
   "bun-serve": bunServeFramework,
+  "bun-fetch": bunFetchFramework,
   "elysia": elysiaFramework,
   "hono": honoFramework,
 };
