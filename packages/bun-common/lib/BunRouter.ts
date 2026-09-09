@@ -15,6 +15,8 @@ import type { EmptyShape, MountedHandler } from "./types/routeTyping";
 import path, { join } from "node:path";
 import process from "node:process";
 import { Router } from "@routejs/router";
+import { BunRequest as BunRequestClass } from "./BunRequest";
+import { BunResponse as BunResponseClass } from "./BunResponse";
 import {
   isArray,
   isError,
@@ -217,6 +219,56 @@ type RouteWithGroup = Route & {
 export type UnmountedRouter = Router & {
   readonly __mount?: { path: ""; shape: EmptyShape };
 };
+
+/**
+ * What {@link BunRouter.fetch} accepts.
+ *
+ * - a `Request` — used as-is
+ * - a `string` or `URL` — a `GET` to that path or URL
+ * - a `RequestInit` carrying a `url` — any method, headers and body
+ */
+export type FetchInput =
+  | string
+  | URL
+  | Request
+  | (RequestInit & { url: string | URL });
+
+/** Origin used when {@link BunRouter.fetch} is given a bare path. */
+const FETCH_DEFAULT_ORIGIN = "http://localhost";
+
+/**
+ * A stand-in for the `Bun.serve` server that {@link BunRouter.fetch} passes to
+ * `BunRequest`. There is no socket, so there is no peer address, and an
+ * upgrade cannot succeed — reporting that honestly is better than pretending.
+ */
+export const FETCH_STUB_SERVER = {
+  requestIP: () => null,
+  upgrade: () => false,
+} as unknown as Parameters<typeof BunRequestClass.init>[1];
+
+/** Builds a native `Request` from anything {@link FetchInput} allows. */
+export function toNativeRequest(
+  input: FetchInput,
+  init?: RequestInit,
+  origin: string = FETCH_DEFAULT_ORIGIN,
+): Request {
+  if (input instanceof Request) {
+    // Already a request: `init` would have to rebuild it (and re-read its
+    // body), so it is ignored rather than silently half-applied.
+    return input;
+  }
+
+  const target =
+    typeof input === "string" || input instanceof URL ? input : input.url;
+  const options: RequestInit | undefined =
+    typeof input === "string" || input instanceof URL
+      ? init
+      : { ...(input as RequestInit), ...init };
+
+  // `Request` accepts a string or another `Request`, not a `URL`.
+  const url = new URL(String(target), origin).href;
+  return new Request(url, options);
+}
 
 export class BunRouter<
   /**
@@ -3619,6 +3671,65 @@ export class BunRouter<
   getCacheKey(options: RouteMatchMethodOptionType) {
     const requestPath = this.getRequestPathFromRequestURL(options.requestUrl);
     return `host:${options.requestHost || "none"}:path:${requestPath}:method:${options.requestMethod}`;
+  }
+
+  /**
+   * Runs a request through the router and resolves the `Response`, without
+   * binding a socket.
+   *
+   * The same contract as `Bun.serve`'s `fetch` — a `Request` in, a `Response`
+   * out — so a test exercises the real pipeline (matching, middleware order,
+   * error handling, `next('route')`) rather than a parallel code path. No port
+   * is opened, so nothing to clean up and no chance of a port collision.
+   *
+   * `BunHttpAdapter` overrides this to route through its full request handler,
+   * so its not-found and error handlers apply too.
+   *
+   * @example
+   * ```ts
+   * await router.fetch("/users/42");                       // GET
+   * await router.fetch({ url: "/users", method: "POST", body });
+   * await router.fetch(new Request("http://localhost/x")); // full control
+   * ```
+   *
+   * @param input A `Request`, a path/URL (implying `GET`), or a `RequestInit`
+   *   carrying a `url`.
+   * @param init  Extra `RequestInit` applied when `input` is a path or URL.
+   */
+  async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+    const nativeRequest = toNativeRequest(
+      input,
+      init,
+      this.localOptions?.host ? `http://${this.localOptions.host}` : undefined,
+    );
+
+    const created = BunRequestClass.init(nativeRequest, FETCH_STUB_SERVER, {
+      parseBody: true,
+      parseCookies: true,
+      parseQuery: true,
+    });
+    const request =
+      created instanceof BunRequestClass ? created : await created;
+    const response = new BunResponseClass(request);
+
+    const handled = await this.handle({
+      requestHost: request.host,
+      requestMethod: request.method,
+      requestUrl: request.originalUrl,
+      request,
+      response,
+    });
+
+    if (response.settledResponse) {
+      return response.settledResponse;
+    }
+    if (handled) {
+      return response.getNativeResponse(0);
+    }
+
+    // Nothing matched, exactly as the adapter reports when no route claims a
+    // request and no not-found handler is registered.
+    return new Response(null, { status: 404, statusText: "Not Found" });
   }
 
   clearRouteCache() {

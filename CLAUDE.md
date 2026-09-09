@@ -200,6 +200,33 @@ Compile-time assertions live in `__tests__/verbTyping.type-test.ts`,
 the tests typecheck, not `bun test`. Runtime coverage for mounting is in
 `__tests__/bunValidate.test.ts`.
 
+## Testing without a socket: `fetch()`
+
+`BunRouter.fetch()` and both adapters' `fetch()` run a request through the real
+pipeline and resolve the `Response`, with no port bound:
+
+```ts
+await router.fetch("/users/42");                        // string implies GET
+await router.fetch("/posts", { method: "POST", body });  // path + RequestInit
+await router.fetch({ url: "/posts", method: "POST", body });
+await router.fetch(new Request("http://localhost/x"));   // full control
+```
+
+Named `fetch` because it is the same contract as `Bun.serve`'s `fetch` — a
+`Request` in, a `Response` out. The adapters override it to delegate to
+`handleNativeRequest`, *the very method* their `Bun.serve` handler calls, so a
+socket-free test exercises the production path (not-found handlers, error
+handlers, the payload guard, response finalisation) rather than an
+approximation. `fetch.test.ts` asserts that parity directly by comparing
+against a served request.
+
+Prefer it over standing up a server: no port to release, so none of the
+`SO_REUSEPORT` hazards below apply. Use a real server only when testing the
+socket itself (WebSockets, streaming, keep-alive).
+
+Without a socket there is no peer, so `requestIP()` is `null` and an upgrade
+cannot succeed — a stub server reports both honestly rather than pretending.
+
 ## Testing conventions & gotchas
 
 - Reuse the test helpers: `packages/bun-common/__tests__/helpers.ts`

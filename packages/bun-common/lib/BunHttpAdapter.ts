@@ -1,5 +1,6 @@
 import type { Server as NodeServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { FetchInput } from "./BunRouter";
 import type {
   CorsOptions as BunCorsOptions,
   CorsOptionsDelegate,
@@ -24,7 +25,7 @@ import { isIPv4, isIPv6 } from "node:net";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
-import { BunRouter } from "./BunRouter";
+import { BunRouter, FETCH_STUB_SERVER, toNativeRequest } from "./BunRouter";
 import { cors } from "./cors";
 import { BunRequest, BunResponse, BunWebSocket } from "./index";
 import { createServeStaticHandler } from "./serveStatic";
@@ -165,6 +166,159 @@ export class BunHttpAdapter<
     } as unknown as WebsocketOptions<customWebsocketDataType>);
 
     this.initNodeHttpServer();
+  }
+
+  /**
+   * Turns one native `Request` into its `Response`, running the whole
+   * adapter pipeline: request construction, the payload guard, the router,
+   * not-found handlers, WebSocket upgrade and response finalisation.
+   *
+   * `Bun.serve`'s `fetch` is a thin wrapper over this, and so is
+   * {@link fetch} — a socket-free call therefore exercises exactly the same
+   * code as a real request rather than a parallel approximation.
+   */
+  protected async handleNativeRequest(
+    nativeRequest: Request,
+    server: BunServer<WebSocketClientData<customWebsocketDataType>>,
+  ): Promise<Response | undefined> {
+    // `BunRequest.init` returns the instance synchronously when no body
+    // or cookie parsing was scheduled. Branching (rather than awaiting
+    // unconditionally) is what banks the saving — `await` on a plain
+    // value still costs a microtask tick.
+    const created = BunRequest.init(nativeRequest, server, this.requestOpts);
+    const req = created instanceof BunRequest ? created : await created;
+
+    // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
+    // rejected with 413 before any route handler or middleware runs.
+    if (req.isPayloadTooLarge) {
+      return BunRequest.payloadTooLargeResponse(req);
+    }
+
+    const res = new BunResponse<customWebsocketDataType>(req, {
+      etag: this.etagEnabled,
+    });
+    let routeUsed: matchedRoute | true | undefined;
+
+    try {
+      routeUsed = await this.instance.handle({
+        requestHost: req.host,
+        requestMethod: req.method,
+        response: res,
+        request: req,
+        requestUrl: req.originalUrl,
+      });
+    } catch (e) {
+      let err = e;
+      if (!isObject(err)) {
+        err = new Error(String(e));
+      }
+
+      set(err as unknown as Record<string, unknown>, "req", req);
+      throw err;
+    }
+
+    let hasNativeResponse = false;
+    if (routeUsed) {
+      hasNativeResponse = true;
+    } else if (this._notFoundHandlers.length) {
+      let continueProcessingHandlers = true;
+      const next: NextFunction = (err) => {
+        if (!(isUndefined(err) || isNull(err))) {
+          continueProcessingHandlers = false;
+        }
+      };
+
+      for await (const handler of this._notFoundHandlers) {
+        if (!continueProcessingHandlers) {
+          break;
+        }
+
+        const resp = await handler(req, res, next);
+        continueProcessingHandlers = !!resp;
+      }
+
+      hasNativeResponse = true;
+    }
+
+    if (hasNativeResponse) {
+      if (res.upgradeToWsData) {
+        const success = server.upgrade(nativeRequest, {
+          data: res.upgradeToWsData,
+        });
+
+        if (success) {
+          return undefined;
+        }
+
+        let response = new Response(
+          "An error occurred while upgrading websocket",
+          {
+            status: 400,
+          },
+        );
+        try {
+          response = await res.getNativeResponse(100);
+        } catch {
+          //
+        }
+
+        return response;
+      }
+
+      // A handler that called `send()` has already produced the native
+      // response synchronously; taking it directly avoids a
+      // `Promise.resolve` plus a microtask tick on the common path.
+      return (
+        res.settledResponse ??
+        (await res.getNativeResponse(this.requestTimeout))
+      );
+    }
+
+    return new Response(undefined, {
+      status: 404,
+      statusText: "Not Found",
+    });
+  }
+
+  /**
+   * Runs a request through the adapter without binding a socket, resolving the
+   * `Response` the server would have sent.
+   *
+   * Delegates to {@link handleNativeRequest}, the same method `Bun.serve`'s
+   * `fetch` calls, so not-found handlers, error handlers, the payload guard
+   * and response finalisation all apply exactly as they do in production.
+   *
+   * @example
+   * ```ts
+   * const res = await adapter.fetch("/users/42");
+   * expect(res.status).toBe(200);
+   * ```
+   */
+  override async fetch(
+    input: FetchInput,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const nativeRequest = toNativeRequest(
+      input,
+      init,
+      this.isListening ? this.url : undefined,
+    );
+
+    const response = await this.handleNativeRequest(
+      nativeRequest,
+      // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
+      // otherwise, which reports no peer and refuses upgrades.
+      (this.getBunServer() ?? FETCH_STUB_SERVER) as unknown as BunServer<
+        WebSocketClientData<customWebsocketDataType>
+      >,
+    );
+
+    // `handleNativeRequest` returns undefined only for a successful WebSocket
+    // upgrade, which cannot happen without a socket.
+    return (
+      response ??
+      new Response(null, { status: 101, statusText: "Switching Protocols" })
+    );
   }
 
   get requestOpts() {
@@ -429,107 +583,7 @@ export class BunHttpAdapter<
         hostname: this._listeningHost,
         development: Bun.env.NODE_ENV !== "production",
         async fetch(nativeRequest: Request, server) {
-          // `BunRequest.init` returns the instance synchronously when no body
-          // or cookie parsing was scheduled. Branching (rather than awaiting
-          // unconditionally) is what banks the saving — `await` on a plain
-          // value still costs a microtask tick.
-          const created = BunRequest.init(
-            nativeRequest,
-            server,
-            that.requestOpts,
-          );
-          const req = created instanceof BunRequest ? created : await created;
-
-          // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
-          // rejected with 413 before any route handler or middleware runs.
-          if (req.isPayloadTooLarge) {
-            return BunRequest.payloadTooLargeResponse(req);
-          }
-
-          const res = new BunResponse<customWebsocketDataType>(req, {
-            etag: that.etagEnabled,
-          });
-          let routeUsed: matchedRoute | true | undefined;
-
-          try {
-            routeUsed = await that.instance.handle({
-              requestHost: req.host,
-              requestMethod: req.method,
-              response: res,
-              request: req,
-              requestUrl: req.originalUrl,
-            });
-          } catch (e) {
-            let err = e;
-            if (!isObject(err)) {
-              err = new Error(String(e));
-            }
-
-            set(err as unknown as Record<string, unknown>, "req", req);
-            throw err;
-          }
-
-          let hasNativeResponse = false;
-          if (routeUsed) {
-            hasNativeResponse = true;
-          } else if (that._notFoundHandlers.length) {
-            let continueProcessingHandlers = true;
-            const next: NextFunction = (err) => {
-              if (!(isUndefined(err) || isNull(err))) {
-                continueProcessingHandlers = false;
-              }
-            };
-
-            for await (const handler of that._notFoundHandlers) {
-              if (!continueProcessingHandlers) {
-                break;
-              }
-
-              const resp = await handler(req, res, next);
-              continueProcessingHandlers = !!resp;
-            }
-
-            hasNativeResponse = true;
-          }
-
-          if (hasNativeResponse) {
-            if (res.upgradeToWsData) {
-              const success = server.upgrade(nativeRequest, {
-                data: res.upgradeToWsData,
-              });
-
-              if (success) {
-                return undefined;
-              }
-
-              let response = new Response(
-                "An error occurred while upgrading websocket",
-                {
-                  status: 400,
-                },
-              );
-              try {
-                response = await res.getNativeResponse(100);
-              } catch {
-                //
-              }
-
-              return response;
-            }
-
-            // A handler that called `send()` has already produced the native
-            // response synchronously; taking it directly avoids a
-            // `Promise.resolve` plus a microtask tick on the common path.
-            return (
-              res.settledResponse ??
-              (await res.getNativeResponse(that.requestTimeout))
-            );
-          }
-
-          return new Response(undefined, {
-            status: 404,
-            statusText: "Not Found",
-          });
+          return that.handleNativeRequest(nativeRequest, server);
         },
         websocket: that.webSocketAdapter.wsHandler,
         async error(err) {

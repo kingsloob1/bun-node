@@ -217,11 +217,14 @@ export {
   BunRouter,
   type CachedRouteMatch,
   DEFAULT_ROUTE_CACHE_MAX,
+  FETCH_STUB_SERVER,
+  type FetchInput,
   type matchedRoute,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
   routeModulePath,
+  toNativeRequest,
   type UnmountedRouter,
 } from "./BunRouter";
 export {
