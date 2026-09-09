@@ -47,10 +47,39 @@ export {
 } from "./drivers/index";
 
 /* ------------------------------------------------------------------ *
+ * The runner — run a JS/TS file on a schedule or on demand.
+ * ------------------------------------------------------------------ */
+export {
+  BunRunner,
+  type BunRunnerEvents,
+  BunRunnerManager,
+  type BunRunnerManagerOptions,
+  type BunRunnerOptions,
+  defineHandler,
+  type Executor,
+  type ExecutorHandle,
+  type ExecutorStartOptions,
+  InProcessExecutor,
+  type InProcessOptions,
+  type ResolvedRunnerOptions,
+  resolveRunnerOptions,
+  type RunContext,
+  type RunHandle,
+  type RunnerHandler,
+  type RunnerInfo,
+  type RunnerStats,
+  type RunnerStatus,
+  type RunOutcome,
+  type SpawnOptions,
+  type TriggerOutcome,
+  type WorkerOptions,
+} from "./runner/index";
+/* ------------------------------------------------------------------ *
  * Shared building blocks used across the package, exported because a
  * consumer writing a custom driver or handler needs them too.
  * ------------------------------------------------------------------ */
 export * from "./shared/constants";
+
 /* ------------------------------------------------------------------ *
  * Scheduling — cron with optional seconds, plus the schedule shapes a
  * runner (and a repeatable job) accepts.
