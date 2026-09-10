@@ -541,6 +541,47 @@ export class RedisDriver implements JobsDriver {
     return fields ? this.#toRecord(fields) : null;
   }
 
+  /**
+   * Claims several jobs in one script.
+   *
+   * The script is the unit of atomicity, so a batch is exactly as exclusive as
+   * a single claim. The reply is one `HGETALL` per job rather than a joined
+   * string, because job data is arbitrary JSON and any separator would show up
+   * inside it sooner or later.
+   */
+  async claimJobs(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    await this.connect();
+
+    const claimed = await this.#runQueue(q, scripts.CLAIM_MANY, [
+      String(opts.now),
+      opts.token,
+      opts.workerId,
+      String(opts.lockMs),
+      "1000",
+      String(Math.max(1, Math.floor(limit))),
+    ]);
+
+    if (!Array.isArray(claimed)) {
+      return [];
+    }
+
+    // `ZRANGE` yielded these in score order and the script preserved it, so
+    // claim order needs no restoring here.
+    const records: JobRecord[] = [];
+    for (const entry of claimed) {
+      const fields = this.#toObject(entry);
+      if (fields) {
+        records.push(this.#toRecord(fields));
+      }
+    }
+
+    return records;
+  }
+
   async extendJobLock(
     q: QueueRef,
     id: string,

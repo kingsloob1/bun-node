@@ -160,6 +160,60 @@ return 1
  *
  * ARGV: prefix, now, token, workerId, lockMs, promoteLimit.
  */
+/**
+ * Claims up to `count` jobs in one script.
+ *
+ * One script is one unit of atomicity, so N claims inside it are as exclusive
+ * as one — this needs no locking that {@link CLAIM} does not already have.
+ *
+ * Two details matter. The promotion sweep stays *outside* the loop: it scans
+ * two sorted sets, and repeating that per job would multiply the cost of every
+ * idle poll by the batch size. And the reply is a nested table, one `HGETALL`
+ * per job, not a joined string — job data is arbitrary JSON and any separator
+ * would eventually appear inside it.
+ */
+export const CLAIM_MANY = `${QUEUE_PRELUDE}
+local now, token = tonumber(ARGV[2]), ARGV[3]
+local workerId, lockMs = ARGV[4], tonumber(ARGV[5])
+local limit = tonumber(ARGV[6])
+local count = tonumber(ARGV[7])
+
+if redis.call('HGET', META, 'paused') == '1' then
+  return {}
+end
+
+-- Anything due is claimable, so promote before looking. Once, not per job.
+for _, set in ipairs({ DELAYED, FAILED }) do
+  local due = redis.call('ZRANGEBYSCORE', set, '-inf', now, 'LIMIT', 0, limit)
+  for _, id in ipairs(due) do
+    redis.call('ZREM', set, id)
+    redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
+    redis.call('HSET', job(id), 'state', 'waiting')
+  end
+end
+
+local heads = redis.call('ZRANGE', WAIT, 0, count - 1)
+local claimed = {}
+
+for _, entry in ipairs(heads) do
+  local id = string.sub(entry, 18)
+
+  redis.call('ZREM', WAIT, entry)
+  redis.call('ZADD', ACTIVE, now + lockMs, id)
+  redis.call('HSET', job(id),
+    'state', 'active',
+    'processedOn', tostring(now),
+    'lockToken', token,
+    'lockExpiresAt', tostring(now + lockMs),
+    'workerId', workerId)
+  redis.call('HINCRBY', job(id), 'attemptsMade', 1)
+
+  claimed[#claimed + 1] = redis.call('HGETALL', job(id))
+end
+
+return claimed
+`;
+
 export const CLAIM = `${QUEUE_PRELUDE}
 local now, token = tonumber(ARGV[2]), ARGV[3]
 local workerId, lockMs = ARGV[4], tonumber(ARGV[5])
