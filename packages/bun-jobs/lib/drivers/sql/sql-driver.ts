@@ -112,10 +112,9 @@ export interface SqlDriverOptions extends ConnectionInput {
   /**
    * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
    *
-   * Off by default. See `DriverConfig` for the measurements behind that: with
-   * an adaptive poll there is little left for it to win on a busy queue, and
-   * carrying the signal inside the insert costs the producer 5-9%. It earns
-   * its keep on a queue idle enough for the poll to reach its ceiling.
+   * On by default where the engine supports it. Set `false` to poll only —
+   * worth doing if the extra listening connection is unwelcome, or through a
+   * pooler that cannot pin a session.
    */
   notify?: boolean;
   /**
@@ -216,7 +215,7 @@ export class SqlDriver implements JobsDriver {
         ),
       });
 
-    this.#notify = this.dialect.supportsListen && options.notify === true;
+    this.#notify = this.dialect.supportsListen && options.notify !== false;
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
   }
 

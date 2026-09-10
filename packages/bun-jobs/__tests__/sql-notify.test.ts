@@ -4,13 +4,12 @@ import { SqlDriver } from "../lib/index";
 import { makeJob, testNamespace } from "./helpers";
 
 /**
- * Postgres `LISTEN`/`NOTIFY`, which is off unless asked for.
+ * Postgres `LISTEN`/`NOTIFY`, which is on wherever the engine supports it.
  *
  * It ends a worker's wait the instant a job lands rather than at its next
- * poll. That is worth less than it sounds with an adaptive poll — the first
- * re-check is a millisecond after a queue drains — and carrying the signal
- * inside the insert costs the producer 5-9%, so the default is off and this
- * covers the opt-in.
+ * poll, and costs the producer nothing because the signal rides inside the
+ * insert. On by default, so this covers both halves: that it really fires,
+ * that polling still catches what it misses, and that it can be turned off.
  */
 
 /** The server to test against, when one is configured. */
@@ -66,12 +65,12 @@ describe.skipIf(!URL)("SQL driver: LISTEN/NOTIFY", () => {
     await driver.close();
   }, 45_000);
 
-  it("is off unless it is asked for", async () => {
-    const driver = new SqlDriver({ url: URL });
+  it("polls only when notifications are turned off", async () => {
+    const driver = new SqlDriver({ url: URL, notify: false });
     await driver.connect();
 
-    // Nothing observable changes, so the guarantee is that the default path
-    // still works end to end without a listener anywhere.
+    // Nothing observable changes, so the guarantee is that the polling path
+    // still works end to end with no listener anywhere.
     const q = { ns: testNamespace(), queue: "quiet" };
     await driver.ensureQueue(q);
     await driver.addJob(q, makeJob({ id: "polled" }));

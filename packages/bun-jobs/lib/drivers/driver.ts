@@ -622,20 +622,22 @@ export type DriverConfig =
       /**
        * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
        *
-       * Off by default, and the measurements are why. It ends a worker's wait
-       * the instant a job lands rather than at its next poll, but the poll is
-       * already adaptive — the first re-check is a millisecond after the queue
-       * drains — so on a queue with steady traffic there is almost nothing left
-       * to win. Measured on Postgres it moved round-trip p50 not at all, and
-       * cost the producer 5% on `add()` and 9% on `addBulk`, because carrying
-       * the signal inside the insert turns it into a statement that returns
-       * rows.
+       * On by default where the engine supports it, because it is free. The
+       * signal rides inside the insert rather than following it, so there is no
+       * extra round trip: measured over alternating runs, bulk enqueue is
+       * 19,414/s without it and 19,334/s with — a 0.4% difference inside the
+       * run-to-run spread. Round-trip latency is about 3% better and, more
+       * usefully, far steadier: three runs gave 2.96/2.97/2.96ms with it
+       * against 3.23/3.05/3.02ms without.
        *
-       * Turn it on for the case the benchmark does not cover: a queue that
-       * sits idle long enough for the poll to back off to its ceiling, where
-       * the first job after a quiet spell would otherwise wait that long.
+       * Polling always continues underneath as the correctness floor. A
+       * notification can be missed while a listener reconnects, and a job
+       * promoted by another process's maintenance sweep is never announced at
+       * all.
        *
-       * Ignored on every engine but Postgres.
+       * Set `false` to poll only — worth doing if the one extra listening
+       * connection is unwelcome, or when running through a pooler that cannot
+       * pin a session. Ignored on every engine but Postgres.
        */
       notify?: boolean;
     }
