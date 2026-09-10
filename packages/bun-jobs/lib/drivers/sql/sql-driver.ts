@@ -49,6 +49,15 @@ import { createSchema, JOB_COLUMNS } from "./schema";
 /** How often a polling wait re-checks, in milliseconds. */
 const POLL_MS = 50;
 
+/**
+ * How many jobs go into one multi-row insert.
+ *
+ * Postgres caps a statement at 65,535 parameters and a job is 24 columns, so
+ * the ceiling is about 2,700 rows; 500 leaves room under every engine's limit
+ * and keeps a single statement short enough to plan quickly.
+ */
+const INSERT_CHUNK = 500;
+
 /** Every job state, in the order `countJobs` reports them. */
 const STATES: JobState[] = [
   "waiting",
@@ -539,15 +548,104 @@ export class SqlDriver implements JobsDriver {
     return { job: existing ?? jsonClone(job), added: false };
   }
 
+  /**
+   * Adds many jobs with one statement per chunk.
+   *
+   * The common case — every id new — costs a single round trip per chunk,
+   * because an engine that can `RETURNING` tells us which rows it took, and one
+   * that cannot is asked only whether it took all of them. Only a chunk that
+   * actually collided pays for a second look.
+   *
+   * Per-id idempotency is unchanged: a duplicate is ignored, not overwritten,
+   * and comes back with `added: false` and whatever is stored. Repeat
+   * scheduling depends on exactly that.
+   */
   async addJobs(
     q: QueueRef,
     jobs: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
+    if (jobs.length === 0) {
+      return [];
     }
+
+    // One job is not a batch, and the singular path already reports precisely
+    // what happened to it.
+    if (jobs.length === 1) {
+      return [await this.addJob(q, jobs[0]!)];
+    }
+
+    await this.connect();
+
+    const results: { job: JobRecord; added: boolean }[] = [];
+
+    for (let start = 0; start < jobs.length; start += INSERT_CHUNK) {
+      const chunk = jobs.slice(start, start + INSERT_CHUNK);
+      results.push(...(await this.#insertChunk(q, chunk)));
+    }
+
     return results;
+  }
+
+  /** Inserts one chunk and works out which of its rows were new. */
+  async #insertChunk(
+    q: QueueRef,
+    chunk: JobRecord[],
+  ): Promise<{ job: JobRecord; added: boolean }[]> {
+    const columns = [...JOB_COLUMNS];
+    const statement = this.dialect.insertIgnoreMany(
+      this.#tables.jobs,
+      columns,
+      chunk.length,
+    );
+    const params = chunk.flatMap((job) => this.#toRow(q, job));
+
+    /** Ids the engine reported as newly inserted, when it can report them. */
+    let added: Set<string>;
+
+    if (this.dialect.supportsReturning) {
+      const rows = await this.#all<{ id: string }>(
+        `${statement} RETURNING id`,
+        params,
+      );
+      added = new Set(rows.map((row) => String(row.id)));
+    } else {
+      const count = await this.#run(statement, params);
+
+      // Everything went in, which is the usual answer and needs no follow-up.
+      if (count >= chunk.length) {
+        added = new Set(chunk.map((job) => job.id));
+      } else {
+        // Some id already existed and this engine will not say which. Rather
+        // than guess, fall back to the singular path for this chunk alone; the
+        // rows already inserted make each of those a cheap no-op.
+        const settled: { job: JobRecord; added: boolean }[] = [];
+        for (const job of chunk) {
+          settled.push(await this.addJob(q, job));
+        }
+        return settled;
+      }
+    }
+
+    if (added.size === chunk.length) {
+      return chunk.map((job) => ({ job: jsonClone(job), added: true }));
+    }
+
+    // Only the collisions need reading back, and only to return what is
+    // actually stored rather than what the caller offered.
+    const stored = new Map<string, JobRecord>();
+    for (const job of chunk) {
+      if (!added.has(job.id)) {
+        const existing = await this.getJob(q, job.id);
+        if (existing) {
+          stored.set(job.id, existing);
+        }
+      }
+    }
+
+    return chunk.map((job) => ({
+      job: stored.get(job.id) ?? jsonClone(job),
+      added: added.has(job.id),
+    }));
   }
 
   async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {

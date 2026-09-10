@@ -34,6 +34,15 @@ export interface SqlDialect {
   readonly supportsSkipLocked: boolean;
   /** An insert that silently does nothing when the row exists. */
   insertIgnore: (table: string, columns: string[]) => string;
+  /**
+   * The same insert for several rows at once.
+   *
+   * One statement per batch instead of one per job: adding 5,000 jobs was
+   * 5,000 serially awaited inserts, which is the whole of the gap against
+   * libraries that write a batch in one go. Parameters are flattened row by
+   * row, so the caller passes `rows * columns` values in that order.
+   */
+  insertIgnoreMany: (table: string, columns: string[], rows: number) => string;
   /** An upsert that overwrites the named columns when the row exists. */
   upsert: (
     table: string,
@@ -125,6 +134,12 @@ export interface ClaimStatementOptions {
    * can see. It is floored at one and rounded down.
    */
   limit?: number;
+}
+
+/** `(?, ?, …)` repeated once per row, for the `?`-placeholder engines. */
+function anonymousRows(columns: string[], rows: number): string {
+  const one = `(${columns.map(() => "?").join(", ")})`;
+  return Array.from({ length: rows }).fill(one).join(", ");
 }
 
 /** The columns a claim sets, shared by the dialects that write it. */
@@ -276,6 +291,14 @@ const postgres: SqlDialect = {
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map((_column, index) => `$${index + 1}`)
       .join(", ")}) ON CONFLICT DO NOTHING`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${Array.from(
+      { length: rows },
+      (_row, rowIndex) =>
+        `(${columns
+          .map((_column, index) => `$${rowIndex * columns.length + index + 1}`)
+          .join(", ")})`,
+    ).join(", ")} ON CONFLICT DO NOTHING`,
   upsert: (table, columns, conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map((_column, index) => `$${index + 1}`)
@@ -331,6 +354,11 @@ const mysql: SqlDialect = {
     `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
       .join(", ")})`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
   upsert: (table, columns, _conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
@@ -405,6 +433,11 @@ const sqlite: SqlDialect = {
     `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
       .join(", ")})`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
   upsert: (table, columns, conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
