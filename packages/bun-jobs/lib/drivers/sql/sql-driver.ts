@@ -30,7 +30,7 @@ import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
-import { createSchema, JOB_COLUMNS } from "./schema";
+import { createSchema, JOB_COLUMNS, jobColumnTypes } from "./schema";
 
 /**
  * A driver backed by a SQL database.
@@ -618,12 +618,17 @@ export class SqlDriver implements JobsDriver {
     chunk: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
     const columns = [...JOB_COLUMNS];
-    const statement = this.dialect.insertIgnoreMany(
-      this.#tables.jobs,
-      columns,
-      chunk.length,
-    );
-    const params = chunk.flatMap((job) => this.#toRow(q, job));
+
+    // One JSON document beats a parameter per column per row where the engine
+    // can expand it: 500 jobs is one bind parameter this way and 12,000 as a
+    // multi-row `VALUES`.
+    const fromJson = this.dialect.insertIgnoreFromJson;
+    const statement = fromJson
+      ? fromJson(this.#tables.jobs, columns, jobColumnTypes(this.dialect))
+      : this.dialect.insertIgnoreMany(this.#tables.jobs, columns, chunk.length);
+    const params = fromJson
+      ? [JSON.stringify(chunk.map((job) => this.#toDocument(q, job)))]
+      : chunk.flatMap((job) => this.#toRow(q, job));
 
     /** Ids the engine reported as newly inserted, when it can report them. */
     let added: Set<string>;
@@ -1613,6 +1618,46 @@ export class SqlDriver implements JobsDriver {
       job.workerId,
       job.repeatKey,
     ];
+  }
+
+  /**
+   * A job as an object keyed by column name, for the JSON insert path.
+   *
+   * Unlike {@link SqlDriver.#toRow} the JSON columns keep their real values
+   * rather than being stringified: they are about to be embedded in a document
+   * that is itself serialised once, so pre-encoding them would double-encode.
+   */
+  #toDocument(q: QueueRef, job: JobRecord): Record<string, unknown> {
+    const values = [
+      q.ns,
+      q.queue,
+      job.id,
+      job.name,
+      job.state,
+      job.priority,
+      job.runAt,
+      job.createdAt,
+      job.processedOn,
+      job.finishedOn,
+      job.expiresAt,
+      job.attemptsMade,
+      job.maxAttempts,
+      job.stalledCount,
+      job.data ?? null,
+      job.opts ?? null,
+      job.progress ?? null,
+      job.returnValue ?? null,
+      job.failedReason ?? null,
+      job.stacktrace ?? null,
+      job.lockToken,
+      job.lockExpiresAt,
+      job.workerId,
+      job.repeatKey,
+    ];
+
+    return Object.fromEntries(
+      JOB_COLUMNS.map((column, index) => [column, values[index]]),
+    );
   }
 
   /** A row as a job record, decoding JSON columns and numeric strings. */
