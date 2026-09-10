@@ -104,6 +104,8 @@ export class BunQueueWorker<
   readonly #active = new Map<string, Promise<void>>();
   /** Controllers for the jobs in flight, so they can be aborted. */
   readonly #aborts = new Map<string, AbortController>();
+  /** Completion writes still in flight, so `close()` does not abandon one. */
+  readonly #settling = new Set<Promise<void>>();
 
   /** How many jobs to process at once; settable at runtime. */
   #concurrency: number;
@@ -302,6 +304,8 @@ export class BunQueueWorker<
     }
 
     await Promise.allSettled([...this.#active.values()]);
+    // Jobs finish before their completions are written, so drain those too.
+    await Promise.allSettled([...this.#settling]);
 
     if (this.#running) {
       await this.#stopped.promise;
@@ -485,26 +489,61 @@ export class BunQueueWorker<
         },
       );
 
-      const completed = await this.driver.completeJob(
-        this.ref,
-        record.id,
-        this.#token,
-        jsonClone(result ?? null),
-        record.opts.removeOnComplete,
-        Date.now(),
-      );
-
-      if (!completed) {
-        // The lock was gone, so someone else owns this job's outcome now.
-        throw new LockLostError(record.id, { jobId: record.id });
-      }
-
-      this.safeEmit("completed", job, result as TResult);
+      // Not awaited, deliberately.
+      //
+      // The job has run; recording that is bookkeeping, and holding the worker
+      // on it makes every job cost two serial round trips instead of one. Let
+      // go here and the next claim goes out on another pooled connection while
+      // this write is still in flight — measured, that is most of the distance
+      // to graphile-worker, which does exactly this.
+      //
+      // `close()` still waits for these through `#settling`, so a clean
+      // shutdown never abandons one.
+      this.#settle(job, record, result as TResult);
     } catch (error) {
       await this.#recordFailure(job, record, error);
     } finally {
       clearInterval(heartbeat);
     }
+  }
+
+  /**
+   * Records a finished job, off the critical path.
+   *
+   * The write is tracked so `close()` can wait for it. A failure here is not
+   * the job failing — it already ran — so it is reported rather than retried:
+   * losing the lock means someone else owns the outcome, and anything else is
+   * a driver error the caller needs to see. Either way the job stays `active`
+   * until the stalled sweep returns it, which is the same window a crash
+   * between running and recording has always had.
+   */
+  #settle(job: Job<TData, TResult>, record: JobRecord, result: TResult): void {
+    const writing = (async () => {
+      try {
+        const completed = await this.driver.completeJob(
+          this.ref,
+          record.id,
+          this.#token,
+          jsonClone(result ?? null),
+          record.opts.removeOnComplete,
+          Date.now(),
+        );
+
+        if (completed) {
+          this.safeEmit("completed", job, result);
+        } else {
+          this.safeEmit("lockLost", job);
+        }
+      } catch (error) {
+        this.#emitError(error, "complete");
+      }
+    })();
+
+    const tracked = writing.finally(() => {
+      this.#settling.delete(tracked);
+    });
+
+    this.#settling.add(tracked);
   }
 
   /** Decides whether a failed attempt is retried, and tells the driver. */
