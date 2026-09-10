@@ -27,6 +27,8 @@ export { BunJobs, type BunJobsOptions, jobsFromContext } from "./BunJobs";
 export {
   type ClaimOptions,
   createDriver,
+  detectAdapter,
+  dialectFor,
   type DriverCapabilities,
   type DriverConfig,
   type DriverEvent,
@@ -51,6 +53,10 @@ export {
   type RunRecord,
   type RunSource,
   type RunStatus,
+  type SqlAdapter,
+  type SqlDialect,
+  SqlDriver,
+  type SqlDriverOptions,
   type StoredSchedule,
 } from "./drivers/index";
 

@@ -29,3 +29,10 @@ export type {
 } from "./driver";
 export { FileDriver, type FileDriverOptions } from "./file-driver";
 export { MemoryDriver } from "./memory-driver";
+export {
+  detectAdapter,
+  dialectFor,
+  type SqlAdapter,
+  type SqlDialect,
+} from "./sql/dialect";
+export { SqlDriver, type SqlDriverOptions } from "./sql/sql-driver";

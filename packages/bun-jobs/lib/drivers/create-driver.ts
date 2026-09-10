@@ -2,6 +2,7 @@ import type { DriverConfig, JobsDriver } from "./driver";
 import { ConfigError } from "../shared/errors";
 import { FileDriver } from "./file-driver";
 import { MemoryDriver } from "./memory-driver";
+import { SqlDriver } from "./sql/sql-driver";
 
 /**
  * Builds a driver from a plain config object.
@@ -21,10 +22,15 @@ export function createDriver(config: DriverConfig): JobsDriver {
       return new MemoryDriver();
     case "file":
       return new FileDriver({ root: config.root });
-    case "redis":
     case "sql":
+      return new SqlDriver({
+        url: config.url,
+        adapter: config.adapter,
+        tablePrefix: config.tablePrefix,
+      });
+    case "redis":
       throw new ConfigError(
-        `The "${config.type}" driver has not landed yet — use { type: "memory" } for now`,
+        `The "${config.type}" driver has not landed yet — use { type: "memory" }, { type: "file" } or { type: "sql" } for now`,
         { type: config.type },
       );
     default:

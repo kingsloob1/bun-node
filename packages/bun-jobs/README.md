@@ -10,9 +10,16 @@ Background work for Bun, built on [`@kingsleyweb/bun-common`](../bun-common):
 - **Queue** — queue and process jobs across processes and services with
   priorities, delays, retries with backoff, per-attempt timeouts, stalled-job
   recovery, repeatable jobs, retention and events.
-- **Drivers** — memory, file, Redis (`Bun.redis`) and SQL (`Bun.sql`:
-  postgres, mysql, mariadb, sqlite) behind one contract, so producers,
-  consumers and runners in different processes share a backend.
+- **Drivers** — memory, file and SQL (`Bun.sql`: sqlite, postgres, mysql,
+  mariadb) behind one contract, so producers, consumers and runners in
+  different processes share a backend. Redis is next.
+
+| Driver | Cross-process | Cross-host | Notes |
+|---|---|---|---|
+| memory | no | no | one process; tests and single-process apps |
+| file | yes | no | a shared directory, POSIX semantics required |
+| sql (sqlite) | yes | yes | one file; WAL and a busy timeout |
+| sql (postgres/mysql/mariadb) | yes | yes | `SKIP LOCKED` claiming |
 - **Namespaces** — every runner, queue and worker is scoped by a required
   namespace, so services sharing a backend never collide.
 
