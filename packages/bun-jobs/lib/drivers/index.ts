@@ -30,9 +30,20 @@ export type {
 export { FileDriver, type FileDriverOptions } from "./file-driver";
 export { MemoryDriver } from "./memory-driver";
 export {
+  MONGO_COLLECTIONS,
+  type MongoCollection,
+  MongoDriver,
+  type MongoDriverOptions,
+} from "./mongo/mongo-driver";
+export {
   detectAdapter,
   dialectFor,
   type SqlAdapter,
   type SqlDialect,
 } from "./sql/dialect";
-export { SqlDriver, type SqlDriverOptions } from "./sql/sql-driver";
+export {
+  SQL_TABLES,
+  SqlDriver,
+  type SqlDriverOptions,
+  type SqlTable,
+} from "./sql/sql-driver";

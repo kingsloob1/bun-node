@@ -1,4 +1,5 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { ConnectionOptions } from "../shared/connection";
 import type { RunnerSchedule } from "../shared/schedule";
 
 /**
@@ -532,21 +533,58 @@ export interface QueueDriver {
 export interface JobsDriver
   extends DriverLifecycle, RunnerDriver, QueueDriver {}
 
-/** How to build a driver, when one is not passed as an instance. */
+/**
+ * How to build a driver, when one is not passed as an instance.
+ *
+ * Every backend accepts a connection either way: `url` for what a platform
+ * hands you in an environment variable, `connection` for what a config file
+ * or a secrets manager gives you a field at a time. A config has to survive
+ * `JSON.stringify`, because it is what a spawned child receives — an
+ * instance cannot cross a process boundary, a description of one can.
+ */
 export type DriverConfig =
   | { type: "memory" }
-  | { type: "file"; root: string }
+  | {
+      type: "file";
+      /** Directory the driver owns. */
+      root: string;
+    }
   | {
       type: "redis";
-      url: string;
+      /** A connection string. */
+      url?: string;
+      /** The connection as fields, when a URL is not what you have. */
+      connection?: ConnectionOptions;
+      /** Whether the server is a cluster, which changes how keys are grouped. */
       cluster?: boolean;
+      /** Prepended to every key, ahead of the namespace. */
       keyPrefix?: string;
     }
   | {
       type: "sql";
+      /** A connection string; its scheme names the engine. */
       url?: string;
+      /** The connection as fields; `adapter` then names the engine. */
+      connection?: ConnectionOptions;
+      /** Overrides the engine detected from the URL. */
       adapter?: "postgres" | "mysql" | "mariadb" | "sqlite";
+      /** Prepended to every table name. */
       tablePrefix?: string;
+      /** Exact table names, for an existing schema. */
+      tables?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+    }
+  | {
+      type: "mongodb";
+      /** A connection string. */
+      url?: string;
+      /** The connection as fields, when a URL is not what you have. */
+      connection?: ConnectionOptions;
+      /** Database to use; defaults to the one named in the URL. */
+      database?: string;
+      /** Prepended to every collection name. */
+      collectionPrefix?: string;
+      /** Exact collection names, for an existing database. */
+      collections?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
     };
 
 /** A schedule stored alongside a runner's state. */

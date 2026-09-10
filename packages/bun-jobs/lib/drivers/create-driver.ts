@@ -2,6 +2,7 @@ import type { DriverConfig, JobsDriver } from "./driver";
 import { ConfigError } from "../shared/errors";
 import { FileDriver } from "./file-driver";
 import { MemoryDriver } from "./memory-driver";
+import { MongoDriver } from "./mongo/mongo-driver";
 import { SqlDriver } from "./sql/sql-driver";
 
 /**
@@ -25,12 +26,22 @@ export function createDriver(config: DriverConfig): JobsDriver {
     case "sql":
       return new SqlDriver({
         url: config.url,
+        connection: config.connection,
         adapter: config.adapter,
         tablePrefix: config.tablePrefix,
+        tables: config.tables,
+      });
+    case "mongodb":
+      return new MongoDriver({
+        url: config.url,
+        connection: config.connection,
+        database: config.database,
+        collectionPrefix: config.collectionPrefix,
+        collections: config.collections,
       });
     case "redis":
       throw new ConfigError(
-        `The "${config.type}" driver has not landed yet — use { type: "memory" }, { type: "file" } or { type: "sql" } for now`,
+        `The "${config.type}" driver has not landed yet — use memory, file, sql or mongodb for now`,
         { type: config.type },
       );
     default:

@@ -42,6 +42,10 @@ export {
   type JobState,
   type LockInfo,
   MemoryDriver,
+  MONGO_COLLECTIONS,
+  type MongoCollection,
+  MongoDriver,
+  type MongoDriverOptions,
   type QueueDriver,
   type QueuedTrigger,
   type QueueRef,
@@ -53,10 +57,12 @@ export {
   type RunRecord,
   type RunSource,
   type RunStatus,
+  SQL_TABLES,
   type SqlAdapter,
   type SqlDialect,
   SqlDriver,
   type SqlDriverOptions,
+  type SqlTable,
   type StoredSchedule,
 } from "./drivers/index";
 
@@ -122,6 +128,16 @@ export {
   WorkerExecutor,
   type WorkerOptions,
 } from "./runner/index";
+export {
+  type ConnectionInput,
+  type ConnectionOptions,
+  databaseFromUrl,
+  resolveConnectionUrl,
+  resolveNames,
+  toConnectionUrl,
+  type UrlDefaults,
+} from "./shared/connection";
+
 /* ------------------------------------------------------------------ *
  * Shared building blocks used across the package, exported because a
  * consumer writing a custom driver or handler needs them too.
@@ -141,7 +157,6 @@ export {
 } from "./shared/cron";
 
 export { TypedEmitterBase } from "./shared/emitter";
-
 /* ------------------------------------------------------------------ *
  * Errors — every failure this package raises, each with a stable `code`.
  * ------------------------------------------------------------------ */
