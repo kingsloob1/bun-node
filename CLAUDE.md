@@ -56,6 +56,23 @@ noise — ignore it. There may be a couple of intentional `no-console` ESLint
 *warnings* (error logging in catch blocks with no logger in scope); warnings
 do not fail lint.
 
+`packages/bun-jobs/bench/` is a **separate, unpublished package** with its own
+`package.json`, lockfile and `node_modules` (the same shape as the root
+`benchmarks/`, and excluded from the root `workspaces` list). It holds the
+third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
+graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
+published package's dependency tree. Neither `bunx tsc --noEmit` nor
+`bunx eslint lib __tests__` covers it; when you change it, run its own pass
+from the package directory:
+
+```bash
+bunx tsc --noEmit -p bench/tsconfig.json
+bunx eslint bench --ignore-pattern 'bench/node_modules/**'
+```
+
+It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
+never the test suite's, so the two can never disturb each other.
+
 **Test files are not in `tsconfig`'s `include`** (`./lib/**/*` only), so
 `bunx tsc --noEmit` doesn't catch type errors in `__tests__/`. The IDE does,
 and an explicit pass does too — when you've changed test files, also run:

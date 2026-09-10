@@ -56,6 +56,27 @@ bun scripts/setup-databases.ts --dry-run   # see the plan first
 It is safe to run repeatedly: an installed server is never reinstalled, and
 configuration runs only when connecting with the expected credentials fails.
 
+### Benchmarks
+
+`bench/` compares both halves of this package against the established
+alternatives, on Bun:
+
+- the **queue** against BullMQ, bee-queue, node-resque (Redis), pg-boss,
+  graphile-worker (Postgres) and Agenda (Mongo, Postgres, Redis);
+- the **runner** against Bree, Agenda, croner, node-cron, node-schedule and
+  toad-scheduler.
+
+```bash
+cd bench && bun install
+bun queue.ts --verify     # every contender must deliver each job exactly once
+bun queue.ts              # enqueue, drain, round-trip, payload, contention
+bun runner.ts             # dispatch, cycle, schedule drift, exclusivity
+```
+
+Results are ranked only **within a backend** — a Redis figure beside a Postgres
+one measures the database, not the library — and each contender runs in its own
+process. `bench/README.md` explains how the configurations are kept comparable.
+
 - **Namespaces** — every runner, queue and worker is scoped by a required
   namespace, so services sharing a backend never collide.
 
