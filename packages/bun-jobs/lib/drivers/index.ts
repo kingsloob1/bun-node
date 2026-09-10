@@ -2,6 +2,7 @@
  * Storage backends. `driver.ts` is the contract; each other module is one
  * implementation of it.
  */
+export { claimByLoop, claimJobBatch } from "./claimBatch";
 export { createDriver, resolveDriver } from "./create-driver";
 export type {
   ClaimOptions,

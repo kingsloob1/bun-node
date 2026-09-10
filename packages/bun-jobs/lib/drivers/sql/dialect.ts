@@ -117,6 +117,14 @@ export interface ClaimStatementOptions {
   workerId: string;
   /** How long the claim's lock lives. */
   lockMs: number;
+  /**
+   * How many jobs the statement may take. Defaults to one.
+   *
+   * A literal, not a bound parameter: it comes from the worker's free slots,
+   * never from user input, and every engine here will only plan a `LIMIT` it
+   * can see. It is floored at one and rounded down.
+   */
+  limit?: number;
 }
 
 /** The columns a claim sets, shared by the dialects that write it. */
@@ -140,11 +148,13 @@ function claimCandidates(
 ): string {
   const { bind } = options;
 
+  const limit = Math.max(1, Math.floor(options.limit ?? 1));
+
   return `SELECT id FROM ${options.table}
        WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
          AND state = 'waiting' AND run_at <= ${bind(options.now)}
        ORDER BY priority ASC, created_at ASC, id ASC
-       LIMIT 1${locking}`;
+       LIMIT ${limit}${locking}`;
 }
 
 /** Picks the id of the row a claim would take. */

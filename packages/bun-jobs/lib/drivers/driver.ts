@@ -414,6 +414,33 @@ export interface QueueDriver {
    * empty, paused, or nothing is due yet.
    */
   claimJob: (q: QueueRef, opts: ClaimOptions) => Promise<JobRecord | null>;
+  /**
+   * Claims up to `limit` jobs in one go, when the backend can.
+   *
+   * Optional: a driver without it is driven through a loop of
+   * {@link QueueDriver.claimJob} by `claimJobBatch`, which is what every caller
+   * uses. Implement it when the backend can take several rows in one round
+   * trip — claiming one at a time caps a drain at one over the claim latency,
+   * however high the worker's concurrency is.
+   *
+   * Two rules, both load-bearing:
+   *
+   * - **Each returned job is claimed exactly once**, as with `claimJob`. The
+   *   batch itself is *not* required to be atomic, so returning fewer than
+   *   `limit` is normal and a short result does not mean the queue is empty.
+   * - **Never throw after claiming anything.** Jobs already taken are `active`
+   *   with the caller's token; throwing abandons them to the stalled sweep and
+   *   spends a `stalledCount` on each. Return what was taken instead.
+   *
+   * Returned jobs must be in claim order — `priority`, then `createdAt`, then
+   * `id` — which is not the order a backend hands them back in: `RETURNING`, a
+   * re-select and a re-read all leave row order undefined.
+   */
+  claimJobs?: (
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ) => Promise<JobRecord[]>;
   /** Extends an active job's lock, for its holder only. */
   extendJobLock: (
     q: QueueRef,

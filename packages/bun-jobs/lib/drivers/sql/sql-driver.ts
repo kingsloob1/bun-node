@@ -27,6 +27,7 @@ import { SQL as BunSQL } from "bun";
 import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { PauseCache } from "../../shared/pauseCache";
+import { claimByLoop } from "../claimBatch";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import { createSchema, JOB_COLUMNS } from "./schema";
 
@@ -664,6 +665,59 @@ export class SqlDriver implements JobsDriver {
       : await claim(this.#sql);
   }
 
+  /**
+   * Claims several jobs in one statement, where the engine can.
+   *
+   * Only offered for engines that can return the rows they updated. MySQL and
+   * MariaDB cannot, so their claim is already a pick-then-take-then-read
+   * sequence per job, and looping it — which is what `claimJobBatch` falls back
+   * to — costs the same as a plural version would while holding far fewer row
+   * locks. SQLite is left out for a different reason: its claim is a scalar
+   * subquery, and widening it to `IN (… LIMIT n)` re-opens exactly the
+   * re-evaluation hazard that once made Postgres claim two rows and return one.
+   */
+  async claimJobs(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    if (!this.dialect.supportsReturning || this.dialect.claimNeedsTransaction) {
+      return await claimByLoop(async () => await this.claimJob(q, opts), limit);
+    }
+
+    await this.connect();
+
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
+      return [];
+    }
+
+    const { bind, values } = this.#binder();
+    const statement = this.dialect.claim({
+      table: this.#tables.jobs,
+      bind,
+      ns: q.ns,
+      queue: q.queue,
+      now: opts.now,
+      token: opts.token,
+      workerId: opts.workerId,
+      lockMs: opts.lockMs,
+      limit,
+    });
+
+    const rows = await this.#all<Record<string, unknown>>(statement, values);
+
+    // `RETURNING` has no defined row order — the CTE orders the *pick*, not the
+    // result — so claim order is restored here rather than left to the planner.
+    return rows
+      .map((row) => this.#toRecord(row))
+      .sort(
+        (a, b) =>
+          a.priority - b.priority ||
+          a.createdAt - b.createdAt ||
+          (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      );
+  }
+
   async extendJobLock(
     q: QueueRef,
     id: string,
@@ -698,6 +752,24 @@ export class SqlDriver implements JobsDriver {
       typeof retention === "object" && retention?.ttl && retention.ttl > 0
         ? now + retention.ttl
         : null;
+
+    // `removeOnComplete: true` is the common configuration for a queue that
+    // does not read results back, and it used to cost two round trips: an
+    // UPDATE that wrote the result and the finished state, then a DELETE of
+    // the row it had just written. One conditional DELETE does the same job,
+    // keeps the same holder check, and skips serialising a result nothing will
+    // ever read.
+    if (retention === true) {
+      const { bind, values } = this.#binder();
+      const removed = await this.#run(
+        `DELETE FROM ${this.#tables.jobs}
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
+            AND state = 'active' AND lock_token = ${bind(token)}`,
+        values,
+      );
+
+      return removed > 0;
+    }
 
     const { bind, values } = this.#binder();
     const completed = await this.#run(

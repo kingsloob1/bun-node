@@ -15,7 +15,7 @@ import {
   sleep,
   withTimeout,
 } from "@kingsleyweb/bun-common";
-import { resolveDriver } from "../drivers/index";
+import { claimJobBatch, resolveDriver } from "../drivers/index";
 import {
   DEFAULT_LOCK_DURATION,
   DEFAULT_MAX_BLOCK,
@@ -368,28 +368,53 @@ export class BunQueueWorker<
       return;
     }
 
+    // Nothing claimable. This is the moment to promote whatever has come due,
+    // because it is the only moment the answer can change and the worker has
+    // nothing else to do.
+    //
+    // Promotion used to run inside every `claimJob`, which charged a write to
+    // every claim on a busy queue to serve a case that only arises on an idle
+    // one. Moving it here removes that cost without slowing a retry down: a
+    // job whose backoff has elapsed is picked up on the next empty pass rather
+    // than waiting out the 1Hz maintenance sweep.
+    if (this.#options.maintenance && (await this.#promoteDue())) {
+      return;
+    }
+
     this.safeEmit("drained");
     await this.#idle(await this.#waitBudget());
   }
 
-  /** Claims jobs until the concurrency limit or the queue runs dry. */
+  /**
+   * Claims up to the free slots and starts every job it gets.
+   *
+   * Exactly the free slots, and nothing is buffered: a job is only claimed when
+   * there is a slot ready to run it. Holding claimed-but-unstarted jobs would
+   * be faster on a backlog and would break three things at once — the jobs are
+   * `active` with no heartbeat, so this worker's own stalled sweep would take
+   * them back and run them twice; `close()` would abandon them; and peers would
+   * idle while one worker sat on the queue.
+   */
   async #claimUpToConcurrency(): Promise<number> {
-    let claimed = 0;
+    const slots = this.#concurrency - this.#active.size;
 
-    while (this.#active.size < this.#concurrency && !this.#closing) {
-      const record = await this.driver.claimJob(this.ref, {
+    if (slots <= 0 || this.#closing) {
+      return 0;
+    }
+
+    const records = await claimJobBatch(
+      this.driver,
+      this.ref,
+      {
         workerId: this.id,
         token: this.#token,
         lockMs: this.#options.lockDuration,
         now: Date.now(),
-      });
+      },
+      slots,
+    );
 
-      if (!record) {
-        break;
-      }
-
-      claimed++;
-
+    for (const record of records) {
       // Schedule the series' next occurrence *before* running this one, so a
       // crash mid-job cannot end the series.
       if (record.repeatKey) {
@@ -404,7 +429,27 @@ export class BunQueueWorker<
       this.#active.set(record.id, running);
     }
 
-    return claimed;
+    return records.length;
+  }
+
+  /**
+   * Promotes whatever has come due, reporting whether anything moved.
+   *
+   * A `true` sends the loop straight back to claiming instead of idling.
+   */
+  async #promoteDue(): Promise<boolean> {
+    try {
+      return (
+        (await this.driver.promoteDelayed(
+          this.ref,
+          Date.now(),
+          MAINTENANCE_BATCH,
+        )) > 0
+      );
+    } catch (error) {
+      this.#emitError(error, "promote");
+      return false;
+    }
   }
 
   /** Runs one job and records how it ended. */
