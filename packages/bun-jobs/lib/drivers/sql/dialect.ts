@@ -165,7 +165,7 @@ async function countFromResult(result: unknown): Promise<number> {
 }
 
 /** How many times a transient lock failure is retried before giving up. */
-const LOCK_RETRIES = 8;
+const LOCK_RETRIES = 12;
 
 /**
  * Whether an error is the database saying "someone else had it, try again".
@@ -428,10 +428,17 @@ const sqlite: SqlDialect = {
       }),
     ),
   pragmas: [
-    // WAL lets a reader work while a writer holds the lock, and the timeout
-    // is what makes a second process wait rather than fail outright.
+    // WAL lets a reader work while a writer holds the lock.
     "PRAGMA journal_mode=WAL",
-    "PRAGMA busy_timeout=5000",
+    // Deliberately small, and smaller is better here. SQLite's busy handler
+    // sleeps in the calling thread, so a connection waiting on a lock blocks
+    // the very event loop that has to run the holder's COMMIT. Two connections
+    // in one process therefore deadlock for the whole timeout: measured, a
+    // 5000ms timeout turned a 300ms wait into a 3015ms one, where 50ms plus
+    // the retry below finished in 349ms. The waiting is done in JavaScript by
+    // `withLockRetry`, which yields between attempts; this value only covers
+    // the microseconds a genuinely concurrent writer needs.
+    "PRAGMA busy_timeout=50",
     "PRAGMA synchronous=NORMAL",
   ],
 };

@@ -1279,18 +1279,34 @@ export class SqlDriver implements JobsDriver {
     const connection = tx ?? this.#sql;
 
     try {
-      const result = await connection.unsafe(text, params as never);
-      return await this.dialect.affectedRows(result, connection);
+      return await this.#contended(tx, async () => {
+        const result = await connection.unsafe(text, params as never);
+        return await this.dialect.affectedRows(result, connection);
+      });
     } catch (error) {
       throw new DriverError("sql", "run", error, { text });
     }
   }
 
+  /**
+   * Retries a statement the database refused because someone else held the
+   * row or the file, unless it is already inside a transaction.
+   *
+   * Inside one, a retry is pointless: the transaction is the unit the engine
+   * aborted, and repeating one statement of it cannot succeed. Those callers
+   * are covered by the retry the dialect wraps around the whole transaction.
+   */
+  async #contended<T>(tx: SQL | undefined, work: () => Promise<T>): Promise<T> {
+    return tx ? await work() : await withLockRetry(work);
+  }
+
   /** Runs a query, returning its rows. */
   async #all<T>(text: string, params: unknown[], tx?: SQL): Promise<T[]> {
     try {
-      const result = await (tx ?? this.#sql).unsafe(text, params as never);
-      return (Array.isArray(result) ? result : []) as T[];
+      return await this.#contended(tx, async () => {
+        const result = await (tx ?? this.#sql).unsafe(text, params as never);
+        return (Array.isArray(result) ? result : []) as T[];
+      });
     } catch (error) {
       throw new DriverError("sql", "query", error, { text });
     }

@@ -199,3 +199,105 @@ describe("SQL driver: schema", () => {
     await driver.close();
   });
 });
+
+describe("SQL driver: several connections to one SQLite file", () => {
+  /**
+   * Two drivers on one file must not wedge each other.
+   *
+   * SQLite's own answer to contention is `busy_timeout`, and on a
+   * single-threaded runtime it is a trap: the busy handler sleeps in the
+   * calling thread, which is the same thread that has to run the *other*
+   * connection's COMMIT. A generous timeout therefore does not make the wait
+   * shorter, it makes it exactly as long as the timeout. The driver keeps that
+   * value tiny and does the waiting in JavaScript instead, where yielding lets
+   * the holder finish.
+   *
+   * Left unfixed this was not a slow test, it was an infinite one: three
+   * workers on one file processed nothing at all.
+   */
+  it("lets a second driver write while a first is mid-transaction", async () => {
+    const tmp = await makeTmpDir("bun-jobs-sqlite-contended");
+    cleanups.push(tmp.cleanup);
+
+    const url = `sqlite://${join(tmp.path, "shared.db")}`;
+    const a = new SqlDriver({ url });
+    const b = new SqlDriver({ url });
+    const ns = testNamespace();
+    const q = { ns, queue: "contended" };
+
+    await a.ensureQueue(q);
+    await b.ensureQueue(q);
+
+    await a.addJob(q, makeJob({ id: "shared" }));
+
+    // Whichever of the two gets it, the other must come back promptly with
+    // `null` rather than sitting on the file's write lock.
+    const started = Date.now();
+    const [first, second] = await Promise.all([
+      a.claimJob(q, {
+        workerId: "a",
+        token: "ta",
+        lockMs: 5000,
+        now: Date.now(),
+      }),
+      b.claimJob(q, {
+        workerId: "b",
+        token: "tb",
+        lockMs: 5000,
+        now: Date.now(),
+      }),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2000);
+
+    await a.close();
+    await b.close();
+  });
+
+  it("drains a queue with three drivers competing on one file", async () => {
+    const tmp = await makeTmpDir("bun-jobs-sqlite-drain");
+    cleanups.push(tmp.cleanup);
+
+    const url = `sqlite://${join(tmp.path, "drain.db")}`;
+    const drivers = [
+      new SqlDriver({ url }),
+      new SqlDriver({ url }),
+      new SqlDriver({ url }),
+    ];
+    const ns = testNamespace();
+    const q = { ns, queue: "drain" };
+
+    await drivers[0]!.ensureQueue(q);
+    const seeded = [];
+    for (let index = 0; index < 30; index++) {
+      seeded.push(makeJob({ id: `j${index}` }));
+    }
+    await drivers[0]!.addJobs(q, seeded);
+
+    // Every driver claims and completes until nothing is left. A job claimed
+    // twice or lost would show up in the tally.
+    const claimed: string[] = [];
+    await Promise.all(
+      drivers.map(async (driver, index) => {
+        for (;;) {
+          const now = Date.now();
+          const job = await driver.claimJob(q, {
+            workerId: `w${index}`,
+            token: `t${index}`,
+            lockMs: 5000,
+            now,
+          });
+          if (!job) return;
+          claimed.push(job.id);
+          await driver.completeJob(q, job.id, `t${index}`, null, true, now);
+        }
+      }),
+    );
+
+    expect(claimed).toHaveLength(30);
+    expect(new Set(claimed).size).toBe(30);
+
+    await Promise.all(drivers.map((driver) => driver.close()));
+  });
+});
