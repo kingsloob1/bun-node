@@ -3,6 +3,8 @@
  * implementation of it.
  */
 export { claimByLoop, claimJobBatch } from "./claimBatch";
+export { CompletionBatcher } from "./completeBatch";
+export type { PendingCompletion } from "./completeBatch";
 export { createDriver, resolveDriver } from "./create-driver";
 export type {
   ClaimOptions,

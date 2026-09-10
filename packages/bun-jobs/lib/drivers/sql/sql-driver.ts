@@ -922,6 +922,125 @@ export class SqlDriver implements JobsDriver {
     return true;
   }
 
+  /**
+   * Completes a set of jobs held under one token.
+   *
+   * Two statements at most, whatever the size of the set: the ones being
+   * removed are one `DELETE … id = ANY`, and the ones being kept are one
+   * `UPDATE … FROM json_to_recordset`, because each of those carries its own
+   * result and expiry and so cannot share a single `SET`.
+   *
+   * Both keep the holder check the singular form has — `state = 'active' AND
+   * lock_token = ?` — so a job whose lock lapsed is left alone and reported as
+   * unsettled rather than silently overwritten.
+   */
+  async completeJobs(
+    q: QueueRef,
+    token: string,
+    completions: { id: string; result: unknown; retention: Retention }[],
+    now: number,
+  ): Promise<string[]> {
+    if (completions.length === 0) {
+      return [];
+    }
+
+    await this.connect();
+
+    // The batched statements below are Postgres-only — `json_to_recordset` has
+    // no portable equivalent — so every other engine takes the singular path,
+    // which is what it did before this existed.
+    if (!this.dialect.insertIgnoreFromJson) {
+      const settledOneByOne: string[] = [];
+      for (const one of completions) {
+        if (
+          await this.completeJob(
+            q,
+            one.id,
+            token,
+            one.result,
+            one.retention,
+            now,
+          )
+        ) {
+          settledOneByOne.push(one.id);
+        }
+      }
+      return settledOneByOne;
+    }
+
+    const settled: string[] = [];
+    const removing = completions.filter((one) => one.retention === true);
+    const keeping = completions.filter((one) => one.retention !== true);
+
+    if (removing.length > 0) {
+      const { bind, values } = this.#binder();
+      const ids = removing.map((one) => one.id);
+      const rows = await this.#all<{ id: string }>(
+        `DELETE FROM ${this.#tables.jobs}
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+            AND state = 'active' AND lock_token = ${bind(token)}
+            AND id IN (${ids.map((id) => bind(id)).join(", ")})
+        RETURNING id`,
+        values,
+      );
+      settled.push(...rows.map((row) => String(row.id)));
+    }
+
+    // Anything with a count-based retention still needs the per-state sweep the
+    // singular path does, so it takes that path rather than being half-batched.
+    const batchable = keeping.filter(
+      (one) => one.retention === false || this.#ttlOf(one.retention) !== null,
+    );
+    const individual = keeping.filter((one) => !batchable.includes(one));
+
+    if (batchable.length > 0) {
+      const { bind, values } = this.#binder();
+      const document = JSON.stringify(
+        batchable.map((one) => ({
+          id: one.id,
+          return_value: one.result ?? null,
+          expires_at:
+            this.#ttlOf(one.retention) === null
+              ? null
+              : now + this.#ttlOf(one.retention)!,
+        })),
+      );
+
+      const rows = await this.#all<{ id: string }>(
+        `UPDATE ${this.#tables.jobs} AS jobs
+            SET state = 'completed', finished_on = ${bind(now)},
+                return_value = document.return_value,
+                expires_at = document.expires_at,
+                lock_token = NULL, lock_expires_at = NULL, worker_id = NULL
+           FROM json_to_recordset(${bind(document)}::text::json)
+             AS document (id ${this.dialect.idType}, return_value json, expires_at ${this.dialect.timeType})
+          WHERE jobs.ns = ${bind(q.ns)} AND jobs.queue = ${bind(q.queue)}
+            AND jobs.id = document.id
+            AND jobs.state = 'active' AND jobs.lock_token = ${bind(token)}
+        RETURNING jobs.id`,
+        values,
+      );
+      settled.push(...rows.map((row) => String(row.id)));
+    }
+
+    for (const one of individual) {
+      if (
+        await this.completeJob(q, one.id, token, one.result, one.retention, now)
+      ) {
+        settled.push(one.id);
+      }
+    }
+
+    return settled;
+  }
+
+  /** The TTL a retention asks for, or `null` when it names none. */
+  #ttlOf(retention: Retention): number | null {
+    return typeof retention === "object" && retention?.ttl && retention.ttl > 0
+      ? retention.ttl
+      : null;
+  }
+
   async failJob(
     q: QueueRef,
     id: string,

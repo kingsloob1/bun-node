@@ -15,7 +15,11 @@ import {
   sleep,
   withTimeout,
 } from "@kingsleyweb/bun-common";
-import { claimJobBatch, resolveDriver } from "../drivers/index";
+import {
+  claimJobBatch,
+  CompletionBatcher,
+  resolveDriver,
+} from "../drivers/index";
 import {
   DEFAULT_LOCK_DURATION,
   DEFAULT_MAX_BLOCK,
@@ -106,6 +110,8 @@ export class BunQueueWorker<
   readonly #aborts = new Map<string, AbortController>();
   /** Completion writes still in flight, so `close()` does not abandon one. */
   readonly #settling = new Set<Promise<void>>();
+  /** Batches finished jobs, so a burst settles in one round trip. */
+  readonly #completions: CompletionBatcher;
 
   /** How many jobs to process at once; settable at runtime. */
   #concurrency: number;
@@ -140,6 +146,7 @@ export class BunQueueWorker<
     const { driver, owned } = resolveDriver(options.driver);
     this.driver = driver;
     this.#ownsDriver = owned;
+    this.#completions = new CompletionBatcher(driver, this.ref, this.#token);
 
     const lockDuration = options.lockDuration ?? DEFAULT_LOCK_DURATION;
     this.#concurrency = Math.max(1, options.concurrency ?? 1);
@@ -305,6 +312,7 @@ export class BunQueueWorker<
 
     await Promise.allSettled([...this.#active.values()]);
     // Jobs finish before their completions are written, so drain those too.
+    await this.#completions.idle();
     await Promise.allSettled([...this.#settling]);
 
     if (this.#running) {
@@ -518,28 +526,27 @@ export class BunQueueWorker<
    * between running and recording has always had.
    */
   #settle(job: Job<TData, TResult>, record: JobRecord, result: TResult): void {
-    const writing = (async () => {
-      try {
-        const completed = await this.driver.completeJob(
-          this.ref,
-          record.id,
-          this.#token,
-          jsonClone(result ?? null),
-          record.opts.removeOnComplete,
-          Date.now(),
-        );
+    const written = createDeferred<void>();
 
-        if (completed) {
+    this.#completions.add({
+      id: record.id,
+      result: jsonClone(result ?? null),
+      retention: record.opts.removeOnComplete,
+      settle: (kept) => {
+        if (kept) {
           this.safeEmit("completed", job, result);
         } else {
           this.safeEmit("lockLost", job);
         }
-      } catch (error) {
+        written.resolve();
+      },
+      fail: (error) => {
         this.#emitError(error, "complete");
-      }
-    })();
+        written.resolve();
+      },
+    });
 
-    const tracked = writing.finally(() => {
+    const tracked = written.promise.finally(() => {
       this.#settling.delete(tracked);
     });
 

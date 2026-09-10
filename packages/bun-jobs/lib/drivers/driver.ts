@@ -458,6 +458,26 @@ export interface QueueDriver {
     retention: Retention,
     now: number,
   ) => Promise<boolean>;
+  /**
+   * Completes several jobs held under one token, in as few statements as the
+   * backend allows.
+   *
+   * Optional: without it `completeJobBatch` calls {@link QueueDriver.completeJob}
+   * once each, which is what every driver did before. Implement it where a
+   * backend can settle a set in one round trip — a worker at concurrency 16
+   * finishes jobs in bursts, and one statement per job is what its own claim
+   * loop ends up contending with.
+   *
+   * Returns the ids actually settled. An id missing from the result lost its
+   * lock and is someone else's to finish, exactly as `false` from the singular
+   * form means.
+   */
+  completeJobs?: (
+    q: QueueRef,
+    token: string,
+    completions: { id: string; result: unknown; retention: Retention }[],
+    now: number,
+  ) => Promise<string[]>;
   /** Fails an attempt, for its lock holder only. */
   failJob: (
     q: QueueRef,
