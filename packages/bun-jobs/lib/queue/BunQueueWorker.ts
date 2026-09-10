@@ -317,40 +317,59 @@ export class BunQueueWorker<
 
   /* --- the claim loop ------------------------------------------------------ */
 
-  /** Claims and processes until closed. */
+  /**
+   * Claims and processes until closed.
+   *
+   * A failure inside the loop is reported and the loop carries on. Letting
+   * one escape would end consumption for the life of the process: the worker
+   * would sit there looking healthy while its queue filled up. Backends do
+   * fail transiently — a connection drops, a database is briefly overloaded —
+   * and the answer to that is to try again shortly, not to stop.
+   */
   async #loop(): Promise<void> {
     try {
       while (!this.#closing) {
-        if (this.#paused || (await this.#queuePaused())) {
-          // Waiting *for work* is the wrong question while paused — there may
-          // be plenty, and none of it claimable — so this is a plain sleep
-          // that `resume()` cuts short.
-          await this.#sleepUntilWake(this.#options.pollInterval);
-          continue;
+        try {
+          await this.#iterate();
+        } catch (error) {
+          this.#emitError(error, "loop");
+          // Wait before retrying, so a persistent failure is not a hot loop.
+          await sleep(this.#options.pollInterval, { unref: true }).catch(
+            () => {},
+          );
         }
-
-        const claimed = await this.#claimUpToConcurrency();
-
-        if (this.#active.size >= this.#concurrency && this.#active.size > 0) {
-          // Full: wait for a slot rather than spinning on a claim that
-          // cannot succeed.
-          await Promise.race([...this.#active.values()]).catch(() => {});
-          continue;
-        }
-
-        if (claimed > 0) {
-          continue;
-        }
-
-        this.safeEmit("drained");
-        await this.#idle(await this.#waitBudget());
       }
-    } catch (error) {
-      this.#emitError(error, "loop");
     } finally {
       this.#running = false;
       this.#stopped.resolve();
     }
+  }
+
+  /** One pass of the claim loop. */
+  async #iterate(): Promise<void> {
+    if (this.#paused || (await this.#queuePaused())) {
+      // Waiting *for work* is the wrong question while paused — there may be
+      // plenty, and none of it claimable — so this is a plain sleep that
+      // `resume()` cuts short.
+      await this.#sleepUntilWake(this.#options.pollInterval);
+      return;
+    }
+
+    const claimed = await this.#claimUpToConcurrency();
+
+    if (this.#active.size >= this.#concurrency && this.#active.size > 0) {
+      // Full: wait for a slot rather than spinning on a claim that cannot
+      // succeed.
+      await Promise.race([...this.#active.values()]).catch(() => {});
+      return;
+    }
+
+    if (claimed > 0) {
+      return;
+    }
+
+    this.safeEmit("drained");
+    await this.#idle(await this.#waitBudget());
   }
 
   /** Claims jobs until the concurrency limit or the queue runs dry. */

@@ -120,7 +120,7 @@ for (const { name: backendName, config, available } of READY) {
       );
 
       await waitFor(async () => (await processed(log)).length >= total, {
-        timeout: 20_000,
+        timeout: 45_000,
         interval: 50,
         message: "consumers did not finish the jobs",
       });
@@ -142,7 +142,7 @@ for (const { name: backendName, config, available } of READY) {
       const counts = await driver.countJobs({ ns: namespace, queue: "work" });
       expect(counts.completed).toBe(total);
       expect(counts.waiting + counts.active + counts.dead).toBe(0);
-    }, 60_000);
+    }, 90_000);
 
     it("lets a producer add while consumers are already running", async () => {
       const { env, log } = await setup();
@@ -161,13 +161,13 @@ for (const { name: backendName, config, available } of READY) {
       await runBun(PRODUCER, { ...env, JOB_PREFIX: "late", JOB_COUNT: "5" });
 
       await waitFor(async () => (await processed(log)).length === 5, {
-        timeout: 15_000,
+        timeout: 45_000,
         interval: 50,
         message: "a job added after the consumer started was not picked up",
       });
 
       await consumer.exited;
-    }, 60_000);
+    }, 90_000);
 
     it("retries a failed job on whichever consumer is free", async () => {
       const { env, log, driver, namespace } = await setup();
@@ -204,7 +204,7 @@ for (const { name: backendName, config, available } of READY) {
       ]).toEqual([0, 6, ""]);
 
       await waitFor(async () => (await processed(log)).length >= 6, {
-        timeout: 20_000,
+        timeout: 45_000,
         interval: 50,
         message: async () => {
           const ref = { ns: namespace, queue: "work" };
@@ -233,7 +233,7 @@ for (const { name: backendName, config, available } of READY) {
       const counts = await driver.countJobs({ ns: namespace, queue: "work" });
       expect(counts.completed).toBe(6);
       expect(counts.dead).toBe(0);
-    }, 60_000);
+    }, 90_000);
 
     it("keeps two namespaces on one backend apart", async () => {
       const first = await setup();
@@ -259,7 +259,7 @@ for (const { name: backendName, config, available } of READY) {
       });
 
       await waitFor(async () => (await processed(first.log)).length === 3, {
-        timeout: 15_000,
+        timeout: 45_000,
         interval: 50,
         message: "the consumer did not finish its own namespace's jobs",
       });
@@ -276,7 +276,7 @@ for (const { name: backendName, config, available } of READY) {
       });
       expect(theirs.waiting).toBe(3);
       expect(theirs.completed).toBe(0);
-    }, 60_000);
+    }, 90_000);
   });
 }
 

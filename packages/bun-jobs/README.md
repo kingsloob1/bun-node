@@ -11,16 +11,21 @@ Background work for Bun, built on [`@kingsleyweb/bun-common`](../bun-common):
   priorities, delays, retries with backoff, per-attempt timeouts, stalled-job
   recovery, repeatable jobs, retention and events.
 - **Drivers** — memory, file, SQL (`Bun.sql`: sqlite, postgres, mysql,
-  mariadb) and MongoDB behind one contract, so producers, consumers and
-  runners in different processes share a backend. Redis is next.
+  mariadb), MongoDB and Redis behind one contract, so producers, consumers
+  and runners in different processes share a backend.
 
-| Driver | Cross-process | Cross-host | How exclusivity is won |
-|---|---|---|---|
-| memory | no | no | one process; tests and single-process apps |
-| file | yes | no | `open(…, "wx")` and atomic `rename` |
-| sql (sqlite) | yes | yes | `BEGIN IMMEDIATE`, WAL, busy timeout |
-| sql (postgres/mysql/mariadb) | yes | yes | `FOR UPDATE SKIP LOCKED` |
-| mongodb | yes | yes | one conditional `findOneAndUpdate` |
+| Driver | Cross-process | Cross-host | Waiting | How exclusivity is won |
+|---|---|---|---|---|
+| memory | no | no | local | one process; tests and single-process apps |
+| file | yes | no | poll | `open(…, "wx")` and atomic `rename` |
+| sql (sqlite) | yes | yes | poll | `BEGIN IMMEDIATE`, WAL, busy timeout |
+| sql (postgres/mysql/mariadb) | yes | yes | poll | `FOR UPDATE SKIP LOCKED` |
+| mongodb | yes | yes | poll | one conditional `findOneAndUpdate` |
+| redis | yes | yes | **blocking** | a Lua script, which runs uninterrupted |
+
+Redis is the only one that waits rather than polls: a worker blocks on the
+queue's wake list and hears about a job in about a millisecond. It is also
+the only one whose events are pushed rather than polled.
 
 Every driver takes its connection **either way** — a URL, or the fields a
 config file gives you — and lets you name its tables or collections:

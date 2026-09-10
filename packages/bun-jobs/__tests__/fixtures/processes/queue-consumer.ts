@@ -49,6 +49,12 @@ const worker = jobs.worker(
   },
 );
 
+// Surfaced rather than swallowed: a worker that stops consuming should say
+// why in the test's output, not leave a stalled queue to be puzzled over.
+worker.on("error", (error, context) => {
+  console.error(`worker error (${context}): ${error.message}`);
+});
+
 void worker.run();
 console.log(JSON.stringify({ event: "ready", consumerId }));
 

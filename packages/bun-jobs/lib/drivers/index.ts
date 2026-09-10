@@ -35,6 +35,8 @@ export {
   MongoDriver,
   type MongoDriverOptions,
 } from "./mongo/mongo-driver";
+export { RedisKeys } from "./redis/keys";
+export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
 export {
   detectAdapter,
   dialectFor,

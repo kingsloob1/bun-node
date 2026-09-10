@@ -3,6 +3,7 @@ import { ConfigError } from "../shared/errors";
 import { FileDriver } from "./file-driver";
 import { MemoryDriver } from "./memory-driver";
 import { MongoDriver } from "./mongo/mongo-driver";
+import { RedisDriver } from "./redis/redis-driver";
 import { SqlDriver } from "./sql/sql-driver";
 
 /**
@@ -40,10 +41,12 @@ export function createDriver(config: DriverConfig): JobsDriver {
         collections: config.collections,
       });
     case "redis":
-      throw new ConfigError(
-        `The "${config.type}" driver has not landed yet — use memory, file, sql or mongodb for now`,
-        { type: config.type },
-      );
+      return new RedisDriver({
+        url: config.url,
+        connection: config.connection,
+        cluster: config.cluster,
+        keyPrefix: config.keyPrefix,
+      });
     default:
       throw new ConfigError("Unrecognised driver config", {
         config: config as unknown,
