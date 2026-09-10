@@ -144,8 +144,15 @@ describe("kill escalation: spawn", () => {
       file: fixture("echo"),
       spawn: {
         startTimeout: 50,
-        execPath: process.execPath,
-        args: ["--version"],
+        // A process that starts and then stays silent. Standing our own
+        // bootstrap up against a small timeout would only be measuring how
+        // fast it imports, which is not what this asserts.
+        execPath: join(
+          import.meta.dir,
+          "fixtures",
+          "processes",
+          "never-ready.sh",
+        ),
       },
     });
     await runner.start();

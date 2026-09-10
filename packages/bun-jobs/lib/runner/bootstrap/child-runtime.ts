@@ -1,4 +1,4 @@
-import type { LogEvent } from "@kingsleyweb/bun-common";
+import type { LogEvent } from "@kingsleyweb/bun-common/lib/logging";
 import type {
   ChildToParent,
   ParentToChild,
@@ -6,7 +6,18 @@ import type {
 } from "../protocol";
 import type { RunContext } from "../types";
 import process from "node:process";
-import { createLogger, serializeError } from "@kingsleyweb/bun-common";
+// Deep paths, deliberately, not the `@kingsleyweb/bun-common` barrel.
+//
+// This module is the whole of a child's start-up, and the barrel re-exports
+// bun-common's HTTP layer — which pulls in `file-type`, `busboy`, `accepts`,
+// `type-is` and `parse-domain` at module scope, none of which a runner child
+// ever touches. Measured on Bun 1.4.3: the barrel costs 58.5ms to import,
+// `lib/logging` 1.4ms and `lib/utils/native` 8.0ms. Since a fresh child is
+// created per run, that difference *was* the dispatch latency.
+//
+// `__tests__/runner-startup.test.ts` fails if the barrel comes back.
+import { createLogger } from "@kingsleyweb/bun-common/lib/logging";
+import { serializeError } from "@kingsleyweb/bun-common/lib/utils/native";
 import { toHandler } from "../executors/executor";
 import { CLOSE_EXIT_CODE } from "../protocol";
 
