@@ -44,6 +44,12 @@ bunx eslint lib __tests__  # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
 
+bun-jobs' integration suites need database servers, and skip (visibly) when
+their URL is unset. `bun scripts/setup-databases.ts` provides them — system
+packages by default, `--docker` for containers, `--dry-run` to see the plan
+first. It never reinstalls an existing server and configures one only when a
+connection with the expected credentials fails.
+
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
 depend on bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
 noise — ignore it. There may be a couple of intentional `no-console` ESLint
