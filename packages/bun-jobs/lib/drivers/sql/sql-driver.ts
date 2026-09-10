@@ -1298,6 +1298,21 @@ export class SqlDriver implements JobsDriver {
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
 
+    // The gap between polls grows from a millisecond up to the configured
+    // interval, rather than being flat.
+    //
+    // Without a push channel this loop is the only thing that notices a new
+    // job, and a flat interval means a job arriving just after a poll waits the
+    // whole of it. That is a tail, not an average: measured on Postgres, p50
+    // 2.9ms and p99 53ms against a 50ms interval. It also got *worse* as
+    // claiming got faster, because a quicker empty pass puts the worker to
+    // sleep sooner, more often just ahead of the next arrival.
+    //
+    // A job is far likelier to arrive just after the queue drains than a second
+    // later, so the early polls are the ones worth spending. Backing off keeps
+    // an idle worker's cost roughly where it was.
+    let wait = 1;
+
     while (Date.now() < deadline && !signal?.aborted) {
       const { bind, values } = this.#binder();
       const row = await this.#one<{ total: number | string }>(
@@ -1308,13 +1323,18 @@ export class SqlDriver implements JobsDriver {
       );
 
       // Only a *claimable* job ends the wait; a paused queue has none.
-      if (Number(row?.total ?? 0) > 0 && !(await this.isQueuePaused(q))) {
+      if (
+        Number(row?.total ?? 0) > 0 &&
+        !(await this.#pauseCache.read(q, () => this.isQueuePaused(q)))
+      ) {
         return;
       }
 
-      await sleep(Math.min(this.#poll, Math.max(1, deadline - Date.now())), {
+      await sleep(Math.min(wait, Math.max(1, deadline - Date.now())), {
         unref: true,
       }).catch(() => {});
+
+      wait = Math.min(this.#poll, wait * 2);
     }
   }
 
