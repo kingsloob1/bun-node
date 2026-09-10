@@ -1,6 +1,11 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { SQL } from "bun";
 import type {
+  ConnectionInput,
+  ConnectionOptions,
+  UrlDefaults,
+} from "../../shared/connection";
+import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
@@ -19,8 +24,9 @@ import type {
 import type { SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
-import { DriverError } from "../../shared/errors";
-import { detectAdapter, dialectFor } from "./dialect";
+import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
+import { ConfigError, DriverError } from "../../shared/errors";
+import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import { createSchema, JOB_COLUMNS } from "./schema";
 
 /**
@@ -54,19 +60,49 @@ const STATES: JobState[] = [
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
 
+/** The tables this driver uses. */
+export const SQL_TABLES = ["jobs", "locks", "kv", "events"] as const;
+
+/** One of the tables this driver uses. */
+export type SqlTable = (typeof SQL_TABLES)[number];
+
 /** Options for {@link SqlDriver}. */
-export interface SqlDriverOptions {
-  /** Connection string. Its scheme picks the engine unless `adapter` says. */
+export interface SqlDriverOptions extends ConnectionInput {
+  /**
+   * A connection string. Its scheme picks the engine unless `adapter` says
+   * otherwise, and it wins over `connection` when both are given.
+   */
   url?: string;
-  /** Overrides the engine detected from `url`. */
+  /**
+   * The connection as fields, for when a URL is not what you have. The engine
+   * then comes from `adapter`, which is required.
+   */
+  connection?: ConnectionOptions;
+  /** Overrides the engine detected from the URL. */
   adapter?: SqlAdapter;
-  /** Prefix for every table name. Defaults to `bun_jobs_`. */
+  /**
+   * Prepended to every table name. Defaults to `bun_jobs_`, which keeps this
+   * driver's tables together in a database it shares with an application.
+   */
   tablePrefix?: string;
+  /**
+   * Exact table names, for an existing schema that was not named here. Given
+   * as-is, so a name set this way ignores `tablePrefix`.
+   */
+  tables?: Partial<Record<SqlTable, string>>;
   /** An already-open `Bun.SQL`, when the application has one to share. */
   sql?: SQL;
   /** How often a wait re-checks for work. Defaults to 50ms. */
   pollInterval?: number;
 }
+
+/** Default port per engine, for building a URL from connection fields. */
+const DEFAULT_PORTS: Record<SqlAdapter, number> = {
+  postgres: 5432,
+  mysql: 3306,
+  mariadb: 3306,
+  sqlite: 0,
+};
 
 export class SqlDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
@@ -89,13 +125,8 @@ export class SqlDriver implements JobsDriver {
     multiHost: true,
   };
 
-  /** Table names, prefix already applied. */
-  readonly #tables: {
-    jobs: string;
-    locks: string;
-    kv: string;
-    events: string;
-  };
+  /** The resolved table names. */
+  readonly #tables: Record<SqlTable, string>;
 
   /** The connection. */
   readonly #sql: SQL;
@@ -109,20 +140,44 @@ export class SqlDriver implements JobsDriver {
   readonly #subscriptions = new Set<() => void>();
 
   constructor(options: SqlDriverOptions) {
+    // A URL names its engine; fields do not, so `adapter` is required there.
+    if (!options.adapter && !options.url && options.connection) {
+      throw new ConfigError(
+        "A SQL connection given as fields needs an explicit adapter",
+        { connection: Object.keys(options.connection) },
+      );
+    }
+
     this.adapter = options.adapter ?? detectAdapter(options.url);
     this.dialect = dialectFor(this.adapter);
 
-    const prefix = options.tablePrefix ?? "bun_jobs_";
-    this.#tables = {
-      jobs: `${prefix}jobs`,
-      locks: `${prefix}locks`,
-      kv: `${prefix}kv`,
-      events: `${prefix}events`,
-    };
+    this.#tables = resolveNames(SQL_TABLES, {
+      prefix: options.tablePrefix,
+      overrides: options.tables,
+      defaultPrefix: "bun_jobs_",
+    });
 
     this.#poll = options.pollInterval ?? POLL_MS;
     this.#ownsConnection = !options.sql;
-    this.#sql = options.sql ?? new BunSQL({ url: options.url });
+
+    this.#sql =
+      options.sql ??
+      new BunSQL({
+        url: resolveConnectionUrl(
+          options,
+          this.#urlDefaults(),
+          "The SQL driver",
+        ),
+      });
+  }
+
+  /** How a connection given as fields becomes a URL for this engine. */
+  #urlDefaults(): UrlDefaults {
+    return {
+      scheme: this.adapter,
+      host: "127.0.0.1",
+      port: DEFAULT_PORTS[this.adapter] || undefined,
+    };
   }
 
   /* --- lifecycle ---------------------------------------------------- */
@@ -500,40 +555,80 @@ export class SqlDriver implements JobsDriver {
 
     await this.promoteDelayed(q, opts.now, 1000);
 
-    // The claim is one conditional UPDATE: whichever transaction commits it
-    // owns the job, and every other sees zero rows affected.
+    // Every engine claims differently — a CTE, a joined derived table, a
+    // scalar subquery under a write lock — so the statement comes from the
+    // dialect. What they share is the guarantee: at most one row, taken by
+    // exactly one caller.
     const { bind, values } = this.#binder();
 
-    const update = `UPDATE ${this.#tables.jobs}
-         SET state = 'active',
-             attempts_made = attempts_made + 1,
-             processed_on = ${bind(opts.now)},
-             lock_token = ${bind(opts.token)},
-             lock_expires_at = ${bind(opts.now + opts.lockMs)},
-             worker_id = ${bind(opts.workerId)}
-       WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-         AND state = 'waiting'
-         AND id IN (${this.dialect.limitedIdSubquery(
-           `SELECT id FROM ${this.#tables.jobs}
-             WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-               AND state = 'waiting' AND run_at <= ${bind(opts.now)}
-             ORDER BY priority ASC, created_at ASC, id ASC
-             LIMIT 1${this.dialect.supportsSkipLocked ? " FOR UPDATE SKIP LOCKED" : ""}`,
-         )})`;
+    const returning = this.dialect.claim({
+      table: this.#tables.jobs,
+      bind,
+      ns: q.ns,
+      queue: q.queue,
+      now: opts.now,
+      token: opts.token,
+      workerId: opts.workerId,
+      lockMs: opts.lockMs,
+    });
 
     return await this.dialect.transaction(this.#sql, async (tx) => {
       if (this.dialect.supportsReturning) {
         const rows = await this.#all<Record<string, unknown>>(
-          `${update} RETURNING *`,
+          returning,
           values,
           tx,
         );
         return rows[0] ? this.#toRecord(rows[0]) : null;
       }
 
-      // MariaDB cannot return the updated row, so it is read back by the
-      // token only this claim used.
-      const claimed = await this.#run(update, values, tx);
+      // MariaDB cannot return the row it updated, so the claim is three
+      // statements: pick an id, take that id, read it back.
+      //
+      // Reading back by lock token instead looks simpler and is wrong: a
+      // worker uses one token for its whole life, so with any concurrency
+      // above one the read returns a job it already holds — and that job is
+      // then processed a second time. Measured, six of forty jobs ran twice.
+      const pick = this.#binder();
+      const candidate = await this.#one<{ id: string }>(
+        this.dialect.claimCandidate({
+          table: this.#tables.jobs,
+          bind: pick.bind,
+          ns: q.ns,
+          queue: q.queue,
+          now: opts.now,
+          token: opts.token,
+          workerId: opts.workerId,
+          lockMs: opts.lockMs,
+        }),
+        pick.values,
+        tx,
+      );
+
+      if (!candidate) {
+        return null;
+      }
+
+      const take = this.#binder();
+      const claimed = await this.#run(
+        this.dialect.claimById(
+          {
+            table: this.#tables.jobs,
+            bind: take.bind,
+            ns: q.ns,
+            queue: q.queue,
+            now: opts.now,
+            token: opts.token,
+            workerId: opts.workerId,
+            lockMs: opts.lockMs,
+          },
+          candidate.id,
+        ),
+        take.values,
+        tx,
+      );
+
+      // Someone else took it between the pick and the update.
       if (claimed === 0) {
         return null;
       }
@@ -542,7 +637,7 @@ export class SqlDriver implements JobsDriver {
       const row = await this.#one<Record<string, unknown>>(
         `SELECT * FROM ${this.#tables.jobs}
           WHERE ns = ${read.bind(q.ns)} AND queue = ${read.bind(q.queue)}
-            AND lock_token = ${read.bind(opts.token)}`,
+            AND id = ${read.bind(candidate.id)}`,
         read.values,
         tx,
       );
@@ -1119,14 +1214,20 @@ export class SqlDriver implements JobsDriver {
   async #migrate(): Promise<void> {
     try {
       for (const statement of this.dialect.pragmas) {
-        await this.#sql.unsafe(statement);
+        // Best-effort: `journal_mode` wants a moment's exclusive access, and
+        // another process may already have set what this one is asking for.
+        await withLockRetry(async () => {
+          await this.#sql.unsafe(statement);
+        }).catch(() => {});
       }
 
-      for (const statement of createSchema(
-        this.#tables.jobs.replace(/jobs$/, ""),
-        this.dialect,
-      )) {
-        await this.#sql.unsafe(statement);
+      // Two processes starting together both create the schema, and one is
+      // told the database is busy. Every statement is `IF NOT EXISTS`, so
+      // waiting and repeating is exactly the right answer.
+      for (const statement of createSchema(this.#tables, this.dialect)) {
+        await withLockRetry(async () => {
+          await this.#sql.unsafe(statement);
+        });
       }
     } catch (error) {
       // A failed migration must not be remembered as done.
@@ -1157,16 +1258,29 @@ export class SqlDriver implements JobsDriver {
     };
   }
 
-  /** Runs a statement, returning how many rows it affected. */
+  /**
+   * Runs a statement, returning how many rows it affected.
+   *
+   * The count is what every conditional write here is judged by — "did this
+   * update find the row in the state I required?" — so getting it wrong makes
+   * every such write silently report failure. MySQL and MariaDB report
+   * nothing through this client and must be asked with `ROW_COUNT()`, which
+   * only answers about its own connection: those writes therefore run inside
+   * a transaction, unless they are already in one.
+   */
   async #run(text: string, params: unknown[], tx?: SQL): Promise<number> {
+    if (this.dialect.countsNeedSameConnection && !tx) {
+      return await this.dialect.transaction(
+        this.#sql,
+        async (connection) => await this.#run(text, params, connection),
+      );
+    }
+
+    const connection = tx ?? this.#sql;
+
     try {
-      const result = await (tx ?? this.#sql).unsafe(text, params as never);
-      const count = (result as unknown as { count?: number }).count;
-      return typeof count === "number"
-        ? count
-        : Array.isArray(result)
-          ? result.length
-          : 0;
+      const result = await connection.unsafe(text, params as never);
+      return await this.dialect.affectedRows(result, connection);
     } catch (error) {
       throw new DriverError("sql", "run", error, { text });
     }
@@ -1292,18 +1406,28 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const columns = ["ns", "kv_key", "value", "updated_at"];
-    const params = [ns, key, this.dialect.jsonIn(value), Date.now()];
+    const encoded = this.dialect.jsonIn(value);
 
+    // Insert-if-absent first, then update. A bare upsert is enough on
+    // Postgres and SQLite, but concurrent `ON DUPLICATE KEY UPDATE` on one
+    // key deadlocks in InnoDB; this shape does not.
+    await this.#run(this.dialect.insertIgnore(this.#tables.kv, columns), [
+      ns,
+      key,
+      encoded,
+      Date.now(),
+    ]);
+
+    if (!overwrite) {
+      return;
+    }
+
+    const { bind, values } = this.#binder();
     await this.#run(
-      overwrite
-        ? this.dialect.upsert(
-            this.#tables.kv,
-            columns,
-            ["ns", "kv_key"],
-            ["value", "updated_at"],
-          )
-        : this.dialect.insertIgnore(this.#tables.kv, columns),
-      params,
+      `UPDATE ${this.#tables.kv}
+          SET value = ${bind(encoded)}, updated_at = ${bind(Date.now())}
+        WHERE ns = ${bind(ns)} AND kv_key = ${bind(key)}`,
+      values,
     );
   }
 
@@ -1345,6 +1469,27 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
     const kvKey = `${key}:state`;
 
+    // Create the row first, outside the transaction.
+    //
+    // `SELECT ... FOR UPDATE` on a row that does not exist takes a *gap* lock
+    // in InnoDB, so two processes arriving together both hold one and both
+    // then try to insert, which deadlocks. With the row already present the
+    // lock is an ordinary record lock and the transaction only ever updates.
+    await this.#run(
+      this.dialect.insertIgnore(this.#tables.kv, [
+        "ns",
+        "kv_key",
+        "value",
+        "updated_at",
+      ]),
+      [
+        ns,
+        kvKey,
+        this.dialect.jsonIn({ fields: {}, history: [], queued: [] }),
+        Date.now(),
+      ],
+    );
+
     await this.dialect.transaction(this.#sql, async (tx) => {
       const locked = this.dialect.supportsSkipLocked ? " FOR UPDATE" : "";
       const read = this.#binder();
@@ -1371,14 +1516,15 @@ export class SqlDriver implements JobsDriver {
 
       mutate(state);
 
+      // A plain update: the row is known to exist, and inserting here is what
+      // caused the deadlock this method now avoids.
+      const write = this.#binder();
       await this.#run(
-        this.dialect.upsert(
-          this.#tables.kv,
-          ["ns", "kv_key", "value", "updated_at"],
-          ["ns", "kv_key"],
-          ["value", "updated_at"],
-        ),
-        [ns, kvKey, this.dialect.jsonIn(state), Date.now()],
+        `UPDATE ${this.#tables.kv}
+            SET value = ${write.bind(this.dialect.jsonIn(state))},
+                updated_at = ${write.bind(Date.now())}
+          WHERE ns = ${write.bind(ns)} AND kv_key = ${write.bind(kvKey)}`,
+        write.values,
         tx,
       );
     });

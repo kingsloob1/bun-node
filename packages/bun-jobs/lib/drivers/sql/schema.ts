@@ -38,12 +38,16 @@ export const JOB_COLUMNS = [
 ] as const;
 
 /** Statements creating everything, each safe to run repeatedly. */
-export function createSchema(prefix: string, dialect: SqlDialect): string[] {
-  const jobs = `${prefix}jobs`;
-  const locks = `${prefix}locks`;
-  const kv = `${prefix}kv`;
-  const events = `${prefix}events`;
+export function createSchema(
+  tables: { jobs: string; locks: string; kv: string; events: string },
+  dialect: SqlDialect,
+): string[] {
+  const { jobs, locks, kv, events } = tables;
   const { idType, jsonType, timeType, serialType } = dialect;
+
+  // Index names have to be unique within a schema, so they are derived from
+  // the table they belong to rather than from a prefix that may not exist.
+  const prefix = jobs.replace(/\W/g, "_");
 
   return [
     `CREATE TABLE IF NOT EXISTS ${jobs} (
@@ -74,15 +78,15 @@ export function createSchema(prefix: string, dialect: SqlDialect): string[] {
       PRIMARY KEY (ns, queue, id)
     )`,
     // Claim order: the queue's due, waiting jobs, cheapest first.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}claim ON ${jobs} (ns, queue, state, priority, created_at)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_claim ON ${jobs} (ns, queue, state, priority, created_at)`,
     // Promotion: what is due but not yet claimable.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}due ON ${jobs} (ns, queue, state, run_at)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_due ON ${jobs} (ns, queue, state, run_at)`,
     // Stalled recovery: active jobs whose lock has lapsed.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}lock ON ${jobs} (ns, queue, state, lock_expires_at)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_lock ON ${jobs} (ns, queue, state, lock_expires_at)`,
     // Cleaning: finished jobs, oldest first.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}done ON ${jobs} (ns, queue, state, finished_on)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_done ON ${jobs} (ns, queue, state, finished_on)`,
     // Retention: whatever has expired, across queues.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}exp ON ${jobs} (expires_at)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_exp ON ${jobs} (expires_at)`,
 
     `CREATE TABLE IF NOT EXISTS ${locks} (
       ns ${idType} NOT NULL,
@@ -107,6 +111,6 @@ export function createSchema(prefix: string, dialect: SqlDialect): string[] {
       payload ${jsonType},
       created_at ${timeType} NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}events ON ${events} (ns, channel, seq)`,
+    `CREATE INDEX IF NOT EXISTS ix_${prefix}_events ON ${events} (ns, channel, seq)`,
   ];
 }

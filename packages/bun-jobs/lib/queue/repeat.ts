@@ -57,7 +57,14 @@ function toMs(value: Date | number, what: string): number {
 export function nextOccurrence(
   definition: Pick<
     RepeatRecord,
-    "cron" | "tz" | "every" | "startAt" | "endAt" | "limit" | "count"
+    | "cron"
+    | "tz"
+    | "every"
+    | "startAt"
+    | "endAt"
+    | "limit"
+    | "count"
+    | "createdAt"
   >,
   from: number,
 ): number | null {
@@ -76,7 +83,13 @@ export function nextOccurrence(
     );
     next = date ? date.getTime() : null;
   } else if (definition.every && definition.every > 0) {
-    const anchor = definition.startAt ?? after;
+    // Anchored to the series, not to the caller's clock. Anchoring on `from`
+    // makes the grid move every time it is asked: two `add` calls a
+    // millisecond apart then compute different instants, derive different
+    // ids, and the series that is meant to be idempotent gains a second
+    // pending occurrence. The creation time is fixed, so the grid is too —
+    // which also keeps a long-running series drift-free.
+    const anchor = definition.startAt ?? definition.createdAt ?? after;
     const steps = Math.floor((after - anchor) / definition.every) + 1;
     next = anchor + Math.max(1, steps) * definition.every;
   } else {

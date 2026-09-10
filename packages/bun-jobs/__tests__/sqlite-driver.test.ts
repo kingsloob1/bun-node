@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
-import { detectAdapter, SqlDriver } from "../lib/index";
+import { detectAdapter, SqlDriver, toConnectionUrl } from "../lib/index";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
@@ -55,6 +55,79 @@ describe("SQL driver: dialect", () => {
     });
 
     await driver.close();
+  });
+});
+
+describe("SQL driver: connection and naming options", () => {
+  it("accepts a connection as fields instead of a URL", async () => {
+    const tmp = await makeTmpDir("bun-jobs-sqlite-fields");
+    cleanups.push(tmp.cleanup);
+
+    // Fields do not name an engine the way a URL scheme does, so the adapter
+    // has to be explicit.
+    expect(
+      () => new SqlDriver({ connection: { host: "db", database: "jobs" } }),
+    ).toThrow(/needs an explicit adapter/);
+
+    const driver = new SqlDriver({
+      adapter: "postgres",
+      connection: {
+        host: "db.internal",
+        port: 5433,
+        user: "jobs",
+        password: "s3cret",
+        database: "work",
+      },
+    });
+
+    expect(driver.adapter).toBe("postgres");
+    await driver.close().catch(() => {});
+  });
+
+  it("builds the URL a connection object describes", () => {
+    expect(
+      toConnectionUrl(
+        {
+          host: "db.internal",
+          port: 5433,
+          user: "jobs",
+          password: "p@ss",
+          database: "work",
+          params: { sslmode: "require" },
+        },
+        { scheme: "postgres", host: "127.0.0.1", port: 5432 },
+      ),
+    ).toBe("postgres://jobs:p%40ss@db.internal:5433/work?sslmode=require");
+  });
+
+  it("names its tables, by prefix or outright", async () => {
+    const tmp = await makeTmpDir("bun-jobs-sqlite-names");
+    cleanups.push(tmp.cleanup);
+    const url = `sqlite://${join(tmp.path, "jobs.db")}`;
+
+    const prefixed = new SqlDriver({ url, tablePrefix: "custom_" });
+    await prefixed.connect();
+    await prefixed.ensureQueue({ ns: "a", queue: "q" });
+
+    const named = new SqlDriver({
+      url,
+      tables: { jobs: "legacy_work_items" },
+    });
+    await named.connect();
+
+    const ns = testNamespace();
+    const q = { ns, queue: "named" };
+    await named.addJob(q, makeJob({ id: "elsewhere" }));
+
+    // The explicit name is used as given, and the default-named driver
+    // therefore cannot see the row.
+    expect(await named.getJob(q, "elsewhere")).not.toBeNull();
+
+    const defaults = new SqlDriver({ url });
+    await defaults.connect();
+    expect(await defaults.getJob(q, "elsewhere")).toBeNull();
+
+    await Promise.all([prefixed.close(), named.close(), defaults.close()]);
   });
 });
 
