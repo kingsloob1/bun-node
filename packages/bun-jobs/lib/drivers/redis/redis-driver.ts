@@ -67,6 +67,16 @@ function firstScore(reply: unknown): number | null {
 const MAX_BLOCK_SECONDS = 5;
 
 /**
+ * How many jobs go into one add script.
+ *
+ * A script takes its arguments as one flat list, and each job contributes its
+ * fields, so a large chunk is both a large packet and a long stretch of Redis's
+ * single thread — during which every other client waits. 200 keeps the packet
+ * modest while removing almost all of the round trips.
+ */
+const ADD_CHUNK = 200;
+
+/**
  * Job fields stored as JSON rather than as scalars.
  *
  * A hash keeps the scalars the scripts compare on — state, priority, runAt,
@@ -515,14 +525,63 @@ export class RedisDriver implements JobsDriver {
     return { job: existing ?? jsonClone(job), added: false };
   }
 
+  /**
+   * Adds many jobs with one script per chunk.
+   *
+   * The loop this replaces cost a round trip per job. Chunked because a script
+   * takes its arguments as one flat list, and a very long one is both a large
+   * packet and a long stretch of Redis's single thread.
+   */
   async addJobs(
     q: QueueRef,
     jobs: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
+    if (jobs.length === 0) {
+      return [];
     }
+
+    // One job is not a batch, and the singular path already reports precisely
+    // what happened to it.
+    if (jobs.length === 1) {
+      return [await this.addJob(q, jobs[0]!)];
+    }
+
+    await this.connect();
+
+    const results: { job: JobRecord; added: boolean }[] = [];
+
+    for (let start = 0; start < jobs.length; start += ADD_CHUNK) {
+      const chunk = jobs.slice(start, start + ADD_CHUNK);
+      const args = [q.queue, String(Date.now()), String(chunk.length)];
+
+      // Self-describing: each job contributes its id, runAt, priority and a
+      // count of the field/value entries that follow, because a record's field
+      // list is not a fixed length.
+      for (const job of chunk) {
+        const fields = this.#toFields(job);
+        args.push(
+          job.id,
+          String(job.runAt),
+          String(job.priority),
+          String(fields.length),
+          ...fields,
+        );
+      }
+
+      const reply = await this.#runQueue(q, scripts.ADD_JOBS, args);
+      const flags = Array.isArray(reply) ? reply : [];
+
+      for (const [index, job] of chunk.entries()) {
+        const added = Number(flags[index] ?? 0) === 1;
+        results.push({
+          job: added
+            ? jsonClone(job)
+            : ((await this.getJob(q, job.id)) ?? jsonClone(job)),
+          added,
+        });
+      }
+    }
+
     return results;
   }
 

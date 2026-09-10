@@ -98,6 +98,91 @@ end
  * ARGV: prefix, id, runAt, priority, now, then field/value pairs.
  * Returns 1 when it added the job, 0 when the id was already there.
  */
+/**
+ * Adds many jobs in one script.
+ *
+ * `addJobs` was a loop over {@link ADD_JOB}, so 5,000 jobs meant 5,000 round
+ * trips — measured, 13,544/s against bee-queue's 95,032/s, which pipelines.
+ * One script per chunk is the same work with one trip.
+ *
+ * A job's fields are variable in number, so ARGV is self-describing: after the
+ * header comes, per job, `id, runAt, priority, fieldCount` and then that many
+ * field/value entries. The reply is one `0` or `1` per job, in the order they
+ * were given, so the caller still learns exactly which ids were new.
+ */
+export const ADD_JOBS = `${QUEUE_PRELUDE}
+local queue, now = ARGV[2], tonumber(ARGV[3])
+local count = tonumber(ARGV[4])
+local cursor = 5
+local results = {}
+
+-- Placement follows the record's own state, not its runAt. They usually agree,
+-- because a producer derives one from the other, but a record may arrive
+-- already finished — a migration, a test, a job restored from elsewhere — and
+-- it belongs in the set it says it is in.
+local function score(id, field, fallback)
+  local value = redis.call('HGET', job(id), field)
+  if value == nil or value == false or value == '' then
+    return tonumber(redis.call('HGET', job(id), fallback)) or 0
+  end
+  return tonumber(value)
+end
+
+local woke = false
+
+for _ = 1, count do
+  local id = ARGV[cursor]
+  local runAt = tonumber(ARGV[cursor + 1])
+  local priority = tonumber(ARGV[cursor + 2])
+  local fieldCount = tonumber(ARGV[cursor + 3])
+  local fieldsAt = cursor + 4
+  cursor = fieldsAt + fieldCount
+
+  if redis.call('EXISTS', job(id)) == 1 then
+    results[#results + 1] = 0
+  else
+    -- Ordering: the score is the priority, and ties break on the member, which
+    -- carries a monotonic sequence. Encoding both in one score would need more
+    -- precision than a double has.
+    local seq = redis.call('INCR', SEQ)
+    local entry = string.format('%016d', seq) .. ':' .. id
+
+    local fields = { 'member', entry }
+    for i = fieldsAt, fieldsAt + fieldCount - 1 do
+      fields[#fields + 1] = ARGV[i]
+    end
+    redis.call('HSET', job(id), unpack(fields))
+
+    local placed = redis.call('HGET', job(id), 'state')
+
+    if placed == 'delayed' then
+      redis.call('ZADD', DELAYED, runAt, id)
+    elseif placed == 'failed' then
+      redis.call('ZADD', FAILED, runAt, id)
+    elseif placed == 'active' then
+      redis.call('ZADD', ACTIVE, score(id, 'lockExpiresAt', 'createdAt'), id)
+    elseif placed == 'completed' then
+      redis.call('ZADD', COMPLETED, score(id, 'finishedOn', 'createdAt'), id)
+    elseif placed == 'dead' then
+      redis.call('ZADD', DEAD, score(id, 'finishedOn', 'createdAt'), id)
+    else
+      redis.call('ZADD', WAIT, priority, entry)
+      woke = true
+    end
+
+    results[#results + 1] = 1
+  end
+end
+
+-- Once for the batch, not once per job: the wake list is a signal, not a count.
+if woke then
+  wake()
+end
+
+redis.call('SADD', QUEUES, queue)
+return results
+`;
+
 export const ADD_JOB = `${QUEUE_PRELUDE}
 local id, runAt, priority = ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
 local now = tonumber(ARGV[5])
