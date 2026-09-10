@@ -74,24 +74,41 @@ export class Arrivals {
       return false;
     }
 
-    const channel = await this.#listen(this.channel(q));
+    const listening = await this.#listen(this.channel(q));
 
-    if (!channel) {
+    if (!listening) {
       return false;
     }
 
+    // Bound to a const the closures below can see: they are hoisted function
+    // declarations, which lose the narrowing the check above established.
+    const channel = listening;
+
     return await new Promise<boolean>((resolve) => {
-      /** Runs once, whichever of the three outcomes happens first. */
-      const settle = (arrived: boolean) => {
+      /**
+       * The three ways this wait can end — a notification, the timeout, or an
+       * abort — each of which has to undo the other two. Declared as functions
+       * so they can refer to each other and to the timer below.
+       */
+      /** The timeout, declared ahead of the handlers that clear it. */
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      function settle(arrived: boolean): void {
         clearTimeout(timer);
         channel.waiters.delete(notify);
         signal?.removeEventListener("abort", abort);
         resolve(arrived);
-      };
+      }
 
-      const notify = () => settle(true);
-      const abort = () => settle(false);
-      const timer = setTimeout(settle, timeoutMs, false);
+      function notify(): void {
+        settle(true);
+      }
+
+      function abort(): void {
+        settle(false);
+      }
+
+      timer = setTimeout(settle, timeoutMs, false);
       timer.unref?.();
 
       channel.waiters.add(notify);
