@@ -31,6 +31,7 @@ import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { DriverError } from "../shared/errors";
 import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
+import { PauseCache } from "../shared/pauseCache";
 
 /**
  * A driver backed by a directory, for processes that share a filesystem.
@@ -112,6 +113,8 @@ export class FileDriver implements JobsDriver {
   /** The directory this driver owns. */
   readonly root: string;
   /** How often to poll for new work and events. */
+  /** Pause flags, so a claim does not read one per call. */
+  readonly #pauseCache = new PauseCache();
   readonly #poll: number;
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
@@ -428,11 +431,13 @@ export class FileDriver implements JobsDriver {
   async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
     await this.ensureQueue(q);
 
-    if (await this.isQueuePaused(q)) {
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
       return null;
     }
 
-    await this.promoteDelayed(q, opts.now, Number.MAX_SAFE_INTEGER);
+    // No `promoteDelayed` here: it ran before every claim whether or not
+    // anything was delayed. Promotion keeps the reported state honest, it is
+    // not what makes a job claimable, and the worker sweeps at 1Hz.
 
     const waiting = join(this.#queueDir(q), "index", "waiting");
     const markers = (await this.#list(waiting)).sort();
@@ -893,11 +898,13 @@ export class FileDriver implements JobsDriver {
 
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#setMeta(q, { paused: true });
+    this.#pauseCache.write(q, true);
   }
 
   async resumeQueue(q: QueueRef): Promise<void> {
     await this.#setMeta(q, { paused: false });
     await this.#touchWake(q);
+    this.#pauseCache.write(q, false);
   }
 
   async isQueuePaused(q: QueueRef): Promise<boolean> {

@@ -26,6 +26,7 @@ import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
 import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
+import { PauseCache } from "../../shared/pauseCache";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import { createSchema, JOB_COLUMNS } from "./schema";
 
@@ -46,18 +47,6 @@ import { createSchema, JOB_COLUMNS } from "./schema";
 
 /** How often a polling wait re-checks, in milliseconds. */
 const POLL_MS = 50;
-
-/**
- * How long a queue's pause flag is trusted before it is read again.
- *
- * Claiming has to honour a paused queue, but reading the flag per claim cost
- * 0.12ms of a 1.16ms claim. The worker above already caches it for a second
- * (`BunQueueWorker.#queuePaused`), so this is the same trade one layer down,
- * and a quarter of that: a pause set in *another* process takes effect within
- * 250ms rather than instantly. A pause set on this instance is immediate,
- * because `pauseQueue` and `resumeQueue` write the cache as well as the row.
- */
-const PAUSE_TTL_MS = 250;
 
 /** Every job state, in the order `countJobs` reports them. */
 const STATES: JobState[] = [
@@ -148,8 +137,8 @@ export class SqlDriver implements JobsDriver {
   readonly #poll: number;
   /** Resolves once the schema exists. */
   #ready: Promise<void> | undefined;
-  /** Pause flags by queue, with the time each was read. */
-  readonly #pauseCache = new Map<string, { paused: boolean; readAt: number }>();
+  /** Pause flags, so a claim does not read one per call. */
+  readonly #pauseCache = new PauseCache();
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
 
@@ -563,7 +552,7 @@ export class SqlDriver implements JobsDriver {
   async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
     await this.connect();
 
-    if (await this.#paused(q)) {
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
       return null;
     }
 
@@ -1060,35 +1049,12 @@ export class SqlDriver implements JobsDriver {
 
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#writeKv(q.ns, `q:${q.queue}:meta`, { paused: true }, true);
-    this.#rememberPaused(q, true);
+    this.#pauseCache.write(q, true);
   }
 
   async resumeQueue(q: QueueRef): Promise<void> {
     await this.#writeKv(q.ns, `q:${q.queue}:meta`, { paused: false }, true);
-    this.#rememberPaused(q, false);
-  }
-
-  /** Records a pause flag this instance just wrote, so it reads back at once. */
-  #rememberPaused(q: QueueRef, paused: boolean): void {
-    this.#pauseCache.set(`${q.ns}\u0000${q.queue}`, {
-      paused,
-      readAt: Date.now(),
-    });
-  }
-
-  /** The pause flag, re-read at most every {@link PAUSE_TTL_MS}. */
-  async #paused(q: QueueRef): Promise<boolean> {
-    const key = `${q.ns}\u0000${q.queue}`;
-    const cached = this.#pauseCache.get(key);
-    const now = Date.now();
-
-    if (cached && now - cached.readAt < PAUSE_TTL_MS) {
-      return cached.paused;
-    }
-
-    const paused = await this.isQueuePaused(q);
-    this.#pauseCache.set(key, { paused, readAt: now });
-    return paused;
+    this.#pauseCache.write(q, false);
   }
 
   async isQueuePaused(q: QueueRef): Promise<boolean> {

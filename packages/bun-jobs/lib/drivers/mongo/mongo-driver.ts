@@ -34,6 +34,7 @@ import {
   resolveNames,
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
+import { PauseCache } from "../../shared/pauseCache";
 
 /**
  * A driver backed by MongoDB.
@@ -225,6 +226,8 @@ export class MongoDriver implements JobsDriver {
   readonly collections: Record<MongoCollection, string>;
 
   /** The connection URL, resolved from a URL or from fields. */
+  /** Pause flags, so a claim does not read one per call. */
+  readonly #pauseCache = new PauseCache();
   readonly #url: string;
   /** Options for the client this driver creates. */
   readonly #clientOptions?: MongoClientOptions;
@@ -715,11 +718,13 @@ export class MongoDriver implements JobsDriver {
   }
 
   async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
-    if (await this.isQueuePaused(q)) {
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
       return null;
     }
 
-    await this.promoteDelayed(q, opts.now, 1000);
+    // No `promoteDelayed` here: it ran before every claim whether or not
+    // anything was delayed. Promotion keeps the reported state honest, it is
+    // not what makes a job claimable, and the worker sweeps at 1Hz.
 
     const jobs = await this.#jobs();
 
@@ -1160,10 +1165,12 @@ export class MongoDriver implements JobsDriver {
 
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#writeValue(q.ns, `q:${q.queue}:meta`, { paused: true });
+    this.#pauseCache.write(q, true);
   }
 
   async resumeQueue(q: QueueRef): Promise<void> {
     await this.#writeValue(q.ns, `q:${q.queue}:meta`, { paused: false });
+    this.#pauseCache.write(q, false);
   }
 
   async isQueuePaused(q: QueueRef): Promise<boolean> {
