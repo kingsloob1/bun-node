@@ -20,6 +20,7 @@ Background work for Bun, built on [`@kingsleyweb/bun-common`](../bun-common):
 | file | yes | no | a shared directory, POSIX semantics required |
 | sql (sqlite) | yes | yes | one file; WAL and a busy timeout |
 | sql (postgres/mysql/mariadb) | yes | yes | `SKIP LOCKED` claiming |
+
 - **Namespaces** — every runner, queue and worker is scoped by a required
   namespace, so services sharing a backend never collide.
 
