@@ -31,6 +31,7 @@ export function createDriver(config: DriverConfig): JobsDriver {
         adapter: config.adapter,
         tablePrefix: config.tablePrefix,
         tables: config.tables,
+        notify: config.notify,
       });
     case "mongodb":
       return new MongoDriver({

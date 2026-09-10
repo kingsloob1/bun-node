@@ -599,6 +599,25 @@ export type DriverConfig =
       tablePrefix?: string;
       /** Exact table names, for an existing schema. */
       tables?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /**
+       * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
+       *
+       * Off by default, and the measurements are why. It ends a worker's wait
+       * the instant a job lands rather than at its next poll, but the poll is
+       * already adaptive — the first re-check is a millisecond after the queue
+       * drains — so on a queue with steady traffic there is almost nothing left
+       * to win. Measured on Postgres it moved round-trip p50 not at all, and
+       * cost the producer 5% on `add()` and 9% on `addBulk`, because carrying
+       * the signal inside the insert turns it into a statement that returns
+       * rows.
+       *
+       * Turn it on for the case the benchmark does not cover: a queue that
+       * sits idle long enough for the poll to back off to its ceiling, where
+       * the first job after a quiet spell would otherwise wait that long.
+       *
+       * Ignored on every engine but Postgres.
+       */
+      notify?: boolean;
     }
   | {
       type: "mongodb";

@@ -91,6 +91,26 @@ export interface SqlDialect {
    */
   readonly claimNeedsTransaction: boolean;
   /**
+   * Whether the engine can push a notification to a waiting connection.
+   *
+   * Only Postgres, through `LISTEN`/`NOTIFY`. Everywhere else a worker polls to
+   * notice a new job, which is why the poll interval sets the tail of the
+   * round-trip latency on those engines and not on this one.
+   */
+  readonly supportsListen: boolean;
+  /**
+   * Wraps an insert so it also signals `channel` for the rows it writes.
+   *
+   * The signal rides along with the write rather than following it. A separate
+   * `NOTIFY` is a second round trip charged to every `add()` in order to save
+   * latency for a consumer that may not even exist; inside the statement it is
+   * free. Postgres collapses repeated notifications carrying the same payload
+   * within one transaction, so a 500-row insert still delivers exactly one.
+   *
+   * Returns the statement unchanged on an engine that cannot do it.
+   */
+  notifyingInsert: (statement: string, channel: string) => string;
+  /**
    * Whether a write needs its own connection so {@link affectedRows} can ask
    * the server what it just did.
    */
@@ -335,6 +355,10 @@ const postgres: SqlDialect = {
   claimById: claimByIdStatement,
   affectedRows: countFromResult,
   claimNeedsTransaction: false,
+  supportsListen: true,
+  notifyingInsert: (statement, channel) =>
+    `WITH written AS (${statement} RETURNING id)
+     SELECT id, pg_notify('${channel}', '') FROM written`,
   countsNeedSameConnection: false,
 };
 
@@ -401,6 +425,8 @@ const mysql: SqlDialect = {
     return Math.max(0, Number(rows[0]?.n ?? 0));
   },
   claimNeedsTransaction: true,
+  supportsListen: false,
+  notifyingInsert: (statement) => statement,
   countsNeedSameConnection: true,
 };
 
@@ -465,6 +491,8 @@ const sqlite: SqlDialect = {
   claimById: claimByIdStatement,
   affectedRows: countFromResult,
   claimNeedsTransaction: true,
+  supportsListen: false,
+  notifyingInsert: (statement) => statement,
   countsNeedSameConnection: false,
   transaction: async (sql, fn) =>
     // The mutex serialises writers inside this process; the retry handles the

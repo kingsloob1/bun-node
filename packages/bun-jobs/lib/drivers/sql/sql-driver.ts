@@ -28,6 +28,7 @@ import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
+import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import { createSchema, JOB_COLUMNS } from "./schema";
 
@@ -92,6 +93,15 @@ export interface SqlDriverOptions extends ConnectionInput {
   /** Overrides the engine detected from the URL. */
   adapter?: SqlAdapter;
   /**
+   * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
+   *
+   * Off by default. See `DriverConfig` for the measurements behind that: with
+   * an adaptive poll there is little left for it to win on a busy queue, and
+   * carrying the signal inside the insert costs the producer 5-9%. It earns
+   * its keep on a queue idle enough for the poll to reach its ceiling.
+   */
+  notify?: boolean;
+  /**
    * Prepended to every table name. Defaults to `bun_jobs_`, which keeps this
    * driver's tables together in a database it shares with an application.
    */
@@ -147,6 +157,10 @@ export class SqlDriver implements JobsDriver {
   readonly #poll: number;
   /** Resolves once the schema exists. */
   #ready: Promise<void> | undefined;
+  /** Whether new jobs are announced as well as polled for. */
+  readonly #notify: boolean;
+  /** Arrival notifications, where the engine can push them. */
+  readonly #arrivals: Arrivals;
   /** Pause flags, so a claim does not read one per call. */
   readonly #pauseCache = new PauseCache();
   /** Active event subscriptions, so `close()` can stop them. */
@@ -182,6 +196,9 @@ export class SqlDriver implements JobsDriver {
           "The SQL driver",
         ),
       });
+
+    this.#notify = this.dialect.supportsListen && options.notify === true;
+    this.#arrivals = new Arrivals(this.#sql, this.#notify);
   }
 
   /** How a connection given as fields becomes a URL for this engine. */
@@ -202,6 +219,8 @@ export class SqlDriver implements JobsDriver {
   }
 
   async close(): Promise<void> {
+    await this.#arrivals.close();
+
     for (const stop of this.#subscriptions) {
       stop();
     }
@@ -535,10 +554,17 @@ export class SqlDriver implements JobsDriver {
   ): Promise<{ job: JobRecord; added: boolean }> {
     await this.connect();
 
-    const added = await this.#run(
-      this.dialect.insertIgnore(this.#tables.jobs, [...JOB_COLUMNS]),
-      this.#toRow(q, job),
-    );
+    // The `NOTIFY` rides inside the insert rather than following it, so a
+    // producer pays nothing for a consumer that may not exist.
+    const plain = this.dialect.insertIgnore(this.#tables.jobs, [
+      ...JOB_COLUMNS,
+    ]);
+    const insert = this.#notify
+      ? this.dialect.notifyingInsert(plain, this.#arrivals.channel(q))
+      : plain;
+    const added = this.#notify
+      ? (await this.#all<{ id: string }>(insert, this.#toRow(q, job))).length
+      : await this.#run(insert, this.#toRow(q, job));
 
     if (added > 0) {
       return { job: jsonClone(job), added: true };
@@ -604,7 +630,9 @@ export class SqlDriver implements JobsDriver {
 
     if (this.dialect.supportsReturning) {
       const rows = await this.#all<{ id: string }>(
-        `${statement} RETURNING id`,
+        this.#notify
+          ? this.dialect.notifyingInsert(statement, this.#arrivals.channel(q))
+          : `${statement} RETURNING id`,
         params,
       );
       added = new Set(rows.map((row) => String(row.id)));
@@ -1298,19 +1326,44 @@ export class SqlDriver implements JobsDriver {
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
 
-    // The gap between polls grows from a millisecond up to the configured
-    // interval, rather than being flat.
-    //
-    // Without a push channel this loop is the only thing that notices a new
-    // job, and a flat interval means a job arriving just after a poll waits the
-    // whole of it. That is a tail, not an average: measured on Postgres, p50
-    // 2.9ms and p99 53ms against a 50ms interval. It also got *worse* as
-    // claiming got faster, because a quicker empty pass puts the worker to
-    // sleep sooner, more often just ahead of the next arrival.
-    //
-    // A job is far likelier to arrive just after the queue drains than a second
-    // later, so the early polls are the ones worth spending. Backing off keeps
-    // an idle worker's cost roughly where it was.
+    // Where the engine can push, a notification ends the wait the moment a job
+    // lands rather than at the next poll. Polling still runs alongside it as
+    // the correctness floor: a notification can be missed while a listener
+    // reconnects, and a job promoted by another process's maintenance sweep is
+    // never announced at all.
+    if (this.#notify) {
+      await Promise.race([
+        this.#arrivals.wait(q, timeoutMs, signal),
+        this.#pollForJob(q, deadline, signal),
+      ]);
+      return;
+    }
+
+    await this.#pollForJob(q, deadline, signal);
+  }
+
+  /**
+   * Polls until a claimable job exists, the deadline passes, or the wait is
+   * aborted. Resolves `true` only when it saw one.
+   *
+   * The gap between polls grows from a millisecond up to the configured
+   * interval rather than being flat. On an engine with no push channel this
+   * loop is the only thing that notices a new job, and a flat interval makes a
+   * job arriving just after a poll wait the whole of it — a tail, not an
+   * average. Measured on Postgres before this: p50 2.9ms against p99 53ms with
+   * a 50ms interval. It also got *worse* as claiming got faster, because a
+   * quicker empty pass puts the worker to sleep sooner and so more often just
+   * ahead of the next arrival.
+   *
+   * A job is far likelier to arrive just after a queue drains than a second
+   * later, so the early polls are the ones worth paying for; backing off keeps
+   * an idle worker's cost roughly where it was.
+   */
+  async #pollForJob(
+    q: QueueRef,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     let wait = 1;
 
     while (Date.now() < deadline && !signal?.aborted) {
@@ -1327,7 +1380,7 @@ export class SqlDriver implements JobsDriver {
         Number(row?.total ?? 0) > 0 &&
         !(await this.#pauseCache.read(q, () => this.isQueuePaused(q)))
       ) {
-        return;
+        return true;
       }
 
       await sleep(Math.min(wait, Math.max(1, deadline - Date.now())), {
@@ -1336,6 +1389,8 @@ export class SqlDriver implements JobsDriver {
 
       wait = Math.min(this.#poll, wait * 2);
     }
+
+    return false;
   }
 
   async publish(event: DriverEvent): Promise<void> {
