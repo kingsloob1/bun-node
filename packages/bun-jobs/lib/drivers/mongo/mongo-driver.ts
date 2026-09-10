@@ -1383,7 +1383,13 @@ export class MongoDriver implements JobsDriver {
 
     await jobs.createIndexes([
       // Claim order: the queue's due, waiting jobs, cheapest first.
-      { key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1 } },
+      //
+      // `_id` is in the key because it is in the claim's sort. Without it
+      // MongoDB cannot walk the index in sort order and falls back to a
+      // blocking in-memory sort of *every* matching document — measured on a
+      // 2,000-job queue, 2,000 documents examined to return one, and 2.75ms
+      // per claim that grew with the backlog.
+      { key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 } },
       // Promotion: what is due but not yet claimable.
       { key: { ns: 1, queue: 1, state: 1, runAt: 1 } },
       // Stalled recovery: active jobs whose lock has lapsed.
@@ -1392,6 +1398,13 @@ export class MongoDriver implements JobsDriver {
       { key: { ns: 1, queue: 1, state: 1, finishedOn: 1 } },
       { key: { expiresAt: 1 } },
     ]);
+
+    // The same index without `_id`, from before the sort was covered. Dropping
+    // it is best-effort: it is absent on a fresh database and may already be
+    // gone on an old one.
+    await jobs
+      .dropIndex("ns_1_queue_1_state_1_priority_1_createdAt_1")
+      .catch(() => undefined);
 
     await db
       .collection<KvDocument>(this.collections.kv)
