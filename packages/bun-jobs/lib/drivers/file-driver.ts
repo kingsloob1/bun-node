@@ -452,10 +452,26 @@ export class FileDriver implements JobsDriver {
         continue;
       }
 
-      if (record.state !== "waiting" || record.runAt > opts.now) {
-        // A marker that disagrees with its record is a crash between two
-        // writes; heal it rather than claiming something twice.
-        if (record.state !== "waiting") {
+      // A record in `delayed` or `failed` whose time has come is claimable:
+      // the only thing between it and `waiting` is a promotion write, and this
+      // claim is about to overwrite the state anyway.
+      const due = record.runAt <= opts.now;
+      const promotable =
+        due && (record.state === "delayed" || record.state === "failed");
+
+      if (!due || (record.state !== "waiting" && !promotable)) {
+        // The marker disagrees with its record. That is either litter from a
+        // crash or a promotion in flight, and from here the two are
+        // indistinguishable — so only a record that can no longer *become*
+        // waiting is safe to clean up after.
+        //
+        // Deleting the rest loses jobs. `promoteDelayed` moved the marker into
+        // `waiting` before rewriting the record, so for that instant the record
+        // still read `failed`; a claim that removed the marker there left a
+        // record no index pointed at, and nothing ever ran it again. The
+        // cross-process retry suite found it as jobs that simply never
+        // finished, after 45 seconds of waiting each.
+        if (record.state === "completed" || record.state === "dead") {
           await rm(join(waiting, marker), { force: true });
         }
         continue;
@@ -731,19 +747,32 @@ export class FileDriver implements JobsDriver {
         const record = await this.#readJson<JobRecord>(
           this.#jobPath(q, markerId(marker)),
         );
-        if (!record || record.state !== state || record.runAt > now) {
+
+        // `waiting` is allowed as well as the state being swept: a promotion
+        // that wrote the record and then died leaves exactly that, and this
+        // pass has to finish the job rather than skip it forever.
+        if (
+          !record ||
+          (record.state !== state && record.state !== "waiting") ||
+          record.runAt > now
+        ) {
           continue;
         }
 
         const updated: JobRecord = { ...record, state: "waiting" };
-        if (!(await this.#move(q, marker, state, updated))) {
-          continue;
-        }
 
+        // Record first, marker second. The other order leaves a window where
+        // the marker says `waiting` and the record does not, which a claim
+        // running at that moment cannot tell from litter.
         await this.#writeAtomic(
           this.#jobPath(q, record.id),
           JSON.stringify(updated),
         );
+
+        if (!(await this.#move(q, marker, state, updated))) {
+          continue;
+        }
+
         promoted++;
       }
     }

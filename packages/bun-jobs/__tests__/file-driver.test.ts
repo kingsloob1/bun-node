@@ -118,3 +118,69 @@ describe("file driver: filesystem specifics", () => {
     await second.close();
   });
 });
+
+describe("file driver: promotion racing a claim", () => {
+  /**
+   * A job must survive being promoted while someone else is claiming.
+   *
+   * Promotion has two steps — move the marker out of `failed` into `waiting`,
+   * and rewrite the record — and between them the marker says `waiting` while
+   * the record still says `failed`. That is indistinguishable from the litter
+   * a crash leaves behind, and claiming used to delete such a marker. The
+   * record itself was untouched, so the job ended up in no index at all: gone,
+   * silently, with no error anywhere.
+   *
+   * The cross-process retry suite found this as jobs that never completed, and
+   * spent 45 seconds timing out on each before saying so.
+   *
+   * The half-promoted state is built directly rather than raced for, because a
+   * race that reproduces once in twenty runs is not a regression test.
+   */
+  it("does not delete the marker of a half-promoted job", async () => {
+    const tmp = await makeTmpDir("bun-jobs-race");
+    cleanups.push(tmp.cleanup);
+
+    const driver = new FileDriver({ root: tmp.path });
+    await driver.connect();
+    const q = { ns: testNamespace(), queue: "raced" };
+    const now = Date.now();
+
+    // A job mid-retry: failed, with its backoff already elapsed.
+    await driver.addJob(
+      q,
+      makeJob({ id: "mid", state: "failed", runAt: now - 1000 }),
+    );
+
+    const { readdir, rename } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const index = join(tmp.path, q.ns, "queues", q.queue, "index");
+
+    // Step one of a promotion, and only step one.
+    const [marker] = await readdir(join(index, "failed"));
+    await rename(
+      join(index, "failed", marker!),
+      join(index, "waiting", marker!),
+    );
+
+    // The claim heals it forward rather than skipping it: the record's time
+    // has come, so the only thing between it and `waiting` was a write this
+    // claim is about to make anyway.
+    const claimed = await driver.claimJob(q, {
+      workerId: "w1",
+      token: "t1",
+      lockMs: 5000,
+      now,
+    });
+
+    expect(claimed?.id).toBe("mid");
+
+    // And the marker moved on to `active` rather than being deleted, which is
+    // what used to strand the record in no index at all.
+    expect(await readdir(join(index, "waiting"))).toEqual([]);
+    expect((await readdir(join(index, "active"))).length).toBe(1);
+    expect((await driver.countJobs(q)).active).toBe(1);
+
+    await driver.purge(q.ns);
+    await driver.close();
+  });
+});
