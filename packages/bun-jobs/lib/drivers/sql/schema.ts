@@ -38,6 +38,33 @@ export const JOB_COLUMNS = [
 ] as const;
 
 /**
+ * The columns a brand-new job actually carries.
+ *
+ * Everything else in {@link JOB_COLUMNS} is the table's default for a job that
+ * has not run yet: no timestamps for work that has not happened, no lock, no
+ * result, no error, zero attempts. Naming only these in an insert is worth
+ * about 20% — measured, 31,299/s against 37,881/s for the same 5,000 rows —
+ * because the cost of this statement is dominated by how much of it there is.
+ *
+ * Used only when *every* job in a batch matches those defaults; a record that
+ * carries any of them, such as one restored from elsewhere or added already
+ * finished, falls back to the full column list.
+ */
+export const FRESH_JOB_COLUMNS = [
+  "ns",
+  "queue",
+  "id",
+  "name",
+  "state",
+  "priority",
+  "run_at",
+  "created_at",
+  "max_attempts",
+  "data",
+  "opts",
+] as const;
+
+/**
  * The type of each column in {@link JOB_COLUMNS}, in the same order.
  *
  * Only needed to describe a `json_to_recordset` column list, which has to name

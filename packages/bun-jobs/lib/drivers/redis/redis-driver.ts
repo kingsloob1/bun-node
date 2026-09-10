@@ -1167,6 +1167,32 @@ export class RedisDriver implements JobsDriver {
 
   /** A job record as the flat field list `HSET` takes. */
   #toFields(job: JobRecord): string[] {
+    // Only the two callers are `addJob` and `addJobs`, both writing a hash that
+    // does not exist yet, so a field left out simply is not there — and the
+    // reader treats absent and default as the same thing. For a brand-new job
+    // that is thirteen of the twenty-two fields, every one of them an empty
+    // string, a "null" or a zero, and the batch script's argument list is the
+    // packet Redis has to read.
+    const omitted = new Set<string>(
+      this.#isFreshJob(job)
+        ? [
+            "processedOn",
+            "finishedOn",
+            "expiresAt",
+            "lockToken",
+            "lockExpiresAt",
+            "workerId",
+            "repeatKey",
+            "attemptsMade",
+            "stalledCount",
+            "progress",
+            "returnValue",
+            "failedReason",
+            "stacktrace",
+          ]
+        : [],
+    );
+
     const scalars: Record<string, string> = {
       id: job.id,
       name: job.name,
@@ -1193,7 +1219,33 @@ export class RedisDriver implements JobsDriver {
       stacktrace: JSON.stringify(job.stacktrace ?? []),
     };
 
-    return Object.entries(scalars).flat();
+    return Object.entries(scalars)
+      .filter(([field]) => !omitted.has(field))
+      .flat();
+  }
+
+  /**
+   * Whether a record carries nothing beyond what a brand-new job carries.
+   *
+   * `maxAttempts` is deliberately not omittable: an absent numeric field reads
+   * back as zero, and zero is not this one's default.
+   */
+  #isFreshJob(job: JobRecord): boolean {
+    return (
+      job.processedOn === null &&
+      job.finishedOn === null &&
+      job.expiresAt === null &&
+      job.lockToken === null &&
+      job.lockExpiresAt === null &&
+      job.workerId === null &&
+      job.repeatKey === null &&
+      job.attemptsMade === 0 &&
+      job.stalledCount === 0 &&
+      job.progress === null &&
+      job.returnValue === null &&
+      job.failedReason === null &&
+      (job.stacktrace?.length ?? 0) === 0
+    );
   }
 
   /** A flat `HGETALL` reply as an object, or `null` when the job is gone. */

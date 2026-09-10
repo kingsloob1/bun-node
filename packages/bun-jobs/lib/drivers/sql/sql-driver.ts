@@ -30,7 +30,12 @@ import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
-import { createSchema, JOB_COLUMNS, jobColumnTypes } from "./schema";
+import {
+  createSchema,
+  FRESH_JOB_COLUMNS,
+  JOB_COLUMNS,
+  jobColumnTypes,
+} from "./schema";
 
 /**
  * A driver backed by a SQL database.
@@ -649,23 +654,58 @@ export class SqlDriver implements JobsDriver {
     }
   }
 
+  /**
+   * Whether a record carries nothing beyond what a brand-new job carries.
+   *
+   * A job added in any other shape — restored from elsewhere, added already
+   * finished, mid-retry — has to name every column, because the ones it would
+   * otherwise skip are exactly the ones holding its state.
+   */
+  #isFreshJob(job: JobRecord): boolean {
+    return (
+      job.processedOn === null &&
+      job.finishedOn === null &&
+      job.expiresAt === null &&
+      job.lockToken === null &&
+      job.lockExpiresAt === null &&
+      job.workerId === null &&
+      job.repeatKey === null &&
+      job.attemptsMade === 0 &&
+      job.stalledCount === 0 &&
+      job.progress === null &&
+      job.returnValue === null &&
+      job.failedReason === null &&
+      (job.stacktrace?.length ?? 0) === 0
+    );
+  }
+
   /** Inserts one chunk and works out which of its rows were new. */
   async #insertChunk(
     q: QueueRef,
     chunk: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const columns = [...JOB_COLUMNS];
+    // A batch of brand-new jobs names only the columns such a job carries; the
+    // rest are the table's defaults, and not naming them is worth about 20%.
+    // One record in an unusual shape sends the whole batch back to the full
+    // list, which keeps this a choice of two statements rather than a shape
+    // per batch.
+    const fresh = chunk.every((job) => this.#isFreshJob(job));
+    const columns: string[] = fresh ? [...FRESH_JOB_COLUMNS] : [...JOB_COLUMNS];
+    const allTypes = jobColumnTypes(this.dialect);
+    const types = columns.map(
+      (column) => allTypes[JOB_COLUMNS.indexOf(column as never)]!,
+    );
 
     // One JSON document beats a parameter per column per row where the engine
     // can expand it: 500 jobs is one bind parameter this way and 12,000 as a
     // multi-row `VALUES`.
     const fromJson = this.dialect.insertIgnoreFromJson;
     const statement = fromJson
-      ? fromJson(this.#tables.jobs, columns, jobColumnTypes(this.dialect))
+      ? fromJson(this.#tables.jobs, columns, types)
       : this.dialect.insertIgnoreMany(this.#tables.jobs, columns, chunk.length);
     const params = fromJson
-      ? [JSON.stringify(chunk.map((job) => this.#toDocument(q, job)))]
-      : chunk.flatMap((job) => this.#toRow(q, job));
+      ? [JSON.stringify(chunk.map((job) => this.#toDocument(q, job, columns)))]
+      : chunk.flatMap((job) => this.#toRow(q, job, columns));
 
     /** Ids the engine reported as newly inserted, when it can report them. */
     let added: Set<string>;
@@ -1745,10 +1785,14 @@ export class SqlDriver implements JobsDriver {
   }
 
   /** A job record as the columns the insert binds, in `JOB_COLUMNS` order. */
-  #toRow(q: QueueRef, job: JobRecord): unknown[] {
+  #toRow(
+    q: QueueRef,
+    job: JobRecord,
+    columns: readonly string[] = JOB_COLUMNS,
+  ): unknown[] {
     const json = (value: unknown) => this.dialect.jsonIn(value);
 
-    return [
+    const values: unknown[] = [
       q.ns,
       q.queue,
       job.id,
@@ -1774,6 +1818,19 @@ export class SqlDriver implements JobsDriver {
       job.workerId,
       job.repeatKey,
     ];
+
+    // The caller may have asked for a subset — a batch of brand-new jobs names
+    // only the columns such a job carries — so the values follow the same list
+    // rather than the full one.
+    if (columns === JOB_COLUMNS || columns.length === JOB_COLUMNS.length) {
+      return values;
+    }
+
+    const byColumn = new Map(
+      JOB_COLUMNS.map((column, index) => [column as string, values[index]]),
+    );
+
+    return columns.map((column) => byColumn.get(column));
   }
 
   /**
@@ -1783,7 +1840,11 @@ export class SqlDriver implements JobsDriver {
    * rather than being stringified: they are about to be embedded in a document
    * that is itself serialised once, so pre-encoding them would double-encode.
    */
-  #toDocument(q: QueueRef, job: JobRecord): Record<string, unknown> {
+  #toDocument(
+    q: QueueRef,
+    job: JobRecord,
+    columns: readonly string[] = JOB_COLUMNS,
+  ): Record<string, unknown> {
     const values = [
       q.ns,
       q.queue,
@@ -1811,8 +1872,12 @@ export class SqlDriver implements JobsDriver {
       job.repeatKey,
     ];
 
+    const byColumn = new Map(
+      JOB_COLUMNS.map((column, index) => [column as string, values[index]]),
+    );
+
     return Object.fromEntries(
-      JOB_COLUMNS.map((column, index) => [column, values[index]]),
+      columns.map((column) => [column, byColumn.get(column)]),
     );
   }
 
