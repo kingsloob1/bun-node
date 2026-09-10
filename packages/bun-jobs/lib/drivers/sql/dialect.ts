@@ -73,6 +73,15 @@ export interface SqlDialect {
    */
   affectedRows: (result: unknown, connection: SQL) => Promise<number>;
   /**
+   * Whether the claim statement needs a transaction wrapped around it.
+   *
+   * Postgres does not: its data-modifying CTE is atomic on its own, and the
+   * wrapper measured 0.31ms of a 1.16ms claim — 27% for nothing. SQLite does,
+   * because `BEGIN IMMEDIATE` *is* its exclusivity, and MySQL and MariaDB do,
+   * because their claim is more than one statement.
+   */
+  readonly claimNeedsTransaction: boolean;
+  /**
    * Whether a write needs its own connection so {@link affectedRows} can ask
    * the server what it just did.
    */
@@ -292,6 +301,7 @@ const postgres: SqlDialect = {
     claimCandidateStatement(options, " FOR UPDATE SKIP LOCKED"),
   claimById: claimByIdStatement,
   affectedRows: countFromResult,
+  claimNeedsTransaction: false,
   countsNeedSameConnection: false,
 };
 
@@ -352,6 +362,7 @@ const mysql: SqlDialect = {
     }[];
     return Math.max(0, Number(rows[0]?.n ?? 0));
   },
+  claimNeedsTransaction: true,
   countsNeedSameConnection: true,
 };
 
@@ -410,6 +421,7 @@ const sqlite: SqlDialect = {
   claimCandidate: (options) => claimCandidateStatement(options, ""),
   claimById: claimByIdStatement,
   affectedRows: countFromResult,
+  claimNeedsTransaction: true,
   countsNeedSameConnection: false,
   transaction: async (sql, fn) =>
     // The mutex serialises writers inside this process; the retry handles the
