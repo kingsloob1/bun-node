@@ -1,5 +1,6 @@
+import type { DriverConfig } from "./shared";
 import process from "node:process";
-import { BunRunner, FileDriver, noopLogger } from "./shared";
+import { BunRunner, createDriver, noopLogger } from "./shared";
 
 /**
  * One runner instance, as a separate process.
@@ -16,7 +17,12 @@ const runner = new BunRunner({
   executionMode: "in-process",
   runMode: "single",
   queueRuns: process.env.QUEUE_RUNS === "1",
-  driver: new FileDriver({ root: process.env.DRIVER_ROOT ?? "" }),
+  // Any backend: the test decides, and the runner cannot tell the difference.
+  driver: createDriver(
+    process.env.DRIVER_CONFIG
+      ? (JSON.parse(process.env.DRIVER_CONFIG) as DriverConfig)
+      : { type: "file", root: process.env.DRIVER_ROOT ?? "" },
+  ),
   waitToExit: false,
   logger: noopLogger,
   args: {

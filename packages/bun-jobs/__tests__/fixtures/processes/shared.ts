@@ -8,6 +8,8 @@ export {
   FileDriver,
   type JobsDriver,
   MemoryDriver,
+  MongoDriver,
+  SqlDriver,
 } from "../../../lib/index";
 /**
  * What the test processes import.

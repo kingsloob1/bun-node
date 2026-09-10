@@ -1,10 +1,10 @@
-import type { DriverConfig, JobsDriver } from "../lib/index";
+import type { JobsDriver } from "../lib/index";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { createDriver } from "../lib/index";
 import { makeTmpDir, testNamespace, waitFor } from "./helpers";
+import { crossProcessBackends } from "./helpers/backends";
 import { runBun, spawnBun } from "./helpers/spawnBun";
 
 /**
@@ -42,92 +42,20 @@ afterAll(async () => {
   await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
 });
 
-/** A backend the spawned processes can each build for themselves. */
-interface Backend {
-  /** Name shown in the test titles. */
-  name: string;
-  /** Config every process receives, since a driver instance cannot be sent. */
-  config: () => Promise<DriverConfig>;
-}
-
-/** The backends to run the suite against, plus the gated ones when configured. */
-async function backends(): Promise<Backend[]> {
-  const list: Backend[] = [
-    {
-      name: "file",
-      config: async () => {
-        const tmp = await makeTmpDir("bun-jobs-queue-xproc");
-        cleanups.push(tmp.cleanup);
-        return { type: "file", root: join(tmp.path, "driver") };
-      },
-    },
-  ];
-
-  const redis = process.env.BUN_JOBS_TEST_REDIS_URL;
-  if (redis) {
-    list.push({
-      name: "redis",
-      config: async () => ({ type: "redis", url: redis }),
-    });
-  }
-
-  for (const [name, variable] of [
-    ["postgres", "BUN_JOBS_TEST_POSTGRES_URL"],
-    ["mysql", "BUN_JOBS_TEST_MYSQL_URL"],
-  ] as const) {
-    const url = process.env[variable];
-    if (url) {
-      list.push({ name, config: async () => ({ type: "sql", url }) });
-    }
-  }
-
-  const sqlite = await makeTmpDir("bun-jobs-queue-sqlite");
-  cleanups.push(sqlite.cleanup);
-  list.push({
-    name: "sqlite",
-    config: async () => ({
-      type: "sql",
-      url: `sqlite://${join(sqlite.path, "jobs.db")}`,
-    }),
-  });
-
-  return list;
-}
-
-/**
- * Whether a driver of this shape can be built and reached.
- *
- * Resolved once, up front, so an unavailable backend's suite is *skipped*
- * rather than quietly passing four tests that did nothing.
- */
-async function isAvailable(config: DriverConfig): Promise<boolean> {
-  try {
-    const driver = createDriver(config);
-    await driver.connect();
-    await driver.close();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Lines the consumers appended, as `<consumerId>:<jobId>`. */
 async function processed(log: string): Promise<string[]> {
   return (await readFile(log, "utf8")).split("\n").filter(Boolean);
 }
 
-const ALL = await backends();
+/**
+ * Every backend that claims it can carry work between processes. The list is
+ * shared with the runner suite, so a backend cannot be covered by one and
+ * quietly missed by the other.
+ */
+const READY = await crossProcessBackends({ cleanups });
 
-/** Each backend paired with a config, and whether it can actually be used. */
-const READY = await Promise.all(
-  ALL.map(async (backend) => {
-    const config = await backend.config();
-    return { backend, config, available: await isAvailable(config) };
-  }),
-);
-
-for (const { backend, config, available } of READY) {
-  describe.skipIf(!available)(`queue across processes: ${backend.name}`, () => {
+for (const { name: backendName, config, available } of READY) {
+  describe.skipIf(!available)(`queue across processes: ${backendName}`, () => {
     /**
      * Sets up a namespace, a run log and the config every child receives.
      * Skips the whole suite when the backend has not landed yet.
@@ -141,7 +69,7 @@ for (const { backend, config, available } of READY) {
       const driver = createDriver(config);
       await driver.connect();
 
-      const namespace = testNamespace(backend.name);
+      const namespace = testNamespace(backendName);
       const tmp = await makeTmpDir("bun-jobs-log");
       cleanups.push(tmp.cleanup);
       const log = join(tmp.path, "processed.log");
@@ -174,7 +102,8 @@ for (const { backend, config, available } of READY) {
         spawnBun(CONSUMER, {
           ...env,
           CONSUMER_ID: id,
-          RUN_FOR_MS: "4000",
+          STOP_AFTER: String(total),
+          RUN_FOR_MS: "30000",
           JOB_MS: "2",
         }),
       );
@@ -221,7 +150,8 @@ for (const { backend, config, available } of READY) {
       const consumer = spawnBun(CONSUMER, {
         ...env,
         CONSUMER_ID: "live",
-        RUN_FOR_MS: "3000",
+        STOP_AFTER: "5",
+        RUN_FOR_MS: "30000",
       });
 
       // Nothing to do yet; the consumer is idling.
@@ -249,7 +179,8 @@ for (const { backend, config, available } of READY) {
           ...env,
           CONSUMER_ID: id,
           FAIL_FIRST: "1",
-          RUN_FOR_MS: "9000",
+          STOP_AFTER: "6",
+          RUN_FOR_MS: "30000",
         }),
       );
 
@@ -312,7 +243,8 @@ for (const { backend, config, available } of READY) {
       const consumer = spawnBun(CONSUMER, {
         ...first.env,
         CONSUMER_ID: "ns-a",
-        RUN_FOR_MS: "2500",
+        STOP_AFTER: "3",
+        RUN_FOR_MS: "30000",
       });
 
       await runBun(PRODUCER, {
@@ -354,15 +286,12 @@ describe("queue across processes: capabilities", () => {
     expect(memory.capabilities.multiProcess).toBe(false);
 
     // Every backend the suite actually ran against claims it can be shared.
-    for (const { backend, config, available } of READY) {
+    for (const { name, config, available } of READY) {
       if (!available) {
         continue;
       }
       const driver = createDriver(config);
-      expect([backend.name, driver.capabilities.multiProcess]).toEqual([
-        backend.name,
-        true,
-      ]);
+      expect([name, driver.capabilities.multiProcess]).toEqual([name, true]);
     }
   });
 });

@@ -52,8 +52,33 @@ const worker = jobs.worker(
 void worker.run();
 console.log(JSON.stringify({ event: "ready", consumerId }));
 
-// Consume until the deadline, then shut down cleanly.
-await Bun.sleep(Number(process.env.RUN_FOR_MS ?? 2000));
+/** How many processed lines the test is waiting for, if it said. */
+const stopAfter = Number(process.env.STOP_AFTER ?? 0);
+
+/** How long to keep consuming regardless, as a backstop. */
+const deadline = Date.now() + Number(process.env.RUN_FOR_MS ?? 2000);
+
+/** Lines every consumer has appended so far. */
+const processedCount = async (): Promise<number> => {
+  if (!log) {
+    return 0;
+  }
+  const contents = await Bun.file(log)
+    .text()
+    .catch(() => "");
+  return contents.split("\n").filter(Boolean).length;
+};
+
+// Stop on the signal rather than on a stopwatch. A fixed lifetime makes a
+// test's outcome depend on how loaded the machine is, which is how a suite
+// acquires flakes; the deadline stays only as a backstop.
+while (Date.now() < deadline) {
+  if (stopAfter > 0 && (await processedCount()) >= stopAfter) {
+    break;
+  }
+  await Bun.sleep(25);
+}
+
 await worker.close({ timeout: 2000 });
 
 console.log(JSON.stringify({ event: "closed", consumerId }));
