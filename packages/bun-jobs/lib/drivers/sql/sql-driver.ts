@@ -29,6 +29,7 @@ import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
 import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
+import { EventRetention } from "../../shared/eventRetention";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
 import { resolveSyncOptions } from "../schemaSync";
@@ -201,6 +202,15 @@ export interface SqlDriverOptions extends ConnectionInput {
   sql?: SQL;
   /** How often a wait re-checks for work. Defaults to 50ms. */
   pollInterval?: number;
+  /**
+   * How long a stored event is kept, in milliseconds.
+   *
+   * Defaults to an hour. Events are a live notification channel rather than an
+   * audit trail, and this backend writes each one down — so without a limit
+   * the log grows for as long as the queue runs. Set `0` to keep everything,
+   * and prune it yourself.
+   */
+  eventRetentionMs?: number;
 }
 
 /** Default port per engine, for building a URL from connection fields. */
@@ -214,6 +224,8 @@ const DEFAULT_PORTS: Record<SqlAdapter, number> = {
 export class SqlDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
   readonly name = "sql";
+  /** Decides when this driver should prune its stored events. */
+  readonly #eventRetention: EventRetention;
 
   /** Which engine this instance talks to. */
   readonly adapter: SqlAdapter;
@@ -295,6 +307,7 @@ export class SqlDriver implements JobsDriver {
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
     this.#syncOnConnect = options.syncSchema ?? false;
+    this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
   }
 
@@ -1898,12 +1911,43 @@ export class SqlDriver implements JobsDriver {
 
   async publish(event: DriverEvent): Promise<void> {
     await this.connect();
+    this.#pruneEvents(event.ns);
 
     const { bind, values } = this.#binder();
     await this.#run(
       `INSERT INTO ${this.#tables.events} (ns, channel, payload, created_at)
        VALUES (${bind(event.ns)}, ${bind(`${event.kind}:${event.target}`)},
                ${bind(this.dialect.jsonIn(event))}, ${bind(event.at)})`,
+      values,
+    );
+  }
+
+  /**
+   * Prunes this namespace's stored events, if it is time to.
+   *
+   * Deliberately not awaited: a publisher should not wait on housekeeping for
+   * a log it is not reading, and a failure here costs disk rather than
+   * correctness. `EventRetention` records the attempt either way, so a delete
+   * that keeps failing does not become a write per event.
+   */
+  #pruneEvents(ns: string): void {
+    const before = this.#eventRetention.due(ns);
+
+    if (before === null) {
+      return;
+    }
+
+    void this.cleanEvents(ns, before).catch(() => undefined);
+  }
+
+  async cleanEvents(ns: string, before: number): Promise<number> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+
+    return await this.#run(
+      `DELETE FROM ${this.#tables.events}
+        WHERE ns = ${bind(ns)} AND created_at < ${bind(before)}`,
       values,
     );
   }

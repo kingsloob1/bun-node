@@ -37,6 +37,7 @@ import {
   resolveNames,
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
+import { EventRetention } from "../../shared/eventRetention";
 import { PauseCache } from "../../shared/pauseCache";
 import { resolveSyncOptions } from "../schemaSync";
 
@@ -139,6 +140,15 @@ export interface MongoDriverOptions extends ConnectionInput {
    * versions created — see {@link RETIRED_INDEXES}.
    */
   syncSchema?: boolean | SchemaSyncOptions;
+  /**
+   * How long a stored event is kept, in milliseconds.
+   *
+   * Defaults to an hour. Events are a live notification channel rather than an
+   * audit trail, and this backend writes each one down — so without a limit
+   * the log grows for as long as the queue runs. Set `0` to keep everything,
+   * and prune it yourself.
+   */
+  eventRetentionMs?: number;
 }
 
 /** A job as it is stored: identifiers and ordering keys plain, payloads JSON. */
@@ -246,6 +256,8 @@ interface EventDocument {
 export class MongoDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
   readonly name = "mongodb";
+  /** Decides when this driver should prune its stored events. */
+  readonly #eventRetention: EventRetention;
 
   /**
    * A document update is atomic on its own, so claiming is safe from any
@@ -314,6 +326,7 @@ export class MongoDriver implements JobsDriver {
     this.#clientOptions = options.clientOptions;
     this.#poll = options.pollInterval ?? POLL_MS;
     this.#syncOnConnect = options.syncSchema ?? false;
+    this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#client = options.client;
     this.#ownsClient = !options.client;
   }
@@ -1375,6 +1388,7 @@ export class MongoDriver implements JobsDriver {
   }
 
   async publish(event: DriverEvent): Promise<void> {
+    this.#pruneEvents(event.ns);
     const events = await this.#events();
 
     await events.insertOne({
@@ -1383,6 +1397,31 @@ export class MongoDriver implements JobsDriver {
       payload: JSON.stringify(event),
       at: event.at,
     });
+  }
+
+  /**
+   * Prunes this namespace's stored events, if it is time to.
+   *
+   * Deliberately not awaited: a publisher should not wait on housekeeping for
+   * a log it is not reading, and a failure here costs disk rather than
+   * correctness. `EventRetention` records the attempt either way, so a delete
+   * that keeps failing does not become a write per event.
+   */
+  #pruneEvents(ns: string): void {
+    const before = this.#eventRetention.due(ns);
+
+    if (before === null) {
+      return;
+    }
+
+    void this.cleanEvents(ns, before).catch(() => undefined);
+  }
+
+  async cleanEvents(ns: string, before: number): Promise<number> {
+    const events = await this.#events();
+    const removed = await events.deleteMany({ ns, at: { $lt: before } });
+
+    return removed.deletedCount ?? 0;
   }
 
   async subscribe<TKind extends EventKind>(

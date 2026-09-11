@@ -31,6 +31,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { DriverError } from "../shared/errors";
+import { EventRetention } from "../shared/eventRetention";
 import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
@@ -94,11 +95,22 @@ export interface FileDriverOptions {
   root: string;
   /** How often to poll for new work and events. Defaults to 25ms. */
   pollInterval?: number;
+  /**
+   * How long a stored event is kept, in milliseconds.
+   *
+   * Defaults to an hour. Events are a live notification channel rather than an
+   * audit trail, and this backend writes each one down — so without a limit
+   * the log grows for as long as the queue runs. Set `0` to keep everything,
+   * and prune it yourself.
+   */
+  eventRetentionMs?: number;
 }
 
 export class FileDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
   readonly name = "file";
+  /** Decides when this driver should prune its stored events. */
+  readonly #eventRetention: EventRetention;
 
   /**
    * Several processes on one host can share this safely. `multiHost` is
@@ -124,6 +136,7 @@ export class FileDriver implements JobsDriver {
   constructor(options: FileDriverOptions) {
     this.root = options.root;
     this.#poll = options.pollInterval ?? POLL_MS;
+    this.#eventRetention = new EventRetention(options.eventRetentionMs);
   }
 
   /* --- lifecycle ---------------------------------------------------- */
@@ -1053,11 +1066,85 @@ export class FileDriver implements JobsDriver {
   }
 
   async publish(event: DriverEvent): Promise<void> {
+    this.#pruneEvents(event.ns);
     const path = this.#eventsPath(event);
     await mkdir(join(path, ".."), { recursive: true });
     // One line, appended: writes below the pipe-buffer size are atomic on
     // POSIX, so concurrent publishers cannot interleave within a line.
     await writeFile(path, `${JSON.stringify(event)}\n`, { flag: "a" });
+  }
+
+  /**
+   * Drops event logs under `ns` that have nothing left worth keeping.
+   *
+   * **Whole files, never part of one.** A subscriber reads this log by byte
+   * offset and treats the file shrinking as a rotation, starting again from
+   * zero — so rewriting a log to keep its newer half would make every
+   * subscriber replay the events that survived. Truncating a log whose *last*
+   * write is already past the cutoff has nothing to replay.
+   *
+   * Modification time is the last append, which is exactly the question being
+   * asked, and reading it does not mean parsing the file.
+   */
+  /**
+   * Prunes this namespace's stored events, if it is time to.
+   *
+   * Deliberately not awaited: a publisher should not wait on housekeeping for
+   * a log it is not reading, and a failure here costs disk rather than
+   * correctness. `EventRetention` records the attempt either way, so a delete
+   * that keeps failing does not become a write per event.
+   */
+  #pruneEvents(ns: string): void {
+    const before = this.#eventRetention.due(ns);
+
+    if (before === null) {
+      return;
+    }
+
+    void this.cleanEvents(ns, before).catch(() => undefined);
+  }
+
+  async cleanEvents(ns: string, before: number): Promise<number> {
+    let dropped = 0;
+
+    for (const path of await this.#eventLogs(ns)) {
+      if ((await this.#mtime(path)) >= before) {
+        continue;
+      }
+
+      // Already empty: truncating it again would report work that did not
+      // happen, and emptying a log updates its modification time, so every
+      // later sweep would find it stale and count it afresh.
+      if ((await this.#size(path)) === 0) {
+        continue;
+      }
+
+      // Truncate rather than unlink: a subscriber holds the path, and an empty
+      // file is the rotation it already understands.
+      await Bun.write(path, "").catch(() => undefined);
+      dropped++;
+    }
+
+    return dropped;
+  }
+
+  /** Every event log under one namespace, queues and runners alike. */
+  async #eventLogs(ns: string): Promise<string[]> {
+    const logs: string[] = [];
+
+    const queues = join(this.root, ns, "queues");
+    const runners = join(this.root, ns, "runners");
+
+    for (const [dir, targets] of [
+      [queues, await this.#list(queues)],
+      [runners, await this.#list(runners)],
+    ] as const) {
+      for (const target of targets) {
+        logs.push(join(dir, target, "events.jsonl"));
+      }
+    }
+
+    return logs;
   }
 
   async subscribe<TKind extends EventKind>(

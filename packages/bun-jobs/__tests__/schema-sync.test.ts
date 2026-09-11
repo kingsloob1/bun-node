@@ -3,7 +3,8 @@ import process from "node:process";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
 import { MongoDriver, SqlDriver } from "../lib/index";
-import { makeJob, testNamespace } from "./helpers";
+import { queueEvent } from "../lib/shared/events";
+import { makeJob, testNamespace, waitFor } from "./helpers";
 
 /**
  * Bringing an existing database in line with the schema the current version
@@ -23,6 +24,23 @@ import { makeJob, testNamespace } from "./helpers";
 const POSTGRES = process.env.BUN_JOBS_TEST_POSTGRES_URL;
 const MONGODB = process.env.BUN_JOBS_TEST_MONGODB_URL;
 
+/**
+ * One connection for every helper in this file.
+ *
+ * Opened lazily and shared, rather than one per call: each test also builds a
+ * driver with a pool of its own, and a connection per statement on top of that
+ * exhausts Postgres's `max_connections` partway through the file — which shows
+ * up as `sorry, too many clients already` on whichever test happens to be
+ * running, not on the one that caused it.
+ */
+let shared: SQL | undefined;
+
+/** The shared connection, opened on first use. */
+function connection(): SQL {
+  shared ??= new SQL(POSTGRES!);
+  return shared;
+}
+
 /** Drivers to close when the suite ends. */
 const drivers: JobsDriver[] = [];
 /** Table prefixes to drop when the suite ends. */
@@ -32,16 +50,16 @@ afterAll(async () => {
   await Promise.allSettled(drivers.map((driver) => driver.close()));
 
   if (POSTGRES && prefixes.length > 0) {
-    const sql = new SQL(POSTGRES);
     for (const prefix of prefixes) {
       for (const table of ["jobs", "locks", "kv", "events"]) {
-        await sql
+        await connection()
           .unsafe(`DROP TABLE IF EXISTS ${prefix}${table} CASCADE`)
           .catch(() => undefined);
       }
     }
-    await sql.close();
   }
+
+  await shared?.close().catch(() => undefined);
 });
 
 /** A prefix nothing else in the suite uses, ending in `_` as the naming wants. */
@@ -51,39 +69,46 @@ function makePrefix(label: string): string {
   return prefix;
 }
 
-/** A driver on its own tables, so one case cannot disturb another. */
+/** SQL drivers made so far, closed as the next one is made. */
+const sqlDrivers: SqlDriver[] = [];
+
+/**
+ * A driver on its own tables, so one case cannot disturb another.
+ *
+ * Each closes the ones before it. A driver holds a connection pool, and this
+ * file makes one per test — kept open to the end they exhaust Postgres's
+ * `max_connections` partway through, which surfaces as `sorry, too many
+ * clients already` on whichever test happens to be running rather than on the
+ * one that caused it. No test needs a driver after its own.
+ */
 function makeSqlDriver(
   prefix: string,
-  options: { syncSchema?: boolean } = {},
+  options: { syncSchema?: boolean; eventRetentionMs?: number } = {},
 ): SqlDriver {
+  const previous = sqlDrivers.splice(0, sqlDrivers.length);
+  for (const stale of previous) {
+    void stale.close().catch(() => undefined);
+  }
+
   const driver = new SqlDriver({
     url: POSTGRES,
     tablePrefix: prefix,
     notify: false,
     ...options,
   });
+  sqlDrivers.push(driver);
   drivers.push(driver);
   return driver;
 }
 
 /** Runs DDL the driver has no API for, which is the point of these tests. */
 async function ddl(statements: string[]): Promise<void> {
-  const sql = new SQL(POSTGRES!);
-  try {
-    for (const statement of statements) await sql.unsafe(statement);
-  } finally {
-    await sql.close();
-  }
+  for (const statement of statements) await connection().unsafe(statement);
 }
 
 /** Reads back whatever the database says, for the assertions. */
 async function query<T>(text: string): Promise<T[]> {
-  const sql = new SQL(POSTGRES!);
-  try {
-    return (await sql.unsafe(text)) as T[];
-  } finally {
-    await sql.close();
-  }
+  return (await connection().unsafe(text)) as T[];
 }
 
 describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
@@ -312,4 +337,55 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
       await client.close();
     }
   }, 45_000);
+});
+
+describe.skipIf(!POSTGRES)("event retention", () => {
+  /**
+   * The contract test calls `cleanEvents` directly, which proves it works and
+   * not that anything calls it. The complaint was never "there is no way to
+   * prune" — it was that nothing ever did, so a stored event log grew for as
+   * long as the queue ran.
+   */
+  it("prunes as it publishes, without being asked", async () => {
+    const prefix = makePrefix("evret");
+    // Short enough that the sweep is due on the second publish; the interval
+    // between sweeps is a quarter of this, floored at a second.
+    const driver = makeSqlDriver(prefix, { eventRetentionMs: 1_200 });
+    await driver.connect();
+
+    const ns = testNamespace();
+    const count = async () =>
+      Number(
+        (
+          await query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM ${prefix}events WHERE ns = '${ns}'`,
+          )
+        )[0]?.n ?? 0,
+      );
+
+    await driver.publish(
+      queueEvent(
+        { ns, target: "q", type: "promoted", origin: "test" },
+        { id: "first" },
+      ),
+    );
+    expect(await count()).toBe(1);
+
+    // Older than the retention window by the time the next publish sweeps.
+    await Bun.sleep(1_400);
+
+    await driver.publish(
+      queueEvent(
+        { ns, target: "q", type: "promoted", origin: "test" },
+        { id: "second" },
+      ),
+    );
+
+    // The sweep is fired and not awaited — a publisher should not wait on
+    // housekeeping — so the row goes shortly after, not synchronously.
+    await waitFor(async () => (await count()) === 1, {
+      message: "the stale event was never pruned",
+      timeout: 5_000,
+    });
+  }, 30_000);
 });

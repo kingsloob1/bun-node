@@ -973,6 +973,49 @@ export function driverContract(
         await waiting;
       });
 
+      it("prunes stored events, where it stores any", async () => {
+        // Optional on the contract, because only a backend that writes events
+        // down has anything to remove: Redis publishes to a channel and the
+        // memory driver calls its listeners. The three that do write them
+        // never removed one until this existed — a log that grows for as long
+        // as the queue runs, holding notifications whose value expired seconds
+        // after they were published.
+        if (!driver.cleanEvents) {
+          return;
+        }
+
+        const target = "prunable";
+        const received: string[] = [];
+        const unsubscribe = await driver.subscribe(
+          ns,
+          "queue",
+          target,
+          (event) => received.push(event.type),
+        );
+
+        try {
+          await driver.publish(
+            queueEvent(
+              { ns, target, type: "promoted", origin: newToken() },
+              { id: "old-one" },
+            ),
+          );
+
+          await waitFor(() => received.length > 0, {
+            message: "the event never arrived, so pruning proves nothing",
+          });
+
+          // Everything published so far is older than this.
+          const removed = await driver.cleanEvents(ns, Date.now() + 1_000);
+          expect(removed).toBeGreaterThan(0);
+
+          // And pruning again finds nothing left to take.
+          expect(await driver.cleanEvents(ns, Date.now() + 1_000)).toBe(0);
+        } finally {
+          await unsubscribe();
+        }
+      });
+
       it("delivers published events to subscribers of that target", async () => {
         const received: string[] = [];
         const unsubscribe = await driver.subscribe(

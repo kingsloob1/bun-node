@@ -583,6 +583,21 @@ export interface QueueDriver {
   /** Publishes an event to other processes. */
   publish: (event: DriverEvent) => Promise<void>;
   /**
+   * Removes stored events older than `before`, and says how many went.
+   *
+   * **Optional**, because only a backend that *stores* events has anything to
+   * remove. Redis publishes to a channel and keeps nothing; the memory driver
+   * calls its listeners and keeps nothing. The other three append a row, a
+   * document or a line per event and, until this existed, never removed one —
+   * an event log that grows for as long as the queue runs.
+   *
+   * Events are a live notification channel rather than an audit trail: a
+   * subscriber that has been down long enough to care about an hour-old event
+   * has a larger problem than the event. Drivers that store them prune on
+   * their own; this is the same thing on demand.
+   */
+  cleanEvents?: (ns: string, before: number) => Promise<number>;
+  /**
    * Subscribes to events; resolves with an unsubscribe function.
    *
    * Generic in `kind` so the listener is handed the union for that subsystem
