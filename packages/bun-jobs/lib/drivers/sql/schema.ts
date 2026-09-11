@@ -111,11 +111,61 @@ export function jobColumnTypes(dialect: SqlDialect): string[] {
   ];
 }
 
-/** Statements creating everything, each safe to run repeatedly. */
-export function createSchema(
+/** One column of a table the driver owns. */
+export interface ColumnDefinition {
+  /** The column's name. */
+  name: string;
+  /** Its type, in this dialect's spelling. */
+  type: string;
+  /** Everything after the type — `NOT NULL`, a default, a serial's keywords. */
+  suffix?: string;
+  /**
+   * Whether a sync may propose changing this column's type. Defaults to true.
+   *
+   * False for a column whose declared type is not what the engine reports
+   * back. A serial is the case: Postgres takes `BIGSERIAL PRIMARY KEY` and
+   * reports `bigint`, because `bigserial` is shorthand for a column plus a
+   * sequence plus a default rather than a type. Comparing the two strings says
+   * "different" every time, forever, and the statement it would generate is
+   * nonsense.
+   */
+  retype?: boolean;
+}
+
+/** One index the driver maintains. */
+export interface IndexDefinition {
+  /** The index's name, unique within the schema. */
+  name: string;
+  /** The table it is on. */
+  table: string;
+  /** The columns it covers, in order. */
+  columns: string[];
+  /** A partial-index predicate, where the engine has them. */
+  predicate?: string;
+}
+
+/** One table the driver owns, as data rather than as a DDL string. */
+export interface TableDefinition {
+  /** The table's name, already prefixed. */
+  name: string;
+  /** Its columns, in declaration order. */
+  columns: ColumnDefinition[];
+  /** The columns of its primary key, or none for a table without one. */
+  primaryKey: string[];
+}
+
+/**
+ * Every table and index the driver owns, described rather than spelled out.
+ *
+ * `createSchema` renders this into DDL, and `syncSchema` compares it against
+ * what the database actually has. One definition means the two can never
+ * disagree about what the schema is supposed to be — which matters, because
+ * the whole point of a sync is to answer that question.
+ */
+export function schemaDefinition(
   tables: { jobs: string; locks: string; kv: string; events: string },
   dialect: SqlDialect,
-): string[] {
+): { tables: TableDefinition[]; indexes: IndexDefinition[] } {
   const { jobs, locks, kv, events } = tables;
   const { idType, jsonType, timeType, serialType } = dialect;
 
@@ -123,83 +173,167 @@ export function createSchema(
   // the table they belong to rather than from a prefix that may not exist.
   const prefix = jobs.replace(/\W/g, "_");
 
+  return {
+    tables: [
+      {
+        name: jobs,
+        primaryKey: ["ns", "queue", "id"],
+        columns: [
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "queue", type: idType, suffix: "NOT NULL" },
+          { name: "id", type: idType, suffix: "NOT NULL" },
+          { name: "name", type: "TEXT", suffix: "NOT NULL" },
+          { name: "state", type: idType, suffix: "NOT NULL" },
+          { name: "priority", type: "INTEGER", suffix: "NOT NULL DEFAULT 0" },
+          { name: "run_at", type: timeType, suffix: "NOT NULL" },
+          { name: "created_at", type: timeType, suffix: "NOT NULL" },
+          { name: "processed_on", type: timeType },
+          { name: "finished_on", type: timeType },
+          { name: "expires_at", type: timeType },
+          {
+            name: "attempts_made",
+            type: "INTEGER",
+            suffix: "NOT NULL DEFAULT 0",
+          },
+          {
+            name: "max_attempts",
+            type: "INTEGER",
+            suffix: "NOT NULL DEFAULT 1",
+          },
+          {
+            name: "stalled_count",
+            type: "INTEGER",
+            suffix: "NOT NULL DEFAULT 0",
+          },
+          { name: "data", type: jsonType },
+          { name: "opts", type: jsonType },
+          { name: "progress", type: jsonType },
+          { name: "return_value", type: jsonType },
+          { name: "failed_reason", type: jsonType },
+          { name: "stacktrace", type: jsonType },
+          { name: "lock_token", type: idType },
+          { name: "lock_expires_at", type: timeType },
+          { name: "worker_id", type: idType },
+          { name: "repeat_key", type: idType },
+        ],
+      },
+      {
+        name: locks,
+        primaryKey: ["ns", "lock_key"],
+        columns: [
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "lock_key", type: idType, suffix: "NOT NULL" },
+          { name: "token", type: idType, suffix: "NOT NULL" },
+          { name: "expires_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: kv,
+        primaryKey: ["ns", "kv_key"],
+        columns: [
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "kv_key", type: idType, suffix: "NOT NULL" },
+          { name: "value", type: jsonType },
+          { name: "updated_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: events,
+        primaryKey: [],
+        columns: [
+          { name: "seq", type: serialType, retype: false },
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "channel", type: idType, suffix: "NOT NULL" },
+          { name: "payload", type: jsonType },
+          { name: "created_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+    ],
+    indexes: [
+      // Claim order: the queue's due, waiting jobs, cheapest first.
+      {
+        name: `ix_${prefix}_claim`,
+        table: jobs,
+        columns: ["ns", "queue", "state", "priority", "created_at"],
+      },
+      // Promotion: what is due but not yet claimable.
+      {
+        name: `ix_${prefix}_due`,
+        table: jobs,
+        columns: ["ns", "queue", "state", "run_at"],
+      },
+      // Stalled recovery: active jobs whose lock has lapsed. Partial where the
+      // engine allows, because a job that has never been claimed has no lock
+      // and has no business in here.
+      {
+        name: `ix_${prefix}_lock`,
+        table: jobs,
+        columns: ["ns", "queue", "state", "lock_expires_at"],
+        predicate: "lock_expires_at IS NOT NULL",
+      },
+      // Retention: whatever has expired, across queues. Partial for the same
+      // reason — most jobs never have an expiry set at all.
+      {
+        name: `ix_${prefix}_exp`,
+        table: jobs,
+        columns: ["expires_at"],
+        predicate: "expires_at IS NOT NULL",
+      },
+
+      // There is deliberately no index on `finished_on`. Cleaning reads
+      // `COALESCE(finished_on, created_at) <= $cutoff`, which no index can
+      // satisfy — it is applied as a filter either way — so the only part of
+      // such an index the planner can use is the `(ns, queue, state)` prefix,
+      // which `ix_..._claim` already provides. Verified on 200,000 rows: with
+      // the index the plan is an index scan on it, without the index it is an
+      // index scan on `ix_..._claim` with the identical index condition, the
+      // same three buffers and a cost of 340.70 against 334.50. It only ever
+      // cost a write per insert.
+
+      {
+        name: `ix_${prefix}_events`,
+        table: events,
+        columns: ["ns", "channel", "seq"],
+      },
+    ],
+  };
+}
+
+/** One column, as it appears inside a `CREATE TABLE`. */
+export function renderColumn(column: ColumnDefinition): string {
+  return `${column.name} ${column.type}${column.suffix ? ` ${column.suffix}` : ""}`;
+}
+
+/** The `CREATE INDEX` for one index definition. */
+export function renderIndex(
+  index: IndexDefinition,
+  dialect: SqlDialect,
+  concurrently = false,
+): string {
+  const where = index.predicate ? dialect.partialIndex(index.predicate) : "";
+  const how = concurrently ? dialect.concurrentIndex : "";
+
+  return `CREATE INDEX ${how}IF NOT EXISTS ${index.name} ON ${index.table} (${index.columns.join(", ")})${where}`;
+}
+
+/** Statements creating everything, each safe to run repeatedly. */
+export function createSchema(
+  tables: { jobs: string; locks: string; kv: string; events: string },
+  dialect: SqlDialect,
+): string[] {
+  const { tables: definitions, indexes } = schemaDefinition(tables, dialect);
+
   return [
-    `CREATE TABLE IF NOT EXISTS ${jobs} (
-      ns ${idType} NOT NULL,
-      queue ${idType} NOT NULL,
-      id ${idType} NOT NULL,
-      name TEXT NOT NULL,
-      state ${idType} NOT NULL,
-      priority INTEGER NOT NULL DEFAULT 0,
-      run_at ${timeType} NOT NULL,
-      created_at ${timeType} NOT NULL,
-      processed_on ${timeType},
-      finished_on ${timeType},
-      expires_at ${timeType},
-      attempts_made INTEGER NOT NULL DEFAULT 0,
-      max_attempts INTEGER NOT NULL DEFAULT 1,
-      stalled_count INTEGER NOT NULL DEFAULT 0,
-      data ${jsonType},
-      opts ${jsonType},
-      progress ${jsonType},
-      return_value ${jsonType},
-      failed_reason ${jsonType},
-      stacktrace ${jsonType},
-      lock_token ${idType},
-      lock_expires_at ${timeType},
-      worker_id ${idType},
-      repeat_key ${idType},
-      PRIMARY KEY (ns, queue, id)
-    )`,
-    // Claim order: the queue's due, waiting jobs, cheapest first.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}_claim ON ${jobs} (ns, queue, state, priority, created_at)`,
-    // Promotion: what is due but not yet claimable.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}_due ON ${jobs} (ns, queue, state, run_at)`,
-    // Stalled recovery: active jobs whose lock has lapsed. Partial where the
-    // engine allows, because a job that has never been claimed has no lock and
-    // has no business in here.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}_lock ON ${jobs} (ns, queue, state, lock_expires_at)${dialect.partialIndex(
-      "lock_expires_at IS NOT NULL",
-    )}`,
-    // Retention: whatever has expired, across queues. Partial for the same
-    // reason — most jobs never have an expiry set at all.
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}_exp ON ${jobs} (expires_at)${dialect.partialIndex(
-      "expires_at IS NOT NULL",
-    )}`,
+    ...definitions.map((table) => {
+      const body = [
+        ...table.columns.map(renderColumn),
+        ...(table.primaryKey.length > 0
+          ? [`PRIMARY KEY (${table.primaryKey.join(", ")})`]
+          : []),
+      ].join(",\n      ");
 
-    // There is deliberately no index on `finished_on`. Cleaning reads
-    // `COALESCE(finished_on, created_at) <= $cutoff`, which no index can
-    // satisfy — it is applied as a filter either way — so the only part of
-    // such an index the planner can use is the `(ns, queue, state)` prefix,
-    // which `ix_..._claim` already provides. Verified on 200,000 rows: with
-    // the index the plan is an index scan on it, without the index it is an
-    // index scan on `ix_..._claim` with the identical index condition, the
-    // same three buffers and a cost of 340.70 against 334.50. It only ever
-    // cost a write per insert.
-
-    `CREATE TABLE IF NOT EXISTS ${locks} (
-      ns ${idType} NOT NULL,
-      lock_key ${idType} NOT NULL,
-      token ${idType} NOT NULL,
-      expires_at ${timeType} NOT NULL,
-      PRIMARY KEY (ns, lock_key)
-    )`,
-
-    `CREATE TABLE IF NOT EXISTS ${kv} (
-      ns ${idType} NOT NULL,
-      kv_key ${idType} NOT NULL,
-      value ${jsonType},
-      updated_at ${timeType} NOT NULL,
-      PRIMARY KEY (ns, kv_key)
-    )`,
-
-    `CREATE TABLE IF NOT EXISTS ${events} (
-      seq ${serialType},
-      ns ${idType} NOT NULL,
-      channel ${idType} NOT NULL,
-      payload ${jsonType},
-      created_at ${timeType} NOT NULL
-    )`,
-    `CREATE INDEX IF NOT EXISTS ix_${prefix}_events ON ${events} (ns, channel, seq)`,
+      return `CREATE TABLE IF NOT EXISTS ${table.name} (\n      ${body}\n    )`;
+    }),
+    ...indexes.map((index) => renderIndex(index, dialect)),
   ];
 }
