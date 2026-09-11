@@ -2,6 +2,7 @@ import type { JobsDriver, QueueRef } from "../../lib/index";
 import { serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { newToken, runnerKey } from "../../lib/index";
+import { queueEvent } from "../../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "../helpers";
 
 /**
@@ -981,26 +982,30 @@ export function driverContract(
           (event) => received.push(event.type),
         );
 
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "events-test",
-          type: "completed",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        await driver.publish(
+          queueEvent(
+            {
+              ns,
+              target: "events-test",
+              type: "completed",
+              origin: newToken(),
+            },
+            { id: "job-1", returnValue: null },
+          ),
+        );
 
         // Another target's events must not arrive here.
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "somewhere-else",
-          type: "failed",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        await driver.publish(
+          queueEvent(
+            {
+              ns,
+              target: "somewhere-else",
+              type: "failed",
+              origin: newToken(),
+            },
+            { id: "job-2", error: { name: "Error", message: "elsewhere" } },
+          ),
+        );
 
         await waitFor(() => received.length > 0, {
           message: "no event delivered",
@@ -1008,15 +1013,14 @@ export function driverContract(
         expect(received).toEqual(["completed"]);
 
         await unsubscribe();
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "events-test",
-          type: "after-unsubscribe",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        // Any event will do here; what is being checked is that nothing
+        // arrives after `unsubscribe()`, not which event it was.
+        await driver.publish(
+          queueEvent(
+            { ns, target: "events-test", type: "promoted", origin: newToken() },
+            { id: "job-3" },
+          ),
+        );
         await Bun.sleep(20);
         expect(received).toEqual(["completed"]);
       });

@@ -1,5 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { ConnectionOptions } from "../shared/connection";
+import type { DriverEvent, EventKind, EventOfKind } from "../shared/events";
 import type { RunnerSchedule } from "../shared/schedule";
 import type { SchemaChange, SchemaSyncOptions } from "./schemaSync";
 
@@ -383,26 +384,26 @@ export interface RepeatRecord {
 }
 
 /** A cross-process notification. */
-export interface DriverEvent {
-  /** Envelope version, so a rolling upgrade can tell shapes apart. */
-  v: 1;
-  /** The namespace it belongs to. Subscribers ignore anything else. */
-  ns: string;
-  /** Which subsystem emitted it. */
-  kind: "queue" | "runner";
-  /** The queue name or runner id. */
-  target: string;
-  /** The event name, e.g. `"completed"`. */
-  type: string;
-  /** The job or run id it concerns. */
-  id?: string;
-  /** When it was emitted, in epoch milliseconds. */
-  at: number;
-  /** A small payload; kept minimal because some transports cap the size. */
-  payload?: unknown;
-  /** Token of the emitting process, so it can ignore its own echoes. */
-  origin: string;
-}
+/**
+ * What a driver publishes and delivers.
+ *
+ * A discriminated union on `kind` and then `type`, defined in
+ * `shared/events.ts` — so a subscriber that switches on `event.type` narrows
+ * to exactly the fields that event carries. It used to be one interface with
+ * `type: string` and `payload?: unknown`, which told a subscriber nothing and
+ * let a publisher put anything anywhere.
+ */
+export type {
+  DriverEvent,
+  EventKind,
+  EventOfKind,
+  QueueDriverEvent,
+  QueueEventName,
+  QueueEventPayloads,
+  RunnerDriverEvent,
+  RunnerEventName,
+  RunnerEventPayloads,
+} from "../shared/events";
 
 /** The queue half of the contract. */
 export interface QueueDriver {
@@ -581,12 +582,18 @@ export interface QueueDriver {
   ) => Promise<void>;
   /** Publishes an event to other processes. */
   publish: (event: DriverEvent) => Promise<void>;
-  /** Subscribes to events; resolves with an unsubscribe function. */
-  subscribe: (
+  /**
+   * Subscribes to events; resolves with an unsubscribe function.
+   *
+   * Generic in `kind` so the listener is handed the union for that subsystem
+   * alone: a queue subscriber never has to consider a runner event, and a
+   * `switch` on `event.type` narrows the payload from there.
+   */
+  subscribe: <TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ) => Promise<() => Promise<void>>;
 }
 

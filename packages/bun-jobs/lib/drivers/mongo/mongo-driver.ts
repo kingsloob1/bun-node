@@ -15,6 +15,8 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
   JobRecord,
   JobsDriver,
@@ -1383,12 +1385,17 @@ export class MongoDriver implements JobsDriver {
     });
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     const events = await this.#events();
     const channel = `${kind}:${target}`;
 
@@ -1422,7 +1429,7 @@ export class MongoDriver implements JobsDriver {
 
         for (const document of documents) {
           cursor = document._id;
-          listener(JSON.parse(document.payload) as DriverEvent);
+          deliver(JSON.parse(document.payload) as DriverEvent);
         }
       })().catch(() => {
         // A failed poll is retried on the next tick.

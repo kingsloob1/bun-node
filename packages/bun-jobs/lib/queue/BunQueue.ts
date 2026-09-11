@@ -1,16 +1,22 @@
 import type {
-  DriverEvent,
   JobRecord,
   JobsDriver,
   JobState,
   QueueRef,
   RepeatRecord,
 } from "../drivers/index";
+import type {
+  QueueDriverEvent,
+  QueueEventName,
+  QueueEventPayloads,
+} from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type { BunQueueEvents, BunQueueOptions, JobOptions } from "./types";
+import { deserializeError } from "@kingsleyweb/bun-common";
 import { resolveDriver } from "../drivers/index";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, QueueClosedError } from "../shared/errors";
+import { queueEvent } from "../shared/events";
 import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
@@ -156,7 +162,7 @@ export class BunQueue<
       view,
       job.runAt,
     );
-    await this.#publish("added", job.id);
+    await this.#publish("added", { id: job.id });
 
     return view;
   }
@@ -240,7 +246,7 @@ export class BunQueue<
 
     if (removed) {
       this.safeEmit("removed", id);
-      await this.#publish("removed", id);
+      await this.#publish("removed", { id });
     }
 
     return removed;
@@ -267,7 +273,7 @@ export class BunQueue<
 
     if (promoted) {
       this.safeEmit("promoted", id);
-      await this.#publish("promoted", id);
+      await this.#publish("promoted", { id });
     }
 
     return promoted;
@@ -278,7 +284,7 @@ export class BunQueue<
     await this.connect();
     await this.driver.pauseQueue(this.ref);
     this.safeEmit("paused");
-    await this.#publish("paused");
+    await this.#publish("paused", {});
   }
 
   /** Lets workers claim again. */
@@ -286,7 +292,7 @@ export class BunQueue<
     await this.connect();
     await this.driver.resumeQueue(this.ref);
     this.safeEmit("resumed");
-    await this.#publish("resumed");
+    await this.#publish("resumed", {});
   }
 
   /** Whether claiming is paused. */
@@ -473,53 +479,139 @@ export class BunQueue<
     return view;
   }
 
-  /** Publishes an event for other processes, when anything is listening. */
-  async #publish(type: string, id?: string): Promise<void> {
+  /**
+   * Publishes an event for other processes, when anything is listening.
+   *
+   * `type` selects the payload's shape, so a mismatched pair is a compile
+   * error here rather than a surprise in a subscriber three processes away.
+   */
+  async #publish<Name extends QueueEventName>(
+    type: Name,
+    payload: QueueEventPayloads[Name],
+  ): Promise<void> {
     if (!this.#subscribe) {
       return;
     }
 
     try {
-      await this.driver.publish({
-        v: 1,
-        ns: this.namespace,
-        kind: "queue",
-        target: this.name,
-        type,
-        ...(id ? { id } : {}),
-        at: Date.now(),
-        origin: this.#origin,
-      });
+      await this.driver.publish(
+        queueEvent(
+          {
+            ns: this.namespace,
+            target: this.name,
+            type,
+            origin: this.#origin,
+          },
+          payload,
+        ),
+      );
     } catch (error) {
       this.#logger.warn("Could not publish a queue event", { error, type });
     }
   }
 
   /**
-   * Re-emits an event from another process.
+   * Re-emits an event from another process, with the arguments its local
+   * signature actually takes.
    *
-   * The envelope carries ids rather than payloads — some transports cap a
-   * message at a few kilobytes — so the job is fetched only when someone is
-   * actually listening for that event.
+   * This used to reconstruct every event the same way: fetch the job named by
+   * `id`, emit `(job)`. That is right for about half of them and quietly wrong
+   * for the rest — `removed` and `promoted` handed listeners a `Job` where the
+   * local signature says `string`, and `delayed`, `progress`, `completed`,
+   * `retrying` and `dead` lost their second argument entirely. A listener
+   * therefore saw a different shape depending on which process emitted, which
+   * is the sort of thing that is only ever found in production.
+   *
+   * The envelope carries ids and scalars rather than records — some transports
+   * cap a message at a few kilobytes — so a job is fetched only for the events
+   * whose signature needs one, and only when somebody is listening.
    */
-  async #onRemoteEvent(event: DriverEvent): Promise<void> {
+  async #onRemoteEvent(event: QueueDriverEvent): Promise<void> {
     if (event.origin === this.#origin) {
       return;
     }
 
-    const name = event.type as keyof BunQueueEvents<TData, TResult>;
-    if (this.listenerCount(name) === 0) {
+    if (this.listenerCount(event.type) === 0) {
       return;
     }
 
-    if (!event.id) {
-      this.safeEmit(name, ...([] as never));
+    // An `Error` does not survive JSON, so the wire carries a
+    // `SerializedError` and it is turned back into one here. Local listeners
+    // get a real `Error` whichever process raised it.
+    switch (event.type) {
+      case "paused":
+      case "resumed":
+        this.safeEmit(event.type);
+        return;
+
+      case "drained":
+        this.safeEmit("drained", event.payload.count);
+        return;
+
+      case "cleaned":
+        this.safeEmit("cleaned", event.payload.ids, event.payload.state);
+        return;
+
+      case "stalled":
+        this.safeEmit("stalled", event.payload.ids);
+        return;
+
+      case "removed":
+      case "promoted":
+        this.safeEmit(event.type, event.payload.id);
+        return;
+
+      case "repeatScheduled":
+        this.safeEmit(
+          "repeatScheduled",
+          event.payload.key,
+          event.payload.nextRunAt,
+        );
+        return;
+    }
+
+    // Everything left is about one job, and hands the listener the job itself.
+    const job = await this.getJob(event.payload.id);
+
+    if (!job) {
       return;
     }
 
-    const job = await this.getJob(event.id);
-    if (job) {
-      this.safeEmit(name, ...([job] as never));
+    switch (event.type) {
+      case "added":
+      case "duplicate":
+      case "waiting":
+      case "active":
+        this.safeEmit(event.type, job);
+        return;
+
+      case "delayed":
+        this.safeEmit("delayed", job, event.payload.runAt);
+        return;
+
+      case "progress":
+        this.safeEmit("progress", job, event.payload.progress);
+        return;
+
+      case "completed":
+        this.safeEmit("completed", job, event.payload.returnValue as TResult);
+        return;
+
+      case "failed":
+        this.safeEmit("failed", job, deserializeError(event.payload.error));
+        return;
+
+      case "dead":
+        this.safeEmit("dead", job, deserializeError(event.payload.error));
+        return;
+
+      case "retrying":
+        this.safeEmit(
+          "retrying",
+          job,
+          deserializeError(event.payload.error),
+          event.payload.runAt,
+        );
     }
   }
 }

@@ -8,6 +8,8 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
   JobRecord,
   JobsDriver,
@@ -1016,12 +1018,17 @@ export class RedisDriver implements JobsDriver {
     );
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     await this.connect();
 
     const channel = this.keys.channel(ns, kind, target);
@@ -1046,11 +1053,11 @@ export class RedisDriver implements JobsDriver {
       });
     }
 
-    listeners.add(listener);
+    listeners.add(deliver);
 
     return async () => {
       const current = this.#channels.get(channel);
-      current?.delete(listener);
+      current?.delete(deliver);
 
       if (current && current.size === 0) {
         this.#channels.delete(channel);

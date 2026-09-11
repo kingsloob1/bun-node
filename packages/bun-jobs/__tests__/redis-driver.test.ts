@@ -2,6 +2,7 @@ import type { JobsDriver } from "../lib/index";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { ConfigError, RedisDriver, RedisKeys } from "../lib/index";
+import { queueEvent } from "../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
@@ -176,15 +177,12 @@ describe.skipIf(!URL)("Redis driver: waiting and events", () => {
       },
     );
 
-    await driver.publish({
-      v: 1,
-      ns,
-      kind: "queue",
-      target: "events",
-      type: "completed",
-      at: Date.now(),
-      origin: "test",
-    });
+    await driver.publish(
+      queueEvent(
+        { ns, target: "events", type: "completed", origin: "test" },
+        { id: "job-1", returnValue: null },
+      ),
+    );
 
     await waitFor(() => received.length > 0, {
       message: "no event was delivered",

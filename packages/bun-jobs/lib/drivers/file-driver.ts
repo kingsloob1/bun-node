@@ -3,6 +3,8 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
   JobRecord,
   JobsDriver,
@@ -1058,12 +1060,17 @@ export class FileDriver implements JobsDriver {
     await writeFile(path, `${JSON.stringify(event)}\n`, { flag: "a" });
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     const path = this.#eventsPath({ ns, kind, target });
     await mkdir(join(path, ".."), { recursive: true });
 
@@ -1099,7 +1106,7 @@ export class FileDriver implements JobsDriver {
             }
             const event = safeJsonParse<DriverEvent | null>(line, null);
             if (event && event.ns === ns && event.target === target) {
-              listener(event);
+              deliver(event);
             }
           }
         } finally {

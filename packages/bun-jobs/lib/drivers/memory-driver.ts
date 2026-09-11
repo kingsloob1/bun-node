@@ -3,6 +3,8 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
   JobRecord,
   JobsDriver,
@@ -836,20 +838,25 @@ export class MemoryDriver implements JobsDriver {
     }
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     const namespace = this.#namespace(ns);
     const key = `${kind}:${target}`;
     const listeners = namespace.subscribers.get(key) ?? new Set();
-    listeners.add(listener);
+    listeners.add(deliver);
     namespace.subscribers.set(key, listeners);
 
     return async () => {
-      listeners.delete(listener);
+      listeners.delete(deliver);
       if (listeners.size === 0) {
         namespace.subscribers.delete(key);
       }

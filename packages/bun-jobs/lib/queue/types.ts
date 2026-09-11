@@ -192,8 +192,16 @@ export type BunQueueEvents<TData = unknown, TResult = unknown> = {
   retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
   /** A job exhausted its attempts, or failed unrecoverably. */
   dead: (job: Job<TData, TResult>, error: Error) => void;
-  /** A job was recovered from a worker that died holding it. */
-  stalled: (jobId: string) => void;
+  /**
+   * Jobs were recovered from workers that died holding them.
+   *
+   * A batch, matching `BunQueueWorkerEvents.stalled` and the wire. It used to
+   * be `(jobId: string)` here and `(ids: string[])` there, for one event that
+   * only ever has one source — so a listener saw a different shape depending
+   * on which object it attached to, and the cross-process path could not have
+   * satisfied both.
+   */
+  stalled: (ids: string[]) => void;
   /** A job was removed. */
   removed: (jobId: string) => void;
   /** A job was made claimable early. */
