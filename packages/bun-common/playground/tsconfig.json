@@ -1,0 +1,15 @@
+{
+  // The playground is scratch code for exercising the adapter by hand, and is
+  // excluded from the package's `include` because it is not part of the
+  // library. It is still type-checked, against the same options, so a change
+  // to `lib/` that breaks it is visible rather than silent.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "lib/*": ["../lib/*"],
+      "utils/*": ["../lib/utils/*"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

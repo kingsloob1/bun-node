@@ -1,46 +1,10 @@
 {
+  // Compiler options live in the repo root's `tsconfig.base.json`.
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "jsx": "react-jsx",
-    // Enable latest features
-    "lib": ["ESNext"],
-    "moduleDetection": "force",
-
-    // Decorators
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "module": "ESNext",
-    // Bundler mode
-    "moduleResolution": "bundler",
-
-    // Bun Specific Because It uses this for module aliasing
     "paths": {
       "lib/*": ["./lib/*"]
-    },
-    "typeRoots": [
-      "./node_modules/@types",
-      "../../node_modules/@types",
-      "./typings"
-    ],
-    "allowImportingTsExtensions": true,
-    "allowJs": true,
-
-    // Best practices
-    "strict": true,
-    "noFallthroughCasesInSwitch": true,
-
-    "noPropertyAccessFromIndexSignature": false,
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "declaration": true,
-    "noEmit": true,
-    "sourceMap": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": false,
-    "verbatimModuleSyntax": true,
-    "skipLibCheck": true
+    }
   },
-  "include": ["./lib/**/*", "./.eslintrc"]
+  "include": ["./lib/**/*", "./__tests__/**/*", "eslint.config.mjs"]
 }

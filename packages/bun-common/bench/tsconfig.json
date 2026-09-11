@@ -1,0 +1,19 @@
+{
+  // `bench/` is excluded from the package's own `include`, so without this
+  // nothing type-checks it. Compiler options come from the repo root, the same
+  // ones the package uses.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    // Named rather than discovered: `typeRoots` in the base resolve relative to
+    // the base, which is right for a package but not for a project one level
+    // deeper. `types` says plainly what this needs, the way `bun-jobs/bench`
+    // does.
+    "types": ["bun"],
+    "paths": {
+      "lib/*": ["../lib/*"],
+      "utils/*": ["../lib/utils/*"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

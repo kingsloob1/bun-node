@@ -36,10 +36,15 @@ bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
 bun-common.
 
-## Dev workflow (run in each affected package directory)
+## Dev workflow
 
 ```bash
-bunx tsc --noEmit          # typecheck — must be clean
+bun scripts/typecheck.ts   # every project in the repo — must be clean
+```
+
+Then, in each affected package directory:
+
+```bash
 bunx eslint lib __tests__  # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
@@ -51,41 +56,57 @@ first. It never reinstalls an existing server and configures one only when a
 connection with the expected credentials fails.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
-depend on bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
-noise — ignore it. There may be a couple of intentional `no-console` ESLint
-*warnings* (error logging in catch blocks with no logger in scope); warnings
-do not fail lint.
+depend on bun-common). The `eslint.config.mjs` `TS2742`/`TS2883` portability
+hint is pre-existing noise — `scripts/typecheck.ts` filters it. There may be a
+couple of intentional `no-console` ESLint *warnings* (error logging in catch
+blocks with no logger in scope); warnings do not fail lint.
 
 `packages/bun-jobs/bench/` is a **separate, unpublished package** with its own
 `package.json`, lockfile and `node_modules` (the same shape as the root
 `benchmarks/`, and excluded from the root `workspaces` list). It holds the
 third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
 graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
-published package's dependency tree. Neither `bunx tsc --noEmit` nor
-`bunx eslint lib __tests__` covers it; when you change it, run its own pass
-from the package directory:
+published package's dependency tree. `scripts/typecheck.ts` covers it, but
+`bunx eslint lib __tests__` does not; when you change it, lint it from the
+package directory:
 
 ```bash
-bunx tsc --noEmit -p bench/tsconfig.json
 bunx eslint bench --ignore-pattern 'bench/node_modules/**'
 ```
 
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
 
-**Test files are not in `tsconfig`'s `include`** (`./lib/**/*` only), so
-`bunx tsc --noEmit` doesn't catch type errors in `__tests__/`. The IDE does,
-and an explicit pass does too — when you've changed test files, also run:
+## Typechecking
+
+**One base config, extended everywhere.** `tsconfig.base.json` at the repo
+root holds every compiler option; the nine `tsconfig.json`s below it add only
+`paths` and `include`. A file is therefore checked the same way wherever it is
+checked from.
 
 ```bash
-bunx tsc --noEmit --skipLibCheck --target ESNext --module ESNext \
-  --moduleResolution bundler --strict --allowImportingTsExtensions \
-  --types bun-types __tests__/*.ts
+bun scripts/typecheck.ts          # every project in the repo
+bun scripts/typecheck.ts --list   # just name them
 ```
 
-The single-file flags will surface unrelated errors in `lib/BunResponse.ts`
-(stream-type incompatibilities Bun papers over with its global types) —
-those are noise; only `__tests__/...` lines are signal.
+Run that rather than `bunx tsc --noEmit` in one package — the packages are not
+the only projects. There are also `packages/bun-common/bench`,
+`packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
+`benchmarks/`, each a nested project with its own config because it resolves
+third-party comparators from its own `node_modules`.
+
+This replaced an arrangement worth understanding, because it hid real bugs.
+Each package's `include` was `./lib/**/*` alone, so `tsc --noEmit` never saw
+`__tests__/` or `scripts/`; `benchmarks/` had no config at all; and the root
+`tsconfig.json` set *only* the decorator options while declaring no `include`,
+which meant it claimed every file in the repo. An IDE resolving a package file
+against that root project type-checked it with no `skipLibCheck`, no bundler
+resolution and no Bun types, and reported a cascade of errors in files the CLI
+called clean. Every documented command passed the whole time.
+
+Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
+ESLint flat config's inferred default export, which cannot be named without a
+path into a pnpm-style store.
 
 ## Dependency policy
 

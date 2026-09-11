@@ -1,0 +1,56 @@
+{
+  // The single source of compiler options for this repo.
+  //
+  // Every `tsconfig.json` — the three packages, the two unpublished benchmark
+  // packages, the playground and the root — extends this, so a file is checked
+  // the same way wherever it is checked from. They used to be three separate
+  // copies that had already drifted (`bun-nest` still named a `.eslintrc` that
+  // no longer exists), and, more importantly, each package's `include` covered
+  // `./lib/**/*` alone. The IDE checks whatever file you open; `tsc --noEmit`
+  // checked only `lib`. Type errors in `__tests__/`, `scripts/` and
+  // `benchmarks/` could therefore sit in the tree indefinitely while every
+  // documented command reported success. They did.
+  //
+  // Only `paths` and `include` belong in the configs that extend this: the
+  // first is genuinely per-package, the second says which of that package's
+  // directories are its own rather than a nested project's.
+  "compilerOptions": {
+    "target": "ESNext",
+    "jsx": "react-jsx",
+    // Enable latest features
+    "lib": ["ESNext"],
+    "moduleDetection": "force",
+
+    // Decorators
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "module": "ESNext",
+    // Bundler mode
+    "moduleResolution": "bundler",
+
+    "typeRoots": [
+      "./node_modules/@types",
+      "../../node_modules/@types",
+      "./typings"
+    ],
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+
+    // Best practices
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "noPropertyAccessFromIndexSignature": false,
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "declaration": true,
+    "noEmit": true,
+    "sourceMap": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": false,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  }
+}
