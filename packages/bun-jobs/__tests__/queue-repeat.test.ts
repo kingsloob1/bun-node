@@ -1,3 +1,4 @@
+import type { JobRecord } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
@@ -285,4 +286,97 @@ describe("repeatable jobs", () => {
       ConfigError,
     );
   });
+});
+
+describe("catchUp", () => {
+  /**
+   * What a series does about occurrences it missed while nothing consumed it.
+   *
+   * The option was declared on `RepeatOptions`, never written to the series
+   * and never read, so every series behaved as `catchUp: false` whatever the
+   * caller asked for. The decision belongs on the record rather than on the
+   * call, because it is made by whichever worker schedules the next
+   * occurrence — which is not the process that created the series.
+   *
+   * The state is built rather than raced into. `add()` normalises a series'
+   * first occurrence to the future, so a freshly created one is never behind;
+   * being behind is what happens to a series that *was* running when its
+   * workers stopped. So these put an overdue occurrence in the queue directly
+   * and let the worker finish it, which is the moment the decision is taken.
+   *
+   * What is counted is how many occurrences *run*, not where the series ends
+   * up. Catching up converges on the present, and with a handler that returns
+   * immediately it converges in milliseconds — so the end state looks the same
+   * either way and only the number of runs tells them apart.
+   */
+
+  /** How far behind the overdue occurrence is: five missed seconds. */
+  const BEHIND_MS = 5_000;
+
+  /** Runs a series that fell behind, and counts the occurrences it works. */
+  async function runsAfterFallingBehind(catchUp: boolean): Promise<number> {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const queue = makeQueue(driver, namespace);
+    const ref = { ns: namespace, queue: "repeats" };
+
+    // `startAt` in the past, because the occurrence grid is anchored on it:
+    // without one it anchors on creation time, and an occurrence "due" before
+    // the series existed is not a state the series can reach. A series that
+    // fell behind is one whose grid began before its workers stopped.
+    const startAt = Date.now() - BEHIND_MS * 2;
+    const first = await queue.add(
+      "tick",
+      {},
+      { repeat: { every: 1_000, startAt, catchUp } },
+    );
+    const key = first.repeatKey!;
+
+    // The series as it would look after its workers had been down: what is
+    // due is an occurrence from several seconds ago.
+    const overdueAt = Date.now() - BEHIND_MS;
+    const definition = (await driver.getRepeat(ref, key))!;
+    await driver.removeJob(ref, first.id);
+    await driver.upsertRepeat(ref, {
+      ...definition,
+      nextRunAt: overdueAt,
+      nextJobId: repeatJobId(key, overdueAt),
+    });
+    await driver.addJob(ref, {
+      ...(first.toJSON() as JobRecord),
+      id: repeatJobId(key, overdueAt),
+      state: "waiting",
+      runAt: overdueAt,
+      repeatKey: key,
+    });
+
+    let runs = 0;
+    const worker = makeWorker(driver, namespace, () => {
+      runs++;
+      return null;
+    });
+
+    void worker.run();
+
+    // Long enough to work through five overdue occurrences, far too short for
+    // five real ones — a second apart — to have come due on their own.
+    await Bun.sleep(600);
+    await worker.close({ force: true });
+
+    return runs;
+  }
+
+  it("skips the backlog by default", async () => {
+    // The overdue occurrence runs, and the series then waits for the next real
+    // one rather than replaying the four it missed.
+    expect(await runsAfterFallingBehind(false)).toBe(1);
+  }, 20_000);
+
+  it("replays the backlog when asked to", async () => {
+    // Every missed occurrence runs, and it does so without waiting out the
+    // interval for each — which is what makes catching up possible at all.
+    expect(await runsAfterFallingBehind(true)).toBeGreaterThanOrEqual(
+      BEHIND_MS / 1_000,
+    );
+  }, 20_000);
 });

@@ -371,6 +371,16 @@ export interface RepeatRecord {
   endAt?: number;
   /** Stop after this many instances. */
   limit?: number;
+  /**
+   * Run every occurrence missed while nothing was consuming, rather than
+   * skipping to the next one. Defaults to `false`.
+   *
+   * Stored on the series rather than taken from the caller each time, because
+   * the decision is made by whichever worker happens to schedule the next
+   * occurrence — which is not the process that created the series, and may not
+   * even be the same machine.
+   */
+  catchUp?: boolean;
   /** How many instances have been scheduled so far. */
   count: number;
   /** When the next instance is due, or `null` when the series is finished. */

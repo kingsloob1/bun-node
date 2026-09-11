@@ -139,6 +139,7 @@ export function toRepeatRecord(
       ? { endAt: toMs(repeat.endAt, "repeat.endAt") }
       : {}),
     ...(repeat.limit !== undefined ? { limit: repeat.limit } : {}),
+    ...(repeat.catchUp ? { catchUp: true } : {}),
     count: 0,
     nextRunAt: null,
     nextJobId: null,

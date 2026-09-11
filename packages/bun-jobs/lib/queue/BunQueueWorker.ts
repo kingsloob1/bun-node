@@ -783,9 +783,18 @@ export class BunQueueWorker<
 
       let next = nextOccurrence(scheduled, record.runAt);
 
-      // A series that fell behind while nothing was consuming skips to the
-      // next real occurrence rather than replaying the backlog.
-      if (next !== null && next <= now) {
+      // A series that fell behind while nothing was consuming has a choice,
+      // and `catchUp` is it. Off — the default — it skips to the next real
+      // occurrence: an hourly job that was down for a day should run once when
+      // it comes back, not twenty-four times at once, and for most series the
+      // missed runs have been overtaken by events anyway.
+      //
+      // On, the occurrence it just computed stands even though it is already
+      // due, so the backlog is replayed one occurrence per completion until
+      // the series catches up with the clock. That is what a caller wants when
+      // each run does a bounded piece of work that still needs doing — billing
+      // a period, rolling a report — rather than reporting a current state.
+      if (next !== null && next <= now && !scheduled.catchUp) {
         next = nextOccurrence(scheduled, now);
       }
 
