@@ -31,18 +31,34 @@ Every driver takes its connection **either way** — a URL, or the fields a
 config file gives you — and lets you name its tables or collections:
 
 ```ts
-{ type: "sql", url: "postgres://user:pass@db/jobs", tablePrefix: "jobs_" }
-{ type: "sql", adapter: "postgres", connection: { host: "db", user, password },
-  tables: { jobs: "legacy_work_items" } }
-{ type: "mongodb", connection: { host: "db", database: "work" },
-  collections: { jobs: "work_items" } }
+import type { DriverConfig } from "@kingsleyweb/bun-jobs";
+
+export const drivers: DriverConfig[] = [
+  // A URL, with a prefix applied to every table name.
+  { type: "sql", url: "postgres://user:pass@db/jobs", tablePrefix: "jobs_" },
+
+  // The same connection as fields, naming a table that already exists.
+  {
+    type: "sql",
+    adapter: "postgres",
+    connection: { host: "db", user: "jobs", password: "secret" },
+    tables: { jobs: "legacy_work_items" },
+  },
+
+  // MongoDB, naming a collection.
+  {
+    type: "mongodb",
+    connection: { host: "db", database: "work" },
+    collections: { jobs: "work_items" },
+  },
+];
 ```
 
 MongoDB's client is an **optional peer dependency**: it is imported only when
 that driver connects, so a project that does not use it never installs it
 (`bun add mongodb`).
 
-### Running the integration suites
+## Running the integration suites
 
 The Redis, Postgres, MariaDB and MongoDB suites skip unless their URL is set.
 To provide the servers:
@@ -56,7 +72,7 @@ bun scripts/setup-databases.ts --dry-run   # see the plan first
 It is safe to run repeatedly: an installed server is never reinstalled, and
 configuration runs only when connecting with the expected credentials fails.
 
-### Benchmarks
+## Benchmarks
 
 `bench/` compares both halves of this package against the established
 alternatives, on Bun:

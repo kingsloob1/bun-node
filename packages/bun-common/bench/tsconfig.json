@@ -4,15 +4,15 @@
   // ones the package uses.
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
+    "paths": {
+      "lib/*": ["../lib/*"],
+      "utils/*": ["../lib/utils/*"]
+    },
     // Named rather than discovered: `typeRoots` in the base resolve relative to
     // the base, which is right for a package but not for a project one level
     // deeper. `types` says plainly what this needs, the way `bun-jobs/bench`
     // does.
-    "types": ["bun"],
-    "paths": {
-      "lib/*": ["../lib/*"],
-      "utils/*": ["../lib/utils/*"]
-    }
+    "types": ["bun"]
   },
   "include": ["./**/*.ts"],
   "exclude": ["node_modules"]

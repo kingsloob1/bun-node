@@ -37,6 +37,16 @@ export default antfu({
     },
   })
   .append({
+    // Scoped to the files Prettier should actually format. Left unscoped, the
+    // rule applies to everything ESLint sees — including Markdown, which it
+    // then parses as code and reports a syntax error on the first heading.
+    // Markdown is still linted, by the Markdown rules, which is the right tool
+    // for it.
+    files: [
+      "**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx,vue}",
+      "**/*.{json,json5,jsonc}",
+      "**/*.{yaml,yml,toml}",
+    ],
     plugins: {
       prettier: prettierPlugin,
     },
