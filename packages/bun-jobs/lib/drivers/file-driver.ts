@@ -1010,7 +1010,23 @@ export class FileDriver implements JobsDriver {
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     const wake = join(this.#queueDir(q), "wake");
+
+    // Snapshotted *before* the first look for work, and the order is the whole
+    // point. This watches `wake` for a change, so anything that arrived before
+    // the snapshot is already folded into it and will never look like one —
+    // and a caller reaches here precisely because its claim came back empty,
+    // which is the window a job most often lands in. Taking the snapshot first
+    // and then looking means a job landing either side of it is caught: before,
+    // by the look; after, by the change.
+    //
+    // Getting this backwards cost a full poll interval. Measured, round-trip
+    // p90 was 1001ms against a p50 of 1.69ms — `DEFAULT_POLL_INTERVAL` exactly,
+    // spent asleep with a claimable job sitting in the queue.
     const before = await this.#mtime(wake);
+
+    if (await this.#hasWaiting(q)) {
+      return;
+    }
 
     // The gap between polls grows from a millisecond up to the configured
     // interval, rather than being flat. Without a push channel this loop is the
@@ -1321,6 +1337,18 @@ export class FileDriver implements JobsDriver {
   }
 
   /** Modification time in milliseconds, or `0` when the file is absent. */
+  /**
+   * Whether anything is sitting in the queue's waiting index.
+   *
+   * Only asked once per wait, at the top, so the cost is a single `readdir` on
+   * a directory that is almost always empty — a caller only waits because its
+   * claim just came back with nothing.
+   */
+  async #hasWaiting(q: QueueRef): Promise<boolean> {
+    const waiting = join(this.#queueDir(q), "index", "waiting");
+    return (await this.#list(waiting)).length > 0;
+  }
+
   async #mtime(path: string): Promise<number> {
     try {
       return (await stat(path)).mtimeMs;

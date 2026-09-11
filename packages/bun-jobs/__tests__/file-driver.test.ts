@@ -184,3 +184,43 @@ describe("file driver: promotion racing a claim", () => {
     await driver.close();
   });
 });
+
+describe("file driver: waiting for work that is already there", () => {
+  /**
+   * A job added before the wait starts must not cost a full poll interval.
+   *
+   * `waitForJob` watches a `wake` file for a change, and the snapshot it
+   * compares against is taken when the wait begins. A job that lands between a
+   * claim coming back empty and the wait starting has already touched `wake`,
+   * so the snapshot is of the *new* value and nothing changes it again — the
+   * worker then sleeps out its whole budget with a claimable job sitting in
+   * the queue.
+   *
+   * That is the round-trip p90 of 1001ms against a p50 of 1.69ms: a lost
+   * wakeup, and `DEFAULT_POLL_INTERVAL` is exactly 1,000ms.
+   */
+  it("returns at once when a job is already waiting", async () => {
+    const tmp = await makeTmpDir("bun-jobs-wake");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const q = { ns: testNamespace(), queue: "already-there" };
+      await driver.ensureQueue(q);
+
+      // Exactly the order that loses the wakeup: the job lands, touching
+      // `wake`, and only then does anybody wait.
+      await driver.addJob(q, makeJob({ id: "present" }));
+
+      const started = performance.now();
+      await driver.waitForJob(q, 1_000);
+      const waited = performance.now() - started;
+
+      // Generous, because the point is the difference between "noticed" and
+      // "slept the whole budget", not a precise timing.
+      expect(waited).toBeLessThan(250);
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  }, 15_000);
+});
