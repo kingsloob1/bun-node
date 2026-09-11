@@ -686,7 +686,7 @@ export class SqlDriver implements JobsDriver {
    * looks obviously better — the producer that crosses the threshold is not
    * the one that benefits, a claim is — but it measures worse, badly: drain
    * fell from 8,558/s to 5,527/s over three runs each. An `ANALYZE` running
-   * *beside* the inserts that are still arriving samples a table in flight and
+   * alongside inserts that are still arriving samples a table in flight and
    * produces worse statistics than one run after them, and a claim planned
    * against those takes 25.9ms where a fresh one takes 0.668ms. Deferring the
    * wait to the claim path does not rescue it either (5,519/s): by then the
@@ -799,6 +799,27 @@ export class SqlDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Which of `ids` are already in the queue.
+   *
+   * Only for engines with no `RETURNING`, which cannot report what an insert
+   * actually inserted. One statement for the whole chunk, so this is a round
+   * trip rather than a read per job.
+   */
+  async #existingIds(q: QueueRef, ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) {
+      return new Set();
+    }
+
+    const { bind, values } = this.#binder();
+    const text = `SELECT id FROM ${this.#tables.jobs}
+       WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+         AND id IN (${ids.map((id) => bind(id)).join(", ")})`;
+    const rows = await this.#all<{ id: string }>(text, values);
+
+    return new Set(rows.map((row) => String(row.id)));
+  }
+
   /** Inserts one chunk and works out which of its rows were new. */
   async #insertChunk(
     q: QueueRef,
@@ -839,21 +860,25 @@ export class SqlDriver implements JobsDriver {
       );
       added = new Set(rows.map((row) => String(row.id)));
     } else {
-      const count = await this.#run(statement, params);
+      // This engine will not say which rows it inserted, and after the insert
+      // it is too late to find out: a job this batch added and one that was
+      // already there are both simply present. So ask first. It costs a round
+      // trip per chunk on MySQL and MariaDB alone — every other engine takes
+      // the `RETURNING` path above — and the alternative is being wrong.
+      //
+      // It used to insert and then, on a short count, re-run the singular
+      // `addJob` for the whole chunk. That reports `added: false` for every
+      // job, including the ones the batch had just inserted, because by then
+      // each of them collides with itself.
+      const present = await this.#existingIds(
+        q,
+        chunk.map((job) => job.id),
+      );
 
-      // Everything went in, which is the usual answer and needs no follow-up.
-      if (count >= chunk.length) {
-        added = new Set(chunk.map((job) => job.id));
-      } else {
-        // Some id already existed and this engine will not say which. Rather
-        // than guess, fall back to the singular path for this chunk alone; the
-        // rows already inserted make each of those a cheap no-op.
-        const settled: { job: JobRecord; added: boolean }[] = [];
-        for (const job of chunk) {
-          settled.push(await this.addJob(q, job));
-        }
-        return settled;
-      }
+      await this.#run(statement, params);
+      added = new Set(
+        chunk.map((job) => job.id).filter((id) => !present.has(id)),
+      );
     }
 
     if (added.size === chunk.length) {

@@ -272,6 +272,93 @@ export function driverContract(
         await driver.removeJob(q, "dupe");
       });
 
+      it("round-trips every field of a fully populated record", async () => {
+        // Several drivers write only the fields a brand-new job carries and
+        // let the reader treat absent as default — it is a large part of why
+        // enqueue is fast. That makes the *other* shape the untested one: a
+        // record restored from elsewhere, added already finished, or mid-retry
+        // has to survive the trip with every field intact.
+        //
+        // Distinct values throughout, because two fields sharing one would let
+        // a swap between them pass.
+        const populated = makeJob({
+          id: "populated",
+          name: "populated-name",
+          data: { which: "data" },
+          state: "completed",
+          priority: 7,
+          runAt: 1_700_000_001_000,
+          createdAt: 1_700_000_002_000,
+          processedOn: 1_700_000_003_000,
+          finishedOn: 1_700_000_004_000,
+          expiresAt: 1_700_000_005_000,
+          attemptsMade: 3,
+          maxAttempts: 9,
+          stalledCount: 2,
+          progress: { which: "progress" },
+          returnValue: { which: "returnValue" },
+          failedReason: { name: "Error", message: "failedReason" },
+          stacktrace: [{ name: "Error", message: "stacktrace" }],
+          lockToken: "token-value",
+          lockExpiresAt: 1_700_000_006_000,
+          workerId: "worker-value",
+          repeatKey: "repeat-value",
+        });
+
+        expect((await driver.addJob(q, populated)).added).toBe(true);
+        expect(await driver.getJob(q, "populated")).toEqual(populated);
+
+        // And a brand-new one, which is the shape that omits fields, has to
+        // read back with the defaults rather than with holes in it.
+        const bare = makeJob({ id: "bare" });
+        expect((await driver.addJob(q, bare)).added).toBe(true);
+        expect(await driver.getJob(q, "bare")).toEqual(bare);
+
+        await driver.removeJob(q, "populated");
+        await driver.removeJob(q, "bare");
+      });
+
+      it("reports per job which of a batch were new", async () => {
+        // `addJobs` is used throughout this suite to seed jobs, but what it
+        // *returns* was never checked anywhere — and a batch has to answer the
+        // same question the singular path does, per job and in order, because
+        // repeat scheduling reads exactly that to decide whether it won the
+        // race to schedule an occurrence.
+        const existing = await driver.addJob(
+          q,
+          makeJob({ id: "batch-taken", data: { stored: true } }),
+        );
+        expect(existing.added).toBe(true);
+
+        const results = await driver.addJobs(q, [
+          makeJob({ id: "batch-new-1" }),
+          makeJob({ id: "batch-taken", data: { replacement: true } }),
+          makeJob({ id: "batch-new-2" }),
+        ]);
+
+        // In order, and one entry per job given — a driver that returns only
+        // the rows it inserted would line the answers up against the wrong
+        // jobs.
+        expect(results.map((r) => r.job.id)).toEqual([
+          "batch-new-1",
+          "batch-taken",
+          "batch-new-2",
+        ]);
+        expect(results.map((r) => r.added)).toEqual([true, false, true]);
+
+        // A duplicate is ignored, not overwritten, and comes back with what is
+        // actually stored rather than what was offered.
+        expect(results[1]!.job.data).toEqual({ stored: true });
+
+        // The ones it claimed to add are really there.
+        expect((await driver.getJob(q, "batch-new-1"))?.id).toBe("batch-new-1");
+        expect((await driver.getJob(q, "batch-new-2"))?.id).toBe("batch-new-2");
+
+        for (const id of ["batch-taken", "batch-new-1", "batch-new-2"]) {
+          await driver.removeJob(q, id);
+        }
+      });
+
       it("claims in priority then FIFO order, exactly once each", async () => {
         const now = Date.now();
         await driver.addJobs(q, [
