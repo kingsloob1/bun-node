@@ -45,9 +45,15 @@ bun scripts/typecheck.ts   # every project in the repo — must be clean
 Then, in each affected package directory:
 
 ```bash
-bunx eslint lib __tests__  # lint — must have 0 errors
+bunx eslint .              # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
+
+**Lint the whole package, not `lib __tests__`.** That narrower scope was what
+the workflow said for a long time, and it had the same blind spot the
+`tsconfig` `include` did: it reported zero errors while `bunx eslint .` found
+thirteen, in READMEs, benchmark code and `package.json`. The editor lints
+everything, so the errors were visible there and nowhere else.
 
 bun-jobs' integration suites need database servers, and skip (visibly) when
 their URL is unset. `bun scripts/setup-databases.ts` provides them — system
@@ -66,13 +72,8 @@ blocks with no logger in scope); warnings do not fail lint.
 `benchmarks/`, and excluded from the root `workspaces` list). It holds the
 third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
 graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
-published package's dependency tree. `scripts/typecheck.ts` covers it, but
-`bunx eslint lib __tests__` does not; when you change it, lint it from the
-package directory:
-
-```bash
-bunx eslint bench --ignore-pattern 'bench/node_modules/**'
-```
+published package's dependency tree. `scripts/typecheck.ts` and `bunx eslint .`
+both cover it.
 
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
@@ -107,6 +108,36 @@ called clean. Every documented command passed the whole time.
 Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
 ESLint flat config's inferred default export, which cannot be named without a
 path into a pnpm-style store.
+
+## Benchmark regression guard
+
+Phase 1 moved most of these numbers a long way, and a regression does not fail
+a test — it just makes a figure smaller, and nobody reads a benchmark table
+carefully on a Tuesday. So the table is an assertion:
+
+```bash
+cd packages/bun-jobs/bench
+bun queue.ts --compare          # fails if anything regressed
+bun runner.ts --compare
+bun queue.ts --save-baseline    # re-record, after a deliberate change
+```
+
+`baselines/*.json` record what each scenario measured **and who led it**. The
+comparison fails on either a figure falling behind its own baseline or a rival
+overtaking us.
+
+**The overtaken check is the sharper of the two**, and the one the claim
+actually rests on. Comparing a figure to its own past is noisy — four runs of
+one unchanged build gave 40,053 to 51,347 jobs/s on Redis contention, a 28%
+spread, because that scenario runs three consumer processes — so the tolerance
+is a blunt 35%, calibrated to that. Comparing against a *rival* is self
+normalising: a busy machine slows both.
+
+That is honest about what the guard catches. Every regression this benchmark
+has actually caught was a factor rather than a percentage — a claim that went
+O(n), a wakeup lost for a whole second, a table analysed on every insert. A
+baseline is only meaningful on the machine that recorded it, which is why the
+file records the platform and Bun version.
 
 ## Schema sync (`bun-jobs`, SQL and MongoDB)
 

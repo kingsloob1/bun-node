@@ -1,9 +1,11 @@
 /* eslint-disable antfu/no-top-level-await , no-console */
+import type { Baseline } from "./lib/compare";
 import type { Backend, Measurement, RunnerScenario } from "./lib/types";
 import { join } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { runnerContenders } from "./contenders/runner/index";
+import { compare, reportComparison, toBaseline } from "./lib/compare";
 import { backendAvailable, backendUrl, unavailableHint } from "./lib/env";
 import { childArgs, emit, runChild } from "./lib/harness";
 import {
@@ -69,6 +71,8 @@ Options:
       --budget <s>        Seconds before a run is abandoned  (default: 120)
       --verbose           Show each child's stderr
       --json              Emit raw JSON results
+      --save-baseline     Record this run as the committed baseline
+      --compare           Fail if anything regressed against the baseline
   -h, --help              Show this help
 
 Examples:
@@ -89,6 +93,8 @@ const { values } = parseArgs({
     budget: { type: "string", default: "120" },
     verbose: { type: "boolean", default: false },
     json: { type: "boolean", default: false },
+    "save-baseline": { type: "boolean", default: false },
+    compare: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
     // Internal: the driver re-invokes this file per contender.
     child: { type: "string" },
@@ -109,6 +115,9 @@ function toInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** Where the committed baseline for this benchmark lives. */
+const BASELINE = new URL("baselines/runner.json", import.meta.url).pathname;
+
 const config = {
   runs: Math.max(1, toInt(values.runs, 30)),
   fires: Math.max(2, toInt(values.fires, 8)),
@@ -117,9 +126,25 @@ const config = {
   budget: Math.max(5, toInt(values.budget, 120)),
   verbose: !!values.verbose,
   json: !!values.json,
+  saveBaseline: !!values["save-baseline"],
+  compare: !!values.compare,
 };
 
 const registry = runnerContenders();
+
+/**
+ * The ids of our own contenders.
+ *
+ * Taken from the registry rather than inferred from the id, because the two
+ * benchmarks name theirs differently — `bun-jobs-*` in one, `bun-runner-*` in
+ * the other — and a prefix test that is right for one files every contender of
+ * the other as a rival.
+ */
+const OURS: ReadonlySet<string> = new Set(
+  registry
+    .filter((contender) => contender.ours)
+    .map((contender) => contender.id),
+);
 
 /** The handler every file-executing contender runs. */
 const HANDLER = join(import.meta.dir, "fixtures", "handler.ts");
@@ -295,6 +320,34 @@ for (const scenario of scenarios) {
     else throughputTable(rows, context, "runs/s");
     footnotes(rows, context);
   }
+}
+
+if (config.saveBaseline) {
+  const baseline = toBaseline(all, {
+    bun: Bun.version,
+    jobs: config.runs,
+    ours: OURS,
+  });
+  await Bun.write(BASELINE, `${JSON.stringify(baseline, null, 2)}\n`);
+  console.log(
+    `\nRecorded ${Object.keys(baseline.entries).length} figures to ${BASELINE}.\n`,
+  );
+  process.exit(0);
+}
+
+if (config.compare) {
+  const file = Bun.file(BASELINE);
+
+  if (!(await file.exists())) {
+    console.log(
+      `\nNo baseline at ${BASELINE}. Record one with --save-baseline.\n`,
+    );
+    process.exit(1);
+  }
+
+  const baseline = (await file.json()) as Baseline;
+  const held = reportComparison(baseline, compare(baseline, all, OURS));
+  process.exit(held ? 0 : 1);
 }
 
 if (config.json) {

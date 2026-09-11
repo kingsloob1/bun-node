@@ -1,0 +1,296 @@
+{
+  "recordedAt": "2026-09-11T13:17:19.156Z",
+  "bun": "1.4.3",
+  "platform": "linux-x64",
+  "jobs": 5000,
+  "entries": {
+    "enqueue/memory": {
+      "scenario": "enqueue",
+      "backend": "memory",
+      "ours": 152553.44412435679,
+      "higherIsBetter": true
+    },
+    "enqueue/file": {
+      "scenario": "enqueue",
+      "backend": "file",
+      "ours": 3921.1966396718785,
+      "higherIsBetter": true
+    },
+    "enqueue/sqlite": {
+      "scenario": "enqueue",
+      "backend": "sqlite",
+      "ours": 21374.403377347247,
+      "higherIsBetter": true
+    },
+    "enqueue/redis": {
+      "scenario": "enqueue",
+      "backend": "redis",
+      "ours": 16670.688914919094,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "node-resque",
+        "value": 25058.676394297836
+      }
+    },
+    "enqueue/postgres": {
+      "scenario": "enqueue",
+      "backend": "postgres",
+      "ours": 1633.4162546351024,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-postgres",
+        "value": 1415.1336201273507
+      }
+    },
+    "enqueue/mongodb": {
+      "scenario": "enqueue",
+      "backend": "mongodb",
+      "ours": 4305.022732099969,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 5022.7559575038995
+      }
+    },
+    "enqueue-bulk/memory": {
+      "scenario": "enqueue-bulk",
+      "backend": "memory",
+      "ours": 182976.7172008104,
+      "higherIsBetter": true
+    },
+    "enqueue-bulk/file": {
+      "scenario": "enqueue-bulk",
+      "backend": "file",
+      "ours": 4176.610371964818,
+      "higherIsBetter": true
+    },
+    "enqueue-bulk/sqlite": {
+      "scenario": "enqueue-bulk",
+      "backend": "sqlite",
+      "ours": 81163.70178098972,
+      "higherIsBetter": true
+    },
+    "enqueue-bulk/redis": {
+      "scenario": "enqueue-bulk",
+      "backend": "redis",
+      "ours": 56403.190218585834,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "bee-queue",
+        "value": 103145.59192150523
+      }
+    },
+    "enqueue-bulk/postgres": {
+      "scenario": "enqueue-bulk",
+      "backend": "postgres",
+      "ours": 31738.73747885383,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "graphile-worker",
+        "value": 57111.115763763344
+      }
+    },
+    "enqueue-bulk/mongodb": {
+      "scenario": "enqueue-bulk",
+      "backend": "mongodb",
+      "ours": 45574.082544270495,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 5376.8623056978995
+      }
+    },
+    "throughput/memory": {
+      "scenario": "throughput",
+      "backend": "memory",
+      "ours": 84227.53495821726,
+      "higherIsBetter": true
+    },
+    "throughput/file": {
+      "scenario": "throughput",
+      "backend": "file",
+      "ours": 803.0713510076197,
+      "higherIsBetter": true
+    },
+    "throughput/sqlite": {
+      "scenario": "throughput",
+      "backend": "sqlite",
+      "ours": 1919.2623949723384,
+      "higherIsBetter": true
+    },
+    "throughput/redis": {
+      "scenario": "throughput",
+      "backend": "redis",
+      "ours": 38724.793480095504,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "bee-queue",
+        "value": 21630.249963408107
+      }
+    },
+    "throughput/postgres": {
+      "scenario": "throughput",
+      "backend": "postgres",
+      "ours": 8832.140556578428,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "graphile-worker",
+        "value": 4427.501082588214
+      }
+    },
+    "throughput/mongodb": {
+      "scenario": "throughput",
+      "backend": "mongodb",
+      "ours": 2073.3069032177705,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 319.9770262638702
+      }
+    },
+    "roundtrip/memory": {
+      "scenario": "roundtrip",
+      "backend": "memory",
+      "ours": 0.021157000000002313,
+      "higherIsBetter": false
+    },
+    "roundtrip/file": {
+      "scenario": "roundtrip",
+      "backend": "file",
+      "ours": 1.616660999999965,
+      "higherIsBetter": false
+    },
+    "roundtrip/sqlite": {
+      "scenario": "roundtrip",
+      "backend": "sqlite",
+      "ours": 0.28581199999999285,
+      "higherIsBetter": false
+    },
+    "roundtrip/redis": {
+      "scenario": "roundtrip",
+      "backend": "redis",
+      "ours": 0.15480600000000777,
+      "higherIsBetter": false,
+      "rival": {
+        "contender": "node-resque",
+        "value": 0.15571700000000988
+      }
+    },
+    "roundtrip/postgres": {
+      "scenario": "roundtrip",
+      "backend": "postgres",
+      "ours": 2.3575060000000008,
+      "higherIsBetter": false,
+      "rival": {
+        "contender": "graphile-worker",
+        "value": 2.0600600000000213
+      }
+    },
+    "roundtrip/mongodb": {
+      "scenario": "roundtrip",
+      "backend": "mongodb",
+      "ours": 0.5563119999999913,
+      "higherIsBetter": false,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 50.01975799999991
+      }
+    },
+    "payload/memory": {
+      "scenario": "payload",
+      "backend": "memory",
+      "ours": 79578.02257462977,
+      "higherIsBetter": true
+    },
+    "payload/file": {
+      "scenario": "payload",
+      "backend": "file",
+      "ours": 796.0630721147779,
+      "higherIsBetter": true
+    },
+    "payload/sqlite": {
+      "scenario": "payload",
+      "backend": "sqlite",
+      "ours": 1480.6873254734764,
+      "higherIsBetter": true
+    },
+    "payload/redis": {
+      "scenario": "payload",
+      "backend": "redis",
+      "ours": 23625.815877978104,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "bee-queue",
+        "value": 20272.205608428936
+      }
+    },
+    "payload/postgres": {
+      "scenario": "payload",
+      "backend": "postgres",
+      "ours": 8251.947156682514,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "graphile-worker",
+        "value": 4157.361431655456
+      }
+    },
+    "payload/mongodb": {
+      "scenario": "payload",
+      "backend": "mongodb",
+      "ours": 1960.5898985557142,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 319.97184798601256
+      }
+    },
+    "contention/memory": {
+      "scenario": "contention",
+      "backend": "memory",
+      "ours": 84716.00442048111,
+      "higherIsBetter": true
+    },
+    "contention/file": {
+      "scenario": "contention",
+      "backend": "file",
+      "ours": 879.4532484323215,
+      "higherIsBetter": true
+    },
+    "contention/sqlite": {
+      "scenario": "contention",
+      "backend": "sqlite",
+      "ours": 1950.4838810149358,
+      "higherIsBetter": true
+    },
+    "contention/redis": {
+      "scenario": "contention",
+      "backend": "redis",
+      "ours": 49672.41292041054,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "bee-queue",
+        "value": 21444.380133701507
+      }
+    },
+    "contention/postgres": {
+      "scenario": "contention",
+      "backend": "postgres",
+      "ours": 17916.87406792166,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "graphile-worker",
+        "value": 7896.448688280241
+      }
+    },
+    "contention/mongodb": {
+      "scenario": "contention",
+      "backend": "mongodb",
+      "ours": 2701.010907730578,
+      "higherIsBetter": true,
+      "rival": {
+        "contender": "agenda-mongodb",
+        "value": 1006.020364892379
+      }
+    }
+  }
+}
