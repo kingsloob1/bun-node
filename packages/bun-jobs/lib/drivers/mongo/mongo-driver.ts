@@ -93,6 +93,14 @@ const RETIRED_INDEXES = [
 const DUPLICATE_KEY = 11000;
 
 /**
+ * How many times a push may lose the race to create the state document.
+ *
+ * It can only lose to a creation, and a document is created once — so one
+ * retry is the reasoning, and this is the margin on it.
+ */
+const CREATE_RETRIES = 3;
+
+/**
  * How many jobs go into one `insertMany`.
  *
  * The server caps a batch at 100,000 documents and 16MB, and the driver splits
@@ -632,6 +640,7 @@ export class MongoDriver implements JobsDriver {
     key: string,
     trigger: QueuedTrigger,
     max: number,
+    attemptsLeft = CREATE_RETRIES,
   ): Promise<boolean> {
     const kv = await this.#kv();
     const id = this.#stateId(ns, key);
@@ -676,8 +685,25 @@ export class MongoDriver implements JobsDriver {
       return true;
     } catch (error) {
       if (isDuplicateKey(error)) {
-        // Someone created it first; try again against the document.
-        return await this.pushQueuedTrigger(ns, key, trigger, max);
+        // Someone created it first, so the atomic path applies now. Bounded,
+        // because this recursed without a limit: each retry can only lose to
+        // a *creation*, and the document is created once — but "can only" is
+        // reasoning, and an unbounded recursion driven by a remote server's
+        // errors is a hang or a blown stack if that reasoning is ever wrong.
+        if (attemptsLeft <= 0) {
+          throw new DriverError("mongodb", "pushQueuedTrigger", error, {
+            key,
+            reason: "the state document kept being created underneath this",
+          });
+        }
+
+        return await this.pushQueuedTrigger(
+          ns,
+          key,
+          trigger,
+          max,
+          attemptsLeft - 1,
+        );
       }
       throw new DriverError("mongodb", "pushQueuedTrigger", error, { key });
     }
