@@ -45,6 +45,39 @@ function driverConfig(backend: Backend, url: string): DriverConfig {
  */
 let memoryDriver: JobsDriver | undefined;
 
+/**
+ * Removes what earlier runs left in the namespace.
+ *
+ * `ctx.name` is unique per run, so a run cannot read another's jobs — but the
+ * rows stay, and on a shared table that is not free: the SQL driver keeps the
+ * planner's statistics fresh with `ANALYZE`, whose cost is proportional to
+ * every row in the table, not just this run's. Left alone, `bun_jobs_jobs`
+ * reached 112,300 rows and 78MB
+ * across one session, which made every later Postgres figure worse than the
+ * one before it and none of them comparable.
+ *
+ * Safe with several consumers in one run: each is given the same `ctx.name`,
+ * and this only ever touches queues that are not it.
+ */
+async function sweepPreviousRuns(
+  driver: JobsDriver,
+  namespace: string,
+  keep: string,
+): Promise<void> {
+  try {
+    const queues = await driver.listQueues(namespace);
+
+    for (const queue of queues) {
+      if (queue !== keep) {
+        await driver.drainQueue({ ns: namespace, queue }, true);
+      }
+    }
+  } catch {
+    // Best effort: a backend that cannot list its queues simply keeps them,
+    // which is what happened before this existed.
+  }
+}
+
 /** Builds a contender for one backend. */
 function contender(backend: Backend, label: string): QueueContender {
   return {
@@ -74,6 +107,8 @@ function contender(backend: Backend, label: string): QueueContender {
         defaultJobOptions: { attempts: 1, removeOnComplete: true },
       });
       queue.on("error", ctx.onError);
+
+      await sweepPreviousRuns(driver, namespace, ctx.name);
 
       let worker: BunQueueWorker<JobPayload> | undefined;
 
