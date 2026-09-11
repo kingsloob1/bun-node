@@ -272,6 +272,42 @@ export function driverContract(
         await driver.removeJob(q, "dupe");
       });
 
+      it("survives an id taken between the look and the write", async () => {
+        // The SQL driver asks which ids exist and then inserts plainly,
+        // because `ON CONFLICT DO NOTHING` costs 43% of the statement. That
+        // leaves a window: another producer can take one of those ids in
+        // between, and the insert — one statement — then lands none of it.
+        //
+        // Two batches sharing an id, issued at once, is that window. Whichever
+        // loses has to recover rather than fail, and between them each id must
+        // be reported added exactly once.
+        const shared = makeJob({ id: "contended", data: { from: "first" } });
+
+        const [first, second] = await Promise.all([
+          driver.addJobs(q, [makeJob({ id: "only-first" }), shared]),
+          driver.addJobs(q, [
+            makeJob({ id: "contended", data: { from: "second" } }),
+            makeJob({ id: "only-second" }),
+          ]),
+        ]);
+
+        // Every job is there, whichever call won the contended one.
+        for (const id of ["only-first", "contended", "only-second"]) {
+          expect((await driver.getJob(q, id))?.id).toBe(id);
+        }
+
+        // And exactly one caller is told it added the contended id — that is
+        // what repeat scheduling reads to decide whether it won.
+        const claims = [...first, ...second].filter(
+          (r) => r.job.id === "contended" && r.added,
+        );
+        expect(claims).toHaveLength(1);
+
+        for (const id of ["only-first", "contended", "only-second"]) {
+          await driver.removeJob(q, id);
+        }
+      });
+
       it("round-trips every field of a fully populated record", async () => {
         // Several drivers write only the fields a brand-new job carries and
         // let the reader treat absent as default — it is a large part of why
