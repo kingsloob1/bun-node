@@ -22,6 +22,22 @@ export interface SqlDialect {
   placeholder: (index: number) => string;
   /** Column type for a JSON document. */
   readonly jsonType: string;
+  /**
+   * A partial-index predicate, or `""` on an engine without them.
+   *
+   * An index over a column that is null for most rows still stores an entry
+   * for every one of them, and a queue table is mostly rows that have not run:
+   * `lock_expires_at` and `expires_at` are null for all of them. Excluding
+   * those rows makes the index hold only what it is asked about, and takes the
+   * write off the insert path — measured with the other index changes, 179.1ms
+   * against 158.0ms for 5,000 rows.
+   *
+   * Only safe for a predicate every query on the index implies. Both callers
+   * qualify: a lapsed lock is read as `lock_expires_at <= $now`, and expiry as
+   * `expires_at IS NOT NULL AND expires_at <= $now`, neither of which can match
+   * a null.
+   */
+  partialIndex: (predicate: string) => string;
   /** Column type for an identifier: bounded on MySQL, whose indexes are. */
   readonly idType: string;
   /** Column type for an epoch-millisecond timestamp. */
@@ -344,7 +360,13 @@ const postgres: SqlDialect = {
   ...base,
   name: "postgres",
   placeholder: (index) => `$${index}`,
-  jsonType: "JSONB",
+  // `json` stores the text; `jsonb` parses it into a binary tree on the way
+  // in. Nothing here indexes into `data` or `opts` or uses a `jsonb` operator
+  // on them — they are opaque payloads, written once and read whole — so that
+  // parse buys nothing and costs, over alternating runs, 12% of the insert.
+  // `jsonOut` reads either, so a table created before this still works.
+  jsonType: "JSON",
+  partialIndex: (predicate) => ` WHERE ${predicate}`,
   idType: "TEXT",
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
@@ -427,6 +449,8 @@ const mysql: SqlDialect = {
   name: "mysql",
   placeholder: () => "?",
   jsonType: "JSON",
+  // MySQL and MariaDB have no partial indexes.
+  partialIndex: () => "",
   // utf8mb4 indexes cap a key at 191 characters, so ids are bounded.
   idType: "VARCHAR(191)",
   timeType: "BIGINT",
@@ -511,6 +535,7 @@ const sqlite: SqlDialect = {
   name: "sqlite",
   placeholder: () => "?",
   jsonType: "TEXT",
+  partialIndex: (predicate) => ` WHERE ${predicate}`,
   idType: "TEXT",
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",

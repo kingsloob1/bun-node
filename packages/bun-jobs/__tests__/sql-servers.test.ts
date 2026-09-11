@@ -88,9 +88,23 @@ describe("SQL driver: engine differences", () => {
     );
 
     // JSON and identifier columns differ; MySQL's index limit bounds ids.
-    expect(dialectFor("postgres").jsonType).toBe("JSONB");
+    // Postgres stores `json`, not `jsonb`: nothing indexes into the payload
+    // columns, so the parse into binary on write would buy nothing.
+    expect(dialectFor("postgres").jsonType).toBe("JSON");
     expect(dialectFor("mysql").jsonType).toBe("JSON");
     expect(dialectFor("sqlite").jsonType).toBe("TEXT");
+
+    // Partial indexes, which keep the rows that never run out of the indexes
+    // that only ask about the ones that do. MySQL and MariaDB have none, and
+    // must produce an empty clause rather than invalid SQL.
+    expect(dialectFor("postgres").partialIndex("x IS NOT NULL")).toBe(
+      " WHERE x IS NOT NULL",
+    );
+    expect(dialectFor("sqlite").partialIndex("x IS NOT NULL")).toBe(
+      " WHERE x IS NOT NULL",
+    );
+    expect(dialectFor("mysql").partialIndex("x IS NOT NULL")).toBe("");
+    expect(dialectFor("mariadb").partialIndex("x IS NOT NULL")).toBe("");
     expect(dialectFor("mysql").idType).toBe("VARCHAR(191)");
   });
 
