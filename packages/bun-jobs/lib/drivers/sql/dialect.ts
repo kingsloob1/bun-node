@@ -38,6 +38,58 @@ export interface SqlDialect {
    * a null.
    */
   partialIndex: (predicate: string) => string;
+  /**
+   * `CONCURRENTLY `, or `""` where the engine has no such thing.
+   *
+   * Building an index normally holds a lock that blocks writes for as long as
+   * it takes, which on a queue table means the queue stops. Postgres can build
+   * one without that lock at the cost of a second pass. Only used by
+   * `syncSchema`: the initial `createSchema` runs against a table that is
+   * empty or already in use by this process alone, and `CONCURRENTLY` cannot
+   * run inside a transaction.
+   */
+  readonly concurrentIndex: string;
+  /**
+   * A query listing a table's columns as `name` and `type`.
+   *
+   * Takes the table name as its one bind parameter. The `type` is whatever the
+   * engine calls it, which is rarely what the DDL said — Postgres answers
+   * `character varying` for a `VARCHAR(191)` — so a comparison has to go
+   * through {@link SqlDialect.normalizeType}.
+   */
+  describeColumns: (table: string) => string;
+  /**
+   * A query listing a table's indexes as `name` and `definition`.
+   *
+   * `definition` is the engine's own rendering where it has one, and `''`
+   * where it does not. It is read for one thing only: whether the index has a
+   * predicate, which is the one property of ours that has ever changed.
+   */
+  describeIndexes: (table: string) => string;
+  /** Adds one column to an existing table. */
+  addColumn: (table: string, column: string) => string;
+  /**
+   * Changes one column's type, or `null` where the engine cannot.
+   *
+   * Rewrites the table under a lock that blocks everything, so this is never
+   * run unless it was explicitly asked for.
+   */
+  alterColumnType: (
+    table: string,
+    column: string,
+    type: string,
+  ) => string | null;
+  /** Drops an index. MySQL needs the table; the others do not. */
+  dropIndex: (name: string, table: string) => string;
+  /**
+   * The engine's name for a type, reduced to something comparable.
+   *
+   * Conservative on purpose: anything it cannot confidently reduce is left
+   * alone, so two spellings of one type read as equal rather than provoking a
+   * table rewrite. A missed change costs an optimisation; a wrong one costs an
+   * outage.
+   */
+  normalizeType: (type: string) => string;
   /** Column type for an identifier: bounded on MySQL, whose indexes are. */
   readonly idType: string;
   /** Column type for an epoch-millisecond timestamp. */
@@ -331,6 +383,38 @@ export async function withLockRetry<T>(work: () => Promise<T>): Promise<T> {
 const sqliteWriteLock = new Mutex();
 
 /** Parses a JSON column that may arrive as text or already decoded. */
+/**
+ * Reduces a type name to something two spellings of one type share.
+ *
+ * Deliberately blunt: lowercase, drop any parenthesised length or precision,
+ * collapse whitespace, then map the synonyms engines actually report.
+ * Everything else passes through unchanged and therefore compares equal only
+ * to itself, which is the safe direction — an unrecognised pair reads as
+ * "different" only when the strings really do differ.
+ */
+function normalizeSqlType(type: string): string {
+  const bare = type
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  const synonyms: Record<string, string> = {
+    "character varying": "varchar",
+    character: "char",
+    int4: "int",
+    integer: "int",
+    int8: "bigint",
+    int2: "smallint",
+    bool: "boolean",
+    "double precision": "double",
+    "timestamp without time zone": "timestamp",
+    "timestamp with time zone": "timestamptz",
+  };
+
+  return synonyms[bare] ?? bare;
+}
+
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) {
     return fallback;
@@ -367,6 +451,21 @@ const postgres: SqlDialect = {
   // `jsonOut` reads either, so a table created before this still works.
   jsonType: "JSON",
   partialIndex: (predicate) => ` WHERE ${predicate}`,
+  concurrentIndex: "CONCURRENTLY ",
+  describeColumns: () =>
+    `SELECT column_name AS name, data_type AS type
+       FROM information_schema.columns
+      WHERE table_name = $1 AND table_schema = ANY (current_schemas(false))`,
+  describeIndexes: () =>
+    `SELECT indexname AS name, indexdef AS definition
+       FROM pg_indexes
+      WHERE tablename = $1 AND schemaname = ANY (current_schemas(false))`,
+  addColumn: (table, column) =>
+    `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column}`,
+  alterColumnType: (table, column, type) =>
+    `ALTER TABLE ${table} ALTER COLUMN ${column} TYPE ${type} USING ${column}::${type}`,
+  dropIndex: (name) => `DROP INDEX CONCURRENTLY IF EXISTS ${name}`,
+  normalizeType: normalizeSqlType,
   idType: "TEXT",
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
@@ -451,6 +550,24 @@ const mysql: SqlDialect = {
   jsonType: "JSON",
   // MySQL and MariaDB have no partial indexes.
   partialIndex: () => "",
+  // No online index build, and no `IF NOT EXISTS` on `ADD COLUMN` either, so
+  // the sync checks before it writes rather than relying on the statement.
+  concurrentIndex: "",
+  describeColumns: () =>
+    `SELECT COLUMN_NAME AS name, DATA_TYPE AS type
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+  // No partial indexes, so there is no definition worth reading back: an index
+  // either exists under its name or it does not.
+  describeIndexes: () =>
+    `SELECT DISTINCT INDEX_NAME AS name, '' AS definition
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+  addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
+  alterColumnType: (table, column, type) =>
+    `ALTER TABLE ${table} MODIFY COLUMN ${column} ${type}`,
+  dropIndex: (name, table) => `DROP INDEX ${name} ON ${table}`,
+  normalizeType: normalizeSqlType,
   // utf8mb4 indexes cap a key at 191 characters, so ids are bounded.
   idType: "VARCHAR(191)",
   timeType: "BIGINT",
@@ -536,6 +653,19 @@ const sqlite: SqlDialect = {
   placeholder: () => "?",
   jsonType: "TEXT",
   partialIndex: (predicate) => ` WHERE ${predicate}`,
+  concurrentIndex: "",
+  describeColumns: () => `SELECT name, type FROM pragma_table_info(?)`,
+  describeIndexes: () =>
+    `SELECT name, COALESCE(sql, '') AS definition
+       FROM sqlite_master
+      WHERE type = 'index' AND tbl_name = ?`,
+  addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
+  // SQLite can rename and add, but not retype: changing a column means
+  // rebuilding the table and copying every row, which is not something to do
+  // behind a connect.
+  alterColumnType: () => null,
+  dropIndex: (name) => `DROP INDEX IF EXISTS ${name}`,
+  normalizeType: normalizeSqlType,
   idType: "TEXT",
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",

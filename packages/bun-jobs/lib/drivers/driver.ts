@@ -1,6 +1,7 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { ConnectionOptions } from "../shared/connection";
 import type { RunnerSchedule } from "../shared/schedule";
+import type { SchemaChange, SchemaSyncOptions } from "./schemaSync";
 
 /**
  * The storage contract both subsystems are built on.
@@ -51,6 +52,19 @@ export interface DriverLifecycle {
   ping: () => Promise<boolean>;
   /** Deletes everything under one namespace — and nothing outside it. */
   purge: (ns: string) => Promise<void>;
+  /**
+   * Brings an existing database in line with the schema this version expects,
+   * reporting every difference found — including the ones it declined to make.
+   *
+   * **Optional**, because it only means anything for a backend with a schema.
+   * The memory, file and Redis drivers have nothing to reconcile, so they do
+   * not implement it; a caller should check before calling.
+   *
+   * Safe by default. A change that could stall a running queue is reported
+   * with `blocking: true` and `applied: false` unless it was asked for by
+   * name — see {@link SchemaSyncOptions.alterColumns}.
+   */
+  syncSchema?: (options?: SchemaSyncOptions) => Promise<SchemaChange[]>;
   /** Runner ids known to the backend in this namespace. */
   listRunners: (ns: string) => Promise<string[]>;
   /** Queue names known to the backend in this namespace. */
@@ -640,6 +654,24 @@ export type DriverConfig =
        * pin a session. Ignored on every engine but Postgres.
        */
       notify?: boolean;
+      /**
+       * Reconcile an existing database with this version's schema on connect.
+       *
+       * Off by default. The schema is created with `IF NOT EXISTS`, so a table
+       * an earlier version created keeps its original shape — which means
+       * schema improvements that ship with an upgrade reach new installs only.
+       * This is how a deployment that already has tables gets them.
+       *
+       * `true` does everything that cannot stall a running queue: adds missing
+       * columns and indexes, drops indexes the driver no longer defines, and
+       * rebuilds one whose predicate changed. On Postgres the index work is
+       * `CONCURRENTLY`, so writes continue throughout.
+       *
+       * Changing a column's type is **not** included — it rewrites the table
+       * under a lock that blocks every reader and writer. Ask for it in a
+       * maintenance window: `{ alterColumns: true }`.
+       */
+      syncSchema?: boolean | SchemaSyncOptions;
     }
   | {
       type: "mongodb";
@@ -653,6 +685,16 @@ export type DriverConfig =
       collectionPrefix?: string;
       /** Exact collection names, for an existing database. */
       collections?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /**
+       * Reconcile the collections' indexes with this version's on connect.
+       *
+       * Off by default, though less consequential here than on SQL: MongoDB
+       * has no column types, so there is nothing a sync can do to a collection
+       * that could block it, and `createIndex` is idempotent — connecting
+       * already creates what is missing. What this adds is the report, and the
+       * retirement of indexes older versions created.
+       */
+      syncSchema?: boolean | SchemaSyncOptions;
     };
 
 /** A schedule stored alongside a runner's state. */

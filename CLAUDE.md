@@ -108,6 +108,43 @@ Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
 ESLint flat config's inferred default export, which cannot be named without a
 path into a pnpm-style store.
 
+## Schema sync (`bun-jobs`, SQL and MongoDB)
+
+The schema is created with `IF NOT EXISTS`, so a table an earlier version
+created keeps its original shape for good — which means every schema
+improvement that ships with an upgrade otherwise reaches new installs only.
+`syncSchema` is how a deployment that already has tables gets them.
+
+```ts
+new SqlDriver({ url, syncSchema: true })          // on connect
+await driver.syncSchema()                          // or explicitly
+await driver.syncSchema({ dryRun: true })          // plan, change nothing
+await driver.syncSchema({ alterColumns: true })    // including the rewrite
+```
+
+**Safe by default, and the split is the point.** Adding a column, dropping an
+index or rebuilding one cannot stall a running queue — on Postgres the index
+work is `CONCURRENTLY`. Changing a column's *type* rewrites the table under a
+lock that blocks every reader and writer, so it is reported with
+`blocking: true` and `applied: false` unless `alterColumns` asks for it. Every
+change comes back either way, so `dryRun` is a plan.
+
+Measured against a table built the way an older version would have built it
+(`jsonb` columns, five plain indexes), 5,000-job bulk enqueue: 25,189/s before,
+26,825/s after the safe sync, 30,756/s once `alterColumns` runs too.
+
+Two rules that keep it from doing harm:
+
+- **It only drops indexes it named.** SQL matches the driver's own `ix_`
+  convention; MongoDB names indexes after their key pattern, so one this driver
+  no longer defines is indistinguishable from one somebody added by hand — there
+  it drops only names on an explicit `RETIRED_INDEXES` list.
+- **A column whose declared type is not what the engine reports back is
+  exempt** (`retype: false`). `BIGSERIAL PRIMARY KEY` comes back as `bigint`,
+  so comparing the strings would propose a nonsense rewrite on every sync
+  forever. The baseline test — a freshly created schema must report no drift —
+  is what catches this class of bug.
+
 ## Dependency policy
 
 Prefer native/Bun APIs and the in-repo helpers over third-party libraries;

@@ -40,6 +40,14 @@ export {
 } from "./mongo/mongo-driver";
 export { RedisKeys } from "./redis/keys";
 export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
+export type {
+  ColumnRow,
+  IndexRow,
+  ResolvedSyncOptions,
+  SchemaChange,
+  SchemaSyncOptions,
+  SyncBackend,
+} from "./schemaSync";
 export {
   detectAdapter,
   dialectFor,

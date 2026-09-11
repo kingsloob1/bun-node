@@ -26,6 +26,7 @@ export { BunJobs, type BunJobsOptions, jobsFromContext } from "./BunJobs";
  * ------------------------------------------------------------------ */
 export {
   type ClaimOptions,
+  type ColumnRow,
   createDriver,
   detectAdapter,
   dialectFor,
@@ -37,6 +38,7 @@ export {
   type FailOutcome,
   FileDriver,
   type FileDriverOptions,
+  type IndexRow,
   type JobRecord,
   type JobsDriver,
   type JobState,
@@ -55,11 +57,14 @@ export {
   type RepeatRecord,
   type ResolvedJobOptions,
   resolveDriver,
+  type ResolvedSyncOptions,
   type Retention,
   type RunnerDriver,
   type RunRecord,
   type RunSource,
   type RunStatus,
+  type SchemaChange,
+  type SchemaSyncOptions,
   SQL_TABLES,
   type SqlAdapter,
   type SqlDialect,
@@ -67,6 +72,7 @@ export {
   type SqlDriverOptions,
   type SqlTable,
   type StoredSchedule,
+  type SyncBackend,
 } from "./drivers/index";
 
 /* ------------------------------------------------------------------ *

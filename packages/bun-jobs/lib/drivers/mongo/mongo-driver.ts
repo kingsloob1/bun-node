@@ -27,6 +27,7 @@ import type {
   Retention,
   RunRecord,
 } from "../driver";
+import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import {
   databaseFromUrl,
@@ -35,6 +36,7 @@ import {
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { PauseCache } from "../../shared/pauseCache";
+import { resolveSyncOptions } from "../schemaSync";
 
 /**
  * A driver backed by MongoDB.
@@ -67,6 +69,24 @@ export const MONGO_COLLECTIONS = ["jobs", "locks", "kv", "events"] as const;
 export type MongoCollection = (typeof MONGO_COLLECTIONS)[number];
 
 /** MongoDB's duplicate-key error, which is how "someone got there first" arrives. */
+/**
+ * Indexes earlier versions of this driver created on the jobs collection.
+ *
+ * Named explicitly rather than inferred. MongoDB names an index after its key
+ * pattern, so an index this driver no longer defines is indistinguishable from
+ * one somebody added by hand — dropping "anything we do not recognise" would
+ * eventually delete a user's index. A list of what *we* retired cannot.
+ *
+ * `ns_1_queue_1_state_1_priority_1_createdAt_1` is the claim index from before
+ * `_id` joined the key. Without `_id` the index does not cover the claim's
+ * sort, so MongoDB fell back to a blocking in-memory sort of every matching
+ * document: measured on a 2,000-job queue, 2,000 documents examined to return
+ * one, at 2.75ms per claim and growing with the backlog.
+ */
+const RETIRED_INDEXES = [
+  "ns_1_queue_1_state_1_priority_1_createdAt_1",
+] as const;
+
 const DUPLICATE_KEY = 11000;
 
 /**
@@ -109,6 +129,14 @@ export interface MongoDriverOptions extends ConnectionInput {
   client?: MongoClient;
   /** How often a wait re-checks for work. Defaults to 50ms. */
   pollInterval?: number;
+  /**
+   * Reconcile the collections' indexes with this version's, on connect.
+   *
+   * Off by default. `createIndex` is idempotent and connecting already creates
+   * what is missing, so what this adds is the retirement of indexes earlier
+   * versions created — see {@link RETIRED_INDEXES}.
+   */
+  syncSchema?: boolean | SchemaSyncOptions;
 }
 
 /** A job as it is stored: identifiers and ordering keys plain, payloads JSON. */
@@ -243,6 +271,8 @@ export class MongoDriver implements JobsDriver {
   readonly #clientOptions?: MongoClientOptions;
   /** How often a wait re-checks. */
   readonly #poll: number;
+  /** What to reconcile on connect, if anything. */
+  readonly #syncOnConnect: boolean | SchemaSyncOptions;
   /** Whether this driver created the client and must close it. */
   readonly #ownsClient: boolean;
   /** Active event subscriptions, so `close()` can stop them. */
@@ -281,6 +311,7 @@ export class MongoDriver implements JobsDriver {
 
     this.#clientOptions = options.clientOptions;
     this.#poll = options.pollInterval ?? POLL_MS;
+    this.#syncOnConnect = options.syncSchema ?? false;
     this.#client = options.client;
     this.#ownsClient = !options.client;
   }
@@ -1435,6 +1466,14 @@ export class MongoDriver implements JobsDriver {
 
       const db = this.#client.db(this.database);
       await this.#createIndexes(db);
+
+      if (this.#syncOnConnect !== false) {
+        await this.#syncSchema(
+          db,
+          typeof this.#syncOnConnect === "object" ? this.#syncOnConnect : {},
+        );
+      }
+
       return db;
     } catch (error) {
       // A failed connect must not be remembered as done.
@@ -1445,11 +1484,15 @@ export class MongoDriver implements JobsDriver {
     }
   }
 
-  /** Creates the indexes the hot paths need. Safe to run repeatedly. */
-  async #createIndexes(db: Db): Promise<void> {
-    const jobs = db.collection<JobDocument>(this.collections.jobs);
-
-    await jobs.createIndexes([
+  /**
+   * The indexes the hot paths need, as data.
+   *
+   * Described rather than created inline so {@link MongoDriver.syncSchema} can
+   * compare them against what the database has, instead of the two having
+   * separate ideas of what the indexes are.
+   */
+  #indexDefinitions(): { collection: string; key: Record<string, 1 | -1> }[] {
+    return [
       // Claim order: the queue's due, waiting jobs, cheapest first.
       //
       // `_id` is in the key because it is in the claim's sort. Without it
@@ -1457,30 +1500,187 @@ export class MongoDriver implements JobsDriver {
       // blocking in-memory sort of *every* matching document — measured on a
       // 2,000-job queue, 2,000 documents examined to return one, and 2.75ms
       // per claim that grew with the backlog.
-      { key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 } },
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 },
+      },
       // Promotion: what is due but not yet claimable.
-      { key: { ns: 1, queue: 1, state: 1, runAt: 1 } },
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, runAt: 1 },
+      },
       // Stalled recovery: active jobs whose lock has lapsed.
-      { key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1 } },
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1 },
+      },
       // Cleaning and retention.
-      { key: { ns: 1, queue: 1, state: 1, finishedOn: 1 } },
-      { key: { expiresAt: 1 } },
-    ]);
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, finishedOn: 1 },
+      },
+      { collection: this.collections.jobs, key: { expiresAt: 1 } },
+      { collection: this.collections.kv, key: { ns: 1, key: 1 } },
+      {
+        collection: this.collections.events,
+        key: { ns: 1, channel: 1, _id: 1 },
+      },
+    ];
+  }
 
-    // The same index without `_id`, from before the sort was covered. Dropping
-    // it is best-effort: it is absent on a fresh database and may already be
-    // gone on an old one.
-    await jobs
-      .dropIndex("ns_1_queue_1_state_1_priority_1_createdAt_1")
-      .catch(() => undefined);
+  /**
+   * Reconciles the database with the indexes this version of the driver
+   * expects, and reports every difference it found.
+   *
+   * MongoDB has no column types, so there is nothing here that can rewrite a
+   * collection and nothing `alterColumns` could mean — every change a sync can
+   * make on this backend is safe by construction. `createIndex` is idempotent,
+   * which is why connecting already does most of this; the value of calling it
+   * explicitly is the report, and `dryRun` in particular.
+   *
+   * Indexes are dropped only when they are on {@link RETIRED_INDEXES}. See
+   * there for why a broader rule would eventually delete somebody's index.
+   */
+  async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
+    return await this.#syncSchema(await this.#db(), options);
+  }
 
-    await db
-      .collection<KvDocument>(this.collections.kv)
-      .createIndex({ ns: 1, key: 1 });
+  /**
+   * The sync itself, given a database rather than fetching one.
+   *
+   * Separate from the public method because opening the connection calls it,
+   * and `#db()` awaits that same open: reaching for the database from in here
+   * would wait on the promise it is running inside.
+   */
+  async #syncSchema(
+    db: Db,
+    options: SchemaSyncOptions,
+  ): Promise<SchemaChange[]> {
+    const resolved = resolveSyncOptions(options);
+    const changes: SchemaChange[] = [];
 
-    await db
-      .collection<EventDocument>(this.collections.events)
-      .createIndex({ ns: 1, channel: 1, _id: 1 });
+    /** The index names each collection already has. */
+    const existing = new Map<string, Set<string>>();
+
+    for (const { collection } of this.#indexDefinitions()) {
+      if (existing.has(collection)) {
+        continue;
+      }
+
+      const names = await db
+        .collection(collection)
+        .indexes()
+        .then((found) => new Set(found.map((index) => String(index.name))))
+        .catch(() => new Set<string>());
+
+      existing.set(collection, names);
+    }
+
+    for (const { collection, key } of this.#indexDefinitions()) {
+      // MongoDB's own naming, which is what `indexes()` reports back.
+      const name = Object.entries(key)
+        .map(([field, direction]) => `${field}_${direction}`)
+        .join("_");
+
+      if (existing.get(collection)?.has(name)) {
+        continue;
+      }
+
+      changes.push({
+        kind: "create-index",
+        table: collection,
+        target: name,
+        statement: `createIndex(${JSON.stringify(key)})`,
+        reason: "the driver defines it and the collection does not have it",
+        blocking: false,
+        applied: false,
+      });
+    }
+
+    for (const name of RETIRED_INDEXES) {
+      if (!existing.get(this.collections.jobs)?.has(name)) {
+        continue;
+      }
+
+      changes.push({
+        kind: "drop-index",
+        table: this.collections.jobs,
+        target: name,
+        statement: `dropIndex(${JSON.stringify(name)})`,
+        reason:
+          "the driver no longer defines it, and it costs a write per document",
+        blocking: false,
+        applied: false,
+      });
+    }
+
+    if (resolved.dryRun) {
+      return changes;
+    }
+
+    for (const change of changes) {
+      if (
+        change.kind === "create-index" &&
+        !(resolved.add || resolved.indexes)
+      ) {
+        continue;
+      }
+
+      if (change.kind === "drop-index" && !resolved.indexes) {
+        continue;
+      }
+
+      if (change.kind === "create-index") {
+        const definition = this.#indexDefinitions().find(
+          (index) =>
+            index.collection === change.table &&
+            Object.entries(index.key)
+              .map(([field, direction]) => `${field}_${direction}`)
+              .join("_") === change.target,
+        );
+
+        if (definition) {
+          await db.collection(change.table).createIndex(definition.key);
+          change.applied = true;
+        }
+
+        continue;
+      }
+
+      await db
+        .collection(change.table)
+        .dropIndex(change.target)
+        .catch(() => undefined);
+      change.applied = true;
+    }
+
+    return changes;
+  }
+
+  /** Creates the indexes the hot paths need. Safe to run repeatedly. */
+  async #createIndexes(db: Db): Promise<void> {
+    const byCollection = new Map<string, Record<string, 1 | -1>[]>();
+
+    for (const { collection, key } of this.#indexDefinitions()) {
+      byCollection.set(collection, [
+        ...(byCollection.get(collection) ?? []),
+        key,
+      ]);
+    }
+
+    for (const [collection, keys] of byCollection) {
+      await db
+        .collection(collection)
+        .createIndexes(keys.map((key) => ({ key })));
+    }
+
+    for (const name of RETIRED_INDEXES) {
+      // Best-effort: absent on a fresh database, and may already be gone.
+      await db
+        .collection(this.collections.jobs)
+        .dropIndex(name)
+        .catch(() => undefined);
+    }
   }
 
   /** The database, connecting on first use. */

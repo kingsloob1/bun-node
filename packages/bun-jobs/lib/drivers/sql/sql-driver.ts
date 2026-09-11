@@ -21,6 +21,7 @@ import type {
   Retention,
   RunRecord,
 } from "../driver";
+import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type { SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
@@ -28,6 +29,7 @@ import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
+import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import {
@@ -35,7 +37,9 @@ import {
   FRESH_JOB_COLUMNS,
   JOB_COLUMNS,
   jobColumnTypes,
+  schemaDefinition,
 } from "./schema";
+import { syncSqlSchema } from "./sync";
 
 /**
  * A driver backed by a SQL database.
@@ -156,6 +160,32 @@ export interface SqlDriverOptions extends ConnectionInput {
    */
   notify?: boolean;
   /**
+   * Bring an existing database in line with the schema this version expects,
+   * on connect.
+   *
+   * Off by default. `createSchema` is all `IF NOT EXISTS`, so a table created
+   * by an earlier version keeps its original shape forever — which means the
+   * schema improvements that come with an upgrade reach new installs only.
+   * This is how an existing deployment gets them.
+   *
+   * `true` does everything that cannot stall a running queue: adds columns and
+   * indexes that are missing, drops indexes this driver no longer defines, and
+   * rebuilds one whose predicate has changed. On Postgres the index work is
+   * `CONCURRENTLY`, so writes continue throughout.
+   *
+   * **Changing a column's type is not included**, because it rewrites the
+   * table under a lock that blocks every reader and writer until it finishes.
+   * Ask for it by name, in a window where that is acceptable:
+   *
+   * ```ts
+   * new SqlDriver({ url, syncSchema: { alterColumns: true } })
+   * ```
+   *
+   * {@link SqlDriver.syncSchema} is the same thing as a method, including a
+   * `dryRun` that reports what would change and applies none of it.
+   */
+  syncSchema?: boolean | SchemaSyncOptions;
+  /**
    * Prepended to every table name. Defaults to `bun_jobs_`, which keeps this
    * driver's tables together in a database it shares with an application.
    */
@@ -213,6 +243,8 @@ export class SqlDriver implements JobsDriver {
   #ready: Promise<void> | undefined;
   /** Whether new jobs are announced as well as polled for. */
   readonly #notify: boolean;
+  /** What to reconcile on connect, if anything. */
+  readonly #syncOnConnect: boolean | SchemaSyncOptions;
   /** Arrival notifications, where the engine can push them. */
   readonly #arrivals: Arrivals;
   /** Rows written since the planner's statistics were last refreshed. */
@@ -260,6 +292,7 @@ export class SqlDriver implements JobsDriver {
       });
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
+    this.#syncOnConnect = options.syncSchema ?? false;
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
   }
 
@@ -295,6 +328,54 @@ export class SqlDriver implements JobsDriver {
     if (this.#ownsConnection) {
       await this.#sql.close();
     }
+  }
+
+  /**
+   * Reconciles the database with the schema this version of the driver
+   * expects, and reports every difference it found.
+   *
+   * Safe by default: adds missing columns and indexes, drops indexes this
+   * driver no longer defines, and rebuilds one whose predicate has changed.
+   * None of that can stall a running queue — on Postgres the index work is
+   * `CONCURRENTLY`. Changing a column's type rewrites the table under a lock
+   * that blocks everything, so it is reported but not applied unless
+   * `alterColumns` says to.
+   *
+   * The returned list includes changes it declined to make, each carrying
+   * `applied` and `blocking`, so a caller can see what a fuller sync would do:
+   *
+   * ```ts
+   * const pending = await driver.syncSchema({ dryRun: true });
+   * for (const change of pending) {
+   *   console.log(change.blocking ? "needs a window" : "safe", change.reason);
+   * }
+   * ```
+   *
+   * Only ever touches indexes whose names this driver generates, so one added
+   * by hand is never dropped.
+   */
+  async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
+    await this.connect();
+    return await this.#syncSchema(options);
+  }
+
+  /**
+   * The sync itself, without connecting first.
+   *
+   * Separate from the public method because the migration calls it, and the
+   * migration *is* what `connect()` awaits: connecting from in there would
+   * wait on the promise it is running inside.
+   */
+  async #syncSchema(options: SchemaSyncOptions): Promise<SchemaChange[]> {
+    return await syncSqlSchema(
+      {
+        all: async (text, params) => await this.#all(text, params),
+        run: async (text) => await this.#sql.unsafe(text),
+      },
+      this.dialect,
+      schemaDefinition(this.#tables, this.dialect),
+      resolveSyncOptions(options),
+    );
   }
 
   async ping(): Promise<boolean> {
@@ -1839,6 +1920,14 @@ export class SqlDriver implements JobsDriver {
         await withLockRetry(async () => {
           await this.#sql.unsafe(statement);
         });
+      }
+
+      // After the tables exist, not instead of creating them: a sync compares
+      // against what is there and has nothing to say about what is not.
+      if (this.#syncOnConnect !== false) {
+        await this.#syncSchema(
+          typeof this.#syncOnConnect === "object" ? this.#syncOnConnect : {},
+        );
       }
     } catch (error) {
       // A failed migration must not be remembered as done.
