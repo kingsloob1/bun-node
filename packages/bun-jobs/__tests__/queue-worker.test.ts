@@ -389,3 +389,75 @@ describe("BunQueueWorker: control", () => {
     expect(worker.concurrency).toBe(4);
   });
 });
+
+describe("drainDelay", () => {
+  /**
+   * `drained` used to fire on every empty pass, which on an idle worker is
+   * once per poll, forever — a heartbeat rather than an event. The option that
+   * was meant to debounce it was resolved into the worker's options and never
+   * read.
+   */
+  it("waits for quiet, and says so once", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const worker = new BunQueueWorker("drain-delay", async () => null, {
+      driver,
+      namespace,
+      logger: noopLogger,
+      pollInterval: 5,
+      maxBlock: 10,
+      drainDelay: 150,
+    });
+
+    let drains = 0;
+    worker.on("drained", () => drains++);
+
+    try {
+      void worker.run();
+
+      // Well inside the delay: many empty passes, and none of them an event.
+      await Bun.sleep(60);
+      expect(drains).toBe(0);
+
+      // Past it: exactly one, however many passes went by.
+      await Bun.sleep(250);
+      expect(drains).toBe(1);
+    } finally {
+      await worker.close({ force: true });
+      await driver.close();
+    }
+  }, 15_000);
+
+  it("starts a new quiet spell after work arrives", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const queue = new BunQueue("drain-again", { driver, namespace });
+    const worker = new BunQueueWorker("drain-again", async () => null, {
+      driver,
+      namespace,
+      logger: noopLogger,
+      pollInterval: 5,
+      maxBlock: 10,
+      drainDelay: 120,
+    });
+
+    let drains = 0;
+    worker.on("drained", () => drains++);
+
+    try {
+      void worker.run();
+      await Bun.sleep(200);
+      expect(drains).toBe(1);
+
+      // A job resets the spell, so the next quiet period is its own event
+      // rather than a continuation of the first.
+      await queue.add("work", {});
+      await Bun.sleep(300);
+      expect(drains).toBe(2);
+    } finally {
+      await worker.close({ force: true });
+      await queue.close();
+      await driver.close();
+    }
+  }, 15_000);
+});

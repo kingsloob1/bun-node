@@ -108,6 +108,10 @@ export class BunQueueWorker<
   readonly #token: string;
   /** Whether this worker announces its job events to other processes. */
   readonly #publishes: boolean;
+  /** When the queue was first seen empty, for `drainDelay`. */
+  #emptySince: number | undefined;
+  /** Whether `drained` has been emitted for the current quiet spell. */
+  #drainedAnnounced = false;
   /** Jobs in flight, by id. */
   readonly #active = new Map<string, Promise<void>>();
   /** Controllers for the jobs in flight, so they can be aborted. */
@@ -375,6 +379,15 @@ export class BunQueueWorker<
 
     const claimed = await this.#claimUpToConcurrency();
 
+    if (claimed > 0) {
+      // Work arrived, so the quiet spell is over and the next one is its own
+      // event rather than a continuation of this one. Reset here rather than
+      // further down: at a concurrency of one the branch below returns first,
+      // so a worker that is never idle for long would never reset at all.
+      this.#emptySince = undefined;
+      this.#drainedAnnounced = false;
+    }
+
     if (this.#active.size >= this.#concurrency && this.#active.size > 0) {
       // Full: wait for a slot rather than spinning on a claim that cannot
       // succeed.
@@ -399,7 +412,7 @@ export class BunQueueWorker<
       return;
     }
 
-    this.safeEmit("drained");
+    this.#announceDrained();
     await this.#idle(await this.#waitBudget());
   }
 
@@ -440,6 +453,37 @@ export class BunQueueWorker<
     } catch (error) {
       this.#logger.warn("Could not publish a worker event", { error, type });
     }
+  }
+
+  /**
+   * Emits `drained` once the queue has been quiet for `drainDelay`.
+   *
+   * The option was resolved and never read, so `drained` fired on every empty
+   * pass — which on an idle worker is once per poll, forever. That is not an
+   * event, it is a heartbeat, and a listener that logs or alerts on it has to
+   * debounce what should have arrived debounced.
+   *
+   * Quiet means *continuously* empty: the timer starts at the first empty pass
+   * and is reset by the next claim, so a queue that hands out one job a second
+   * with a one-second delay never drains. Emitted once per quiet spell rather
+   * than once per pass, which is what makes it an event.
+   */
+  #announceDrained(): void {
+    const delay = this.#options.drainDelay;
+
+    if (delay <= 0) {
+      this.safeEmit("drained");
+      return;
+    }
+
+    this.#emptySince ??= Date.now();
+
+    if (this.#drainedAnnounced || Date.now() - this.#emptySince < delay) {
+      return;
+    }
+
+    this.#drainedAnnounced = true;
+    this.safeEmit("drained");
   }
 
   /**
