@@ -65,16 +65,54 @@ const POLL_MS = 50;
 const INSERT_CHUNK = 500;
 
 /**
- * How many rows may be written before the planner's statistics are refreshed.
+ * The fewest rows that may be written before statistics are refreshed.
  *
- * The same heuristic autovacuum uses — a threshold on rows changed — applied
- * promptly rather than on a 60-second nap. A queue table earns it: measured on
- * Postgres, the claim statement cost 25.9ms with stale statistics and 0.668ms
- * with fresh ones, the same plan either way. Refreshing costs about 3.4ms per
- * thousand rows and happens once per this many, so it is a rounding error
- * against what it saves.
+ * The same heuristic autovacuum uses — a threshold on rows changed, plus a
+ * share of the table — applied promptly rather than on a 60-second nap. A
+ * queue table earns it: measured on Postgres, the claim statement cost 25.9ms
+ * with stale statistics and 0.668ms with fresh ones, the same plan either way.
  */
-const ANALYZE_AFTER_ROWS = 2_000;
+const ANALYZE_MIN_ROWS = 2_000;
+
+/**
+ * The share of the table that must change before re-analysing it.
+ *
+ * Autovacuum's `autovacuum_analyze_scale_factor`, and it exists because
+ * `ANALYZE` is linear in table size: 11.3ms at 5,000 rows, 77.8ms at 50,000.
+ * A fixed threshold would re-analyse a large table every few inserts, so the
+ * threshold grows with the table and the cost per row written stays flat.
+ */
+const ANALYZE_SCALE_FACTOR = 0.1;
+
+/**
+ * Where each column of a subset sits in the full value list, resolved once.
+ *
+ * {@link SqlDriver.#toRow} and {@link SqlDriver.#toDocument} lay a job out in
+ * {@link JOB_COLUMNS} order and then pick the columns a given statement names.
+ * That mapping depends only on the column list, so it is loop-invariant across
+ * a chunk — and doing it per job is expensive: building the lookup 5,000 times
+ * cost 7.47ms against 0.73ms for this, measured on a 5,000-job batch.
+ *
+ * Keyed on the array itself, which is why the callers pass the module
+ * constants rather than copies of them.
+ */
+const COLUMN_INDICES = new WeakMap<readonly string[], readonly number[]>();
+
+/** The index list for `columns`, computed on first use and then reused. */
+function columnIndices(columns: readonly string[]): readonly number[] {
+  const cached = COLUMN_INDICES.get(columns);
+
+  if (cached) {
+    return cached;
+  }
+
+  const indices = columns.map((column) =>
+    JOB_COLUMNS.indexOf(column as (typeof JOB_COLUMNS)[number]),
+  );
+  COLUMN_INDICES.set(columns, indices);
+
+  return indices;
+}
 
 /** Every job state, in the order `countJobs` reports them. */
 const STATES: JobState[] = [
@@ -179,6 +217,12 @@ export class SqlDriver implements JobsDriver {
   readonly #arrivals: Arrivals;
   /** Rows written since the planner's statistics were last refreshed. */
   #writtenSinceAnalyze = 0;
+  /** Rows that must be written before the next refresh; grows with the table. */
+  #analyzeThreshold = ANALYZE_MIN_ROWS;
+  /** Whether the threshold has been sized against the real table yet. */
+  #thresholdMeasured = false;
+  /** The refresh currently running, so only one runs and `close` can wait. */
+  #analyzing: Promise<void> | undefined;
   /** Pause flags, so a claim does not read one per call. */
   readonly #pauseCache = new PauseCache();
   /** Active event subscriptions, so `close()` can stop them. */
@@ -237,6 +281,10 @@ export class SqlDriver implements JobsDriver {
   }
 
   async close(): Promise<void> {
+    // A statistics refresh runs unawaited, so it can still be in flight here.
+    // Letting it finish keeps it off a closing connection; it cannot fail the
+    // close, because a failed refresh is already tolerated.
+    await this.#analyzing?.catch(() => undefined);
     await this.#arrivals.close();
 
     for (const stop of this.#subscriptions) {
@@ -634,23 +682,96 @@ export class SqlDriver implements JobsDriver {
   /**
    * Refreshes the planner's statistics once enough rows have been written.
    *
-   * Best-effort: a failure here costs a slower plan, never a lost job, and the
-   * counter resets either way so a permanently failing `ANALYZE` cannot turn
-   * into a retry on every insert.
+   * **Awaited, and it has to be.** Letting it run in the background instead
+   * looks obviously better — the producer that crosses the threshold is not
+   * the one that benefits, a claim is — but it measures worse, badly: drain
+   * fell from 8,558/s to 5,527/s over three runs each. An `ANALYZE` running
+   * *beside* the inserts that are still arriving samples a table in flight and
+   * produces worse statistics than one run after them, and a claim planned
+   * against those takes 25.9ms where a fresh one takes 0.668ms. Deferring the
+   * wait to the claim path does not rescue it either (5,519/s): by then the
+   * refresh has finished, and finished badly.
+   *
+   * So the writer waits. It costs enqueue about 9%, which is the cheaper side
+   * of that trade by a wide margin, and {@link ANALYZE_SCALE_FACTOR} is what
+   * keeps the cost per row written flat as the table grows.
+   *
+   * Best-effort in every other sense: one runs at a time, a failure costs a
+   * slower plan rather than a lost job, and the counter resets either way so a
+   * permanently failing `ANALYZE` cannot turn into a retry on every insert.
    */
   async #refreshStatistics(written: number): Promise<void> {
     this.#writtenSinceAnalyze += written;
 
-    if (this.#writtenSinceAnalyze < ANALYZE_AFTER_ROWS) {
+    // Already running: let it finish and let the counter keep climbing, so a
+    // burst of inserts cannot queue a refresh behind every chunk.
+    if (this.#writtenSinceAnalyze < this.#analyzeThreshold || this.#analyzing) {
+      return;
+    }
+
+    // The threshold starts at the floor, which is only right for a table that
+    // starts empty. A driver attached to an existing queue would otherwise
+    // analyse it after ANALYZE_MIN_ROWS however large it is — measured, that
+    // is a 78MB table analysed after 2,000 writes, and bulk enqueue fell from
+    // 19,969/s to 7,708/s. So the first time the floor is crossed, ask the
+    // table how big it is and re-decide against the real threshold.
+    if (!this.#thresholdMeasured) {
+      this.#thresholdMeasured = true;
+      this.#analyzeThreshold = await this.#nextAnalyzeThreshold();
+
+      if (this.#writtenSinceAnalyze < this.#analyzeThreshold) {
+        return;
+      }
+    }
+
+    const statement = this.dialect.analyze(this.#tables.jobs);
+
+    if (!statement) {
       return;
     }
 
     this.#writtenSinceAnalyze = 0;
-    const statement = this.dialect.analyze(this.#tables.jobs);
+    this.#analyzing = this.#analyzeNow(statement).finally(() => {
+      this.#analyzing = undefined;
+    });
 
-    if (statement) {
-      await this.#sql.unsafe(statement).catch(() => undefined);
+    await this.#analyzing;
+  }
+
+  /** Runs one refresh and re-sizes the threshold from what it learns. */
+  async #analyzeNow(statement: string): Promise<void> {
+    try {
+      await this.#sql.unsafe(statement);
+      this.#analyzeThreshold = await this.#nextAnalyzeThreshold();
+    } catch {
+      // A refresh is an optimisation. Losing one costs a slower plan until the
+      // next write crosses the threshold again, or until autovacuum notices.
     }
+  }
+
+  /**
+   * How many rows to wait for before the next refresh.
+   *
+   * Autovacuum's own rule, `threshold + scale_factor * rows`, so the cost of
+   * analysing stays a fixed share of the writes that made it necessary rather
+   * than growing with the table.
+   */
+  async #nextAnalyzeThreshold(): Promise<number> {
+    const query = this.dialect.estimatedRows(this.#tables.jobs);
+
+    if (!query) {
+      return ANALYZE_MIN_ROWS;
+    }
+
+    const rows = await this.#all<{ n: number | string }>(query, []);
+    // Negative means the engine has no estimate yet, which `ANALYZE` having
+    // just run makes unlikely — but a floor is the safe reading either way.
+    const estimated = Math.max(0, Number(rows[0]?.n ?? 0));
+
+    return Math.max(
+      ANALYZE_MIN_ROWS,
+      Math.round(estimated * ANALYZE_SCALE_FACTOR),
+    );
   }
 
   /**
@@ -689,11 +810,11 @@ export class SqlDriver implements JobsDriver {
     // list, which keeps this a choice of two statements rather than a shape
     // per batch.
     const fresh = chunk.every((job) => this.#isFreshJob(job));
-    const columns: string[] = fresh ? [...FRESH_JOB_COLUMNS] : [...JOB_COLUMNS];
+    // The module constants themselves, not copies: `columnIndices` memoises on
+    // the array's identity, and a fresh copy per chunk would defeat it.
+    const columns: readonly string[] = fresh ? FRESH_JOB_COLUMNS : JOB_COLUMNS;
     const allTypes = jobColumnTypes(this.dialect);
-    const types = columns.map(
-      (column) => allTypes[JOB_COLUMNS.indexOf(column as never)]!,
-    );
+    const types = columnIndices(columns).map((index) => allTypes[index]!);
 
     // One JSON document beats a parameter per column per row where the engine
     // can expand it: 500 jobs is one bind parameter this way and 12,000 as a
@@ -1825,11 +1946,9 @@ export class SqlDriver implements JobsDriver {
       return values;
     }
 
-    const byColumn = new Map(
-      JOB_COLUMNS.map((column, index) => [column as string, values[index]]),
-    );
+    const indices = columnIndices(columns);
 
-    return columns.map((column) => byColumn.get(column));
+    return indices.map((index) => values[index]);
   }
 
   /**
@@ -1871,13 +1990,16 @@ export class SqlDriver implements JobsDriver {
       job.repeatKey,
     ];
 
-    const byColumn = new Map(
-      JOB_COLUMNS.map((column, index) => [column as string, values[index]]),
-    );
+    const indices = columnIndices(columns);
+    const document: Record<string, unknown> = {};
 
-    return Object.fromEntries(
-      columns.map((column) => [column, byColumn.get(column)]),
-    );
+    // A plain loop rather than `Object.fromEntries(columns.map(...))`: this
+    // runs once per job, and the tuple array that builds is pure garbage.
+    for (let position = 0; position < indices.length; position++) {
+      document[columns[position]!] = values[indices[position]!];
+    }
+
+    return document;
   }
 
   /** A row as a job record, decoding JSON columns and numeric strings. */
