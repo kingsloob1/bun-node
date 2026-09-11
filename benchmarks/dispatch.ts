@@ -518,7 +518,20 @@ const bunServeMethodsStrategy: Strategy = {
  * ------------------------------------------------------------------ */
 
 /** Handler signature exported by every file under `pages/`. */
-type PageHandler = (params: Record<string, string>) => Response;
+/**
+ * A page module's handler.
+ *
+ * The return type is derived from the `Response` constructor rather than
+ * written as the bare global. `@types/node` and `bun-types` both declare a
+ * global `Response` — node's comes from `undici-types`, Bun's carries
+ * `textStream` — and with both in scope the annotation can resolve to node's,
+ * which `Bun.serve` then refuses. `InstanceType<typeof Response>` means
+ * "whatever `new Response()` actually produces", which is the thing being
+ * returned either way.
+ */
+type PageHandler = (
+  params: Record<string, string>,
+) => InstanceType<typeof Response>;
 
 /**
  * Builds the FileSystemRouter and eagerly imports every page module once, as a
@@ -547,17 +560,23 @@ const fsRouterStrategy: Strategy = {
   label: "Bun.FileSystemRouter",
   async start(port) {
     const { router, handlers } = await buildFsRouter();
-    const notFound = new Response("not found", { status: 404 });
+
+    // A factory rather than one response cloned per miss. A `Response` body can
+    // only be read once, so the shared instance had to be cloned anyway — and
+    // `clone()` is typed through `bun-types`' undici fallback, which drops
+    // `textStream` and makes the result something `Bun.serve` will not accept.
+    // Constructing one is the same work without either problem.
+    const notFound = (): Response => new Response("not found", { status: 404 });
 
     const server = Bun.serve({
       port,
       fetch(req) {
         const matched = router.match(req);
         if (!matched) {
-          return notFound.clone();
+          return notFound();
         }
         const handler = handlers.get(matched.name);
-        return handler ? handler(matched.params) : notFound.clone();
+        return handler ? handler(matched.params) : notFound();
       },
     });
     return {
