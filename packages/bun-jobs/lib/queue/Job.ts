@@ -65,6 +65,14 @@ export class Job<TData = unknown, TResult = unknown> {
   readonly #record: JobRecord;
   /** Where the job lives. */
   readonly #driver: JobsDriver;
+  /**
+   * Told when progress is recorded, so whoever owns this job can announce it.
+   *
+   * Only the worker running the job sees `updateProgress` called, and `Job`
+   * has no emitter of its own — which is why the `progress` event was declared
+   * on both `BunQueue` and `BunQueueWorker` and fired on neither.
+   */
+  readonly #onProgress?: (value: unknown) => void;
   /** Which queue it belongs to. */
   readonly #ref: QueueRef;
 
@@ -73,11 +81,13 @@ export class Job<TData = unknown, TResult = unknown> {
     ref: QueueRef,
     record: JobRecord,
     wasAdded = true,
+    onProgress?: (value: unknown) => void,
   ) {
     this.#driver = driver;
     this.#ref = ref;
     this.#record = record;
     this.wasAdded = wasAdded;
+    this.#onProgress = onProgress;
 
     this.id = record.id;
     this.name = record.name;
@@ -121,6 +131,9 @@ export class Job<TData = unknown, TResult = unknown> {
   /** Records a progress value for observers to read. */
   async updateProgress(value: number | Record<string, unknown>): Promise<void> {
     await this.#driver.updateProgress(this.#ref, this.id, value);
+    // Told after the write, not before: an observer should not be shown
+    // progress that failed to persist.
+    this.#onProgress?.(value);
   }
 
   /**

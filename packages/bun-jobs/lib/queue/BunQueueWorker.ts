@@ -1,4 +1,5 @@
 import type { JobRecord, JobsDriver, QueueRef } from "../drivers/index";
+import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type {
   BunQueueWorkerEvents,
@@ -33,6 +34,7 @@ import {
   LockLostError,
   UnrecoverableJobError,
 } from "../shared/errors";
+import { queueEvent } from "../shared/events";
 import { newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
@@ -104,6 +106,8 @@ export class BunQueueWorker<
   readonly #logger: Logger;
   /** The lock token every claim by this worker carries. */
   readonly #token: string;
+  /** Whether this worker announces its job events to other processes. */
+  readonly #publishes: boolean;
   /** Jobs in flight, by id. */
   readonly #active = new Map<string, Promise<void>>();
   /** Controllers for the jobs in flight, so they can be aborted. */
@@ -163,6 +167,8 @@ export class BunQueueWorker<
       maintenance: options.maintenance ?? true,
       drainDelay: options.drainDelay ?? 0,
     };
+
+    this.#publishes = options.publish ?? false;
 
     this.#logger = createJobsLogger(
       options.logger,
@@ -398,6 +404,45 @@ export class BunQueueWorker<
   }
 
   /**
+   * Announces an event to other processes, when asked to.
+   *
+   * The worker is the only thing that knows a job became active, reported
+   * progress, completed, failed or stalled — it is the process running it. So
+   * without this, a producer or a dashboard elsewhere can observe only what it
+   * did itself, which is why `BunQueue` declared those events and never saw
+   * one.
+   *
+   * `type` selects the payload's shape, so a mismatched pair is a compile
+   * error here rather than a surprise in a subscriber somewhere else. A
+   * failure to publish is logged and swallowed: an observer missing an event
+   * must never fail the job that produced it.
+   */
+  async #publish<Name extends QueueEventName>(
+    type: Name,
+    payload: QueueEventPayloads[Name],
+  ): Promise<void> {
+    if (!this.#publishes) {
+      return;
+    }
+
+    try {
+      await this.driver.publish(
+        queueEvent(
+          {
+            ns: this.namespace,
+            target: this.queueName,
+            type,
+            origin: this.#token,
+          },
+          payload,
+        ),
+      );
+    } catch (error) {
+      this.#logger.warn("Could not publish a worker event", { error, type });
+    }
+  }
+
+  /**
    * Claims up to the free slots and starts every job it gets.
    *
    * Exactly the free slots, and nothing is buffered: a job is only claimed when
@@ -466,7 +511,18 @@ export class BunQueueWorker<
 
   /** Runs one job and records how it ended. */
   async #process(record: JobRecord): Promise<void> {
-    const job = new Job<TData, TResult>(this.driver, this.ref, record);
+    // The progress hook is how `updateProgress` reaches an emitter: `Job` has
+    // none of its own, and the worker is the only thing that sees the call.
+    const job = new Job<TData, TResult>(
+      this.driver,
+      this.ref,
+      record,
+      true,
+      (progress) => {
+        this.safeEmit("progress", job, progress);
+        void this.#publish("progress", { id: record.id, progress });
+      },
+    );
     const controller = new AbortController();
     this.#aborts.set(record.id, controller);
 
@@ -486,6 +542,7 @@ export class BunQueueWorker<
     };
 
     this.safeEmit("active", job);
+    void this.#publish("active", { id: record.id });
 
     try {
       const result = await withTimeout(
@@ -535,6 +592,10 @@ export class BunQueueWorker<
       settle: (kept) => {
         if (kept) {
           this.safeEmit("completed", job, result);
+          void this.#publish("completed", {
+            id: record.id,
+            returnValue: result ?? null,
+          });
         } else {
           this.safeEmit("lockLost", job);
         }
@@ -594,6 +655,12 @@ export class BunQueueWorker<
 
         this.safeEmit("failed", job, failure);
         this.safeEmit("retrying", job, failure, runAt);
+        void this.#publish("failed", { id: record.id, error: serialized });
+        void this.#publish("retrying", {
+          id: record.id,
+          error: serialized,
+          runAt,
+        });
         return;
       }
 
@@ -609,6 +676,8 @@ export class BunQueueWorker<
 
       this.safeEmit("failed", job, failure);
       this.safeEmit("dead", job, failure);
+      void this.#publish("failed", { id: record.id, error: serialized });
+      void this.#publish("dead", { id: record.id, error: serialized });
     } catch (writeError) {
       this.#emitError(writeError, "failJob");
     }
@@ -737,6 +806,7 @@ export class BunQueueWorker<
       const recovered = [...requeued, ...dead];
       if (recovered.length > 0) {
         this.safeEmit("stalled", recovered);
+        void this.#publish("stalled", { ids: recovered });
         this.#wake.abort();
       }
     });

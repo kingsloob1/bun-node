@@ -61,6 +61,8 @@ export class BunQueue<
   readonly #logger: Logger;
   /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
+  /** Whether this queue announces its events to other processes. */
+  readonly #publishes: boolean;
 
   /** Cancels the cross-process subscription, once opened. */
   #unsubscribe?: () => Promise<void>;
@@ -80,6 +82,10 @@ export class BunQueue<
     this.#ownsDriver = owned;
     this.#defaults = options.defaultJobOptions;
     this.#subscribe = options.subscribe ?? false;
+    // Defaults to `subscribe` so nothing changes for anyone relying on the
+    // two being one flag; settable on its own so a producer can publish
+    // without also paying for a subscription.
+    this.#publishes = options.publish ?? this.#subscribe;
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: this.namespace, queue: this.name },
@@ -153,16 +159,22 @@ export class BunQueue<
 
     if (!added) {
       this.safeEmit("duplicate", view);
+      await this.#publish("duplicate", { id: job.id });
       return view;
     }
 
     this.safeEmit("added", view);
-    this.safeEmit(
-      job.state === "waiting" ? "waiting" : "delayed",
-      view,
-      job.runAt,
-    );
     await this.#publish("added", { id: job.id });
+
+    // Which of the two it is depends on whether it is claimable now, and a
+    // remote listener has no way to work that out from `added` alone.
+    if (job.state === "waiting") {
+      this.safeEmit("waiting", view);
+      await this.#publish("waiting", { id: job.id });
+    } else {
+      this.safeEmit("delayed", view, job.runAt);
+      await this.#publish("delayed", { id: job.id, runAt: job.runAt });
+    }
 
     return view;
   }
@@ -310,6 +322,7 @@ export class BunQueue<
     );
 
     this.safeEmit("drained", removed);
+    await this.#publish("drained", { count: removed });
     return removed;
   }
 
@@ -330,6 +343,7 @@ export class BunQueue<
 
     if (removed.length > 0) {
       this.safeEmit("cleaned", removed, state);
+      await this.#publish("cleaned", { ids: removed, state });
     }
 
     return removed;
@@ -473,6 +487,10 @@ export class BunQueue<
     });
 
     this.safeEmit("repeatScheduled", merged.key, firstRunAt);
+    await this.#publish("repeatScheduled", {
+      key: merged.key,
+      nextRunAt: firstRunAt,
+    });
 
     const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
     this.safeEmit(added ? "added" : "duplicate", view);
@@ -489,7 +507,7 @@ export class BunQueue<
     type: Name,
     payload: QueueEventPayloads[Name],
   ): Promise<void> {
-    if (!this.#subscribe) {
+    if (!this.#publishes) {
       return;
     }
 

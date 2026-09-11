@@ -124,10 +124,37 @@ export interface BunQueueOptions {
    * worker elsewhere is running. Off by default: it costs a subscription.
    */
   subscribe?: boolean;
+  /**
+   * Publish this queue's events for other processes to receive.
+   *
+   * Separate from {@link BunQueueOptions.subscribe}, which it used to be
+   * folded into — publishing was gated on whether *this* instance also
+   * listened. That is the wrong way round for the arrangement it matters most
+   * in: a dashboard subscribes and never produces, while the producers it
+   * wants to watch listen to nothing and therefore said nothing.
+   *
+   * Defaults to whatever `subscribe` is, so existing behaviour is unchanged;
+   * set it explicitly to publish without listening. It is not on by default
+   * because each event is a round trip, and on a busy queue that is a round
+   * trip per job.
+   */
+  publish?: boolean;
 }
 
 /** Options for a {@link BunQueueWorker}. */
 export interface BunQueueWorkerOptions {
+  /**
+   * Publish this worker's job events for other processes to receive.
+   *
+   * Off by default, and worth turning on for the case it exists for: the
+   * worker is the only thing that knows a job became active, reported
+   * progress, completed, failed or stalled, so without this a producer or a
+   * dashboard elsewhere can only observe what it did itself.
+   *
+   * Each event is a round trip. On a queue draining thousands of jobs a second
+   * that is the dominant cost of turning it on, which is why it is a choice.
+   */
+  publish?: boolean;
   /** The namespace to consume from. Must match the producer's. */
   namespace: string;
   /** Where jobs live. A config is built and closed here; an instance is shared. */
