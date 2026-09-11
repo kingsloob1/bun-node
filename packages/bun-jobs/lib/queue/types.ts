@@ -196,9 +196,46 @@ export interface BunQueueWorkerOptions {
   isolation?: ExecutionMode;
 }
 
+/**
+ * The events that are about one job, and so can be scoped to its name.
+ *
+ * Everything else is about the queue — it was paused, it was drained — or
+ * about an id with no name to hand: `removed` and `promoted` carry an id, and
+ * `stalled` carries several. Scoping those would mean fetching a record to
+ * work out an event name, which is the wrong way round.
+ */
+export type JobScopedEvent =
+  | "added"
+  | "duplicate"
+  | "waiting"
+  | "delayed"
+  | "active"
+  | "progress"
+  | "completed"
+  | "failed"
+  | "retrying"
+  | "dead";
+
+/**
+ * The same job events, qualified by the job's name.
+ *
+ * `queue.on("completed:sendEmail", ...)` fires only for jobs named
+ * `sendEmail`, with exactly the arguments `completed` takes. A consumer that
+ * runs twenty kinds of job through one queue would otherwise filter by name in
+ * every listener, which is both noisier and slower — every listener runs for
+ * every job.
+ *
+ * The unqualified event still fires as well, so a listener that wants all of
+ * them is unaffected.
+ */
+export type JobScopedEvents<TEvents, TName extends string = string> = {
+  [Event in keyof TEvents &
+    JobScopedEvent as `${Event}:${TName}`]: TEvents[Event];
+};
+
 /** Events a {@link BunQueue} emits. */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunQueueEvents<TData = unknown, TResult = unknown> = {
+type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
   /** A job was added. */
   added: (job: Job<TData, TResult>) => void;
   /** An `add()` matched an existing id, so nothing was added. */
@@ -247,9 +284,19 @@ export type BunQueueEvents<TData = unknown, TResult = unknown> = {
   error: (error: Error, context: string) => void;
 };
 
+/**
+ * Everything a {@link BunQueue} emits: each event, and the same
+ * events qualified by a job's name.
+ */
+export type BunQueueEvents<
+  TData = unknown,
+  TResult = unknown,
+> = BunQueueBaseEvents<TData, TResult> &
+  JobScopedEvents<BunQueueBaseEvents<TData, TResult>>;
+
 /** Events a {@link BunQueueWorker} emits. */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunQueueWorkerEvents<TData = unknown, TResult = unknown> = {
+type BunQueueWorkerBaseEvents<TData = unknown, TResult = unknown> = {
   /** The worker connected and started consuming. */
   ready: () => void;
   /** A job was claimed. */
@@ -281,6 +328,16 @@ export type BunQueueWorkerEvents<TData = unknown, TResult = unknown> = {
   /** Something failed outside a job. */
   error: (error: Error, context: string) => void;
 };
+
+/**
+ * Everything a {@link BunQueueWorker} emits: each event, and the same
+ * events qualified by a job's name.
+ */
+export type BunQueueWorkerEvents<
+  TData = unknown,
+  TResult = unknown,
+> = BunQueueWorkerBaseEvents<TData, TResult> &
+  JobScopedEvents<BunQueueWorkerBaseEvents<TData, TResult>>;
 
 /** A repeat definition as reported by `listRepeatables()`. */
 export type Repeatable = RepeatRecord;

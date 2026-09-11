@@ -216,3 +216,98 @@ describe("queue events: what a producer can see of a worker's run", () => {
     45_000,
   );
 });
+
+describe("per-job-name events", () => {
+  /**
+   * `completed:sendEmail` fires only for jobs named `sendEmail`.
+   *
+   * A consumer running twenty kinds of job through one queue would otherwise
+   * filter by name inside every listener — noisier to write, and slower,
+   * because every listener runs for every job.
+   */
+  it("fires for the named job and no other", async () => {
+    const driver = new MemoryDriver();
+    drivers.push(driver);
+    const { namespace, queue } = await pair(driver, "by-name");
+
+    const emails: string[] = [];
+    const reports: string[] = [];
+    const all: string[] = [];
+
+    queue.on("completed:sendEmail", (job) => emails.push(job.id));
+    queue.on("completed:buildReport", (job) => reports.push(job.id));
+    queue.on("completed", (job) => all.push(job.id));
+
+    const worker = new BunQueueWorker("by-name", async () => null, {
+      driver,
+      namespace,
+      publish: true,
+      concurrency: 1,
+      pollInterval: 10,
+      maxBlock: 20,
+    });
+
+    try {
+      void worker.run();
+      const email = await queue.add("sendEmail", {});
+      const report = await queue.add("buildReport", {});
+
+      await waitFor(() => all.length >= 2, {
+        message: "both jobs should have completed",
+        timeout: 10_000,
+      });
+
+      // Each qualified listener saw only its own, and the unqualified one saw
+      // both — a listener that wants everything is unaffected by this.
+      expect(emails).toEqual([email.id]);
+      expect(reports).toEqual([report.id]);
+      expect(all.sort()).toEqual([email.id, report.id].sort());
+    } finally {
+      await worker.close({ force: true });
+      await queue.close();
+    }
+  }, 30_000);
+
+  it("reaches a listener that only wants the qualified form", async () => {
+    const driver = new MemoryDriver();
+    drivers.push(driver);
+    const { namespace, queue } = await pair(driver, "only-qualified");
+
+    // A remote event costs a fetch, so one nobody wants is dropped before
+    // paying for it — and that check used to ask only about the unqualified
+    // name. Someone listening for `progress:slowThing` alone would have been
+    // skipped, which is the whole case the qualified form exists for.
+    const progress: unknown[] = [];
+    queue.on("progress:slowThing", (_job, value) => progress.push(value));
+
+    const worker = new BunQueueWorker(
+      "only-qualified",
+      async (job) => {
+        await job.updateProgress(75);
+        return null;
+      },
+      {
+        driver,
+        namespace,
+        publish: true,
+        concurrency: 1,
+        pollInterval: 10,
+        maxBlock: 20,
+      },
+    );
+
+    try {
+      void worker.run();
+      await queue.add("slowThing", {});
+
+      await waitFor(() => progress.length > 0, {
+        message: "the qualified listener never heard anything",
+        timeout: 10_000,
+      });
+      expect(progress).toEqual([75]);
+    } finally {
+      await worker.close({ force: true });
+      await queue.close();
+    }
+  }, 30_000);
+});

@@ -158,21 +158,21 @@ export class BunQueue<
     const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
 
     if (!added) {
-      this.safeEmit("duplicate", view);
+      this.safeEmitScoped("duplicate", job.name, view);
       await this.#publish("duplicate", { id: job.id });
       return view;
     }
 
-    this.safeEmit("added", view);
+    this.safeEmitScoped("added", job.name, view);
     await this.#publish("added", { id: job.id });
 
     // Which of the two it is depends on whether it is claimable now, and a
     // remote listener has no way to work that out from `added` alone.
     if (job.state === "waiting") {
-      this.safeEmit("waiting", view);
+      this.safeEmitScoped("waiting", job.name, view);
       await this.#publish("waiting", { id: job.id });
     } else {
-      this.safeEmit("delayed", view, job.runAt);
+      this.safeEmitScoped("delayed", job.name, view, job.runAt);
       await this.#publish("delayed", { id: job.id, runAt: job.runAt });
     }
 
@@ -544,12 +544,36 @@ export class BunQueue<
    * cap a message at a few kilobytes — so a job is fetched only for the events
    * whose signature needs one, and only when somebody is listening.
    */
+  /**
+   * Whether anything is listening for an event, under any name it can take.
+   *
+   * A remote event costs a fetch, so one nobody wants is dropped before
+   * paying for it. That check used to be `listenerCount(type)` alone, which
+   * silently skipped a listener registered only on the qualified form — and
+   * the whole point of `completed:sendEmail` is to be the only thing someone
+   * listens for.
+   *
+   * The qualified name cannot be known without the job, and the job cannot be
+   * fetched without deciding to, so the question is asked the other way round:
+   * is anyone listening for *any* qualification of this event.
+   */
+  #wants(type: string): boolean {
+    if (this.listenerCount(type as never) > 0) {
+      return true;
+    }
+
+    const scoped = `${type}:`;
+    return this.eventNames().some(
+      (name) => typeof name === "string" && name.startsWith(scoped),
+    );
+  }
+
   async #onRemoteEvent(event: QueueDriverEvent): Promise<void> {
     if (event.origin === this.#origin) {
       return;
     }
 
-    if (this.listenerCount(event.type) === 0) {
+    if (!this.#wants(event.type)) {
       return;
     }
 
@@ -600,32 +624,48 @@ export class BunQueue<
       case "duplicate":
       case "waiting":
       case "active":
-        this.safeEmit(event.type, job);
+        this.safeEmitScoped(event.type, job.name, job);
         return;
 
       case "delayed":
-        this.safeEmit("delayed", job, event.payload.runAt);
+        this.safeEmitScoped("delayed", job.name, job, event.payload.runAt);
         return;
 
       case "progress":
-        this.safeEmit("progress", job, event.payload.progress);
+        this.safeEmitScoped("progress", job.name, job, event.payload.progress);
         return;
 
       case "completed":
-        this.safeEmit("completed", job, event.payload.returnValue as TResult);
+        this.safeEmitScoped(
+          "completed",
+          job.name,
+          job,
+          event.payload.returnValue as TResult,
+        );
         return;
 
       case "failed":
-        this.safeEmit("failed", job, deserializeError(event.payload.error));
+        this.safeEmitScoped(
+          "failed",
+          job.name,
+          job,
+          deserializeError(event.payload.error),
+        );
         return;
 
       case "dead":
-        this.safeEmit("dead", job, deserializeError(event.payload.error));
+        this.safeEmitScoped(
+          "dead",
+          job.name,
+          job,
+          deserializeError(event.payload.error),
+        );
         return;
 
       case "retrying":
-        this.safeEmit(
+        this.safeEmitScoped(
           "retrying",
+          job.name,
           job,
           deserializeError(event.payload.error),
           event.payload.runAt,

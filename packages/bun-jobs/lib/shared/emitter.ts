@@ -130,4 +130,32 @@ export abstract class TypedEmitterBase<
       return true;
     }
   }
+
+  /**
+   * Emits an event, and the same event qualified by a job's name.
+   *
+   * `completed` and `completed:sendEmail` carry identical arguments, so a
+   * listener on either sees the same thing. Emitting both is what lets a
+   * consumer running twenty kinds of job through one queue listen for the one
+   * it cares about, instead of filtering by name inside a listener that runs
+   * for every job.
+   *
+   * The qualified name is built only when something is listening for it.
+   * Building it unconditionally would allocate a string per event per job on
+   * a path that is otherwise allocation-free.
+   */
+  protected safeEmitScoped<E extends keyof Events & string>(
+    event: E,
+    jobName: string,
+    ...args: Parameters<Events[E]>
+  ): boolean {
+    const heard = this.safeEmit(event, ...args);
+    const scoped = `${event}:${jobName}` as keyof Events;
+
+    if (this.listenerCount(scoped) === 0) {
+      return heard;
+    }
+
+    return this.safeEmit(scoped, ...(args as never)) || heard;
+  }
 }

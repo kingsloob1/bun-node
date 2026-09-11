@@ -563,7 +563,7 @@ export class BunQueueWorker<
       record,
       true,
       (progress) => {
-        this.safeEmit("progress", job, progress);
+        this.safeEmitScoped("progress", record.name, job, progress);
         void this.#publish("progress", { id: record.id, progress });
       },
     );
@@ -585,7 +585,7 @@ export class BunQueueWorker<
       },
     };
 
-    this.safeEmit("active", job);
+    this.safeEmitScoped("active", record.name, job);
     void this.#publish("active", { id: record.id });
 
     try {
@@ -635,7 +635,7 @@ export class BunQueueWorker<
       retention: record.opts.removeOnComplete,
       settle: (kept) => {
         if (kept) {
-          this.safeEmit("completed", job, result);
+          this.safeEmitScoped("completed", record.name, job, result);
           void this.#publish("completed", {
             id: record.id,
             returnValue: result ?? null,
@@ -697,8 +697,8 @@ export class BunQueueWorker<
           record.opts.keepStacktraces,
         );
 
-        this.safeEmit("failed", job, failure);
-        this.safeEmit("retrying", job, failure, runAt);
+        this.safeEmitScoped("failed", record.name, job, failure);
+        this.safeEmitScoped("retrying", record.name, job, failure, runAt);
         void this.#publish("failed", { id: record.id, error: serialized });
         void this.#publish("retrying", {
           id: record.id,
@@ -718,8 +718,8 @@ export class BunQueueWorker<
         record.opts.keepStacktraces,
       );
 
-      this.safeEmit("failed", job, failure);
-      this.safeEmit("dead", job, failure);
+      this.safeEmitScoped("failed", record.name, job, failure);
+      this.safeEmitScoped("dead", record.name, job, failure);
       void this.#publish("failed", { id: record.id, error: serialized });
       void this.#publish("dead", { id: record.id, error: serialized });
     } catch (writeError) {
