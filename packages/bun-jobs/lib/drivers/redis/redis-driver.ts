@@ -1179,17 +1179,22 @@ export class RedisDriver implements JobsDriver {
    * it on the enqueue critical path.
    */
   #toValues(job: JobRecord): string[] {
-    // The first FRESH_JOB_FIELD_COUNT of JOB_FIELDS, in that order.
+    // The first FRESH_JOB_FIELD_COUNT of JOB_FIELDS, in that order. `blob`
+    // carries the four fields no script ever touches, in one value — see
+    // `JOB_FIELDS`. It is also one `JSON.stringify` where `data` and `opts`
+    // were two.
     const values: string[] = [
       job.id,
-      job.name,
       job.state,
       String(job.priority),
       String(job.runAt),
       String(job.createdAt),
-      String(job.maxAttempts),
-      JSON.stringify(job.data ?? null),
-      JSON.stringify(job.opts),
+      JSON.stringify({
+        name: job.name,
+        maxAttempts: job.maxAttempts,
+        data: job.data ?? null,
+        opts: job.opts,
+      }),
     ];
 
     // Only `addJob` and `addJobs` call this, both writing a hash that does not
@@ -1279,11 +1284,25 @@ export class RedisDriver implements JobsDriver {
     const json = <T>(name: JsonField, fallback: T): T =>
       safeJsonParse<T>(fields[name], fallback);
 
+    // `blob` holds `name`, `maxAttempts`, `data` and `opts` together. A record
+    // written before it existed has them as four separate fields instead, and
+    // both have to read back the same — nothing migrates a hash in place.
+    const blob = safeJsonParse<{
+      name?: string;
+      maxAttempts?: number;
+      data?: unknown;
+      opts?: ResolvedJobOptions;
+    }>(fields.blob, {});
+
     return {
       id: fields.id,
-      name: fields.name,
-      data: json<unknown>("data", null),
-      opts: json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions),
+      name: blob.name ?? fields.name,
+      data:
+        blob.name === undefined
+          ? json<unknown>("data", null)
+          : (blob.data ?? null),
+      opts:
+        blob.opts ?? json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions),
       state: fields.state as JobState,
       priority: number("priority"),
       runAt: number("runAt"),
@@ -1292,7 +1311,7 @@ export class RedisDriver implements JobsDriver {
       finishedOn: nullable("finishedOn"),
       expiresAt: nullable("expiresAt"),
       attemptsMade: number("attemptsMade"),
-      maxAttempts: number("maxAttempts"),
+      maxAttempts: blob.maxAttempts ?? number("maxAttempts"),
       stalledCount: number("stalledCount"),
       progress: json<unknown>("progress", null),
       returnValue: json<unknown>("returnValue", null),

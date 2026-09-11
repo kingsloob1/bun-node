@@ -5,7 +5,7 @@ import {
   FRESH_JOB_FIELD_COUNT,
   JOB_FIELDS,
 } from "../lib/drivers/redis/scripts";
-import { RedisDriver } from "../lib/index";
+import { RedisDriver, RedisKeys } from "../lib/index";
 import { makeJob, testNamespace } from "./helpers";
 
 /**
@@ -69,7 +69,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it("sends a value for every field it names", () => {
     // The Lua table is generated from JOB_FIELDS, so the only way the two can
     // disagree is if the driver stops building values in that order.
-    expect(JOB_FIELDS.length).toBe(22);
+    expect(JOB_FIELDS.length).toBe(19);
     expect(FRESH_JOB_FIELD_COUNT).toBeLessThan(JOB_FIELDS.length);
 
     // The fresh set has to be a *prefix* of the full one — that is what lets
@@ -77,15 +77,18 @@ describe("Redis add scripts: the positional wire format", () => {
     // `runAt` at positions both shapes share.
     expect(JOB_FIELDS.slice(0, FRESH_JOB_FIELD_COUNT)).toEqual([
       "id",
-      "name",
       "state",
       "priority",
       "runAt",
       "createdAt",
-      "maxAttempts",
-      "data",
-      "opts",
+      "blob",
     ]);
+
+    // The four inside `blob` must not also be named on their own: two places
+    // to write one value is two places for them to disagree.
+    for (const folded of ["name", "maxAttempts", "data", "opts"]) {
+      expect(JOB_FIELDS).not.toContain(folded);
+    }
   });
 
   it.skipIf(!URL)("round-trips every field through addJob", async () => {
@@ -141,6 +144,64 @@ describe("Redis add scripts: the positional wire format", () => {
       expect(await driver.getJob(q, "mixed-after")).toEqual(after);
     },
   );
+
+  it.skipIf(!URL)("reads a hash written before `blob` existed", async () => {
+    const driver = new RedisDriver({ url: URL });
+    drivers.push(driver);
+    const q = { ns: testNamespace(), queue: "legacy" };
+    await driver.ensureQueue(q);
+
+    // Nothing rewrites a hash in place, so an upgraded deployment's jobs still
+    // have `name`, `maxAttempts`, `data` and `opts` as four separate fields.
+    // They have to read back exactly as a `blob` record does.
+    const client = new Bun.RedisClient(URL!);
+
+    try {
+      const key = `${new RedisKeys({}).queue(q).jobPrefix}legacy-1`;
+      await client.send("HSET", [
+        key,
+        "id",
+
+        "legacy-1",
+        "name",
+
+        "from-before",
+        "state",
+
+        "waiting",
+        "priority",
+
+        "3",
+        "runAt",
+
+        "1700000001000",
+        "createdAt",
+
+        "1700000002000",
+        "maxAttempts",
+
+        "7",
+        "data",
+
+        JSON.stringify({ which: "data" }),
+        "opts",
+
+        JSON.stringify({ attempts: 7 }),
+        "member",
+
+        "0000000000000001:legacy-1",
+      ]);
+
+      const stored = await driver.getJob(q, "legacy-1");
+      expect(stored?.name).toBe("from-before");
+      expect(stored?.maxAttempts).toBe(7);
+      expect(stored?.data).toEqual({ which: "data" });
+      expect(stored?.opts).toEqual({ attempts: 7 } as never);
+      expect(stored?.priority).toBe(3);
+    } finally {
+      client.close();
+    }
+  });
 
   it.skipIf(!URL)("places a record by the state it arrived with", async () => {
     const driver = new RedisDriver({ url: URL });
