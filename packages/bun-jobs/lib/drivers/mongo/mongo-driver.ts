@@ -69,6 +69,16 @@ export type MongoCollection = (typeof MONGO_COLLECTIONS)[number];
 /** MongoDB's duplicate-key error, which is how "someone got there first" arrives. */
 const DUPLICATE_KEY = 11000;
 
+/**
+ * How many jobs go into one `insertMany`.
+ *
+ * The server caps a batch at 100,000 documents and 16MB, and the driver splits
+ * anything larger on its own, so this is not the server's limit — it bounds how
+ * many documents are built in memory at once, and how much one rejected batch
+ * has to be reported on.
+ */
+const INSERT_CHUNK = 1_000;
+
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
 
@@ -121,38 +131,38 @@ interface JobDocument {
   runAt: number;
   /** When it was added. */
   createdAt: number;
-  /** When the current or last attempt started. */
-  processedOn: number | null;
-  /** When it completed or died. */
-  finishedOn: number | null;
-  /** When retention removes it. */
-  expiresAt: number | null;
-  /** How many attempts have been made. */
-  attemptsMade: number;
+  /** When the current or last attempt started. Absent on a job yet to run. */
+  processedOn?: number | null;
+  /** When it completed or died. Absent until it has. */
+  finishedOn?: number | null;
+  /** When retention removes it. Absent while it has no expiry. */
+  expiresAt?: number | null;
+  /** How many attempts have been made. Absent means none. */
+  attemptsMade?: number;
   /** How many are allowed. */
   maxAttempts: number;
-  /** How many times it stalled. */
-  stalledCount: number;
-  /** The worker holding it. */
-  workerId: string | null;
-  /** That worker's lock token. */
-  lockToken: string | null;
-  /** When the lock expires. */
-  lockExpiresAt: number | null;
-  /** The repeat series that produced it. */
-  repeatKey: string | null;
+  /** How many times it stalled. Absent means never. */
+  stalledCount?: number;
+  /** The worker holding it. Absent while unclaimed. */
+  workerId?: string | null;
+  /** That worker's lock token. Absent while unclaimed. */
+  lockToken?: string | null;
+  /** When the lock expires. Absent while unclaimed. */
+  lockExpiresAt?: number | null;
+  /** The repeat series that produced it. Absent when it is a one-off. */
+  repeatKey?: string | null;
   /** The caller's payload, as JSON. */
   data: string;
   /** Resolved options, as JSON. */
   opts: string;
-  /** Latest progress, as JSON. */
-  progress: string;
-  /** The processor's result, as JSON. */
-  returnValue: string;
-  /** The most recent failure, as JSON. */
-  failedReason: string;
-  /** Recent failures, as JSON. */
-  stacktrace: string;
+  /** Latest progress, as JSON. Absent until reported. */
+  progress?: string;
+  /** The processor's result, as JSON. Absent until it has one. */
+  returnValue?: string;
+  /** The most recent failure, as JSON. Absent until it has one. */
+  failedReason?: string;
+  /** Recent failures, as JSON. Absent until it has one. */
+  stacktrace?: string;
 }
 
 /** A lock as it is stored. */
@@ -706,14 +716,72 @@ export class MongoDriver implements JobsDriver {
     }
   }
 
+  /**
+   * Adds many jobs, in as few round trips as the collection allows.
+   *
+   * `insertMany` is unordered, which is what makes it usable here: an ordered
+   * batch stops at the first duplicate and leaves the rest of the chunk
+   * unwritten, whereas an unordered one inserts everything it can and reports
+   * the collisions by position. That is exactly the contract this method needs,
+   * because per-id idempotency means a duplicate is an ordinary outcome rather
+   * than a failure — repeat scheduling depends on several workers noticing the
+   * same occurrence and exactly one of them winning.
+   *
+   * A collision is the only write error tolerated. Anything else fails the
+   * call, because it means the batch did not do what it said.
+   */
   async addJobs(
     q: QueueRef,
     jobs: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
+    if (jobs.length === 0) {
+      return [];
     }
+
+    // One job is not a batch, and the singular path already reports precisely
+    // what happened to it.
+    if (jobs.length === 1) {
+      return [await this.addJob(q, jobs[0]!)];
+    }
+
+    const collection = await this.#jobs();
+    const results: { job: JobRecord; added: boolean }[] = [];
+
+    for (let start = 0; start < jobs.length; start += INSERT_CHUNK) {
+      const chunk = jobs.slice(start, start + INSERT_CHUNK);
+      /** Positions within this chunk whose id was already taken. */
+      const collided = new Set<number>();
+
+      try {
+        await collection.insertMany(
+          chunk.map((job) => this.#toDocument(q, job)),
+          { ordered: false },
+        );
+      } catch (error) {
+        const writeErrors = duplicateKeyPositions(error);
+
+        if (!writeErrors) {
+          throw new DriverError("mongodb", "addJobs", error);
+        }
+
+        for (const position of writeErrors) {
+          collided.add(position);
+        }
+      }
+
+      for (const [index, job] of chunk.entries()) {
+        if (!collided.has(index)) {
+          results.push({ job: jsonClone(job), added: true });
+          continue;
+        }
+
+        // The id is the idempotency key, so a collision means it is already
+        // here. Only a collision pays for the read that fetches what is.
+        const existing = await this.getJob(q, job.id);
+        results.push({ job: existing ?? jsonClone(job), added: false });
+      }
+    }
+
     return results;
   }
 
@@ -833,7 +901,7 @@ export class MongoDriver implements JobsDriver {
 
     const stacktrace = [
       error,
-      ...(JSON.parse(existing.stacktrace) as SerializedError[]),
+      ...parseOrDefault<SerializedError[]>(existing.stacktrace, []),
     ].slice(0, Math.max(0, keepStacktraces));
 
     const retention = outcome.retry ? false : outcome.retention;
@@ -1059,7 +1127,7 @@ export class MongoDriver implements JobsDriver {
     const dead: string[] = [];
 
     for (const document of stalled) {
-      const count = document.stalledCount + 1;
+      const count = (document.stalledCount ?? 0) + 1;
       const buried = count > maxStalledCount;
 
       // Still conditional on being stalled, so a worker that recovered in the
@@ -1500,7 +1568,7 @@ export class MongoDriver implements JobsDriver {
    * legal and guarantees it returns exactly as every other driver returns it.
    */
   #toDocument(q: QueueRef, job: JobRecord): JobDocument {
-    return {
+    const document: JobDocument = {
       _id: this.#jobId(q, job.id),
       ns: q.ns,
       queue: q.queue,
@@ -1510,23 +1578,61 @@ export class MongoDriver implements JobsDriver {
       priority: job.priority,
       runAt: job.runAt,
       createdAt: job.createdAt,
-      processedOn: job.processedOn,
-      finishedOn: job.finishedOn,
-      expiresAt: job.expiresAt,
-      attemptsMade: job.attemptsMade,
       maxAttempts: job.maxAttempts,
-      stalledCount: job.stalledCount,
-      workerId: job.workerId,
-      lockToken: job.lockToken,
-      lockExpiresAt: job.lockExpiresAt,
-      repeatKey: job.repeatKey,
       data: JSON.stringify(job.data ?? null),
       opts: JSON.stringify(job.opts),
-      progress: JSON.stringify(job.progress ?? null),
-      returnValue: JSON.stringify(job.returnValue ?? null),
-      failedReason: JSON.stringify(job.failedReason ?? null),
-      stacktrace: JSON.stringify(job.stacktrace ?? []),
     };
+
+    // A brand-new job carries nothing else: every remaining field would be a
+    // null, a zero, or the string "null". Leaving them out makes the document
+    // smaller on the wire and in the collection, and the reader already treats
+    // absent and default alike. `maxAttempts` stays above deliberately — an
+    // absent number reads back as its default, and the default for that one is
+    // not zero.
+    if (this.#isFreshJob(job)) {
+      return document;
+    }
+
+    document.processedOn = job.processedOn;
+    document.finishedOn = job.finishedOn;
+    document.expiresAt = job.expiresAt;
+    document.attemptsMade = job.attemptsMade;
+    document.stalledCount = job.stalledCount;
+    document.workerId = job.workerId;
+    document.lockToken = job.lockToken;
+    document.lockExpiresAt = job.lockExpiresAt;
+    document.repeatKey = job.repeatKey;
+    document.progress = JSON.stringify(job.progress ?? null);
+    document.returnValue = JSON.stringify(job.returnValue ?? null);
+    document.failedReason = JSON.stringify(job.failedReason ?? null);
+    document.stacktrace = JSON.stringify(job.stacktrace ?? []);
+
+    return document;
+  }
+
+  /**
+   * Whether a record carries nothing beyond what a brand-new job carries.
+   *
+   * A job in any other shape — restored from elsewhere, added already
+   * finished, mid-retry — has to write every field, because the ones it would
+   * otherwise skip are exactly the ones holding its state.
+   */
+  #isFreshJob(job: JobRecord): boolean {
+    return (
+      job.processedOn === null &&
+      job.finishedOn === null &&
+      job.expiresAt === null &&
+      job.lockToken === null &&
+      job.lockExpiresAt === null &&
+      job.workerId === null &&
+      job.repeatKey === null &&
+      job.attemptsMade === 0 &&
+      job.stalledCount === 0 &&
+      job.progress === null &&
+      job.returnValue === null &&
+      job.failedReason === null &&
+      (job.stacktrace?.length ?? 0) === 0
+    );
   }
 
   /** A stored document as a job record. */
@@ -1540,20 +1646,26 @@ export class MongoDriver implements JobsDriver {
       priority: document.priority,
       runAt: document.runAt,
       createdAt: document.createdAt,
-      processedOn: document.processedOn,
-      finishedOn: document.finishedOn,
-      expiresAt: document.expiresAt,
-      attemptsMade: document.attemptsMade,
+      // Absent and default are the same thing: a brand-new job writes none of
+      // these, and a document stored before that was true writes all of them.
+      // Both have to read back identically.
+      processedOn: document.processedOn ?? null,
+      finishedOn: document.finishedOn ?? null,
+      expiresAt: document.expiresAt ?? null,
+      attemptsMade: document.attemptsMade ?? 0,
       maxAttempts: document.maxAttempts,
-      stalledCount: document.stalledCount,
-      progress: JSON.parse(document.progress) as unknown,
-      returnValue: JSON.parse(document.returnValue) as unknown,
-      failedReason: JSON.parse(document.failedReason) as SerializedError | null,
-      stacktrace: JSON.parse(document.stacktrace) as SerializedError[],
-      lockToken: document.lockToken,
-      lockExpiresAt: document.lockExpiresAt,
-      workerId: document.workerId,
-      repeatKey: document.repeatKey,
+      stalledCount: document.stalledCount ?? 0,
+      progress: parseOrDefault<unknown>(document.progress, null),
+      returnValue: parseOrDefault<unknown>(document.returnValue, null),
+      failedReason: parseOrDefault<SerializedError | null>(
+        document.failedReason,
+        null,
+      ),
+      stacktrace: parseOrDefault<SerializedError[]>(document.stacktrace, []),
+      lockToken: document.lockToken ?? null,
+      lockExpiresAt: document.lockExpiresAt ?? null,
+      workerId: document.workerId ?? null,
+      repeatKey: document.repeatKey ?? null,
     };
   }
 
@@ -1606,6 +1718,46 @@ function isDuplicateKey(error: unknown): boolean {
     error !== null &&
     (error as { code?: number }).code === DUPLICATE_KEY
   );
+}
+
+/**
+ * The positions in an unordered batch that failed because the id was taken.
+ *
+ * Returns `null` when the error is not a batch write failure, or when any of
+ * its write errors is something other than a collision — in both cases the
+ * caller has no business carrying on, so the distinction is "all of these are
+ * duplicates" rather than "some of them are".
+ */
+function duplicateKeyPositions(error: unknown): number[] | null {
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+
+  const writeErrors = (error as { writeErrors?: unknown }).writeErrors;
+
+  if (!Array.isArray(writeErrors) || writeErrors.length === 0) {
+    return null;
+  }
+
+  const positions: number[] = [];
+
+  for (const writeError of writeErrors as { index?: number; code?: number }[]) {
+    if (
+      writeError.code !== DUPLICATE_KEY ||
+      typeof writeError.index !== "number"
+    ) {
+      return null;
+    }
+
+    positions.push(writeError.index);
+  }
+
+  return positions;
+}
+
+/** A JSON field that a brand-new job does not write, and its default. */
+function parseOrDefault<T>(value: string | undefined, fallback: T): T {
+  return value === undefined ? fallback : (JSON.parse(value) as T);
 }
 
 /** Escapes a value for use inside a regular expression. */
