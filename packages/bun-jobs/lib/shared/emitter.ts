@@ -16,6 +16,16 @@ export abstract class TypedEmitterBase<
 > implements TypedEmitter<Events> {
   /** The emitter, absent until something listens. */
   #emitter: EventEmitter | undefined = undefined;
+  /**
+   * Whether a listener may exist for a job-name-scoped event (`completed:sendEmail`).
+   *
+   * Set when one is added, and worked out again from the listeners actually
+   * registered whenever any are removed. It can only err towards `true` — a
+   * `once` listener removes itself without passing through here — which costs
+   * {@link safeEmitScoped} the name it would have built anyway; it never skips
+   * one that is listening.
+   */
+  #hasScoped = false;
 
   /** Returns the emitter, creating it on demand. */
   protected get events(): EventEmitter {
@@ -34,23 +44,43 @@ export abstract class TypedEmitterBase<
     return event as string | symbol;
   }
 
+  /** Notes a listener added for `event`. */
+  #added(event: keyof Events): void {
+    if (typeof event === "string" && event.includes(":")) {
+      this.#hasScoped = true;
+    }
+  }
+
+  /** Works out again whether any scoped listener remains, after a removal. */
+  #removed(): void {
+    this.#hasScoped =
+      this.#emitter
+        ?.eventNames()
+        .some((name) => typeof name === "string" && name.includes(":")) ??
+      false;
+  }
+
   addListener<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.events.addListener(this.#name(event), listener);
+    this.#added(event);
     return this;
   }
 
   on<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.events.on(this.#name(event), listener);
+    this.#added(event);
     return this;
   }
 
   once<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.events.once(this.#name(event), listener);
+    this.#added(event);
     return this;
   }
 
   prependListener<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.events.prependListener(this.#name(event), listener);
+    this.#added(event);
     return this;
   }
 
@@ -59,16 +89,19 @@ export abstract class TypedEmitterBase<
     listener: Events[E],
   ): this {
     this.events.prependOnceListener(this.#name(event), listener);
+    this.#added(event);
     return this;
   }
 
   off<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.#emitter?.off(this.#name(event), listener);
+    this.#removed();
     return this;
   }
 
   removeListener<E extends keyof Events>(event: E, listener: Events[E]): this {
     this.#emitter?.removeListener(this.#name(event), listener);
+    this.#removed();
     return this;
   }
 
@@ -81,6 +114,7 @@ export abstract class TypedEmitterBase<
     } else {
       this.#emitter?.removeAllListeners(this.#name(event));
     }
+    this.#removed();
     return this;
   }
 
@@ -150,6 +184,13 @@ export abstract class TypedEmitterBase<
     ...args: Parameters<Events[E]>
   ): boolean {
     const heard = this.safeEmit(event, ...args);
+
+    // No scoped listener anywhere: skip building a name nobody asked for, on
+    // every event of every job.
+    if (!this.#hasScoped) {
+      return heard;
+    }
+
     const scoped = `${event}:${jobName}` as keyof Events;
 
     if (this.listenerCount(scoped) === 0) {
