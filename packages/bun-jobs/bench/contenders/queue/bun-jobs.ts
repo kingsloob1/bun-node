@@ -29,6 +29,10 @@ function driverConfig(backend: Backend, url: string): DriverConfig {
       return { type: "sql", url, adapter: "sqlite" };
     case "postgres":
       return { type: "sql", url, adapter: "postgres" };
+    case "mysql":
+      return { type: "sql", url, adapter: "mysql" };
+    case "mariadb":
+      return { type: "sql", url, adapter: "mariadb" };
     case "redis":
       return { type: "redis", url };
     case "mongodb":
@@ -168,5 +172,7 @@ export const bunJobsContenders: QueueContender[] = [
   contender("sqlite", "bun-jobs (sqlite)"),
   contender("redis", "bun-jobs (redis)"),
   contender("postgres", "bun-jobs (postgres)"),
+  contender("mysql", "bun-jobs (mysql)"),
+  contender("mariadb", "bun-jobs (mariadb)"),
   contender("mongodb", "bun-jobs (mongodb)"),
 ];

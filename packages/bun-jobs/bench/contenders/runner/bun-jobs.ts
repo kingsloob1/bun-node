@@ -29,6 +29,10 @@ function driverConfig(backend: Backend, url: string): DriverConfig {
       return { type: "sql", url, adapter: "sqlite" };
     case "postgres":
       return { type: "sql", url, adapter: "postgres" };
+    case "mysql":
+      return { type: "sql", url, adapter: "mysql" };
+    case "mariadb":
+      return { type: "sql", url, adapter: "mariadb" };
     case "redis":
       return { type: "redis", url };
     case "mongodb":

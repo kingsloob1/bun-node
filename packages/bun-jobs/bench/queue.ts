@@ -66,7 +66,8 @@ Options:
                           ${ALL_SCENARIOS.join(" | ")}
   -c, --contenders <ids>  Contender(s): comma list or 'all'  (default: all)
   -b, --backends <names>  Backend(s): comma list or 'all'    (default: all)
-                          memory | file | sqlite | redis | postgres | mongodb
+                          memory | file | sqlite | redis | postgres | mysql |
+                          mariadb | mongodb
   -n, --jobs <n>          Jobs per throughput run            (default: 5000)
       --concurrency <n>   Jobs a worker processes at once    (default: 16)
       --consumers <n>     Consumer instances in 'contention' (default: 3)
@@ -219,6 +220,8 @@ const ALL_BACKENDS: Backend[] = [
   "sqlite",
   "redis",
   "postgres",
+  "mysql",
+  "mariadb",
   "mongodb",
 ];
 const backends = select<Backend>(values.backends, ALL_BACKENDS);
