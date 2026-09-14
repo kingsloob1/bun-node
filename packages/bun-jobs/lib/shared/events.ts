@@ -89,6 +89,10 @@ export interface RunnerEventPayloads {
   queued: { runId: string };
   /** A scheduled run was skipped. */
   skipped: { reason: string };
+  /** A run outlived its timeout. */
+  timeout: { runId: string };
+  /** A run was stopped on request, with the reason it was given. */
+  killed: { runId: string; reason: string };
 }
 
 /** The name of any queue event. */
@@ -186,6 +190,38 @@ export function queueEvent<Name extends QueueEventName>(
     origin: event.origin,
     payload,
   } as QueueDriverEvent;
+}
+
+/**
+ * Builds a runner event, with the payload checked against its name — the
+ * runner's counterpart of {@link queueEvent}.
+ */
+export function runnerEvent<Name extends RunnerEventName>(
+  event: {
+    /** The namespace it belongs to. */
+    ns: string;
+    /** The runner it is about. */
+    target: string;
+    /** The event name. */
+    type: Name;
+    /** Token of the emitting process. */
+    origin: string;
+    /** When it happened; defaults to now. */
+    at?: number;
+  },
+  payload: RunnerEventPayloads[Name],
+): RunnerDriverEvent {
+  return {
+    v: 1,
+    ns: event.ns,
+    kind: "runner",
+    target: event.target,
+    type: event.type,
+    ...("runId" in payload ? { id: (payload as { runId: string }).runId } : {}),
+    at: event.at ?? Date.now(),
+    origin: event.origin,
+    payload,
+  } as RunnerDriverEvent;
 }
 
 /**

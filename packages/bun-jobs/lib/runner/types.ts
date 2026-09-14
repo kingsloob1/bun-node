@@ -290,6 +290,13 @@ export interface BunRunnerOptions<TArgs = unknown> {
   syncInterval?: number;
   /** Forward a child's `ctx.logger` calls to the parent's `log` event. */
   forwardLogs?: boolean;
+  /**
+   * Whether this runner publishes its events — started, succeeded, failed,
+   * timeout, killed, queued, skipped — for listeners in other processes, such
+   * as a `JobsNotifier` behind a dashboard. Defaults to `false`: publishing
+   * costs a write per event on backends that store events.
+   */
+  publish?: boolean;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */
@@ -323,6 +330,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
     | "startPaused"
     | "syncInterval"
     | "forwardLogs"
+    | "publish"
   >
 > {
   /** The resolved absolute path (or URL string) of the handler file. */

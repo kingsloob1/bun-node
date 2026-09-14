@@ -4,6 +4,7 @@ import type {
   RunSource,
   RunStatus,
 } from "../drivers/index";
+import type { RunnerEventName, RunnerEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput, Ticker } from "../shared/schedule";
 import type {
@@ -25,6 +26,7 @@ import type {
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
 import { TypedEmitterBase } from "../shared/emitter";
 import { RunnerStoppedError } from "../shared/errors";
+import { runnerEvent } from "../shared/events";
 import { HOST, newId, newToken, parseToken } from "../shared/ids";
 import { stringifyBounded } from "../shared/json";
 import { runnerKey } from "../shared/keys";
@@ -88,6 +90,8 @@ export class BunRunner<
   readonly #key: string;
   /** How runs execute. */
   readonly #executor: Executor;
+  /** Identifies this runner's published events as coming from this process. */
+  readonly #origin = newToken();
   /**
    * Why each active run was asked to stop, by run id, so the `killed` event
    * carries the caller's reason rather than a placeholder.
@@ -616,6 +620,7 @@ export class BunRunner<
     const outcome = { outcome: "skipped", reason } as const;
     await this.#bump({ skipped: 1 });
     this.safeEmit("skipped", outcome);
+    void this.#publish("skipped", { reason: outcome.reason });
     return outcome;
   }
 
@@ -636,6 +641,7 @@ export class BunRunner<
     this.#localQueue.push(trigger);
     await this.#bump({ queued: 1 });
     this.safeEmit("queued", trigger);
+    void this.#publish("queued", { runId: trigger.id });
 
     return { outcome: "queued", position: this.#localQueue.length };
   }
@@ -675,6 +681,7 @@ export class BunRunner<
 
     void this.#bump({ queued: 1 });
     this.safeEmit("queued", { id: trigger.id, args });
+    void this.#publish("queued", { runId: trigger.id });
 
     return {
       outcome: "queued",
@@ -860,6 +867,7 @@ export class BunRunner<
 
     this.#armHeartbeat(runId);
     this.safeEmit("started", record);
+    void this.#publish("started", { runId: record.runId });
 
     return runId;
   }
@@ -969,18 +977,60 @@ export class BunRunner<
     }
   }
 
+  /**
+   * Publishes an event for other processes, when this runner was asked to.
+   *
+   * A failure to publish is logged and swallowed: an observer missing an event
+   * must never fail the run that produced it.
+   */
+  async #publish<Name extends RunnerEventName>(
+    type: Name,
+    payload: RunnerEventPayloads[Name],
+  ): Promise<void> {
+    if (!this.options.publish) {
+      return;
+    }
+
+    try {
+      await this.driver.publish(
+        runnerEvent(
+          { ns: this.namespace, target: this.id, type, origin: this.#origin },
+          payload,
+        ),
+      );
+    } catch (error) {
+      this.#logger.warn("Could not publish a runner event", { error, type });
+    }
+  }
+
   /** Emits the event matching a run's outcome. */
   #emitOutcome(
     record: RunRecord,
     outcome: RunOutcome,
     abortReason: string | undefined,
   ): void {
+    if (outcome.status !== "success") {
+      void this.#publish("failed", {
+        runId: record.runId,
+        error:
+          outcome.error ??
+          serializeError(
+            new Error(`The run ended with status ${outcome.status}`),
+          ),
+      });
+    }
+
     switch (outcome.status) {
       case "success":
         this.safeEmit("finished", record, outcome.result as TResult);
+        void this.#publish("succeeded", {
+          runId: record.runId,
+          durationMs: record.durationMs ?? 0,
+        });
         break;
       case "timeout":
         this.safeEmit("timeout", record);
+        void this.#publish("timeout", { runId: record.runId });
         this.safeEmit(
           "failed",
           record,
@@ -991,6 +1041,10 @@ export class BunRunner<
         break;
       case "killed":
         this.safeEmit("killed", record, abortReason ?? "killed");
+        void this.#publish("killed", {
+          runId: record.runId,
+          reason: abortReason ?? "killed",
+        });
         this.safeEmit(
           "failed",
           record,

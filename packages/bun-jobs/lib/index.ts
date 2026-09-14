@@ -77,6 +77,13 @@ export {
   type SyncBackend,
 } from "./drivers/index";
 
+// One stream of every event in a namespace.
+export {
+  JobsNotifier,
+  type JobsNotifierEvents,
+  type JobsNotifierOptions,
+} from "./notifier";
+
 /* ------------------------------------------------------------------ *
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
@@ -124,7 +131,6 @@ export {
   type StoredLimits,
   toRepeatRecord,
 } from "./queue/index";
-
 /* ------------------------------------------------------------------ *
  * The runner — run a JS/TS file on a schedule or on demand.
  * ------------------------------------------------------------------ */
@@ -161,6 +167,7 @@ export {
   WorkerExecutor,
   type WorkerOptions,
 } from "./runner/index";
+
 export {
   type ConnectionInput,
   type ConnectionOptions,
@@ -188,7 +195,6 @@ export {
   type ParsedCron,
   validateCron,
 } from "./shared/cron";
-
 export { TypedEmitterBase } from "./shared/emitter";
 /* ------------------------------------------------------------------ *
  * Errors — every failure this package raises, each with a stable `code`.
@@ -210,6 +216,7 @@ export {
   UnrecoverableJobError,
   WorkerClosedError,
 } from "./shared/errors";
+export { runnerEvent } from "./shared/events";
 // Reading dates in phrases: the parser interface, and the chrono range.
 export {
   assertDateParser,

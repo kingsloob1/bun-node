@@ -1,4 +1,5 @@
 import type { DriverConfig, JobsDriver } from "./drivers/index";
+import type { JobsNotifierOptions } from "./notifier";
 import type { BackoffStrategy } from "./queue/backoff";
 import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
 import type {
@@ -12,6 +13,7 @@ import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
 import { resolveDriver } from "./drivers/index";
+import { JobsNotifier } from "./notifier";
 import { BackoffStrategies } from "./queue/backoff";
 import { JobDefinitions } from "./queue/definitions";
 import { BunQueue, BunQueueWorker } from "./queue/index";
@@ -54,6 +56,14 @@ export interface BunJobsOptions {
    * given its own. Defaults to `chrono-node`. See `DateParser` for the shape.
    */
   dateParser?: DateParser;
+  /**
+   * Whether every queue, worker and runner created here publishes its events
+   * for other processes — what a `JobsNotifier`, and a dashboard behind one,
+   * listens to. Defaults to `false`, since publishing costs a write per event
+   * on backends that store events. A `publish` option given to one of them
+   * still wins.
+   */
+  publishEvents?: boolean;
 }
 
 /**
@@ -113,6 +123,10 @@ export class BunJobs {
   readonly #registryQueue: string;
   /** Reads dates in phrases for queues created here, when one was given. */
   readonly #dateParser: DateParser | undefined;
+  /** Whether what is created here publishes its events. */
+  readonly #publishEvents: boolean;
+  /** Notifiers opened here, closed with the context. */
+  readonly #notifiers = new Set<JobsNotifier>();
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: BunQueueWorker<any, any> | undefined;
 
@@ -129,6 +143,7 @@ export class BunJobs {
         : undefined;
     this.#defaultJobOptions = options.defaultJobOptions;
     this.#registryQueue = options.registryQueue ?? "jobs";
+    this.#publishEvents = options.publishEvents ?? false;
     this.#dateParser =
       options.dateParser === undefined
         ? undefined
@@ -168,8 +183,10 @@ export class BunJobs {
   runner<TArgs = unknown, TResult = unknown>(
     options: Omit<BunRunnerOptions<TArgs>, "namespace" | "driver">,
   ): BunRunner<TArgs, TResult> {
+    this.#followInNotifiers("runner", options.id);
     return this.runners.add<TArgs, TResult>({
       ...this.#runnerDefaults,
+      ...(this.#publishEvents ? { publish: true } : {}),
       // Children get the config, since an instance cannot be serialised.
       ...(this.#childDriver ? { childDriver: this.#childDriver } : {}),
       ...options,
@@ -191,6 +208,7 @@ export class BunJobs {
     }
 
     const queue = new BunQueue<TData, TResult, TName>(name, {
+      ...(this.#publishEvents ? { publish: true } : {}),
       ...options,
       namespace: this.namespace,
       driver: this.driver,
@@ -200,6 +218,7 @@ export class BunJobs {
     });
 
     this.#queues.set(name, queue);
+    this.#followInNotifiers("queue", name);
     return queue;
   }
 
@@ -210,6 +229,7 @@ export class BunJobs {
     options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
   ): BunQueueWorker<TData, TResult> {
     const worker = new BunQueueWorker<TData, TResult>(name, processor, {
+      ...(this.#publishEvents ? { publish: true } : {}),
       ...options,
       namespace: this.namespace,
       driver: this.driver,
@@ -218,6 +238,7 @@ export class BunJobs {
     });
 
     this.#workers.add(worker);
+    this.#followInNotifiers("queue", name);
     return worker;
   }
 
@@ -527,8 +548,70 @@ export class BunJobs {
     }
   }
 
+  /**
+   * One typed stream of every queue, worker and runner event in this
+   * namespace — or the queues and runners named — including ones created after
+   * it started.
+   *
+   * ```ts
+   * const notifier = await jobs.notifier();
+   * for await (const event of notifier) {
+   *   if (event.kind === "queue" && event.type === "completed") {
+   *     console.log(event.target, event.payload.id);
+   *   }
+   * }
+   * ```
+   *
+   * Hears only what is published: set `publishEvents` here, or `publish` on
+   * the queues, workers and runners concerned, in whichever processes produce
+   * the events. Closed with the context.
+   */
+  async notifier(options?: JobsNotifierOptions): Promise<JobsNotifier> {
+    const notifier = new JobsNotifier(this.driver, this.namespace, options);
+    await notifier.start();
+    this.#notifiers.add(notifier);
+
+    // What this context already created, followed now rather than on the next
+    // discovery pass, within whatever the notifier was asked to follow.
+    const queues = new Set([
+      ...this.#queues.keys(),
+      ...[...this.#workers].map((worker) => worker.queueName),
+    ]);
+    for (const name of queues) {
+      if (notifier.wants("queue", name)) {
+        await notifier.follow("queue", name);
+      }
+    }
+    for (const runner of this.runners.list()) {
+      if (notifier.wants("runner", runner.id)) {
+        await notifier.follow("runner", runner.id);
+      }
+    }
+
+    return notifier;
+  }
+
+  /**
+   * Has every notifier opened here follow a queue or runner this context just
+   * created, straight away rather than on its next discovery pass — which is
+   * what lets a job added the moment its queue is created still be heard.
+   */
+  #followInNotifiers(kind: "queue" | "runner", target: string): void {
+    for (const notifier of this.#notifiers) {
+      // A notifier given a list keeps exactly that list.
+      if (notifier.wants(kind, target)) {
+        void notifier.follow(kind, target).catch(() => undefined);
+      }
+    }
+  }
+
   /** The body of {@link BunJobs.close}, under its hold on the process. */
   async #close(options?: { timeout?: number }): Promise<void> {
+    await Promise.allSettled(
+      [...this.#notifiers].map((notifier) => notifier.close()),
+    );
+    this.#notifiers.clear();
+
     await Promise.allSettled([
       this.runners.stopAll(options),
       ...[...this.#workers].map((worker) => worker.close(options)),
