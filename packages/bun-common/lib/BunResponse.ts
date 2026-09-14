@@ -81,8 +81,11 @@ export class BunResponse<customWebsocketDataType = unknown>
     | undefined = undefined;
 
   #nativeResponse: Response | undefined = undefined;
-  /** Resolvers awaiting the native `Response` (see {@link getNativeResponse}). */
-  #responseWaiters: ((response: Response) => void)[] = [];
+  /**
+   * Resolvers awaiting the native `Response` (see {@link getNativeResponse}).
+   * Allocated on the first waiter — a response nobody awaits costs no array.
+   */
+  #responseWaiters: ((response: Response) => void)[] | undefined = undefined;
   private options: Writable<ResponseInit> = {};
   private headersObj = new Headers();
   private _isLongLived = false;
@@ -97,10 +100,17 @@ export class BunResponse<customWebsocketDataType = unknown>
    * arrival-ordered token. Values are text or binary (`Buffer`, typed array,
    * `DataView`, `ArrayBuffer`); binary is enqueued verbatim.
    */
-  #readableStreamEventMap = new Map<
+  #readableStreamEventMap:
+    | Map<string, string | ArrayBufferView | ArrayBufferLike>
+    | undefined = undefined;
+
+  /** The pending-chunk map, created on the first buffered write. */
+  get #pendingChunks(): Map<
     string,
     string | ArrayBufferView | ArrayBufferLike
-  >();
+  > {
+    return (this.#readableStreamEventMap ??= new Map());
+  }
 
   /** Notifies a parked stream `pull` that data is available to enqueue. */
   #streamWriteNotifier: Deferred<void> | undefined = undefined;
@@ -299,9 +309,9 @@ export class BunResponse<customWebsocketDataType = unknown>
     if (value) {
       this.req.markResponded();
     }
-    if (value && this.#responseWaiters.length) {
+    if (value && this.#responseWaiters !== undefined) {
       const waiters = this.#responseWaiters;
-      this.#responseWaiters = [];
+      this.#responseWaiters = undefined;
       for (const waiter of waiters) {
         waiter(value);
       }
@@ -315,7 +325,7 @@ export class BunResponse<customWebsocketDataType = unknown>
   }
 
   public get isLongLived() {
-    return this.req.socket.keepAlive === true || this._isLongLived || false;
+    return this.req.isKeepAlive || this._isLongLived || false;
   }
 
   public header(key: string, value: string | string[]) {
@@ -457,6 +467,37 @@ export class BunResponse<customWebsocketDataType = unknown>
       body = "";
     }
 
+    // Fast path for the overwhelmingly common case: a string body.
+    //
+    // A string matches none of the branches below (it is not a BunResponse,
+    // Response, Blob, stream, binary view, FormData, URLSearchParams, async
+    // iterable, object or array), so it always falls through to the final
+    // `else`. Reaching that branch means running eleven type guards against a
+    // value the compiler only knows as a wide union, which is megamorphic and
+    // measured at ~162ns — far more than the guards cost in isolation. Testing
+    // `typeof` first skips all of them; the body below mirrors the final
+    // `else` exactly, with `String(body)` elided because it is the identity
+    // for a string.
+    //
+    // Placed after the 204/304/205 handling above, which may itself rewrite
+    // `body` to `""` — still a string, so that case takes this path too and
+    // behaves as it did before.
+    if (typeof body === "string") {
+      if (this.#etagEnabled && !this.hasHeader("ETag") && body) {
+        this.setHeader("ETag", etag(body));
+      }
+
+      // A string body is text — default to `text/plain`.
+      if (!this.options.headers.get("content-type")) {
+        this.options.headers.set("Content-Type", "text/plain");
+      }
+
+      this.response = new Response(body, this.options);
+      // The trailing header merge only runs when the response was *not*
+      // constructed with `this.options`, so it is a no-op here.
+      return this;
+    }
+
     let wasResponseInitSet = false;
     if (body instanceof BunResponse) {
       // Use the already-produced native response when available.
@@ -523,7 +564,10 @@ export class BunResponse<customWebsocketDataType = unknown>
       wasResponseInitSet = true;
       this.response = new Response(bodyToBeSent, this.options);
     } else {
-      let bodyToBeSent = body;
+      // `string` is re-admitted to the type here: the fast path above returned
+      // for a string body, so control flow has narrowed it out, but this branch
+      // still assigns `String(...)` below.
+      let bodyToBeSent = body as typeof body | string;
       if (
         !(
           isNull(bodyToBeSent) ||
@@ -654,7 +698,7 @@ export class BunResponse<customWebsocketDataType = unknown>
     }
 
     if (!this.response && !this.#readableStream) {
-      this.#readableStreamEventMap.clear();
+      this.#readableStreamEventMap?.clear();
 
       const encoder = new TextEncoder();
       this.#readableStream = new ReadableStream(
@@ -663,14 +707,14 @@ export class BunResponse<customWebsocketDataType = unknown>
             this.#readableStreamController = controller;
 
             // Park until a write notifies us instead of busy-polling.
-            if (this.#readableStreamEventMap.size === 0) {
+            if ((this.#readableStreamEventMap?.size ?? 0) === 0) {
               this.#streamWriteNotifier = createDeferred<void>();
               await this.#streamWriteNotifier.promise;
               this.#streamWriteNotifier = undefined;
             }
 
-            for (const key of this.#readableStreamEventMap.keys()) {
-              const value = this.#readableStreamEventMap.get(key);
+            for (const key of this.#pendingChunks.keys()) {
+              const value = this.#pendingChunks.get(key);
 
               // Binary chunks (Buffer, typed array, DataView, ArrayBuffer)
               // are enqueued as bytes; anything else is text-encoded.
@@ -682,7 +726,7 @@ export class BunResponse<customWebsocketDataType = unknown>
                     : encoder.encode(String(value)),
               );
 
-              this.#readableStreamEventMap.delete(key);
+              this.#pendingChunks.delete(key);
             }
           },
           cancel: async (reason: string) => {
@@ -733,11 +777,11 @@ export class BunResponse<customWebsocketDataType = unknown>
 
   private async writeToWritableStream(chunk: unknown) {
     let key = String(Bun.nanoseconds());
-    while (this.#readableStreamEventMap.has(key)) {
+    while (this.#pendingChunks.has(key)) {
       key = `${key}${Bun.nanoseconds()}`;
     }
 
-    this.#readableStreamEventMap.set(
+    this.#pendingChunks.set(
       key,
       chunk as string | ArrayBufferView | ArrayBufferLike,
     );
@@ -825,18 +869,32 @@ export class BunResponse<customWebsocketDataType = unknown>
         resolve(response);
       };
 
-      this.#responseWaiters.push(waiter);
+      (this.#responseWaiters ??= []).push(waiter);
 
       if (enableTimeout) {
         timer = setTimeout(() => {
-          const index = this.#responseWaiters.indexOf(waiter);
+          const index = this.#responseWaiters?.indexOf(waiter) ?? -1;
           if (index !== -1) {
-            this.#responseWaiters.splice(index, 1);
+            this.#responseWaiters?.splice(index, 1);
           }
           reject(new Error("Request Timedout"));
         }, Number(timeout));
       }
     });
+  }
+
+  /**
+   * The native `Response` if one has already been produced, otherwise
+   * `undefined`.
+   *
+   * {@link getNativeResponse} always returns a promise, so awaiting it costs a
+   * `Promise.resolve` plus a microtask tick even when the response is already
+   * settled — which is the common case, since a handler that called `send()`
+   * has produced it synchronously. Callers on a hot path can check this first
+   * and skip both.
+   */
+  public get settledResponse(): Response | undefined {
+    return this.#nativeResponse;
   }
 
   get headersSent() {

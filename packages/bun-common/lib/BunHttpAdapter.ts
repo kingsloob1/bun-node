@@ -21,13 +21,13 @@ import type {
 } from "./index";
 import { EventEmitter } from "node:events";
 import { isIPv4, isIPv6 } from "node:net";
-import { join } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import { BunRouter } from "./BunRouter";
 import { cors } from "./cors";
 import { BunRequest, BunResponse, BunWebSocket } from "./index";
+import { createServeStaticHandler } from "./serveStatic";
 import {
   each,
   get,
@@ -109,7 +109,14 @@ export class BunHttpAdapter<
       etag?: boolean;
       /**
        * Upper bound on the router's matched-pipeline cache before FIFO
-       * eviction. Forwarded to {@link BunRouter}; defaults to 2000.
+       * eviction. Forwarded to {@link BunRouter}; defaults to
+       * {@link DEFAULT_ROUTE_CACHE_MAX} (50 000). Pass `0` to disable the
+       * cache entirely.
+       *
+       * The cache is keyed by resolved path, so a route carrying an id needs
+       * one entry per distinct id seen. Size this above the number of
+       * distinct paths in flight, or set `0` — a value between the two means
+       * every request misses *and* pays eviction.
        */
       routeCacheMax?: number;
       /**
@@ -422,11 +429,16 @@ export class BunHttpAdapter<
         hostname: this._listeningHost,
         development: Bun.env.NODE_ENV !== "production",
         async fetch(nativeRequest: Request, server) {
-          const req = await BunRequest.init(
+          // `BunRequest.init` returns the instance synchronously when no body
+          // or cookie parsing was scheduled. Branching (rather than awaiting
+          // unconditionally) is what banks the saving — `await` on a plain
+          // value still costs a microtask tick.
+          const created = BunRequest.init(
             nativeRequest,
             server,
             that.requestOpts,
           );
+          const req = created instanceof BunRequest ? created : await created;
 
           // DDoS guard: a body that exceeded `parseBody.maxContentLength` is
           // rejected with 413 before any route handler or middleware runs.
@@ -505,10 +517,13 @@ export class BunHttpAdapter<
               return response;
             }
 
-            const nativeResponse = await res.getNativeResponse(
-              that.requestTimeout,
+            // A handler that called `send()` has already produced the native
+            // response synchronously; taking it directly avoids a
+            // `Promise.resolve` plus a microtask tick on the common path.
+            return (
+              res.settledResponse ??
+              (await res.getNativeResponse(that.requestTimeout))
             );
-            return nativeResponse;
           }
 
           return new Response(undefined, {
@@ -641,30 +656,19 @@ export class BunHttpAdapter<
     this._notFoundHandlers.push(handler);
   }
 
+  /**
+   * Serves a directory of files under `options.prefix`.
+   *
+   * Implements the `serve-static` contract in {@link ServeStaticOptions}:
+   * directory indexes, extension fallbacks, dotfile policy, `ETag` /
+   * `Last-Modified` validators (so conditional requests answer `304`),
+   * `Cache-Control` from `maxAge`/`immutable`, and a `404` — not a `500` — for
+   * a path that resolves to nothing. Range requests are served as `206` by Bun.
+   */
   public useStaticAssets(path: string, options: ServeStaticOptions) {
-    const prefix = String(options.prefix || "").toLocaleLowerCase();
+    const { prefix, handler } = createServeStaticHandler(path, options);
 
-    return this.instance.get(`${prefix}/*`, async (req, res) => {
-      let properPath = req.path.toLocaleLowerCase();
-      if (properPath.startsWith(prefix)) {
-        properPath = properPath.substring(prefix.length);
-      }
-
-      if (!properPath.startsWith("/")) {
-        properPath = `/${properPath}`;
-      }
-
-      const filePath = join(path, properPath);
-      const file = Bun.file(filePath);
-      if (await file.exists()) {
-        res.setHeader("Content-Type", file.type || "application/octet-stream");
-
-        res.setHeader("Content-Length", String(file.size));
-        return res.status(200).send(file);
-      } else {
-        throw new Error("NOT_FOUND");
-      }
-    });
+    return this.instance.get(`${prefix}/*`, handler);
   }
 
   public getRequestHostname(request: BunRequest): string {

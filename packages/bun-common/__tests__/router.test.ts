@@ -403,15 +403,138 @@ describe("BunRouter: route cache (routeCacheMax)", () => {
     expect(x2).toEqual(x1);
   });
 
-  it("falls back to the default cap for an invalid routeCacheMax", () => {
-    // 0 is non-positive — rejected in favour of the 2000 default, so a
-    // re-requested signature is still served from cache.
+  it("disables the cache entirely for routeCacheMax: 0", () => {
+    // 0 turns the cache off, so every call re-matches from scratch and
+    // returns a fresh (but equal) array rather than the cached reference.
     const router = new BunRouter({ routeCacheMax: 0 });
     router.get("/z", () => {});
 
     const z1 = layersFor(router, "GET", "/z");
     const z2 = layersFor(router, "GET", "/z");
-    expect(z2).toBe(z1);
+    expect(z2).not.toBe(z1);
+    expect(z2).toEqual(z1);
+    // Still routes correctly with the cache off.
+    expect(z2).toHaveLength(1);
+  });
+
+  it("keeps nothing cached while disabled", async () => {
+    const router = new BunRouter({ routeCacheMax: 0 });
+    router.get("/nocache", (_req, res) => res.send("ok"));
+
+    layersFor(router, "GET", "/nocache");
+    layersFor(router, "GET", "/nocache");
+
+    // clearRouteCache stays a no-op — there is nothing to clear.
+    expect(router.clearRouteCache()).toBe(router);
+
+    const request = await makeRequest({ url: "http://localhost/nocache" });
+    const response = new BunResponse(request);
+    await router.handle({
+      requestHost: request.host,
+      requestMethod: "GET",
+      requestUrl: "/nocache",
+      request,
+      response,
+    });
+    expect(await response.getNativeResponse().then((r) => r.text())).toBe("ok");
+  });
+
+  it("falls back to the default cap for a negative routeCacheMax", () => {
+    // Negative is invalid (not a request to disable) — the 2000 default
+    // applies, so a re-requested signature is served from cache.
+    const router = new BunRouter({ routeCacheMax: -5 });
+    router.get("/neg", () => {});
+
+    const n1 = layersFor(router, "GET", "/neg");
+    const n2 = layersFor(router, "GET", "/neg");
+    expect(n2).toBe(n1);
+  });
+});
+
+describe("BunRouter: direct route matching (no routejs LRU)", () => {
+  it("extracts required, optional and catch-all params identically", async () => {
+    const router = new BunRouter();
+    const seen: Record<string, unknown>[] = [];
+    router.get("/user/:id", (req, res) => {
+      seen.push({ ...req.params });
+      res.send("ok");
+    });
+    router.get("/search/:category/:page?", (req, res) => {
+      seen.push({ ...req.params });
+      res.send("ok");
+    });
+    router.get("/assets/*", (req, res) => {
+      seen.push({ ...req.params });
+      res.send("ok");
+    });
+
+    async function hit(path: string) {
+      const request = await makeRequest({ url: `http://localhost${path}` });
+      const response = new BunResponse(request);
+      await router.handle({
+        requestHost: request.host,
+        requestMethod: "GET",
+        requestUrl: path,
+        request,
+        response,
+      });
+    }
+
+    await hit("/user/42");
+    await hit("/search/books");
+    await hit("/search/books/2");
+    await hit("/assets/css/site/app.css");
+
+    expect(seen[0]).toEqual({ id: "42" });
+    expect(seen[1]).toEqual({ category: "books" });
+    expect(seen[2]).toEqual({ category: "books", page: "2" });
+    expect(seen[3]).toEqual({ 0: "css/site/app.css" });
+  });
+
+  it("percent-decodes param values", async () => {
+    const router = new BunRouter();
+    let captured: string | undefined;
+    router.get("/user/:name", (req, res) => {
+      captured = req.params.name as string;
+      res.send("ok");
+    });
+
+    const path = "/user/ada%20lovelace";
+    const request = await makeRequest({ url: `http://localhost${path}` });
+    const response = new BunResponse(request);
+    await router.handle({
+      requestHost: request.host,
+      requestMethod: "GET",
+      requestUrl: path,
+      request,
+      response,
+    });
+
+    expect(captured).toBe("ada lovelace");
+  });
+
+  it("rejects a non-matching method and a non-matching path", () => {
+    const router = new BunRouter();
+    router.post("/only-post", () => {});
+
+    expect(layersFor(router, "GET", "/only-post")).toHaveLength(0);
+    expect(layersFor(router, "POST", "/only-post")).toHaveLength(1);
+    expect(layersFor(router, "POST", "/nope")).toHaveLength(0);
+  });
+
+  it("stays correct across more distinct paths than any internal cache holds", () => {
+    // Exercises the path that used to thrash routejs's 250-entry per-route
+    // LRU: every one of these must still match and carry the right param.
+    const router = new BunRouter({ routeCacheMax: 16 });
+    router.get("/item/:id", () => {});
+
+    for (let i = 0; i < 600; i++) {
+      const layers = layersFor(router, "GET", `/item/${i}`);
+      expect(layers).toHaveLength(1);
+      expect((layers[0].matched.params as Record<string, string>).id).toBe(
+        String(i),
+      );
+    }
   });
 });
 

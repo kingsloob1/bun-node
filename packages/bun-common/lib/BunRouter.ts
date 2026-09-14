@@ -135,6 +135,19 @@ function normalizeCatchAllPath(path: string): string {
 }
 
 /**
+ * Default cap on the matched-pipeline cache (`routeCacheMax`).
+ *
+ * The cache is keyed by *resolved path*, so a route carrying an id consumes one
+ * entry per distinct id seen — its size tracks traffic, not the route table.
+ * Sized below the live path set, every request both misses and pays eviction,
+ * which is strictly worse than no cache at all; the cap is therefore set high
+ * enough to cover realistic id cardinality. Entries are small (an array of
+ * layer descriptors referencing existing callbacks), so the memory ceiling is
+ * modest. Override per adapter, or pass `0` to disable the cache.
+ */
+export const DEFAULT_ROUTE_CACHE_MAX = 50_000;
+
+/**
  * A `@routejs/router` `Route` tagged with BunRouter metadata:
  * - `routerGroupId` — `undefined`/`0` for the router's own routes, a positive
  *   id for routes flattened in by `use(subRouter)`;
@@ -152,7 +165,9 @@ export class BunRouter extends Router {
 
   /**
    * Upper bound on {@link routeCacheLayers} entries before FIFO eviction.
-   * Set via the `routeCacheMax` constructor option; defaults to 2000.
+   * Set via the `routeCacheMax` constructor option; defaults to
+   * {@link DEFAULT_ROUTE_CACHE_MAX}. `0` means the cache is disabled and every
+   * request matches from scratch.
    */
   private readonly routeCacheMax: number;
 
@@ -191,8 +206,14 @@ export class BunRouter extends Router {
       logger?: Logger;
       /**
        * Upper bound on the matched-pipeline cache before FIFO eviction kicks
-       * in. Defaults to 2000; a non-positive or invalid value falls back to
-       * the default.
+       * in. Defaults to {@link DEFAULT_ROUTE_CACHE_MAX} (50 000). Pass `0` to
+       * disable the cache entirely (every request then matches from scratch);
+       * a negative or non-numeric value falls back to the default.
+       *
+       * The cache is keyed by resolved path, so a route carrying an id needs
+       * one entry per distinct id seen. Size this above the number of distinct
+       * paths in flight, or set `0` — a value between the two means every
+       * request misses *and* pays eviction.
        */
       routeCacheMax?: number;
       /**
@@ -204,9 +225,15 @@ export class BunRouter extends Router {
   ) {
     super(pick(localOptions, ["caseSensitive", "host"]));
 
+    // `0` disables the cache; a positive value caps it; anything else
+    // (negative, non-numeric, absent) falls back to the default.
     const max = localOptions?.routeCacheMax;
-    this.routeCacheMax =
-      isNumeric(max) && Number(max) > 0 ? Math.floor(Number(max)) : 2000;
+    if (isNumeric(max)) {
+      const parsed = Math.floor(Number(max));
+      this.routeCacheMax = parsed >= 0 ? parsed : DEFAULT_ROUTE_CACHE_MAX;
+    } else {
+      this.routeCacheMax = DEFAULT_ROUTE_CACHE_MAX;
+    }
 
     this.#routeSpecificity = localOptions?.routeSpecificity ?? false;
   }
@@ -1265,6 +1292,102 @@ export class BunRouter extends Router {
   }
 
   /**
+   * Matches one route against a request, replacing `@routejs/router`'s
+   * `Route.match`.
+   *
+   * Semantics are identical — same host/method/path rules, same
+   * `decodeURIComponent`'d params and subdomains, `false` for no match — but
+   * routejs memoizes every `RegExp.exec` in a 250-entry LRU per route, and that
+   * LRU costs far more than the regex it caches: measured at 1793ns per call
+   * once the path set exceeds its capacity, against 70ns to simply run the
+   * regex. Since the number of *distinct paths* in real traffic is unbounded
+   * (any route with an id in it), that LRU thrashes permanently in production
+   * and turns a sub-microsecond match into a multi-microsecond one.
+   *
+   * Executing the precompiled regexes directly removes the memoization, and
+   * with it the cliff: cost becomes flat in path cardinality.
+   *
+   * The checks run cheapest-first (method, then path, then host) rather than in
+   * routejs's order; every rejection path returns the same `false`, so the
+   * reordering is observationally identical while skipping work sooner.
+   */
+  private matchRoute(
+    route: Route,
+    requestHost: string,
+    requestMethod: string,
+    requestPath: string,
+  ): matchedRoute | false {
+    const pathRegexp = route.pathRegexp;
+    if (pathRegexp === null || pathRegexp === undefined) {
+      return false;
+    }
+
+    // 1. Method — a string compare, so it rejects non-matching routes first.
+    const routeMethod = route.method;
+    if (routeMethod) {
+      const method = requestMethod.toUpperCase();
+      if (isArray(routeMethod)) {
+        if (!routeMethod.includes(method)) {
+          return false;
+        }
+      } else if (method !== routeMethod) {
+        return false;
+      }
+    }
+
+    // 2. Path.
+    const pathMatch = pathRegexp.exec(requestPath);
+    if (pathMatch === null) {
+      return false;
+    }
+
+    // 3. Host — only routes that declare one pay for this.
+    let subdomains: Record<string, string> = {};
+    const hostRegexp = route.hostRegexp;
+    if (hostRegexp) {
+      const hostMatch = hostRegexp.exec(requestHost);
+      if (hostMatch === null) {
+        return false;
+      }
+
+      const subdomainNames = route.subdomains;
+      if (hostMatch.length > 1 && subdomainNames && subdomainNames.length > 0) {
+        subdomains = {};
+        for (let i = 1; i < hostMatch.length; i++) {
+          const name = subdomainNames[i - 1];
+          const value = hostMatch[i];
+          if (name !== undefined && value !== undefined) {
+            subdomains[name] = decodeURIComponent(value);
+          }
+        }
+      }
+    }
+
+    const params: Record<string, string> = {};
+    const paramNames = route.params;
+    if (pathMatch.length > 1 && paramNames && paramNames.length > 0) {
+      for (let i = 1; i < pathMatch.length; i++) {
+        const name = paramNames[i - 1];
+        const value = pathMatch[i];
+        if (name !== undefined && value !== undefined) {
+          params[name] = decodeURIComponent(value);
+        }
+      }
+    }
+
+    // Mirrors routejs: the returned descriptor carries the *route's* own host,
+    // method and path, not the request's.
+    return {
+      host: route.host,
+      method: route.method,
+      path: route.path,
+      callbacks: route.callbacks,
+      params,
+      subdomains,
+    } as matchedRoute;
+  }
+
+  /**
    * BunRouter's built-in specificity ranking — the comparators used when the
    * `routeSpecificity` option is `true`. Orders matched route handlers most
    * specific first; middleware ordering is untouched.
@@ -1323,13 +1446,18 @@ export class BunRouter extends Router {
    * be treated as read-only.
    */
   getMatchedLayers(options: RouteMatchMethodOptionType): MatchedLayer[] {
-    const cacheKey = this.getCacheKey(options);
     const cache = this.routeCacheLayers;
+    // `routeCacheMax: 0` disables the cache outright — skip building the key so
+    // a disabled cache costs nothing, not even its string concatenation.
+    const cacheEnabled = this.routeCacheMax > 0;
+    const cacheKey = cacheEnabled ? this.getCacheKey(options) : "";
 
-    // Fast path: a single `Map.get`, no allocation, no bookkeeping.
-    const cached = cache.get(cacheKey);
-    if (cached !== undefined) {
-      return cached;
+    if (cacheEnabled) {
+      // Fast path: a single `Map.get`, no allocation, no bookkeeping.
+      const cached = cache.get(cacheKey);
+      if (cached !== undefined) {
+        return cached;
+      }
     }
 
     const requestPath =
@@ -1339,13 +1467,14 @@ export class BunRouter extends Router {
     // 1. Match every route, preserving registration order.
     const entries = routes
       .map((route, routeIndex) => {
-        const matched = route.match({
-          host: options.requestHost,
-          method: options.requestMethod,
-          path: requestPath,
-        }) as matchedRoute;
+        const matched = this.matchRoute(
+          route,
+          options.requestHost,
+          options.requestMethod,
+          requestPath,
+        );
 
-        if (!isObject(matched)) {
+        if (matched === false) {
           return undefined;
         }
 
@@ -1420,14 +1549,17 @@ export class BunRouter extends Router {
       }
     }
 
-    // 5. Cache, evicting the least-recently-used entry when full.
-    if (cache.size >= this.routeCacheMax) {
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) {
-        cache.delete(oldest);
+    // 5. Cache, evicting the oldest entry when full. Skipped entirely when the
+    //    cache is disabled (`routeCacheMax: 0`).
+    if (cacheEnabled) {
+      if (cache.size >= this.routeCacheMax) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) {
+          cache.delete(oldest);
+        }
       }
+      cache.set(cacheKey, layers);
     }
-    cache.set(cacheKey, layers);
 
     return layers;
   }

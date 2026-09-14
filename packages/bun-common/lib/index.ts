@@ -187,9 +187,11 @@ export {
   type QueryParserOpts,
 } from "./BunRequest";
 export { BunResponse } from "./BunResponse";
+export { createServeStaticHandler } from "./serveStatic";
 export {
   BunRouter,
   type CachedRouteMatch,
+  DEFAULT_ROUTE_CACHE_MAX,
   type matchedRoute,
   RouteClass,
   type RouteConstructorOption,

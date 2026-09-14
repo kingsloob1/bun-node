@@ -187,6 +187,24 @@ export interface ServeStaticOptions {
    * Creates a virtual path prefix
    */
   prefix?: string;
+
+  /**
+   * How long, in milliseconds, a resolved path (its size, mtime, content type
+   * and ETag) stays memoised before the filesystem is consulted again.
+   * Defaults to 1000. Set `0` to disable and stat on every request.
+   *
+   * Only metadata is cached, never file contents — the response still streams
+   * the file from disk. A file replaced within the window may be served with
+   * the previous length or validators for up to this long.
+   */
+  metadataCacheTtl?: number;
+
+  /**
+   * Maximum number of paths held in the metadata cache before the oldest is
+   * evicted. Defaults to 1024. Keyed by resolved path, so its size is bounded
+   * by the asset tree rather than by request volume.
+   */
+  metadataCacheMax?: number;
 }
 
 export interface SendFileOptions {

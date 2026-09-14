@@ -104,11 +104,15 @@ async function main(): Promise<void> {
     benchSync("req.method getter", "BunRequest", () => req.method);
     benchSync("req.headers getter (cached)", "BunRequest", () => req.headers);
   }
-  benchSync("req.host getter (cold → new URL)", "BunRequest", () => {
+  // Both getters go through `splitRequestUrl()` — a single string scan, not a
+  // `new URL()` — and share its cached result. Each figure below builds a fresh
+  // request per iteration, so it includes construction (~73ns) plus one cold
+  // scan; the second getter on the same request is effectively free.
+  benchSync("req.host (fresh request: construct + url scan)", "BunRequest", () => {
     sink = makeBunRequest().host;
   });
   benchSync(
-    "req.originalUrl getter (cold → new URL)",
+    "req.originalUrl (fresh request: construct + url scan)",
     "BunRequest",
     () => {
       sink = makeBunRequest().originalUrl;

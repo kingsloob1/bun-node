@@ -238,4 +238,23 @@ describe("BunHttpAdapter: routeCacheMax option", () => {
     match("/y");
     expect(match("/x")).toBe(x1);
   });
+
+  it("disables the router cache for routeCacheMax: 0", () => {
+    const adapter = new BunHttpAdapter(0, { routeCacheMax: 0 });
+    adapter.get("/x", () => {});
+
+    const match = (path: string) =>
+      adapter.instance.getMatchedLayers({
+        requestHost: "localhost",
+        requestMethod: "GET",
+        requestUrl: path,
+      });
+
+    const first = match("/x");
+    const second = match("/x");
+    // Nothing is cached, so each call rebuilds an equal but distinct array.
+    expect(second).not.toBe(first);
+    expect(second).toEqual(first);
+    expect(second).toHaveLength(1);
+  });
 });
