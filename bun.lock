@@ -61,6 +61,7 @@
         "@antfu/eslint-config": "^9.0.0",
         "@types/bun": "^1.4.2",
         "bun-types": "^1.4.2",
+        "chrono-node": "^2.7.0",
         "eslint": "^10.5.0",
         "eslint-config-prettier": "^10.0.1",
         "eslint-plugin-prettier": "^5.5.6",
@@ -70,10 +71,14 @@
       },
       "peerDependencies": {
         "@types/bun": ">=1.4.2",
+        "chrono-node": ">=2.7",
+        "mongodb": ">=6",
         "typescript": "^5.9.3",
       },
       "optionalPeers": [
         "@types/bun",
+        "chrono-node",
+        "mongodb",
       ],
     },
     "packages/bun-nest": {
@@ -768,6 +773,8 @@
     "chardet": ["chardet@2.1.0", "", {}, "sha512-bNFETTG/pM5ryzQ9Ad0lJOTa6HWD/YsScAR3EnCPZRPlQh77JocYktSHOUHelyhm8IARL+o4c4F1bP5KVOjiRA=="],
 
     "chownr": ["chownr@3.0.0", "", {}, "sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g=="],
+
+    "chrono-node": ["chrono-node@2.10.1", "", {}, "sha512-tPOsBzYVAK5zth+CiHCgp5NGeqRc4mMD8FPthQ5IxkgjPWWxIFdM5odnmfw//IRAzl6C++Xy8olQW7wn5qBR1g=="],
 
     "ci-info": ["ci-info@4.3.1", "", {}, "sha512-Wdy2Igu8OcBpI2pZePZ5oWjPC38tmDVx5WKUXKwlLYkA0ozo85sLsLvkBbBn/sZaSCMFOGZJ14fvW9t5/d7kdA=="],
 

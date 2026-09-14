@@ -22,18 +22,283 @@ export interface SqlDialect {
   placeholder: (index: number) => string;
   /** Column type for a JSON document. */
   readonly jsonType: string;
-  /** Column type for an identifier: bounded on MySQL, whose indexes are. */
+  /**
+   * A partial-index predicate, or `""` on an engine without them.
+   *
+   * An index over a column that is null for most rows still stores an entry
+   * for every one of them, and a queue table is mostly rows that have not run:
+   * `lock_expires_at` and `expires_at` are null for all of them. Excluding
+   * those rows makes the index hold only what it is asked about, and takes the
+   * write off the insert path — measured with the other index changes, 179.1ms
+   * against 158.0ms for 5,000 rows.
+   *
+   * Only safe for a predicate every query on the index implies. Both callers
+   * qualify: a lapsed lock is read as `lock_expires_at <= $now`, and expiry as
+   * `expires_at IS NOT NULL AND expires_at <= $now`, neither of which can match
+   * a null.
+   */
+  partialIndex: (predicate: string) => string;
+  /**
+   * `CONCURRENTLY `, or `""` where the engine has no such thing.
+   *
+   * Building an index normally holds a lock that blocks writes for as long as
+   * it takes, which on a queue table means the queue stops. Postgres can build
+   * one without that lock at the cost of a second pass. Only used by
+   * `syncSchema`: the initial `createSchema` runs against a table that is
+   * empty or already in use by this process alone, and `CONCURRENTLY` cannot
+   * run inside a transaction.
+   */
+  readonly concurrentIndex: string;
+  /**
+   * A query listing a table's columns as `name`, `type` and `collation`.
+   *
+   * Takes the table name as its one bind parameter. The `type` is whatever the
+   * engine calls it, which is rarely what the DDL said — Postgres answers
+   * `character varying` for a `VARCHAR(191)` — so a comparison has to go
+   * through {@link SqlDialect.normalizeType}.
+   *
+   * `collation` is the column's collation where the engine reports one and the
+   * driver declares one: MySQL and MariaDB. Elsewhere it is `NULL`, and a sync
+   * compares only types.
+   */
+  describeColumns: (table: string) => string;
+  /**
+   * A query listing a table's indexes as `name`, `definition` and `columns`.
+   *
+   * `definition` is the engine's own rendering where it has one, and `''`
+   * where it does not; a sync reads a predicate and per-column collations out
+   * of it. `columns` is the index's column names in order, comma-separated,
+   * where the engine does not render a definition — MySQL and MariaDB — and
+   * `NULL` elsewhere, so an index whose columns changed is still noticed there.
+   */
+  describeIndexes: (table: string) => string;
+  /**
+   * Whether the claim index names `id` as its last column.
+   *
+   * Only MySQL. Claim order is `priority, created_at, id`, and InnoDB appends
+   * the primary key to every secondary index, so the index already ends in
+   * `id` — MariaDB and Postgres (whose index has no such suffix, and plans the
+   * tie-break differently) read it in that order. MySQL 8.4 does not use the
+   * implicit suffix to satisfy an `ORDER BY`: it reads every row of the queue
+   * through the primary key and sorts them, 9.3ms for one job from a queue of
+   * 20,000 against 0.29ms with `id` named, and a claim window that skips names
+   * is no longer bounded at all. Naming it makes the key 3,068 bytes, inside
+   * InnoDB's 3,072.
+   */
+  readonly claimIndexNamesId: boolean;
+  /** Adds one column to an existing table. */
+  addColumn: (table: string, column: string) => string;
+  /**
+   * Changes one column's type or collation, or `null` where the engine cannot.
+   *
+   * Rewrites the table under a lock that blocks everything, so this is never
+   * run unless it was explicitly asked for.
+   *
+   * `suffix` is the rest of the column's definition — `NOT NULL`, a default.
+   * MySQL's `MODIFY COLUMN` replaces the whole definition, so leaving it out
+   * would silently make a `NOT NULL` column nullable; Postgres changes only the
+   * type and ignores it.
+   */
+  alterColumnType: (
+    table: string,
+    column: string,
+    type: string,
+    suffix?: string,
+  ) => string | null;
+  /**
+   * Changes several columns of one table in a single statement, or `null`
+   * where the engine cannot.
+   *
+   * What a sync actually runs. Each `ALTER TABLE` that retypes or recollates
+   * a column copies the whole table under a lock, so nine columns changed one
+   * statement at a time are nine copies; MySQL, MariaDB and Postgres all apply
+   * every clause of one `ALTER TABLE` in a single rewrite.
+   */
+  alterColumnTypes: (
+    table: string,
+    columns: readonly AlterColumn[],
+  ) => string | null;
+  /**
+   * Whether `CREATE INDEX` takes `IF NOT EXISTS`.
+   *
+   * MySQL's does not — MariaDB's and every other engine's here do — so on
+   * MySQL an index that already exists makes the statement fail, and creating
+   * the schema stays repeatable only because that one failure is recognised by
+   * {@link SqlDialect.isDuplicateIndex} and ignored.
+   */
+  readonly indexIfNotExists: boolean;
+  /**
+   * Whether an error is "an index by that name already exists", which a
+   * repeated `CREATE INDEX` without `IF NOT EXISTS` raises.
+   */
+  isDuplicateIndex: (error: unknown) => boolean;
+  /** Drops an index. MySQL needs the table; the others do not. */
+  dropIndex: (name: string, table: string) => string;
+  /**
+   * The engine's name for a type, reduced to something comparable.
+   *
+   * Conservative on purpose: anything it cannot confidently reduce is left
+   * alone, so two spellings of one type read as equal rather than provoking a
+   * table rewrite. A missed change costs an optimisation; a wrong one costs an
+   * outage.
+   */
+  normalizeType: (type: string) => string;
+  /**
+   * Column type for an identifier: an id, a queue, a state, a key, a token.
+   *
+   * Identifiers are compared exactly — case, accents and trailing spaces
+   * included — and ordered by code point, on every engine. Postgres and
+   * SQLite's default collations are already exact for equality, so `TEXT` is
+   * enough there. MySQL and MariaDB default to case- and accent-insensitive
+   * collations (`utf8mb4_uca1400_ai_ci` on MariaDB 11), under which `Report`
+   * and `report` are one primary key; their type names a binary, `NO PAD`
+   * collation explicitly. `NO PAD` because the plain `utf8mb4_bin` pads, which
+   * makes `a` and `a ` equal.
+   *
+   * Bounded on MySQL and MariaDB, whose index keys are: 191 characters is 764
+   * bytes in utf8mb4, and the widest key here, three of them plus two
+   * integers, stays under InnoDB's 3,072-byte limit. The collation does not
+   * change the width.
+   */
   readonly idType: string;
+  /**
+   * Column type for an identifier with no length bound: a job's name.
+   *
+   * Compared exactly for the same reason as {@link SqlDialect.idType} — a
+   * claim that skips `Report` must not skip `report` — but never indexed, so
+   * it need not be bounded.
+   */
+  readonly nameType: string;
+  /**
+   * The collation, as written after `COLLATE`, that orders an identifier
+   * column by code point where the column's own collation does not; `null`
+   * where it already does.
+   *
+   * Only Postgres: its `TEXT` sorts by the database's locale, which in
+   * `en_US.utf8` puts `a` before `B`, and `"C"` is byte order — for UTF-8,
+   * code-point order. SQLite's default `BINARY` and the binary collation
+   * {@link SqlDialect.idType} gives MySQL and MariaDB already are. An index
+   * carrying it is what lets a code-point range use an index at all.
+   */
+  readonly codePointCollation: string | null;
   /** Column type for an epoch-millisecond timestamp. */
   readonly timeType: string;
   /** Column type for an auto-incrementing primary key. */
   readonly serialType: string;
+  /**
+   * Column type for free text of any length: a job's log line.
+   *
+   * `TEXT` everywhere except MySQL and MariaDB, where `TEXT` stops at 64KB and
+   * a longer value is an error in strict mode — one stack trace logged whole
+   * is enough to hit it. `MEDIUMTEXT` holds 16MB.
+   */
+  readonly longTextType: string;
+  /**
+   * An expression that is `column`, a JSON object, with `key` set to the
+   * integer bound at `placeholder`.
+   *
+   * Used to keep a job's `opts.priority` in step with its `priority` column
+   * without reading the document back first. The value is cast to an integer
+   * in the expression, because the clients bind numbers as doubles on some
+   * engines and the document would otherwise say `1.0`.
+   */
+  jsonSetInteger: (column: string, key: string, placeholder: string) => string;
+  /**
+   * An integer read out of the JSON object in `column` at `key`, as an
+   * expression that compares with `=` against a bound number.
+   *
+   * A queue-state entry keeps its version inside its document, and the
+   * compare-and-set is a `WHERE` on it. The field is extracted rather than the
+   * document compared because Postgres' `json` type has no equality operator
+   * at all, and cast to an integer because each engine's extraction otherwise
+   * yields its own text or JSON type.
+   */
+  jsonInteger: (column: string, key: string) => string;
+  /**
+   * Wraps a placeholder bound to JSON text so the engine stores the document
+   * it holds, not a JSON string containing it.
+   *
+   * Only Postgres needs it: bound as untyped text into a `json` or `jsonb`
+   * column, the text is stored as a JSON *string*, and extracting a field from
+   * a string yields `NULL`. `jsonOut` parses twice, so whole-document reads
+   * never notice — {@link SqlDialect.jsonInteger} does. MySQL parses a string
+   * assigned to a `JSON` column, and SQLite stores text either way.
+   */
+  jsonParameter: (placeholder: string) => string;
   /** Whether `UPDATE … RETURNING` is available. MariaDB's is not. */
   readonly supportsReturning: boolean;
   /** Whether `FOR UPDATE SKIP LOCKED` is available. */
   readonly supportsSkipLocked: boolean;
-  /** An insert that silently does nothing when the row exists. */
-  insertIgnore: (table: string, columns: string[]) => string;
+  /**
+   * An insert that silently does nothing when the row exists.
+   *
+   * `values` are the rendered value expressions, one per column, for a caller
+   * that needs more than a bare placeholder in a position (a cast, say).
+   * Omitted, each column gets its own placeholder in order.
+   */
+  insertIgnore: (table: string, columns: string[], values?: string[]) => string;
+  /**
+   * An insert that reads its rows out of one JSON document.
+   *
+   * Optional, because only Postgres has the function for it. Where it exists it
+   * replaces a multi-row `VALUES`, and the difference is the parameter count:
+   * 500 jobs of 24 columns is 12,000 bind parameters as `VALUES` and exactly
+   * one this way. Measured, 20,166/s against 29,525/s for the same rows.
+   *
+   * `columnTypes` describes the record the document is expanded into, one type
+   * per column, in {@link JOB_COLUMNS} order.
+   */
+  insertIgnoreFromJson?: (
+    table: string,
+    columns: readonly string[],
+    columnTypes: readonly string[],
+  ) => string;
+  /**
+   * The same insert for several rows at once.
+   *
+   * One statement per batch instead of one per job: adding 5,000 jobs was
+   * 5,000 serially awaited inserts, which is the whole of the gap against
+   * libraries that write a batch in one go. Parameters are flattened row by
+   * row, so the caller passes `rows * columns` values in that order.
+   */
+  insertIgnoreMany: (
+    table: string,
+    columns: readonly string[],
+    rows: number,
+  ) => string;
+  /**
+   * The same batch insert with no conflict handling at all.
+   *
+   * For a caller that has already established every id is free. `ON CONFLICT
+   * DO NOTHING` is not a cheap clause — it makes Postgres insert
+   * speculatively, taking a token and probing the index before it commits to
+   * the tuple, and measured on 5,000 rows that is 134ms against 78ms for the
+   * same insert without it. A separate `SELECT` of the taken ids costs far
+   * less than the clause does, so asking first and inserting plainly is 49%
+   * quicker end to end.
+   *
+   * The caller must handle a unique violation, because asking first leaves a
+   * window: another producer can take one of those ids between the look and
+   * the write. That is what {@link SqlDialect.isUniqueViolation} is for.
+   */
+  insertFromJson?: (
+    table: string,
+    columns: readonly string[],
+    columnTypes: readonly string[],
+  ) => string;
+  /** {@link SqlDialect.insertFromJson} for engines binding a value per column. */
+  insertMany: (
+    table: string,
+    columns: readonly string[],
+    rows: number,
+  ) => string;
+  /**
+   * Whether an error is "that id is already taken".
+   *
+   * The one error the insert path expects and recovers from, rather than
+   * failing the call.
+   */
+  isUniqueViolation: (error: unknown) => boolean;
   /** An upsert that overwrites the named columns when the row exists. */
   upsert: (
     table: string,
@@ -65,6 +330,15 @@ export interface SqlDialect {
   /** Takes one specific job, for the same engines. */
   claimById: (options: ClaimStatementOptions, id: string) => string;
   /**
+   * The last row of the window a claim that skips names looks at from
+   * `options.after`, as `priority`, `created_at` and `id` — or no row when the
+   * window is not full, which means it reached the end of the queue.
+   *
+   * The claim only reports what it took. Resuming past the rows it passed over
+   * needs to know where they ended, and every name counts here, skipped or not.
+   */
+  claimWindowEnd: (options: ClaimStatementOptions) => string;
+  /**
    * How many rows a write affected.
    *
    * Not every engine reports it the same way: Postgres and SQLite put it on
@@ -73,18 +347,93 @@ export interface SqlDialect {
    */
   affectedRows: (result: unknown, connection: SQL) => Promise<number>;
   /**
+   * Whether the claim statement needs a transaction wrapped around it.
+   *
+   * Postgres does not: its data-modifying CTE is atomic on its own, and the
+   * wrapper measured 0.31ms of a 1.16ms claim — 27% for nothing. SQLite does,
+   * because `BEGIN IMMEDIATE` *is* its exclusivity, and MySQL and MariaDB do,
+   * because their claim is more than one statement.
+   */
+  readonly claimNeedsTransaction: boolean;
+  /**
+   * Whether the engine can push a notification to a waiting connection.
+   *
+   * Only Postgres, through `LISTEN`/`NOTIFY`. Everywhere else a worker polls to
+   * notice a new job, which is why the poll interval sets the tail of the
+   * round-trip latency on those engines and not on this one.
+   */
+  readonly supportsListen: boolean;
+  /**
+   * Wraps an insert so it also signals `channel` for the rows it writes.
+   *
+   * The signal rides along with the write rather than following it. A separate
+   * `NOTIFY` is a second round trip charged to every `add()` in order to save
+   * latency for a consumer that may not even exist; inside the statement it is
+   * free. Postgres collapses repeated notifications carrying the same payload
+   * within one transaction, so a 500-row insert still delivers exactly one.
+   *
+   * Returns the statement unchanged on an engine that cannot do it.
+   */
+  notifyingInsert: (statement: string, channel: string) => string;
+  /**
    * Whether a write needs its own connection so {@link affectedRows} can ask
    * the server what it just did.
    */
   readonly countsNeedSameConnection: boolean;
   /** Runs `fn` inside a transaction. */
   transaction: <T>(sql: SQL, fn: (tx: SQL) => Promise<T>) => Promise<T>;
+  /**
+   * Refreshes the planner's statistics for a table, or `null` where the engine
+   * has no such notion.
+   *
+   * A queue table is the worst case for a cost-based planner: it goes from
+   * empty to thousands of rows in a burst and back again, and autovacuum's
+   * defaults are written for tables that change slowly. Measured on Postgres,
+   * the claim statement took 25.9ms with stale statistics and 0.668ms with
+   * fresh ones — the *same plan* either way, so it is not a plan choice going
+   * wrong, and no amount of index work fixes it.
+   */
+  analyze: (table: string) => string | null;
+  /**
+   * A query yielding the table's estimated row count as `n`, or `null` where
+   * the engine cannot estimate one cheaply.
+   *
+   * Sizes how often {@link SqlDialect.analyze} is worth running. `ANALYZE` is
+   * linear in table size — measured on Postgres, 11.3ms at 5,000 rows and
+   * 77.8ms at 50,000 — so a fixed row threshold re-analyses a large table far
+   * too often. An *estimate* is the point: this has to be cheap enough to be
+   * free, so it reads what the engine already knows rather than counting.
+   */
+  estimatedRows: (table: string) => string | null;
   /** Parses a JSON column, which some engines return already decoded. */
   jsonOut: <T>(value: unknown, fallback: T) => T;
   /** Encodes a value for a JSON column. */
   jsonIn: (value: unknown) => string;
   /** Statements run once when the connection opens. */
   readonly pragmas: string[];
+}
+
+/** One column an `ALTER TABLE` changes. */
+export interface AlterColumn {
+  /** The column's name. */
+  column: string;
+  /** The type it should have, collation included where the driver sets one. */
+  type: string;
+  /**
+   * The rest of its definition — `NOT NULL`, a default. MySQL's `MODIFY
+   * COLUMN` replaces the whole definition and needs it; Postgres ignores it.
+   */
+  suffix?: string;
+}
+
+/** Postgres' clause changing one column's type. */
+function postgresAlterClause({ column, type }: AlterColumn): string {
+  return `ALTER COLUMN ${column} TYPE ${type} USING ${column}::${type}`;
+}
+
+/** MySQL's clause redefining one column, whose definition it replaces whole. */
+function mysqlAlterClause({ column, type, suffix }: AlterColumn): string {
+  return `MODIFY COLUMN ${column} ${type}${suffix ? ` ${suffix}` : ""}`;
 }
 
 /** What a dialect needs in order to write its claim statement. */
@@ -108,6 +457,66 @@ export interface ClaimStatementOptions {
   workerId: string;
   /** How long the claim's lock lives. */
   lockMs: number;
+  /**
+   * How many jobs the statement may take. Defaults to one.
+   *
+   * A literal, not a bound parameter: it comes from the worker's free slots,
+   * never from user input, and every engine here will only plan a `LIMIT` it
+   * can see. It is floored at one and rounded down.
+   */
+  limit?: number;
+  /**
+   * Job names the claim must pass over. Absent or empty adds nothing to the
+   * statement, which is then byte-identical to one without the option — the
+   * claim is the hottest statement in the library, and a different text is a
+   * different prepared statement.
+   */
+  excludeNames?: string[];
+  /**
+   * Where a claim that skips names resumes: only rows after this one in claim
+   * order are looked at. Ignored without `excludeNames`; absent or `null`
+   * means from the head of the queue.
+   */
+  after?: ClaimCursor | null;
+}
+
+/** A row's place in claim order, which is where a claim can resume from. */
+export interface ClaimCursor {
+  /** The row's `priority`. */
+  priority: number;
+  /** The row's `created_at`, in epoch milliseconds. */
+  createdAt: number;
+  /** The row's id, which orders the rows the two above leave tied. */
+  id: string;
+}
+
+/**
+ * How many waiting rows one pass of a claim that skips names looks at.
+ *
+ * `name NOT IN (…)` is a filter on the claim index, not a key of it, so on its
+ * own the scan walks past every skipped row before reaching one it may take:
+ * measured on Postgres with 100,000 of them at the head, 22.1ms against
+ * 0.055ms, paid again on every retry while the name stays capped. Bounding the
+ * scan caps a pass at this many rows; the driver resumes where the last full
+ * window ended, so a job further back is still reached.
+ */
+export const CLAIM_WINDOW = 1_000;
+
+/** `(?, ?, …)` repeated once per row, for the `?`-placeholder engines. */
+/** `($1, $2), ($3, $4), …` for engines that number their placeholders. */
+function numberedRows(columns: readonly string[], rows: number): string {
+  return Array.from(
+    { length: rows },
+    (_row, rowIndex) =>
+      `(${columns
+        .map((_column, index) => `$${rowIndex * columns.length + index + 1}`)
+        .join(", ")})`,
+  ).join(", ");
+}
+
+function anonymousRows(columns: readonly string[], rows: number): string {
+  const one = `(${columns.map(() => "?").join(", ")})`;
+  return Array.from({ length: rows }).fill(one).join(", ");
 }
 
 /** The columns a claim sets, shared by the dialects that write it. */
@@ -124,27 +533,165 @@ function claimAssignments(options: ClaimStatementOptions, prefix = ""): string {
   ].join(", ");
 }
 
-/** The rows a claim may take, ordered so the cheapest comes first. */
-function claimCandidates(
+/** How one engine locks, and resumes, the rows its claim picks. */
+interface ClaimShape {
+  /** Appended to the plain candidate query: `FOR UPDATE SKIP LOCKED`, or `""`. */
+  locking: string;
+  /**
+   * Appended to the windowed candidate query, which joins the window back to
+   * the table so only the rows it returns are locked. `null` on an engine with
+   * no row locks, where the window is filtered as it is.
+   */
+  windowLocking: string | null;
+  /** A predicate: the row comes after `cursor` in claim order. */
+  after: (bind: ClaimStatementOptions["bind"], cursor: ClaimCursor) => string;
+}
+
+/**
+ * "After `cursor` in claim order", in the form Postgres and SQLite plan as an
+ * index range.
+ *
+ * Not the obvious `(priority, created_at, id) > (…)`. Postgres estimates a row
+ * comparison from its first column alone, and with every row on one priority
+ * it expects no rows and picks a sequential scan: 29.9ms for a window halfway
+ * into 100,000 rows. The two-column `>=` is a bound on columns the claim index
+ * has, and the disjunction only removes rows tied with the cursor itself:
+ * 0.70ms for the same window. SQLite plans the `>=` as an index range too.
+ */
+function rowValueAfter(
+  bind: ClaimStatementOptions["bind"],
+  cursor: ClaimCursor,
+): string {
+  return `(priority, created_at) >= (${bind(cursor.priority)}, ${bind(cursor.createdAt)})
+           AND (priority >${bind(cursor.priority)} OR created_at > ${bind(cursor.createdAt)} OR id > ${bind(cursor.id)})`;
+}
+
+/**
+ * The same predicate written out column by column, for MySQL and MariaDB.
+ *
+ * MariaDB does not bound a range scan with a row comparison: the form above
+ * read 11,001 index rows for a 1,000-row window starting at row 10,000
+ * (19.8ms), and this one read 1,000 (3.4ms). On Postgres it is the reverse —
+ * this form is a filter there, not a bound.
+ */
+function expandedAfter(
+  bind: ClaimStatementOptions["bind"],
+  cursor: ClaimCursor,
+): string {
+  return `(priority > ${bind(cursor.priority)} OR (priority = ${bind(cursor.priority)}
+           AND (created_at > ${bind(cursor.createdAt)} OR (created_at = ${bind(cursor.createdAt)} AND id > ${bind(cursor.id)}))))`;
+}
+
+/** The queue's waiting, due rows, from `options.after` when there is one. */
+function claimWindowFilter(
   options: ClaimStatementOptions,
-  locking: string,
+  shape: ClaimShape,
 ): string {
   const { bind } = options;
 
-  return `SELECT id FROM ${options.table}
+  return `ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
+           AND state = 'waiting' AND run_at <= ${bind(options.now)}${
+             options.after
+               ? `
+           AND ${shape.after(bind, options.after)}`
+               : ""
+           }`;
+}
+
+/** The rows a claim may take, ordered so the cheapest comes first. */
+function claimCandidates(
+  options: ClaimStatementOptions,
+  shape: ClaimShape,
+): string {
+  const { bind, table } = options;
+
+  const limit = Math.max(1, Math.floor(options.limit ?? 1));
+  const excluded = options.excludeNames ?? [];
+
+  if (excluded.length === 0) {
+    return `SELECT id FROM ${table}
        WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
          AND state = 'waiting' AND run_at <= ${bind(options.now)}
        ORDER BY priority ASC, created_at ASC, id ASC
-       LIMIT 1${locking}`;
+       LIMIT ${limit}${shape.locking}`;
+  }
+
+  // Skipped names are a filter, not a key of the claim index: a capped name is
+  // the exception, so widening the index for it would tax every insert for a
+  // clause most claims never carry. Filtering *outside* a bounded window is
+  // what keeps the filter from walking an unbounded run of skipped rows; the
+  // driver slides the window with `after`.
+  //
+  // Built before the text that follows it, because it also comes first in the
+  // statement: `bind` numbers placeholders in call order.
+  const window = `SELECT id, name, priority, created_at FROM ${table}
+         WHERE ${claimWindowFilter(options, shape)}
+         ORDER BY priority ASC, created_at ASC, id ASC
+         LIMIT ${CLAIM_WINDOW}`;
+
+  if (shape.windowLocking === null) {
+    return `SELECT id FROM (${window}) AS win
+       WHERE name NOT IN (${excluded.map((name) => bind(name)).join(", ")})
+       ORDER BY priority ASC, created_at ASC, id ASC
+       LIMIT ${limit}`;
+  }
+
+  // Locked through a join back to the table, never inside the window: locking
+  // there would lock every row the window passes over, up to a thousand skipped
+  // jobs a worker skipping other names could have taken. Postgres locks only
+  // `job` because it is named, InnoDB because a derived table is read without
+  // locks — checked with two open transactions on MariaDB, the second took the
+  // next job rather than nothing. The window is read from the statement's
+  // snapshot, so `job.state` is what is rechecked once the row is locked.
+  return `SELECT job.id FROM (${window}) AS win
+       JOIN ${table} job
+         ON job.ns = ${bind(options.ns)} AND job.queue = ${bind(options.queue)}
+        AND job.id = win.id
+       WHERE win.name NOT IN (${excluded.map((name) => bind(name)).join(", ")})
+         AND job.state = 'waiting'
+       ORDER BY win.priority ASC, win.created_at ASC, win.id ASC
+       LIMIT ${limit}${shape.windowLocking}`;
 }
 
 /** Picks the id of the row a claim would take. */
 function claimCandidateStatement(
   options: ClaimStatementOptions,
-  locking: string,
+  shape: ClaimShape,
 ): string {
-  return claimCandidates(options, locking);
+  return claimCandidates(options, shape);
 }
+
+/** See {@link SqlDialect.claimWindowEnd}. */
+function claimWindowEndStatement(
+  options: ClaimStatementOptions,
+  shape: ClaimShape,
+): string {
+  return `SELECT priority, created_at, id FROM ${options.table}
+       WHERE ${claimWindowFilter(options, shape)}
+       ORDER BY priority ASC, created_at ASC, id ASC
+       LIMIT 1 OFFSET ${CLAIM_WINDOW - 1}`;
+}
+
+/** Postgres locks named rows and ranges on a two-column row comparison. */
+const POSTGRES_CLAIM: ClaimShape = {
+  locking: " FOR UPDATE SKIP LOCKED",
+  windowLocking: " FOR UPDATE OF job SKIP LOCKED",
+  after: rowValueAfter,
+};
+
+/** MySQL and MariaDB: no `OF`, and a range only on the spelled-out predicate. */
+const MYSQL_CLAIM: ClaimShape = {
+  locking: " FOR UPDATE SKIP LOCKED",
+  windowLocking: " FOR UPDATE SKIP LOCKED",
+  after: expandedAfter,
+};
+
+/** SQLite has no row locks to take. */
+const SQLITE_CLAIM: ClaimShape = {
+  locking: "",
+  windowLocking: null,
+  after: rowValueAfter,
+};
 
 /** Takes one specific job, conditional on it still being claimable. */
 function claimByIdStatement(
@@ -168,24 +715,75 @@ async function countFromResult(result: unknown): Promise<number> {
 const LOCK_RETRIES = 12;
 
 /**
+ * Server error numbers that mean "the statement was fine, the timing was not".
+ *
+ * MySQL and MariaDB report them as a numeric `errno`: 1213 is a deadlock, 1205
+ * a lock wait timeout, and 1020 is MariaDB's "record has changed since last
+ * read" — what `innodb_snapshot_isolation`, on by default since 11.6, raises
+ * when a transaction writes a row another committed after its snapshot.
+ * Postgres puts its SQLSTATE in `errno` as a string: `40001` serialization
+ * failure, `40P01` deadlock.
+ */
+const TRANSIENT_ERRNOS = new Set<unknown>([1213, 1205, 1020, "40001", "40P01"]);
+
+/**
+ * The same conditions as a `code` or `sqlState`: SQLSTATE `40001` is what
+ * MySQL sends alongside 1213, and Postgres's `code` carries the SQLSTATE too.
+ */
+const TRANSIENT_STATES = new Set<unknown>(["40001", "40P01"]);
+
+/**
  * Whether an error is the database saying "someone else had it, try again".
  *
- * Both engines have one, and both mean the same thing: the statement was
+ * Every engine has one, and they all mean the same thing: the statement was
  * fine, the timing was not. InnoDB breaks a lock cycle by aborting one
- * transaction and telling the loser to retry, and SQLite reports
- * `SQLITE_BUSY` when another connection holds the file's single write lock
- * for longer than the busy timeout allows. Neither is a defect in the query.
+ * transaction and telling the loser to retry, Postgres does the same, and
+ * SQLite reports `SQLITE_BUSY` when another connection holds the file's single
+ * write lock for longer than the busy timeout allows. None is a defect in the
+ * query.
+ *
+ * Walks the `cause` chain, and checks codes before wording. The driver wraps
+ * what the server said in a `DriverError` whose own message is only "sql
+ * driver failed during run", so the engine's code and message are one or more
+ * links down. Checking the outermost error alone never matched anything raised
+ * inside a transaction — on MySQL and MariaDB that is every counted write, so
+ * the retry around them never fired and each deadlock escaped to the worker.
  */
 export function isTransientLockError(error: unknown): boolean {
-  const message = (error as Error | null)?.message ?? "";
-  const code = (error as { code?: string } | null)?.code ?? "";
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
 
-  return (
-    code === "SQLITE_BUSY" ||
-    /deadlock|try restarting transaction|lock wait timeout|database (?:is|table is) locked/i.test(
-      message,
-    )
-  );
+    const { errno, code, sqlState, message } = at as {
+      errno?: unknown;
+      code?: unknown;
+      sqlState?: unknown;
+      message?: unknown;
+    };
+
+    if (
+      TRANSIENT_ERRNOS.has(errno) ||
+      TRANSIENT_STATES.has(code) ||
+      TRANSIENT_STATES.has(sqlState) ||
+      // `SQLITE_BUSY_SNAPSHOT` and the other extended forms mean the same.
+      (typeof code === "string" && code.startsWith("SQLITE_BUSY"))
+    ) {
+      return true;
+    }
+
+    if (
+      /deadlock|try restarting transaction|lock wait timeout|could not serialize access|database (?:is|table is) locked/i.test(
+        String(message ?? ""),
+      )
+    ) {
+      return true;
+    }
+
+    at = (at as { cause?: unknown }).cause;
+  }
+
+  return false;
 }
 
 /**
@@ -217,6 +815,113 @@ export async function withLockRetry<T>(work: () => Promise<T>): Promise<T> {
 /** Serialises SQLite writers inside one process; the file lock does the rest. */
 const sqliteWriteLock = new Mutex();
 
+/**
+ * Whether an error says a unique constraint was violated.
+ *
+ * Each engine says so differently — Postgres in SQLSTATE, MySQL with a driver
+ * code, SQLite only in the message — and the error reaches here through Bun's
+ * SQL client, which surfaces whichever the server gave it.
+ */
+function isUniqueViolationError(
+  error: unknown,
+  codes: (string | number)[],
+): boolean {
+  // The driver wraps what the server said in a `DriverError`, so the engine's
+  // own code and message are one or more `cause` links down. Checking only the
+  // outermost error would never match, and the insert path would fail a call
+  // it is meant to recover from.
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
+
+    const { errno, code, message } = at as {
+      errno?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+
+    if (codes.some((wanted) => errno === wanted || code === wanted)) {
+      return true;
+    }
+
+    if (/unique constraint|duplicate key/i.test(String(message ?? ""))) {
+      return true;
+    }
+
+    at = (at as { cause?: unknown }).cause;
+  }
+
+  return false;
+}
+
+/**
+ * The collation a declared column type names, lowercased, or `null` when it
+ * names none.
+ *
+ * Read from the driver's own DDL — `VARCHAR(191) CHARACTER SET utf8mb4 COLLATE
+ * utf8mb4_nopad_bin` gives `utf8mb4_nopad_bin` — so a sync compares a column's
+ * collation only where the driver actually chose one.
+ */
+export function declaredCollation(type: string): string | null {
+  const match = /\bCOLLATE\s+("[^"]+"|[\w.-]+)/i.exec(type);
+  return match ? match[1]!.replace(/"/g, "").toLowerCase() : null;
+}
+
+/**
+ * Reduces a type name to something two spellings of one type share.
+ *
+ * Deliberately blunt: lowercase, drop any parenthesised length or precision,
+ * and any `CHARACTER SET` or `COLLATE` clause (compared separately, through
+ * {@link declaredCollation}), collapse whitespace, then map the synonyms
+ * engines actually report. Everything else passes through unchanged and
+ * therefore compares equal only to itself, which is the safe direction — an
+ * unrecognised pair reads as "different" only when the strings really do
+ * differ.
+ */
+/**
+ * Whether an error, or one it wraps, carries one of `codes` — the server's own
+ * code sits one or more `cause` links below the client's wrapper.
+ */
+function hasErrorCode(error: unknown, codes: (string | number)[]): boolean {
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
+    const { errno, code } = at as { errno?: unknown; code?: unknown };
+    if (codes.some((wanted) => errno === wanted || code === wanted)) {
+      return true;
+    }
+    at = (at as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function normalizeSqlType(type: string): string {
+  const bare = type
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\b(?:character set|charset)\s+\w+/g, "")
+    .replace(/\bcollate\s+(?:"[^"]+"|[\w.-]+)/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  const synonyms: Record<string, string> = {
+    "character varying": "varchar",
+    character: "char",
+    int4: "int",
+    integer: "int",
+    int8: "bigint",
+    int2: "smallint",
+    bool: "boolean",
+    "double precision": "double",
+    "timestamp without time zone": "timestamp",
+    "timestamp with time zone": "timestamptz",
+  };
+
+  return synonyms[bare] ?? bare;
+}
+
 /** Parses a JSON column that may arrive as text or already decoded. */
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) {
@@ -247,16 +952,95 @@ const postgres: SqlDialect = {
   ...base,
   name: "postgres",
   placeholder: (index) => `$${index}`,
-  jsonType: "JSONB",
+  // `json` stores the text; `jsonb` parses it into a binary tree on the way
+  // in. Nothing here indexes into `data` or `opts` or uses a `jsonb` operator
+  // on them — they are opaque payloads, written once and read whole — so that
+  // parse buys nothing and costs, over alternating runs, 12% of the insert.
+  // `jsonOut` reads either, so a table created before this still works.
+  jsonType: "JSON",
+  partialIndex: (predicate) => ` WHERE ${predicate}`,
+  concurrentIndex: "CONCURRENTLY ",
+  // No collation: every identifier is declared in the default one, and
+  // ordering by code point is `codePointCollation`'s job, not the column's.
+  describeColumns: () =>
+    `SELECT column_name AS name, data_type AS type, NULL AS collation
+       FROM information_schema.columns
+      WHERE table_name = $1 AND table_schema = ANY (current_schemas(false))`,
+  describeIndexes: () =>
+    `SELECT indexname AS name, indexdef AS definition, NULL AS columns
+       FROM pg_indexes
+      WHERE tablename = $1 AND schemaname = ANY (current_schemas(false))`,
+  addColumn: (table, column) =>
+    `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column}`,
+  alterColumnType: (table, column, type) =>
+    `ALTER TABLE ${table} ${postgresAlterClause({ column, type })}`,
+  alterColumnTypes: (table, columns) =>
+    `ALTER TABLE ${table} ${columns.map(postgresAlterClause).join(", ")}`,
+  indexIfNotExists: true,
+  isDuplicateIndex: (error) => hasErrorCode(error, ["42P07"]),
+  claimIndexNamesId: false,
+  dropIndex: (name) => `DROP INDEX CONCURRENTLY IF EXISTS ${name}`,
+  normalizeType: normalizeSqlType,
   idType: "TEXT",
+  nameType: "TEXT",
+  codePointCollation: '"C"',
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
+  longTextType: "TEXT",
+  // Through `jsonb`, which has the setter, and back: the result is assigned to
+  // a `json` column or, on a table created before that became the type, a
+  // `jsonb` one, and Postgres converts either way on assignment.
+  //
+  // A single-row insert binds the document as untyped text, which Postgres
+  // stores as a JSON *string* holding the object — `jsonOut` parses it twice,
+  // so reads never notice. The setter cannot reach into a string, so one is
+  // unwrapped first; what is written back is the object itself.
+  jsonSetInteger: (column, key, placeholder) => {
+    const document = `COALESCE(${column}::jsonb, '{}'::jsonb)`;
+    const object = `(CASE WHEN jsonb_typeof(${document}) = 'string' THEN (${document} #>> '{}')::jsonb ELSE ${document} END)`;
+
+    return `jsonb_set(${object}, '{${key}}', to_jsonb(${placeholder}::integer))`;
+  },
+  // `->>` works on `json` and on a `jsonb` column left by an older version.
+  jsonInteger: (column, key) => `(${column}->>'${key}')::bigint`,
+  // `::text` first, so the client's untyped string is read as the document.
+  jsonParameter: (placeholder) => `${placeholder}::text::json`,
   supportsReturning: true,
   supportsSkipLocked: true,
-  insertIgnore: (table, columns) =>
-    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map((_column, index) => `$${index + 1}`)
-      .join(", ")}) ON CONFLICT DO NOTHING`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map((_column, index) => `$${index + 1}`)
+    ).join(", ")}) ON CONFLICT DO NOTHING`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${Array.from(
+      { length: rows },
+      (_row, rowIndex) =>
+        `(${columns
+          .map((_column, index) => `$${rowIndex * columns.length + index + 1}`)
+          .join(", ")})`,
+    ).join(", ")} ON CONFLICT DO NOTHING`,
+  insertIgnoreFromJson: (table, columns, columnTypes) =>
+    // `$1::text::json`, not `$1::json`: the client sends the document as an
+    // untyped string, and without the intermediate cast Postgres reads it as a
+    // JSON *string* rather than the array it contains.
+    `INSERT INTO ${table} (${columns.join(", ")})
+     SELECT ${columns.join(", ")}
+       FROM json_to_recordset($1::text::json) AS document (${columns
+         .map((column, index) => `${column} ${columnTypes[index]}`)
+         .join(", ")})
+     ON CONFLICT DO NOTHING`,
+  insertFromJson: (table, columns, columnTypes) =>
+    `INSERT INTO ${table} (${columns.join(", ")})
+     SELECT ${columns.join(", ")}
+       FROM json_to_recordset($1::text::json) AS document (${columns
+         .map((column, index) => `${column} ${columnTypes[index]}`)
+         .join(", ")})`,
+  insertMany: (table, columns, rows) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${numberedRows(
+      columns,
+      rows,
+    )}`,
+  isUniqueViolation: (error) => isUniqueViolationError(error, ["23505", 23505]),
   upsert: (table, columns, conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map((_column, index) => `$${index + 1}`)
@@ -279,7 +1063,7 @@ const postgres: SqlDialect = {
 
     // Built inline, in statement order: `bind` numbers parameters as it is
     // called, so a fragment computed early would be numbered early too.
-    return `WITH picked AS (${claimCandidates(options, " FOR UPDATE SKIP LOCKED")})
+    return `WITH picked AS (${claimCandidates(options, POSTGRES_CLAIM)})
       UPDATE ${table} SET ${claimAssignments(options)}
         FROM picked
        WHERE ${table}.ns = ${bind(options.ns)}
@@ -288,10 +1072,21 @@ const postgres: SqlDialect = {
          AND ${table}.state = 'waiting'
       RETURNING ${table}.*`;
   },
-  claimCandidate: (options) =>
-    claimCandidateStatement(options, " FOR UPDATE SKIP LOCKED"),
+  claimCandidate: (options) => claimCandidateStatement(options, POSTGRES_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, POSTGRES_CLAIM),
   affectedRows: countFromResult,
+  claimNeedsTransaction: false,
+  analyze: (table) => `ANALYZE ${table}`,
+  // `reltuples` is maintained by `ANALYZE` itself, so this is a catalog
+  // lookup rather than a scan. It reads -1 on a table that has never been
+  // analysed, which the caller treats as having no estimate yet.
+  estimatedRows: (table) =>
+    `SELECT reltuples::bigint AS n FROM pg_class WHERE oid = '${table}'::regclass`,
+  supportsListen: true,
+  notifyingInsert: (statement, channel) =>
+    `WITH written AS (${statement} RETURNING id)
+     SELECT id, pg_notify('${channel}', '') FROM written`,
   countsNeedSameConnection: false,
 };
 
@@ -301,16 +1096,82 @@ const mysql: SqlDialect = {
   name: "mysql",
   placeholder: () => "?",
   jsonType: "JSON",
-  // utf8mb4 indexes cap a key at 191 characters, so ids are bounded.
-  idType: "VARCHAR(191)",
+  // MySQL and MariaDB have no partial indexes.
+  partialIndex: () => "",
+  // No online index build, and no `IF NOT EXISTS` on `ADD COLUMN` either, so
+  // the sync checks before it writes rather than relying on the statement.
+  concurrentIndex: "",
+  describeColumns: () =>
+    `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLLATION_NAME AS collation
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+  // No partial indexes, so there is no definition worth reading back: an index
+  // either exists under its name or it does not.
+  describeIndexes: () =>
+    `SELECT INDEX_NAME AS name, '' AS definition,
+            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') AS columns
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+      GROUP BY INDEX_NAME`,
+  addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
+  alterColumnType: (table, column, type, suffix) =>
+    `ALTER TABLE ${table} ${mysqlAlterClause({ column, type, suffix })}`,
+  alterColumnTypes: (table, columns) =>
+    `ALTER TABLE ${table} ${columns.map(mysqlAlterClause).join(", ")}`,
+  // MySQL 8 has no `CREATE INDEX IF NOT EXISTS`; see the interface.
+  indexIfNotExists: false,
+  // ER_DUP_KEYNAME: "Duplicate key name".
+  isDuplicateIndex: (error) =>
+    hasErrorCode(error, [1061, "1061", "ER_DUP_KEYNAME"]),
+  claimIndexNamesId: true,
+  dropIndex: (name, table) => `DROP INDEX ${name} ON ${table}`,
+  normalizeType: normalizeSqlType,
+  // Binary and `NO PAD`: see `idType` on the interface. `utf8mb4_0900_bin` is
+  // MySQL 8's; MariaDB has its own, below.
+  idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+  nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+  codePointCollation: null,
   timeType: "BIGINT",
   serialType: "BIGINT AUTO_INCREMENT PRIMARY KEY",
+  longTextType: "MEDIUMTEXT",
+  /**
+   * Reads a JSON column as the client already decoded it.
+   *
+   * Bun's MySQL client decodes a `JSON` column itself — MariaDB's too, whose
+   * `JSON` is `LONGTEXT` with a validity check — so a stored `"done"` arrives
+   * as the string `done`, an object as an object. Parsing that again, as the
+   * shared reader does for engines that hand back text, threw on every plain
+   * string and fell back to `null`, and turned a string that happens to be
+   * valid JSON, such as `"42"`, into a different type. A job's data, progress
+   * and return value were all lost that way whenever they were a string.
+   */
+  jsonOut: <T>(value: unknown, fallback: T): T =>
+    value === null || value === undefined ? fallback : (value as T),
+  jsonSetInteger: (column, key, placeholder) =>
+    `JSON_SET(COALESCE(${column}, JSON_OBJECT()), '$.${key}', CAST(${placeholder} AS SIGNED))`,
+  // MySQL's `JSON_EXTRACT` yields a JSON number and MariaDB's (whose `JSON` is
+  // `LONGTEXT`) yields text; `CAST … AS SIGNED` reads both.
+  jsonInteger: (column, key) =>
+    `CAST(JSON_EXTRACT(${column}, '$.${key}') AS SIGNED)`,
+  jsonParameter: (placeholder) => placeholder,
   supportsReturning: false,
   supportsSkipLocked: true,
-  insertIgnore: (table, columns) =>
-    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map(() => "?")
-      .join(", ")})`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map(() => "?")
+    ).join(", ")})`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
+  insertMany: (table, columns, rows) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
+  isUniqueViolation: (error) =>
+    isUniqueViolationError(error, [1062, "1062", "ER_DUP_ENTRY"]),
   upsert: (table, columns, _conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
@@ -319,8 +1180,50 @@ const mysql: SqlDialect = {
       .join(", ")}`,
   // "You can't specify target table for update in FROM clause" without this.
   limitedIdSubquery: (select) => `SELECT id FROM (${select}) AS picked`,
+  /**
+   * Runs `fn` in a READ COMMITTED transaction, retried on a transient lock
+   * error.
+   *
+   * InnoDB's default, REPEATABLE READ, takes gap and next-key locks on every
+   * locking read and range update. Several workers claiming, completing,
+   * retrying and promoting on one queue then deadlock on each other's gaps
+   * faster than a retry clears them. Measured with 4 workers on 600 jobs,
+   * a quarter failing once and a fifth delayed: MariaDB collapsed in 2 of 6
+   * runs (4 and 403 of 600 jobs done in 90s, over 10,000 deadlocks), where READ
+   * COMMITTED finished 8 of 8 at about 1,200 jobs/s. MySQL is as fast or faster
+   * under it everywhere. The cost is a single consumer draining a backlog on
+   * MariaDB, about 20% slower, and that cost is READ COMMITTED itself: setting
+   * it once per connection measured within 4% of this.
+   *
+   * It is set per transaction, not per session, because a session setting is
+   * lost silently whenever the pool replaces a connection. Nothing here relies
+   * on a snapshot: every write is conditional on the state and lock token it
+   * expects, and `ROW_COUNT()` reports whether it landed.
+   *
+   * Bun's `begin(options)` sends `START TRANSACTION <options>`, which both
+   * engines reject with an isolation level, so the connection is reserved and
+   * the statements are issued in order.
+   */
   transaction: async (sql, fn) =>
-    await withLockRetry(async () => (await sql.begin(fn as never)) as never),
+    await withLockRetry(async () => {
+      const connection = await sql.reserve();
+      try {
+        await connection.unsafe(
+          "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        );
+        await connection.unsafe("START TRANSACTION");
+        try {
+          const result = await fn(connection);
+          await connection.unsafe("COMMIT");
+          return result;
+        } catch (error) {
+          await connection.unsafe("ROLLBACK").catch(() => {});
+          throw error;
+        }
+      } finally {
+        connection.release();
+      }
+    }),
   /**
    * A join against a derived table. MySQL materialises it, so the `LIMIT 1`
    * bounds the update, and it also sidesteps the refusal to read the table
@@ -331,7 +1234,7 @@ const mysql: SqlDialect = {
 
     // Built inline, in statement order, for the same reason as the others.
     return `UPDATE ${table}
-        JOIN (${claimCandidates(options, " FOR UPDATE SKIP LOCKED")}) AS picked
+        JOIN (${claimCandidates(options, MYSQL_CLAIM)}) AS picked
           ON ${table}.id = picked.id
          SET ${claimAssignments(options, `${table}.`)}
        WHERE ${table}.ns = ${bind(options.ns)}
@@ -343,23 +1246,47 @@ const mysql: SqlDialect = {
    * the count has to be asked for, and `ROW_COUNT()` answers only about the
    * connection it runs on: that is why these writes take a transaction.
    */
-  claimCandidate: (options) =>
-    claimCandidateStatement(options, " FOR UPDATE SKIP LOCKED"),
+  claimCandidate: (options) => claimCandidateStatement(options, MYSQL_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, MYSQL_CLAIM),
   affectedRows: async (_result, connection) => {
     const rows = (await connection.unsafe("SELECT ROW_COUNT() AS n")) as {
       n: number | string;
     }[];
     return Math.max(0, Number(rows[0]?.n ?? 0));
   },
+  claimNeedsTransaction: true,
+  analyze: (table) => `ANALYZE TABLE ${table}`,
+  estimatedRows: () => null,
+  supportsListen: false,
+  notifyingInsert: (statement) => statement,
   countsNeedSameConnection: true,
 };
 
-/** MariaDB: MySQL, minus `UPDATE … RETURNING`. */
+/**
+ * MariaDB: MySQL, minus `UPDATE … RETURNING`, with its own binary collation
+ * and its own spelling of `JSON`.
+ */
 const mariadb: SqlDialect = {
   ...mysql,
   name: "mariadb",
   supportsReturning: false,
+  // MariaDB, unlike MySQL, has `CREATE INDEX IF NOT EXISTS`.
+  indexIfNotExists: true,
+  // And reads the claim index's implicit `id` suffix in order, so it need not
+  // be named: see the interface.
+  claimIndexNamesId: false,
+  // `utf8mb4_nopad_bin` has been MariaDB's exact collation since 10.2. It
+  // compares by code point, which for UTF-8 is byte order.
+  idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
+  nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
+  // MariaDB's `JSON` is an alias for `LONGTEXT` with a validity check, and
+  // `information_schema` reports `longtext`. Without this, a schema the driver
+  // has just created reports every JSON column as drift, forever.
+  normalizeType: (type) => {
+    const normalized = normalizeSqlType(type);
+    return normalized === "json" ? "longtext" : normalized;
+  },
 };
 
 /**
@@ -375,15 +1302,56 @@ const sqlite: SqlDialect = {
   name: "sqlite",
   placeholder: () => "?",
   jsonType: "TEXT",
+  partialIndex: (predicate) => ` WHERE ${predicate}`,
+  concurrentIndex: "",
+  describeColumns: () =>
+    `SELECT name, type, NULL AS collation FROM pragma_table_info(?)`,
+  describeIndexes: () =>
+    `SELECT name, COALESCE(sql, '') AS definition, NULL AS columns
+       FROM sqlite_master
+      WHERE type = 'index' AND tbl_name = ?`,
+  addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
+  // SQLite can rename and add, but not retype: changing a column means
+  // rebuilding the table and copying every row, which is not something to do
+  // behind a connect.
+  alterColumnType: () => null,
+  alterColumnTypes: () => null,
+  indexIfNotExists: true,
+  isDuplicateIndex: (error) =>
+    /index .* already exists/i.test(String((error as Error | null)?.message)),
+  claimIndexNamesId: false,
+  dropIndex: (name) => `DROP INDEX IF EXISTS ${name}`,
+  normalizeType: normalizeSqlType,
   idType: "TEXT",
+  nameType: "TEXT",
+  codePointCollation: null,
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",
+  longTextType: "TEXT",
+  jsonSetInteger: (column, key, placeholder) =>
+    `json_set(COALESCE(${column}, '{}'), '$.${key}', CAST(${placeholder} AS INTEGER))`,
+  jsonInteger: (column, key) =>
+    `CAST(json_extract(${column}, '$.${key}') AS INTEGER)`,
+  jsonParameter: (placeholder) => placeholder,
   supportsReturning: true,
   supportsSkipLocked: false,
-  insertIgnore: (table, columns) =>
-    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map(() => "?")
-      .join(", ")})`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map(() => "?")
+    ).join(", ")})`,
+  insertIgnoreMany: (table, columns, rows) =>
+    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
+  insertMany: (table, columns, rows) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
+      columns,
+      rows,
+    )}`,
+  // SQLite reports the constraint only in the message.
+  isUniqueViolation: (error) =>
+    isUniqueViolationError(error, ["SQLITE_CONSTRAINT_PRIMARYKEY", 1555, 2067]),
   upsert: (table, columns, conflict, update) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
       .map(() => "?")
@@ -404,12 +1372,18 @@ const sqlite: SqlDialect = {
     return `UPDATE ${table} SET ${claimAssignments(options)}
        WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
          AND state = 'waiting'
-         AND id = (${claimCandidates(options, "")})
+         AND id = (${claimCandidates(options, SQLITE_CLAIM)})
       RETURNING *`;
   },
-  claimCandidate: (options) => claimCandidateStatement(options, ""),
+  claimCandidate: (options) => claimCandidateStatement(options, SQLITE_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, SQLITE_CLAIM),
   affectedRows: countFromResult,
+  claimNeedsTransaction: true,
+  analyze: (table) => `ANALYZE ${table}`,
+  estimatedRows: () => null,
+  supportsListen: false,
+  notifyingInsert: (statement) => statement,
   countsNeedSameConnection: false,
   transaction: async (sql, fn) =>
     // The mutex serialises writers inside this process; the retry handles the

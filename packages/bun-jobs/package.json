@@ -30,11 +30,15 @@
   },
   "peerDependencies": {
     "@types/bun": ">=1.4.2",
-    "typescript": "^5.9.3",
-    "mongodb": ">=6"
+    "chrono-node": ">=2.7.0 <3",
+    "mongodb": ">=6",
+    "typescript": "^5.9.3"
   },
   "peerDependenciesMeta": {
     "@types/bun": {
+      "optional": true
+    },
+    "chrono-node": {
       "optional": true
     },
     "mongodb": {
@@ -48,6 +52,7 @@
     "@antfu/eslint-config": "^9.0.0",
     "@types/bun": "^1.4.2",
     "bun-types": "^1.4.2",
+    "chrono-node": "^2.7.0",
     "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.5.6",

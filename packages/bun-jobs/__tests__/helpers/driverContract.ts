@@ -1,7 +1,8 @@
-import type { JobsDriver, QueueRef } from "../../lib/index";
+import type { JobRecord, JobsDriver, QueueRef } from "../../lib/index";
 import { serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { newToken, runnerKey } from "../../lib/index";
+import { queueEvent } from "../../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "../helpers";
 
 /**
@@ -272,6 +273,129 @@ export function driverContract(
         await driver.removeJob(q, "dupe");
       });
 
+      it("survives an id taken between the look and the write", async () => {
+        // The SQL driver asks which ids exist and then inserts plainly,
+        // because `ON CONFLICT DO NOTHING` costs 43% of the statement. That
+        // leaves a window: another producer can take one of those ids in
+        // between, and the insert — one statement — then lands none of it.
+        //
+        // Two batches sharing an id, issued at once, is that window. Whichever
+        // loses has to recover rather than fail, and between them each id must
+        // be reported added exactly once.
+        const shared = makeJob({ id: "contended", data: { from: "first" } });
+
+        const [first, second] = await Promise.all([
+          driver.addJobs(q, [makeJob({ id: "only-first" }), shared]),
+          driver.addJobs(q, [
+            makeJob({ id: "contended", data: { from: "second" } }),
+            makeJob({ id: "only-second" }),
+          ]),
+        ]);
+
+        // Every job is there, whichever call won the contended one.
+        for (const id of ["only-first", "contended", "only-second"]) {
+          expect((await driver.getJob(q, id))?.id).toBe(id);
+        }
+
+        // And exactly one caller is told it added the contended id — that is
+        // what repeat scheduling reads to decide whether it won.
+        const claims = [...first, ...second].filter(
+          (r) => r.job.id === "contended" && r.added,
+        );
+        expect(claims).toHaveLength(1);
+
+        for (const id of ["only-first", "contended", "only-second"]) {
+          await driver.removeJob(q, id);
+        }
+      });
+
+      it("round-trips every field of a fully populated record", async () => {
+        // Several drivers write only the fields a brand-new job carries and
+        // let the reader treat absent as default — it is a large part of why
+        // enqueue is fast. That makes the *other* shape the untested one: a
+        // record restored from elsewhere, added already finished, or mid-retry
+        // has to survive the trip with every field intact.
+        //
+        // Distinct values throughout, because two fields sharing one would let
+        // a swap between them pass.
+        const populated = makeJob({
+          id: "populated",
+          name: "populated-name",
+          data: { which: "data" },
+          state: "completed",
+          priority: 7,
+          runAt: 1_700_000_001_000,
+          createdAt: 1_700_000_002_000,
+          processedOn: 1_700_000_003_000,
+          finishedOn: 1_700_000_004_000,
+          expiresAt: 1_700_000_005_000,
+          attemptsMade: 3,
+          maxAttempts: 9,
+          stalledCount: 2,
+          progress: { which: "progress" },
+          returnValue: { which: "returnValue" },
+          failedReason: { name: "Error", message: "failedReason" },
+          stacktrace: [{ name: "Error", message: "stacktrace" }],
+          lockToken: "token-value",
+          lockExpiresAt: 1_700_000_006_000,
+          workerId: "worker-value",
+          repeatKey: "repeat-value",
+        });
+
+        expect((await driver.addJob(q, populated)).added).toBe(true);
+        expect(await driver.getJob(q, "populated")).toEqual(populated);
+
+        // And a brand-new one, which is the shape that omits fields, has to
+        // read back with the defaults rather than with holes in it.
+        const bare = makeJob({ id: "bare" });
+        expect((await driver.addJob(q, bare)).added).toBe(true);
+        expect(await driver.getJob(q, "bare")).toEqual(bare);
+
+        await driver.removeJob(q, "populated");
+        await driver.removeJob(q, "bare");
+      });
+
+      it("reports per job which of a batch were new", async () => {
+        // `addJobs` is used throughout this suite to seed jobs, but what it
+        // *returns* was never checked anywhere — and a batch has to answer the
+        // same question the singular path does, per job and in order, because
+        // repeat scheduling reads exactly that to decide whether it won the
+        // race to schedule an occurrence.
+        const existing = await driver.addJob(
+          q,
+          makeJob({ id: "batch-taken", data: { stored: true } }),
+        );
+        expect(existing.added).toBe(true);
+
+        const results = await driver.addJobs(q, [
+          makeJob({ id: "batch-new-1" }),
+          makeJob({ id: "batch-taken", data: { replacement: true } }),
+          makeJob({ id: "batch-new-2" }),
+        ]);
+
+        // In order, and one entry per job given — a driver that returns only
+        // the rows it inserted would line the answers up against the wrong
+        // jobs.
+        expect(results.map((r) => r.job.id)).toEqual([
+          "batch-new-1",
+          "batch-taken",
+          "batch-new-2",
+        ]);
+        expect(results.map((r) => r.added)).toEqual([true, false, true]);
+
+        // A duplicate is ignored, not overwritten, and comes back with what is
+        // actually stored rather than what was offered.
+        expect(results[1]!.job.data).toEqual({ stored: true });
+
+        // The ones it claimed to add are really there.
+        expect((await driver.getJob(q, "batch-new-1"))?.id).toBe("batch-new-1");
+        expect((await driver.getJob(q, "batch-new-2"))?.id).toBe("batch-new-2");
+
+        for (const id of ["batch-taken", "batch-new-1", "batch-new-2"]) {
+          await driver.removeJob(q, id);
+        }
+      });
+
       it("claims in priority then FIFO order, exactly once each", async () => {
         const now = Date.now();
         await driver.addJobs(q, [
@@ -328,6 +452,30 @@ export function driverContract(
         }
       });
 
+      it("keeps a job's data, progress and return value when they are strings", async () => {
+        const now = Date.now();
+        const token = newToken();
+        // Plain strings, the empty one, and one that is itself valid JSON:
+        // each must come back as the same string, not null or a number.
+        await driver.addJob(
+          q,
+          makeJob({ id: "stringly", data: "done", runAt: now }),
+        );
+        expect((await driver.getJob(q, "stringly"))?.data).toBe("done");
+
+        await driver.claimJob(q, { workerId: "w1", token, lockMs: 1000, now });
+        expect(await driver.updateProgress(q, "stringly", "42")).toBe(true);
+        expect((await driver.getJob(q, "stringly"))?.progress).toBe("42");
+
+        await driver.completeJob(q, "stringly", token, "", false, now);
+        const done = await driver.getJob(q, "stringly");
+        expect(done?.state).toBe("completed");
+        expect(done?.returnValue).toBe("");
+        expect(done?.data).toBe("done");
+
+        await driver.removeJob(q, "stringly");
+      });
+
       it("stamps the claim on the job", async () => {
         const now = Date.now();
         const token = newToken();
@@ -353,6 +501,51 @@ export function driverContract(
         await driver.completeJob(q, "stamped", token, null, true, now);
       });
 
+      it("lists delayed jobs by when they are due, not when they were added", async () => {
+        const now = Date.now();
+        await driver.addJobs(q, [
+          makeJob({
+            id: "due-last",
+            state: "delayed",
+            createdAt: now - 3,
+            runAt: now + 30_000,
+          }),
+          makeJob({
+            id: "due-first",
+            state: "delayed",
+            createdAt: now - 2,
+            runAt: now + 10_000,
+          }),
+          makeJob({
+            id: "due-middle",
+            state: "delayed",
+            createdAt: now - 1,
+            runAt: now + 20_000,
+          }),
+        ]);
+
+        const ids = async (order: "asc" | "desc") =>
+          (
+            await driver.listJobs(q, ["delayed"], {
+              offset: 0,
+              limit: 10,
+              order,
+            })
+          ).map((job) => job.id);
+
+        expect(await ids("asc")).toEqual([
+          "due-first",
+          "due-middle",
+          "due-last",
+        ]);
+        expect(await ids("desc")).toEqual([
+          "due-last",
+          "due-middle",
+          "due-first",
+        ]);
+        await driver.drainQueue(q, true);
+      });
+
       it("does not claim a job before its runAt", async () => {
         const now = Date.now();
         await driver.addJob(
@@ -370,6 +563,17 @@ export function driverContract(
         ).toBeNull();
 
         expect(await driver.nextDelayedAt(q)).toBe(now + 60_000);
+
+        // Due is not enough: a claim does not promote, because promotion is
+        // the worker's maintenance and `maintenance: false` turns it off.
+        expect(
+          await driver.claimJob(q, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 1000,
+            now: now + 60_001,
+          }),
+        ).toBeNull();
 
         // Once due, promotion makes it claimable.
         expect(await driver.promoteDelayed(q, now + 60_001, 10)).toBe(1);
@@ -701,6 +905,37 @@ export function driverContract(
           ["old"],
         );
 
+        // Age, not due time: a job due in a minute but created long ago is old.
+        await driver.addJobs(q, [
+          makeJob({
+            id: "old-delayed",
+            state: "delayed",
+            createdAt: now - 100_000,
+            runAt: now + 60_000,
+          }),
+          makeJob({
+            id: "new-delayed",
+            state: "delayed",
+            createdAt: now,
+            runAt: now + 60_000,
+          }),
+          makeJob({
+            id: "old-failed",
+            state: "failed",
+            createdAt: now - 200_000,
+            finishedOn: now - 100_000,
+            runAt: now + 60_000,
+          }),
+        ]);
+        expect(await driver.cleanJobs(q, "delayed", 50_000, 10, now)).toEqual([
+          "old-delayed",
+        ]);
+        expect(await driver.cleanJobs(q, "failed", 50_000, 10, now)).toEqual([
+          "old-failed",
+        ]);
+        expect(await driver.getJob(q, "new-delayed")).not.toBeNull();
+        await driver.drainQueue(q, true);
+
         await driver.addJob(
           q,
           makeJob({
@@ -772,6 +1007,696 @@ export function driverContract(
 
         expect(await driver.removeRepeat(q, "nightly")).toBe(true);
         expect(await driver.getRepeat(q, "nightly")).toBeNull();
+      });
+
+      /* --- changing a stored job ---------------------------------------- */
+
+      /** Claims whatever is due in `ref`, with a fresh token. */
+      async function claimFrom(ref: QueueRef, now: number) {
+        const token = newToken();
+        const job = await driver.claimJob(ref, {
+          workerId: "w1",
+          token,
+          lockMs: 30_000,
+          now,
+        });
+        return { job, token };
+      }
+
+      it("updateJob replaces data, and answers with the job as it now is", async () => {
+        const uq: QueueRef = { ns, queue: "update-data" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "patched", runAt: now, data: { v: 1 } }),
+        );
+
+        const updated = await driver.updateJob!(
+          uq,
+          "patched",
+          { data: { v: 2, list: [1, 2] } },
+          now,
+        );
+
+        expect(updated?.data).toEqual({ v: 2, list: [1, 2] });
+        expect(updated?.state).toBe("waiting");
+        expect((await driver.getJob(uq, "patched"))?.data).toEqual({
+          v: 2,
+          list: [1, 2],
+        });
+        expect(
+          await driver.updateJob!(uq, "missing", { data: 1 }, now),
+        ).toBeNull();
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob with a new priority reorders what is claimed next", async () => {
+        const uq: QueueRef = { ns, queue: "update-priority" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "first-in", runAt: now, createdAt: now, priority: 5 }),
+        );
+        await driver.addJob(
+          uq,
+          makeJob({
+            id: "second-in",
+            runAt: now,
+            createdAt: now + 1,
+            priority: 5,
+          }),
+        );
+
+        const updated = await driver.updateJob!(
+          uq,
+          "second-in",
+          { priority: 1 },
+          now,
+        );
+        expect(updated?.priority).toBe(1);
+        expect((await driver.getJob(uq, "second-in"))?.priority).toBe(1);
+
+        expect((await claimFrom(uq, now)).job?.id).toBe("second-in");
+        expect((await claimFrom(uq, now)).job?.id).toBe("first-in");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob moves runAt between waiting and delayed, and refuses anything else", async () => {
+        const uq: QueueRef = { ns, queue: "update-runat" };
+        const now = Date.now();
+        await driver.addJob(uq, makeJob({ id: "moved", runAt: now }));
+
+        // Into the future: delayed, not claimable, not promoted early.
+        const later = await driver.updateJob!(
+          uq,
+          "moved",
+          { runAt: now + 60_000 },
+          now,
+        );
+        expect(later?.state).toBe("delayed");
+        expect(later?.runAt).toBe(now + 60_000);
+        expect((await claimFrom(uq, now)).job).toBeNull();
+        expect(await driver.promoteDelayed(uq, now, 10)).toBe(0);
+        expect(await driver.nextDelayedAt(uq)).toBe(now + 60_000);
+
+        // Back to now: waiting, claimable without a promotion pass.
+        const sooner = await driver.updateJob!(
+          uq,
+          "moved",
+          { runAt: now },
+          now,
+        );
+        expect(sooner?.state).toBe("waiting");
+        expect(await driver.nextDelayedAt(uq)).toBeNull();
+
+        const { job } = await claimFrom(uq, now);
+        expect(job?.id).toBe("moved");
+
+        // Active: its due time is no longer the queue's to move.
+        expect(
+          await driver.updateJob!(uq, "moved", { runAt: now + 5_000 }, now),
+        ).toBeNull();
+        expect((await driver.getJob(uq, "moved"))?.state).toBe("active");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob checks onlyIn in the same step as the write", async () => {
+        const uq: QueueRef = { ns, queue: "update-onlyin" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "guarded", runAt: now, data: { v: 1 } }),
+        );
+        await claimFrom(uq, now);
+
+        const pending: ("waiting" | "delayed")[] = ["waiting", "delayed"];
+        expect(
+          await driver.updateJob!(
+            uq,
+            "guarded",
+            { data: { v: 2 }, onlyIn: pending },
+            now,
+          ),
+        ).toBeNull();
+        expect((await driver.getJob(uq, "guarded"))?.data).toEqual({ v: 1 });
+
+        // Without the guard, data may change on an active job.
+        const changed = await driver.updateJob!(
+          uq,
+          "guarded",
+          { data: { v: 3 } },
+          now,
+        );
+        expect(changed?.data).toEqual({ v: 3 });
+        expect(changed?.state).toBe("active");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("keeps a job's log in order, capped, and paged", async () => {
+        const lq: QueueRef = { ns, queue: "logs" };
+        const now = Date.now();
+        await driver.addJob(lq, makeJob({ id: "logged", runAt: now }));
+
+        for (let line = 1; line <= 5; line++) {
+          expect(await driver.addJobLog!(lq, "logged", `line ${line}`, 0)).toBe(
+            line,
+          );
+        }
+
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({
+          logs: ["line 1", "line 2", "line 3", "line 4", "line 5"],
+          count: 5,
+        });
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 1,
+            limit: 2,
+            order: "desc",
+          }),
+        ).toEqual({ logs: ["line 4", "line 3"], count: 5 });
+
+        // A cap keeps the most recent lines.
+        expect(await driver.addJobLog!(lq, "logged", "line 6", 3)).toBe(3);
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({ logs: ["line 4", "line 5", "line 6"], count: 3 });
+
+        // Lines are kept verbatim, whatever they contain.
+        const awkward = 'quote " pipe | newline \n tab \t unicode ✓';
+        await driver.addJobLog!(lq, "logged", awkward, 0);
+        const [last] = (
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 1,
+            order: "desc",
+          })
+        ).logs;
+        expect(last).toBe(awkward);
+
+        // No job, no log.
+        expect(await driver.addJobLog!(lq, "no-such-job", "lost", 0)).toBe(0);
+        expect(
+          await driver.getJobLogs!(lq, "no-such-job", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({ logs: [], count: 0 });
+
+        await driver.drainQueue(lq, true);
+      });
+
+      it("a log goes with its job, however the job goes", async () => {
+        const lq: QueueRef = { ns, queue: "log-lifetime" };
+        const page = { offset: 0, limit: 10, order: "asc" as const };
+        const now = Date.now();
+
+        /** Adds a job with one log line, runs `remove`, re-adds the same id. */
+        async function survivesRemoval(
+          id: string,
+          remove: () => Promise<unknown>,
+          state: Partial<{ runAt: number }> = {},
+        ) {
+          // Both jobs are created in the same millisecond, deliberately. A
+          // driver that tells the two apart by `createdAt` passes this only
+          // when the clock happens to tick between them — and a job completed
+          // and re-added under its id inside one millisecond is ordinary.
+          await driver.addJob(
+            lq,
+            makeJob({ id, runAt: now, createdAt: now, ...state }),
+          );
+          await driver.addJobLog!(lq, id, `before ${id}`, 0);
+          await remove();
+          expect(await driver.getJob(lq, id)).toBeNull();
+
+          // The same id, added again, is a new job with a new log.
+          await driver.addJob(
+            lq,
+            makeJob({ id, createdAt: now, runAt: now + 3_600_000 }),
+          );
+          expect(await driver.getJobLogs!(lq, id, page)).toEqual({
+            logs: [],
+            count: 0,
+          });
+          await driver.removeJob(lq, id);
+        }
+
+        await survivesRemoval("log-removed", async () => {
+          await driver.removeJob(lq, "log-removed");
+        });
+
+        await survivesRemoval("log-drained", () => driver.drainQueue(lq, true));
+
+        await survivesRemoval("log-completed", async () => {
+          const { job, token } = await claimFrom(lq, now);
+          expect(job?.id).toBe("log-completed");
+          // Retention `true` deletes on completion: the hot path.
+          await driver.completeJob(lq, "log-completed", token, null, true, now);
+        });
+
+        await survivesRemoval("log-cleaned", async () => {
+          const { token } = await claimFrom(lq, now);
+          await driver.completeJob(lq, "log-cleaned", token, null, false, now);
+          await driver.cleanJobs(lq, "completed", 0, 100, now + 1);
+        });
+
+        await survivesRemoval("log-expired", async () => {
+          const { token } = await claimFrom(lq, now);
+          await driver.completeJob(
+            lq,
+            "log-expired",
+            token,
+            null,
+            { ttl: 1 },
+            now,
+          );
+          await driver.pruneExpired(lq, now + 1_000, 100);
+        });
+
+        await driver.drainQueue(lq, true);
+      });
+
+      /* --- skipping names, and state for limits ------------------------- */
+
+      it("skips excluded names on a single claim, taking what comes next", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-one" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        // The excluded name is at the head of the queue, twice.
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-capped-1",
+            name: "capped",
+            runAt: now,
+            createdAt: now,
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-capped-2",
+            name: "capped",
+            runAt: now,
+            createdAt: now + 1,
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-free",
+            name: "free",
+            runAt: now,
+            createdAt: now + 2,
+          }),
+        );
+
+        const claim = (excludeNames?: string[]) =>
+          driver.claimJob(xq, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 30_000,
+            now,
+            excludeNames,
+          });
+
+        expect((await claim(["capped"]))?.id).toBe("x-free");
+        // Nothing else is claimable while the only remaining name is excluded.
+        expect(await claim(["capped"])).toBeNull();
+        // And they are still there, in order, once it is not.
+        expect((await claim([]))?.id).toBe("x-capped-1");
+        expect((await claim())?.id).toBe("x-capped-2");
+
+        await driver.drainQueue(xq, true);
+      });
+
+      it("skips excluded names on a batch claim too", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-many" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        const names = ["a", "b", "a", "c", "a", "b"];
+        for (const [index, name] of names.entries()) {
+          await driver.addJob(
+            xq,
+            makeJob({
+              id: `xm-${index}`,
+              name,
+              runAt: now,
+              createdAt: now + index,
+            }),
+          );
+        }
+
+        const options = {
+          workerId: "w1",
+          token: newToken(),
+          lockMs: 30_000,
+          now,
+          excludeNames: ["a", "c"],
+        };
+        const claimed = driver.claimJobs
+          ? await driver.claimJobs(xq, options, 10)
+          : [
+              await driver.claimJob(xq, options),
+              await driver.claimJob(xq, options),
+            ];
+
+        expect(
+          claimed.filter((job) => job !== null).map((job) => job!.id),
+        ).toEqual(["xm-1", "xm-5"]);
+
+        await driver.drainQueue(xq, true);
+      });
+
+      it("reaches jobs behind a block of excluded ones, however long", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-pileup" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        // Far more capped jobs at the head than any one claim should look at.
+        const pile = 2_500;
+        await driver.addJobs(
+          xq,
+          Array.from({ length: pile }, (_, index) => {
+            return makeJob({
+              id: `pile-${index}`,
+              name: "capped",
+              runAt: now,
+              createdAt: now + index,
+            });
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "behind-the-pile",
+            name: "free",
+            runAt: now,
+            createdAt: now + pile + 1,
+          }),
+        );
+
+        const claim = async () =>
+          await driver.claimJob(xq, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 30_000,
+            now,
+            excludeNames: ["capped"],
+          });
+
+        // A driver may look at a bounded window per claim, but each claim has
+        // to make progress: the job behind the pile comes out within a few.
+        let found: JobRecord | null = null;
+        for (let attempt = 0; attempt < 8 && !found; attempt++) {
+          found = await claim();
+        }
+        expect(found?.id).toBe("behind-the-pile");
+
+        // A new job at the head is still seen promptly, however far into the
+        // pile the last claims looked.
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "new-at-the-head",
+            name: "free",
+            runAt: now,
+            createdAt: now - 1,
+          }),
+        );
+
+        let head: JobRecord | null = null;
+        for (let attempt = 0; attempt < 3 && !head; attempt++) {
+          head = await claim();
+        }
+        expect(head?.id).toBe("new-at-the-head");
+
+        // Nothing capped was taken along the way.
+        expect((await driver.countJobs(xq)).active).toBe(2);
+
+        await driver.drainQueue(xq, true);
+      }, 120_000);
+
+      it("compare-and-sets queue state, and refuses a stale version", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state" };
+
+        expect(await driver.getQueueState!(sq, "limiter")).toBeNull();
+
+        // Created only when absent.
+        const first = await driver.setQueueState!(
+          sq,
+          "limiter",
+          { holders: {}, list: [1, 2] },
+          null,
+        );
+        expect(first).toBeGreaterThanOrEqual(1);
+        expect(
+          await driver.setQueueState!(sq, "limiter", { racing: true }, null),
+        ).toBeNull();
+
+        expect(await driver.getQueueState!(sq, "limiter")).toEqual({
+          value: { holders: {}, list: [1, 2] },
+          version: first!,
+        });
+
+        // Replaced only at the version read.
+        const second = await driver.setQueueState!(
+          sq,
+          "limiter",
+          { count: 1 },
+          first,
+        );
+        expect(second).toBeGreaterThan(first!);
+        expect(
+          await driver.setQueueState!(sq, "limiter", { count: 99 }, first),
+        ).toBeNull();
+        expect((await driver.getQueueState!(sq, "limiter"))?.value).toEqual({
+          count: 1,
+        });
+
+        // Names are independent, and so are queues and namespaces.
+        expect(await driver.getQueueState!(sq, "other")).toBeNull();
+        expect(
+          await driver.getQueueState!(
+            { ns, queue: "queue-state-2" },
+            "limiter",
+          ),
+        ).toBeNull();
+        expect(
+          await driver.getQueueState!(
+            { ns: other, queue: "queue-state" },
+            "limiter",
+          ),
+        ).toBeNull();
+
+        // Deleted only at the version read, and then absent.
+        expect(
+          await driver.setQueueState!(sq, "limiter", null, first),
+        ).toBeNull();
+        expect(await driver.setQueueState!(sq, "limiter", null, second)).toBe(
+          0,
+        );
+        expect(await driver.getQueueState!(sq, "limiter")).toBeNull();
+      });
+
+      it("lists queue state names by prefix, in order, a page at a time", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-list" };
+        const names = [
+          "debounce:b",
+          "debounce:a",
+          "debounce:c",
+          "throttle:a",
+          "limiter",
+        ];
+
+        for (const name of names) {
+          await driver.setQueueState!(sq, name, { name }, null);
+        }
+        // Another queue and another namespace, with matching names.
+        await driver.setQueueState!(
+          { ns, queue: "queue-state-list-2" },
+          "debounce:z",
+          {},
+          null,
+        );
+        await driver.setQueueState!(
+          { ns: other, queue: "queue-state-list" },
+          "debounce:y",
+          {},
+          null,
+        );
+
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 10 }),
+        ).toEqual(["debounce:a", "debounce:b", "debounce:c"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 2 }),
+        ).toEqual(["debounce:a", "debounce:b"]);
+        expect(
+          await driver.listQueueState!(sq, {
+            prefix: "debounce:",
+            after: "debounce:b",
+            limit: 10,
+          }),
+        ).toEqual(["debounce:c"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "", limit: 10 }),
+        ).toEqual([
+          "debounce:a",
+          "debounce:b",
+          "debounce:c",
+          "limiter",
+          "throttle:a",
+        ]);
+
+        // A deleted entry is not listed.
+        const entry = await driver.getQueueState!(sq, "debounce:b");
+        await driver.setQueueState!(sq, "debounce:b", null, entry!.version);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 10 }),
+        ).toEqual(["debounce:a", "debounce:c"]);
+
+        // Prefixes are literal: nothing that merely looks like a pattern.
+        await driver.setQueueState!(sq, "a%b_c*d", {}, null);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "a%b_", limit: 10 }),
+        ).toEqual(["a%b_c*d"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "a_", limit: 10 }),
+        ).toEqual([]);
+      });
+
+      it("lists queue state in code-point order, whatever the characters", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-codepoints" };
+        // Accented, private-use, the last BMP character and an emoji: the
+        // characters where byte order, code-unit order and collations disagree.
+        const names = ["\u{1F600}", "\uFFFF", "z", "é", "\uE000", "Y", "b"];
+
+        for (const name of names) {
+          await driver.setQueueState!(sq, name, { name }, null);
+        }
+
+        const ordered = ["Y", "b", "z", "é", "\uE000", "\uFFFF", "\u{1F600}"];
+        expect(
+          await driver.listQueueState!(sq, { prefix: "", limit: 20 }),
+        ).toEqual(ordered);
+
+        // Paging agrees with the order across every boundary.
+        const paged: string[] = [];
+        let after: string | undefined;
+        for (;;) {
+          const page = await driver.listQueueState!(sq, {
+            prefix: "",
+            limit: 2,
+            ...(after !== undefined ? { after } : {}),
+          });
+          paged.push(...page);
+          if (page.length < 2) {
+            break;
+          }
+          after = page.at(-1);
+        }
+        expect(paged).toEqual(ordered);
+
+        for (const name of names) {
+          const entry = await driver.getQueueState!(sq, name);
+          await driver.setQueueState!(sq, name, null, entry!.version);
+        }
+      });
+
+      it("keeps ids and names that differ only by case or accent apart", async () => {
+        const now = Date.now();
+        const variants = ["Report", "report", "REPORT", "résumé", "resume"];
+
+        // Job ids: each is its own job, not a duplicate of another.
+        const cq: QueueRef = { ns, queue: "case-sensitive" };
+        for (const id of variants) {
+          const { added } = await driver.addJob(
+            cq,
+            makeJob({ id, state: "delayed", runAt: now + 60_000 }),
+          );
+          expect(added).toBe(true);
+        }
+        for (const id of variants) {
+          expect((await driver.getJob(cq, id))?.id).toBe(id);
+        }
+        expect((await driver.countJobs(cq)).delayed).toBe(variants.length);
+
+        // Queue state names.
+        for (const name of variants) {
+          expect(await driver.setQueueState!(cq, name, { name }, null)).toBe(1);
+        }
+        for (const name of variants) {
+          expect((await driver.getQueueState!(cq, name))?.value).toEqual({
+            name,
+          });
+        }
+
+        // Queue names that differ only by case are different queues.
+        const upper: QueueRef = { ns, queue: "Mail" };
+        const lower: QueueRef = { ns, queue: "mail" };
+        await driver.addJob(
+          upper,
+          makeJob({ id: "shared", state: "delayed", runAt: now + 60_000 }),
+        );
+        expect(
+          (
+            await driver.addJob(
+              lower,
+              makeJob({ id: "shared", state: "delayed", runAt: now + 60_000 }),
+            )
+          ).added,
+        ).toBe(true);
+        expect((await driver.countJobs(upper)).delayed).toBe(1);
+        expect((await driver.countJobs(lower)).delayed).toBe(1);
+
+        for (const name of variants) {
+          const entry = await driver.getQueueState!(cq, name);
+          await driver.setQueueState!(cq, name, null, entry!.version);
+        }
+        await driver.drainQueue(cq, true);
+        await driver.drainQueue(upper, true);
+        await driver.drainQueue(lower, true);
+      });
+
+      it("lets exactly one of many concurrent compare-and-sets win", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-race" };
+        const base = await driver.setQueueState!(sq, "counter", { n: 0 }, null);
+
+        const results = await Promise.all(
+          Array.from({ length: 16 }, async (_, index) => {
+            return await driver.setQueueState!(
+              sq,
+              "counter",
+              { n: index + 1 },
+              base,
+            );
+          }),
+        );
+
+        expect(results.filter((version) => version !== null)).toHaveLength(1);
+        await driver.setQueueState!(
+          sq,
+          "counter",
+          null,
+          (await driver.getQueueState!(sq, "counter"))!.version,
+        );
       });
 
       it("keeps the same queue name in two namespaces apart", async () => {
@@ -849,6 +1774,49 @@ export function driverContract(
         await waiting;
       });
 
+      it("prunes stored events, where it stores any", async () => {
+        // Optional on the contract, because only a backend that writes events
+        // down has anything to remove: Redis publishes to a channel and the
+        // memory driver calls its listeners. The three that do write them
+        // never removed one until this existed — a log that grows for as long
+        // as the queue runs, holding notifications whose value expired seconds
+        // after they were published.
+        if (!driver.cleanEvents) {
+          return;
+        }
+
+        const target = "prunable";
+        const received: string[] = [];
+        const unsubscribe = await driver.subscribe(
+          ns,
+          "queue",
+          target,
+          (event) => received.push(event.type),
+        );
+
+        try {
+          await driver.publish(
+            queueEvent(
+              { ns, target, type: "promoted", origin: newToken() },
+              { id: "old-one" },
+            ),
+          );
+
+          await waitFor(() => received.length > 0, {
+            message: "the event never arrived, so pruning proves nothing",
+          });
+
+          // Everything published so far is older than this.
+          const removed = await driver.cleanEvents(ns, Date.now() + 1_000);
+          expect(removed).toBeGreaterThan(0);
+
+          // And pruning again finds nothing left to take.
+          expect(await driver.cleanEvents(ns, Date.now() + 1_000)).toBe(0);
+        } finally {
+          await unsubscribe();
+        }
+      });
+
       it("delivers published events to subscribers of that target", async () => {
         const received: string[] = [];
         const unsubscribe = await driver.subscribe(
@@ -858,26 +1826,30 @@ export function driverContract(
           (event) => received.push(event.type),
         );
 
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "events-test",
-          type: "completed",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        await driver.publish(
+          queueEvent(
+            {
+              ns,
+              target: "events-test",
+              type: "completed",
+              origin: newToken(),
+            },
+            { id: "job-1", returnValue: null },
+          ),
+        );
 
         // Another target's events must not arrive here.
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "somewhere-else",
-          type: "failed",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        await driver.publish(
+          queueEvent(
+            {
+              ns,
+              target: "somewhere-else",
+              type: "failed",
+              origin: newToken(),
+            },
+            { id: "job-2", error: { name: "Error", message: "elsewhere" } },
+          ),
+        );
 
         await waitFor(() => received.length > 0, {
           message: "no event delivered",
@@ -885,15 +1857,14 @@ export function driverContract(
         expect(received).toEqual(["completed"]);
 
         await unsubscribe();
-        await driver.publish({
-          v: 1,
-          ns,
-          kind: "queue",
-          target: "events-test",
-          type: "after-unsubscribe",
-          at: Date.now(),
-          origin: newToken(),
-        });
+        // Any event will do here; what is being checked is that nothing
+        // arrives after `unsubscribe()`, not which event it was.
+        await driver.publish(
+          queueEvent(
+            { ns, target: "events-test", type: "promoted", origin: newToken() },
+            { id: "job-3" },
+          ),
+        );
         await Bun.sleep(20);
         expect(received).toEqual(["completed"]);
       });
@@ -902,6 +1873,18 @@ export function driverContract(
     /* --- discovery and purge ------------------------------------------ */
 
     describe("discovery and purge", () => {
+      it("lists a runner that has written state but never taken a lock", async () => {
+        const ns = testNamespace("unlocked");
+
+        await driver.setState(ns, runnerKey("never-locked"), {
+          paused: "0",
+          updatedAt: Date.now(),
+        });
+
+        expect(await driver.listRunners(ns)).toContain("never-locked");
+        await driver.purge(ns);
+      });
+
       it("lists what the namespace holds and purges only it", async () => {
         const doomed = testNamespace("doomed");
         const kept = testNamespace("kept");

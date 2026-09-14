@@ -26,6 +26,7 @@ export { BunJobs, type BunJobsOptions, jobsFromContext } from "./BunJobs";
  * ------------------------------------------------------------------ */
 export {
   type ClaimOptions,
+  type ColumnRow,
   createDriver,
   detectAdapter,
   dialectFor,
@@ -37,6 +38,8 @@ export {
   type FailOutcome,
   FileDriver,
   type FileDriverOptions,
+  type IndexRow,
+  type JobPatch,
   type JobRecord,
   type JobsDriver,
   type JobState,
@@ -49,17 +52,21 @@ export {
   type QueueDriver,
   type QueuedTrigger,
   type QueueRef,
+  type QueueStateEntry,
   RedisDriver,
   type RedisDriverOptions,
   RedisKeys,
   type RepeatRecord,
   type ResolvedJobOptions,
   resolveDriver,
+  type ResolvedSyncOptions,
   type Retention,
   type RunnerDriver,
   type RunRecord,
   type RunSource,
   type RunStatus,
+  type SchemaChange,
+  type SchemaSyncOptions,
   SQL_TABLES,
   type SqlAdapter,
   type SqlDialect,
@@ -67,24 +74,52 @@ export {
   type SqlDriverOptions,
   type SqlTable,
   type StoredSchedule,
+  type SyncBackend,
 } from "./drivers/index";
+
+// One stream of every event in a namespace.
+export {
+  JobsNotifier,
+  type JobsNotifierEvents,
+  type JobsNotifierOptions,
+} from "./notifier";
 
 /* ------------------------------------------------------------------ *
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
 export {
+  type BackoffContext,
+  BackoffStrategies,
+  type BackoffStrategy,
+  BUILT_IN_BACKOFFS,
   BunQueue,
   type BunQueueEvents,
   type BunQueueOptions,
   BunQueueWorker,
   type BunQueueWorkerEvents,
   type BunQueueWorkerOptions,
+  type DeadLetter,
+  type DebounceOptions,
   DEFAULT_JOB_OPTIONS,
+  defineProcessor,
+  IsolatedProcessor,
+  type IsolationMode,
+  type IsolationOptions,
   Job,
+  type JobBackoffOptions,
+  JobBuilder,
+  type JobBuilderOptions,
+  type JobDefinition,
+  type JobDefinitionOptions,
+  JobDefinitions,
   type JobOptions,
   type JobProcessor,
+  type NameLimits,
   nextOccurrence,
   type ProcessorContext,
+  QueueLimiter,
+  type QueueLimits,
+  type RateLimit,
   type Repeatable,
   repeatJobId,
   repeatKeyFor,
@@ -92,9 +127,10 @@ export {
   resolveJobOptions,
   resolveRunAt,
   retentionExpiry,
+  type RetryAllOptions,
+  type StoredLimits,
   toRepeatRecord,
 } from "./queue/index";
-
 /* ------------------------------------------------------------------ *
  * The runner — run a JS/TS file on a schedule or on demand.
  * ------------------------------------------------------------------ */
@@ -131,6 +167,7 @@ export {
   WorkerExecutor,
   type WorkerOptions,
 } from "./runner/index";
+
 export {
   type ConnectionInput,
   type ConnectionOptions,
@@ -158,7 +195,6 @@ export {
   type ParsedCron,
   validateCron,
 } from "./shared/cron";
-
 export { TypedEmitterBase } from "./shared/emitter";
 /* ------------------------------------------------------------------ *
  * Errors — every failure this package raises, each with a stable `code`.
@@ -174,11 +210,22 @@ export {
   LockUnavailableError,
   QueueClosedError,
   QueueFullError,
+  RunKilledError,
   RunnerStoppedError,
   SerializationError,
   UnrecoverableJobError,
   WorkerClosedError,
 } from "./shared/errors";
+export { runnerEvent } from "./shared/events";
+// Reading dates in phrases: the parser interface, and the chrono range.
+export {
+  assertDateParser,
+  CHRONO_VERSION_RANGE,
+  type DateParseComponent,
+  type DateParseOptions,
+  type DateParser,
+  type DateParseResult,
+} from "./shared/humanTime";
 export { HOST, newId, newToken, parseToken } from "./shared/ids";
 export { assertJsonSafe, safeJsonParse, stringifyBounded } from "./shared/json";
 export {

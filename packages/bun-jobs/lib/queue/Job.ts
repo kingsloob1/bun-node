@@ -6,7 +6,10 @@ import type {
   ResolvedJobOptions,
 } from "../drivers/index";
 import { deserializeError } from "@kingsleyweb/bun-common";
-import { DEFAULT_LOCK_DURATION } from "../shared/constants";
+import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
+import { ConfigError } from "../shared/errors";
+import { parseWhen } from "../shared/humanTime";
+import { assertJsonSafe } from "../shared/json";
 
 /**
  * One job, as a producer or a processor sees it.
@@ -65,6 +68,14 @@ export class Job<TData = unknown, TResult = unknown> {
   readonly #record: JobRecord;
   /** Where the job lives. */
   readonly #driver: JobsDriver;
+  /**
+   * Told when progress is recorded, so whoever owns this job can announce it.
+   *
+   * Only the worker running the job sees `updateProgress` called, and `Job`
+   * has no emitter of its own — which is why the `progress` event was declared
+   * on both `BunQueue` and `BunQueueWorker` and fired on neither.
+   */
+  readonly #onProgress?: (value: unknown) => void;
   /** Which queue it belongs to. */
   readonly #ref: QueueRef;
 
@@ -73,11 +84,13 @@ export class Job<TData = unknown, TResult = unknown> {
     ref: QueueRef,
     record: JobRecord,
     wasAdded = true,
+    onProgress?: (value: unknown) => void,
   ) {
     this.#driver = driver;
     this.#ref = ref;
     this.#record = record;
     this.wasAdded = wasAdded;
+    this.#onProgress = onProgress;
 
     this.id = record.id;
     this.name = record.name;
@@ -121,6 +134,9 @@ export class Job<TData = unknown, TResult = unknown> {
   /** Records a progress value for observers to read. */
   async updateProgress(value: number | Record<string, unknown>): Promise<void> {
     await this.#driver.updateProgress(this.#ref, this.id, value);
+    // Told after the write, not before: an observer should not be shown
+    // progress that failed to persist.
+    this.#onProgress?.(value);
   }
 
   /**
@@ -159,6 +175,109 @@ export class Job<TData = unknown, TResult = unknown> {
   /** Makes a delayed or retry-pending job claimable now. */
   async promote(): Promise<boolean> {
     return await this.#driver.promoteJob(this.#ref, this.id, Date.now());
+  }
+
+  /**
+   * Replaces the job's data, and answers with the job as it now is — or
+   * `null` when it is gone.
+   *
+   * Allowed in any state, including while it runs: the running attempt keeps
+   * the data it started with, and a later attempt reads the new data.
+   */
+  async updateData(data: TData): Promise<Job<TData, TResult> | null> {
+    return await this.#update(
+      { data: assertJsonSafe(data, "job data") },
+      "updateData()",
+    );
+  }
+
+  /** Changes the job's priority; a waiting job moves in claim order. */
+  async setPriority(priority: number): Promise<Job<TData, TResult> | null> {
+    if (!Number.isFinite(priority)) {
+      throw new ConfigError("priority must be a number", { priority });
+    }
+
+    return await this.#update({ priority }, "setPriority()");
+  }
+
+  /**
+   * Moves a waiting or delayed job to a new run time — a `Date`, epoch
+   * milliseconds, or words such as `"in 10 minutes"`. A job that is running
+   * or finished is left alone and answers `null`.
+   */
+  async reschedule(
+    when: Date | number | string,
+  ): Promise<Job<TData, TResult> | null> {
+    const now = Date.now();
+    const runAt = parseWhen(when, "reschedule()", now);
+    return await this.#update({ runAt }, "reschedule()", now);
+  }
+
+  /** Extends the lock, as {@link Job.extendLock} does; the name Agenda uses. */
+  async touch(ms?: number): Promise<boolean> {
+    return await this.extendLock(ms);
+  }
+
+  /**
+   * Appends a line to the job's log and answers with how many lines it keeps,
+   * or `0` when the job is gone. The log is capped at `opts.keepLogs`.
+   */
+  async log(line: string): Promise<number> {
+    const driver = this.#require("addJobLog", "log()");
+
+    return await driver.addJobLog!(
+      this.#ref,
+      this.id,
+      String(line),
+      this.opts.keepLogs ?? DEFAULT_KEEP_LOGS,
+    );
+  }
+
+  /** A page of the job's log, oldest first unless asked otherwise. */
+  async getLogs(options?: {
+    /** Lines to skip. Defaults to `0`. */
+    offset?: number;
+    /** Lines to return. Defaults to `100`. */
+    limit?: number;
+    /** `asc` is oldest first, the default. */
+    order?: "asc" | "desc";
+  }): Promise<{ logs: string[]; count: number }> {
+    const driver = this.#require("getJobLogs", "getLogs()");
+
+    return await driver.getJobLogs!(this.#ref, this.id, {
+      offset: options?.offset ?? 0,
+      limit: options?.limit ?? 100,
+      order: options?.order ?? "asc",
+    });
+  }
+
+  /** Applies a patch through the driver and answers with a fresh view. */
+  async #update(
+    patch: { data?: unknown; priority?: number; runAt?: number },
+    what: string,
+    now = Date.now(),
+  ): Promise<Job<TData, TResult> | null> {
+    const driver = this.#require("updateJob", what);
+    const record = await driver.updateJob!(this.#ref, this.id, patch, now);
+
+    return record
+      ? new Job<TData, TResult>(this.#driver, this.#ref, record, false)
+      : null;
+  }
+
+  /** The driver, checked to implement an optional method a caller needs. */
+  #require(
+    method: "updateJob" | "addJobLog" | "getJobLogs",
+    what: string,
+  ): JobsDriver {
+    if (typeof this.#driver[method] !== "function") {
+      throw new ConfigError(
+        `${what} needs a driver that implements ${method}, and the ${this.#driver.name} driver does not`,
+        { driver: this.#driver.name, method },
+      );
+    }
+
+    return this.#driver;
   }
 
   /** Re-reads the job, returning a fresh view or `null` when it is gone. */

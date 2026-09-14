@@ -3,9 +3,16 @@ import type {
   RepeatRecord,
   ResolvedJobOptions,
 } from "../drivers/index";
+import type { DateParser } from "../shared/humanTime";
 import type { RepeatOptions } from "./types";
 import { nextCronDate } from "../shared/cron";
 import { ConfigError } from "../shared/errors";
+import {
+  looksLikeCron,
+  parseDuration,
+  parseWhen,
+  readRecurrence,
+} from "../shared/humanTime";
 
 /**
  * Repeatable jobs.
@@ -26,7 +33,7 @@ export function repeatJobId(key: string, runAt: number): string {
  * Identifies a series. Derived from what makes it distinct, so adding the
  * same repeat twice updates it rather than creating a rival series.
  */
-export function repeatKeyFor(name: string, repeat: RepeatOptions): string {
+export function repeatKeyFor(name: string, repeat: ResolvedRepeat): string {
   if (repeat.key) {
     return repeat.key;
   }
@@ -34,7 +41,7 @@ export function repeatKeyFor(name: string, repeat: RepeatOptions): string {
   const schedule = repeat.cron
     ? `${repeat.cron}${repeat.tz ? `@${repeat.tz}` : ""}`
     : `every:${repeat.every}`;
-  const start = repeat.startAt ? toMs(repeat.startAt, "repeat.startAt") : "";
+  const start = repeat.startAt ?? "";
 
   return `${name}|${schedule}|${start}`;
 }
@@ -89,9 +96,16 @@ export function nextOccurrence(
     // ids, and the series that is meant to be idempotent gains a second
     // pending occurrence. The creation time is fixed, so the grid is too —
     // which also keeps a long-running series drift-free.
+    //
+    // The first point on the grid strictly after `after`. Step zero is the
+    // anchor itself, which is due when a series starts at `startAt` — `after`
+    // is `startAt - 1` then, the same "not before" rule cron follows, so
+    // "every 2 days from 1 December" runs on the 1st rather than the 3rd.
+    // Without `startAt` the anchor is the creation time, never after `after`,
+    // so the grid's first step comes out as one interval on by itself.
     const anchor = definition.startAt ?? definition.createdAt ?? after;
     const steps = Math.floor((after - anchor) / definition.every) + 1;
-    next = anchor + Math.max(1, steps) * definition.every;
+    next = anchor + Math.max(0, steps) * definition.every;
   } else {
     throw new ConfigError("A repeat needs either a cron expression or every", {
       repeat: definition,
@@ -109,15 +123,106 @@ export function nextOccurrence(
   return next;
 }
 
+/** A repeat with every word read: intervals and instants as milliseconds. */
+export type ResolvedRepeat = Omit<
+  RepeatOptions,
+  "every" | "startAt" | "endAt"
+> & {
+  /** Interval in milliseconds. */
+  every?: number;
+  /** Epoch milliseconds the series may begin. */
+  startAt?: number;
+  /** Epoch milliseconds the series ends. */
+  endAt?: number;
+};
+
+/**
+ * Reads the words in a repeat, against `now`.
+ *
+ * `every` may be milliseconds, a duration, a cron expression or a phrase with
+ * dates in it; `startAt` and `endAt` may be words too. Dates a phrase names
+ * fill `startAt`/`endAt` only when those were not given, since saying one
+ * directly is the more specific thing to have said.
+ *
+ * Everything that reads a repeat goes through here first, so the series key,
+ * the stored record and the first occurrence are all worked out from the same
+ * numbers.
+ */
+export function resolveRepeat(
+  repeat: RepeatOptions,
+  now: number,
+  what = "repeat",
+  parser?: DateParser,
+): ResolvedRepeat {
+  const { every, startAt, endAt, ...rest } = repeat;
+  const resolved: ResolvedRepeat = { ...rest };
+  let phraseStart: number | undefined;
+  let phraseEnd: number | undefined;
+
+  if (typeof every === "number") {
+    resolved.every = every;
+  } else if (typeof every === "string") {
+    const duration = parseDuration(
+      every.trim().replace(/^(?:every|each)\s+/i, ""),
+    );
+
+    if (duration !== null) {
+      resolved.every = duration;
+    } else if (looksLikeCron(every)) {
+      if (repeat.cron !== undefined && repeat.cron !== every) {
+        throw new ConfigError(
+          `${what} was given two cron expressions, in cron and in every`,
+          { cron: repeat.cron, every },
+        );
+      }
+
+      resolved.cron = every;
+    } else {
+      const recurrence = readRecurrence(every, `${what}.every`, now, parser);
+      resolved.every = recurrence.every;
+      phraseStart = recurrence.startAt;
+      phraseEnd = recurrence.endAt;
+    }
+  }
+
+  const start = startAt ?? phraseStart;
+  const end = endAt ?? phraseEnd;
+
+  if (start !== undefined) {
+    resolved.startAt = readInstant(start, `${what}.startAt`, now, parser);
+  }
+
+  if (end !== undefined) {
+    resolved.endAt = readInstant(end, `${what}.endAt`, now, parser);
+  }
+
+  return resolved;
+}
+
+/** Epoch milliseconds from a `Date`, a number, or words. */
+function readInstant(
+  value: Date | number | string,
+  what: string,
+  now: number,
+  parser: DateParser | undefined,
+): number {
+  return typeof value === "string"
+    ? parseWhen(value, what, now, parser)
+    : toMs(value, what);
+}
+
 /** Builds the stored definition for a series. */
 export function toRepeatRecord(
   q: QueueRef,
   name: string,
   data: unknown,
   opts: ResolvedJobOptions,
-  repeat: RepeatOptions,
+  options: RepeatOptions,
   now: number,
+  parser?: DateParser,
 ): RepeatRecord {
+  const repeat = resolveRepeat(options, now, "repeat", parser);
+
   if (!repeat.cron && !(repeat.every && repeat.every > 0)) {
     throw new ConfigError("A repeat needs either a cron expression or every", {
       repeat,
@@ -132,13 +237,10 @@ export function toRepeatRecord(
     ...(repeat.cron ? { cron: repeat.cron } : {}),
     ...(repeat.tz ? { tz: repeat.tz } : {}),
     ...(repeat.every ? { every: repeat.every } : {}),
-    ...(repeat.startAt !== undefined
-      ? { startAt: toMs(repeat.startAt, "repeat.startAt") }
-      : {}),
-    ...(repeat.endAt !== undefined
-      ? { endAt: toMs(repeat.endAt, "repeat.endAt") }
-      : {}),
+    ...(repeat.startAt !== undefined ? { startAt: repeat.startAt } : {}),
+    ...(repeat.endAt !== undefined ? { endAt: repeat.endAt } : {}),
     ...(repeat.limit !== undefined ? { limit: repeat.limit } : {}),
+    ...(repeat.catchUp ? { catchUp: true } : {}),
     count: 0,
     nextRunAt: null,
     nextJobId: null,

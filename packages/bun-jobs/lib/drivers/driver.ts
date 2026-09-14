@@ -1,6 +1,8 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { ConnectionOptions } from "../shared/connection";
+import type { DriverEvent, EventKind, EventOfKind } from "../shared/events";
 import type { RunnerSchedule } from "../shared/schedule";
+import type { SchemaChange, SchemaSyncOptions } from "./schemaSync";
 
 /**
  * The storage contract both subsystems are built on.
@@ -51,6 +53,19 @@ export interface DriverLifecycle {
   ping: () => Promise<boolean>;
   /** Deletes everything under one namespace — and nothing outside it. */
   purge: (ns: string) => Promise<void>;
+  /**
+   * Brings an existing database in line with the schema this version expects,
+   * reporting every difference found — including the ones it declined to make.
+   *
+   * **Optional**, because it only means anything for a backend with a schema.
+   * The memory, file and Redis drivers have nothing to reconcile, so they do
+   * not implement it; a caller should check before calling.
+   *
+   * Safe by default. A change that could stall a running queue is reported
+   * with `blocking: true` and `applied: false` unless it was asked for by
+   * name — see {@link SchemaSyncOptions.alterColumns}.
+   */
+  syncSchema?: (options?: SchemaSyncOptions) => Promise<SchemaChange[]>;
   /** Runner ids known to the backend in this namespace. */
   listRunners: (ns: string) => Promise<string[]>;
   /** Queue names known to the backend in this namespace. */
@@ -249,11 +264,17 @@ export interface ResolvedJobOptions {
   priority: number;
   /** Total attempts, including the first. */
   attempts: number;
-  /** Delay schedule between attempts. */
+  /**
+   * Delay schedule between attempts.
+   *
+   * `type` is a built-in strategy or the name of one registered on the worker
+   * that runs the job — a name rather than a function, because this has to
+   * survive being stored and read back by another process.
+   */
   backoff:
     | number
     | {
-        type?: "fixed" | "exponential";
+        type?: string;
         delay?: number;
         factor?: number;
         max?: number;
@@ -267,6 +288,16 @@ export interface ResolvedJobOptions {
   removeOnFail: Retention;
   /** How many stack traces a failing job keeps. */
   keepStacktraces: number;
+  /**
+   * The queue a copy of the job is added to when it dies, in the same
+   * namespace. Absent unless the job, or the worker running it, names one.
+   */
+  deadLetter?: string;
+  /**
+   * How many log lines the job keeps, newest last. Absent unless the job set
+   * one; readers fall back to the default.
+   */
+  keepLogs?: number;
 }
 
 /** A job as stored. */
@@ -317,8 +348,26 @@ export interface JobRecord {
   repeatKey: string | null;
 }
 
+/** A value stored on a queue, and the version a write must name to replace it. */
+export interface QueueStateEntry {
+  /** The value, as it was written. JSON only. */
+  value: unknown;
+  /** Increases with every write, so a compare-and-set can tell it changed. */
+  version: number;
+}
+
 /** What a worker presents when claiming. */
 export interface ClaimOptions {
+  /**
+   * Job names not to claim this time. Jobs with these names are *skipped*,
+   * not waited behind: the claim takes whatever comes next in claim order as
+   * if they were not there. Absent or empty means any name.
+   *
+   * This is how a per-name limit stops one kind of job without stalling the
+   * rest of the queue. A driver must honour it on every claim path, singular
+   * and plural, or a capped name would run past its cap.
+   */
+  excludeNames?: string[];
   /** The claiming worker's id. */
   workerId: string;
   /** The lock token to stamp on the job. */
@@ -327,6 +376,18 @@ export interface ClaimOptions {
   lockMs: number;
   /** The caller's clock, in epoch milliseconds. */
   now: number;
+}
+
+/** What {@link QueueDriver.updateJob} changes. Anything left out stays as it is. */
+export interface JobPatch {
+  /** The new payload. JSON only; `undefined` leaves the payload alone. */
+  data?: unknown;
+  /** The new priority. Lower runs first. */
+  priority?: number;
+  /** When the job becomes claimable. Only a `waiting` or `delayed` job moves. */
+  runAt?: number;
+  /** Change the job only while it is in one of these states. */
+  onlyIn?: JobState[];
 }
 
 /** What should happen to a job whose attempt failed. */
@@ -356,6 +417,16 @@ export interface RepeatRecord {
   endAt?: number;
   /** Stop after this many instances. */
   limit?: number;
+  /**
+   * Run every occurrence missed while nothing was consuming, rather than
+   * skipping to the next one. Defaults to `false`.
+   *
+   * Stored on the series rather than taken from the caller each time, because
+   * the decision is made by whichever worker happens to schedule the next
+   * occurrence — which is not the process that created the series, and may not
+   * even be the same machine.
+   */
+  catchUp?: boolean;
   /** How many instances have been scheduled so far. */
   count: number;
   /** When the next instance is due, or `null` when the series is finished. */
@@ -369,26 +440,26 @@ export interface RepeatRecord {
 }
 
 /** A cross-process notification. */
-export interface DriverEvent {
-  /** Envelope version, so a rolling upgrade can tell shapes apart. */
-  v: 1;
-  /** The namespace it belongs to. Subscribers ignore anything else. */
-  ns: string;
-  /** Which subsystem emitted it. */
-  kind: "queue" | "runner";
-  /** The queue name or runner id. */
-  target: string;
-  /** The event name, e.g. `"completed"`. */
-  type: string;
-  /** The job or run id it concerns. */
-  id?: string;
-  /** When it was emitted, in epoch milliseconds. */
-  at: number;
-  /** A small payload; kept minimal because some transports cap the size. */
-  payload?: unknown;
-  /** Token of the emitting process, so it can ignore its own echoes. */
-  origin: string;
-}
+/**
+ * What a driver publishes and delivers.
+ *
+ * A discriminated union on `kind` and then `type`, defined in
+ * `shared/events.ts` — so a subscriber that switches on `event.type` narrows
+ * to exactly the fields that event carries. It used to be one interface with
+ * `type: string` and `payload?: unknown`, which told a subscriber nothing and
+ * let a publisher put anything anywhere.
+ */
+export type {
+  DriverEvent,
+  EventKind,
+  EventOfKind,
+  QueueDriverEvent,
+  QueueEventName,
+  QueueEventPayloads,
+  RunnerDriverEvent,
+  RunnerEventName,
+  RunnerEventPayloads,
+} from "../shared/events";
 
 /** The queue half of the contract. */
 export interface QueueDriver {
@@ -414,6 +485,33 @@ export interface QueueDriver {
    * empty, paused, or nothing is due yet.
    */
   claimJob: (q: QueueRef, opts: ClaimOptions) => Promise<JobRecord | null>;
+  /**
+   * Claims up to `limit` jobs in one go, when the backend can.
+   *
+   * Optional: a driver without it is driven through a loop of
+   * {@link QueueDriver.claimJob} by `claimJobBatch`, which is what every caller
+   * uses. Implement it when the backend can take several rows in one round
+   * trip — claiming one at a time caps a drain at one over the claim latency,
+   * however high the worker's concurrency is.
+   *
+   * Two rules, both load-bearing:
+   *
+   * - **Each returned job is claimed exactly once**, as with `claimJob`. The
+   *   batch itself is *not* required to be atomic, so returning fewer than
+   *   `limit` is normal and a short result does not mean the queue is empty.
+   * - **Never throw after claiming anything.** Jobs already taken are `active`
+   *   with the caller's token; throwing abandons them to the stalled sweep and
+   *   spends a `stalledCount` on each. Return what was taken instead.
+   *
+   * Returned jobs must be in claim order — `priority`, then `createdAt`, then
+   * `id` — which is not the order a backend hands them back in: `RETURNING`, a
+   * re-select and a re-read all leave row order undefined.
+   */
+  claimJobs?: (
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ) => Promise<JobRecord[]>;
   /** Extends an active job's lock, for its holder only. */
   extendJobLock: (
     q: QueueRef,
@@ -431,6 +529,26 @@ export interface QueueDriver {
     retention: Retention,
     now: number,
   ) => Promise<boolean>;
+  /**
+   * Completes several jobs held under one token, in as few statements as the
+   * backend allows.
+   *
+   * Optional: without it `completeJobBatch` calls {@link QueueDriver.completeJob}
+   * once each, which is what every driver did before. Implement it where a
+   * backend can settle a set in one round trip — a worker at concurrency 16
+   * finishes jobs in bursts, and one statement per job is what its own claim
+   * loop ends up contending with.
+   *
+   * Returns the ids actually settled. An id missing from the result lost its
+   * lock and is someone else's to finish, exactly as `false` from the singular
+   * form means.
+   */
+  completeJobs?: (
+    q: QueueRef,
+    token: string,
+    completions: { id: string; result: unknown; retention: Retention }[],
+    now: number,
+  ) => Promise<string[]>;
   /** Fails an attempt, for its lock holder only. */
   failJob: (
     q: QueueRef,
@@ -447,9 +565,74 @@ export interface QueueDriver {
     id: string,
     progress: unknown,
   ) => Promise<boolean>;
+  /**
+   * Changes a stored job's data, priority or due time, and answers with the
+   * job as it now is — or `null` when there is no such job, or it is in a state
+   * the patch does not allow.
+   *
+   * Optional, so a driver written against an earlier contract still compiles;
+   * every built-in driver implements it, and what depends on it — changing a
+   * job's data or priority, debouncing — says so when a driver lacks it.
+   *
+   * The rules:
+   *
+   * - **`runAt` moves only a `waiting` or `delayed` job**, and anything else
+   *   comes back `null` untouched: an active job belongs to its worker, and a
+   *   finished one has nothing to be due for. The state follows the new time —
+   *   later than `now` is `delayed`, otherwise `waiting` — so a job moved into
+   *   the future is not claimable and one moved to now does not wait for
+   *   promotion.
+   * - **A new priority reorders a waiting job** among the others.
+   * - **`onlyIn` is checked in the same step as the write.** A job claimed
+   *   between a caller reading it and calling this is not changed when
+   *   `onlyIn` leaves out `active`, which is what makes replacing a pending
+   *   job's data safe while workers are claiming.
+   */
+  updateJob?: (
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ) => Promise<JobRecord | null>;
+  /**
+   * Appends one line to a job's log, and says how many lines it now keeps —
+   * `0`, storing nothing, when there is no such job.
+   *
+   * `keep` caps the log at its most recent lines, dropping the oldest; `0`
+   * keeps every line.
+   *
+   * **A log lives exactly as long as its job**, however the job goes: removed,
+   * cleaned, drained, pruned, or deleted on completion by retention. A job
+   * added later under the same id starts with an empty log, rather than
+   * inheriting the lines of the one it replaced.
+   *
+   * Optional, as {@link QueueDriver.updateJob} is.
+   */
+  addJobLog?: (
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ) => Promise<number>;
+  /**
+   * A page of a job's log, and how many lines it keeps in total.
+   *
+   * `asc` is oldest first. A job with no log, or no such job, has none.
+   */
+  getJobLogs?: (
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ) => Promise<{ logs: string[]; count: number }>;
   /** One job by id, or `null`. */
   getJob: (q: QueueRef, id: string) => Promise<JobRecord | null>;
-  /** Jobs in the given states, ordered by their state's natural order. */
+  /**
+   * Jobs in the given states, ordered by their state's natural order, which
+   * every driver shares for a single state: `waiting` by priority then
+   * creation, `delayed` and `failed` by when they are due, `active` by lock
+   * expiry, `completed` and `dead` by when they finished. Several states are
+   * ordered by creation. `asc` is that order, `desc` its reverse.
+   */
   listJobs: (
     q: QueueRef,
     states: JobState[],
@@ -492,6 +675,59 @@ export interface QueueDriver {
   pruneExpired: (q: QueueRef, now: number, limit: number) => Promise<number>;
   /** Removes every pending job, returning how many went. */
   drainQueue: (q: QueueRef, includeDelayed: boolean) => Promise<number>;
+  /**
+   * A named value stored on a queue, with its version, or `null`.
+   *
+   * Optional, with {@link QueueDriver.setQueueState}: the pair is what
+   * cluster-wide limits are built on. Limits are shared state every worker in
+   * every process has to agree on, and a compare-and-set is the one primitive
+   * each backend can make atomic in its own way, so the limiting logic itself
+   * is written once, above the driver.
+   */
+  getQueueState?: (
+    q: QueueRef,
+    name: string,
+  ) => Promise<QueueStateEntry | null>;
+  /**
+   * Writes a named value on a queue, but only if it is still at `expected` —
+   * `null` meaning only if there is no value yet — and answers with the new
+   * version, or `null` when somebody else wrote first and nothing changed.
+   *
+   * A `value` of `null` deletes the entry, under the same condition, and
+   * answers `0`. The check and the write are one atomic step: two callers
+   * naming the same version cannot both succeed. Versions only increase, and
+   * a deleted then re-created entry starts again from `1`. Purging the
+   * namespace removes every entry.
+   */
+  setQueueState?: (
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ) => Promise<number | null>;
+  /**
+   * Names of a queue's state entries that begin with `prefix`, in ascending
+   * **code-point order** — only those after `after` when it is given — at most
+   * `limit`.
+   *
+   * Code-point order is UTF-8 byte order, which is what a byte comparison
+   * gives on every backend; it is not JavaScript's default `sort()`, which
+   * compares UTF-16 units. `compareCodePoints` in `shared/strings.ts` is the
+   * reference. Names are compared exactly — case and accents included — and
+   * `prefix` is matched literally, with no pattern characters.
+   *
+   * Optional, with the other queue-state methods. It exists so entries whose
+   * purpose has passed can be found and removed: a debounce pointer to a job
+   * that has run, a throttle window that has closed. Without it they would
+   * accumulate, one per id ever used, for as long as the queue exists.
+   *
+   * Paging by `after` is what keeps a sweep bounded however many entries
+   * there are. A deleted entry is not listed.
+   */
+  listQueueState?: (
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ) => Promise<string[]>;
   /** Pauses claiming across every process. */
   pauseQueue: (q: QueueRef) => Promise<void>;
   /** Resumes claiming across every process. */
@@ -520,12 +756,33 @@ export interface QueueDriver {
   ) => Promise<void>;
   /** Publishes an event to other processes. */
   publish: (event: DriverEvent) => Promise<void>;
-  /** Subscribes to events; resolves with an unsubscribe function. */
-  subscribe: (
+  /**
+   * Removes stored events older than `before`, and says how many went.
+   *
+   * **Optional**, because only a backend that *stores* events has anything to
+   * remove. Redis publishes to a channel and keeps nothing; the memory driver
+   * calls its listeners and keeps nothing. The other three append a row, a
+   * document or a line per event and, until this existed, never removed one —
+   * an event log that grows for as long as the queue runs.
+   *
+   * Events are a live notification channel rather than an audit trail: a
+   * subscriber that has been down long enough to care about an hour-old event
+   * has a larger problem than the event. Drivers that store them prune on
+   * their own; this is the same thing on demand.
+   */
+  cleanEvents?: (ns: string, before: number) => Promise<number>;
+  /**
+   * Subscribes to events; resolves with an unsubscribe function.
+   *
+   * Generic in `kind` so the listener is handed the union for that subsystem
+   * alone: a queue subscriber never has to consider a runner event, and a
+   * `switch` on `event.type` narrows the payload from there.
+   */
+  subscribe: <TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ) => Promise<() => Promise<void>>;
 }
 
@@ -572,6 +829,45 @@ export type DriverConfig =
       tablePrefix?: string;
       /** Exact table names, for an existing schema. */
       tables?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /**
+       * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
+       *
+       * On by default where the engine supports it, because it is free. The
+       * signal rides inside the insert rather than following it, so there is no
+       * extra round trip: measured over alternating runs, bulk enqueue is
+       * 19,414/s without it and 19,334/s with — a 0.4% difference inside the
+       * run-to-run spread. Round-trip latency is about 3% better and, more
+       * usefully, far steadier: three runs gave 2.96/2.97/2.96ms with it
+       * against 3.23/3.05/3.02ms without.
+       *
+       * Polling always continues underneath as the correctness floor. A
+       * notification can be missed while a listener reconnects, and a job
+       * promoted by another process's maintenance sweep is never announced at
+       * all.
+       *
+       * Set `false` to poll only — worth doing if the one extra listening
+       * connection is unwelcome, or when running through a pooler that cannot
+       * pin a session. Ignored on every engine but Postgres.
+       */
+      notify?: boolean;
+      /**
+       * Reconcile an existing database with this version's schema on connect.
+       *
+       * Off by default. The schema is created with `IF NOT EXISTS`, so a table
+       * an earlier version created keeps its original shape — which means
+       * schema improvements that ship with an upgrade reach new installs only.
+       * This is how a deployment that already has tables gets them.
+       *
+       * `true` does everything that cannot stall a running queue: adds missing
+       * columns and indexes, drops indexes the driver no longer defines, and
+       * rebuilds one whose predicate changed. On Postgres the index work is
+       * `CONCURRENTLY`, so writes continue throughout.
+       *
+       * Changing a column's type is **not** included — it rewrites the table
+       * under a lock that blocks every reader and writer. Ask for it in a
+       * maintenance window: `{ alterColumns: true }`.
+       */
+      syncSchema?: boolean | SchemaSyncOptions;
     }
   | {
       type: "mongodb";
@@ -585,6 +881,16 @@ export type DriverConfig =
       collectionPrefix?: string;
       /** Exact collection names, for an existing database. */
       collections?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /**
+       * Reconcile the collections' indexes with this version's on connect.
+       *
+       * Off by default, though less consequential here than on SQL: MongoDB
+       * has no column types, so there is nothing a sync can do to a collection
+       * that could block it, and `createIndex` is idempotent — connecting
+       * already creates what is missing. What this adds is the report, and the
+       * retirement of indexes older versions created.
+       */
+      syncSchema?: boolean | SchemaSyncOptions;
     };
 
 /** A schedule stored alongside a runner's state. */

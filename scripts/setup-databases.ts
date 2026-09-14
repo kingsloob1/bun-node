@@ -4,7 +4,7 @@ import process from "node:process";
 /**
  * Provisions the database servers the integration suites need.
  *
- * The suites for Redis, Postgres, MariaDB and MongoDB skip unless their URL
+ * The suites for Redis, Postgres, MariaDB, MySQL and MongoDB skip unless their URL
  * is set, which is the right default but leaves "how do I actually run them?"
  * unanswered. This script answers it, and is safe to run repeatedly:
  *
@@ -27,7 +27,7 @@ import process from "node:process";
  * ------------------------------------------------------------------ */
 
 /** The servers this script knows how to provide. */
-const SERVICES = ["redis", "postgres", "mariadb", "mongodb"] as const;
+const SERVICES = ["redis", "postgres", "mariadb", "mysql", "mongodb"] as const;
 
 /** One of the servers this script knows how to provide. */
 type Service = (typeof SERVICES)[number];
@@ -421,6 +421,12 @@ interface ContainerSpec {
   image: string;
   /** Port published on the loopback interface. */
   port: number;
+  /**
+   * The port the server listens on inside the container, when it differs from
+   * the published one — MySQL listens on 3306 but is published on 3307, so it
+   * can run beside MariaDB. Defaults to `port`.
+   */
+  containerPort?: number;
   /** Environment the image reads when it first initialises itself. */
   env: Record<string, string>;
 }
@@ -474,7 +480,7 @@ async function ensureContainer(
     "unless-stopped",
     // Loopback only: a test database has no business being reachable.
     "--publish",
-    `127.0.0.1:${spec.port}:${spec.port}`,
+    `127.0.0.1:${spec.port}:${spec.containerPort ?? spec.port}`,
     ...Object.entries(spec.env).flatMap(([key, value]) => [
       "--env",
       `${key}=${value}`,
@@ -528,6 +534,19 @@ interface ServicePlan {
   configureNote: (options: Options) => string;
   /** Extra advice when this server needs more than a package install. */
   manualHint?: string;
+  /**
+   * Why this server is only ever provided as a container, when it is. Such a
+   * plan takes the container path even in native mode, and says this when
+   * Docker is not usable rather than reporting an unexplained failure.
+   */
+  dockerOnly?: string;
+  /**
+   * How long a freshly created container may take to accept the expected
+   * credentials, in milliseconds. Defaults to 90 seconds. MySQL initialises
+   * its data directory on first start and routinely needs longer, and giving
+   * up early reports a server as broken that is merely still starting.
+   */
+  readyTimeout?: number;
 }
 
 /** Whether a SQL URL can be connected to and queried. */
@@ -739,6 +758,44 @@ const PLANS: Record<Service, ServicePlan> = {
       `created the ${options.user} user and the ${options.database} database`,
   },
 
+  mysql: {
+    service: "mysql",
+    port: 3307,
+    envVar: "BUN_JOBS_TEST_MYSQL_URL",
+    url: (options) =>
+      // MySQL 8.4 authenticates with caching_sha2_password, which only sends a
+      // password over plain TCP when the client may fetch the server's key.
+      // Fine for a loopback test server; use TLS anywhere that matters.
+      `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.database}?allowPublicKeyRetrieval=true`,
+    // A container, so there are no binaries on the host to look for.
+    installed: () => false,
+    packages: {},
+    unit: () => "mysql",
+    readyTimeout: 240_000,
+    dockerOnly:
+      "MySQL and MariaDB server packages conflict with each other and both listen on 3306, so MySQL runs as a container on 3307 instead",
+    container: (options) => ({
+      name: "bun-jobs-mysql",
+      // 8.4 is the long-term support line, and the first whose binary
+      // collations the SQL dialect relies on are all present.
+      image: "mysql:8.4",
+      port: 3307,
+      containerPort: 3306,
+      env: {
+        MYSQL_ROOT_PASSWORD: `${options.password}-root`,
+        MYSQL_DATABASE: options.database,
+        MYSQL_USER: options.user,
+        MYSQL_PASSWORD: options.password,
+      },
+    }),
+    configured: async (options) =>
+      (await portOpen(3307)) && (await sqlReachable(PLANS.mysql.url(options))),
+    // The image creates the user and database itself from its environment.
+    configure: async () => true,
+    configureNote: (options) =>
+      `the container created the ${options.user} user and the ${options.database} database`,
+  },
+
   mongodb: {
     service: "mongodb",
     port: 27017,
@@ -882,10 +939,18 @@ async function setupService(
     return { service: plan.service, ready: true, note: "already set up" };
   }
 
-  if (options.mode === "docker") {
+  if (options.mode === "docker" || plan.dockerOnly) {
     if (!platform.docker) {
-      log.bad("Docker is not usable here");
+      log.bad(
+        plan.dockerOnly
+          ? `Docker is not usable here, and ${plan.dockerOnly}`
+          : "Docker is not usable here",
+      );
       return { service: plan.service, ready: false, note: "docker unavailable" };
+    }
+
+    if (plan.dockerOnly && options.mode !== "docker") {
+      log.warn(plan.dockerOnly);
     }
 
     const started = await ensureContainer(plan.container(options), options);
@@ -895,7 +960,8 @@ async function setupService(
     // usable; wait for a real connection rather than for the socket.
     const ready = options.dryRun
       ? true
-      : started && (await waitForConfigured(plan, options));
+      : started &&
+        (await waitForConfigured(plan, options, plan.readyTimeout));
 
     return {
       service: plan.service,

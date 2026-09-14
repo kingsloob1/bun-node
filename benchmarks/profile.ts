@@ -95,8 +95,11 @@ async function main(): Promise<void> {
 
   /* --- BunRequest ---------------------------------------------------- */
   benchSync("new BunRequest (constructor)", "BunRequest", makeBunRequest);
-  await benchAsync("BunRequest.init (construct + ready)", "BunRequest", () =>
-    BunRequest.init(makeNativeRequest(), server as never, requestOpts),
+  await benchAsync(
+    "BunRequest.init (construct + ready)",
+    "BunRequest",
+    async () =>
+      await BunRequest.init(makeNativeRequest(), server as never, requestOpts),
   );
   {
     // Getters the adapter reads to build the handle() options.

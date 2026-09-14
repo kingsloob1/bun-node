@@ -730,6 +730,81 @@ describe("native: computeBackoff", () => {
     expect(shorthand).toBeGreaterThanOrEqual(900);
     expect(shorthand).toBeLessThanOrEqual(1100);
   });
+
+  it("grows by the attempt when linear", () => {
+    const options = { type: "linear", delay: 100 } as const;
+    const delays = [1, 2, 3, 10].map((n) => computeBackoff(n, options));
+    expect(delays).toEqual([100, 200, 300, 1000]);
+  });
+
+  it("follows the Fibonacci sequence when fibonacci", () => {
+    const options = { type: "fibonacci", delay: 100 } as const;
+    expect(
+      [1, 2, 3, 4, 5, 6, 7].map((n) => computeBackoff(n, options)),
+    ).toEqual([100, 100, 200, 300, 500, 800, 1300]);
+  });
+
+  it("caps linear and fibonacci at max, even where the sequence overflows", () => {
+    expect(computeBackoff(50, { type: "linear", delay: 100, max: 1000 })).toBe(
+      1000,
+    );
+    expect(
+      computeBackoff(5_000, { type: "fibonacci", delay: 100, max: 60_000 }),
+    ).toBe(60_000);
+  });
+
+  it("draws full jitter from zero up to the exponential delay", () => {
+    const options = { type: "full-jitter", delay: 100, factor: 2 } as const;
+    const draws = Array.from({ length: 400 }, () => computeBackoff(4, options));
+
+    expect(Math.min(...draws)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...draws)).toBeLessThanOrEqual(800);
+    // Spread across the range rather than parked at one end: the whole point.
+    expect(draws.some((draw) => draw < 200)).toBe(true);
+    expect(draws.some((draw) => draw > 600)).toBe(true);
+    // And capped when the exponential delay passes max.
+    for (let i = 0; i < 50; i++) {
+      expect(
+        computeBackoff(20, { type: "full-jitter", delay: 100, max: 500 }),
+      ).toBeLessThanOrEqual(500);
+    }
+  });
+
+  it("keeps decorrelated jitter at or above the base, growing, under max", () => {
+    const options = {
+      type: "decorrelated-jitter",
+      delay: 100,
+      max: 10_000,
+    } as const;
+
+    const draw = (attempt: number) =>
+      Array.from({ length: 400 }, () => computeBackoff(attempt, options));
+    const first = draw(1);
+    const tenth = draw(10);
+    const mean = (values: number[]) =>
+      values.reduce((sum, value) => sum + value, 0) / values.length;
+
+    for (const draw of [...first, ...tenth]) {
+      expect(draw).toBeGreaterThanOrEqual(100);
+      expect(draw).toBeLessThanOrEqual(10_000);
+    }
+    // One step draws between the base and three times it.
+    expect(Math.max(...first)).toBeLessThanOrEqual(300);
+    // Later attempts wait longer on average.
+    expect(mean(tenth)).toBeGreaterThan(mean(first) * 3);
+  });
+
+  it("ignores jitter for the strategies that are random already", () => {
+    for (let i = 0; i < 50; i++) {
+      expect(
+        computeBackoff(1, {
+          type: "decorrelated-jitter",
+          delay: 100,
+          jitter: 5,
+        }),
+      ).toBeLessThanOrEqual(300);
+    }
+  });
 });
 
 describe("native: retry", () => {

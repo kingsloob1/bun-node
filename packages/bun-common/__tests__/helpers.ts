@@ -25,7 +25,15 @@ export interface MakeRequestInit {
   url?: string;
   method?: string;
   headers?: Record<string, string>;
-  body?: BodyInit;
+  /**
+   * The request body, in any shape `Bun.serve` accepts.
+   *
+   * `Bun.BodyInit`, not the bare global: that one only exists when `lib.dom`
+   * is loaded, and this package compiles against `lib: ["ESNext"]`. It is also
+   * the more accurate type — Bun accepts async iterables and generators the
+   * DOM union does not.
+   */
+  body?: Bun.BodyInit;
   /** Extra {@link BunRequest} options, merged over the helper defaults. */
   options?: Partial<NonNullable<BunRequestOptions>>;
 }

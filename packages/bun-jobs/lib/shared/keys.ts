@@ -15,6 +15,12 @@ import { ConfigError } from "./errors";
  * Characters allowed in a namespace, runner id or queue name. Deliberately
  * narrow: safe in a Redis key, a file path, a SQL value and a URL, with no
  * escaping anywhere.
+ *
+ * **Key layouts depend on it.** Every backend joins segments with separators
+ * this pattern excludes — `:` in Redis, MongoDB and SQL keys, `/` in paths —
+ * so a key like `q:<queue>:state:<name>` can only be read one way. Allow a
+ * separator here and `x:state:z` becomes indistinguishable from another
+ * queue's state. `__tests__/keys.test.ts` pins this.
  */
 const SEGMENT_PATTERN = /^[\w.-]+$/;
 

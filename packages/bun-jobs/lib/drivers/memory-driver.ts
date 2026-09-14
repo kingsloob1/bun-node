@@ -3,18 +3,23 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   Retention,
   RunRecord,
 } from "./driver";
 import { jsonClone } from "@kingsleyweb/bun-common";
+import { compareCodePoints } from "../shared/strings";
 
 /**
  * The in-process driver: `Map`s, no I/O, no dependencies.
@@ -52,8 +57,48 @@ interface QueueState {
   jobs: Map<string, JobRecord>;
   /** Insertion order, for a stable FIFO tie-break at equal priority. */
   order: Map<string, number>;
+  /**
+   * Ids of the waiting jobs, kept in claim order.
+   *
+   * Claiming used to build this list every time: materialise every job in the
+   * queue, filter it down to the waiting ones, sort them, take the first.
+   * That is O(n log n) per claim over jobs that are mostly not candidates, and
+   * it showed — 0.022ms per claim at a backlog of 100 against 0.308ms at
+   * 5,000, so the in-process driver drained at 7,088/s where Redis, over a
+   * socket, managed 37,165/s.
+   *
+   * Maintained by {@link MemoryDriver.#setState} alone, which is what keeps it
+   * honest: every state change in this driver goes through there.
+   */
+  waiting: string[];
+  /**
+   * Where {@link QueueState.waiting} actually starts.
+   *
+   * Claiming takes from the front, and splicing index 0 of a long array moves
+   * every remaining element. A cursor makes that O(1); the dead prefix is
+   * compacted once it is worth the copy.
+   */
+  waitingFrom: number;
+  /**
+   * How many jobs are `delayed` or `failed`.
+   *
+   * Promotion used to walk every job in the queue before every claim, looking
+   * for something due. Almost always there is nothing scheduled at all, and a
+   * count says so without looking.
+   */
+  scheduled: number;
   /** Repeat definitions, by key. */
   repeats: Map<string, RepeatRecord>;
+  /**
+   * Each job's log lines, oldest first, by job id.
+   *
+   * Removed in {@link MemoryDriver.#delete}, which every removal goes through,
+   * so a log cannot outlive its job or be inherited by a later job that
+   * reuses the id.
+   */
+  logs: Map<string, string[]>;
+  /** Named values stored on the queue, for compare-and-set. */
+  state: Map<string, QueueStateEntry>;
   /** Whether claiming is paused for every worker. */
   paused: boolean;
   /** Next insertion sequence number. */
@@ -77,6 +122,9 @@ const PENDING_STATES: JobState[] = ["waiting"];
 
 /** States holding a job that is due later. */
 const SCHEDULED_STATES: JobState[] = ["delayed", "failed"];
+
+/** How long a claimed-out prefix may grow before the waiting list is copied. */
+const COMPACT_AFTER = 1_000;
 
 export class MemoryDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
@@ -337,7 +385,14 @@ export class MemoryDriver implements JobsDriver {
     queue.order.set(stored.id, queue.seq++);
 
     if (stored.state === "waiting") {
+      // `order` has to be set first: it is the comparator's last tie-break, so
+      // inserting before it is known would place the job against a zero.
+      this.#enterWaiting(queue, stored);
       this.#wake(queue);
+    } else if (SCHEDULED_STATES.includes(stored.state)) {
+      // A job can arrive already delayed or failed, and the promotion guard
+      // reads this count rather than looking.
+      queue.scheduled++;
     }
 
     return { job: { ...stored }, added: true };
@@ -360,19 +415,20 @@ export class MemoryDriver implements JobsDriver {
       return null;
     }
 
-    // Anything due is claimable, so promote before looking.
-    this.#promoteDue(queue, opts.now, Number.POSITIVE_INFINITY);
+    // Due delayed jobs are not promoted here: that is the worker's maintenance,
+    // which `maintenance: false` turns off, as on every other driver.
 
-    const candidates = [...queue.jobs.values()]
-      .filter((job) => job.state === "waiting" && job.runAt <= opts.now)
-      .sort((a, b) => this.#compareWaiting(queue, a, b));
+    // The index is already in claim order, so the first due entry is the
+    // answer. Walking past a not-yet-due one matters because `runAt` can move
+    // forward under a job that is already waiting — a retry sets both — and
+    // the index is ordered by priority, not by time.
+    const job = this.#firstClaimable(queue, opts.now, opts.excludeNames);
 
-    const job = candidates[0];
     if (!job) {
       return null;
     }
 
-    job.state = "active";
+    this.#setState(queue, job, "active");
     job.attemptsMade += 1;
     job.processedOn = opts.now;
     job.lockToken = opts.token;
@@ -412,7 +468,7 @@ export class MemoryDriver implements JobsDriver {
       return false;
     }
 
-    job.state = "completed";
+    this.#setState(queue, job, "completed");
     job.finishedOn = now;
     job.returnValue = jsonClone(result);
     job.lockToken = null;
@@ -448,13 +504,13 @@ export class MemoryDriver implements JobsDriver {
     job.workerId = null;
 
     if (outcome.retry) {
-      job.state = "failed";
+      this.#setState(queue, job, "failed");
       job.runAt = outcome.runAt;
       job.finishedOn = null;
       return true;
     }
 
-    job.state = "dead";
+    this.#setState(queue, job, "dead");
     job.finishedOn = now;
     this.#applyRetention(queue, job, outcome.retention, now);
     return true;
@@ -472,6 +528,102 @@ export class MemoryDriver implements JobsDriver {
 
     job.progress = jsonClone(progress);
     return true;
+  }
+
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
+
+    if (!job || (patch.onlyIn && !patch.onlyIn.includes(job.state))) {
+      return null;
+    }
+
+    if (
+      patch.runAt !== undefined &&
+      job.state !== "waiting" &&
+      job.state !== "delayed"
+    ) {
+      return null;
+    }
+
+    if (patch.data !== undefined) {
+      job.data = jsonClone(patch.data);
+    }
+
+    if (patch.priority !== undefined && patch.priority !== job.priority) {
+      // The waiting index is ordered by priority, so a waiting job has to be
+      // taken out before its key changes and put back after.
+      const reindex = job.state === "waiting";
+
+      if (reindex) {
+        this.#leaveWaiting(queue, id);
+      }
+
+      job.priority = patch.priority;
+      job.opts = { ...job.opts, priority: patch.priority };
+
+      if (reindex) {
+        this.#enterWaiting(queue, job);
+      }
+    }
+
+    if (patch.runAt !== undefined) {
+      job.runAt = patch.runAt;
+      this.#setState(queue, job, patch.runAt > now ? "delayed" : "waiting");
+    }
+
+    if (job.state === "waiting") {
+      this.#wake(queue);
+    }
+
+    return { ...job };
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    const queue = this.#queue(q);
+
+    if (!queue.jobs.has(id)) {
+      return 0;
+    }
+
+    let logs = queue.logs.get(id);
+
+    if (!logs) {
+      logs = [];
+      queue.logs.set(id, logs);
+    }
+
+    logs.push(line);
+
+    if (keep > 0 && logs.length > keep) {
+      logs.splice(0, logs.length - keep);
+    }
+
+    return logs.length;
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    const logs = this.#queue(q).logs.get(id) ?? [];
+    const ordered = opts.order === "desc" ? logs.toReversed() : logs;
+
+    return {
+      logs: ordered.slice(opts.offset, opts.offset + opts.limit),
+      count: logs.length,
+    };
   }
 
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
@@ -539,12 +691,13 @@ export class MemoryDriver implements JobsDriver {
     resetAttempts: boolean,
     now: number,
   ): Promise<boolean> {
-    const job = this.#queue(q).jobs.get(id);
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
     if (!job || job.state === "active" || job.state === "waiting") {
       return false;
     }
 
-    job.state = "waiting";
+    this.#setState(queue, job, "waiting");
     job.runAt = now;
     job.finishedOn = null;
     job.expiresAt = null;
@@ -564,7 +717,7 @@ export class MemoryDriver implements JobsDriver {
       return false;
     }
 
-    job.state = "waiting";
+    this.#setState(queue, job, "waiting");
     job.runAt = now;
     this.#wake(queue);
     return true;
@@ -607,11 +760,11 @@ export class MemoryDriver implements JobsDriver {
       job.workerId = null;
 
       if (job.stalledCount > maxStalledCount) {
-        job.state = "dead";
+        this.#setState(queue, job, "dead");
         job.finishedOn = now;
         dead.push(job.id);
       } else {
-        job.state = "waiting";
+        this.#setState(queue, job, "waiting");
         job.runAt = now;
         requeued.push(job.id);
       }
@@ -688,6 +841,55 @@ export class MemoryDriver implements JobsDriver {
     }
 
     return removed;
+  }
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    const entry = this.#queue(q).state.get(name);
+    return entry
+      ? { value: jsonClone(entry.value), version: entry.version }
+      : null;
+  }
+
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    const state = this.#queue(q).state;
+    const current = state.get(name);
+
+    if ((current?.version ?? null) !== expected) {
+      return null;
+    }
+
+    if (value === null) {
+      state.delete(name);
+      return 0;
+    }
+
+    const version = (current?.version ?? 0) + 1;
+    state.set(name, { value: jsonClone(value), version });
+    return version;
+  }
+
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const names = [...this.#queue(q).state.keys()]
+      .filter(
+        (name) =>
+          name.startsWith(options.prefix) &&
+          (options.after === undefined ||
+            compareCodePoints(name, options.after) > 0),
+      )
+      .sort(compareCodePoints);
+
+    return names.slice(0, Math.max(0, options.limit));
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {
@@ -794,20 +996,25 @@ export class MemoryDriver implements JobsDriver {
     }
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     const namespace = this.#namespace(ns);
     const key = `${kind}:${target}`;
     const listeners = namespace.subscribers.get(key) ?? new Set();
-    listeners.add(listener);
+    listeners.add(deliver);
     namespace.subscribers.set(key, listeners);
 
     return async () => {
-      listeners.delete(listener);
+      listeners.delete(deliver);
       if (listeners.size === 0) {
         namespace.subscribers.delete(key);
       }
@@ -849,7 +1056,12 @@ export class MemoryDriver implements JobsDriver {
       queue = {
         jobs: new Map(),
         order: new Map(),
+        waiting: [],
+        waitingFrom: 0,
+        scheduled: 0,
         repeats: new Map(),
+        logs: new Map(),
+        state: new Map(),
         paused: false,
         seq: 0,
         waiters: new Set(),
@@ -868,11 +1080,128 @@ export class MemoryDriver implements JobsDriver {
 
   /** Removes a job and its ordering entry. */
   #delete(queue: QueueState, id: string): boolean {
+    const job = queue.jobs.get(id);
+
+    if (job && SCHEDULED_STATES.includes(job.state)) {
+      queue.scheduled--;
+    }
+
     queue.order.delete(id);
+    queue.logs.delete(id);
+    this.#leaveWaiting(queue, id);
     return queue.jobs.delete(id);
   }
 
   /** Claim order: priority, then when it was added, then insertion order. */
+  /**
+   * Moves a job to a new state, keeping the waiting index in step.
+   *
+   * Every state change in this driver goes through here. That is the whole
+   * design: an index maintained at nine separate assignment sites is an index
+   * that goes stale the first time someone adds a tenth, and a stale one here
+   * means a job that is never claimed.
+   */
+  #setState(queue: QueueState, job: JobRecord, state: JobState): void {
+    if (job.state === state) {
+      return;
+    }
+
+    if (job.state === "waiting") {
+      this.#leaveWaiting(queue, job.id);
+    }
+
+    if (SCHEDULED_STATES.includes(job.state)) {
+      queue.scheduled--;
+    }
+
+    job.state = state;
+
+    if (state === "waiting") {
+      this.#enterWaiting(queue, job);
+    }
+
+    if (SCHEDULED_STATES.includes(state)) {
+      queue.scheduled++;
+    }
+  }
+
+  /** The first waiting job that is due, in claim order, or `null`. */
+  #firstClaimable(
+    queue: QueueState,
+    now: number,
+    excludeNames?: string[],
+  ): JobRecord | null {
+    const excluded =
+      excludeNames && excludeNames.length > 0 ? new Set(excludeNames) : null;
+
+    for (let at = queue.waitingFrom; at < queue.waiting.length; at++) {
+      const job = queue.jobs.get(queue.waiting[at]!);
+
+      if (
+        job &&
+        job.state === "waiting" &&
+        job.runAt <= now &&
+        !excluded?.has(job.name)
+      ) {
+        return job;
+      }
+    }
+
+    return null;
+  }
+
+  /** Inserts a job into the waiting index, in claim order. */
+  #enterWaiting(queue: QueueState, job: JobRecord): void {
+    // Binary search for the insertion point rather than pushing and re-sorting:
+    // the list is already ordered, so placing one job is a comparison per
+    // halving rather than a sort of the whole thing.
+    let low = queue.waitingFrom;
+    let high = queue.waiting.length;
+
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const other = queue.jobs.get(queue.waiting[middle]!);
+
+      if (other && this.#compareWaiting(queue, other, job) <= 0) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+
+    queue.waiting.splice(low, 0, job.id);
+  }
+
+  /** Takes a job out of the waiting index. */
+  #leaveWaiting(queue: QueueState, id: string): void {
+    const at = queue.waiting.indexOf(id, queue.waitingFrom);
+
+    if (at < 0) {
+      return;
+    }
+
+    // Taking the head is the common case — that is what claiming does — and
+    // moving the cursor costs nothing where splicing would move the rest of
+    // the array.
+    if (at === queue.waitingFrom) {
+      queue.waitingFrom++;
+
+      // Compact once the dead prefix is most of the array, so the copy is paid
+      // once per many claims rather than once per claim.
+      if (
+        queue.waitingFrom > COMPACT_AFTER &&
+        queue.waitingFrom * 2 > queue.waiting.length
+      ) {
+        queue.waiting = queue.waiting.slice(queue.waitingFrom);
+        queue.waitingFrom = 0;
+      }
+
+      return;
+    }
+
+    queue.waiting.splice(at, 1);
+  }
+
   #compareWaiting(queue: QueueState, a: JobRecord, b: JobRecord): number {
     if (a.priority !== b.priority) {
       return a.priority - b.priority;
@@ -904,6 +1233,12 @@ export class MemoryDriver implements JobsDriver {
 
   /** Moves due `delayed`/`failed` jobs to `waiting`; returns how many moved. */
   #promoteDue(queue: QueueState, now: number, limit: number): number {
+    // Nothing is delayed or failed, so there is nothing to promote and no
+    // reason to look at every job in the queue to find that out.
+    if (queue.scheduled === 0) {
+      return 0;
+    }
+
     let promoted = 0;
 
     for (const job of queue.jobs.values()) {
@@ -912,7 +1247,7 @@ export class MemoryDriver implements JobsDriver {
       }
 
       if (SCHEDULED_STATES.includes(job.state) && job.runAt <= now) {
-        job.state = "waiting";
+        this.#setState(queue, job, "waiting");
         promoted++;
       }
     }

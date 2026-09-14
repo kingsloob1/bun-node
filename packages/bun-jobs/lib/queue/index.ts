@@ -1,9 +1,35 @@
+export {
+  type BackoffContext,
+  BackoffStrategies,
+  type BackoffStrategy,
+  type BackoffWarning,
+  BUILT_IN_BACKOFFS,
+  type JobBackoffOptions,
+  nextBackoff,
+} from "./backoff";
+export { BunQueue } from "./BunQueue";
+export { BunQueueWorker } from "./BunQueueWorker";
 /**
  * The queue: producers, consumers and the job they exchange.
  */
-export { BunQueue } from "./BunQueue";
-export { BunQueueWorker } from "./BunQueueWorker";
+export type { JobDefinition, JobDefinitionOptions } from "./definitions";
+export { JobDefinitions } from "./definitions";
+export {
+  defineProcessor,
+  IsolatedProcessor,
+  type IsolationMode,
+  type IsolationOptions,
+} from "./isolation";
 export { Job } from "./Job";
+export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
+export {
+  DEFAULT_LIMITS_REFRESH_MS,
+  type NameLimits,
+  QueueLimiter,
+  type QueueLimits,
+  type RateLimit,
+  type StoredLimits,
+} from "./limits";
 export {
   DEFAULT_JOB_OPTIONS,
   resolveJobOptions,
@@ -21,9 +47,21 @@ export type {
   BunQueueOptions,
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
+  DeadLetter,
+  DebounceOptions,
   JobOptions,
   JobProcessor,
   ProcessorContext,
   Repeatable,
   RepeatOptions,
+  RetryAllOptions,
 } from "./types";
+export {
+  DEBOUNCE_PREFIX,
+  type DebouncePointer,
+  supportsWindowSweep,
+  sweepWindows,
+  THROTTLE_PREFIX,
+  type ThrottlePointer,
+  type WindowSweep,
+} from "./windows";

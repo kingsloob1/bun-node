@@ -6,6 +6,7 @@ import {
   DEFAULT_RESULT_TTL,
 } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 
 /** Widest priority the drivers can order on; keeps marker names sortable. */
 const PRIORITY_LIMIT = 1_048_576;
@@ -52,7 +53,28 @@ export function resolveJobOptions(
     removeOnFail: merged.removeOnFail ?? DEFAULT_JOB_OPTIONS.removeOnFail,
     keepStacktraces:
       merged.keepStacktraces ?? DEFAULT_JOB_OPTIONS.keepStacktraces,
+    ...(merged.keepLogs === undefined
+      ? {}
+      : { keepLogs: nonNegativeInteger(merged.keepLogs, "keepLogs") }),
+    // Only present when named, so the stored options of every other job are
+    // exactly what they were.
+    ...(merged.deadLetter === undefined
+      ? {}
+      : {
+          deadLetter: assertSegment(merged.deadLetter, "deadLetter queue name"),
+        }),
   };
+}
+
+/** A whole number of zero or more, or a `ConfigError` naming the option. */
+function nonNegativeInteger(value: number, what: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ConfigError(`${what} must be a whole number of zero or more`, {
+      [what]: value,
+    });
+  }
+
+  return value;
 }
 
 /** When a job becomes claimable: `runAt` if given, else `delay` from now. */

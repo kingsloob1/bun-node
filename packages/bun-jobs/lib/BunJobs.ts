@@ -1,16 +1,26 @@
 import type { DriverConfig, JobsDriver } from "./drivers/index";
+import type { JobsNotifierOptions } from "./notifier";
+import type { BackoffStrategy } from "./queue/backoff";
+import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
 import type {
   BunQueueOptions,
   BunQueueWorkerOptions,
+  Job,
   JobOptions,
   JobProcessor,
 } from "./queue/index";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
+import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
 import { resolveDriver } from "./drivers/index";
+import { JobsNotifier } from "./notifier";
+import { BackoffStrategies } from "./queue/backoff";
+import { JobDefinitions } from "./queue/definitions";
 import { BunQueue, BunQueueWorker } from "./queue/index";
+import { JobBuilder } from "./queue/JobBuilder";
 import { BunRunnerManager } from "./runner/index";
 import { ConfigError } from "./shared/errors";
+import { assertDateParser } from "./shared/humanTime";
 import { assertNamespace } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
 
@@ -33,6 +43,27 @@ export interface BunJobsOptions {
   defaultJobOptions?: JobOptions;
   /** Options merged under every runner created here. */
   runnerDefaults?: Partial<Omit<BunRunnerOptions, "id" | "namespace" | "file">>;
+  /**
+   * The queue `define`/`now`/`schedule`/`every` use. Defaults to `"jobs"`.
+   *
+   * One queue for every defined name, dispatched by name — so a consumer runs
+   * one worker rather than one per kind of job. Name it if something else in
+   * the namespace already owns `jobs`.
+   */
+  registryQueue?: string;
+  /**
+   * Reads the dates in phrases for every queue created here, unless a queue is
+   * given its own. Defaults to `chrono-node`. See `DateParser` for the shape.
+   */
+  dateParser?: DateParser;
+  /**
+   * Whether every queue, worker and runner created here publishes its events
+   * for other processes — what a `JobsNotifier`, and a dashboard behind one,
+   * listens to. Defaults to `false`, since publishing costs a write per event
+   * on backends that store events. A `publish` option given to one of them
+   * still wins.
+   */
+  publishEvents?: boolean;
 }
 
 /**
@@ -79,6 +110,25 @@ export class BunJobs {
   readonly #queues = new Map<string, BunQueue<any, any, any>>();
   /** Workers created here. */
   readonly #workers = new Set<BunQueueWorker<any, any>>();
+  /** Jobs defined by name, and how to run them. */
+  readonly #definitions = new JobDefinitions();
+  /**
+   * Backoff strategies registered with `defineBackoff`.
+   *
+   * Handed to every worker created here by reference, so a strategy defined
+   * after a worker was built still reaches it.
+   */
+  readonly #backoffs = new BackoffStrategies();
+  /** The queue the defined jobs are added to and consumed from. */
+  readonly #registryQueue: string;
+  /** Reads dates in phrases for queues created here, when one was given. */
+  readonly #dateParser: DateParser | undefined;
+  /** Whether what is created here publishes its events. */
+  readonly #publishEvents: boolean;
+  /** Notifiers opened here, closed with the context. */
+  readonly #notifiers = new Set<JobsNotifier>();
+  /** The worker running defined jobs, once `start()` has been called. */
+  #registryWorker: BunQueueWorker<any, any> | undefined;
 
   constructor(options: BunJobsOptions) {
     this.namespace = assertNamespace(options.namespace);
@@ -92,6 +142,12 @@ export class BunJobs {
         ? (options.driver as DriverConfig)
         : undefined;
     this.#defaultJobOptions = options.defaultJobOptions;
+    this.#registryQueue = options.registryQueue ?? "jobs";
+    this.#publishEvents = options.publishEvents ?? false;
+    this.#dateParser =
+      options.dateParser === undefined
+        ? undefined
+        : assertDateParser(options.dateParser);
     this.#runnerDefaults = options.runnerDefaults;
     this.#logger = createJobsLogger(
       options.logger,
@@ -127,8 +183,11 @@ export class BunJobs {
   runner<TArgs = unknown, TResult = unknown>(
     options: Omit<BunRunnerOptions<TArgs>, "namespace" | "driver">,
   ): BunRunner<TArgs, TResult> {
+    this.#followInNotifiers("runner", options.id);
     return this.runners.add<TArgs, TResult>({
       ...this.#runnerDefaults,
+      ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       // Children get the config, since an instance cannot be serialised.
       ...(this.#childDriver ? { childDriver: this.#childDriver } : {}),
       ...options,
@@ -150,32 +209,309 @@ export class BunJobs {
     }
 
     const queue = new BunQueue<TData, TResult, TName>(name, {
+      ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       ...options,
       namespace: this.namespace,
       driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
       defaultJobOptions: options?.defaultJobOptions ?? this.#defaultJobOptions,
+      dateParser: options?.dateParser ?? this.#dateParser,
     });
 
     this.#queues.set(name, queue);
+    this.#followInNotifiers("queue", name);
     return queue;
   }
 
   /** Creates a worker consuming a queue in this namespace. */
   worker<TData = unknown, TResult = unknown>(
     name: string,
-    processor: JobProcessor<TData, TResult>,
+    processor: JobProcessor<TData, TResult> | string | URL,
     options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
   ): BunQueueWorker<TData, TResult> {
     const worker = new BunQueueWorker<TData, TResult>(name, processor, {
+      ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       ...options,
       namespace: this.namespace,
       driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
+      backoffStrategies: options?.backoffStrategies ?? this.#backoffs,
     });
 
     this.#workers.add(worker);
+    this.#followInNotifiers("queue", name);
     return worker;
+  }
+
+  /* --- defined jobs ------------------------------------------------- */
+
+  /**
+   * Records how to run jobs of one name, and what they carry by default.
+   *
+   * ```ts
+   * jobs.define("sendEmail", async (job) => send(job.data), { attempts: 5 });
+   * await jobs.now("sendEmail", { to: "ops@example.com" });
+   * await jobs.start();
+   * ```
+   *
+   * The options are merged under every job added by that name, wherever it is
+   * added from. That is the point of declaring them here: `attempts: 5`
+   * belongs to what the job *is* rather than to each place that enqueues one,
+   * and spread across call sites is how two of them come to disagree.
+   *
+   * Defining a name twice replaces the first — what a caller reloading a
+   * module expects, and not silent, because they called `define` again.
+   */
+  define<TData = unknown, TResult = unknown>(
+    name: string,
+    handler: JobProcessor<TData, TResult>,
+    options: JobDefinitionOptions = {},
+  ): this {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new ConfigError("A job definition needs a name", { name });
+    }
+
+    if (
+      options.concurrency !== undefined &&
+      (!Number.isInteger(options.concurrency) || options.concurrency < 1)
+    ) {
+      throw new ConfigError(
+        `The concurrency for "${name}" must be a whole number of at least 1`,
+        { name, concurrency: options.concurrency },
+      );
+    }
+
+    this.#definitions.set<TData, TResult>({ name, handler, options });
+    return this;
+  }
+
+  /**
+   * Registers a backoff strategy that jobs can name.
+   *
+   * ```ts
+   * jobs.defineBackoff("slowRamp", ({ attempt }) => attempt * 30_000);
+   * await jobs.now("sync", data, { attempts: 5, backoff: { type: "slowRamp" } });
+   * ```
+   *
+   * The job stores the name; the worker that runs it calls the function. So
+   * every process that consumes such jobs has to define the strategy too — one
+   * that does not falls back to the default backoff and logs a warning.
+   * Return `false` to stop retrying.
+   */
+  defineBackoff(name: string, strategy: BackoffStrategy): this {
+    this.#backoffs.define(name, strategy);
+    return this;
+  }
+
+  /** Every job name defined here, with how to run it. */
+  definitions(): JobDefinition<never, never>[] {
+    return this.#definitions.all();
+  }
+
+  /**
+   * Describes a job to add, and answers with a builder.
+   *
+   * ```ts
+   * await jobs.schedule("sendMails").every("2 days").withData(list).start();
+   * await jobs.run("sendMail").in("5 minutes").withData(mail).start();
+   * await jobs.process("report").on("2nd december 2026").start();
+   * ```
+   *
+   * `schedule`, `run` and `process` are the same method under three names,
+   * because which one reads better depends on the sentence and none of them
+   * is worth making the caller remember. Nothing is added until `start()`.
+   *
+   * This replaced a positional form — `schedule(when, name, data, options)` —
+   * that put the least interesting argument first and gave every variation of
+   * "when" its own method with the same four parameters in a different order.
+   */
+  schedule<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    const definition = this.#definitions.get(name);
+
+    if (!definition) {
+      throw new ConfigError(
+        `No job is defined for "${name}"; call define() first`,
+        { name, defined: this.#definitions.names() },
+      );
+    }
+
+    // The definition's options sit under whatever the builder is told, so a
+    // caller changing one thing does not lose the rest.
+    const { concurrency: _concurrency, ...defaults } = definition.options;
+
+    return new JobBuilder<TData, TResult>(
+      this.queue<TData, TResult>(this.#registryQueue),
+      name,
+      data,
+      defaults,
+    );
+  }
+
+  /** {@link BunJobs.schedule}, for a sentence that reads better as "run". */
+  run<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    return this.schedule<TData, TResult>(name, data);
+  }
+
+  /** {@link BunJobs.schedule}, for a sentence that reads better as "process". */
+  process<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    return this.schedule<TData, TResult>(name, data);
+  }
+
+  /**
+   * Adds a job to run as soon as something claims it.
+   *
+   * The one case short enough not to need a sentence:
+   * `jobs.run(name, data).start()` says the same thing in more words.
+   */
+  async now<TData = unknown>(
+    name: string,
+    data?: TData,
+    options?: JobOptions,
+  ): Promise<Job<TData>> {
+    const builder = this.schedule<TData>(name, data);
+    return await (options ? builder.withOptions(options) : builder).start();
+  }
+
+  /**
+   * Starts consuming the defined jobs.
+   *
+   * One worker for every name, dispatching on `job.name` — which is why the
+   * definitions live in one place. Calling it twice is a no-op rather than a
+   * second consumer.
+   */
+  async start(
+    options?: Omit<
+      BunQueueWorkerOptions,
+      "namespace" | "driver" | "concurrency"
+    > & { concurrency?: number },
+  ): Promise<BunQueueWorker<unknown, unknown>> {
+    if (this.#registryWorker) {
+      return this.#registryWorker;
+    }
+
+    if (this.#definitions.size === 0) {
+      throw new ConfigError("start() has nothing to run: define a job first", {
+        namespace: this.namespace,
+      });
+    }
+
+    await this.#storeDefinitionLimits();
+
+    const worker = this.worker<unknown, unknown>(
+      this.#registryQueue,
+      async (job, context) => {
+        const definition = this.#definitions.get(job.name);
+
+        if (!definition) {
+          // A name this process does not know. Failing is right: another
+          // deployment may define it, and the job should be left for a worker
+          // that does rather than quietly dropped.
+          throw new ConfigError(`No job is defined for "${job.name}"`, {
+            name: job.name,
+            defined: this.#definitions.names(),
+          });
+        }
+
+        return await definition.handler(job as never, context);
+      },
+      {
+        ...options,
+      },
+    );
+
+    this.#registryWorker = worker;
+    void worker.run();
+    return worker;
+  }
+
+  /**
+   * Stores each definition's `concurrency` as a per-name limit on the
+   * registry's queue, so every process consuming it enforces the same cap.
+   *
+   * Merged into what is already stored rather than replacing it: the queue's
+   * rate, its overall concurrency and every name without a definition here
+   * stay exactly as they were. Nothing is written when nothing would change,
+   * so a fleet of processes starting together does not rewrite the limits
+   * once each.
+   */
+  async #storeDefinitionLimits(): Promise<void> {
+    const capped = this.#definitions
+      .all()
+      .filter((definition) => definition.options.concurrency !== undefined);
+
+    if (capped.length === 0) {
+      return;
+    }
+
+    const queue = this.queue(this.#registryQueue);
+    const current = await queue.getLimits();
+    const names = { ...current?.names };
+    let changed = false;
+
+    for (const { name, options } of capped) {
+      if (names[name]?.concurrency !== options.concurrency) {
+        names[name] = { ...names[name], concurrency: options.concurrency };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await queue.setLimits({ ...current, names });
+    }
+  }
+
+  /** Stops consuming defined jobs, leaving what is in flight to finish. */
+  async stop(options?: { force?: boolean; timeout?: number }): Promise<void> {
+    const worker = this.#registryWorker;
+    this.#registryWorker = undefined;
+
+    await worker?.close(options);
+  }
+
+  /** Removes every pending job from the registry's queue. */
+  async drain(options?: { delayed?: boolean }): Promise<number> {
+    return await this.queue(this.#registryQueue).drain(options);
+  }
+
+  /** Adds a job under a defined name, with that definition's defaults. */
+  async #addDefined<TData>(
+    name: string,
+    data: TData | undefined,
+    options?: JobOptions,
+  ): Promise<Job<TData>> {
+    const definition = this.#definitions.get(name);
+
+    if (!definition) {
+      throw new ConfigError(
+        `No job is defined for "${name}"; call define() first`,
+        { name, defined: this.#definitions.names() },
+      );
+    }
+
+    // The definition's options underneath, the call's on top: a caller asking
+    // for a delay on one job should not lose the retry policy the definition
+    // gave every job of that name.
+    const { concurrency: _concurrency, ...defaults } = definition.options;
+
+    return await this.queue<TData>(this.#registryQueue).add(
+      name,
+      data as TData,
+      {
+        ...defaults,
+        ...options,
+      },
+    );
   }
 
   /** Runner ids the backend knows about in this namespace. */
@@ -202,6 +538,105 @@ export class BunJobs {
    * whoever created it may still be using it.
    */
   async close(options?: { timeout?: number }): Promise<void> {
+    // Held until everything below has settled: the workers each hold the
+    // process while they close, but the queues and the driver close after
+    // them, and a caller awaiting this from a signal handler must not be cut
+    // off before the driver has let go of its connection or its file.
+    const hold = setInterval(() => {}, 2_147_483_647);
+
+    try {
+      await this.#close(options);
+    } finally {
+      clearInterval(hold);
+    }
+  }
+
+  /**
+   * One typed stream of every queue, worker and runner event in this
+   * namespace — or the queues and runners named — including ones created after
+   * it started.
+   *
+   * ```ts
+   * const notifier = await jobs.notifier();
+   * for await (const event of notifier) {
+   *   if (event.kind === "queue" && event.type === "completed") {
+   *     console.log(event.target, event.payload.id);
+   *   }
+   * }
+   * ```
+   *
+   * Hears only what is published: set `publishEvents` here, or `publish` on
+   * the queues, workers and runners concerned, in whichever processes produce
+   * the events. Closed with the context.
+   */
+  async notifier(options?: JobsNotifierOptions): Promise<JobsNotifier> {
+    const notifier = new JobsNotifier(this.driver, this.namespace, options);
+    await notifier.start();
+    this.#notifiers.add(notifier);
+
+    // What this context already created, followed now rather than on the next
+    // discovery pass, within whatever the notifier was asked to follow.
+    const queues = new Set([
+      ...this.#queues.keys(),
+      ...[...this.#workers].map((worker) => worker.queueName),
+    ]);
+    for (const name of queues) {
+      if (notifier.wants("queue", name)) {
+        await notifier.follow("queue", name);
+      }
+    }
+    for (const runner of this.runners.list()) {
+      if (notifier.wants("runner", runner.id)) {
+        await notifier.follow("runner", runner.id);
+      }
+    }
+
+    return notifier;
+  }
+
+  /**
+   * Has every notifier opened here follow a queue or runner this context just
+   * created, straight away rather than on its next discovery pass — which is
+   * what lets a job added the moment its queue is created still be heard.
+   */
+  #followInNotifiers(kind: "queue" | "runner", target: string): void {
+    for (const notifier of this.#notifiers) {
+      // A notifier given a list keeps exactly that list.
+      if (notifier.wants(kind, target)) {
+        const following = notifier
+          .follow(kind, target)
+          .catch(() => undefined)
+          .finally(() => this.#pendingFollows.delete(following));
+        this.#pendingFollows.add(following);
+      }
+    }
+  }
+
+  /**
+   * Subscriptions {@link #followInNotifiers} has started and not finished.
+   * `queue()`, `worker()` and `runner()` cannot await them — they return
+   * synchronously — so what they create awaits them instead, through
+   * {@link #publishGate}, before its first publish.
+   */
+  readonly #pendingFollows = new Set<Promise<void>>();
+
+  /**
+   * Resolves once no follow is pending. Free when none is: it returns without
+   * touching the event loop, so a context with no notifier pays nothing.
+   */
+  readonly #publishGate = async (): Promise<void> => {
+    while (this.#pendingFollows.size > 0) {
+      await Promise.all(this.#pendingFollows);
+    }
+  };
+
+  /** The body of {@link BunJobs.close}, under its hold on the process. */
+  async #close(options?: { timeout?: number }): Promise<void> {
+    await Promise.allSettled(
+      [...this.#notifiers].map((notifier) => notifier.close()),
+    );
+    this.#notifiers.clear();
+
     await Promise.allSettled([
       this.runners.stopAll(options),
       ...[...this.#workers].map((worker) => worker.close(options)),

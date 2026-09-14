@@ -103,7 +103,10 @@ for (const { name: backendName, config, available } of READY) {
           ...env,
           CONSUMER_ID: id,
           STOP_AFTER: String(total),
-          RUN_FOR_MS: "30000",
+          // Longer than the 45s this test is willing to wait. A consumer that
+          // exits first turns a slow machine into a failure with no cause to
+          // find: the jobs are simply left unprocessed. Seen under CPU load.
+          RUN_FOR_MS: "60000",
           JOB_MS: "2",
         }),
       );
@@ -151,7 +154,7 @@ for (const { name: backendName, config, available } of READY) {
         ...env,
         CONSUMER_ID: "live",
         STOP_AFTER: "5",
-        RUN_FOR_MS: "30000",
+        RUN_FOR_MS: "60000",
       });
 
       // Nothing to do yet; the consumer is idling.
@@ -180,7 +183,7 @@ for (const { name: backendName, config, available } of READY) {
           CONSUMER_ID: id,
           FAIL_FIRST: "1",
           STOP_AFTER: "6",
-          RUN_FOR_MS: "30000",
+          RUN_FOR_MS: "60000",
         }),
       );
 
@@ -244,7 +247,7 @@ for (const { name: backendName, config, available } of READY) {
         ...first.env,
         CONSUMER_ID: "ns-a",
         STOP_AFTER: "3",
-        RUN_FOR_MS: "30000",
+        RUN_FOR_MS: "60000",
       });
 
       await runBun(PRODUCER, {

@@ -74,10 +74,14 @@ export class RedisKeys {
     completed: string;
     dead: string;
     meta: string;
+    excludeCursors: string;
     seq: string;
     wake: string;
     repeats: string;
     jobPrefix: string;
+    logPrefix: string;
+    statePrefix: string;
+    stateNames: string;
   } {
     const base = `${this.namespace(q.ns)}:q:${this.#tag(q.queue)}`;
 
@@ -89,10 +93,32 @@ export class RedisKeys {
       completed: `${base}:completed`,
       dead: `${base}:dead`,
       meta: `${base}:meta`,
+      // Where a claim that excludes names resumes its scan, one hash field per
+      // exclusion set. A sibling of `meta`, not passed to scripts as a key:
+      // the claim scripts derive it from `meta` — see `excludeCursors()` in
+      // `scripts.ts` — so the two must keep this shape.
+      excludeCursors: `${base}:exclude`,
       seq: `${base}:seq`,
       wake: `${base}:wake`,
       repeats: `${base}:repeat`,
       jobPrefix: `${base}:job:`,
+      // A sibling of `job:`, not a suffix on the job's key: ids are arbitrary
+      // strings, so `<job>:logs` would be the hash key of a job whose id ends
+      // in `:logs`. The queue scripts derive this from `jobPrefix` — see
+      // `logs(id)` in `scripts.ts` — so the two must keep this shape.
+      logPrefix: `${base}:log:`,
+      // One hash per named value, `version` and `value`, for `setQueueState`.
+      // Under the queue's base, so it shares the queue's slot and a purge of
+      // the namespace sweeps it with everything else.
+      statePrefix: `${base}:state:`,
+      // Every state entry's name, in a sorted set at score 0 so members order
+      // by their bytes and `listQueueState` is a `ZRANGE BYLEX` rather than a
+      // keyspace `SCAN`. `state-names`, not `state:names`: under `statePrefix`
+      // it would be the hash of an entry called `names`. Kept in step by
+      // `SET_QUEUE_STATE`, in the same script as the write. Entries written
+      // before this key existed are not in it; queue state has not shipped in
+      // a release, so there is nothing to migrate.
+      stateNames: `${base}:state-names`,
     };
   }
 

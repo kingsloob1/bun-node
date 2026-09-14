@@ -144,7 +144,10 @@ export interface RunnerInfo {
   isPaused: boolean;
   /** Whether *any* process is running it, from the lock. */
   isRunning: boolean;
-  /** Who is running it, when the lock says so. */
+  /**
+   * Who is running it, when the lock says so: the lock holder's host and pid,
+   * the run it started most recently — the one in flight — and since when.
+   */
   runningOn?: { host: string; pid: number; runId: string; since: number };
   /** Runs in flight in this process. */
   activeRuns: RunRecord[];
@@ -290,6 +293,20 @@ export interface BunRunnerOptions<TArgs = unknown> {
   syncInterval?: number;
   /** Forward a child's `ctx.logger` calls to the parent's `log` event. */
   forwardLogs?: boolean;
+  /**
+   * Whether this runner publishes its events — started, succeeded, failed,
+   * timeout, killed, queued, skipped — for listeners in other processes, such
+   * as a `JobsNotifier` behind a dashboard. Defaults to `false`: publishing
+   * costs a write per event on backends that store events.
+   */
+  publish?: boolean;
+  /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */
@@ -323,6 +340,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
     | "startPaused"
     | "syncInterval"
     | "forwardLogs"
+    | "publish"
   >
 > {
   /** The resolved absolute path (or URL string) of the handler file. */

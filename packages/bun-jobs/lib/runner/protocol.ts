@@ -1,5 +1,10 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
-import type { DriverConfig, ExecutionMode, RunSource } from "../drivers/index";
+import type {
+  DriverConfig,
+  ExecutionMode,
+  JobRecord,
+  RunSource,
+} from "../drivers/index";
 import process from "node:process";
 
 /**
@@ -60,6 +65,45 @@ export interface SerializableContext<TArgs = unknown> {
   closeTimeout: number;
   /** Whether the child's logger should be forwarded to the parent. */
   forwardLogs: boolean;
+  /**
+   * What the child runs: a runner handler called with a run context (the
+   * default), or a queue job processor called with a job and its context.
+   */
+  kind?: "run" | "job";
+  /** The job being processed, when `kind` is `"job"`. */
+  job?: JobRecord;
+}
+
+/**
+ * The key marking a message as part of an isolated job's request and reply
+ * channel rather than a user message.
+ *
+ * A job processor in a child has no driver, so the few job operations that
+ * need one — appending to its log, renewing its lock — are asked of the
+ * worker, which does have one, and answered back. They ride the existing
+ * `message` channel, tagged with this key so they never reach a handler's own
+ * `onMessage` listeners.
+ */
+export const JOB_CHANNEL = "__bunJobsJob";
+
+/** A request an isolated job makes of its worker. */
+export interface JobChannelRequest {
+  /** Marks the message; the operation asked for. */
+  [JOB_CHANNEL]: "log" | "heartbeat";
+  /** Pairs the reply with the request. */
+  seq: number;
+  /** The line to log, for `"log"`. */
+  line?: string;
+}
+
+/** The worker's answer to a {@link JobChannelRequest}. */
+export interface JobChannelReply {
+  /** Marks the message as a reply. */
+  [JOB_CHANNEL]: "reply";
+  /** The request this answers. */
+  seq: number;
+  /** The result: a line count for `"log"`, whether the lock is held for `"heartbeat"`. */
+  value: unknown;
 }
 
 /** Messages the parent sends. */

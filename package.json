@@ -3,6 +3,9 @@
   "author": "Okafor Obinna <kingsloob1@gmail.com>",
   "description": "Utilities for bun webserver which includes an extended Request, Response, Router, HttpAdapter, Websocket, NestJs compatitble HttpAdapter, NestJs compatitble websocket adapter, NestJs compatitble file decorators and file interceptors",
   "private": true,
+  "scripts": {
+    "typecheck": "bun scripts/typecheck.ts"
+  },
   "workspaces": [
     "packages/bun-common",
     "packages/bun-nest",

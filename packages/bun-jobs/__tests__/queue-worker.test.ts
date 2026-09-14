@@ -1,4 +1,4 @@
-import type { BunQueueWorkerOptions, Job } from "../lib/index";
+import type { BunQueueWorkerOptions, Job, JobsDriver } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
@@ -308,6 +308,105 @@ describe("BunQueueWorker: failure", () => {
   });
 });
 
+describe("BunQueueWorker: a write that fails", () => {
+  /**
+   * The job has run; only recording it failed. Left alone, it sits `active`
+   * with a lock nobody renews until the stalled sweep takes it back —
+   * `lockDuration` plus `stalledInterval` later, 30s and more by default — and
+   * then runs a second time. A write that fails because the database was busy
+   * is exactly what a short retry recovers.
+   */
+  for (const kind of ["completion", "failure"] as const) {
+    it(`retries a ${kind} write instead of stranding the job as active`, async () => {
+      // Typed as the contract, not the class: the plural completion is an
+      // optional member the memory driver does not implement.
+      const driver: JobsDriver = new MemoryDriver();
+      const namespace = testNamespace();
+      const queue = new BunQueue("writes", {
+        namespace,
+        driver,
+        logger: noopLogger,
+      });
+      closers.push(() => queue.close());
+
+      /** Writes still to fail before the real driver is reached. */
+      let failuresLeft = 2;
+      const fail = () => {
+        if (failuresLeft > 0) {
+          failuresLeft--;
+          throw new Error("Deadlock found when trying to get lock");
+        }
+      };
+
+      if (kind === "completion") {
+        const completeJob = driver.completeJob.bind(driver);
+        driver.completeJob = async (...args) => {
+          fail();
+          return await completeJob(...args);
+        };
+        // The memory driver has no plural form today; cover it if it gains one,
+        // so the batch path cannot slip past the fault.
+        if (driver.completeJobs) {
+          const completeJobs = driver.completeJobs.bind(driver);
+          driver.completeJobs = async (...args) => {
+            fail();
+            return await completeJobs(...args);
+          };
+        }
+      } else {
+        const failJob = driver.failJob.bind(driver);
+        driver.failJob = async (...args) => {
+          fail();
+          return await failJob(...args);
+        };
+      }
+
+      /** How many times the processor ran. */
+      let runs = 0;
+      const worker = new BunQueueWorker(
+        "writes",
+        async () => {
+          runs++;
+          if (kind === "failure") {
+            throw new Error("the job's own failure");
+          }
+          return "done";
+        },
+        {
+          namespace,
+          driver,
+          logger: noopLogger,
+          pollInterval: 5,
+          // Long enough that only a retry, never the stalled sweep, can settle
+          // the job inside the wait below.
+          lockDuration: 30_000,
+          stalledInterval: 30_000,
+        },
+      );
+      closers.push(() => worker.close({ force: true }));
+
+      /** Contexts the worker reported errors under. */
+      const errors: string[] = [];
+      worker.on("error", (_error, context) => errors.push(context));
+
+      const added = await queue.add("once", {}, { attempts: 1 });
+      void worker.run();
+
+      const settled = kind === "completion" ? "completed" : "dead";
+      await waitFor(async () => (await queue.count(settled)) === 1, {
+        timeout: 3000,
+      });
+
+      expect(failuresLeft).toBe(0);
+      expect(runs).toBe(1);
+      expect(await queue.count("active")).toBe(0);
+      expect((await queue.getJob(added.id))?.state).toBe(settled);
+      // Recovered inside the retry, so nothing needed reporting.
+      expect(errors).toEqual([]);
+    });
+  }
+});
+
 describe("BunQueueWorker: control", () => {
   it("stops and starts claiming on request", async () => {
     const processed: string[] = [];
@@ -388,4 +487,76 @@ describe("BunQueueWorker: control", () => {
     worker.concurrency = 4;
     expect(worker.concurrency).toBe(4);
   });
+});
+
+describe("drainDelay", () => {
+  /**
+   * `drained` used to fire on every empty pass, which on an idle worker is
+   * once per poll, forever — a heartbeat rather than an event. The option that
+   * was meant to debounce it was resolved into the worker's options and never
+   * read.
+   */
+  it("waits for quiet, and says so once", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const worker = new BunQueueWorker("drain-delay", async () => null, {
+      driver,
+      namespace,
+      logger: noopLogger,
+      pollInterval: 5,
+      maxBlock: 10,
+      drainDelay: 150,
+    });
+
+    let drains = 0;
+    worker.on("drained", () => drains++);
+
+    try {
+      void worker.run();
+
+      // Well inside the delay: many empty passes, and none of them an event.
+      await Bun.sleep(60);
+      expect(drains).toBe(0);
+
+      // Past it: exactly one, however many passes went by.
+      await Bun.sleep(250);
+      expect(drains).toBe(1);
+    } finally {
+      await worker.close({ force: true });
+      await driver.close();
+    }
+  }, 15_000);
+
+  it("starts a new quiet spell after work arrives", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const queue = new BunQueue("drain-again", { driver, namespace });
+    const worker = new BunQueueWorker("drain-again", async () => null, {
+      driver,
+      namespace,
+      logger: noopLogger,
+      pollInterval: 5,
+      maxBlock: 10,
+      drainDelay: 120,
+    });
+
+    let drains = 0;
+    worker.on("drained", () => drains++);
+
+    try {
+      void worker.run();
+      await Bun.sleep(200);
+      expect(drains).toBe(1);
+
+      // A job resets the spell, so the next quiet period is its own event
+      // rather than a continuation of the first.
+      await queue.add("work", {});
+      await Bun.sleep(300);
+      expect(drains).toBe(2);
+    } finally {
+      await worker.close({ force: true });
+      await queue.close();
+      await driver.close();
+    }
+  }, 15_000);
 });

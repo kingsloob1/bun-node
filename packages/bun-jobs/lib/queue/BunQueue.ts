@@ -1,23 +1,48 @@
 import type {
-  DriverEvent,
   JobRecord,
   JobsDriver,
   JobState,
   QueueRef,
   RepeatRecord,
 } from "../drivers/index";
+import type {
+  QueueDriverEvent,
+  QueueEventName,
+  QueueEventPayloads,
+} from "../shared/events";
+import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
-import type { BunQueueEvents, BunQueueOptions, JobOptions } from "./types";
+import type { QueueLimits, StoredLimits } from "./limits";
+import type {
+  BunQueueEvents,
+  BunQueueOptions,
+  JobOptions,
+  RetryAllOptions,
+} from "./types";
+import { deserializeError } from "@kingsleyweb/bun-common";
 import { resolveDriver } from "../drivers/index";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, QueueClosedError } from "../shared/errors";
+import { queueEvent } from "../shared/events";
+import { assertDateParser, parseDuration } from "../shared/humanTime";
 import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Job } from "./Job";
+import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+import { DEBOUNCE_PREFIX, sweepWindows, THROTTLE_PREFIX } from "./windows";
+
+/** How many times a debounce or throttle retries a pointer it lost. */
+const WINDOW_ATTEMPTS = 12;
+
+/** How many finished jobs `retryAll` reads at a time. */
+const RETRY_PAGE = 200;
+
+/** How many retries `retryJobs` and `retryAll` send the driver at once. */
+const RETRY_CONCURRENCY = 16;
 
 /**
  * The producer and management side of a queue.
@@ -55,6 +80,10 @@ export class BunQueue<
   readonly #logger: Logger;
   /** Whether to re-emit other processes' events. */
   readonly #subscribe: boolean;
+  /** Whether this queue announces its events to other processes. */
+  readonly #publishes: boolean;
+  /** Awaited before each publish; see `BunQueueOptions.publishGate`. */
+  readonly #publishGate: (() => Promise<void>) | undefined;
 
   /** Cancels the cross-process subscription, once opened. */
   #unsubscribe?: () => Promise<void>;
@@ -73,13 +102,28 @@ export class BunQueue<
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#defaults = options.defaultJobOptions;
+    this.dateParser =
+      options.dateParser === undefined
+        ? undefined
+        : assertDateParser(options.dateParser);
     this.#subscribe = options.subscribe ?? false;
+    // Defaults to `subscribe` so nothing changes for anyone relying on the
+    // two being one flag; settable on its own so a producer can publish
+    // without also paying for a subscription.
+    this.#publishes = options.publish ?? this.#subscribe;
+    this.#publishGate = options.publishGate;
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: this.namespace, queue: this.name },
       `queue:${this.name}`,
     );
   }
+
+  /**
+   * What reads dates in phrases for jobs added here, when one was given;
+   * otherwise `chrono-node` does.
+   */
+  readonly dateParser: DateParser | undefined;
 
   /** This queue's reference, as the driver wants it. */
   get ref(): QueueRef {
@@ -137,6 +181,10 @@ export class BunQueue<
   ): Promise<Job<TData, TResult>> {
     await this.connect();
 
+    if (options?.debounce || options?.throttle) {
+      return await this.#addWindowed(name, data, options);
+    }
+
     if (options?.repeat) {
       return await this.#addRepeatable(name, data, options);
     }
@@ -146,17 +194,23 @@ export class BunQueue<
     const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
 
     if (!added) {
-      this.safeEmit("duplicate", view);
+      this.safeEmitScoped("duplicate", job.name, view);
+      await this.#publish("duplicate", { id: job.id });
       return view;
     }
 
-    this.safeEmit("added", view);
-    this.safeEmit(
-      job.state === "waiting" ? "waiting" : "delayed",
-      view,
-      job.runAt,
-    );
-    await this.#publish("added", job.id);
+    this.safeEmitScoped("added", job.name, view);
+    await this.#publish("added", { id: job.id });
+
+    // Which of the two it is depends on whether it is claimable now, and a
+    // remote listener has no way to work that out from `added` alone.
+    if (job.state === "waiting") {
+      this.safeEmitScoped("waiting", job.name, view);
+      await this.#publish("waiting", { id: job.id });
+    } else {
+      this.safeEmitScoped("delayed", job.name, view, job.runAt);
+      await this.#publish("delayed", { id: job.id, runAt: job.runAt });
+    }
 
     return view;
   }
@@ -240,7 +294,7 @@ export class BunQueue<
 
     if (removed) {
       this.safeEmit("removed", id);
-      await this.#publish("removed", id);
+      await this.#publish("removed", { id });
     }
 
     return removed;
@@ -260,6 +314,214 @@ export class BunQueue<
     );
   }
 
+  /**
+   * Returns several finished jobs to the queue, and answers with the ids that
+   * went — an id that was missing, running or already pending is left out.
+   */
+  async retryJobs(
+    ids: string[],
+    options?: { resetAttempts?: boolean },
+  ): Promise<string[]> {
+    await this.connect();
+    const retried = await this.#retryIds(ids, options?.resetAttempts ?? true);
+    await this.#announceRetried(retried);
+    return retried;
+  }
+
+  /**
+   * Returns every finished job in a state that matches to the queue — the
+   * re-drive for a dead-letter backlog once whatever killed it is fixed.
+   *
+   * ```ts
+   * await queue.retryAll("dead", { reason: /ECONNREFUSED/ });
+   * await queue.retryAll("dead", { name: "sendEmail", limit: 500 });
+   * ```
+   *
+   * Walks the state a page at a time rather than loading it whole, so a
+   * backlog of a million is as safe to re-drive as ten.
+   */
+  async retryAll(
+    state: "dead" | "failed" | "completed",
+    options: RetryAllOptions<TData, TResult> = {},
+  ): Promise<string[]> {
+    await this.connect();
+
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
+    const reset = options.resetAttempts ?? true;
+    const retried: string[] = [];
+    // Jobs that did not match stay in the state, so the next page starts after
+    // them; jobs that were retried left it, so they are not counted.
+    let offset = 0;
+
+    while (retried.length < limit) {
+      const page = await this.driver.listJobs(this.ref, [state], {
+        offset,
+        limit: RETRY_PAGE,
+        order: "asc",
+      });
+
+      if (page.length === 0) {
+        break;
+      }
+
+      const chosen: string[] = [];
+      let skipped = 0;
+
+      for (const record of page) {
+        if (retried.length + chosen.length >= limit) {
+          break;
+        }
+
+        if (this.#matchesRetry(record, options)) {
+          chosen.push(record.id);
+        } else {
+          skipped++;
+        }
+      }
+
+      const done = await this.#retryIds(chosen, reset);
+      retried.push(...done);
+      offset += skipped;
+
+      // A chosen job that was not retried has been taken by someone else and
+      // left the state, so it shifts nothing. But a page that moved nothing at
+      // all would be read again identically, forever; step past it instead.
+      if (done.length === 0 && skipped === 0) {
+        offset += page.length;
+      }
+    }
+
+    await this.#announceRetried(retried);
+    return retried;
+  }
+
+  /**
+   * Changes a stored job's data, priority or run time, and answers with the
+   * job as it now is — or `null` when there is no such job, or it is in a
+   * state the patch cannot apply to.
+   *
+   * `runAt` moves only a waiting or delayed job. `onlyIn` makes the whole
+   * change conditional on the job's state, checked in the same step as the
+   * write.
+   */
+  async update(
+    id: string,
+    patch: {
+      /** The new payload. */
+      data?: TData;
+      /** The new priority. */
+      priority?: number;
+      /** When it may run: a `Date`, or epoch milliseconds. */
+      runAt?: Date | number;
+      /** Change it only while it is in one of these states. */
+      onlyIn?: JobState[];
+    },
+  ): Promise<Job<TData, TResult> | null> {
+    await this.connect();
+    const driver = this.#requireDriver("update()", "updateJob");
+
+    if (patch.priority !== undefined && !Number.isFinite(patch.priority)) {
+      throw new ConfigError("priority must be a number", {
+        priority: patch.priority,
+      });
+    }
+
+    const runAt =
+      patch.runAt instanceof Date ? patch.runAt.getTime() : patch.runAt;
+
+    if (runAt !== undefined && !Number.isFinite(runAt)) {
+      throw new ConfigError("runAt must be a valid date or timestamp", {
+        runAt: patch.runAt,
+      });
+    }
+
+    const record = await driver.updateJob!(
+      this.ref,
+      id,
+      {
+        ...(patch.data !== undefined
+          ? { data: assertJsonSafe(patch.data, "job data") }
+          : {}),
+        ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+        ...(runAt !== undefined ? { runAt } : {}),
+        ...(patch.onlyIn ? { onlyIn: patch.onlyIn } : {}),
+      },
+      Date.now(),
+    );
+
+    return record
+      ? new Job<TData, TResult>(this.driver, this.ref, record, false)
+      : null;
+  }
+
+  /**
+   * Removes debounce and throttle pointers that no longer stand for anything
+   * — a debounce whose job has started or gone, a throttle whose window has
+   * closed — and answers with how many went.
+   *
+   * Workers do this on their own once a minute; this is the same thing on
+   * demand. Safe while producers are adding: a pointer moved in the meantime
+   * is left alone.
+   */
+  async cleanWindows(options?: {
+    /** The most entries to examine. Defaults to `1000`. */
+    limit?: number;
+  }): Promise<number> {
+    await this.connect();
+    const driver = this.#requireDriver(
+      "cleanWindows()",
+      "listQueueState",
+      "getQueueState",
+      "setQueueState",
+    );
+
+    let remaining = Math.max(1, options?.limit ?? 1_000);
+    let after: string | undefined;
+    let removed = 0;
+
+    while (remaining > 0) {
+      const page = Math.min(remaining, 200);
+      const sweep = await sweepWindows(driver, this.ref, {
+        now: Date.now(),
+        limit: page,
+        ...(after !== undefined ? { after } : {}),
+      });
+
+      removed += sweep.removed;
+      remaining -= page;
+
+      if (sweep.next === undefined) {
+        break;
+      }
+
+      after = sweep.next;
+    }
+
+    return removed;
+  }
+
+  /** A page of a job's log, oldest first unless asked otherwise. */
+  async getJobLogs(
+    id: string,
+    options?: {
+      /** Lines to skip. Defaults to `0`. */
+      offset?: number;
+      /** Lines to return. Defaults to `100`. */
+      limit?: number;
+      /** `asc` is oldest first, the default. */
+      order?: "asc" | "desc";
+    },
+  ): Promise<{ logs: string[]; count: number }> {
+    await this.connect();
+    const driver = this.#requireDriver("getJobLogs()", "getJobLogs");
+
+    return await driver.getJobLogs!(this.ref, id, {
+      offset: options?.offset ?? 0,
+      limit: options?.limit ?? 100,
+      order: options?.order ?? "asc",
+    });
+  }
+
   /** Makes a delayed or retry-pending job claimable now. */
   async promote(id: string): Promise<boolean> {
     await this.connect();
@@ -267,10 +529,79 @@ export class BunQueue<
 
     if (promoted) {
       this.safeEmit("promoted", id);
-      await this.#publish("promoted", id);
+      await this.#publish("promoted", { id });
     }
 
     return promoted;
+  }
+
+  /**
+   * Sets the queue's limits for every worker in every process, or removes
+   * them with `null`.
+   *
+   * ```ts
+   * await queue.setLimits({
+   *   rate: { max: 100, duration: "1 minute" },
+   *   concurrency: 20,
+   *   names: { sendEmail: { concurrency: 5 } },
+   * });
+   * ```
+   *
+   * Stored on the queue, so a worker started tomorrow in another process
+   * enforces the same numbers, and a change reaches running workers within
+   * their `limitsRefreshInterval`. Enforcement is approximate — see
+   * `QueueLimiter` — and a name at its limit is skipped, not waited behind.
+   */
+  async setLimits(limits: QueueLimits | null): Promise<void> {
+    await this.connect();
+    const driver = this.#limitsDriver();
+    const stored = limits === null ? null : normalizeLimits(limits);
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const current = await driver.getQueueState!(this.ref, LIMITS_STATE);
+
+      if (stored === null && !current) {
+        return;
+      }
+
+      const written = await driver.setQueueState!(
+        this.ref,
+        LIMITS_STATE,
+        stored,
+        current?.version ?? null,
+      );
+
+      if (written !== null) {
+        return;
+      }
+    }
+
+    throw new ConfigError(
+      `Could not store limits for queue "${this.name}": they kept changing underneath`,
+      { queue: this.name },
+    );
+  }
+
+  /** The queue's stored limits, with durations in milliseconds, or `null`. */
+  async getLimits(): Promise<StoredLimits | null> {
+    await this.connect();
+    const entry = await this.#limitsDriver().getQueueState!(
+      this.ref,
+      LIMITS_STATE,
+    );
+    return (entry?.value as StoredLimits | undefined) ?? null;
+  }
+
+  /** The driver, checked to be able to store limits. */
+  #limitsDriver(): JobsDriver {
+    if (!QueueLimiter.supports(this.driver)) {
+      throw new ConfigError(
+        `The ${this.driver.name} driver cannot store queue limits: it does not implement getQueueState and setQueueState`,
+        { driver: this.driver.name },
+      );
+    }
+
+    return this.driver;
   }
 
   /** Stops every worker on every process from claiming. */
@@ -278,7 +609,7 @@ export class BunQueue<
     await this.connect();
     await this.driver.pauseQueue(this.ref);
     this.safeEmit("paused");
-    await this.#publish("paused");
+    await this.#publish("paused", {});
   }
 
   /** Lets workers claim again. */
@@ -286,7 +617,7 @@ export class BunQueue<
     await this.connect();
     await this.driver.resumeQueue(this.ref);
     this.safeEmit("resumed");
-    await this.#publish("resumed");
+    await this.#publish("resumed", {});
   }
 
   /** Whether claiming is paused. */
@@ -304,6 +635,7 @@ export class BunQueue<
     );
 
     this.safeEmit("drained", removed);
+    await this.#publish("drained", { count: removed });
     return removed;
   }
 
@@ -324,6 +656,7 @@ export class BunQueue<
 
     if (removed.length > 0) {
       this.safeEmit("cleaned", removed, state);
+      await this.#publish("cleaned", { ids: removed, state });
     }
 
     return removed;
@@ -366,6 +699,252 @@ export class BunQueue<
   }
 
   /* --- internals --------------------------------------------------------- */
+
+  /**
+   * Adds a debounced or throttled job.
+   *
+   * Both keep a pointer per id in queue state — the job that currently stands
+   * for that id — and move it with a compare-and-set, which is what keeps a
+   * crowd of producers adding at once down to one job:
+   *
+   * - **Debounce** replaces a pointed-to job's data and pushes its run time
+   *   back, but only while it is still waiting or delayed (checked in the same
+   *   step as the write). A job that has started, or is gone, is replaced.
+   * - **Throttle** answers with the pointed-to job while its window is open,
+   *   and otherwise opens a new window with a new job.
+   *
+   * The pointer is moved *before* the job is added. A crash between the two
+   * leaves a pointer to a job that does not exist, which the next add treats
+   * exactly like a finished one; the reverse order could leave a second job.
+   */
+  async #addWindowed(
+    name: TName,
+    data: TData,
+    options: JobOptions,
+  ): Promise<Job<TData, TResult>> {
+    const kind = options.debounce ? "debounce" : "throttle";
+    const window = (options.debounce ?? options.throttle)!;
+
+    if (options.debounce && options.throttle) {
+      throw new ConfigError("A job cannot be both debounced and throttled", {
+        debounce: options.debounce,
+        throttle: options.throttle,
+      });
+    }
+
+    if (options.repeat || options.jobId !== undefined) {
+      throw new ConfigError(
+        `${kind} cannot be combined with ${options.repeat ? "repeat" : "jobId"}: it chooses the job's id itself`,
+        { [kind]: window },
+      );
+    }
+
+    if (typeof window.id !== "string" || window.id.length === 0) {
+      throw new ConfigError(`${kind}.id is required`, { [kind]: window });
+    }
+
+    const ttl =
+      typeof window.ttl === "string" ? parseDuration(window.ttl) : window.ttl;
+
+    if (ttl === null || !Number.isFinite(ttl) || ttl <= 0) {
+      throw new ConfigError(
+        `${kind}.ttl must be a positive number of milliseconds or a duration such as "30 seconds"`,
+        { ttl: window.ttl },
+      );
+    }
+
+    const driver = this.#requireDriver(
+      `${kind}`,
+      "getQueueState",
+      "setQueueState",
+      "updateJob",
+    );
+    const {
+      debounce: _debounce,
+      throttle: _throttle,
+      delay: _delay,
+      runAt: _runAt,
+      ...rest
+    } = options;
+    const pointerName = `${kind === "debounce" ? DEBOUNCE_PREFIX : THROTTLE_PREFIX}${window.id}`;
+
+    for (let attempt = 0; attempt < WINDOW_ATTEMPTS; attempt++) {
+      const now = Date.now();
+      const pointer = await driver.getQueueState!(this.ref, pointerName);
+      const current = pointer?.value as
+        | { jobId: string; until?: number }
+        | undefined;
+
+      if (current && kind === "debounce") {
+        const updated = await driver.updateJob!(
+          this.ref,
+          current.jobId,
+          {
+            data: assertJsonSafe(data, "job data"),
+            runAt: now + ttl,
+            onlyIn: ["waiting", "delayed"],
+          },
+          now,
+        );
+
+        if (updated) {
+          const view = new Job<TData, TResult>(
+            this.driver,
+            this.ref,
+            updated,
+            false,
+          );
+          this.safeEmitScoped("debounced", name, view);
+          await this.#publish("debounced", { id: updated.id });
+          return view;
+        }
+
+        // A `null` should mean the pending job has started or is gone, and
+        // only then may the window move to a new one. But a driver can also
+        // answer `null` because it could not get at the job in time — the file
+        // driver gives up on a marker somebody else holds — and replacing the
+        // job then would leave two where the caller asked for one. So look:
+        // still waiting or delayed means the update simply did not land, and
+        // it is tried again.
+        const pending = await this.driver.getJob(this.ref, current.jobId);
+        if (pending?.state === "waiting" || pending?.state === "delayed") {
+          continue;
+        }
+      }
+
+      if (current && kind === "throttle" && (current.until ?? 0) > now) {
+        const existing = await this.driver.getJob(this.ref, current.jobId);
+
+        if (existing) {
+          const view = new Job<TData, TResult>(
+            this.driver,
+            this.ref,
+            existing,
+            false,
+          );
+          this.safeEmitScoped("throttled", name, view);
+          await this.#publish("throttled", { id: existing.id });
+          return view;
+        }
+      }
+
+      const jobId = `${pointerName}:${newId()}`;
+      const moved = await driver.setQueueState!(
+        this.ref,
+        pointerName,
+        kind === "throttle" ? { jobId, until: now + ttl } : { jobId },
+        pointer?.version ?? null,
+      );
+
+      if (moved === null) {
+        // Another producer moved the pointer first: its job is now the one to
+        // debounce into, or the window it opened is the one to respect.
+        continue;
+      }
+
+      return await this.add(name, data, {
+        ...rest,
+        jobId,
+        ...(kind === "debounce"
+          ? { runAt: now + ttl }
+          : options.runAt !== undefined
+            ? { runAt: options.runAt }
+            : options.delay !== undefined
+              ? { delay: options.delay }
+              : {}),
+      });
+    }
+
+    throw new ConfigError(
+      `Could not ${kind} "${window.id}": it kept changing underneath`,
+      { [kind]: window },
+    );
+  }
+
+  /** The driver, checked to implement the optional methods a feature needs. */
+  #requireDriver(
+    what: string,
+    ...methods: (keyof JobsDriver & string)[]
+  ): JobsDriver {
+    for (const method of methods) {
+      if (typeof this.driver[method] !== "function") {
+        throw new ConfigError(
+          `${what} needs a driver that implements ${method}, and the ${this.driver.name} driver does not`,
+          { driver: this.driver.name, method },
+        );
+      }
+    }
+
+    return this.driver;
+  }
+
+  /** Retries ids a bounded number at a time, and answers with those that went. */
+  async #retryIds(ids: string[], resetAttempts: boolean): Promise<string[]> {
+    const now = Date.now();
+    const retried: string[] = [];
+
+    for (let at = 0; at < ids.length; at += RETRY_CONCURRENCY) {
+      const chunk = ids.slice(at, at + RETRY_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((id) =>
+          this.driver.retryJob(this.ref, id, resetAttempts, now),
+        ),
+      );
+
+      chunk.forEach((id, index) => {
+        if (results[index]) {
+          retried.push(id);
+        }
+      });
+    }
+
+    return retried;
+  }
+
+  /** Whether a finished job is one `retryAll` was asked for. */
+  #matchesRetry(
+    record: JobRecord,
+    options: RetryAllOptions<TData, TResult>,
+  ): boolean {
+    if (options.name !== undefined && record.name !== options.name) {
+      return false;
+    }
+
+    if (options.reason !== undefined) {
+      if (!record.failedReason) {
+        return false;
+      }
+
+      const text = `${record.failedReason.name}: ${record.failedReason.message}`;
+
+      if (typeof options.reason === "string") {
+        if (!text.includes(options.reason)) {
+          return false;
+        }
+      } else {
+        // A global or sticky pattern remembers where it stopped; start over.
+        options.reason.lastIndex = 0;
+
+        if (!options.reason.test(text)) {
+          return false;
+        }
+      }
+    }
+
+    return options.filter
+      ? options.filter(new Job<TData, TResult>(this.driver, this.ref, record))
+      : true;
+  }
+
+  /** Emits and publishes one `retried` for a batch, when it retried anything. */
+  async #announceRetried(ids: string[]): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+
+    this.safeEmit("retried", ids);
+    await this.#publish("retried", { ids });
+  }
 
   /** Builds the record a driver stores, applying defaults and validation. */
   #buildRecord(
@@ -426,7 +1005,15 @@ export class BunQueue<
     const now = Date.now();
     const opts = resolveJobOptions(this.#defaults, options);
     const repeat = options.repeat!;
-    const definition = toRepeatRecord(this.ref, name, data, opts, repeat, now);
+    const definition = toRepeatRecord(
+      this.ref,
+      name,
+      data,
+      opts,
+      repeat,
+      now,
+      this.dateParser,
+    );
 
     const existing = await this.driver.getRepeat(this.ref, definition.key);
     const merged: RepeatRecord = existing
@@ -467,59 +1054,197 @@ export class BunQueue<
     });
 
     this.safeEmit("repeatScheduled", merged.key, firstRunAt);
+    await this.#publish("repeatScheduled", {
+      key: merged.key,
+      nextRunAt: firstRunAt,
+    });
 
     const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
     this.safeEmit(added ? "added" : "duplicate", view);
     return view;
   }
 
-  /** Publishes an event for other processes, when anything is listening. */
-  async #publish(type: string, id?: string): Promise<void> {
-    if (!this.#subscribe) {
+  /**
+   * Publishes an event for other processes, when anything is listening.
+   *
+   * `type` selects the payload's shape, so a mismatched pair is a compile
+   * error here rather than a surprise in a subscriber three processes away.
+   */
+  async #publish<Name extends QueueEventName>(
+    type: Name,
+    payload: QueueEventPayloads[Name],
+  ): Promise<void> {
+    if (!this.#publishes) {
       return;
     }
 
+    await this.#publishGate?.();
+
     try {
-      await this.driver.publish({
-        v: 1,
-        ns: this.namespace,
-        kind: "queue",
-        target: this.name,
-        type,
-        ...(id ? { id } : {}),
-        at: Date.now(),
-        origin: this.#origin,
-      });
+      await this.driver.publish(
+        queueEvent(
+          {
+            ns: this.namespace,
+            target: this.name,
+            type,
+            origin: this.#origin,
+          },
+          payload,
+        ),
+      );
     } catch (error) {
       this.#logger.warn("Could not publish a queue event", { error, type });
     }
   }
 
   /**
-   * Re-emits an event from another process.
+   * Re-emits an event from another process, with the arguments its local
+   * signature actually takes.
    *
-   * The envelope carries ids rather than payloads — some transports cap a
-   * message at a few kilobytes — so the job is fetched only when someone is
-   * actually listening for that event.
+   * This used to reconstruct every event the same way: fetch the job named by
+   * `id`, emit `(job)`. That is right for about half of them and quietly wrong
+   * for the rest — `removed` and `promoted` handed listeners a `Job` where the
+   * local signature says `string`, and `delayed`, `progress`, `completed`,
+   * `retrying` and `dead` lost their second argument entirely. A listener
+   * therefore saw a different shape depending on which process emitted, which
+   * is the sort of thing that is only ever found in production.
+   *
+   * The envelope carries ids and scalars rather than records — some transports
+   * cap a message at a few kilobytes — so a job is fetched only for the events
+   * whose signature needs one, and only when somebody is listening.
    */
-  async #onRemoteEvent(event: DriverEvent): Promise<void> {
+  /**
+   * Whether anything is listening for an event, under any name it can take.
+   *
+   * A remote event costs a fetch, so one nobody wants is dropped before
+   * paying for it. That check used to be `listenerCount(type)` alone, which
+   * silently skipped a listener registered only on the qualified form — and
+   * the whole point of `completed:sendEmail` is to be the only thing someone
+   * listens for.
+   *
+   * The qualified name cannot be known without the job, and the job cannot be
+   * fetched without deciding to, so the question is asked the other way round:
+   * is anyone listening for *any* qualification of this event.
+   */
+  #wants(type: string): boolean {
+    if (this.listenerCount(type as never) > 0) {
+      return true;
+    }
+
+    const scoped = `${type}:`;
+    return this.eventNames().some(
+      (name) => typeof name === "string" && name.startsWith(scoped),
+    );
+  }
+
+  async #onRemoteEvent(event: QueueDriverEvent): Promise<void> {
     if (event.origin === this.#origin) {
       return;
     }
 
-    const name = event.type as keyof BunQueueEvents<TData, TResult>;
-    if (this.listenerCount(name) === 0) {
+    if (!this.#wants(event.type)) {
       return;
     }
 
-    if (!event.id) {
-      this.safeEmit(name, ...([] as never));
+    // An `Error` does not survive JSON, so the wire carries a
+    // `SerializedError` and it is turned back into one here. Local listeners
+    // get a real `Error` whichever process raised it.
+    switch (event.type) {
+      case "paused":
+      case "resumed":
+        this.safeEmit(event.type);
+        return;
+
+      case "drained":
+        this.safeEmit("drained", event.payload.count);
+        return;
+
+      case "cleaned":
+        this.safeEmit("cleaned", event.payload.ids, event.payload.state);
+        return;
+
+      case "stalled":
+        this.safeEmit("stalled", event.payload.ids);
+        return;
+
+      case "retried":
+        this.safeEmit("retried", event.payload.ids);
+        return;
+
+      case "removed":
+      case "promoted":
+        this.safeEmit(event.type, event.payload.id);
+        return;
+
+      case "repeatScheduled":
+        this.safeEmit(
+          "repeatScheduled",
+          event.payload.key,
+          event.payload.nextRunAt,
+        );
+        return;
+    }
+
+    // Everything left is about one job, and hands the listener the job itself.
+    const job = await this.getJob(event.payload.id);
+
+    if (!job) {
       return;
     }
 
-    const job = await this.getJob(event.id);
-    if (job) {
-      this.safeEmit(name, ...([job] as never));
+    switch (event.type) {
+      case "added":
+      case "duplicate":
+      case "debounced":
+      case "throttled":
+      case "waiting":
+      case "active":
+        this.safeEmitScoped(event.type, job.name, job);
+        return;
+
+      case "delayed":
+        this.safeEmitScoped("delayed", job.name, job, event.payload.runAt);
+        return;
+
+      case "progress":
+        this.safeEmitScoped("progress", job.name, job, event.payload.progress);
+        return;
+
+      case "completed":
+        this.safeEmitScoped(
+          "completed",
+          job.name,
+          job,
+          event.payload.returnValue as TResult,
+        );
+        return;
+
+      case "failed":
+        this.safeEmitScoped(
+          "failed",
+          job.name,
+          job,
+          deserializeError(event.payload.error),
+        );
+        return;
+
+      case "dead":
+        this.safeEmitScoped(
+          "dead",
+          job.name,
+          job,
+          deserializeError(event.payload.error),
+        );
+        return;
+
+      case "retrying":
+        this.safeEmitScoped(
+          "retrying",
+          job.name,
+          job,
+          deserializeError(event.payload.error),
+          event.payload.runAt,
+        );
     }
   }
 }

@@ -1071,13 +1071,38 @@ export function withTimeout<T>(
   });
 }
 
+/**
+ * How a backoff grows from one attempt to the next, for `n` failed attempts:
+ *
+ * - `"fixed"` — `delay`, every time.
+ * - `"exponential"` — `delay × factorⁿ⁻¹`.
+ * - `"linear"` — `delay × n`.
+ * - `"fibonacci"` — `delay × fib(n)`: 1, 1, 2, 3, 5, 8… Gentler than
+ *   exponential, for a dependency that usually recovers in a few tries.
+ * - `"full-jitter"` — anywhere from zero up to the exponential delay. Spreads
+ *   a crowd of clients that failed together the most evenly, at the cost of
+ *   sometimes retrying almost at once.
+ * - `"decorrelated-jitter"` — each delay drawn between `delay` and three times
+ *   the last. Never shorter than `delay`, and unlike full jitter it grows.
+ *
+ * The two jittered strategies are random by construction, so `jitter` does
+ * not apply to them; `max` does, to all six.
+ */
+export type BackoffType =
+  | "fixed"
+  | "exponential"
+  | "linear"
+  | "fibonacci"
+  | "full-jitter"
+  | "decorrelated-jitter";
+
 /** Shape of a backoff schedule, shared by {@link computeBackoff} and {@link retry}. */
 export interface BackoffOptions {
-  /** `"fixed"` waits `delay` every time; `"exponential"` grows it. Defaults to `"fixed"`. */
-  type?: "fixed" | "exponential";
+  /** How the delay grows; see {@link BackoffType}. Defaults to `"fixed"`. */
+  type?: BackoffType;
   /** Base delay in milliseconds. Defaults to `1000`. */
   delay?: number;
-  /** Growth factor for `"exponential"`. Defaults to `2`. */
+  /** Growth factor for `"exponential"` and `"full-jitter"`. Defaults to `2`. */
   factor?: number;
   /** Upper bound on the delay before jitter, in milliseconds. Defaults to `Infinity`. */
   max?: number;
@@ -1108,8 +1133,21 @@ export function computeBackoff(
   const max = resolved.max ?? Number.POSITIVE_INFINITY;
   const step = Math.max(1, Math.floor(attempt));
 
+  switch (resolved.type) {
+    case "full-jitter":
+      return Math.random() * Math.min(base * factor ** (step - 1), max);
+    case "decorrelated-jitter":
+      return decorrelatedJitter(step, base, max);
+  }
+
   const raw =
-    resolved.type === "exponential" ? base * factor ** (step - 1) : base;
+    resolved.type === "exponential"
+      ? base * factor ** (step - 1)
+      : resolved.type === "linear"
+        ? base * step
+        : resolved.type === "fibonacci"
+          ? base * fibonacci(step)
+          : base;
   const capped = Math.min(raw, max);
 
   const jitter =
@@ -1125,6 +1163,43 @@ export function computeBackoff(
 
   const spread = capped * jitter;
   return Math.max(0, capped + (Math.random() * 2 - 1) * spread);
+}
+
+/**
+ * The `n`th Fibonacci number, counting 1, 1, 2, 3, 5 from `n = 1`.
+ *
+ * Iterative, and it overflows to `Infinity` rather than looping forever,
+ * which the caller's `max` then caps.
+ */
+function fibonacci(n: number): number {
+  let previous = 0;
+  let current = 1;
+
+  for (let at = 1; at < n && Number.isFinite(current); at++) {
+    [previous, current] = [current, previous + current];
+  }
+
+  return current;
+}
+
+/**
+ * Decorrelated jitter, without the state it is usually described with.
+ *
+ * The published form keeps the last delay between calls — `sleep = min(cap,
+ * random(base, sleep × 3))` — and a job's attempts happen in different
+ * processes, often on different machines, with nothing to keep it in. Walking
+ * the recurrence from the first attempt draws from the same distribution
+ * using only the attempt number. Attempts are few, so the walk is short; it is
+ * bounded anyway, since past the cap every further step is the cap.
+ */
+function decorrelatedJitter(step: number, base: number, max: number): number {
+  let delay = base;
+
+  for (let at = 0; at < Math.min(step, 64) && delay < max; at++) {
+    delay = Math.min(max, base + Math.random() * (delay * 3 - base));
+  }
+
+  return Math.max(0, Math.min(delay, max));
 }
 
 /** Options for {@link retry}. */

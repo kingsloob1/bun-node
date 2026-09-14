@@ -134,6 +134,221 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
     expect(await driver.countQueuedTriggers(ns, key)).toBeLessThanOrEqual(3);
   });
 
+  it("keeps a job's priority and its options in agreement", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "reprioritised" };
+
+    await driver.addJob(q, makeJob({ id: "moved-up", priority: 5 }));
+    const updated = await driver.updateJob(q, "moved-up", { priority: 1 }, 0);
+
+    // `opts` is stored as a JSON string, so the plain field changing is not
+    // enough: both have to read back as the new value.
+    expect(updated?.priority).toBe(1);
+    expect(updated?.opts.priority).toBe(1);
+    expect((await driver.getJob(q, "moved-up"))?.opts.priority).toBe(1);
+
+    await driver.purge(ns);
+  });
+
+  it("keeps log lines off the job, and sweeps the ones a job left behind", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "log-sweep" };
+    const now = Date.now();
+
+    await driver.addJob(q, makeJob({ id: "chatty", runAt: now }));
+    await driver.addJobLog(q, "chatty", "one", 0);
+    await driver.addJobLog(q, "chatty", "two", 0);
+
+    const token = "sweep-token";
+    const claimed = await driver.claimJob(q, {
+      workerId: "w1",
+      token,
+      lockMs: 5_000,
+      now,
+    });
+    // A claim returns the whole document, which is why lines are not on it.
+    expect(Object.keys(claimed ?? {})).not.toContain("logs");
+
+    // Retention `true` deletes in one operation and leaves the lines behind.
+    await driver.completeJob(q, "chatty", token, null, true, now);
+
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(URL!);
+    await client.connect();
+
+    try {
+      const lines = client
+        .db(driver.database)
+        .collection(driver.collections.jobLogs);
+
+      expect(await lines.countDocuments({ ns })).toBe(2);
+
+      // The worker's periodic maintenance pass collects them.
+      await driver.pruneExpired(q, now, 100);
+      expect(await lines.countDocuments({ ns })).toBe(0);
+    } finally {
+      await client.close();
+      await driver.purge(ns);
+    }
+  });
+
+  it("purges a namespace's log lines with the rest of it", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "log-purge" };
+
+    await driver.addJob(q, makeJob({ id: "logged" }));
+    await driver.addJobLog(q, "logged", "kept until purge", 0);
+    await driver.purge(ns);
+
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(URL!);
+    await client.connect();
+
+    try {
+      expect(
+        await client
+          .db(driver.database)
+          .collection(driver.collections.jobLogs)
+          .countDocuments({ ns }),
+      ).toBe(0);
+    } finally {
+      await client.close();
+      await driver.purge(ns);
+    }
+  });
+
+  it("claims past a large block of excluded jobs in bounded steps", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "exclude-timing" };
+    const now = Date.now();
+    const pile = 10_000;
+
+    await driver.addJobs(
+      q,
+      Array.from({ length: pile }, (_u, index) => {
+        return makeJob({
+          id: `capped-${index}`,
+          name: "capped",
+          runAt: now,
+          createdAt: now + index,
+        });
+      }),
+    );
+
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(URL!);
+    await client.connect();
+
+    try {
+      const jobs = client
+        .db(driver.database)
+        .collection<{ _id: string }>(driver.collections.jobs);
+      const due = {
+        ns,
+        queue: q.queue,
+        state: "waiting",
+        runAt: { $lte: now },
+      };
+      const sort = { priority: 1, createdAt: 1, _id: 1 } as const;
+
+      /** Documents the server examined to answer a claim-shaped read. */
+      const examined = async (
+        filter: object,
+        limit: number,
+      ): Promise<number> => {
+        const plan = await jobs
+          .find(filter)
+          .sort(sort)
+          .limit(limit)
+          .explain("executionStats");
+        return Number(plan.executionStats?.totalDocsExamined);
+      };
+
+      const claim = async () =>
+        await driver.claimJob(q, {
+          workerId: "w1",
+          token: "timing",
+          lockMs: 30_000,
+          now,
+          excludeNames: ["capped"],
+        });
+
+      // Before: a `$nin` in the claim filter walks the whole block, on every
+      // retry, while the name stays capped.
+      const filterStarted = performance.now();
+      await jobs.findOne({ ...due, name: { $nin: ["capped"] } }, { sort });
+      const filterMs = performance.now() - filterStarted;
+      const filterExamined = await examined(
+        { ...due, name: { $nin: ["capped"] } },
+        1,
+      );
+
+      // After: one claim reads a head window and one continuation window,
+      // whatever the size of the block.
+      const idleStarted = performance.now();
+      expect(await claim()).toBeNull();
+      const idleMs = performance.now() - idleStarted;
+      const headExamined = await examined(due, 64);
+      const continuationExamined = await examined(
+        {
+          ...due,
+          $or: [
+            { priority: { $gt: 0 } },
+            { priority: 0, createdAt: { $gt: now + 63 } },
+            { priority: 0, createdAt: now + 63, _id: { $gt: "" } },
+          ],
+        },
+        1_000,
+      );
+
+      // The window bounds the work, not the pile. Explain counts a little
+      // more than the limit (the three merged index branches each read ahead,
+      // and plan selection's trial work is included), so the bound is the
+      // order of magnitude that matters rather than the exact window size.
+      expect(filterExamined).toBeGreaterThanOrEqual(pile);
+      expect(headExamined).toBeLessThanOrEqual(2 * 64);
+      expect(continuationExamined).toBeLessThanOrEqual(2 * 1_000);
+
+      await driver.addJob(
+        q,
+        makeJob({
+          id: "free",
+          name: "free",
+          runAt: now,
+          createdAt: now + pile + 1,
+        }),
+      );
+
+      // Each claim moves a window further in, so the free job comes out in
+      // about pile / 1,000 claims rather than never being reached cheaply.
+      const reachStarted = performance.now();
+      let found = null;
+      let claims = 0;
+      while (!found && claims < Math.ceil(pile / 1_000) + 3) {
+        claims++;
+        found = await claim();
+      }
+      const reachMs = performance.now() - reachStarted;
+
+      expect(found?.id).toBe("free");
+      expect((await driver.countJobs(q)).active).toBe(1);
+
+      process.stdout.write(
+        `[mongo exclusions, ${pile} capped] before: ${filterExamined} docs examined, ` +
+          `${filterMs.toFixed(1)}ms per claim attempt; after: ${headExamined} + ` +
+          `${continuationExamined} docs examined, ${idleMs.toFixed(1)}ms per idle claim, ` +
+          `${claims} claims in ${reachMs.toFixed(1)}ms to reach the free job\n`,
+      );
+    } finally {
+      await client.close();
+      await driver.purge(ns);
+    }
+  }, 120_000);
+
   it("trims history on the server, newest first", async () => {
     const driver = makeDriver();
     const ns = testNamespace();
@@ -174,6 +389,7 @@ describe.skipIf(!URL)("MongoDB driver: options", () => {
       locks: "custom_locks",
       kv: "custom_kv",
       events: "custom_events",
+      jobLogs: "custom_jobLogs",
     });
 
     const named = new MongoDriver({

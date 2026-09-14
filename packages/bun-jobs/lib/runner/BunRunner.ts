@@ -4,6 +4,7 @@ import type {
   RunSource,
   RunStatus,
 } from "../drivers/index";
+import type { RunnerEventName, RunnerEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput, Ticker } from "../shared/schedule";
 import type {
@@ -25,6 +26,7 @@ import type {
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
 import { TypedEmitterBase } from "../shared/emitter";
 import { RunnerStoppedError } from "../shared/errors";
+import { runnerEvent } from "../shared/events";
 import { HOST, newId, newToken, parseToken } from "../shared/ids";
 import { stringifyBounded } from "../shared/json";
 import { runnerKey } from "../shared/keys";
@@ -38,6 +40,9 @@ import { InProcessExecutor } from "./executors/in-process";
 import { SpawnExecutor } from "./executors/spawn";
 import { WorkerExecutor } from "./executors/worker";
 import { resolveRunnerOptions } from "./options";
+
+/** A publish that does nothing: already settled, and shared, so it costs nothing. */
+const SETTLED: Promise<void> = Promise.resolve();
 
 /**
  * Runs a JS/TS file on a schedule or on demand.
@@ -88,6 +93,15 @@ export class BunRunner<
   readonly #key: string;
   /** How runs execute. */
   readonly #executor: Executor;
+  /** Identifies this runner's published events as coming from this process. */
+  readonly #origin = newToken();
+  /** Awaited before each publish; see `BunRunnerOptions.publishGate`. */
+  readonly #publishGate: (() => Promise<void>) | undefined;
+  /**
+   * Why each active run was asked to stop, by run id, so the `killed` event
+   * carries the caller's reason rather than a placeholder.
+   */
+  readonly #abortReasons = new Map<string, string>();
 
   /** Runs in flight in this process. */
   readonly #active = new Map<string, RunHandle>();
@@ -105,6 +119,8 @@ export class BunRunner<
    * the lock it was holding.
    */
   readonly #settling = new Set<Promise<unknown>>();
+  /** Publishes still in flight, which `close()` waits for. */
+  readonly #publishing = new Set<Promise<void>>();
 
   /** The schedule ticker, while started. */
   #ticker: Ticker | undefined;
@@ -138,6 +154,7 @@ export class BunRunner<
     this.#key = runnerKey(resolved.id);
     this.#paused = resolved.startPaused;
     this.#schedule = resolved.schedule;
+    this.#publishGate = options.publishGate;
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: resolved.namespace, runnerId: resolved.id },
@@ -162,7 +179,11 @@ export class BunRunner<
 
   /** Replaces the logger, keeping this runner's bindings. */
   set logger(logger: Logger) {
-    this.#logger = logger;
+    this.#logger = createJobsLogger(
+      logger,
+      { namespace: this.namespace, runnerId: this.id },
+      this.name,
+    );
   }
 
   /** What this instance is doing. */
@@ -252,6 +273,7 @@ export class BunRunner<
     await Promise.allSettled([...this.#active.values()].map((run) => run.done));
     // Then whatever is still being written for runs that already settled.
     await Promise.allSettled([...this.#settling]);
+    await Promise.allSettled([...this.#publishing]);
 
     this.#clearHeartbeat();
     await this.#releaseLock();
@@ -461,6 +483,10 @@ export class BunRunner<
     ]);
 
     const owner = lock ? parseToken(lock.token) : null;
+    // The lock is taken before its run exists and outlives it until the drain
+    // finishes, so the token cannot name the run; the holder records each run
+    // it starts, and that is the one in flight.
+    const runningRunId = state.lastRunId;
     const lastError = state.lastError
       ? (JSON.parse(state.lastError) as { name: string; message: string })
       : undefined;
@@ -479,12 +505,12 @@ export class BunRunner<
       status: this.#status,
       isPaused: state.paused === "1",
       isRunning: lock !== null,
-      ...(owner
+      ...(owner && runningRunId
         ? {
             runningOn: {
               host: owner.host,
               pid: owner.pid,
-              runId: owner.scope ?? owner.id,
+              runId: runningRunId,
               since: lock ? lock.expiresAt - this.options.lockTtl : now,
             },
           }
@@ -611,6 +637,7 @@ export class BunRunner<
     const outcome = { outcome: "skipped", reason } as const;
     await this.#bump({ skipped: 1 });
     this.safeEmit("skipped", outcome);
+    void this.#publish("skipped", { reason: outcome.reason });
     return outcome;
   }
 
@@ -631,6 +658,7 @@ export class BunRunner<
     this.#localQueue.push(trigger);
     await this.#bump({ queued: 1 });
     this.safeEmit("queued", trigger);
+    void this.#publish("queued", { runId: trigger.id });
 
     return { outcome: "queued", position: this.#localQueue.length };
   }
@@ -670,6 +698,7 @@ export class BunRunner<
 
     void this.#bump({ queued: 1 });
     this.safeEmit("queued", { id: trigger.id, args });
+    void this.#publish("queued", { runId: trigger.id });
 
     return {
       outcome: "queued",
@@ -841,13 +870,21 @@ export class BunRunner<
 
     this.#active.set(runId, {
       record,
-      abort: (reason, abortOptions) => handle.stop(reason, abortOptions),
+      abort: (reason, abortOptions) => {
+        // The first reason wins: a kill followed by the runner stopping is
+        // still the kill the caller asked for.
+        if (!this.#abortReasons.has(runId)) {
+          this.#abortReasons.set(runId, reason);
+        }
+        handle.stop(reason, abortOptions);
+      },
       send: (message) => handle.send(message),
       done: settle,
     });
 
     this.#armHeartbeat(runId);
     this.safeEmit("started", record);
+    void this.#publish("started", { runId: record.runId });
 
     return runId;
   }
@@ -916,7 +953,8 @@ export class BunRunner<
     this.#clearHeartbeat();
 
     await this.#record(record, outcome);
-    this.#emitOutcome(record, outcome);
+    this.#emitOutcome(record, outcome, this.#abortReasons.get(runId));
+    this.#abortReasons.delete(runId);
 
     // Drain what is waiting before letting go of the lock, so a queued
     // trigger runs here rather than waiting for someone else to notice it.
@@ -956,14 +994,85 @@ export class BunRunner<
     }
   }
 
+  /**
+   * Publishes an event for other processes, when this runner was asked to.
+   *
+   * A failure to publish is logged and swallowed: an observer missing an event
+   * must never fail the run that produced it.
+   */
+  /**
+   * Publishes an event, tracked so `close()` can wait for it.
+   *
+   * Callers fire it and move on, and a caller may close straight after — from
+   * the very listener the event was emitted to. Untracked, the close shut the
+   * driver under the write: a `completed` event from a process that closed on
+   * completion was lost, and on MongoDB, whose publish takes two round trips,
+   * reliably.
+   */
+  #publish<Name extends RunnerEventName>(
+    type: Name,
+    payload: RunnerEventPayloads[Name],
+  ): Promise<void> {
+    // Nothing to track, and nothing to allocate, for a runner that does not
+    // publish.
+    if (!this.options.publish) {
+      return SETTLED;
+    }
+
+    const publishing = this.#doPublish(type, payload).finally(() => {
+      this.#publishing.delete(publishing);
+    });
+    this.#publishing.add(publishing);
+    return publishing;
+  }
+
+  /** The body of {@link #publish}. */
+  async #doPublish<Name extends RunnerEventName>(
+    type: Name,
+    payload: RunnerEventPayloads[Name],
+  ): Promise<void> {
+    await this.#publishGate?.();
+
+    try {
+      await this.driver.publish(
+        runnerEvent(
+          { ns: this.namespace, target: this.id, type, origin: this.#origin },
+          payload,
+        ),
+      );
+    } catch (error) {
+      this.#logger.warn("Could not publish a runner event", { error, type });
+    }
+  }
+
   /** Emits the event matching a run's outcome. */
-  #emitOutcome(record: RunRecord, outcome: RunOutcome): void {
+  #emitOutcome(
+    record: RunRecord,
+    outcome: RunOutcome,
+    abortReason: string | undefined,
+  ): void {
+    if (outcome.status !== "success") {
+      void this.#publish("failed", {
+        runId: record.runId,
+        error:
+          outcome.error ??
+          serializeError(
+            new Error(`The run ended with status ${outcome.status}`),
+          ),
+      });
+    }
+
     switch (outcome.status) {
       case "success":
         this.safeEmit("finished", record, outcome.result as TResult);
+        void this.#publish("succeeded", {
+          runId: record.runId,
+          durationMs: record.durationMs ?? 0,
+        });
         break;
       case "timeout":
         this.safeEmit("timeout", record);
+        void this.#publish("timeout", { runId: record.runId });
         this.safeEmit(
           "failed",
           record,
@@ -973,7 +1082,11 @@ export class BunRunner<
         );
         break;
       case "killed":
-        this.safeEmit("killed", record, "killed");
+        this.safeEmit("killed", record, abortReason ?? "killed");
+        void this.#publish("killed", {
+          runId: record.runId,
+          reason: abortReason ?? "killed",
+        });
         this.safeEmit(
           "failed",
           record,
@@ -1064,8 +1177,13 @@ export class BunRunner<
     const failure =
       error instanceof Error ? error : deserializeError(serializeError(error));
 
-    if (!this.safeEmit("error", failure, context)) {
+    // Asked of `error` itself: a listener for any other event makes `emit`
+    // throw on an unheard `error`, which `safeEmit` swallows as "heard".
+    if (this.listenerCount("error") === 0) {
       this.#logger.error(failure, { context });
+      return;
     }
+
+    this.safeEmit("error", failure, context);
   }
 }

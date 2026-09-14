@@ -1,13 +1,19 @@
-import type { BackoffOptions } from "@kingsleyweb/bun-common";
+import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
-  ExecutionMode,
   JobsDriver,
   JobState,
   RepeatRecord,
   Retention,
 } from "../drivers/index";
+import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
+import type {
+  BackoffStrategies,
+  BackoffStrategy,
+  JobBackoffOptions,
+} from "./backoff";
+import type { IsolationMode, IsolationOptions } from "./isolation";
 import type { Job } from "./Job";
 
 /**
@@ -18,18 +24,40 @@ import type { Job } from "./Job";
  * outcome is kept.
  */
 
-/** How a repeatable job repeats. */
+/**
+ * How a repeatable job repeats.
+ *
+ * ```ts
+ * { every: 60_000 }
+ * { every: "2 days" }                                     // or "every 2 days", "daily"
+ * { every: "0 9 * * 1", tz: "Europe/London" }             // cron, by its shape
+ * { every: "every 2 weeks starting 1st december 2026" }   // interval + start
+ * { every: "every day from 1 dec 2026 until 31 dec 2026" }// interval + window
+ * { every: "1 hour", startAt: "tomorrow at 9am" }
+ * ```
+ *
+ * Words are read when the job is added, so "starting tomorrow" means tomorrow
+ * from then. Reading dates needs the optional `chrono-node`; an interval alone
+ * does not. A series is identified by its schedule and start, so a phrase that
+ * names a relative start gives a new series each time it resolves differently;
+ * give `key` when re-adding one must update it.
+ */
 export interface RepeatOptions {
   /** Cron expression, five- or six-field (seconds first). */
   cron?: string;
   /** IANA time zone the cron expression is read in. */
   tz?: string;
-  /** Interval in milliseconds, as an alternative to `cron`. */
-  every?: number;
-  /** Do not run before this instant. */
-  startAt?: Date | number;
-  /** Do not run after this instant. */
-  endAt?: Date | number;
+  /**
+   * How often, as an alternative to `cron`: milliseconds, a duration
+   * (`"2 days"`), a cron expression, or a phrase that may also name the start
+   * and end (`"every 2 weeks starting 1st december 2026"`). Dates inside the
+   * phrase fill `startAt`/`endAt` only when those are not given.
+   */
+  every?: number | string;
+  /** Do not run before this instant — a `Date`, epoch milliseconds, or words. */
+  startAt?: Date | number | string;
+  /** Do not run after this instant — a `Date`, epoch milliseconds, or words. */
+  endAt?: Date | number | string;
   /** Stop after this many occurrences. */
   limit?: number;
   /** Identifies the series. Defaults to one derived from the other options. */
@@ -62,7 +90,7 @@ export interface JobOptions {
    * Delay between attempts: a number of milliseconds, or a schedule.
    * Defaults to exponential from 1s, capped at 5 minutes, with jitter.
    */
-  backoff?: number | BackoffOptions;
+  backoff?: number | JobBackoffOptions;
   /** Per-attempt timeout in milliseconds. `0` (the default) means none. */
   timeout?: number;
   /**
@@ -75,8 +103,44 @@ export interface JobOptions {
   removeOnFail?: Retention;
   /** How many stack traces a failing job keeps. Defaults to `5`. */
   keepStacktraces?: number;
+  /**
+   * A queue, in the same namespace, that receives a copy of this job when it
+   * dies — as a {@link DeadLetter} carrying the original id, data and error.
+   * Wins over the worker's `deadLetterQueue`. The dead job itself is kept or
+   * removed by `removeOnFail` as usual.
+   */
+  deadLetter?: string;
+  /**
+   * Keeps one pending job per `id` instead of adding another each time.
+   *
+   * While a job added under this id has not started, a further add replaces
+   * its data and pushes its run time back to `ttl` from now; once it has
+   * started, the next add is a new job. The first add's other options stay.
+   * `ttl` is milliseconds or a duration such as `"30 seconds"`. Not with
+   * `repeat`, `jobId` or `throttle`.
+   */
+  debounce?: DebounceOptions;
+  /**
+   * Adds at most one job per `id` per `ttl`: an add inside the window adds
+   * nothing and answers with the job that opened it. Not with `repeat`,
+   * `jobId` or `debounce`.
+   */
+  throttle?: DebounceOptions;
+  /**
+   * How many log lines the job keeps, newest last; older lines are dropped.
+   * `0` keeps every line. Defaults to `1000`.
+   */
+  keepLogs?: number;
   /** Makes this a repeatable job. */
   repeat?: RepeatOptions;
+}
+
+/** Which debounce or throttle a job belongs to, and for how long. */
+export interface DebounceOptions {
+  /** Jobs sharing this id are debounced or throttled together. */
+  id: string;
+  /** The window: milliseconds, or a duration such as `"30 seconds"`. */
+  ttl: number | string;
 }
 
 /** What a worker calls for each job. */
@@ -103,6 +167,12 @@ export interface ProcessorContext {
    * For a step that will take longer than `lockDuration` on its own.
    */
   heartbeat: () => Promise<void>;
+  /**
+   * Appends a line to the job's log, which outlives this attempt — readable
+   * with `job.getLogs()` or `queue.getJobLogs(id)` from anywhere. Answers with
+   * how many lines the log keeps.
+   */
+  log: (line: string) => Promise<number>;
 }
 
 /** Options for a {@link BunQueue}. */
@@ -124,10 +194,60 @@ export interface BunQueueOptions {
    * worker elsewhere is running. Off by default: it costs a subscription.
    */
   subscribe?: boolean;
+  /**
+   * Publish this queue's events for other processes to receive.
+   *
+   * Separate from {@link BunQueueOptions.subscribe}, which it used to be
+   * folded into — publishing was gated on whether *this* instance also
+   * listened. That is the wrong way round for the arrangement it matters most
+   * in: a dashboard subscribes and never produces, while the producers it
+   * wants to watch listen to nothing and therefore said nothing.
+   *
+   * Defaults to whatever `subscribe` is, so existing behaviour is unchanged;
+   * set it explicitly to publish without listening. It is not on by default
+   * because each event is a round trip, and on a busy queue that is a round
+   * trip per job.
+   */
+  publish?: boolean;
+  /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
+  /**
+   * Reads the dates in phrases — `on("2nd december 2026")`, `every("every 2
+   * weeks from payday")`, `repeat: { startAt: "tomorrow at 9am" }`. Defaults
+   * to `chrono-node`, loaded when a phrase first needs it.
+   *
+   * Give one to read dates `chrono-node` does not, or to avoid installing it.
+   * Checked when the queue is built; see `DateParser` for the shape.
+   */
+  dateParser?: DateParser;
 }
 
 /** Options for a {@link BunQueueWorker}. */
 export interface BunQueueWorkerOptions {
+  /**
+   * Publish this worker's job events for other processes to receive.
+   *
+   * Off by default, and worth turning on for the case it exists for: the
+   * worker is the only thing that knows a job became active, reported
+   * progress, completed, failed or stalled, so without this a producer or a
+   * dashboard elsewhere can only observe what it did itself.
+   *
+   * Each event is a round trip. On a queue draining thousands of jobs a second
+   * that is the dominant cost of turning it on, which is why it is a choice.
+   */
+  publish?: boolean;
+  /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
   /** The namespace to consume from. Must match the producer's. */
   namespace: string;
   /** Where jobs live. A config is built and closed here; an instance is shared. */
@@ -162,16 +282,151 @@ export interface BunQueueWorkerOptions {
   /** Milliseconds of quiet before `drained` is emitted. Defaults to 0. */
   drainDelay?: number;
   /**
-   * Where a file-path processor runs. Only meaningful when the processor is
-   * a path: the job then runs through the runner's executors, one child per
-   * job. Defaults to `"in-process"`.
+   * Where a processor *file* runs each attempt:
+   *
+   * - `"in-process"` (the default) imports it once and calls it on the
+   *   worker's thread, exactly like a function processor.
+   * - `"worker"` runs each attempt in a fresh `Worker`: a separate JavaScript
+   *   context that can be terminated, in the same process.
+   * - `"spawn"` runs each attempt in a child process: the only mode where a
+   *   processor that ignores its signal can be killed for certain.
+   *
+   * Only for a processor given as a file path or URL. The file default-exports
+   * the same `(job, ctx) => result` a function processor is; `defineProcessor`
+   * types it. In a child, `job.log`, `job.updateProgress`, `job.touch` and
+   * `ctx.heartbeat` work through the worker; operations that change the
+   * stored job directly are unavailable.
    */
-  isolation?: ExecutionMode;
+  isolation?: IsolationMode;
+  /** Timeouts and executor options for isolated processors. */
+  isolationOptions?: IsolationOptions;
+  /**
+   * Named backoff strategies, for jobs whose `backoff.type` names one.
+   *
+   * Resolved here, on the worker, because a job's options are stored and a
+   * function cannot be. A job naming a strategy this worker was not given
+   * falls back to the default backoff and logs a warning rather than losing
+   * its remaining attempts. A worker from `BunJobs` is given the strategies
+   * registered with `defineBackoff`.
+   */
+  backoffStrategies?: BackoffStrategies | Record<string, BackoffStrategy>;
+  /**
+   * The dead-letter queue for jobs that do not name their own `deadLetter`.
+   * Unset by default: a dead job stays where it died.
+   */
+  deadLetterQueue?: string;
+  /**
+   * How long the queue's stored limits are trusted before a worker reads them
+   * again, in milliseconds. A change made with `queue.setLimits()` reaches
+   * every worker within this. Defaults to `1000`.
+   */
+  limitsRefreshInterval?: number;
+  /**
+   * Whether a running worker keeps the process alive while it waits for work.
+   * Defaults to `true`, as `BunRunner`'s option of the same name does.
+   *
+   * Every wait the worker makes is unref'd, so that it never holds up a
+   * process that has other reasons to exit. Without this, a process whose
+   * only work *is* a worker — a worker service — would exit the moment its
+   * queue went idle. Set `false` for a script that runs a worker alongside
+   * work of its own and should exit when that work is done.
+   *
+   * `false` releases only the worker's own hold. Whether anything else holds
+   * the process depends on the driver's client: the Redis, Postgres and
+   * MongoDB clients keep an open connection that holds it by itself, and none
+   * of them can be unref'd — with one of those, close the driver (or
+   * `jobs.close()`) once the script's own work is done. Bun's MySQL client,
+   * used for MySQL and MariaDB, does not hold the process, and neither do the
+   * memory, file and SQLite drivers, so an idle process on any of those exits.
+   */
+  waitToExit?: boolean;
 }
+
+/**
+ * What a dead-letter queue receives: the job that died, as it was.
+ *
+ * Added under the original job's name, so a worker on the dead-letter queue
+ * can dispatch on it exactly as the original worker did, and with an id
+ * derived from the original's, so a failure noticed twice files one letter.
+ */
+export interface DeadLetter<TData = unknown> {
+  /** The queue the job died in. */
+  queue: string;
+  /** Its id there. */
+  id: string;
+  /** Its name. */
+  name: string;
+  /** What it carried. */
+  data: TData;
+  /** The failure that killed it. */
+  failedReason: SerializedError;
+  /** How many attempts it had made. */
+  attemptsMade: number;
+  /** When it died, in epoch milliseconds. */
+  diedAt: number;
+}
+
+/** Which finished jobs {@link BunQueue.retryAll} returns to the queue. */
+export interface RetryAllOptions<TData = unknown, TResult = unknown> {
+  /** Only jobs with this name. */
+  name?: string;
+  /**
+   * Only jobs whose last failure matches: a substring of, or a pattern tested
+   * against, `"<error name>: <message>"`. A job with no failure never matches,
+   * so this selects nothing among completed jobs.
+   */
+  reason?: string | RegExp;
+  /** Only jobs this returns `true` for. Applied after `name` and `reason`. */
+  filter?: (job: Job<TData, TResult>) => boolean;
+  /** Stop after this many. Defaults to every match. */
+  limit?: number;
+  /** Start their attempts again from zero. Defaults to `true`, as `retry()` does. */
+  resetAttempts?: boolean;
+}
+
+/**
+ * The events that are about one job, and so can be scoped to its name.
+ *
+ * Everything else is about the queue — it was paused, it was drained — or
+ * about an id with no name to hand: `removed` and `promoted` carry an id, and
+ * `stalled` carries several. Scoping those would mean fetching a record to
+ * work out an event name, which is the wrong way round.
+ */
+export type JobScopedEvent =
+  | "added"
+  | "duplicate"
+  | "waiting"
+  | "delayed"
+  | "active"
+  | "progress"
+  | "completed"
+  | "failed"
+  | "retrying"
+  | "dead"
+  | "deadLettered"
+  | "debounced"
+  | "throttled";
+
+/**
+ * The same job events, qualified by the job's name.
+ *
+ * `queue.on("completed:sendEmail", ...)` fires only for jobs named
+ * `sendEmail`, with exactly the arguments `completed` takes. A consumer that
+ * runs twenty kinds of job through one queue would otherwise filter by name in
+ * every listener, which is both noisier and slower — every listener runs for
+ * every job.
+ *
+ * The unqualified event still fires as well, so a listener that wants all of
+ * them is unaffected.
+ */
+export type JobScopedEvents<TEvents, TName extends string = string> = {
+  [Event in keyof TEvents &
+    JobScopedEvent as `${Event}:${TName}`]: TEvents[Event];
+};
 
 /** Events a {@link BunQueue} emits. */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunQueueEvents<TData = unknown, TResult = unknown> = {
+type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
   /** A job was added. */
   added: (job: Job<TData, TResult>) => void;
   /** An `add()` matched an existing id, so nothing was added. */
@@ -192,8 +447,16 @@ export type BunQueueEvents<TData = unknown, TResult = unknown> = {
   retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
   /** A job exhausted its attempts, or failed unrecoverably. */
   dead: (job: Job<TData, TResult>, error: Error) => void;
-  /** A job was recovered from a worker that died holding it. */
-  stalled: (jobId: string) => void;
+  /**
+   * Jobs were recovered from workers that died holding them.
+   *
+   * A batch, matching `BunQueueWorkerEvents.stalled` and the wire. It used to
+   * be `(jobId: string)` here and `(ids: string[])` there, for one event that
+   * only ever has one source — so a listener saw a different shape depending
+   * on which object it attached to, and the cross-process path could not have
+   * satisfied both.
+   */
+  stalled: (ids: string[]) => void;
   /** A job was removed. */
   removed: (jobId: string) => void;
   /** A job was made claimable early. */
@@ -206,15 +469,34 @@ export type BunQueueEvents<TData = unknown, TResult = unknown> = {
   drained: (count: number) => void;
   /** Finished jobs were removed. */
   cleaned: (ids: string[], state: JobState) => void;
+  /** Finished jobs were returned to the queue together, by `retryJobs` or `retryAll`. */
+  retried: (ids: string[]) => void;
+  /**
+   * An add found a pending job with the same debounce id, replaced its data
+   * and pushed its run time back, rather than adding another.
+   */
+  debounced: (job: Job<TData, TResult>) => void;
+  /** An add fell inside a throttle window; `job` is the one that opened it. */
+  throttled: (job: Job<TData, TResult>) => void;
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: (key: string, nextRunAt: number) => void;
   /** Something failed outside a job. */
   error: (error: Error, context: string) => void;
 };
 
+/**
+ * Everything a {@link BunQueue} emits: each event, and the same
+ * events qualified by a job's name.
+ */
+export type BunQueueEvents<
+  TData = unknown,
+  TResult = unknown,
+> = BunQueueBaseEvents<TData, TResult> &
+  JobScopedEvents<BunQueueBaseEvents<TData, TResult>>;
+
 /** Events a {@link BunQueueWorker} emits. */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunQueueWorkerEvents<TData = unknown, TResult = unknown> = {
+type BunQueueWorkerBaseEvents<TData = unknown, TResult = unknown> = {
   /** The worker connected and started consuming. */
   ready: () => void;
   /** A job was claimed. */
@@ -229,6 +511,11 @@ export type BunQueueWorkerEvents<TData = unknown, TResult = unknown> = {
   retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
   /** A job exhausted its attempts. */
   dead: (job: Job<TData, TResult>, error: Error) => void;
+  /** A dead job was copied to its dead-letter queue, as `letter`. */
+  deadLettered: (
+    job: Job<TData, TResult>,
+    letter: Job<DeadLetter<TData>, unknown>,
+  ) => void;
   /** Jobs were recovered from workers that died holding them. */
   stalled: (ids: string[]) => void;
   /** A job's lock was lost mid-attempt. */
@@ -246,6 +533,16 @@ export type BunQueueWorkerEvents<TData = unknown, TResult = unknown> = {
   /** Something failed outside a job. */
   error: (error: Error, context: string) => void;
 };
+
+/**
+ * Everything a {@link BunQueueWorker} emits: each event, and the same
+ * events qualified by a job's name.
+ */
+export type BunQueueWorkerEvents<
+  TData = unknown,
+  TResult = unknown,
+> = BunQueueWorkerBaseEvents<TData, TResult> &
+  JobScopedEvents<BunQueueWorkerBaseEvents<TData, TResult>>;
 
 /** A repeat definition as reported by `listRepeatables()`. */
 export type Repeatable = RepeatRecord;

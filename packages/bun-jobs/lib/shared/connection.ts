@@ -35,6 +35,23 @@ export interface ConnectionOptions {
   params?: Record<string, string | number | boolean>;
   /** Additional hosts, for a replica set or a cluster. */
   hosts?: { host: string; port?: number }[];
+  /**
+   * Let the client fetch the server's RSA public key, so it can send a
+   * password over a connection without TLS. MySQL and MariaDB only; ignored by
+   * every other backend. Defaults to false.
+   *
+   * MySQL 8's `caching_sha2_password` (the default since 8.0, and the only
+   * choice in 8.4) will not accept a password in the clear, so without TLS the
+   * client must encrypt it with a key the server sends. Nothing authenticates
+   * that key: someone able to intercept the connection can substitute their
+   * own and read the password. Fine for a trusted local connection or a test
+   * server; in production, prefer TLS (`tls: true`), which needs none of this.
+   *
+   * The URL form is the query parameter `allowPublicKeyRetrieval=true`. A plain
+   * boolean, so it survives the `JSON.stringify` a spawned child's driver
+   * config goes through.
+   */
+  allowPublicKeyRetrieval?: boolean;
 }
 
 /** What a backend needs in order to build a URL from fields. */
@@ -128,6 +145,64 @@ export function resolveConnectionUrl(
   throw new ConfigError(`${what} needs either a url or a connection object`, {
     what,
   });
+}
+
+/**
+ * Takes a boolean query parameter out of a connection URL.
+ *
+ * Returns the URL without it, and its value: `true` for `true`/`1`/`yes`,
+ * `false` for `false`/`0`/`no`, `undefined` when absent. For a parameter the
+ * driver understands and the client does not — the client would ignore it, so
+ * a URL carrying it would connect as though it were not there. Every other
+ * parameter, `sslmode` and `tls` included, is left exactly as written. The
+ * query is edited as text, so the rest of the URL (a password with escapes, a
+ * host list) is never reparsed or re-encoded.
+ */
+export function takeBooleanParam(
+  url: string,
+  name: string,
+): { url: string; value: boolean | undefined } {
+  const at = url.indexOf("?");
+  if (at < 0) {
+    return { url, value: undefined };
+  }
+
+  const hashAt = url.indexOf("#", at);
+  const query = url.slice(at + 1, hashAt < 0 ? undefined : hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+
+  let value: boolean | undefined;
+  const kept: string[] = [];
+
+  for (const pair of query.split("&")) {
+    const eq = pair.indexOf("=");
+    const key = decodeURIComponent(eq < 0 ? pair : pair.slice(0, eq));
+
+    if (key !== name) {
+      if (pair !== "") {
+        kept.push(pair);
+      }
+      continue;
+    }
+
+    const raw = decodeURIComponent(eq < 0 ? "" : pair.slice(eq + 1))
+      .trim()
+      .toLowerCase();
+
+    if (["true", "1", "yes"].includes(raw)) {
+      value = true;
+    } else if (["false", "0", "no"].includes(raw)) {
+      value = false;
+    } else {
+      throw new ConfigError(
+        `The connection URL's ${name} parameter must be true or false`,
+        { parameter: name, value: raw },
+      );
+    }
+  }
+
+  const rest = kept.length > 0 ? `?${kept.join("&")}` : "";
+  return { url: `${url.slice(0, at)}${rest}${hash}`, value };
 }
 
 /** The database named in a URL's path, when it has one. */

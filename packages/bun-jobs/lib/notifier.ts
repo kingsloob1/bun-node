@@ -1,0 +1,316 @@
+import type { DriverEvent, JobsDriver } from "./drivers/index";
+import type { EventKind } from "./shared/events";
+import { TypedEmitterBase } from "./shared/emitter";
+import { assertNamespace, assertSegment } from "./shared/keys";
+
+/**
+ * One stream of every event in a namespace: each queue's and each runner's,
+ * from whichever process published it.
+ *
+ * A driver's `subscribe` listens to one queue or one runner at a time, which
+ * is what a `BunQueue` needs and nothing like what a dashboard needs. This
+ * subscribes to all of them — or the ones named — and keeps looking, so a
+ * queue first used after the notifier started is picked up within
+ * `discoveryInterval`. Events arrive typed as the driver delivers them: a
+ * `switch` on `event.kind`, then `event.type`, narrows the payload.
+ *
+ * It hears only what is published. Producers, workers and runners publish
+ * when asked to (`publish: true`, or `publishEvents` on their `BunJobs`).
+ *
+ * **Discovery has a gap, by nature.** A queue another process starts using is
+ * found on the next discovery pass, and anything it published before then is
+ * not heard. To be sure of every event from the start, name the queues and
+ * runners (`queues: ["mail"]`) or `follow()` them before they are used — a
+ * subscription does not need the queue to exist yet. Queues, workers and
+ * runners created by the same `BunJobs` as the notifier are followed the
+ * moment they are created, so they have no gap.
+ */
+
+/** Which queues and runners to listen to, and how. */
+export interface JobsNotifierOptions {
+  /** `"all"` (the default) follows every queue in the namespace; a list, just those. */
+  queues?: "all" | string[];
+  /** `"all"` (the default) follows every runner in the namespace; a list, just those. */
+  runners?: "all" | string[];
+  /**
+   * How often to look for queues and runners that appeared since the last
+   * look, in milliseconds. Defaults to `2000`. Only meaningful with `"all"`.
+   */
+  discoveryInterval?: number;
+  /**
+   * How many events an async iterator holds for a consumer that has fallen
+   * behind before it drops the oldest. Defaults to `10000`; `dropped` counts
+   * what was lost.
+   */
+  bufferSize?: number;
+}
+
+/** What a {@link JobsNotifier} emits. */
+// eslint-disable-next-line ts/consistent-type-definitions
+export type JobsNotifierEvents = {
+  /** An event, from any queue or runner being followed. */
+  event: (event: DriverEvent) => void;
+  /** A queue or runner started being followed. */
+  subscribed: (kind: EventKind, target: string) => void;
+  /** Something failed while subscribing or discovering. */
+  error: (error: Error, context: string) => void;
+};
+
+/** A reply waiting for the next event. */
+type Waiter = (result: IteratorResult<DriverEvent>) => void;
+
+export class JobsNotifier
+  extends TypedEmitterBase<JobsNotifierEvents>
+  implements AsyncIterable<DriverEvent>
+{
+  /** The namespace being followed. */
+  readonly namespace: string;
+  /** How many buffered events were dropped because a consumer fell behind. */
+  dropped = 0;
+
+  /** The driver events come from. */
+  readonly #driver: JobsDriver;
+  /** Which queues to follow. */
+  readonly #queues: "all" | string[];
+  /** Which runners to follow. */
+  readonly #runners: "all" | string[];
+  /** How often to discover new queues and runners. */
+  readonly #discoveryInterval: number;
+  /** The most events an iterator buffers. */
+  readonly #bufferSize: number;
+  /** Unsubscribe functions, by `<kind>:<target>`. */
+  readonly #subscriptions = new Map<string, () => Promise<void>>();
+  /** Events waiting for an iterator to take them. */
+  readonly #buffer: DriverEvent[] = [];
+  /** Iterators waiting for an event. */
+  readonly #waiters: Waiter[] = [];
+  /** How many iterators are open; events are buffered only while one is. */
+  #iterators = 0;
+  /** The discovery timer. */
+  #timer: ReturnType<typeof setInterval> | undefined;
+  /** Whether `close()` has been called. */
+  #closed = false;
+
+  constructor(
+    /** The driver to subscribe through. */
+    driver: JobsDriver,
+    /** The namespace to follow. */
+    namespace: string,
+    /** Which queues and runners, and how. */
+    options: JobsNotifierOptions = {},
+  ) {
+    super();
+    this.#driver = driver;
+    this.namespace = assertNamespace(namespace);
+    this.#queues = validateTargets(options.queues ?? "all", "queue name");
+    this.#runners = validateTargets(options.runners ?? "all", "runner id");
+    this.#discoveryInterval = Math.max(10, options.discoveryInterval ?? 2_000);
+    this.#bufferSize = Math.max(1, options.bufferSize ?? 10_000);
+  }
+
+  /** The queues and runners currently followed, as `<kind>:<target>`. */
+  get following(): string[] {
+    return [...this.#subscriptions.keys()].sort();
+  }
+
+  /**
+   * Subscribes to everything that matches now, and starts looking for what
+   * appears later. Resolves once the first round of subscriptions is in place.
+   */
+  async start(): Promise<void> {
+    await this.#driver.connect();
+    await this.#discover();
+
+    if (
+      !this.#closed &&
+      !this.#timer &&
+      (this.#queues === "all" || this.#runners === "all")
+    ) {
+      this.#timer = setInterval(() => {
+        void this.#discover().catch((error: unknown) => {
+          this.#emitError(error, "discover");
+        });
+      }, this.#discoveryInterval);
+      this.#timer.unref?.();
+    }
+  }
+
+  /** Stops listening, and ends any iterator waiting for an event. */
+  async close(): Promise<void> {
+    if (this.#closed) {
+      return;
+    }
+
+    this.#closed = true;
+    clearInterval(this.#timer);
+    this.#timer = undefined;
+
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter({ value: undefined, done: true });
+    }
+
+    const unsubscribes = [...this.#subscriptions.values()];
+    this.#subscriptions.clear();
+    await Promise.allSettled(unsubscribes.map((unsubscribe) => unsubscribe()));
+  }
+
+  /**
+   * Events as an async iterator, from the moment it is opened.
+   *
+   * A consumer slower than the events buffers up to `bufferSize` of them, then
+   * loses the oldest; `dropped` says how many. Several iterators open at once
+   * share one buffer, so each event reaches one of them — iterate once, and
+   * fan out from there.
+   */
+  [Symbol.asyncIterator](): AsyncIterator<DriverEvent> {
+    this.#iterators++;
+    let finished = false;
+
+    const finish = (): IteratorResult<DriverEvent> => {
+      if (!finished) {
+        finished = true;
+        this.#iterators--;
+      }
+      return { value: undefined, done: true };
+    };
+
+    return {
+      next: async () => {
+        if (finished) {
+          return { value: undefined, done: true };
+        }
+
+        const buffered = this.#buffer.shift();
+        if (buffered) {
+          return { value: buffered, done: false };
+        }
+
+        if (this.#closed) {
+          return finish();
+        }
+
+        return await new Promise<IteratorResult<DriverEvent>>((resolve) => {
+          this.#waiters.push((result) => {
+            resolve(result.done ? finish() : result);
+          });
+        });
+      },
+      return: async () => finish(),
+    };
+  }
+
+  /** Subscribes to every queue and runner that matches and is not yet followed. */
+  async #discover(): Promise<void> {
+    if (this.#closed) {
+      return;
+    }
+
+    const [queues, runners] = await Promise.all([
+      this.#queues === "all"
+        ? this.#driver.listQueues(this.namespace)
+        : this.#queues,
+      this.#runners === "all"
+        ? this.#driver.listRunners(this.namespace)
+        : this.#runners,
+    ]);
+
+    await Promise.all([
+      ...queues.map(async (queue) => await this.#follow("queue", queue)),
+      ...runners.map(async (runner) => await this.#follow("runner", runner)),
+    ]);
+  }
+
+  /** Whether this notifier is meant to follow a queue or runner by that name. */
+  wants(kind: EventKind, target: string): boolean {
+    const targets = kind === "queue" ? this.#queues : this.#runners;
+    return targets === "all" || targets.includes(target);
+  }
+
+  /**
+   * Starts following one queue or runner now, whether or not it exists yet —
+   * so nothing it publishes from its first use is missed. Following something
+   * already followed does nothing.
+   */
+  async follow(kind: EventKind, target: string): Promise<void> {
+    await this.#follow(
+      kind,
+      assertSegment(target, kind === "queue" ? "queue name" : "runner id"),
+    );
+  }
+
+  /** Subscribes to one queue or runner, once. */
+  async #follow(kind: EventKind, target: string): Promise<void> {
+    const key = `${kind}:${target}`;
+
+    if (this.#closed || this.#subscriptions.has(key)) {
+      return;
+    }
+
+    // Claimed before the await, so two discovery passes overlapping cannot
+    // both subscribe and deliver every event twice.
+    this.#subscriptions.set(key, async () => {});
+
+    try {
+      const unsubscribe = await this.#driver.subscribe(
+        this.namespace,
+        kind,
+        target,
+        (event) => this.#deliver(event),
+      );
+
+      if (this.#closed) {
+        await unsubscribe();
+        return;
+      }
+
+      this.#subscriptions.set(key, unsubscribe);
+      this.safeEmit("subscribed", kind, target);
+    } catch (error) {
+      this.#subscriptions.delete(key);
+      this.#emitError(error, `subscribe ${key}`);
+    }
+  }
+
+  /** Hands an event to listeners, and to an iterator if one is open. */
+  #deliver(event: DriverEvent): void {
+    if (this.#closed) {
+      return;
+    }
+
+    this.safeEmit("event", event);
+
+    if (this.#iterators === 0) {
+      return;
+    }
+
+    const waiter = this.#waiters.shift();
+
+    if (waiter) {
+      waiter({ value: event, done: false });
+      return;
+    }
+
+    this.#buffer.push(event);
+
+    if (this.#buffer.length > this.#bufferSize) {
+      this.#buffer.shift();
+      this.dropped++;
+    }
+  }
+
+  /** Reports a failure, which must not stop the stream. */
+  #emitError(error: unknown, context: string): void {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    this.safeEmit("error", failure, context);
+  }
+}
+
+/** A target list, validated, or `"all"`. */
+function validateTargets(
+  targets: "all" | string[],
+  what: string,
+): "all" | string[] {
+  return targets === "all"
+    ? "all"
+    : targets.map((target) => assertSegment(target, what));
+}

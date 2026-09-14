@@ -8,23 +8,29 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
   RunRecord,
 } from "../driver";
-import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { Buffer } from "node:buffer";
+import { jsonClone } from "@kingsleyweb/bun-common";
 import { RedisClient as BunRedis } from "bun";
 import { resolveConnectionUrl } from "../../shared/connection";
 import { DriverError } from "../../shared/errors";
 import { safeJsonParse } from "../../shared/json";
+import { waitForAny } from "../../shared/wait";
 import { RedisKeys } from "./keys";
 import * as scripts from "./scripts";
 
@@ -67,6 +73,19 @@ function firstScore(reply: unknown): number | null {
 const MAX_BLOCK_SECONDS = 5;
 
 /**
+ * How many jobs go into one add script.
+ *
+ * A script takes its arguments as one flat list, and each job contributes its
+ * values, so a large chunk is both a large packet and a long stretch of Redis's
+ * single thread — during which every other client waits. Measured across chunk
+ * sizes for 5,000 jobs, the curve is shallow and flattens here: 60.6ms at 100,
+ * 57.5ms at 200, 55.4ms at 500, 55.7ms at 1,000, 57.2ms at 2,500. 500 also
+ * happens to be the batch size a caller adding in pages tends to reach for, so
+ * a page becomes one round trip rather than three.
+ */
+const ADD_CHUNK = 500;
+
+/**
  * Job fields stored as JSON rather than as scalars.
  *
  * A hash keeps the scalars the scripts compare on — state, priority, runAt,
@@ -98,7 +117,13 @@ export interface RedisDriverOptions extends ConnectionInput {
    * per runner, because a script may only touch one slot.
    */
   cluster?: boolean;
-  /** An already-connected client, when the application has one to share. */
+  /**
+   * An already-connected client, when the application has one to share. It
+   * carries commands and scripts only; `url` is still required, because
+   * blocking waits and pub/sub each need a connection of their own, and the
+   * driver opens those from it. Without `url` the constructor throws a
+   * `ConfigError`.
+   */
   client?: RedisClient;
   /** How long a blocking wait lasts, at most. Defaults to 5 seconds. */
   maxBlockSeconds?: number;
@@ -341,6 +366,10 @@ export class RedisDriver implements JobsDriver {
       }
     }
 
+    // A runner exists once it has written state — on `start()`, whether or
+    // not it ever takes a lock, as a parallel-mode runner never does.
+    await this.#client.sadd(this.keys.runners(ns), this.#runnerId(key));
+
     if (set.length > 0) {
       await this.#client.send("HSET", [stateKey, ...set]);
     }
@@ -498,13 +527,12 @@ export class RedisDriver implements JobsDriver {
   ): Promise<{ job: JobRecord; added: boolean }> {
     await this.connect();
 
+    const values = this.#toValues(job);
     const added = await this.#runQueue(q, scripts.ADD_JOB, [
-      job.id,
-      String(job.runAt),
-      String(job.priority),
-      String(Date.now()),
-      ...this.#toFields(job),
       q.queue,
+      String(Date.now()),
+      String(values.length),
+      ...values,
     ]);
 
     if (Number(added) === 1) {
@@ -515,14 +543,58 @@ export class RedisDriver implements JobsDriver {
     return { job: existing ?? jsonClone(job), added: false };
   }
 
+  /**
+   * Adds many jobs with one script per chunk.
+   *
+   * The loop this replaces cost a round trip per job. Chunked because a script
+   * takes its arguments as one flat list, and a very long one is both a large
+   * packet and a long stretch of Redis's single thread.
+   */
   async addJobs(
     q: QueueRef,
     jobs: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
+    if (jobs.length === 0) {
+      return [];
     }
+
+    // One job is not a batch, and the singular path already reports precisely
+    // what happened to it.
+    if (jobs.length === 1) {
+      return [await this.addJob(q, jobs[0]!)];
+    }
+
+    await this.connect();
+
+    const results: { job: JobRecord; added: boolean }[] = [];
+
+    for (let start = 0; start < jobs.length; start += ADD_CHUNK) {
+      const chunk = jobs.slice(start, start + ADD_CHUNK);
+      const args = [q.queue, String(Date.now()), String(chunk.length)];
+
+      // Each job contributes a count and then that many values, in
+      // `JOB_FIELDS` order. The count is how a brand-new job says it stopped
+      // early; the script reads id, state, priority and runAt from fixed
+      // positions within the values, so nothing else needs sending.
+      for (const job of chunk) {
+        const values = this.#toValues(job);
+        args.push(String(values.length), ...values);
+      }
+
+      const reply = await this.#runQueue(q, scripts.ADD_JOBS, args);
+      const flags = Array.isArray(reply) ? reply : [];
+
+      for (const [index, job] of chunk.entries()) {
+        const added = Number(flags[index] ?? 0) === 1;
+        results.push({
+          job: added
+            ? jsonClone(job)
+            : ((await this.getJob(q, job.id)) ?? jsonClone(job)),
+          added,
+        });
+      }
+    }
+
     return results;
   }
 
@@ -535,10 +607,57 @@ export class RedisDriver implements JobsDriver {
       opts.workerId,
       String(opts.lockMs),
       "1000",
+      // Last, because they are variadic. None at all is how the script knows
+      // to take the plain head read.
+      ...(opts.excludeNames ?? []),
     ]);
 
     const fields = this.#toObject(claimed);
     return fields ? this.#toRecord(fields) : null;
+  }
+
+  /**
+   * Claims several jobs in one script.
+   *
+   * The script is the unit of atomicity, so a batch is exactly as exclusive as
+   * a single claim. The reply is one `HGETALL` per job rather than a joined
+   * string, because job data is arbitrary JSON and any separator would show up
+   * inside it sooner or later.
+   */
+  async claimJobs(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    await this.connect();
+
+    const claimed = await this.#runQueue(q, scripts.CLAIM_MANY, [
+      String(opts.now),
+      opts.token,
+      opts.workerId,
+      String(opts.lockMs),
+      "1000",
+      String(Math.max(1, Math.floor(limit))),
+      // Last, because they are variadic. None at all is how the script knows
+      // to take the plain head read.
+      ...(opts.excludeNames ?? []),
+    ]);
+
+    if (!Array.isArray(claimed)) {
+      return [];
+    }
+
+    // `ZRANGE` yielded these in score order and the script preserved it, so
+    // claim order needs no restoring here.
+    const records: JobRecord[] = [];
+    for (const entry of claimed) {
+      const fields = this.#toObject(entry);
+      if (fields) {
+        records.push(this.#toRecord(fields));
+      }
+    }
+
+    return records;
   }
 
   async extendJobLock(
@@ -638,6 +757,90 @@ export class RedisDriver implements JobsDriver {
 
     await this.#client.hset(key, "progress", JSON.stringify(progress ?? null));
     return true;
+  }
+
+  /**
+   * Changes a job's data, priority or due time in one script.
+   *
+   * Everything the script cannot know without a clock is settled here first:
+   * the state a new `runAt` leads to, and which states the patch allows. An
+   * empty allowed set can match nothing, so it costs no round trip at all.
+   */
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    const pending: JobState[] = ["waiting", "delayed"];
+    let allowed: JobState[] | undefined = patch.onlyIn;
+
+    // Only a pending job has a due time to move.
+    if (patch.runAt !== undefined) {
+      allowed = (allowed ?? pending).filter((state) => pending.includes(state));
+    }
+
+    if (allowed && allowed.length === 0) {
+      return null;
+    }
+
+    await this.connect();
+
+    const reply = await this.#runQueue(q, scripts.UPDATE_JOB, [
+      id,
+      patch.data === undefined ? "0" : "1",
+      patch.data === undefined ? "" : JSON.stringify(patch.data),
+      patch.priority === undefined ? "0" : "1",
+      patch.priority === undefined ? "" : String(patch.priority),
+      patch.runAt === undefined ? "0" : "1",
+      patch.runAt === undefined ? "" : String(patch.runAt),
+      patch.runAt !== undefined && patch.runAt > now ? "delayed" : "waiting",
+      ...(allowed ?? []),
+    ]);
+
+    const fields = this.#toObject(reply);
+    return fields ? this.#toRecord(fields) : null;
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    await this.connect();
+    const keys = this.keys.queue(q);
+
+    const count = await this.#run(
+      scripts.ADD_JOB_LOG,
+      [`${keys.jobPrefix}${id}`, `${keys.logPrefix}${id}`],
+      [line, String(Math.max(0, Math.floor(keep)))],
+    );
+
+    return Number(count ?? 0);
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    await this.connect();
+
+    const reply = await this.#run(
+      scripts.GET_JOB_LOGS,
+      [`${this.keys.queue(q).logPrefix}${id}`],
+      [
+        String(Math.max(0, Math.floor(opts.offset))),
+        String(Math.max(0, Math.floor(opts.limit))),
+        opts.order,
+      ],
+    );
+
+    // The count leads, and the lines follow in the order asked for. They are
+    // bulk strings, so they arrive exactly as they were pushed.
+    const [count, ...lines] = Array.isArray(reply) ? reply : [0];
+    return { logs: lines.map(String), count: Number(count ?? 0) };
   }
 
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
@@ -805,6 +1008,106 @@ export class RedisDriver implements JobsDriver {
     return Number(removed ?? 0);
   }
 
+  /* --- queue: state ----------------------------------------------------- */
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    await this.connect();
+
+    // One read for both fields, so the value and its version always match.
+    const [version, value] = await this.#client.hmget(
+      `${this.keys.queue(q).statePrefix}${name}`,
+      ["version", "value"],
+    );
+
+    return version === null || version === undefined
+      ? null
+      : {
+          value: safeJsonParse<unknown>(value ?? undefined, null),
+          version: Number(version),
+        };
+  }
+
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    await this.connect();
+
+    const keys = this.keys.queue(q);
+    const version = await this.#run(
+      scripts.SET_QUEUE_STATE,
+      [`${keys.statePrefix}${name}`, keys.stateNames],
+      [
+        expected === null ? "" : String(expected),
+        value === null ? "1" : "0",
+        value === null ? "" : (JSON.stringify(value) ?? "null"),
+        name,
+      ],
+    );
+
+    return version === null || version === undefined ? null : Number(version);
+  }
+
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const limit = Math.floor(options.limit);
+
+    // Redis reads a negative LIMIT count as "no limit", so answer here.
+    if (!(limit > 0)) {
+      return [];
+    }
+
+    await this.connect();
+
+    const { prefix, after } = options;
+
+    // Start at whichever is later: just past `after`, or the prefix itself.
+    // An `after` that sorts below the prefix would otherwise start the range
+    // among names that do not match, and the cut below would stop at once.
+    // Compared as bytes, because that is how BYLEX compares.
+    const start =
+      after !== undefined &&
+      Buffer.compare(Buffer.from(after), Buffer.from(prefix)) >= 0
+        ? `(${after}`
+        : `[${prefix}`;
+
+    // Every member has score 0, so BYLEX orders them by their UTF-8 bytes.
+    // For ASCII — and any names without characters above U+FFFF — that is the
+    // JavaScript code-unit order the contract sorts by. Names mixing
+    // characters above U+FFFF with ones in U+E000–U+FFFF can order
+    // differently: UTF-16 puts the surrogate pair first, UTF-8 puts it last.
+    const members = (await this.#client.send("ZRANGE", [
+      this.keys.queue(q).stateNames,
+      start,
+      "+",
+      "BYLEX",
+      "LIMIT",
+      "0",
+      String(limit),
+    ])) as string[] | null;
+
+    // Names sharing a prefix are contiguous from the start, so the first one
+    // that does not begin with it ends the matches. Cutting after LIMIT still
+    // honours `limit`: every match is ahead of every non-match in the page.
+    const names: string[] = [];
+
+    for (const member of members ?? []) {
+      if (!member.startsWith(prefix)) {
+        break;
+      }
+      names.push(member);
+    }
+
+    return names;
+  }
+
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.connect();
     await this.#client.hset(this.keys.queue(q).meta, "paused", "1");
@@ -904,10 +1207,16 @@ export class RedisDriver implements JobsDriver {
 
     // The signal cannot interrupt a blocking call, so the wait is bounded by
     // the timeout the caller asked for and checked again on the way out.
-    await Promise.race([
-      blocking.blpop(this.keys.queue(q).wake, seconds).catch(() => null),
-      sleep(timeoutMs, { signal, unref: true }).catch(() => null),
-    ]);
+    //
+    // The caller's signal outlives this wait — a worker passes the same one to
+    // every wait it makes — so nothing may be left listening on it when the
+    // pop wins, which on a busy queue is every job. See `waitForAny`.
+    await waitForAny(timeoutMs, {
+      signal,
+      others: [
+        blocking.blpop(this.keys.queue(q).wake, seconds).catch(() => null),
+      ],
+    });
   }
 
   async publish(event: DriverEvent): Promise<void> {
@@ -919,12 +1228,17 @@ export class RedisDriver implements JobsDriver {
     );
   }
 
-  async subscribe(
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     await this.connect();
 
     const channel = this.keys.channel(ns, kind, target);
@@ -949,11 +1263,11 @@ export class RedisDriver implements JobsDriver {
       });
     }
 
-    listeners.add(listener);
+    listeners.add(deliver);
 
     return async () => {
       const current = this.#channels.get(channel);
-      current?.delete(listener);
+      current?.delete(deliver);
 
       if (current && current.size === 0) {
         this.#channels.delete(channel);
@@ -1065,35 +1379,91 @@ export class RedisDriver implements JobsDriver {
     return { mode: "keep", count: "0", ttl: "0" };
   }
 
-  /** A job record as the flat field list `HSET` takes. */
-  #toFields(job: JobRecord): string[] {
-    const scalars: Record<string, string> = {
-      id: job.id,
-      name: job.name,
-      state: job.state,
-      priority: String(job.priority),
-      runAt: String(job.runAt),
-      createdAt: String(job.createdAt),
-      processedOn: job.processedOn === null ? "" : String(job.processedOn),
-      finishedOn: job.finishedOn === null ? "" : String(job.finishedOn),
-      expiresAt: job.expiresAt === null ? "" : String(job.expiresAt),
-      attemptsMade: String(job.attemptsMade),
-      maxAttempts: String(job.maxAttempts),
-      stalledCount: String(job.stalledCount),
-      lockToken: job.lockToken ?? "",
-      lockExpiresAt:
-        job.lockExpiresAt === null ? "" : String(job.lockExpiresAt),
-      workerId: job.workerId ?? "",
-      repeatKey: job.repeatKey ?? "",
-      data: JSON.stringify(job.data ?? null),
-      opts: JSON.stringify(job.opts),
-      progress: JSON.stringify(job.progress ?? null),
-      returnValue: JSON.stringify(job.returnValue ?? null),
-      failedReason: JSON.stringify(job.failedReason ?? null),
-      stacktrace: JSON.stringify(job.stacktrace ?? []),
-    };
+  /**
+   * A job record as the values the add scripts take, in `JOB_FIELDS` order.
+   *
+   * Values only — the field names live in the script as a constant table, so
+   * they are interned once when it is cached rather than once per job. That
+   * halves the ARGV entries, and every entry is a string the Lua VM has to
+   * intern on the way in: 10 for a fresh job where the name/value shape sent
+   * 22.
+   *
+   * Written out in order rather than built and filtered. The obvious shape —
+   * all twenty-two, then drop the ones a fresh job does not need — costs four
+   * `JSON.stringify` calls whose results are discarded, a `Set` allocated per
+   * job, and three more arrays from `entries`/`filter`/`flat`. Measured against
+   * bee-queue's single `toData()`, that was 4.50µs a job to its 0.26µs, all of
+   * it on the enqueue critical path.
+   */
+  #toValues(job: JobRecord): string[] {
+    // The first FRESH_JOB_FIELD_COUNT of JOB_FIELDS, in that order. `blob`
+    // carries the four fields no script ever touches, in one value — see
+    // `JOB_FIELDS`. It is also one `JSON.stringify` where `data` and `opts`
+    // were two.
+    const values: string[] = [
+      job.id,
+      job.state,
+      String(job.priority),
+      String(job.runAt),
+      String(job.createdAt),
+      JSON.stringify({
+        name: job.name,
+        maxAttempts: job.maxAttempts,
+        data: job.data ?? null,
+        opts: job.opts,
+      }),
+    ];
 
-    return Object.entries(scalars).flat();
+    // Only `addJob` and `addJobs` call this, both writing a hash that does not
+    // exist yet, so stopping here simply leaves the rest absent — and the
+    // reader treats absent and default alike. For a brand-new job that is
+    // every remaining field: each an empty string, a "null" or a zero.
+    if (this.#isFreshJob(job)) {
+      return values;
+    }
+
+    // The rest of JOB_FIELDS, in that order.
+    values.push(
+      job.processedOn === null ? "" : String(job.processedOn),
+      job.finishedOn === null ? "" : String(job.finishedOn),
+      job.expiresAt === null ? "" : String(job.expiresAt),
+      String(job.attemptsMade),
+      String(job.stalledCount),
+      job.lockToken ?? "",
+      job.lockExpiresAt === null ? "" : String(job.lockExpiresAt),
+      job.workerId ?? "",
+      job.repeatKey ?? "",
+      JSON.stringify(job.progress ?? null),
+      JSON.stringify(job.returnValue ?? null),
+      JSON.stringify(job.failedReason ?? null),
+      JSON.stringify(job.stacktrace ?? []),
+    );
+
+    return values;
+  }
+
+  /**
+   * Whether a record carries nothing beyond what a brand-new job carries.
+   *
+   * `maxAttempts` is deliberately not omittable: an absent numeric field reads
+   * back as zero, and zero is not this one's default.
+   */
+  #isFreshJob(job: JobRecord): boolean {
+    return (
+      job.processedOn === null &&
+      job.finishedOn === null &&
+      job.expiresAt === null &&
+      job.lockToken === null &&
+      job.lockExpiresAt === null &&
+      job.workerId === null &&
+      job.repeatKey === null &&
+      job.attemptsMade === 0 &&
+      job.stalledCount === 0 &&
+      job.progress === null &&
+      job.returnValue === null &&
+      job.failedReason === null &&
+      (job.stacktrace?.length ?? 0) === 0
+    );
   }
 
   /** A flat `HGETALL` reply as an object, or `null` when the job is gone. */
@@ -1131,11 +1501,32 @@ export class RedisDriver implements JobsDriver {
     const json = <T>(name: JsonField, fallback: T): T =>
       safeJsonParse<T>(fields[name], fallback);
 
+    // `blob` holds `name`, `maxAttempts`, `data` and `opts` together. A record
+    // written before it existed has them as four separate fields instead, and
+    // both have to read back the same — nothing migrates a hash in place.
+    const blob = safeJsonParse<{
+      name?: string;
+      maxAttempts?: number;
+      data?: unknown;
+      opts?: ResolvedJobOptions;
+    }>(fields.blob, {});
+
+    // `updateJob` never rewrites the blob — see `UPDATE_JOB` — so a patched
+    // payload sits in `data` and a patched priority in `optsPriority`, and
+    // either wins over the blob's copy. A record from before the blob keeps
+    // its payload in `data` too, so one rule reads both shapes.
+    const opts =
+      blob.opts ?? json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions);
+    const optsPriority = nullable("optsPriority");
+
     return {
       id: fields.id,
-      name: fields.name,
-      data: json<unknown>("data", null),
-      opts: json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions),
+      name: blob.name ?? fields.name,
+      data:
+        fields.data !== undefined
+          ? json<unknown>("data", null)
+          : (blob.data ?? null),
+      opts: optsPriority === null ? opts : { ...opts, priority: optsPriority },
       state: fields.state as JobState,
       priority: number("priority"),
       runAt: number("runAt"),
@@ -1144,7 +1535,7 @@ export class RedisDriver implements JobsDriver {
       finishedOn: nullable("finishedOn"),
       expiresAt: nullable("expiresAt"),
       attemptsMade: number("attemptsMade"),
-      maxAttempts: number("maxAttempts"),
+      maxAttempts: blob.maxAttempts ?? number("maxAttempts"),
       stalledCount: number("stalledCount"),
       progress: json<unknown>("progress", null),
       returnValue: json<unknown>("returnValue", null),

@@ -1,0 +1,16 @@
+{
+  // `benchmarks/` is a separate, unpublished package with its own
+  // `package.json`, lockfile and `node_modules` — the third-party comparators
+  // (Express, Elysia, Hono, autocannon) resolve from here, never from the
+  // workspace, so none of them can reach a published package's dependency
+  // tree. It is outside every package's `include`, so until this config existed
+  // nothing type-checked it at all and two real errors had accumulated.
+  //
+  // `typeRoots` is local because the comparators' `@types/*` live here.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["./node_modules/@types", "../node_modules/@types"]
+  },
+  "include": ["./*.ts", "./pages/**/*.ts"],
+  "exclude": ["node_modules"]
+}

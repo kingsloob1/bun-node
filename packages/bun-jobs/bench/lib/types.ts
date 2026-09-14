@@ -13,6 +13,8 @@ export type Backend =
   | "sqlite"
   | "redis"
   | "postgres"
+  | "mysql"
+  | "mariadb"
   | "mongodb";
 
 /** What a contender is measured doing. */

@@ -31,6 +31,8 @@ export function createDriver(config: DriverConfig): JobsDriver {
         adapter: config.adapter,
         tablePrefix: config.tablePrefix,
         tables: config.tables,
+        notify: config.notify,
+        syncSchema: config.syncSchema,
       });
     case "mongodb":
       return new MongoDriver({
@@ -39,6 +41,7 @@ export function createDriver(config: DriverConfig): JobsDriver {
         database: config.database,
         collectionPrefix: config.collectionPrefix,
         collections: config.collections,
+        syncSchema: config.syncSchema,
       });
     case "redis":
       return new RedisDriver({

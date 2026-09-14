@@ -21,6 +21,15 @@ export const BACKEND_URLS: Record<Backend, string> = {
   postgres:
     process.env.BUN_JOBS_BENCH_POSTGRES_URL ??
     "postgres://bunjobs:bunjobs@127.0.0.1:5432/bun_jobs_bench",
+  // MySQL listens on 3307 so it can sit beside a MariaDB on 3306; the two
+  // server packages conflict. Its default authentication asks for the RSA key
+  // over a plain connection, which the URL has to allow.
+  mysql:
+    process.env.BUN_JOBS_BENCH_MYSQL_URL ??
+    "mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_jobs_bench?allowPublicKeyRetrieval=true",
+  mariadb:
+    process.env.BUN_JOBS_BENCH_MARIADB_URL ??
+    "mariadb://bunjobs:bunjobs@127.0.0.1:3306/bun_jobs_bench",
   mongodb:
     process.env.BUN_JOBS_BENCH_MONGODB_URL ??
     "mongodb://127.0.0.1:27017/bun_jobs_bench",
@@ -30,6 +39,8 @@ export const BACKEND_URLS: Record<Backend, string> = {
 export const BACKEND_ENV_VAR: Partial<Record<Backend, string>> = {
   redis: "BUN_JOBS_BENCH_REDIS_URL",
   postgres: "BUN_JOBS_BENCH_POSTGRES_URL",
+  mysql: "BUN_JOBS_BENCH_MYSQL_URL",
+  mariadb: "BUN_JOBS_BENCH_MARIADB_URL",
   mongodb: "BUN_JOBS_BENCH_MONGODB_URL",
 };
 
@@ -72,9 +83,20 @@ export async function backendAvailable(backend: Backend): Promise<boolean> {
       return true;
     }
 
-    if (backend === "postgres") {
+    if (
+      backend === "postgres" ||
+      backend === "mysql" ||
+      backend === "mariadb"
+    ) {
       const { SQL } = await import("bun");
-      const sql = new SQL(url, { max: 1, connectionTimeout: 2 });
+      // Bun reads the rest of the URL itself, but not this flag.
+      const allowPublicKeyRetrieval =
+        new URL(url).searchParams.get("allowPublicKeyRetrieval") === "true";
+      const sql = new SQL(url, {
+        max: 1,
+        connectionTimeout: 2,
+        ...(allowPublicKeyRetrieval ? { allowPublicKeyRetrieval } : {}),
+      });
       await sql.unsafe("select 1");
       await sql.close();
       return true;

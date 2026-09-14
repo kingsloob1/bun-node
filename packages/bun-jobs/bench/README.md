@@ -18,19 +18,27 @@ cd packages/bun-jobs/bench
 bun install
 ```
 
-Redis, Postgres and MongoDB are needed for the backends that use them. The
-repository's provisioning script brings all three up:
+Redis, Postgres, MySQL, MariaDB and MongoDB are needed for the backends that
+use them. The repository's provisioning script brings them up; the bench
+database is then created once per SQL server:
 
 ```bash
 bun ../../../scripts/setup-databases.ts --docker
 createdb bun_jobs_bench     # or: docker exec <pg> createdb -U bunjobs bun_jobs_bench
+
+# MySQL (container on 3307) and MariaDB (3306), as root
+docker exec -e MYSQL_PWD=<root password> bun-jobs-mysql mysql -uroot -e \
+  "CREATE DATABASE bun_jobs_bench; GRANT ALL ON bun_jobs_bench.* TO 'bunjobs'@'%'"
+docker exec -e MYSQL_PWD=<root password> bun-jobs-mariadb mariadb -uroot -e \
+  "CREATE DATABASE bun_jobs_bench; GRANT ALL ON bun_jobs_bench.* TO 'bunjobs'@'%'"
 ```
 
 The suites use their own databases — Redis database **14** and
-**`bun_jobs_bench`** on Postgres and MongoDB — so a long benchmark cannot
-disturb the test suite, and a test run cannot make a benchmark look slow.
-Override with `BUN_JOBS_BENCH_REDIS_URL`, `BUN_JOBS_BENCH_POSTGRES_URL` and
-`BUN_JOBS_BENCH_MONGODB_URL`.
+**`bun_jobs_bench`** on Postgres, MySQL, MariaDB and MongoDB — so a long
+benchmark cannot disturb the test suite, and a test run cannot make a benchmark
+look slow. Override with `BUN_JOBS_BENCH_REDIS_URL`,
+`BUN_JOBS_BENCH_POSTGRES_URL`, `BUN_JOBS_BENCH_MYSQL_URL`,
+`BUN_JOBS_BENCH_MARIADB_URL` and `BUN_JOBS_BENCH_MONGODB_URL`.
 
 Nothing is skipped silently: a backend that does not answer is named at the top
 of every run, with the environment variable that would point it elsewhere.
@@ -62,13 +70,15 @@ bun runner.ts -c bun-runner-spawn,bree -s cycle
 | `redis`      | **bun-jobs**, BullMQ, bee-queue, node-resque, Agenda            |
 | `postgres`   | **bun-jobs**, pg-boss, graphile-worker, Agenda                  |
 | `mongodb`    | **bun-jobs**, Agenda                                            |
+| `mysql`      | **bun-jobs**                                                    |
+| `mariadb`    | **bun-jobs**                                                    |
 | `sqlite`     | **bun-jobs**                                                    |
 | `file`       | **bun-jobs**                                                    |
 | `memory`     | **bun-jobs**                                                    |
 
 **Results are only ranked within a backend.** A Redis figure next to a Postgres
 figure measures the database, not the library, and a ranking across them would
-say nothing useful. The four backends only `bun-jobs` supports are reported for
+say nothing useful. The backends only `bun-jobs` supports here are reported for
 their own sake, not against anyone.
 
 Agenda 6 splits storage into separate packages, so it appears in three groups

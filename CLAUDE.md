@@ -36,13 +36,24 @@ bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
 bun-common.
 
-## Dev workflow (run in each affected package directory)
+## Dev workflow
 
 ```bash
-bunx tsc --noEmit          # typecheck — must be clean
-bunx eslint lib __tests__  # lint — must have 0 errors
+bun scripts/typecheck.ts   # every project in the repo — must be clean
+```
+
+Then, in each affected package directory:
+
+```bash
+bunx eslint .              # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
+
+**Lint the whole package, not `lib __tests__`.** That narrower scope was what
+the workflow said for a long time, and it had the same blind spot the
+`tsconfig` `include` did: it reported zero errors while `bunx eslint .` found
+thirteen, in READMEs, benchmark code and `package.json`. The editor lints
+everything, so the errors were visible there and nowhere else.
 
 bun-jobs' integration suites need database servers, and skip (visibly) when
 their URL is unset. `bun scripts/setup-databases.ts` provides them — system
@@ -51,41 +62,119 @@ first. It never reinstalls an existing server and configures one only when a
 connection with the expected credentials fails.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
-depend on bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
-noise — ignore it. There may be a couple of intentional `no-console` ESLint
-*warnings* (error logging in catch blocks with no logger in scope); warnings
-do not fail lint.
+depend on bun-common). The `eslint.config.mjs` `TS2742`/`TS2883` portability
+hint is pre-existing noise — `scripts/typecheck.ts` filters it. There may be a
+couple of intentional `no-console` ESLint *warnings* (error logging in catch
+blocks with no logger in scope); warnings do not fail lint.
 
 `packages/bun-jobs/bench/` is a **separate, unpublished package** with its own
 `package.json`, lockfile and `node_modules` (the same shape as the root
 `benchmarks/`, and excluded from the root `workspaces` list). It holds the
 third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
 graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
-published package's dependency tree. Neither `bunx tsc --noEmit` nor
-`bunx eslint lib __tests__` covers it; when you change it, run its own pass
-from the package directory:
-
-```bash
-bunx tsc --noEmit -p bench/tsconfig.json
-bunx eslint bench --ignore-pattern 'bench/node_modules/**'
-```
+published package's dependency tree. `scripts/typecheck.ts` and `bunx eslint .`
+both cover it.
 
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
 
-**Test files are not in `tsconfig`'s `include`** (`./lib/**/*` only), so
-`bunx tsc --noEmit` doesn't catch type errors in `__tests__/`. The IDE does,
-and an explicit pass does too — when you've changed test files, also run:
+## Typechecking
+
+**One base config, extended everywhere.** `tsconfig.base.json` at the repo
+root holds every compiler option; the nine `tsconfig.json`s below it add only
+`paths` and `include`. A file is therefore checked the same way wherever it is
+checked from.
 
 ```bash
-bunx tsc --noEmit --skipLibCheck --target ESNext --module ESNext \
-  --moduleResolution bundler --strict --allowImportingTsExtensions \
-  --types bun-types __tests__/*.ts
+bun scripts/typecheck.ts          # every project in the repo
+bun scripts/typecheck.ts --list   # just name them
 ```
 
-The single-file flags will surface unrelated errors in `lib/BunResponse.ts`
-(stream-type incompatibilities Bun papers over with its global types) —
-those are noise; only `__tests__/...` lines are signal.
+Run that rather than `bunx tsc --noEmit` in one package — the packages are not
+the only projects. There are also `packages/bun-common/bench`,
+`packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
+`benchmarks/`, each a nested project with its own config because it resolves
+third-party comparators from its own `node_modules`.
+
+This replaced an arrangement worth understanding, because it hid real bugs.
+Each package's `include` was `./lib/**/*` alone, so `tsc --noEmit` never saw
+`__tests__/` or `scripts/`; `benchmarks/` had no config at all; and the root
+`tsconfig.json` set *only* the decorator options while declaring no `include`,
+which meant it claimed every file in the repo. An IDE resolving a package file
+against that root project type-checked it with no `skipLibCheck`, no bundler
+resolution and no Bun types, and reported a cascade of errors in files the CLI
+called clean. Every documented command passed the whole time.
+
+Two known-noise codes are filtered by the script: `TS2742`/`TS2883` on the
+ESLint flat config's inferred default export, which cannot be named without a
+path into a pnpm-style store.
+
+## Benchmark regression guard
+
+Phase 1 moved most of these numbers a long way, and a regression does not fail
+a test — it just makes a figure smaller, and nobody reads a benchmark table
+carefully on a Tuesday. So the table is an assertion:
+
+```bash
+cd packages/bun-jobs/bench
+bun queue.ts --compare          # fails if anything regressed
+bun runner.ts --compare
+bun queue.ts --save-baseline    # re-record, after a deliberate change
+```
+
+`baselines/*.json` record what each scenario measured **and who led it**. The
+comparison fails on either a figure falling behind its own baseline or a rival
+overtaking us.
+
+**The overtaken check is the sharper of the two**, and the one the claim
+actually rests on. Comparing a figure to its own past is noisy — four runs of
+one unchanged build gave 40,053 to 51,347 jobs/s on Redis contention, a 28%
+spread, because that scenario runs three consumer processes — so the tolerance
+is a blunt 35%, calibrated to that. Comparing against a *rival* is self
+normalising: a busy machine slows both.
+
+That is honest about what the guard catches. Every regression this benchmark
+has actually caught was a factor rather than a percentage — a claim that went
+O(n), a wakeup lost for a whole second, a table analysed on every insert. A
+baseline is only meaningful on the machine that recorded it, which is why the
+file records the platform and Bun version.
+
+## Schema sync (`bun-jobs`, SQL and MongoDB)
+
+The schema is created with `IF NOT EXISTS`, so a table an earlier version
+created keeps its original shape for good — which means every schema
+improvement that ships with an upgrade otherwise reaches new installs only.
+`syncSchema` is how a deployment that already has tables gets them.
+
+```ts
+new SqlDriver({ url, syncSchema: true })          // on connect
+await driver.syncSchema()                          // or explicitly
+await driver.syncSchema({ dryRun: true })          // plan, change nothing
+await driver.syncSchema({ alterColumns: true })    // including the rewrite
+```
+
+**Safe by default, and the split is the point.** Adding a column, dropping an
+index or rebuilding one cannot stall a running queue — on Postgres the index
+work is `CONCURRENTLY`. Changing a column's *type* rewrites the table under a
+lock that blocks every reader and writer, so it is reported with
+`blocking: true` and `applied: false` unless `alterColumns` asks for it. Every
+change comes back either way, so `dryRun` is a plan.
+
+Measured against a table built the way an older version would have built it
+(`jsonb` columns, five plain indexes), 5,000-job bulk enqueue: 25,189/s before,
+26,825/s after the safe sync, 30,756/s once `alterColumns` runs too.
+
+Two rules that keep it from doing harm:
+
+- **It only drops indexes it named.** SQL matches the driver's own `ix_`
+  convention; MongoDB names indexes after their key pattern, so one this driver
+  no longer defines is indistinguishable from one somebody added by hand — there
+  it drops only names on an explicit `RETIRED_INDEXES` list.
+- **A column whose declared type is not what the engine reports back is
+  exempt** (`retype: false`). `BIGSERIAL PRIMARY KEY` comes back as `bigint`,
+  so comparing the strings would propose a nonsense rewrite on every sync
+  forever. The baseline test — a freshly created schema must report no drift —
+  is what catches this class of bug.
 
 ## Dependency policy
 

@@ -8,7 +8,7 @@ import type {
 } from "./executor";
 import process from "node:process";
 import { serializeError, withTimeout } from "@kingsleyweb/bun-common";
-import { JobTimeoutError } from "../../shared/errors";
+import { JobTimeoutError, RunKilledError } from "../../shared/errors";
 import { toHandler } from "./executor";
 
 /**
@@ -63,11 +63,16 @@ export class InProcessExecutor implements Executor {
 
     options.events.onPid(process.pid);
 
-    const done = this.#run(options, context, controller);
+    /** Why the run was asked to stop, once it has been. */
+    let stopReason: string | undefined;
+    const done = this.#run(options, context, controller, () => stopReason);
 
     return {
       done,
-      stop: (_reason, _stopOptions) => controller.abort(),
+      stop: (reason, _stopOptions) => {
+        stopReason ??= reason;
+        controller.abort();
+      },
       send: (message: unknown) => {
         if (listeners.size === 0) {
           pending.push(message);
@@ -87,6 +92,7 @@ export class InProcessExecutor implements Executor {
     options: ExecutorStartOptions<TArgs>,
     context: ExecutorStartOptions<TArgs>["context"],
     controller: AbortController,
+    stopReason: () => string | undefined,
   ): Promise<RunOutcome> {
     let settled = false;
 
@@ -112,15 +118,36 @@ export class InProcessExecutor implements Executor {
         onTimeout: () => controller.abort(),
       });
 
+      // A run stopped on request is a kill even when the handler saw its
+      // signal and returned cleanly, exactly as in the other two modes.
+      const reason = controller.signal.aborted ? stopReason() : undefined;
+      if (reason !== undefined) {
+        return {
+          status: "killed",
+          error: serializeError(
+            new RunKilledError(reason, { runId: context.runId }),
+          ),
+          pid: process.pid,
+        };
+      }
+
       return { status: "success", result, pid: process.pid };
     } catch (error) {
       if (error instanceof Error && error.name === "TimeoutError") {
         return await this.#afterTimeout(options, () => settled);
       }
 
+      const reason = controller.signal.aborted ? stopReason() : undefined;
+
       return {
         status: controller.signal.aborted ? "killed" : "failed",
-        error: serializeError(error),
+        // A stop is reported as a stop, whatever the handler threw on its way
+        // out — usually just the abort it was told about.
+        error: serializeError(
+          reason === undefined
+            ? error
+            : new RunKilledError(reason, { runId: context.runId }),
+        ),
         pid: process.pid,
       };
     }

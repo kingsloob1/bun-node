@@ -2,6 +2,9 @@
  * Storage backends. `driver.ts` is the contract; each other module is one
  * implementation of it.
  */
+export { claimByLoop, claimJobBatch } from "./claimBatch";
+export { CompletionBatcher } from "./completeBatch";
+export type { PendingCompletion } from "./completeBatch";
 export { createDriver, resolveDriver } from "./create-driver";
 export type {
   ClaimOptions,
@@ -11,6 +14,7 @@ export type {
   DriverLifecycle,
   ExecutionMode,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -18,6 +22,7 @@ export type {
   QueueDriver,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
@@ -37,6 +42,14 @@ export {
 } from "./mongo/mongo-driver";
 export { RedisKeys } from "./redis/keys";
 export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
+export type {
+  ColumnRow,
+  IndexRow,
+  ResolvedSyncOptions,
+  SchemaChange,
+  SchemaSyncOptions,
+  SyncBackend,
+} from "./schemaSync";
 export {
   detectAdapter,
   dialectFor,

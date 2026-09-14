@@ -1,7 +1,14 @@
 import type { JobsDriver } from "../lib/index";
 import process from "node:process";
+import { RedisClient as BunRedis } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
+import {
+  EXCLUDE_CURSOR_MAX_SIGNATURES,
+  EXCLUDE_HEAD_WINDOW,
+  EXCLUDE_SCAN_LIMIT,
+} from "../lib/drivers/redis/scripts";
 import { ConfigError, RedisDriver, RedisKeys } from "../lib/index";
+import { queueEvent } from "../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
@@ -140,6 +147,250 @@ describe.skipIf(!URL)("Redis driver: atomicity", () => {
   });
 });
 
+describe.skipIf(!URL)("Redis driver: excluding names", () => {
+  /** Claim options for these tests, excluding the given names. */
+  const options = (now: number, excludeNames: string[]) => ({
+    workerId: "w",
+    token: `t-${crypto.randomUUID()}`,
+    lockMs: 5000,
+    now,
+    excludeNames,
+  });
+
+  it("matches a name exactly, whatever JSON has to escape in it", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "escaped" };
+    const now = Date.now();
+
+    // The script reads the name from the blob's leading string literal, so
+    // these are the names that could end it early or match on a prefix.
+    const tricky = ['say "hi"', "back\\slash\\", 'a\\"b', "naïve ✓"];
+    for (const [index, name] of [...tricky, 'say "hi', "free"].entries()) {
+      await driver.addJob(
+        q,
+        makeJob({ id: `e${index}`, name, runAt: now, createdAt: now + index }),
+      );
+    }
+
+    const claimed = await driver.claimJobs(q, options(now, tricky), 10);
+    expect(claimed.map((job) => job.name)).toEqual(['say "hi', "free"]);
+    await driver.purge(q.ns);
+  });
+
+  it("reads the name of a record written before the blob", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "legacy" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    const raw = new BunRedis(URL);
+
+    // The pre-blob shape: name, data, opts and maxAttempts as fields of their
+    // own. Nothing migrates such a hash, so a claim must still read its name.
+    for (const [seq, id, name] of [
+      [1, "old-capped", "capped"],
+      [2, "old-free", "free"],
+    ] as const) {
+      const member = `${String(seq).padStart(16, "0")}:${id}`;
+      await raw.send("HSET", [
+        `${keys.jobPrefix}${id}`,
+        ...["member", member, "id", id, "name", name, "state", "waiting"],
+        ...["priority", "0", "runAt", String(now), "createdAt", String(now)],
+        ...["data", "null", "opts", "{}", "maxAttempts", "1"],
+      ]);
+      await raw.send("ZADD", [keys.wait, "0", member]);
+    }
+    raw.close();
+
+    const job = await driver.claimJob(q, options(now, ["capped"]));
+    expect(job?.id).toBe("old-free");
+    expect(job?.name).toBe("free");
+    await driver.purge(q.ns);
+  });
+
+  /** Adds `length` capped jobs at the head of `q`, then the given jobs. */
+  const pileUp = async (
+    driver: RedisDriver,
+    q: { ns: string; queue: string },
+    now: number,
+    length: number,
+    behind: string[],
+  ) => {
+    const cappedJob = (_u: unknown, index: number) =>
+      makeJob({
+        id: `c${index}`,
+        name: "capped",
+        runAt: now,
+        createdAt: now + index,
+      });
+    const capped = Array.from({ length }, cappedJob);
+    const free = behind.map((id) =>
+      makeJob({ id, name: "free", runAt: now, createdAt: now + length }),
+    );
+    await driver.addJobs(q, [...capped, ...free]);
+  };
+
+  it("works through a pile longer than one scan, claiming nothing it excludes", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "bounded-scan" };
+    const now = Date.now();
+    const pile = EXCLUDE_SCAN_LIMIT * 2 + 100;
+    await pileUp(driver, q, now, pile, ["free-1", "free-2", "free-3"]);
+
+    // Each claim is still bounded, so the first comes back empty-handed...
+    expect(await driver.claimJob(q, options(now, ["capped"]))).toBeNull();
+
+    // ...but the next ones resume where it stopped rather than rereading it.
+    const claimed: string[] = [];
+    for (let attempt = 0; attempt < 6 && claimed.length === 0; attempt++) {
+      const job = await driver.claimJob(q, options(now, ["capped"]));
+      if (job) {
+        claimed.push(job.id);
+      }
+    }
+    for (let attempt = 0; attempt < 6 && claimed.length < 3; attempt++) {
+      const jobs = await driver.claimJobs(q, options(now, ["capped"]), 5);
+      claimed.push(...jobs.map((job) => job.id));
+    }
+
+    expect(claimed).toEqual(["free-1", "free-2", "free-3"]);
+    // Nothing capped went along the way, and the head is still the head.
+    expect((await driver.countJobs(q)).active).toBe(3);
+    expect((await driver.claimJob(q, options(now, [])))?.id).toBe("c0");
+    await driver.purge(q.ns);
+  }, 60_000);
+
+  it("resumes past its cursor when the entry it names has gone", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "cursor-gone" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    // Once the cursor's entry goes, the free job is the last entry a scan
+    // resuming right after it can reach — and out of reach of one that
+    // restarts behind the head window.
+    const pile = EXCLUDE_HEAD_WINDOW + EXCLUDE_SCAN_LIMIT * 2 - 1;
+    await pileUp(driver, q, now, pile, ["behind"]);
+
+    expect(await driver.claimJob(q, options(now, ["capped"]))).toBeNull();
+
+    const raw = new BunRedis(URL);
+    const cursors = (await raw.send("HGETALL", [keys.excludeCursors])) as
+      | Record<string, string>
+      | string[];
+    const stored = Array.isArray(cursors)
+      ? cursors[1]
+      : Object.values(cursors)[0];
+    expect(stored).toBeString();
+    const member = stored!.slice(stored!.indexOf(" ") + 1);
+    expect(member).toEndWith(
+      `:c${EXCLUDE_HEAD_WINDOW + EXCLUDE_SCAN_LIMIT - 1}`,
+    );
+
+    // The entry the cursor names leaves the wait set underneath it.
+    expect(Number(await raw.send("ZREM", [keys.wait, member]))).toBe(1);
+    raw.close();
+
+    expect((await driver.claimJob(q, options(now, ["capped"])))?.id).toBe(
+      "behind",
+    );
+    await driver.purge(q.ns);
+  }, 60_000);
+
+  it("keeps its cursors bounded, and out of claims that exclude nothing", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "cursor-bounds" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    const raw = new BunRedis(URL);
+    await pileUp(
+      driver,
+      q,
+      now,
+      EXCLUDE_HEAD_WINDOW + EXCLUDE_SCAN_LIMIT + 10,
+      [],
+    );
+
+    // No exclusions: the plain head read, which writes no cursor.
+    await driver.claimJob(q, options(now, []));
+    expect(Number(await raw.send("EXISTS", [keys.excludeCursors]))).toBe(0);
+
+    // A hash already holding as many signatures as it keeps is cleared before
+    // a new one is written, and the key always carries a TTL.
+    const stale = Array.from(
+      { length: EXCLUDE_CURSOR_MAX_SIGNATURES },
+      (_u, index) => [`5:old-${index}`, "0 0000000000000001:x"],
+    ).flat();
+    await raw.send("HSET", [keys.excludeCursors, ...stale]);
+
+    expect(await driver.claimJob(q, options(now, ["capped"]))).toBeNull();
+    expect(Number(await raw.send("HLEN", [keys.excludeCursors]))).toBe(1);
+    expect(
+      Number(await raw.send("PTTL", [keys.excludeCursors])),
+    ).toBeGreaterThan(0);
+
+    // A drain empties the wait set, so it drops the cursors pointing into it.
+    await driver.drainQueue(q, true);
+    expect(Number(await raw.send("EXISTS", [keys.excludeCursors]))).toBe(0);
+
+    raw.close();
+    await driver.purge(q.ns);
+  }, 60_000);
+});
+
+describe.skipIf(!URL)("Redis driver: queue state", () => {
+  it("is swept by a purge and never listed as a queue", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "stateful" };
+
+    expect(await driver.setQueueState(q, "limiter", { n: 1 }, null)).toBe(1);
+    // State alone does not make a queue: the queue set is its own key.
+    expect(await driver.listQueues(ns)).toEqual([]);
+
+    await driver.purge(ns);
+    expect(await driver.getQueueState(q, "limiter")).toBeNull();
+    // And a re-created entry starts again from the first version.
+    expect(await driver.setQueueState(q, "limiter", { n: 2 }, null)).toBe(1);
+    await driver.purge(ns);
+  });
+
+  it("lists names from a sorted set, bounded by prefix and after", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "listed" };
+    const keys = driver.keys.queue(q);
+
+    for (const name of ["a", "b:1", "b:2", "b:3", "c"]) {
+      await driver.setQueueState(q, name, {}, null);
+    }
+    // An update does not add the name twice; a delete removes it.
+    await driver.setQueueState(q, "a", { n: 1 }, 1);
+    await driver.setQueueState(q, "c", null, 1);
+
+    const raw = new BunRedis(URL!);
+    await raw.connect();
+    expect(
+      await raw.send("ZRANGE", [keys.stateNames, "-", "+", "BYLEX"]),
+    ).toEqual(["a", "b:1", "b:2", "b:3"]);
+
+    // An `after` below the prefix starts at the prefix, not among non-matches.
+    expect(
+      await driver.listQueueState(q, { prefix: "b:", after: "a", limit: 2 }),
+    ).toEqual(["b:1", "b:2"]);
+    // An `after` past every match lists nothing, not the names beyond it.
+    expect(
+      await driver.listQueueState(q, { prefix: "a", after: "a", limit: 10 }),
+    ).toEqual([]);
+    expect(await driver.listQueueState(q, { prefix: "b:", limit: 0 })).toEqual(
+      [],
+    );
+
+    // A purge sweeps the names set with the entries.
+    await driver.purge(ns);
+    expect(await raw.exists(keys.stateNames)).toBe(false);
+    raw.close();
+  });
+});
+
 describe.skipIf(!URL)("Redis driver: waiting and events", () => {
   it("wakes on a new job rather than waiting out the timeout", async () => {
     const driver = makeDriver();
@@ -176,15 +427,12 @@ describe.skipIf(!URL)("Redis driver: waiting and events", () => {
       },
     );
 
-    await driver.publish({
-      v: 1,
-      ns,
-      kind: "queue",
-      target: "events",
-      type: "completed",
-      at: Date.now(),
-      origin: "test",
-    });
+    await driver.publish(
+      queueEvent(
+        { ns, target: "events", type: "completed", origin: "test" },
+        { id: "job-1", returnValue: null },
+      ),
+    );
 
     await waitFor(() => received.length > 0, {
       message: "no event was delivered",

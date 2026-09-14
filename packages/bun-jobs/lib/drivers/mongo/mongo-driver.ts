@@ -5,6 +5,7 @@ import type {
   Filter,
   MongoClient,
   MongoClientOptions,
+  ObjectId,
   UpdateFilter,
 } from "mongodb";
 import type {
@@ -15,18 +16,23 @@ import type {
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
+  EventKind,
+  EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
   RunRecord,
 } from "../driver";
+import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import {
   databaseFromUrl,
@@ -34,6 +40,10 @@ import {
   resolveNames,
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
+import { EventRetention } from "../../shared/eventRetention";
+import { PauseCache } from "../../shared/pauseCache";
+import { EventGaps } from "../eventGaps";
+import { resolveSyncOptions } from "../schemaSync";
 
 /**
  * A driver backed by MongoDB.
@@ -59,17 +69,135 @@ import { ConfigError, DriverError } from "../../shared/errors";
 /** How often a polling wait re-checks, in milliseconds. */
 const POLL_MS = 50;
 
-/** The collections this driver uses. */
-export const MONGO_COLLECTIONS = ["jobs", "locks", "kv", "events"] as const;
+/**
+ * The collections this driver uses.
+ *
+ * Job logs have a collection of their own rather than an array on the job:
+ * a claim returns the whole document, so lines kept on it would ride along on
+ * every claim of a job that logs, and grow the document the claim index
+ * points at.
+ */
+export const MONGO_COLLECTIONS = [
+  "jobs",
+  "locks",
+  "kv",
+  "events",
+  "jobLogs",
+] as const;
 
 /** One of the collections this driver uses. */
 export type MongoCollection = (typeof MONGO_COLLECTIONS)[number];
 
 /** MongoDB's duplicate-key error, which is how "someone got there first" arrives. */
+/**
+ * Indexes earlier versions of this driver created on the jobs collection.
+ *
+ * Named explicitly rather than inferred. MongoDB names an index after its key
+ * pattern, so an index this driver no longer defines is indistinguishable from
+ * one somebody added by hand — dropping "anything we do not recognise" would
+ * eventually delete a user's index. A list of what *we* retired cannot.
+ *
+ * `ns_1_queue_1_state_1_priority_1_createdAt_1` is the claim index from before
+ * `_id` joined the key. Without `_id` the index does not cover the claim's
+ * sort, so MongoDB fell back to a blocking in-memory sort of every matching
+ * document: measured on a 2,000-job queue, 2,000 documents examined to return
+ * one, at 2.75ms per claim and growing with the backlog.
+ */
+const RETIRED_INDEXES = [
+  "ns_1_queue_1_state_1_priority_1_createdAt_1",
+] as const;
+
 const DUPLICATE_KEY = 11000;
+
+/**
+ * How many times a push may lose the race to create the state document.
+ *
+ * It can only lose to a creation, and a document is created once — so one
+ * retry is the reasoning, and this is the margin on it.
+ */
+const CREATE_RETRIES = 3;
+
+/**
+ * How many jobs a claim with excluded names reads from the head of the queue.
+ *
+ * Short, so a job that arrives at the head is seen on the very next claim
+ * however far into a block of excluded jobs the continuation has moved.
+ */
+const EXCLUDE_HEAD_WINDOW = 64;
+
+/**
+ * How many jobs a claim with excluded names reads past the head, resuming
+ * where the previous claim stopped.
+ *
+ * A `$nin` in the claim filter used to fetch every excluded waiting job ahead
+ * of the first allowed one — measured, 10,001 documents examined and 65ms per
+ * attempt behind 10,000 capped jobs, repeated on every retry while the name
+ * stayed capped. A window bounds one claim's cost; the cursor is what makes
+ * successive claims reach the end.
+ */
+const EXCLUDE_SCAN_WINDOW = 1_000;
+
+/** How many exclusion cursors one driver keeps before forgetting the oldest. */
+const EXCLUDE_CURSOR_LIMIT = 1_000;
+
+/** The claim-order position of a job, and the one field a window filters on. */
+type ClaimPosition = Pick<
+  JobDocument,
+  "_id" | "name" | "priority" | "createdAt"
+>;
+
+/** What reading one window of candidates found. */
+interface ClaimWindow {
+  /** The job claimed from the window, when one was. */
+  claimed: JobRecord | null;
+  /** How many documents the window returned. */
+  count: number;
+  /** The last position the window returned. Absent when it returned none. */
+  last?: ClaimPosition;
+}
+
+/** Orders two claim positions as the claim index does. */
+function compareClaimPositions(a: ClaimPosition, b: ClaimPosition): number {
+  return (
+    a.priority - b.priority ||
+    a.createdAt - b.createdAt ||
+    (a._id < b._id ? -1 : a._id > b._id ? 1 : 0)
+  );
+}
+
+/**
+ * How many jobs go into one `insertMany`.
+ *
+ * The server caps a batch at 100,000 documents and 16MB, and the driver splits
+ * anything larger on its own, so this is not the server's limit — it bounds how
+ * many documents are built in memory at once, and how much one rejected batch
+ * has to be reported on.
+ */
+const INSERT_CHUNK = 1_000;
 
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
+
+/** The states whose due time `updateJob` may move. */
+const PENDING: JobState[] = ["waiting", "delayed"];
+
+/**
+ * How many times a priority change may lose the race to rewrite `opts`.
+ *
+ * It can only lose to another priority change landing between its read and
+ * its write, so one retry is the reasoning, and this is the margin on it.
+ */
+const PATCH_RETRIES = 3;
+
+/**
+ * How many log lines one orphan sweep reads, per job the maintenance batch
+ * allows.
+ *
+ * The sweep walks lines rather than jobs because that is what the index can
+ * bound; a job's lines are adjacent in it, so this is roughly how many lines a
+ * logging job is assumed to keep before a sweep spans fewer jobs than asked.
+ */
+const LOG_SWEEP_LINES_PER_JOB = 10;
 
 /** Options for {@link MongoDriver}. */
 export interface MongoDriverOptions extends ConnectionInput {
@@ -98,6 +226,23 @@ export interface MongoDriverOptions extends ConnectionInput {
   client?: MongoClient;
   /** How often a wait re-checks for work. Defaults to 50ms. */
   pollInterval?: number;
+  /**
+   * Reconcile the collections' indexes with this version's, on connect.
+   *
+   * Off by default. `createIndex` is idempotent and connecting already creates
+   * what is missing, so what this adds is the retirement of indexes earlier
+   * versions created — see {@link RETIRED_INDEXES}.
+   */
+  syncSchema?: boolean | SchemaSyncOptions;
+  /**
+   * How long a stored event is kept, in milliseconds.
+   *
+   * Defaults to an hour. Events are a live notification channel rather than an
+   * audit trail, and this backend writes each one down — so without a limit
+   * the log grows for as long as the queue runs. Set `0` to keep everything,
+   * and prune it yourself.
+   */
+  eventRetentionMs?: number;
 }
 
 /** A job as it is stored: identifiers and ordering keys plain, payloads JSON. */
@@ -120,38 +265,48 @@ interface JobDocument {
   runAt: number;
   /** When it was added. */
   createdAt: number;
-  /** When the current or last attempt started. */
-  processedOn: number | null;
-  /** When it completed or died. */
-  finishedOn: number | null;
-  /** When retention removes it. */
-  expiresAt: number | null;
-  /** How many attempts have been made. */
-  attemptsMade: number;
+  /** When the current or last attempt started. Absent on a job yet to run. */
+  processedOn?: number | null;
+  /** When it completed or died. Absent until it has. */
+  finishedOn?: number | null;
+  /** When retention removes it. Absent while it has no expiry. */
+  expiresAt?: number | null;
+  /** How many attempts have been made. Absent means none. */
+  attemptsMade?: number;
   /** How many are allowed. */
   maxAttempts: number;
-  /** How many times it stalled. */
-  stalledCount: number;
-  /** The worker holding it. */
-  workerId: string | null;
-  /** That worker's lock token. */
-  lockToken: string | null;
-  /** When the lock expires. */
-  lockExpiresAt: number | null;
-  /** The repeat series that produced it. */
-  repeatKey: string | null;
+  /** How many times it stalled. Absent means never. */
+  stalledCount?: number;
+  /** The worker holding it. Absent while unclaimed. */
+  workerId?: string | null;
+  /** That worker's lock token. Absent while unclaimed. */
+  lockToken?: string | null;
+  /** When the lock expires. Absent while unclaimed. */
+  lockExpiresAt?: number | null;
+  /** The repeat series that produced it. Absent when it is a one-off. */
+  repeatKey?: string | null;
   /** The caller's payload, as JSON. */
   data: string;
   /** Resolved options, as JSON. */
   opts: string;
-  /** Latest progress, as JSON. */
-  progress: string;
-  /** The processor's result, as JSON. */
-  returnValue: string;
-  /** The most recent failure, as JSON. */
-  failedReason: string;
-  /** Recent failures, as JSON. */
-  stacktrace: string;
+  /** Latest progress, as JSON. Absent until reported. */
+  progress?: string;
+  /** The processor's result, as JSON. Absent until it has one. */
+  returnValue?: string;
+  /** The most recent failure, as JSON. Absent until it has one. */
+  failedReason?: string;
+  /** Recent failures, as JSON. Absent until it has one. */
+  stacktrace?: string;
+  /**
+   * Names this job's log lines. Absent until the job logs its first line, so
+   * adding, claiming and settling a job never write it — and never read back
+   * through `#toRecord`, which is not part of the record.
+   *
+   * A random token rather than anything derived from the job: a job completed
+   * and re-added under its id in the same millisecond is identical in every
+   * field that could be derived, and has to start with an empty log anyway.
+   */
+  logKey?: string;
 }
 
 /** A lock as it is stored. */
@@ -184,10 +339,42 @@ interface KvDocument {
   history?: string[];
   /** Queued triggers, oldest first, each entry JSON. */
   queued?: string[];
-  /** An arbitrary JSON document, for queue metadata and repeats. */
+  /** An arbitrary JSON document, for queue metadata, repeats and queue state. */
   value?: string;
+  /**
+   * A queue state entry's version, which a compare-and-set names in its
+   * filter. Present on queue state documents only, so it also tells them apart.
+   */
+  version?: number;
   /** When it last changed. */
   updatedAt: number;
+}
+
+/** One line of a job's log, as it is stored. */
+interface JobLogDocument {
+  /** Assigned by the server; not used for ordering. */
+  _id?: ObjectId;
+  /** The namespace the job belongs to. */
+  ns: string;
+  /** The queue it belongs to. */
+  queue: string;
+  /** The job's id within that queue. Used only by the orphan sweep. */
+  jobId: string;
+  /**
+   * The owning job's `logKey`.
+   *
+   * What ties a line to one *incarnation* of an id. Completing with retention
+   * `true` deletes the job in one operation and leaves its lines behind — a
+   * second delete there would tax the hottest path for a feature most jobs
+   * never use. Reads and trims match on this, so a job added later under the
+   * same id, which gets a key of its own, sees none of those lines, and a sweep
+   * removes them eventually.
+   */
+  logKey: string;
+  /** Orders lines within a job; see `MongoDriver.#nextLogSeq`. */
+  seq: number;
+  /** The line, verbatim. */
+  line: string;
 }
 
 /** An event as it is stored. */
@@ -196,15 +383,28 @@ interface EventDocument {
   ns: string;
   /** `<kind>:<target>`. */
   channel: string;
+  /**
+   * The event's place in its channel, from a counter the server increments.
+   * Absent on events published before events were numbered.
+   */
+  seq?: number;
   /** The event, as JSON. */
   payload: string;
   /** When it was published. */
   at: number;
 }
 
+/**
+ * Prefix of the key-value entry holding a channel's event counter. Starts with
+ * an underscore pair so it cannot collide with a runner's key.
+ */
+const EVENT_SEQ_PREFIX = "__events_seq:";
+
 export class MongoDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
   readonly name = "mongodb";
+  /** Decides when this driver should prune its stored events. */
+  readonly #eventRetention: EventRetention;
 
   /**
    * A document update is atomic on its own, so claiming is safe from any
@@ -225,15 +425,37 @@ export class MongoDriver implements JobsDriver {
   readonly collections: Record<MongoCollection, string>;
 
   /** The connection URL, resolved from a URL or from fields. */
+  /** Pause flags, so a claim does not read one per call. */
+  readonly #pauseCache = new PauseCache();
   readonly #url: string;
   /** Options for the client this driver creates. */
   readonly #clientOptions?: MongoClientOptions;
   /** How often a wait re-checks. */
   readonly #poll: number;
+  /** What to reconcile on connect, if anything. */
+  readonly #syncOnConnect: boolean | SchemaSyncOptions;
   /** Whether this driver created the client and must close it. */
   readonly #ownsClient: boolean;
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /**
+   * Where each queue's orphaned-log sweep resumes: the last job id it read,
+   * keyed by `<ns>:<queue>`. Absent means start from the beginning. Per
+   * instance, which is all a rotation needs — several workers sweeping from
+   * different points only covers the log sooner.
+   */
+  readonly #logSweepFrom = new Map<string, string>();
+  /**
+   * Where a claim with excluded names resumes past the head window: the last
+   * position a full continuation window examined without finding an allowed
+   * job, keyed by queue and exclusion set. Absent means start after the head.
+   * Per instance and bounded to {@link EXCLUDE_CURSOR_LIMIT} entries, oldest
+   * forgotten first — losing one only costs a rescan from the head.
+   */
+  readonly #excludeCursors = new Map<string, ClaimPosition>();
+
+  /** The last log sequence number this instance handed out. */
+  #lastLogSeq = 0;
 
   /** The client, once connected. */
   #client: MongoClient | undefined;
@@ -268,6 +490,8 @@ export class MongoDriver implements JobsDriver {
 
     this.#clientOptions = options.clientOptions;
     this.#poll = options.pollInterval ?? POLL_MS;
+    this.#syncOnConnect = options.syncSchema ?? false;
+    this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#client = options.client;
     this.#ownsClient = !options.client;
   }
@@ -334,7 +558,15 @@ export class MongoDriver implements JobsDriver {
   async listQueues(ns: string): Promise<string[]> {
     const [jobs, kv] = await Promise.all([
       (await this.#jobs()).distinct("queue", { ns }),
-      (await this.#kv()).find({ ns, key: { $regex: "^q:.*:meta$" } }).toArray(),
+      // A queue state entry named `...:meta` would match the pattern too, so
+      // those are told apart by the version only they carry.
+      (await this.#kv())
+        .find({
+          ns,
+          key: { $regex: "^q:.*:meta$" },
+          version: { $exists: false },
+        })
+        .toArray(),
     ]);
 
     const names = new Set<string>(jobs as string[]);
@@ -573,6 +805,7 @@ export class MongoDriver implements JobsDriver {
     key: string,
     trigger: QueuedTrigger,
     max: number,
+    attemptsLeft = CREATE_RETRIES,
   ): Promise<boolean> {
     const kv = await this.#kv();
     const id = this.#stateId(ns, key);
@@ -617,8 +850,25 @@ export class MongoDriver implements JobsDriver {
       return true;
     } catch (error) {
       if (isDuplicateKey(error)) {
-        // Someone created it first; try again against the document.
-        return await this.pushQueuedTrigger(ns, key, trigger, max);
+        // Someone created it first, so the atomic path applies now. Bounded,
+        // because this recursed without a limit: each retry can only lose to
+        // a *creation*, and the document is created once — but "can only" is
+        // reasoning, and an unbounded recursion driven by a remote server's
+        // errors is a hang or a blown stack if that reasoning is ever wrong.
+        if (attemptsLeft <= 0) {
+          throw new DriverError("mongodb", "pushQueuedTrigger", error, {
+            key,
+            reason: "the state document kept being created underneath this",
+          });
+        }
+
+        return await this.pushQueuedTrigger(
+          ns,
+          key,
+          trigger,
+          max,
+          attemptsLeft - 1,
+        );
       }
       throw new DriverError("mongodb", "pushQueuedTrigger", error, { key });
     }
@@ -703,25 +953,89 @@ export class MongoDriver implements JobsDriver {
     }
   }
 
+  /**
+   * Adds many jobs, in as few round trips as the collection allows.
+   *
+   * `insertMany` is unordered, which is what makes it usable here: an ordered
+   * batch stops at the first duplicate and leaves the rest of the chunk
+   * unwritten, whereas an unordered one inserts everything it can and reports
+   * the collisions by position. That is exactly the contract this method needs,
+   * because per-id idempotency means a duplicate is an ordinary outcome rather
+   * than a failure — repeat scheduling depends on several workers noticing the
+   * same occurrence and exactly one of them winning.
+   *
+   * A collision is the only write error tolerated. Anything else fails the
+   * call, because it means the batch did not do what it said.
+   */
   async addJobs(
     q: QueueRef,
     jobs: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
+    if (jobs.length === 0) {
+      return [];
     }
+
+    // One job is not a batch, and the singular path already reports precisely
+    // what happened to it.
+    if (jobs.length === 1) {
+      return [await this.addJob(q, jobs[0]!)];
+    }
+
+    const collection = await this.#jobs();
+    const results: { job: JobRecord; added: boolean }[] = [];
+
+    for (let start = 0; start < jobs.length; start += INSERT_CHUNK) {
+      const chunk = jobs.slice(start, start + INSERT_CHUNK);
+      /** Positions within this chunk whose id was already taken. */
+      const collided = new Set<number>();
+
+      try {
+        await collection.insertMany(
+          chunk.map((job) => this.#toDocument(q, job)),
+          { ordered: false },
+        );
+      } catch (error) {
+        const writeErrors = duplicateKeyPositions(error);
+
+        if (!writeErrors) {
+          throw new DriverError("mongodb", "addJobs", error);
+        }
+
+        for (const position of writeErrors) {
+          collided.add(position);
+        }
+      }
+
+      for (const [index, job] of chunk.entries()) {
+        if (!collided.has(index)) {
+          results.push({ job: jsonClone(job), added: true });
+          continue;
+        }
+
+        // The id is the idempotency key, so a collision means it is already
+        // here. Only a collision pays for the read that fetches what is.
+        const existing = await this.getJob(q, job.id);
+        results.push({ job: existing ?? jsonClone(job), added: false });
+      }
+    }
+
     return results;
   }
 
   async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
-    if (await this.isQueuePaused(q)) {
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
       return null;
     }
 
-    await this.promoteDelayed(q, opts.now, 1000);
+    // No `promoteDelayed` here: it ran before every claim whether or not
+    // anything was delayed. Promotion keeps the reported state honest, it is
+    // not what makes a job claimable, and the worker sweeps at 1Hz.
 
     const jobs = await this.#jobs();
+
+    if (opts.excludeNames && opts.excludeNames.length > 0) {
+      return await this.#claimExcluding(jobs, q, opts, opts.excludeNames);
+    }
 
     // One atomic document update: the server picks the document, applies the
     // claim and returns it, so exactly one caller can receive any given job.
@@ -732,16 +1046,7 @@ export class MongoDriver implements JobsDriver {
         state: "waiting",
         runAt: { $lte: opts.now },
       },
-      {
-        $set: {
-          state: "active",
-          processedOn: opts.now,
-          lockToken: opts.token,
-          lockExpiresAt: opts.now + opts.lockMs,
-          workerId: opts.workerId,
-        },
-        $inc: { attemptsMade: 1 },
-      },
+      this.#claimUpdate(opts),
       {
         sort: { priority: 1, createdAt: 1, _id: 1 },
         returnDocument: "after",
@@ -749,6 +1054,161 @@ export class MongoDriver implements JobsDriver {
     );
 
     return claimed ? this.#toRecord(claimed) : null;
+  }
+
+  /** The update that turns a waiting job into one held by the claimer. */
+  #claimUpdate(opts: ClaimOptions): UpdateFilter<JobDocument> {
+    return {
+      $set: {
+        state: "active",
+        processedOn: opts.now,
+        lockToken: opts.token,
+        lockExpiresAt: opts.now + opts.lockMs,
+        workerId: opts.workerId,
+      },
+      $inc: { attemptsMade: 1 },
+    };
+  }
+
+  /**
+   * Claims the first due job whose name is not excluded, in bounded steps.
+   *
+   * `name` is not in the claim index, so filtering on it server-side fetches
+   * every excluded job ahead of the first allowed one. Instead candidates are
+   * read in index order from two windows — a short one at the head, so new
+   * work is seen promptly, and a longer one resuming from a per-queue cursor,
+   * so a block of excluded jobs is crossed a window per claim — filtered here,
+   * and taken one at a time by id. The take names `state: "waiting"`, so a
+   * candidate somebody else claimed first is simply passed over.
+   */
+  async #claimExcluding(
+    jobs: Collection<JobDocument>,
+    q: QueueRef,
+    opts: ClaimOptions,
+    excludeNames: string[],
+  ): Promise<JobRecord | null> {
+    const excluded = new Set(excludeNames);
+    const key = [q.ns, q.queue, ...[...excluded].sort()].join("\u0000");
+    const due: Filter<JobDocument> = {
+      ns: q.ns,
+      queue: q.queue,
+      state: "waiting",
+      runAt: { $lte: opts.now },
+    };
+
+    const head = await this.#claimWindow(
+      jobs,
+      due,
+      undefined,
+      EXCLUDE_HEAD_WINDOW,
+      excluded,
+      opts,
+    );
+
+    if (head.claimed) {
+      return head.claimed;
+    }
+
+    // The head held everything due: there is nothing past it to resume into.
+    if (!head.last || head.count < EXCLUDE_HEAD_WINDOW) {
+      this.#excludeCursors.delete(key);
+      return null;
+    }
+
+    // Resume from whichever is further in: the cursor, or the end of the head
+    // (a cursor the head has overtaken would only re-read the head).
+    const saved = this.#excludeCursors.get(key);
+    const from =
+      saved && compareClaimPositions(saved, head.last) > 0 ? saved : head.last;
+
+    const rest = await this.#claimWindow(
+      jobs,
+      due,
+      from,
+      EXCLUDE_SCAN_WINDOW,
+      excluded,
+      opts,
+    );
+
+    this.#excludeCursors.delete(key);
+
+    if (rest.count < EXCLUDE_SCAN_WINDOW || !rest.last) {
+      // Short: the window reached the end of what is due, so the next claim
+      // starts after the head again.
+      return rest.claimed;
+    }
+
+    // Full: nothing allowed means the next claim looks past this window;
+    // a claim means the window may hold more, so the next one reads it again.
+    this.#excludeCursors.set(key, rest.claimed ? from : rest.last);
+
+    if (this.#excludeCursors.size > EXCLUDE_CURSOR_LIMIT) {
+      const oldest = this.#excludeCursors.keys().next().value;
+
+      if (oldest !== undefined) {
+        this.#excludeCursors.delete(oldest);
+      }
+    }
+
+    return rest.claimed;
+  }
+
+  /**
+   * Reads one index-ordered window of due jobs after `after` (from the head
+   * when absent), and claims the first one whose name is allowed.
+   */
+  async #claimWindow(
+    jobs: Collection<JobDocument>,
+    due: Filter<JobDocument>,
+    after: ClaimPosition | undefined,
+    limit: number,
+    excluded: ReadonlySet<string>,
+    opts: ClaimOptions,
+  ): Promise<ClaimWindow> {
+    // "After" as a disjunction of compound comparisons, one per sort key, so
+    // each branch is a bounded range of the claim index rather than a filter
+    // applied to a scan from the start of the queue.
+    const filter: Filter<JobDocument> = after
+      ? {
+          ...due,
+          $or: [
+            { priority: { $gt: after.priority } },
+            { priority: after.priority, createdAt: { $gt: after.createdAt } },
+            {
+              priority: after.priority,
+              createdAt: after.createdAt,
+              _id: { $gt: after._id },
+            },
+          ],
+        }
+      : due;
+
+    const window = await jobs
+      .find<ClaimPosition>(filter, {
+        sort: { priority: 1, createdAt: 1, _id: 1 },
+        limit,
+        batchSize: limit,
+        projection: { _id: 1, name: 1, priority: 1, createdAt: 1 },
+      })
+      .toArray();
+
+    for (const candidate of window) {
+      if (excluded.has(candidate.name)) {
+        continue;
+      }
+
+      const claimed = await jobs.findOneAndUpdate(
+        { _id: candidate._id, state: "waiting", runAt: { $lte: opts.now } },
+        this.#claimUpdate(opts),
+        { returnDocument: "after" },
+      );
+
+      if (claimed) {
+        return { claimed: this.#toRecord(claimed), count: window.length };
+      }
+    }
+
+    return { claimed: null, count: window.length, last: window.at(-1) };
   }
 
   async extendJobLock(
@@ -828,7 +1288,7 @@ export class MongoDriver implements JobsDriver {
 
     const stacktrace = [
       error,
-      ...(JSON.parse(existing.stacktrace) as SerializedError[]),
+      ...parseOrDefault<SerializedError[]>(existing.stacktrace, []),
     ].slice(0, Math.max(0, keepStacktraces));
 
     const retention = outcome.retry ? false : outcome.retention;
@@ -883,6 +1343,178 @@ export class MongoDriver implements JobsDriver {
     return result.matchedCount > 0;
   }
 
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    // Which states may be changed. The state a moved job lands in depends only
+    // on the new time and `now`, both known here, so the whole rule becomes
+    // part of the filter — and the check and the write are one operation.
+    const allowed =
+      patch.runAt === undefined
+        ? patch.onlyIn
+        : (patch.onlyIn ?? PENDING).filter((state) => PENDING.includes(state));
+
+    if (allowed?.length === 0) {
+      return null;
+    }
+
+    const filter: Filter<JobDocument> = {
+      _id: this.#jobId(q, id),
+      ...(allowed ? { state: { $in: allowed } } : {}),
+    };
+
+    // Written in the encoding `#toDocument` uses, so a patched job reads back
+    // exactly as an added one does.
+    const set: Partial<JobDocument> = {};
+
+    if (patch.data !== undefined) {
+      set.data = JSON.stringify(patch.data);
+    }
+
+    if (patch.runAt !== undefined) {
+      set.runAt = patch.runAt;
+      set.state = patch.runAt > now ? "delayed" : "waiting";
+    }
+
+    const jobs = await this.#jobs();
+
+    if (patch.priority === undefined) {
+      if (Object.keys(set).length === 0) {
+        const found = await jobs.findOne(filter);
+        return found ? this.#toRecord(found) : null;
+      }
+
+      const updated = await jobs.findOneAndUpdate(
+        filter,
+        { $set: set },
+        { returnDocument: "after" },
+      );
+
+      return updated ? this.#toRecord(updated) : null;
+    }
+
+    // Priority lives twice: the plain field the claim index sorts on, which is
+    // all reordering needs, and inside `opts`, which is a JSON string the
+    // server cannot edit in place. The two may legitimately differ on a stored
+    // record, so the reader cannot simply trust one — `opts` has to be
+    // rewritten, and the read it is built from is pinned in the write's filter
+    // so a concurrent change to it is retried rather than overwritten.
+    for (let attempt = 0; attempt <= PATCH_RETRIES; attempt++) {
+      const current = await jobs.findOne(filter, { projection: { opts: 1 } });
+
+      if (!current) {
+        return null;
+      }
+
+      const opts = JSON.parse(current.opts) as ResolvedJobOptions;
+
+      const updated = await jobs.findOneAndUpdate(
+        { ...filter, opts: current.opts },
+        {
+          $set: {
+            ...set,
+            priority: patch.priority,
+            opts: JSON.stringify({ ...opts, priority: patch.priority }),
+          },
+        },
+        { returnDocument: "after" },
+      );
+
+      if (updated) {
+        return this.#toRecord(updated);
+      }
+    }
+
+    throw new DriverError("mongodb", "updateJob", undefined, {
+      id,
+      reason: "the job's options kept changing underneath this",
+    });
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    const logKey = await this.#stampLogKey(q, id);
+
+    if (logKey === null) {
+      return 0;
+    }
+
+    const logs = await this.#jobLogs();
+    const owner = { ns: q.ns, queue: q.queue, logKey };
+
+    // A job removed between the stamp above and this insert leaves one
+    // orphaned line. No job holds its key, so no later job under the id can
+    // see it, and the sweep collects it.
+    await logs.insertOne({
+      ...owner,
+      jobId: id,
+      seq: this.#nextLogSeq(),
+      line,
+    });
+
+    const count = await logs.countDocuments(owner);
+
+    if (keep <= 0 || count <= keep) {
+      return count;
+    }
+
+    const oldest = await logs
+      .find(owner)
+      .sort({ seq: 1 })
+      .limit(count - keep)
+      .project<{ _id: ObjectId }>({ _id: 1 })
+      .toArray();
+
+    const removed = await logs.deleteMany({
+      _id: { $in: oldest.map((document) => document._id) },
+    });
+
+    return count - removed.deletedCount;
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    const jobs = await this.#jobs();
+    const job = await jobs.findOne(
+      { _id: this.#jobId(q, id) },
+      { projection: { logKey: 1 } },
+    );
+
+    // No key means the job has never logged: nothing to look for.
+    if (!job?.logKey) {
+      return { logs: [], count: 0 };
+    }
+
+    const logs = await this.#jobLogs();
+    const owner = { ns: q.ns, queue: q.queue, logKey: job.logKey };
+
+    const [count, page] = await Promise.all([
+      logs.countDocuments(owner),
+      // A limit of 0 means "no limit" to MongoDB, and "nothing" to the caller.
+      opts.limit > 0
+        ? logs
+            .find(owner)
+            .sort({ seq: opts.order === "asc" ? 1 : -1 })
+            .skip(Math.max(0, opts.offset))
+            .limit(opts.limit)
+            .project<{ line: string }>({ _id: 0, line: 1 })
+            .toArray()
+        : Promise.resolve([]),
+    ]);
+
+    return { logs: page.map((document) => document.line), count };
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     const jobs = await this.#jobs();
     const document = await jobs.findOne({ _id: this.#jobId(q, id) });
@@ -897,16 +1529,24 @@ export class MongoDriver implements JobsDriver {
     const jobs = await this.#jobs();
     const direction = opts.order === "asc" ? 1 : -1;
 
-    // A single state is listed in its own natural order; several states share
-    // only creation time.
-    const sort =
-      states.length === 1 && states[0] === "waiting"
+    // A single state is listed in its own natural order — the one every driver
+    // shares, see `JobsDriver.listJobs` — and several states share only
+    // creation time. Delayed and failed ride the promotion index.
+    const single = states.length === 1 ? states[0] : undefined;
+    const sort: Record<string, 1 | -1> =
+      single === "waiting"
         ? { priority: direction, createdAt: direction, _id: direction }
-        : { createdAt: direction, _id: direction };
+        : single === "delayed" || single === "failed"
+          ? { runAt: direction, _id: direction }
+          : single === "active"
+            ? { lockExpiresAt: direction, _id: direction }
+            : single === "completed" || single === "dead"
+              ? { finishedOn: direction, _id: direction }
+              : { createdAt: direction, _id: direction };
 
     const documents = await jobs
       .find({ ns: q.ns, queue: q.queue, state: { $in: states } })
-      .sort(sort as Record<string, 1 | -1>)
+      .sort(sort)
       .skip(opts.offset)
       .limit(opts.limit)
       .toArray();
@@ -948,12 +1588,19 @@ export class MongoDriver implements JobsDriver {
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     const jobs = await this.#jobs();
 
-    const result = await jobs.deleteOne({
-      _id: this.#jobId(q, id),
-      state: { $ne: "active" },
-    });
+    // `findOneAndDelete` rather than `deleteOne`: still one operation, and it
+    // hands back the `logKey` that says which lines were this job's.
+    const removed = await jobs.findOneAndDelete(
+      { _id: this.#jobId(q, id), state: { $ne: "active" } },
+      { projection: { logKey: 1 } },
+    );
 
-    return result.deletedCount > 0;
+    if (!removed) {
+      return false;
+    }
+
+    await this.#deleteLogs(q, [removed]);
+    return true;
   }
 
   async retryJob(
@@ -1054,7 +1701,7 @@ export class MongoDriver implements JobsDriver {
     const dead: string[] = [];
 
     for (const document of stalled) {
-      const count = document.stalledCount + 1;
+      const count = (document.stalledCount ?? 0) + 1;
       const buried = count > maxStalledCount;
 
       // Still conditional on being stalled, so a worker that recovered in the
@@ -1116,6 +1763,8 @@ export class MongoDriver implements JobsDriver {
     await jobs.deleteMany({
       _id: { $in: stale.map((document) => document._id) },
     });
+    await this.#deleteLogs(q, stale);
+
     return stale.map((document) => document.id);
   }
 
@@ -1129,18 +1778,25 @@ export class MongoDriver implements JobsDriver {
         expiresAt: { $ne: null, $lte: now },
       })
       .limit(Math.max(1, Math.floor(limit)))
-      .project<{ _id: string }>({ _id: 1 })
+      .project<{ _id: string; logKey?: string }>({ _id: 1, logKey: 1 })
       .toArray();
 
-    if (expired.length === 0) {
-      return 0;
+    let deleted = 0;
+
+    if (expired.length > 0) {
+      const result = await jobs.deleteMany({
+        _id: { $in: expired.map((document) => document._id) },
+      });
+      await this.#deleteLogs(q, expired);
+      deleted = result.deletedCount;
     }
 
-    const result = await jobs.deleteMany({
-      _id: { $in: expired.map((document) => document._id) },
-    });
+    // The worker calls this once a minute whether or not anything expired,
+    // which makes it the place to collect what the paths that delete without
+    // a second operation — retention on completion, a drain — left behind.
+    await this.#sweepLogs(q, limit);
 
-    return result.deletedCount;
+    return deleted;
   }
 
   async drainQueue(q: QueueRef, includeDelayed: boolean): Promise<number> {
@@ -1155,15 +1811,142 @@ export class MongoDriver implements JobsDriver {
       state: { $in: states },
     });
 
+    // A drain deletes without knowing which jobs it deleted, so their lines
+    // cannot be named. A drain is an operator's action rather than a hot path,
+    // so it pays for one bounded sweep; anything past the bound goes later.
+    if (result.deletedCount > 0) {
+      await this.#sweepLogs(q, result.deletedCount);
+    }
+
     return result.deletedCount;
+  }
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    const kv = await this.#kv();
+    const document = await kv.findOne({ _id: this.#queueStateId(q, name) });
+
+    return document?.value !== undefined && document.version !== undefined
+      ? { value: JSON.parse(document.value), version: document.version }
+      : null;
+  }
+
+  /**
+   * Each branch is a single-document write whose filter carries the
+   * condition, so the server checks and writes in one step: of many callers
+   * naming the same version, one matches and the rest match nothing. Creation
+   * gets the same guarantee from the `_id` being unique.
+   */
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    const kv = await this.#kv();
+    const _id = this.#queueStateId(q, name);
+
+    if (value === null) {
+      if (expected === null) {
+        // Deleting what must not exist changes nothing; it only succeeds if
+        // that is still true.
+        return (await kv.findOne({ _id }, { projection: { _id: 1 } }))
+          ? null
+          : 0;
+      }
+
+      const result = await kv.deleteOne({ _id, version: expected });
+      return result.deletedCount === 1 ? 0 : null;
+    }
+
+    const encoded = JSON.stringify(value);
+
+    if (expected === null) {
+      try {
+        await kv.insertOne({
+          _id,
+          ns: q.ns,
+          key: `q:${q.queue}:state:${name}`,
+          value: encoded,
+          version: 1,
+          updatedAt: Date.now(),
+        });
+        return 1;
+      } catch (error) {
+        if (isDuplicateKey(error)) {
+          return null;
+        }
+        throw new DriverError("mongodb", "setQueueState", error, {
+          queue: q.queue,
+        });
+      }
+    }
+
+    // `updateOne` rather than `findOneAndUpdate`: the new version is known
+    // without the document, so there is nothing worth sending back.
+    const result = await kv.updateOne(
+      { _id, version: expected },
+      {
+        $set: { value: encoded, version: expected + 1, updatedAt: Date.now() },
+      },
+    );
+    return result.matchedCount === 1 ? expected + 1 : null;
+  }
+
+  /**
+   * A range on `_id` rather than a regex: the prefix is matched literally
+   * whatever it contains, and the range walks the `_id` index directly, so
+   * the query is covered — no document is fetched.
+   *
+   * Ordering is the server's, which for a collection without a collation (this
+   * driver never creates one) is UTF-8 byte order, i.e. code point order. That
+   * is JavaScript's order for every name except one that mixes U+E000–U+FFFF
+   * with characters above U+FFFF, which UTF-16 sorts the other way round.
+   *
+   * A deletion is a real `deleteOne`, so a deleted entry has no document left
+   * to be listed.
+   */
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const limit = Math.floor(options.limit);
+    // `limit(0)` means "no limit" to MongoDB, and a negative one means "a
+    // single batch", so a limit of nothing has to be answered here.
+    if (!(limit > 0)) {
+      return [];
+    }
+
+    const kv = await this.#kv();
+    const base = this.#queueStateId(q, "");
+    const lower = base + options.prefix;
+    const range: { $gte: string; $lt: string; $gt?: string } = {
+      $gte: lower,
+      $lt: prefixUpperBound(lower),
+    };
+    if (options.after !== undefined) {
+      range.$gt = base + options.after;
+    }
+
+    const documents = await kv
+      .find({ _id: range }, { projection: { _id: 1 } })
+      .sort({ _id: 1 })
+      .limit(limit)
+      .toArray();
+
+    return documents.map((document) => document._id.slice(base.length));
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#writeValue(q.ns, `q:${q.queue}:meta`, { paused: true });
+    this.#pauseCache.write(q, true);
   }
 
   async resumeQueue(q: QueueRef): Promise<void> {
     await this.#writeValue(q.ns, `q:${q.queue}:meta`, { paused: false });
+    this.#pauseCache.write(q, false);
   }
 
   async isQueuePaused(q: QueueRef): Promise<boolean> {
@@ -1235,6 +2018,14 @@ export class MongoDriver implements JobsDriver {
     const deadline = Date.now() + timeoutMs;
     const jobs = await this.#jobs();
 
+    // The gap between polls grows from a millisecond up to the configured
+    // interval, rather than being flat. Without a push channel this loop is the
+    // only thing that notices a new job, and a flat interval makes a job that
+    // arrives just after a poll wait the whole of it — a tail, not an average.
+    // Measured on Postgres, that was p99 53ms against a 50ms interval; backing
+    // off brought it to 4ms while leaving an idle worker's cost where it was.
+    let wait = 1;
+
     while (Date.now() < deadline && !signal?.aborted) {
       const claimable = await jobs.findOne(
         {
@@ -1251,42 +2042,96 @@ export class MongoDriver implements JobsDriver {
         return;
       }
 
-      await sleep(Math.min(this.#poll, Math.max(1, deadline - Date.now())), {
+      await sleep(Math.min(wait, Math.max(1, deadline - Date.now())), {
         unref: true,
       }).catch(() => {});
+      wait = Math.min(this.#poll, wait * 2);
     }
   }
 
+  /**
+   * Stores an event under the next number in its channel.
+   *
+   * Numbered by a counter the server increments, not ordered by `_id`: an
+   * ObjectId is made by the client, and only its first four bytes are time — to
+   * the second — so within a second two processes' ids sort by their random
+   * middle bytes. A subscriber following `_id` passed over a second process's
+   * events for good whenever that came out lower, about half the time. The
+   * counter costs one round trip per published event, which only producers
+   * that asked to publish pay.
+   */
   async publish(event: DriverEvent): Promise<void> {
-    const events = await this.#events();
+    this.#pruneEvents(event.ns);
+    const channel = `${event.kind}:${event.target}`;
+    const [kv, events] = await Promise.all([this.#kv(), this.#events()]);
+    const key = `${EVENT_SEQ_PREFIX}${channel}`;
+
+    const counter = await kv.findOneAndUpdate(
+      { _id: `${event.ns}:${key}` },
+      {
+        $inc: { "counters.seq": 1 },
+        $setOnInsert: { ns: event.ns, key },
+      },
+      { upsert: true, returnDocument: "after" },
+    );
 
     await events.insertOne({
       ns: event.ns,
-      channel: `${event.kind}:${event.target}`,
+      channel,
+      seq: counter?.counters?.seq ?? 0,
       payload: JSON.stringify(event),
       at: event.at,
     });
   }
 
-  async subscribe(
+  /**
+   * Prunes this namespace's stored events, if it is time to.
+   *
+   * Deliberately not awaited: a publisher should not wait on housekeeping for
+   * a log it is not reading, and a failure here costs disk rather than
+   * correctness. `EventRetention` records the attempt either way, so a delete
+   * that keeps failing does not become a write per event.
+   */
+  #pruneEvents(ns: string): void {
+    const before = this.#eventRetention.due(ns);
+
+    if (before === null) {
+      return;
+    }
+
+    void this.cleanEvents(ns, before).catch(() => undefined);
+  }
+
+  async cleanEvents(ns: string, before: number): Promise<number> {
+    const events = await this.#events();
+    const removed = await events.deleteMany({ ns, at: { $lt: before } });
+
+    return removed.deletedCount ?? 0;
+  }
+
+  async subscribe<TKind extends EventKind>(
     ns: string,
-    kind: "queue" | "runner",
+    kind: TKind,
     target: string,
-    listener: (event: DriverEvent) => void,
+    listener: (event: EventOfKind<TKind>) => void,
   ): Promise<() => Promise<void>> {
+    // Widened once, here, because everything below works on the envelope
+    // rather than on one subsystem's events. The narrowing is the caller's:
+    // asking for `"queue"` is what makes their listener see queue events only.
+    const deliver = listener as (event: DriverEvent) => void;
+
     const events = await this.#events();
     const channel = `${kind}:${target}`;
 
     // Start from the present: a subscriber is told what happens next, not the
-    // history it was not there for. ObjectIds increase over time, so they
-    // order the log without a counter.
+    // history it was not there for.
     const latest = await events
-      .find({ ns, channel })
-      .sort({ _id: -1 })
+      .find({ ns, channel, seq: { $exists: true } })
+      .sort({ seq: -1 })
       .limit(1)
       .toArray();
 
-    let cursor = latest[0]?._id;
+    const gaps = new EventGaps(latest[0]?.seq ?? 0);
     let stopped = false;
 
     const timer = setInterval(() => {
@@ -1295,19 +2140,25 @@ export class MongoDriver implements JobsDriver {
           return;
         }
 
+        const now = Date.now();
+        const retry = gaps.retry(now);
         const documents = await events
           .find({
             ns,
             channel,
-            ...(cursor ? { _id: { $gt: cursor } } : {}),
+            $or: [
+              { seq: { $gt: gaps.cursor } },
+              ...(retry.length > 0 ? [{ seq: { $in: retry } }] : []),
+            ],
           })
-          .sort({ _id: 1 })
+          .sort({ seq: 1 })
           .limit(200)
           .toArray();
 
         for (const document of documents) {
-          cursor = document._id;
-          listener(JSON.parse(document.payload) as DriverEvent);
+          if (document.seq !== undefined && gaps.accept(document.seq, now)) {
+            deliver(JSON.parse(document.payload) as DriverEvent);
+          }
         }
       })().catch(() => {
         // A failed poll is retried on the next tick.
@@ -1351,6 +2202,14 @@ export class MongoDriver implements JobsDriver {
 
       const db = this.#client.db(this.database);
       await this.#createIndexes(db);
+
+      if (this.#syncOnConnect !== false) {
+        await this.#syncSchema(
+          db,
+          typeof this.#syncOnConnect === "object" ? this.#syncOnConnect : {},
+        );
+      }
+
       return db;
     } catch (error) {
       // A failed connect must not be remembered as done.
@@ -1361,29 +2220,218 @@ export class MongoDriver implements JobsDriver {
     }
   }
 
+  /**
+   * The indexes the hot paths need, as data.
+   *
+   * Described rather than created inline so {@link MongoDriver.syncSchema} can
+   * compare them against what the database has, instead of the two having
+   * separate ideas of what the indexes are.
+   */
+  #indexDefinitions(): { collection: string; key: Record<string, 1 | -1> }[] {
+    return [
+      // Claim order: the queue's due, waiting jobs, cheapest first.
+      //
+      // `_id` is in the key because it is in the claim's sort. Without it
+      // MongoDB cannot walk the index in sort order and falls back to a
+      // blocking in-memory sort of *every* matching document — measured on a
+      // 2,000-job queue, 2,000 documents examined to return one, and 2.75ms
+      // per claim that grew with the backlog.
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 },
+      },
+      // Promotion: what is due but not yet claimable.
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, runAt: 1 },
+      },
+      // Stalled recovery: active jobs whose lock has lapsed.
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1 },
+      },
+      // Cleaning and retention.
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, state: 1, finishedOn: 1 },
+      },
+      { collection: this.collections.jobs, key: { expiresAt: 1 } },
+      { collection: this.collections.kv, key: { ns: 1, key: 1 } },
+      {
+        collection: this.collections.events,
+        key: { ns: 1, channel: 1, _id: 1 },
+      },
+      // Following a channel: by its number, and asking again for the ones a
+      // poll passed over.
+      {
+        collection: this.collections.events,
+        key: { ns: 1, channel: 1, seq: 1 },
+      },
+      // A job's log: counted, paged and trimmed by its key, in `seq` order.
+      {
+        collection: this.collections.jobLogs,
+        key: { ns: 1, queue: 1, logKey: 1, seq: 1 },
+      },
+      // The orphan sweep walks a queue's lines by job id. `logKey` is in the
+      // key so that walk is answered from the index alone, without fetching a
+      // single line.
+      {
+        collection: this.collections.jobLogs,
+        key: { ns: 1, queue: 1, jobId: 1, logKey: 1 },
+      },
+    ];
+  }
+
+  /**
+   * Reconciles the database with the indexes this version of the driver
+   * expects, and reports every difference it found.
+   *
+   * MongoDB has no column types, so there is nothing here that can rewrite a
+   * collection and nothing `alterColumns` could mean — every change a sync can
+   * make on this backend is safe by construction. `createIndex` is idempotent,
+   * which is why connecting already does most of this; the value of calling it
+   * explicitly is the report, and `dryRun` in particular.
+   *
+   * Indexes are dropped only when they are on {@link RETIRED_INDEXES}. See
+   * there for why a broader rule would eventually delete somebody's index.
+   */
+  async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
+    return await this.#syncSchema(await this.#db(), options);
+  }
+
+  /**
+   * The sync itself, given a database rather than fetching one.
+   *
+   * Separate from the public method because opening the connection calls it,
+   * and `#db()` awaits that same open: reaching for the database from in here
+   * would wait on the promise it is running inside.
+   */
+  async #syncSchema(
+    db: Db,
+    options: SchemaSyncOptions,
+  ): Promise<SchemaChange[]> {
+    const resolved = resolveSyncOptions(options);
+    const changes: SchemaChange[] = [];
+
+    /** The index names each collection already has. */
+    const existing = new Map<string, Set<string>>();
+
+    for (const { collection } of this.#indexDefinitions()) {
+      if (existing.has(collection)) {
+        continue;
+      }
+
+      const names = await db
+        .collection(collection)
+        .indexes()
+        .then((found) => new Set(found.map((index) => String(index.name))))
+        .catch(() => new Set<string>());
+
+      existing.set(collection, names);
+    }
+
+    for (const { collection, key } of this.#indexDefinitions()) {
+      // MongoDB's own naming, which is what `indexes()` reports back.
+      const name = Object.entries(key)
+        .map(([field, direction]) => `${field}_${direction}`)
+        .join("_");
+
+      if (existing.get(collection)?.has(name)) {
+        continue;
+      }
+
+      changes.push({
+        kind: "create-index",
+        table: collection,
+        target: name,
+        statement: `createIndex(${JSON.stringify(key)})`,
+        reason: "the driver defines it and the collection does not have it",
+        blocking: false,
+        applied: false,
+      });
+    }
+
+    for (const name of RETIRED_INDEXES) {
+      if (!existing.get(this.collections.jobs)?.has(name)) {
+        continue;
+      }
+
+      changes.push({
+        kind: "drop-index",
+        table: this.collections.jobs,
+        target: name,
+        statement: `dropIndex(${JSON.stringify(name)})`,
+        reason:
+          "the driver no longer defines it, and it costs a write per document",
+        blocking: false,
+        applied: false,
+      });
+    }
+
+    if (resolved.dryRun) {
+      return changes;
+    }
+
+    for (const change of changes) {
+      if (
+        change.kind === "create-index" &&
+        !(resolved.add || resolved.indexes)
+      ) {
+        continue;
+      }
+
+      if (change.kind === "drop-index" && !resolved.indexes) {
+        continue;
+      }
+
+      if (change.kind === "create-index") {
+        const definition = this.#indexDefinitions().find(
+          (index) =>
+            index.collection === change.table &&
+            Object.entries(index.key)
+              .map(([field, direction]) => `${field}_${direction}`)
+              .join("_") === change.target,
+        );
+
+        if (definition) {
+          await db.collection(change.table).createIndex(definition.key);
+          change.applied = true;
+        }
+
+        continue;
+      }
+
+      await db
+        .collection(change.table)
+        .dropIndex(change.target)
+        .catch(() => undefined);
+      change.applied = true;
+    }
+
+    return changes;
+  }
+
   /** Creates the indexes the hot paths need. Safe to run repeatedly. */
   async #createIndexes(db: Db): Promise<void> {
-    const jobs = db.collection<JobDocument>(this.collections.jobs);
+    const byCollection = new Map<string, Record<string, 1 | -1>[]>();
 
-    await jobs.createIndexes([
-      // Claim order: the queue's due, waiting jobs, cheapest first.
-      { key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1 } },
-      // Promotion: what is due but not yet claimable.
-      { key: { ns: 1, queue: 1, state: 1, runAt: 1 } },
-      // Stalled recovery: active jobs whose lock has lapsed.
-      { key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1 } },
-      // Cleaning and retention.
-      { key: { ns: 1, queue: 1, state: 1, finishedOn: 1 } },
-      { key: { expiresAt: 1 } },
-    ]);
+    for (const { collection, key } of this.#indexDefinitions()) {
+      byCollection.set(collection, [
+        ...(byCollection.get(collection) ?? []),
+        key,
+      ]);
+    }
 
-    await db
-      .collection<KvDocument>(this.collections.kv)
-      .createIndex({ ns: 1, key: 1 });
+    for (const [collection, keys] of byCollection) {
+      await db
+        .collection(collection)
+        .createIndexes(keys.map((key) => ({ key })));
+    }
 
-    await db
-      .collection<EventDocument>(this.collections.events)
-      .createIndex({ ns: 1, channel: 1, _id: 1 });
+    // Retired indexes are not dropped here. Dropping one is a schema change,
+    // and schema changes are `syncSchema`'s to plan and apply — so a plain
+    // connect, `syncSchema: false`, `dryRun` and `indexes: false` all leave
+    // them where they are.
   }
 
   /** The database, connecting on first use. */
@@ -1414,6 +2462,160 @@ export class MongoDriver implements JobsDriver {
     );
   }
 
+  /** The job-logs collection. */
+  async #jobLogs(): Promise<Collection<JobLogDocument>> {
+    return (await this.#db()).collection<JobLogDocument>(
+      this.collections.jobLogs,
+    );
+  }
+
+  /**
+   * A job's log key, giving it one if it has none yet; `null` when there is
+   * no such job.
+   *
+   * Read first, stamp only when absent. Once a job has logged, every further
+   * line costs one read of its document and no write to it — which matters
+   * because a job that logs is usually active, and its worker is writing that
+   * same document. A pipeline update with `$ifNull` would also be one round
+   * trip, but a write on every line. The stamp's filter requires the key to be
+   * absent, so two first lines racing agree on whichever key landed.
+   */
+  async #stampLogKey(q: QueueRef, id: string): Promise<string | null> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, id);
+
+    const existing = await jobs.findOne({ _id }, { projection: { logKey: 1 } });
+
+    if (!existing) {
+      return null;
+    }
+
+    if (existing.logKey) {
+      return existing.logKey;
+    }
+
+    const stamped = await jobs.findOneAndUpdate(
+      { _id, logKey: { $exists: false } },
+      { $set: { logKey: crypto.randomUUID() } },
+      { projection: { logKey: 1 }, returnDocument: "after" },
+    );
+
+    if (stamped?.logKey) {
+      return stamped.logKey;
+    }
+
+    // Lost the race to another first line, or the job has just gone.
+    const raced = await jobs.findOne({ _id }, { projection: { logKey: 1 } });
+    return raced?.logKey ?? null;
+  }
+
+  /**
+   * The next log sequence number: strictly increasing within this instance,
+   * and close to wall-clock order across instances.
+   *
+   * Not the `ObjectId`, which looks ordered and is not quite: its low bytes
+   * are a counter that starts at a random value and wraps, and the bytes above
+   * it are random per process, so two lines in one second can sort either way.
+   * Not `Date.now()` alone, which repeats within a millisecond. Milliseconds
+   * times 1024 leave room for 1024 lines a millisecond before the `+ 1` takes
+   * over, and stay exact in a double until the 23rd century.
+   */
+  #nextLogSeq(): number {
+    this.#lastLogSeq = Math.max(Date.now() * 1024, this.#lastLogSeq + 1);
+    return this.#lastLogSeq;
+  }
+
+  /**
+   * Deletes the lines of jobs that are gone. A job that never logged has no
+   * key, and costs nothing here.
+   */
+  async #deleteLogs(q: QueueRef, owners: { logKey?: string }[]): Promise<void> {
+    const keys = owners
+      .map((owner) => owner.logKey)
+      .filter((key): key is string => typeof key === "string");
+
+    if (keys.length === 0) {
+      return;
+    }
+
+    const logs = await this.#jobLogs();
+
+    for (let start = 0; start < keys.length; start += INSERT_CHUNK) {
+      await logs.deleteMany({
+        ns: q.ns,
+        queue: q.queue,
+        logKey: { $in: keys.slice(start, start + INSERT_CHUNK) },
+      });
+    }
+  }
+
+  /**
+   * Deletes a bounded slice of a queue's orphaned log lines: those whose job
+   * is gone, or has since been replaced by a job with the same id.
+   *
+   * Rotates through the queue by job id, resuming where the last sweep
+   * stopped, so every call costs the same three bounded operations however
+   * large the log is — a covered index read of the lines, one read of their
+   * jobs, one delete — and repeated calls cover all of it.
+   */
+  async #sweepLogs(q: QueueRef, limit: number): Promise<void> {
+    const logs = await this.#jobLogs();
+    const key = `${q.ns}:${q.queue}`;
+    const after = this.#logSweepFrom.get(key);
+    const lines = Math.max(1, Math.floor(limit)) * LOG_SWEEP_LINES_PER_JOB;
+
+    const scanned = await logs
+      .find({
+        ns: q.ns,
+        queue: q.queue,
+        ...(after === undefined ? {} : { jobId: { $gt: after } }),
+      })
+      .sort({ jobId: 1, logKey: 1 })
+      .limit(lines)
+      .project<{ jobId: string; logKey: string }>({
+        _id: 0,
+        jobId: 1,
+        logKey: 1,
+      })
+      .toArray();
+
+    // A short read reached the end, so the next sweep starts over. A full one
+    // resumes after the last job it saw — skipping that job's remaining lines,
+    // whose incarnation was judged here already.
+    if (scanned.length < lines) {
+      this.#logSweepFrom.delete(key);
+    } else {
+      this.#logSweepFrom.set(key, scanned.at(-1)!.jobId);
+    }
+
+    if (scanned.length === 0) {
+      return;
+    }
+
+    const jobs = await this.#jobs();
+    const live = await jobs
+      .find({
+        _id: {
+          $in: [...new Set(scanned.map((line) => line.jobId))].map((id) =>
+            this.#jobId(q, id),
+          ),
+        },
+      })
+      .project<{ logKey?: string }>({ _id: 0, logKey: 1 })
+      .toArray();
+
+    // A line is an orphan when no job holds its key: its job is gone, or was
+    // replaced by one under the same id, which got a key of its own.
+    const held = new Set(live.map((job) => job.logKey));
+
+    await this.#deleteLogs(
+      q,
+      [...new Set(scanned.map((line) => line.logKey))]
+        .filter((logKey) => !held.has(logKey))
+        .map((logKey) => ({ logKey })),
+    );
+  }
+
   /** The `_id` of a job. Deterministic, which is what makes an add idempotent. */
   #jobId(q: QueueRef, id: string): string {
     return `${q.ns}:${q.queue}:${id}`;
@@ -1422,6 +2624,14 @@ export class MongoDriver implements JobsDriver {
   /** The `_id` of a runner's state document. */
   #stateId(ns: string, key: string): string {
     return `${ns}:${key}:state`;
+  }
+
+  /**
+   * The `_id` of a queue state entry. Built like a queue's `meta` key, so
+   * `purge` takes it with the rest of the namespace.
+   */
+  #queueStateId(q: QueueRef, name: string): string {
+    return `${q.ns}:q:${q.queue}:state:${name}`;
   }
 
   /** Applies an update to a runner's state, creating the document if needed. */
@@ -1471,7 +2681,7 @@ export class MongoDriver implements JobsDriver {
    * legal and guarantees it returns exactly as every other driver returns it.
    */
   #toDocument(q: QueueRef, job: JobRecord): JobDocument {
-    return {
+    const document: JobDocument = {
       _id: this.#jobId(q, job.id),
       ns: q.ns,
       queue: q.queue,
@@ -1481,23 +2691,61 @@ export class MongoDriver implements JobsDriver {
       priority: job.priority,
       runAt: job.runAt,
       createdAt: job.createdAt,
-      processedOn: job.processedOn,
-      finishedOn: job.finishedOn,
-      expiresAt: job.expiresAt,
-      attemptsMade: job.attemptsMade,
       maxAttempts: job.maxAttempts,
-      stalledCount: job.stalledCount,
-      workerId: job.workerId,
-      lockToken: job.lockToken,
-      lockExpiresAt: job.lockExpiresAt,
-      repeatKey: job.repeatKey,
       data: JSON.stringify(job.data ?? null),
       opts: JSON.stringify(job.opts),
-      progress: JSON.stringify(job.progress ?? null),
-      returnValue: JSON.stringify(job.returnValue ?? null),
-      failedReason: JSON.stringify(job.failedReason ?? null),
-      stacktrace: JSON.stringify(job.stacktrace ?? []),
     };
+
+    // A brand-new job carries nothing else: every remaining field would be a
+    // null, a zero, or the string "null". Leaving them out makes the document
+    // smaller on the wire and in the collection, and the reader already treats
+    // absent and default alike. `maxAttempts` stays above deliberately — an
+    // absent number reads back as its default, and the default for that one is
+    // not zero.
+    if (this.#isFreshJob(job)) {
+      return document;
+    }
+
+    document.processedOn = job.processedOn;
+    document.finishedOn = job.finishedOn;
+    document.expiresAt = job.expiresAt;
+    document.attemptsMade = job.attemptsMade;
+    document.stalledCount = job.stalledCount;
+    document.workerId = job.workerId;
+    document.lockToken = job.lockToken;
+    document.lockExpiresAt = job.lockExpiresAt;
+    document.repeatKey = job.repeatKey;
+    document.progress = JSON.stringify(job.progress ?? null);
+    document.returnValue = JSON.stringify(job.returnValue ?? null);
+    document.failedReason = JSON.stringify(job.failedReason ?? null);
+    document.stacktrace = JSON.stringify(job.stacktrace ?? []);
+
+    return document;
+  }
+
+  /**
+   * Whether a record carries nothing beyond what a brand-new job carries.
+   *
+   * A job in any other shape — restored from elsewhere, added already
+   * finished, mid-retry — has to write every field, because the ones it would
+   * otherwise skip are exactly the ones holding its state.
+   */
+  #isFreshJob(job: JobRecord): boolean {
+    return (
+      job.processedOn === null &&
+      job.finishedOn === null &&
+      job.expiresAt === null &&
+      job.lockToken === null &&
+      job.lockExpiresAt === null &&
+      job.workerId === null &&
+      job.repeatKey === null &&
+      job.attemptsMade === 0 &&
+      job.stalledCount === 0 &&
+      job.progress === null &&
+      job.returnValue === null &&
+      job.failedReason === null &&
+      (job.stacktrace?.length ?? 0) === 0
+    );
   }
 
   /** A stored document as a job record. */
@@ -1511,20 +2759,26 @@ export class MongoDriver implements JobsDriver {
       priority: document.priority,
       runAt: document.runAt,
       createdAt: document.createdAt,
-      processedOn: document.processedOn,
-      finishedOn: document.finishedOn,
-      expiresAt: document.expiresAt,
-      attemptsMade: document.attemptsMade,
+      // Absent and default are the same thing: a brand-new job writes none of
+      // these, and a document stored before that was true writes all of them.
+      // Both have to read back identically.
+      processedOn: document.processedOn ?? null,
+      finishedOn: document.finishedOn ?? null,
+      expiresAt: document.expiresAt ?? null,
+      attemptsMade: document.attemptsMade ?? 0,
       maxAttempts: document.maxAttempts,
-      stalledCount: document.stalledCount,
-      progress: JSON.parse(document.progress) as unknown,
-      returnValue: JSON.parse(document.returnValue) as unknown,
-      failedReason: JSON.parse(document.failedReason) as SerializedError | null,
-      stacktrace: JSON.parse(document.stacktrace) as SerializedError[],
-      lockToken: document.lockToken,
-      lockExpiresAt: document.lockExpiresAt,
-      workerId: document.workerId,
-      repeatKey: document.repeatKey,
+      stalledCount: document.stalledCount ?? 0,
+      progress: parseOrDefault<unknown>(document.progress, null),
+      returnValue: parseOrDefault<unknown>(document.returnValue, null),
+      failedReason: parseOrDefault<SerializedError | null>(
+        document.failedReason,
+        null,
+      ),
+      stacktrace: parseOrDefault<SerializedError[]>(document.stacktrace, []),
+      lockToken: document.lockToken ?? null,
+      lockExpiresAt: document.lockExpiresAt ?? null,
+      workerId: document.workerId ?? null,
+      repeatKey: document.repeatKey ?? null,
     };
   }
 
@@ -1577,6 +2831,72 @@ function isDuplicateKey(error: unknown): boolean {
     error !== null &&
     (error as { code?: number }).code === DUPLICATE_KEY
   );
+}
+
+/**
+ * The smallest string greater than every string that starts with `prefix`,
+ * in MongoDB's (code point) order: the prefix with its last code point
+ * incremented. Trailing U+10FFFF cannot be incremented, so it is dropped and
+ * the code point before it carries instead. Surrogates are skipped, since a
+ * string holding one lone cannot be stored.
+ *
+ * Callers pass a prefix ending in the `:` of a fixed base, so there is always
+ * a code point to increment.
+ */
+function prefixUpperBound(prefix: string): string {
+  const codePoints = Array.from(prefix, (char) => char.codePointAt(0)!);
+
+  while (codePoints.at(-1) === 0x10ffff) {
+    codePoints.pop();
+  }
+
+  const last = codePoints.pop();
+  if (last === undefined) {
+    throw new RangeError("A prefix of only U+10FFFF has no upper bound");
+  }
+
+  codePoints.push(last === 0xd7ff ? 0xe000 : last + 1);
+  return String.fromCodePoint(...codePoints);
+}
+
+/**
+ * The positions in an unordered batch that failed because the id was taken.
+ *
+ * Returns `null` when the error is not a batch write failure, or when any of
+ * its write errors is something other than a collision — in both cases the
+ * caller has no business carrying on, so the distinction is "all of these are
+ * duplicates" rather than "some of them are".
+ */
+function duplicateKeyPositions(error: unknown): number[] | null {
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+
+  const writeErrors = (error as { writeErrors?: unknown }).writeErrors;
+
+  if (!Array.isArray(writeErrors) || writeErrors.length === 0) {
+    return null;
+  }
+
+  const positions: number[] = [];
+
+  for (const writeError of writeErrors as { index?: number; code?: number }[]) {
+    if (
+      writeError.code !== DUPLICATE_KEY ||
+      typeof writeError.index !== "number"
+    ) {
+      return null;
+    }
+
+    positions.push(writeError.index);
+  }
+
+  return positions;
+}
+
+/** A JSON field that a brand-new job does not write, and its default. */
+function parseOrDefault<T>(value: string | undefined, fallback: T): T {
+  return value === undefined ? fallback : (JSON.parse(value) as T);
 }
 
 /** Escapes a value for use inside a regular expression. */
