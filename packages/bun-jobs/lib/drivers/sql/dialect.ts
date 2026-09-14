@@ -114,12 +114,40 @@ export interface SqlDialect {
    * engines and the document would otherwise say `1.0`.
    */
   jsonSetInteger: (column: string, key: string, placeholder: string) => string;
+  /**
+   * An integer read out of the JSON object in `column` at `key`, as an
+   * expression that compares with `=` against a bound number.
+   *
+   * A queue-state entry keeps its version inside its document, and the
+   * compare-and-set is a `WHERE` on it. The field is extracted rather than the
+   * document compared because Postgres' `json` type has no equality operator
+   * at all, and cast to an integer because each engine's extraction otherwise
+   * yields its own text or JSON type.
+   */
+  jsonInteger: (column: string, key: string) => string;
+  /**
+   * Wraps a placeholder bound to JSON text so the engine stores the document
+   * it holds, not a JSON string containing it.
+   *
+   * Only Postgres needs it: bound as untyped text into a `json` or `jsonb`
+   * column, the text is stored as a JSON *string*, and extracting a field from
+   * a string yields `NULL`. `jsonOut` parses twice, so whole-document reads
+   * never notice — {@link SqlDialect.jsonInteger} does. MySQL parses a string
+   * assigned to a `JSON` column, and SQLite stores text either way.
+   */
+  jsonParameter: (placeholder: string) => string;
   /** Whether `UPDATE … RETURNING` is available. MariaDB's is not. */
   readonly supportsReturning: boolean;
   /** Whether `FOR UPDATE SKIP LOCKED` is available. */
   readonly supportsSkipLocked: boolean;
-  /** An insert that silently does nothing when the row exists. */
-  insertIgnore: (table: string, columns: string[]) => string;
+  /**
+   * An insert that silently does nothing when the row exists.
+   *
+   * `values` are the rendered value expressions, one per column, for a caller
+   * that needs more than a bare placeholder in a position (a cast, say).
+   * Omitted, each column gets its own placeholder in order.
+   */
+  insertIgnore: (table: string, columns: string[], values?: string[]) => string;
   /**
    * An insert that reads its rows out of one JSON document.
    *
@@ -212,6 +240,15 @@ export interface SqlDialect {
   claimCandidate: (options: ClaimStatementOptions) => string;
   /** Takes one specific job, for the same engines. */
   claimById: (options: ClaimStatementOptions, id: string) => string;
+  /**
+   * The last row of the window a claim that skips names looks at from
+   * `options.after`, as `priority`, `created_at` and `id` — or no row when the
+   * window is not full, which means it reached the end of the queue.
+   *
+   * The claim only reports what it took. Resuming past the rows it passed over
+   * needs to know where they ended, and every name counts here, skipped or not.
+   */
+  claimWindowEnd: (options: ClaimStatementOptions) => string;
   /**
    * How many rows a write affected.
    *
@@ -316,7 +353,42 @@ export interface ClaimStatementOptions {
    * can see. It is floored at one and rounded down.
    */
   limit?: number;
+  /**
+   * Job names the claim must pass over. Absent or empty adds nothing to the
+   * statement, which is then byte-identical to one without the option — the
+   * claim is the hottest statement in the library, and a different text is a
+   * different prepared statement.
+   */
+  excludeNames?: string[];
+  /**
+   * Where a claim that skips names resumes: only rows after this one in claim
+   * order are looked at. Ignored without `excludeNames`; absent or `null`
+   * means from the head of the queue.
+   */
+  after?: ClaimCursor | null;
 }
+
+/** A row's place in claim order, which is where a claim can resume from. */
+export interface ClaimCursor {
+  /** The row's `priority`. */
+  priority: number;
+  /** The row's `created_at`, in epoch milliseconds. */
+  createdAt: number;
+  /** The row's id, which orders the rows the two above leave tied. */
+  id: string;
+}
+
+/**
+ * How many waiting rows one pass of a claim that skips names looks at.
+ *
+ * `name NOT IN (…)` is a filter on the claim index, not a key of it, so on its
+ * own the scan walks past every skipped row before reaching one it may take:
+ * measured on Postgres with 100,000 of them at the head, 22.1ms against
+ * 0.055ms, paid again on every retry while the name stays capped. Bounding the
+ * scan caps a pass at this many rows; the driver resumes where the last full
+ * window ended, so a job further back is still reached.
+ */
+export const CLAIM_WINDOW = 1_000;
 
 /** `(?, ?, …)` repeated once per row, for the `?`-placeholder engines. */
 /** `($1, $2), ($3, $4), …` for engines that number their placeholders. */
@@ -349,29 +421,165 @@ function claimAssignments(options: ClaimStatementOptions, prefix = ""): string {
   ].join(", ");
 }
 
-/** The rows a claim may take, ordered so the cheapest comes first. */
-function claimCandidates(
+/** How one engine locks, and resumes, the rows its claim picks. */
+interface ClaimShape {
+  /** Appended to the plain candidate query: `FOR UPDATE SKIP LOCKED`, or `""`. */
+  locking: string;
+  /**
+   * Appended to the windowed candidate query, which joins the window back to
+   * the table so only the rows it returns are locked. `null` on an engine with
+   * no row locks, where the window is filtered as it is.
+   */
+  windowLocking: string | null;
+  /** A predicate: the row comes after `cursor` in claim order. */
+  after: (bind: ClaimStatementOptions["bind"], cursor: ClaimCursor) => string;
+}
+
+/**
+ * "After `cursor` in claim order", in the form Postgres and SQLite plan as an
+ * index range.
+ *
+ * Not the obvious `(priority, created_at, id) > (…)`. Postgres estimates a row
+ * comparison from its first column alone, and with every row on one priority
+ * it expects no rows and picks a sequential scan: 29.9ms for a window halfway
+ * into 100,000 rows. The two-column `>=` is a bound on columns the claim index
+ * has, and the disjunction only removes rows tied with the cursor itself:
+ * 0.70ms for the same window. SQLite plans the `>=` as an index range too.
+ */
+function rowValueAfter(
+  bind: ClaimStatementOptions["bind"],
+  cursor: ClaimCursor,
+): string {
+  return `(priority, created_at) >= (${bind(cursor.priority)}, ${bind(cursor.createdAt)})
+           AND (priority >${bind(cursor.priority)} OR created_at > ${bind(cursor.createdAt)} OR id > ${bind(cursor.id)})`;
+}
+
+/**
+ * The same predicate written out column by column, for MySQL and MariaDB.
+ *
+ * MariaDB does not bound a range scan with a row comparison: the form above
+ * read 11,001 index rows for a 1,000-row window starting at row 10,000
+ * (19.8ms), and this one read 1,000 (3.4ms). On Postgres it is the reverse —
+ * this form is a filter there, not a bound.
+ */
+function expandedAfter(
+  bind: ClaimStatementOptions["bind"],
+  cursor: ClaimCursor,
+): string {
+  return `(priority > ${bind(cursor.priority)} OR (priority = ${bind(cursor.priority)}
+           AND (created_at > ${bind(cursor.createdAt)} OR (created_at = ${bind(cursor.createdAt)} AND id > ${bind(cursor.id)}))))`;
+}
+
+/** The queue's waiting, due rows, from `options.after` when there is one. */
+function claimWindowFilter(
   options: ClaimStatementOptions,
-  locking: string,
+  shape: ClaimShape,
 ): string {
   const { bind } = options;
 
-  const limit = Math.max(1, Math.floor(options.limit ?? 1));
+  return `ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
+           AND state = 'waiting' AND run_at <= ${bind(options.now)}${
+             options.after
+               ? `
+           AND ${shape.after(bind, options.after)}`
+               : ""
+           }`;
+}
 
-  return `SELECT id FROM ${options.table}
+/** The rows a claim may take, ordered so the cheapest comes first. */
+function claimCandidates(
+  options: ClaimStatementOptions,
+  shape: ClaimShape,
+): string {
+  const { bind, table } = options;
+
+  const limit = Math.max(1, Math.floor(options.limit ?? 1));
+  const excluded = options.excludeNames ?? [];
+
+  if (excluded.length === 0) {
+    return `SELECT id FROM ${table}
        WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
          AND state = 'waiting' AND run_at <= ${bind(options.now)}
        ORDER BY priority ASC, created_at ASC, id ASC
-       LIMIT ${limit}${locking}`;
+       LIMIT ${limit}${shape.locking}`;
+  }
+
+  // Skipped names are a filter, not a key of the claim index: a capped name is
+  // the exception, so widening the index for it would tax every insert for a
+  // clause most claims never carry. Filtering *outside* a bounded window is
+  // what keeps the filter from walking an unbounded run of skipped rows; the
+  // driver slides the window with `after`.
+  //
+  // Built before the text that follows it, because it also comes first in the
+  // statement: `bind` numbers placeholders in call order.
+  const window = `SELECT id, name, priority, created_at FROM ${table}
+         WHERE ${claimWindowFilter(options, shape)}
+         ORDER BY priority ASC, created_at ASC, id ASC
+         LIMIT ${CLAIM_WINDOW}`;
+
+  if (shape.windowLocking === null) {
+    return `SELECT id FROM (${window}) AS win
+       WHERE name NOT IN (${excluded.map((name) => bind(name)).join(", ")})
+       ORDER BY priority ASC, created_at ASC, id ASC
+       LIMIT ${limit}`;
+  }
+
+  // Locked through a join back to the table, never inside the window: locking
+  // there would lock every row the window passes over, up to a thousand skipped
+  // jobs a worker skipping other names could have taken. Postgres locks only
+  // `job` because it is named, InnoDB because a derived table is read without
+  // locks — checked with two open transactions on MariaDB, the second took the
+  // next job rather than nothing. The window is read from the statement's
+  // snapshot, so `job.state` is what is rechecked once the row is locked.
+  return `SELECT job.id FROM (${window}) AS win
+       JOIN ${table} job
+         ON job.ns = ${bind(options.ns)} AND job.queue = ${bind(options.queue)}
+        AND job.id = win.id
+       WHERE win.name NOT IN (${excluded.map((name) => bind(name)).join(", ")})
+         AND job.state = 'waiting'
+       ORDER BY win.priority ASC, win.created_at ASC, win.id ASC
+       LIMIT ${limit}${shape.windowLocking}`;
 }
 
 /** Picks the id of the row a claim would take. */
 function claimCandidateStatement(
   options: ClaimStatementOptions,
-  locking: string,
+  shape: ClaimShape,
 ): string {
-  return claimCandidates(options, locking);
+  return claimCandidates(options, shape);
 }
+
+/** See {@link SqlDialect.claimWindowEnd}. */
+function claimWindowEndStatement(
+  options: ClaimStatementOptions,
+  shape: ClaimShape,
+): string {
+  return `SELECT priority, created_at, id FROM ${options.table}
+       WHERE ${claimWindowFilter(options, shape)}
+       ORDER BY priority ASC, created_at ASC, id ASC
+       LIMIT 1 OFFSET ${CLAIM_WINDOW - 1}`;
+}
+
+/** Postgres locks named rows and ranges on a two-column row comparison. */
+const POSTGRES_CLAIM: ClaimShape = {
+  locking: " FOR UPDATE SKIP LOCKED",
+  windowLocking: " FOR UPDATE OF job SKIP LOCKED",
+  after: rowValueAfter,
+};
+
+/** MySQL and MariaDB: no `OF`, and a range only on the spelled-out predicate. */
+const MYSQL_CLAIM: ClaimShape = {
+  locking: " FOR UPDATE SKIP LOCKED",
+  windowLocking: " FOR UPDATE SKIP LOCKED",
+  after: expandedAfter,
+};
+
+/** SQLite has no row locks to take. */
+const SQLITE_CLAIM: ClaimShape = {
+  locking: "",
+  windowLocking: null,
+  after: rowValueAfter,
+};
 
 /** Takes one specific job, conditional on it still being claimable. */
 function claimByIdStatement(
@@ -586,12 +794,16 @@ const postgres: SqlDialect = {
 
     return `jsonb_set(${object}, '{${key}}', to_jsonb(${placeholder}::integer))`;
   },
+  // `->>` works on `json` and on a `jsonb` column left by an older version.
+  jsonInteger: (column, key) => `(${column}->>'${key}')::bigint`,
+  // `::text` first, so the client's untyped string is read as the document.
+  jsonParameter: (placeholder) => `${placeholder}::text::json`,
   supportsReturning: true,
   supportsSkipLocked: true,
-  insertIgnore: (table, columns) =>
-    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map((_column, index) => `$${index + 1}`)
-      .join(", ")}) ON CONFLICT DO NOTHING`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map((_column, index) => `$${index + 1}`)
+    ).join(", ")}) ON CONFLICT DO NOTHING`,
   insertIgnoreMany: (table, columns, rows) =>
     `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${Array.from(
       { length: rows },
@@ -644,7 +856,7 @@ const postgres: SqlDialect = {
 
     // Built inline, in statement order: `bind` numbers parameters as it is
     // called, so a fragment computed early would be numbered early too.
-    return `WITH picked AS (${claimCandidates(options, " FOR UPDATE SKIP LOCKED")})
+    return `WITH picked AS (${claimCandidates(options, POSTGRES_CLAIM)})
       UPDATE ${table} SET ${claimAssignments(options)}
         FROM picked
        WHERE ${table}.ns = ${bind(options.ns)}
@@ -653,9 +865,9 @@ const postgres: SqlDialect = {
          AND ${table}.state = 'waiting'
       RETURNING ${table}.*`;
   },
-  claimCandidate: (options) =>
-    claimCandidateStatement(options, " FOR UPDATE SKIP LOCKED"),
+  claimCandidate: (options) => claimCandidateStatement(options, POSTGRES_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, POSTGRES_CLAIM),
   affectedRows: countFromResult,
   claimNeedsTransaction: false,
   analyze: (table) => `ANALYZE ${table}`,
@@ -704,12 +916,17 @@ const mysql: SqlDialect = {
   longTextType: "MEDIUMTEXT",
   jsonSetInteger: (column, key, placeholder) =>
     `JSON_SET(COALESCE(${column}, JSON_OBJECT()), '$.${key}', CAST(${placeholder} AS SIGNED))`,
+  // MySQL's `JSON_EXTRACT` yields a JSON number and MariaDB's (whose `JSON` is
+  // `LONGTEXT`) yields text; `CAST … AS SIGNED` reads both.
+  jsonInteger: (column, key) =>
+    `CAST(JSON_EXTRACT(${column}, '$.${key}') AS SIGNED)`,
+  jsonParameter: (placeholder) => placeholder,
   supportsReturning: false,
   supportsSkipLocked: true,
-  insertIgnore: (table, columns) =>
-    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map(() => "?")
-      .join(", ")})`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map(() => "?")
+    ).join(", ")})`,
   insertIgnoreMany: (table, columns, rows) =>
     `INSERT IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
       columns,
@@ -742,7 +959,7 @@ const mysql: SqlDialect = {
 
     // Built inline, in statement order, for the same reason as the others.
     return `UPDATE ${table}
-        JOIN (${claimCandidates(options, " FOR UPDATE SKIP LOCKED")}) AS picked
+        JOIN (${claimCandidates(options, MYSQL_CLAIM)}) AS picked
           ON ${table}.id = picked.id
          SET ${claimAssignments(options, `${table}.`)}
        WHERE ${table}.ns = ${bind(options.ns)}
@@ -754,9 +971,9 @@ const mysql: SqlDialect = {
    * the count has to be asked for, and `ROW_COUNT()` answers only about the
    * connection it runs on: that is why these writes take a transaction.
    */
-  claimCandidate: (options) =>
-    claimCandidateStatement(options, " FOR UPDATE SKIP LOCKED"),
+  claimCandidate: (options) => claimCandidateStatement(options, MYSQL_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, MYSQL_CLAIM),
   affectedRows: async (_result, connection) => {
     const rows = (await connection.unsafe("SELECT ROW_COUNT() AS n")) as {
       n: number | string;
@@ -811,12 +1028,15 @@ const sqlite: SqlDialect = {
   longTextType: "TEXT",
   jsonSetInteger: (column, key, placeholder) =>
     `json_set(COALESCE(${column}, '{}'), '$.${key}', CAST(${placeholder} AS INTEGER))`,
+  jsonInteger: (column, key) =>
+    `CAST(json_extract(${column}, '$.${key}') AS INTEGER)`,
+  jsonParameter: (placeholder) => placeholder,
   supportsReturning: true,
   supportsSkipLocked: false,
-  insertIgnore: (table, columns) =>
-    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns
-      .map(() => "?")
-      .join(", ")})`,
+  insertIgnore: (table, columns, values) =>
+    `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${(
+      values ?? columns.map(() => "?")
+    ).join(", ")})`,
   insertIgnoreMany: (table, columns, rows) =>
     `INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES ${anonymousRows(
       columns,
@@ -850,11 +1070,12 @@ const sqlite: SqlDialect = {
     return `UPDATE ${table} SET ${claimAssignments(options)}
        WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
          AND state = 'waiting'
-         AND id = (${claimCandidates(options, "")})
+         AND id = (${claimCandidates(options, SQLITE_CLAIM)})
       RETURNING *`;
   },
-  claimCandidate: (options) => claimCandidateStatement(options, ""),
+  claimCandidate: (options) => claimCandidateStatement(options, SQLITE_CLAIM),
   claimById: claimByIdStatement,
+  claimWindowEnd: (options) => claimWindowEndStatement(options, SQLITE_CLAIM),
   affectedRows: countFromResult,
   claimNeedsTransaction: true,
   analyze: (table) => `ANALYZE ${table}`,

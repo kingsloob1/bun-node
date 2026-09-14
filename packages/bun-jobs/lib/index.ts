@@ -52,6 +52,7 @@ export {
   type QueueDriver,
   type QueuedTrigger,
   type QueueRef,
+  type QueueStateEntry,
   RedisDriver,
   type RedisDriverOptions,
   RedisKeys,
@@ -101,8 +102,12 @@ export {
   JobDefinitions,
   type JobOptions,
   type JobProcessor,
+  type NameLimits,
   nextOccurrence,
   type ProcessorContext,
+  QueueLimiter,
+  type QueueLimits,
+  type RateLimit,
   type Repeatable,
   repeatJobId,
   repeatKeyFor,
@@ -111,6 +116,7 @@ export {
   resolveRunAt,
   retentionExpiry,
   type RetryAllOptions,
+  type StoredLimits,
   toRepeatRecord,
 } from "./queue/index";
 

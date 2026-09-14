@@ -1,4 +1,4 @@
-import type { JobsDriver, QueueRef } from "../../lib/index";
+import type { JobRecord, JobsDriver, QueueRef } from "../../lib/index";
 import { serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { newToken, runnerKey } from "../../lib/index";
@@ -1177,6 +1177,255 @@ export function driverContract(
         });
 
         await driver.drainQueue(lq, true);
+      });
+
+      /* --- skipping names, and state for limits ------------------------- */
+
+      it("skips excluded names on a single claim, taking what comes next", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-one" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        // The excluded name is at the head of the queue, twice.
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-capped-1",
+            name: "capped",
+            runAt: now,
+            createdAt: now,
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-capped-2",
+            name: "capped",
+            runAt: now,
+            createdAt: now + 1,
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "x-free",
+            name: "free",
+            runAt: now,
+            createdAt: now + 2,
+          }),
+        );
+
+        const claim = (excludeNames?: string[]) =>
+          driver.claimJob(xq, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 30_000,
+            now,
+            excludeNames,
+          });
+
+        expect((await claim(["capped"]))?.id).toBe("x-free");
+        // Nothing else is claimable while the only remaining name is excluded.
+        expect(await claim(["capped"])).toBeNull();
+        // And they are still there, in order, once it is not.
+        expect((await claim([]))?.id).toBe("x-capped-1");
+        expect((await claim())?.id).toBe("x-capped-2");
+
+        await driver.drainQueue(xq, true);
+      });
+
+      it("skips excluded names on a batch claim too", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-many" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        const names = ["a", "b", "a", "c", "a", "b"];
+        for (const [index, name] of names.entries()) {
+          await driver.addJob(
+            xq,
+            makeJob({
+              id: `xm-${index}`,
+              name,
+              runAt: now,
+              createdAt: now + index,
+            }),
+          );
+        }
+
+        const options = {
+          workerId: "w1",
+          token: newToken(),
+          lockMs: 30_000,
+          now,
+          excludeNames: ["a", "c"],
+        };
+        const claimed = driver.claimJobs
+          ? await driver.claimJobs(xq, options, 10)
+          : [
+              await driver.claimJob(xq, options),
+              await driver.claimJob(xq, options),
+            ];
+
+        expect(
+          claimed.filter((job) => job !== null).map((job) => job!.id),
+        ).toEqual(["xm-1", "xm-5"]);
+
+        await driver.drainQueue(xq, true);
+      });
+
+      it("reaches jobs behind a block of excluded ones, however long", async () => {
+        const xq: QueueRef = { ns, queue: "exclude-pileup" };
+        const now = Date.now();
+        await driver.drainQueue(xq, true);
+
+        // Far more capped jobs at the head than any one claim should look at.
+        const pile = 2_500;
+        await driver.addJobs(
+          xq,
+          Array.from({ length: pile }, (_, index) => {
+            return makeJob({
+              id: `pile-${index}`,
+              name: "capped",
+              runAt: now,
+              createdAt: now + index,
+            });
+          }),
+        );
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "behind-the-pile",
+            name: "free",
+            runAt: now,
+            createdAt: now + pile + 1,
+          }),
+        );
+
+        const claim = async () =>
+          await driver.claimJob(xq, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 30_000,
+            now,
+            excludeNames: ["capped"],
+          });
+
+        // A driver may look at a bounded window per claim, but each claim has
+        // to make progress: the job behind the pile comes out within a few.
+        let found: JobRecord | null = null;
+        for (let attempt = 0; attempt < 8 && !found; attempt++) {
+          found = await claim();
+        }
+        expect(found?.id).toBe("behind-the-pile");
+
+        // A new job at the head is still seen promptly, however far into the
+        // pile the last claims looked.
+        await driver.addJob(
+          xq,
+          makeJob({
+            id: "new-at-the-head",
+            name: "free",
+            runAt: now,
+            createdAt: now - 1,
+          }),
+        );
+
+        let head: JobRecord | null = null;
+        for (let attempt = 0; attempt < 3 && !head; attempt++) {
+          head = await claim();
+        }
+        expect(head?.id).toBe("new-at-the-head");
+
+        // Nothing capped was taken along the way.
+        expect((await driver.countJobs(xq)).active).toBe(2);
+
+        await driver.drainQueue(xq, true);
+      }, 120_000);
+
+      it("compare-and-sets queue state, and refuses a stale version", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state" };
+
+        expect(await driver.getQueueState!(sq, "limiter")).toBeNull();
+
+        // Created only when absent.
+        const first = await driver.setQueueState!(
+          sq,
+          "limiter",
+          { holders: {}, list: [1, 2] },
+          null,
+        );
+        expect(first).toBeGreaterThanOrEqual(1);
+        expect(
+          await driver.setQueueState!(sq, "limiter", { racing: true }, null),
+        ).toBeNull();
+
+        expect(await driver.getQueueState!(sq, "limiter")).toEqual({
+          value: { holders: {}, list: [1, 2] },
+          version: first!,
+        });
+
+        // Replaced only at the version read.
+        const second = await driver.setQueueState!(
+          sq,
+          "limiter",
+          { count: 1 },
+          first,
+        );
+        expect(second).toBeGreaterThan(first!);
+        expect(
+          await driver.setQueueState!(sq, "limiter", { count: 99 }, first),
+        ).toBeNull();
+        expect((await driver.getQueueState!(sq, "limiter"))?.value).toEqual({
+          count: 1,
+        });
+
+        // Names are independent, and so are queues and namespaces.
+        expect(await driver.getQueueState!(sq, "other")).toBeNull();
+        expect(
+          await driver.getQueueState!(
+            { ns, queue: "queue-state-2" },
+            "limiter",
+          ),
+        ).toBeNull();
+        expect(
+          await driver.getQueueState!(
+            { ns: other, queue: "queue-state" },
+            "limiter",
+          ),
+        ).toBeNull();
+
+        // Deleted only at the version read, and then absent.
+        expect(
+          await driver.setQueueState!(sq, "limiter", null, first),
+        ).toBeNull();
+        expect(await driver.setQueueState!(sq, "limiter", null, second)).toBe(
+          0,
+        );
+        expect(await driver.getQueueState!(sq, "limiter")).toBeNull();
+      });
+
+      it("lets exactly one of many concurrent compare-and-sets win", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-race" };
+        const base = await driver.setQueueState!(sq, "counter", { n: 0 }, null);
+
+        const results = await Promise.all(
+          Array.from({ length: 16 }, async (_, index) => {
+            return await driver.setQueueState!(
+              sq,
+              "counter",
+              { n: index + 1 },
+              base,
+            );
+          }),
+        );
+
+        expect(results.filter((version) => version !== null)).toHaveLength(1);
+        await driver.setQueueState!(
+          sq,
+          "counter",
+          null,
+          (await driver.getQueueState!(sq, "counter"))!.version,
+        );
       });
 
       it("keeps the same queue name in two namespaces apart", async () => {

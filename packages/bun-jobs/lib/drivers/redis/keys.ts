@@ -74,11 +74,13 @@ export class RedisKeys {
     completed: string;
     dead: string;
     meta: string;
+    excludeCursors: string;
     seq: string;
     wake: string;
     repeats: string;
     jobPrefix: string;
     logPrefix: string;
+    statePrefix: string;
   } {
     const base = `${this.namespace(q.ns)}:q:${this.#tag(q.queue)}`;
 
@@ -90,6 +92,11 @@ export class RedisKeys {
       completed: `${base}:completed`,
       dead: `${base}:dead`,
       meta: `${base}:meta`,
+      // Where a claim that excludes names resumes its scan, one hash field per
+      // exclusion set. A sibling of `meta`, not passed to scripts as a key:
+      // the claim scripts derive it from `meta` — see `excludeCursors()` in
+      // `scripts.ts` — so the two must keep this shape.
+      excludeCursors: `${base}:exclude`,
       seq: `${base}:seq`,
       wake: `${base}:wake`,
       repeats: `${base}:repeat`,
@@ -99,6 +106,10 @@ export class RedisKeys {
       // in `:logs`. The queue scripts derive this from `jobPrefix` — see
       // `logs(id)` in `scripts.ts` — so the two must keep this shape.
       logPrefix: `${base}:log:`,
+      // One hash per named value, `version` and `value`, for `setQueueState`.
+      // Under the queue's base, so it shares the queue's slot and a purge of
+      // the namespace sweeps it with everything else.
+      statePrefix: `${base}:state:`,
     };
   }
 

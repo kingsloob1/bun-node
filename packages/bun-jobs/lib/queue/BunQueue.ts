@@ -12,6 +12,7 @@ import type {
 } from "../shared/events";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
+import type { QueueLimits, StoredLimits } from "./limits";
 import type {
   BunQueueEvents,
   BunQueueOptions,
@@ -29,6 +30,7 @@ import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Job } from "./Job";
+import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
 
@@ -393,6 +395,75 @@ export class BunQueue<
     }
 
     return promoted;
+  }
+
+  /**
+   * Sets the queue's limits for every worker in every process, or removes
+   * them with `null`.
+   *
+   * ```ts
+   * await queue.setLimits({
+   *   rate: { max: 100, duration: "1 minute" },
+   *   concurrency: 20,
+   *   names: { sendEmail: { concurrency: 5 } },
+   * });
+   * ```
+   *
+   * Stored on the queue, so a worker started tomorrow in another process
+   * enforces the same numbers, and a change reaches running workers within
+   * their `limitsRefreshInterval`. Enforcement is approximate — see
+   * `QueueLimiter` — and a name at its limit is skipped, not waited behind.
+   */
+  async setLimits(limits: QueueLimits | null): Promise<void> {
+    await this.connect();
+    const driver = this.#limitsDriver();
+    const stored = limits === null ? null : normalizeLimits(limits);
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const current = await driver.getQueueState!(this.ref, LIMITS_STATE);
+
+      if (stored === null && !current) {
+        return;
+      }
+
+      const written = await driver.setQueueState!(
+        this.ref,
+        LIMITS_STATE,
+        stored,
+        current?.version ?? null,
+      );
+
+      if (written !== null) {
+        return;
+      }
+    }
+
+    throw new ConfigError(
+      `Could not store limits for queue "${this.name}": they kept changing underneath`,
+      { queue: this.name },
+    );
+  }
+
+  /** The queue's stored limits, with durations in milliseconds, or `null`. */
+  async getLimits(): Promise<StoredLimits | null> {
+    await this.connect();
+    const entry = await this.#limitsDriver().getQueueState!(
+      this.ref,
+      LIMITS_STATE,
+    );
+    return (entry?.value as StoredLimits | undefined) ?? null;
+  }
+
+  /** The driver, checked to be able to store limits. */
+  #limitsDriver(): JobsDriver {
+    if (!QueueLimiter.supports(this.driver)) {
+      throw new ConfigError(
+        `The ${this.driver.name} driver cannot store queue limits: it does not implement getQueueState and setQueueState`,
+        { driver: this.driver.name },
+      );
+    }
+
+    return this.driver;
   }
 
   /** Stops every worker on every process from claiming. */

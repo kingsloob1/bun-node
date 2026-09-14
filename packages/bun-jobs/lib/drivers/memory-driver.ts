@@ -13,6 +13,7 @@ import type {
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   Retention,
   RunRecord,
@@ -95,6 +96,8 @@ interface QueueState {
    * reuses the id.
    */
   logs: Map<string, string[]>;
+  /** Named values stored on the queue, for compare-and-set. */
+  state: Map<string, QueueStateEntry>;
   /** Whether claiming is paused for every worker. */
   paused: boolean;
   /** Next insertion sequence number. */
@@ -418,7 +421,7 @@ export class MemoryDriver implements JobsDriver {
     // answer. Walking past a not-yet-due one matters because `runAt` can move
     // forward under a job that is already waiting — a retry sets both — and
     // the index is ordered by priority, not by time.
-    const job = this.#firstClaimable(queue, opts.now);
+    const job = this.#firstClaimable(queue, opts.now, opts.excludeNames);
 
     if (!job) {
       return null;
@@ -839,6 +842,39 @@ export class MemoryDriver implements JobsDriver {
     return removed;
   }
 
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    const entry = this.#queue(q).state.get(name);
+    return entry
+      ? { value: jsonClone(entry.value), version: entry.version }
+      : null;
+  }
+
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    const state = this.#queue(q).state;
+    const current = state.get(name);
+
+    if ((current?.version ?? null) !== expected) {
+      return null;
+    }
+
+    if (value === null) {
+      state.delete(name);
+      return 0;
+    }
+
+    const version = (current?.version ?? 0) + 1;
+    state.set(name, { value: jsonClone(value), version });
+    return version;
+  }
+
   async pauseQueue(q: QueueRef): Promise<void> {
     this.#queue(q).paused = true;
   }
@@ -1008,6 +1044,7 @@ export class MemoryDriver implements JobsDriver {
         scheduled: 0,
         repeats: new Map(),
         logs: new Map(),
+        state: new Map(),
         paused: false,
         seq: 0,
         waiters: new Set(),
@@ -1072,11 +1109,23 @@ export class MemoryDriver implements JobsDriver {
   }
 
   /** The first waiting job that is due, in claim order, or `null`. */
-  #firstClaimable(queue: QueueState, now: number): JobRecord | null {
+  #firstClaimable(
+    queue: QueueState,
+    now: number,
+    excludeNames?: string[],
+  ): JobRecord | null {
+    const excluded =
+      excludeNames && excludeNames.length > 0 ? new Set(excludeNames) : null;
+
     for (let at = queue.waitingFrom; at < queue.waiting.length; at++) {
       const job = queue.jobs.get(queue.waiting[at]!);
 
-      if (job && job.state === "waiting" && job.runAt <= now) {
+      if (
+        job &&
+        job.state === "waiting" &&
+        job.runAt <= now &&
+        !excluded?.has(job.name)
+      ) {
         return job;
       }
     }

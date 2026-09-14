@@ -339,14 +339,243 @@ return 1
 `;
 
 /**
- * Claims the next due job.
+ * How many wait-set entries the continuation scan of a claim that excludes
+ * names inspects, at most.
  *
- * Promotes whatever has come due first, then takes the head of the wait set,
- * so a caller never has to ask twice. Returns the job's fields, or nothing
- * when the queue is empty or paused.
- *
- * ARGV: prefix, now, token, workerId, lockMs, promoteLimit.
+ * Without a bound, a long run of excluded jobs at the head — a capped name
+ * that has queued thousands — would make every claim walk all of them inside
+ * Redis's single thread. Past this many the claim returns what it found, which
+ * may be fewer than asked or nothing at all; the contract allows that, and the
+ * worker simply asks again — and because the scan leaves a cursor behind, the
+ * next claim looks at the *next* this-many rather than the same ones. Only the
+ * exclusion path pays any of this.
  */
+export const EXCLUDE_SCAN_LIMIT = 1000;
+
+/**
+ * How many entries from the head of the wait set every excluding claim looks
+ * at before resuming from its cursor, so a job that arrives at the head is
+ * seen on the next claim however deep into a pile the cursor has gone.
+ */
+export const EXCLUDE_HEAD_WINDOW = 64;
+
+/**
+ * The most exclusion signatures one queue keeps a cursor for. Past it the
+ * cursor hash is cleared before the next write, so a service whose capped
+ * names keep changing cannot grow it without bound.
+ */
+export const EXCLUDE_CURSOR_MAX_SIGNATURES = 32;
+
+/**
+ * How long a queue's exclusion cursors live untouched, in milliseconds. Every
+ * write renews it, so a cursor only lapses once nothing has scanned past a
+ * pile for this long — and a lapsed one only costs a rescan from the head.
+ */
+export const EXCLUDE_CURSOR_TTL_MS = 10 * 60 * 1000;
+
+/** The largest page the exclusion scan reads in one `ZRANGE`. */
+const EXCLUDE_PAGE_MAX = 256;
+
+/**
+ * Shared Lua for the claim scripts: the wait-set heads, in claim order,
+ * skipping jobs whose names are excluded.
+ *
+ * Only ever called when the caller passed names, so a claim without them runs
+ * exactly the commands it always did.
+ *
+ * **Two bounded scans.** A head scan reads the first
+ * {@link EXCLUDE_HEAD_WINDOW} entries, so a new job at the head is never
+ * missed. If that does not fill the request, a continuation scan reads up to
+ * {@link EXCLUDE_SCAN_LIMIT} more, starting where the last claim with the
+ * same exclusions stopped. Without it, more than the limit of excluded jobs
+ * at the head meant every claim re-read the same entries and returned nothing,
+ * starving every other name behind them for as long as the cap held.
+ *
+ * **The cursor** is one field per exclusion *signature* (the sorted, length
+ * prefixed names) in the queue's `exclude` hash — see `excludeCursors` in
+ * keys.ts. It holds the score and member of the last entry examined, not a
+ * rank, because ranks shift as jobs are claimed and added. Resuming takes
+ * `ZRANK` of the member, and when that entry has gone since, the rank of the
+ * first entry ordered after its (score, member) pair. It advances when the
+ * continuation scan uses its whole budget without filling the request (any
+ * allowed job it passed was claimed, so nothing is skipped), and is cleared
+ * when the scan reaches the end of the set, so the next pass starts again
+ * behind the head window. An allowed job that lands *behind* the cursor but
+ * past the head window — a retry restored to its original place — waits at
+ * most one pass through the pile.
+ *
+ * A job's name is inside `blob`, or in a `name` field on a record from before
+ * `blob` existed. The blob is only ever *decoded* here, never re-encoded — see
+ * {@link UPDATE_JOB} for what a cjson round trip does to a value. And it is
+ * usually not decoded whole either: `#toValues` writes `name` as the blob's
+ * first key, so the name is the string literal right after the opening
+ * `{"name":`, and decoding just that literal keeps a large payload from being
+ * parsed once per inspected job. Anything else falls back to a full decode.
+ *
+ * Pages start small, since the common case is a short run of excluded jobs,
+ * and double so a long run costs few round trips into the sorted set.
+ */
+const EXCLUDE_PRELUDE = `
+local function nameOf(id)
+  local stored = redis.call('HMGET', job(id), 'blob', 'name')
+  local blob = stored[1]
+  if not blob then
+    return stored[2]
+  end
+
+  if string.sub(blob, 1, 9) == '{"name":"' then
+    local from = 10
+    while true do
+      local quote = string.find(blob, '"', from, true)
+      if not quote then
+        break
+      end
+      -- A quote preceded by an odd run of backslashes (byte 92) is escaped.
+      local slashes = 0
+      while string.byte(blob, quote - 1 - slashes) == 92 do
+        slashes = slashes + 1
+      end
+      if slashes % 2 == 0 then
+        return cjson.decode(string.sub(blob, 9, quote))
+      end
+      from = quote + 1
+    end
+  end
+
+  local ok, decoded = pcall(cjson.decode, blob)
+  if ok and type(decoded) == 'table' and type(decoded.name) == 'string' then
+    return decoded.name
+  end
+  return stored[2]
+end
+
+-- The queue's cursor hash, a sibling of META: the prefix with its trailing
+-- 'meta' swapped for 'exclude', matching \`excludeCursors\` in keys.ts.
+local function excludeCursors() return string.sub(META, 1, -5) .. 'exclude' end
+
+-- Scans up to budget entries from rank from, appending allowed ones to heads
+-- until it holds count. Returns the last entry examined, whether the set ran
+-- out, and whether heads filled.
+local function scanWait(excluded, heads, count, from, budget)
+  local examined, last = 0, nil
+  local page = math.min(math.max(count, 16), ${EXCLUDE_PAGE_MAX})
+
+  while examined < budget do
+    local size = math.min(page, budget - examined)
+    local start = from + examined
+    local entries = redis.call('ZRANGE', WAIT, start, start + size - 1)
+
+    for _, entry in ipairs(entries) do
+      examined = examined + 1
+      last = entry
+      if not excluded[nameOf(string.sub(entry, 18))] then
+        heads[#heads + 1] = entry
+        if #heads == count then
+          return last, false, true
+        end
+      end
+    end
+
+    -- A short page means the set ran out.
+    if #entries < size then
+      return last, true, false
+    end
+
+    page = math.min(page * 2, ${EXCLUDE_PAGE_MAX})
+  end
+
+  return last, false, false
+end
+
+-- The rank just after a stored cursor, 'score member'. The member's own rank
+-- when it is still waiting; otherwise the first entry ordered after its
+-- (score, member) pair, found by a binary search within that score's run.
+-- Members lead with a fixed-width sequence, so comparing them as strings
+-- orders them as ZRANGE does.
+local function resumeRank(stored)
+  local space = string.find(stored, ' ', 1, true)
+  if not space then
+    return nil
+  end
+  local score = string.sub(stored, 1, space - 1)
+  local member = string.sub(stored, space + 1)
+
+  local rank = redis.call('ZRANK', WAIT, member)
+  if rank then
+    return rank + 1
+  end
+
+  local lo = redis.call('ZCOUNT', WAIT, '-inf', '(' .. score)
+  local hi = lo + redis.call('ZCOUNT', WAIT, score, score)
+  while lo < hi do
+    local mid = math.floor((lo + hi) / 2)
+    if redis.call('ZRANGE', WAIT, mid, mid)[1] < member then
+      lo = mid + 1
+    else
+      hi = mid
+    end
+  end
+  return lo
+end
+
+-- Up to count wait-set entries whose job is not excluded, in claim order. The
+-- excluded names are ARGV[first] onwards.
+local function claimableHeads(first, count)
+  local excluded, names = {}, {}
+  for i = first, #ARGV do
+    if not excluded[ARGV[i]] then
+      excluded[ARGV[i]] = true
+      names[#names + 1] = ARGV[i]
+    end
+  end
+
+  local heads = {}
+  local _, ended, filled = scanWait(excluded, heads, count, 0, ${EXCLUDE_HEAD_WINDOW})
+  if ended or filled then
+    return heads
+  end
+
+  -- Length-prefixed, so no name can contain a separator that forges another
+  -- set's signature.
+  table.sort(names)
+  local parts = {}
+  for i, name in ipairs(names) do
+    parts[i] = #name .. ':' .. name
+  end
+  local signature = table.concat(parts)
+  local cursors = excludeCursors()
+
+  local from = ${EXCLUDE_HEAD_WINDOW}
+  local stored = redis.call('HGET', cursors, signature)
+  if stored then
+    local rank = resumeRank(stored)
+    if rank and rank > from then
+      from = rank
+    end
+  end
+
+  local last
+  last, ended, filled = scanWait(excluded, heads, count, from, ${EXCLUDE_SCAN_LIMIT})
+
+  if ended then
+    -- Through to the end: the next pass starts again behind the head window.
+    if stored then
+      redis.call('HDEL', cursors, signature)
+    end
+  elseif not filled and last then
+    if not stored and redis.call('HLEN', cursors) >= ${EXCLUDE_CURSOR_MAX_SIGNATURES} then
+      redis.call('DEL', cursors)
+    end
+    -- Read before the claim removes anything: last is still in the set.
+    local score = redis.call('ZSCORE', WAIT, last)
+    redis.call('HSET', cursors, signature, score .. ' ' .. last)
+    redis.call('PEXPIRE', cursors, ${EXCLUDE_CURSOR_TTL_MS})
+  end
+
+  return heads
+end
+`;
+
 /**
  * Claims up to `count` jobs in one script.
  *
@@ -358,8 +587,13 @@ return 1
  * idle poll by the batch size. And the reply is a nested table, one `HGETALL`
  * per job, not a joined string — job data is arbitrary JSON and any separator
  * would eventually appear inside it.
+ *
+ * ARGV: prefix, now, token, workerId, lockMs, promoteLimit, count, then the
+ * names to exclude, if any. Excluding names bounds each claim's scan (see
+ * `EXCLUDE_PRELUDE`), so it may claim fewer than `count` while more remain;
+ * repeated claims resume from a cursor and work through any pile.
  */
-export const CLAIM_MANY = `${QUEUE_PRELUDE}
+export const CLAIM_MANY = `${QUEUE_PRELUDE}${EXCLUDE_PRELUDE}
 local now, token = tonumber(ARGV[2]), ARGV[3]
 local workerId, lockMs = ARGV[4], tonumber(ARGV[5])
 local limit = tonumber(ARGV[6])
@@ -379,7 +613,14 @@ for _, set in ipairs({ DELAYED, FAILED }) do
   end
 end
 
-local heads = redis.call('ZRANGE', WAIT, 0, count - 1)
+-- Names to skip arrive after count. Without any, this is the plain head read
+-- it always was: #ARGV is a length check in the VM, not a call to Redis.
+local heads
+if #ARGV >= 8 then
+  heads = claimableHeads(8, count)
+else
+  heads = redis.call('ZRANGE', WAIT, 0, count - 1)
+end
 local claimed = {}
 
 for _, entry in ipairs(heads) do
@@ -401,7 +642,19 @@ end
 return claimed
 `;
 
-export const CLAIM = `${QUEUE_PRELUDE}
+/**
+ * Claims the next due job.
+ *
+ * Promotes whatever has come due first, then takes the head of the wait set,
+ * so a caller never has to ask twice. Returns the job's fields, or nothing
+ * when the queue is empty or paused.
+ *
+ * ARGV: prefix, now, token, workerId, lockMs, promoteLimit, then the names to
+ * exclude, if any. Excluding names bounds each claim's scan (see
+ * `EXCLUDE_PRELUDE`), so it may return nothing while a claimable job sits
+ * further back; repeated claims resume from a cursor and reach it.
+ */
+export const CLAIM = `${QUEUE_PRELUDE}${EXCLUDE_PRELUDE}
 local now, token = tonumber(ARGV[2]), ARGV[3]
 local workerId, lockMs = ARGV[4], tonumber(ARGV[5])
 local limit = tonumber(ARGV[6])
@@ -420,12 +673,22 @@ for _, set in ipairs({ DELAYED, FAILED }) do
   end
 end
 
-local head = redis.call('ZRANGE', WAIT, 0, 0)
-if #head == 0 then
-  return nil
+-- Names to skip arrive after promoteLimit. Without any, this is the plain head
+-- read it always was: #ARGV is a length check in the VM, not a call to Redis.
+local entry
+if #ARGV >= 7 then
+  entry = claimableHeads(7, 1)[1]
+  if not entry then
+    return nil
+  end
+else
+  local head = redis.call('ZRANGE', WAIT, 0, 0)
+  if #head == 0 then
+    return nil
+  end
+  entry = head[1]
 end
 
-local entry = head[1]
 local id = string.sub(entry, 18)
 
 redis.call('ZREM', WAIT, entry)
@@ -731,6 +994,8 @@ for _, entry in ipairs(redis.call('ZRANGE', WAIT, 0, -1)) do
   removed = removed + 1
 end
 redis.call('DEL', WAIT)
+-- Exclusion cursors point into the wait set just emptied. See excludeCursors.
+redis.call('DEL', string.sub(META, 1, -5) .. 'exclude')
 
 if includeDelayed == '1' then
   for _, set in ipairs({ DELAYED, FAILED }) do
@@ -941,6 +1206,36 @@ else
 end
 
 return reply
+`;
+
+/**
+ * Replaces a named queue value, but only at the version the caller read.
+ *
+ * The comparison and the write are one script, which is the whole guarantee:
+ * two callers naming the same version cannot both get past the check. The
+ * versions are compared as the strings they are stored as, both being integers
+ * the driver formatted; an absent entry compares as the empty string, which is
+ * what the driver sends for "only if there is none". A delete removes the hash
+ * outright, so a re-created entry starts again from 1.
+ *
+ * KEYS: state hash. ARGV: expected version (`''` for none), delete (`1`/`0`),
+ * value as JSON. Returns the new version, 0 after a delete, or nothing when
+ * the version had moved on.
+ */
+export const SET_QUEUE_STATE = `
+local current = redis.call('HGET', KEYS[1], 'version')
+if (current or '') ~= ARGV[1] then
+  return nil
+end
+
+if ARGV[2] == '1' then
+  redis.call('DEL', KEYS[1])
+  return 0
+end
+
+local version = (tonumber(current) or 0) + 1
+redis.call('HSET', KEYS[1], 'version', tostring(version), 'value', ARGV[3])
+return version
 `;
 
 /* ------------------------------------------------------------------ *

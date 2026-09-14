@@ -22,6 +22,7 @@ export type {
   QueueDriver,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,

@@ -18,6 +18,7 @@ import type {
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
@@ -594,6 +595,9 @@ export class RedisDriver implements JobsDriver {
       opts.workerId,
       String(opts.lockMs),
       "1000",
+      // Last, because they are variadic. None at all is how the script knows
+      // to take the plain head read.
+      ...(opts.excludeNames ?? []),
     ]);
 
     const fields = this.#toObject(claimed);
@@ -622,6 +626,9 @@ export class RedisDriver implements JobsDriver {
       String(opts.lockMs),
       "1000",
       String(Math.max(1, Math.floor(limit))),
+      // Last, because they are variadic. None at all is how the script knows
+      // to take the plain head read.
+      ...(opts.excludeNames ?? []),
     ]);
 
     if (!Array.isArray(claimed)) {
@@ -987,6 +994,49 @@ export class RedisDriver implements JobsDriver {
     ]);
 
     return Number(removed ?? 0);
+  }
+
+  /* --- queue: state ----------------------------------------------------- */
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    await this.connect();
+
+    // One read for both fields, so the value and its version always match.
+    const [version, value] = await this.#client.hmget(
+      `${this.keys.queue(q).statePrefix}${name}`,
+      ["version", "value"],
+    );
+
+    return version === null || version === undefined
+      ? null
+      : {
+          value: safeJsonParse<unknown>(value ?? undefined, null),
+          version: Number(version),
+        };
+  }
+
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    await this.connect();
+
+    const version = await this.#run(
+      scripts.SET_QUEUE_STATE,
+      [`${this.keys.queue(q).statePrefix}${name}`],
+      [
+        expected === null ? "" : String(expected),
+        value === null ? "1" : "0",
+        value === null ? "" : (JSON.stringify(value) ?? "null"),
+      ],
+    );
+
+    return version === null || version === undefined ? null : Number(version);
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {

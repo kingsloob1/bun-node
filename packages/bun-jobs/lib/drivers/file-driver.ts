@@ -13,12 +13,14 @@ import type {
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   Retention,
   RunRecord,
 } from "./driver";
 import { Buffer } from "node:buffer";
 import {
+  link,
   mkdir,
   open,
   readdir,
@@ -99,6 +101,9 @@ const SCHEDULED_STATES: JobState[] = ["delayed", "failed"];
 /** Priorities may be negative; the offset keeps marker names sortable. */
 const PRIORITY_OFFSET = 1_048_576;
 
+/** How many waiting markers' job names a driver remembers for exclusion. */
+const NAME_CACHE_SIZE = 10_000;
+
 /** Options for {@link FileDriver}. */
 export interface FileDriverOptions {
   /** Directory the driver owns. Created on demand. */
@@ -142,6 +147,15 @@ export class FileDriver implements JobsDriver {
   readonly #poll: number;
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /**
+   * Job names by waiting marker path, so a claim excluding names does not read
+   * the same capped job's record on every call. A waiting marker's name holds
+   * the job's `createdAt` and id, and a job's name never changes, so an entry
+   * cannot go stale short of an id reused within the same millisecond — and
+   * the claim checks the name again under the rename anyway. Insertion-ordered,
+   * so the oldest entry goes first past {@link NAME_CACHE_SIZE}.
+   */
+  readonly #names = new Map<string, string>();
 
   constructor(options: FileDriverOptions) {
     this.root = options.root;
@@ -467,9 +481,26 @@ export class FileDriver implements JobsDriver {
     const waiting = join(this.#queueDir(q), "index", "waiting");
     const markers = (await this.#list(waiting)).sort();
     const lockExpiresAt = opts.now + opts.lockMs;
+    const excluded =
+      opts.excludeNames && opts.excludeNames.length > 0
+        ? new Set(opts.excludeNames)
+        : null;
 
     for (const marker of markers) {
       const id = markerId(marker);
+
+      // Exclusion is decided *before* the rename, from a plain read, and only
+      // when there is something to exclude. Renaming a capped job's marker into
+      // `active` and back would have it count as active meanwhile, and — worse
+      // — make it vanish from `waiting` for every other claim, `updateJob` and
+      // removal, none of which excluded it: a worker without the cap would skip
+      // the job, and might sleep believing the queue empty. Reading first leaves
+      // the index untouched. A stale read costs nothing here, because exclusion
+      // is advisory — the checks that matter still run on the record read
+      // under the rename below.
+      if (excluded && (await this.#isExcluded(q, waiting, marker, excluded))) {
+        continue;
+      }
 
       // Whoever renames the marker owns the job, and the loser gets ENOENT.
       //
@@ -508,7 +539,14 @@ export class FileDriver implements JobsDriver {
       const promotable =
         due && (record.state === "delayed" || record.state === "failed");
 
-      if (!due || (record.state !== "waiting" && !promotable)) {
+      // An excluded name is one more way of being not claimable *now*: the
+      // pre-check above could only have missed it on an id reused under a
+      // different name since, but a cap is only as good as its last check.
+      if (
+        !due ||
+        (record.state !== "waiting" && !promotable) ||
+        excluded?.has(record.name)
+      ) {
         // The marker disagrees with its record. That is either litter from a
         // crash or a promotion in flight, and from here the two are
         // indistinguishable — so only a record that can no longer *become*
@@ -1225,6 +1263,55 @@ export class FileDriver implements JobsDriver {
     return removed;
   }
 
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    // No lock: every write lands by rename, so a read sees one whole version.
+    return await this.#readJson<QueueStateEntry>(this.#statePath(q, name));
+  }
+
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    const path = this.#statePath(q, name);
+
+    // The compare and the write under one lock file, which is what makes them
+    // one step across processes: `O_EXCL` lets exactly one process in, and the
+    // write goes through a rename so a reader outside the lock never sees half
+    // of it. Creating an absent entry takes the same lock rather than an
+    // exclusive create of its own, so a delete cannot land between somebody's
+    // check for absence and their create.
+    const release = await this.#lockFile(
+      `${path.slice(0, -".json".length)}.lock`,
+    );
+
+    try {
+      const current = await this.#readJson<QueueStateEntry>(path);
+
+      if ((current?.version ?? null) !== expected) {
+        return null;
+      }
+
+      if (value === null) {
+        await unlink(path).catch(() => undefined);
+        return 0;
+      }
+
+      const version = (current?.version ?? 0) + 1;
+      await this.#writeAtomic(
+        path,
+        JSON.stringify({ version, value } satisfies QueueStateEntry),
+      );
+      return version;
+    } finally {
+      await release();
+    }
+  }
+
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#setMeta(q, { paused: true });
     this.#pauseCache.write(q, true);
@@ -1533,6 +1620,14 @@ export class FileDriver implements JobsDriver {
       "logs",
       `${encodeURIComponent(record.id)}.${record.createdAt}.jsonl`,
     );
+  }
+
+  /**
+   * Path of a named value stored on a queue. Inside the queue's directory, so
+   * `purge` takes it with the queue, and a lock beside it shares the stem.
+   */
+  #statePath(q: QueueRef, name: string): string {
+    return join(this.#queueDir(q), "state", `${encodeURIComponent(name)}.json`);
   }
 
   /** Directory markers are moved into while their job is being changed. */
@@ -1952,6 +2047,37 @@ export class FileDriver implements JobsDriver {
   }
 
   /**
+   * Whether the job behind a waiting marker has an excluded name. `false` when
+   * its record is missing: the claim's own path deals with litter.
+   */
+  async #isExcluded(
+    q: QueueRef,
+    waiting: string,
+    marker: string,
+    excluded: Set<string>,
+  ): Promise<boolean> {
+    const key = join(waiting, marker);
+    let name = this.#names.get(key);
+
+    if (name === undefined) {
+      const record = await this.#readJson<JobRecord>(
+        this.#jobPath(q, markerId(marker)),
+      );
+      if (!record) {
+        return false;
+      }
+
+      name = record.name;
+      if (this.#names.size >= NAME_CACHE_SIZE) {
+        this.#names.delete(this.#names.keys().next().value!);
+      }
+      this.#names.set(key, name);
+    }
+
+    return excluded.has(name);
+  }
+
+  /**
    * Removes a finished job now, or caps how many are kept. A TTL is already in
    * the record, put there by `expiryFor` when the job finished.
    */
@@ -2183,7 +2309,25 @@ export class FileDriver implements JobsDriver {
       const held = await this.#mtime(path);
       if (held > 0 && Date.now() - held > LOCK_STALE_MS) {
         // Whoever held this is gone; break it and race for it again.
-        await rm(path, { force: true });
+        //
+        // By renaming it aside, not deleting it. Two processes can both judge
+        // the same lock stale, and with `rm` the slower one deletes the lock the
+        // faster one has just created in its place — both then hold it, which
+        // for `setQueueState` means two compare-and-sets winning. Only one
+        // rename of a given file succeeds, and the file it moved is checked:
+        // still stale, it is dropped; fresh, it was somebody's live lock, and
+        // goes back unless the path has been taken again meanwhile.
+        const aside = `${path}.${newId()}.stale`;
+        try {
+          await rename(path, aside);
+        } catch {
+          continue;
+        }
+
+        if (Date.now() - (await this.#mtime(aside)) <= LOCK_STALE_MS) {
+          await link(aside, path).catch(() => undefined);
+        }
+        await rm(aside, { force: true });
         continue;
       }
 

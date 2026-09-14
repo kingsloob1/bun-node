@@ -343,8 +343,26 @@ export interface JobRecord {
   repeatKey: string | null;
 }
 
+/** A value stored on a queue, and the version a write must name to replace it. */
+export interface QueueStateEntry {
+  /** The value, as it was written. JSON only. */
+  value: unknown;
+  /** Increases with every write, so a compare-and-set can tell it changed. */
+  version: number;
+}
+
 /** What a worker presents when claiming. */
 export interface ClaimOptions {
+  /**
+   * Job names not to claim this time. Jobs with these names are *skipped*,
+   * not waited behind: the claim takes whatever comes next in claim order as
+   * if they were not there. Absent or empty means any name.
+   *
+   * This is how a per-name limit stops one kind of job without stalling the
+   * rest of the queue. A driver must honour it on every claim path, singular
+   * and plural, or a capped name would run past its cap.
+   */
+  excludeNames?: string[];
   /** The claiming worker's id. */
   workerId: string;
   /** The lock token to stamp on the job. */
@@ -646,6 +664,36 @@ export interface QueueDriver {
   pruneExpired: (q: QueueRef, now: number, limit: number) => Promise<number>;
   /** Removes every pending job, returning how many went. */
   drainQueue: (q: QueueRef, includeDelayed: boolean) => Promise<number>;
+  /**
+   * A named value stored on a queue, with its version, or `null`.
+   *
+   * Optional, with {@link QueueDriver.setQueueState}: the pair is what
+   * cluster-wide limits are built on. Limits are shared state every worker in
+   * every process has to agree on, and a compare-and-set is the one primitive
+   * each backend can make atomic in its own way, so the limiting logic itself
+   * is written once, above the driver.
+   */
+  getQueueState?: (
+    q: QueueRef,
+    name: string,
+  ) => Promise<QueueStateEntry | null>;
+  /**
+   * Writes a named value on a queue, but only if it is still at `expected` —
+   * `null` meaning only if there is no value yet — and answers with the new
+   * version, or `null` when somebody else wrote first and nothing changed.
+   *
+   * A `value` of `null` deletes the entry, under the same condition, and
+   * answers `0`. The check and the write are one atomic step: two callers
+   * naming the same version cannot both succeed. Versions only increase, and
+   * a deleted then re-created entry starts again from `1`. Purging the
+   * namespace removes every entry.
+   */
+  setQueueState?: (
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ) => Promise<number | null>;
   /** Pauses claiming across every process. */
   pauseQueue: (q: QueueRef) => Promise<void>;
   /** Resumes claiming across every process. */

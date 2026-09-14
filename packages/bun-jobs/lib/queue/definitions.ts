@@ -18,11 +18,14 @@ import type { JobOptions, JobProcessor } from "./types";
 /** What a definition says about jobs of one name, beyond how to run them. */
 export interface JobDefinitionOptions extends JobOptions {
   /**
-   * How many of *this* job may run at once, across the registry's worker.
+   * How many of *this* job may run at once, across every worker in every
+   * process consuming the registry's queue.
    *
-   * Not yet enforced — the worker's concurrency is a single number covering
-   * every name it runs. Recorded here because it belongs to the definition,
-   * and the per-name limit that reads it is a separate piece of work.
+   * `jobs.start()` stores it as the name's concurrency in the queue's limits,
+   * leaving the queue's other limits as they are. The definition wins at
+   * start: a different number set for the same name with `setLimits` is
+   * replaced. A name at its limit is skipped, not waited behind. Needs a
+   * driver that can hold limits — every built-in one can.
    */
   concurrency?: number;
 }

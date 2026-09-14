@@ -26,6 +26,7 @@ import type {
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
@@ -114,6 +115,54 @@ const DUPLICATE_KEY = 11000;
  * retry is the reasoning, and this is the margin on it.
  */
 const CREATE_RETRIES = 3;
+
+/**
+ * How many jobs a claim with excluded names reads from the head of the queue.
+ *
+ * Short, so a job that arrives at the head is seen on the very next claim
+ * however far into a block of excluded jobs the continuation has moved.
+ */
+const EXCLUDE_HEAD_WINDOW = 64;
+
+/**
+ * How many jobs a claim with excluded names reads past the head, resuming
+ * where the previous claim stopped.
+ *
+ * A `$nin` in the claim filter used to fetch every excluded waiting job ahead
+ * of the first allowed one — measured, 10,001 documents examined and 65ms per
+ * attempt behind 10,000 capped jobs, repeated on every retry while the name
+ * stayed capped. A window bounds one claim's cost; the cursor is what makes
+ * successive claims reach the end.
+ */
+const EXCLUDE_SCAN_WINDOW = 1_000;
+
+/** How many exclusion cursors one driver keeps before forgetting the oldest. */
+const EXCLUDE_CURSOR_LIMIT = 1_000;
+
+/** The claim-order position of a job, and the one field a window filters on. */
+type ClaimPosition = Pick<
+  JobDocument,
+  "_id" | "name" | "priority" | "createdAt"
+>;
+
+/** What reading one window of candidates found. */
+interface ClaimWindow {
+  /** The job claimed from the window, when one was. */
+  claimed: JobRecord | null;
+  /** How many documents the window returned. */
+  count: number;
+  /** The last position the window returned. Absent when it returned none. */
+  last?: ClaimPosition;
+}
+
+/** Orders two claim positions as the claim index does. */
+function compareClaimPositions(a: ClaimPosition, b: ClaimPosition): number {
+  return (
+    a.priority - b.priority ||
+    a.createdAt - b.createdAt ||
+    (a._id < b._id ? -1 : a._id > b._id ? 1 : 0)
+  );
+}
 
 /**
  * How many jobs go into one `insertMany`.
@@ -289,8 +338,13 @@ interface KvDocument {
   history?: string[];
   /** Queued triggers, oldest first, each entry JSON. */
   queued?: string[];
-  /** An arbitrary JSON document, for queue metadata and repeats. */
+  /** An arbitrary JSON document, for queue metadata, repeats and queue state. */
   value?: string;
+  /**
+   * A queue state entry's version, which a compare-and-set names in its
+   * filter. Present on queue state documents only, so it also tells them apart.
+   */
+  version?: number;
   /** When it last changed. */
   updatedAt: number;
 }
@@ -379,6 +433,14 @@ export class MongoDriver implements JobsDriver {
    * different points only covers the log sooner.
    */
   readonly #logSweepFrom = new Map<string, string>();
+  /**
+   * Where a claim with excluded names resumes past the head window: the last
+   * position a full continuation window examined without finding an allowed
+   * job, keyed by queue and exclusion set. Absent means start after the head.
+   * Per instance and bounded to {@link EXCLUDE_CURSOR_LIMIT} entries, oldest
+   * forgotten first — losing one only costs a rescan from the head.
+   */
+  readonly #excludeCursors = new Map<string, ClaimPosition>();
 
   /** The last log sequence number this instance handed out. */
   #lastLogSeq = 0;
@@ -484,7 +546,15 @@ export class MongoDriver implements JobsDriver {
   async listQueues(ns: string): Promise<string[]> {
     const [jobs, kv] = await Promise.all([
       (await this.#jobs()).distinct("queue", { ns }),
-      (await this.#kv()).find({ ns, key: { $regex: "^q:.*:meta$" } }).toArray(),
+      // A queue state entry named `...:meta` would match the pattern too, so
+      // those are told apart by the version only they carry.
+      (await this.#kv())
+        .find({
+          ns,
+          key: { $regex: "^q:.*:meta$" },
+          version: { $exists: false },
+        })
+        .toArray(),
     ]);
 
     const names = new Set<string>(jobs as string[]);
@@ -951,6 +1021,10 @@ export class MongoDriver implements JobsDriver {
 
     const jobs = await this.#jobs();
 
+    if (opts.excludeNames && opts.excludeNames.length > 0) {
+      return await this.#claimExcluding(jobs, q, opts, opts.excludeNames);
+    }
+
     // One atomic document update: the server picks the document, applies the
     // claim and returns it, so exactly one caller can receive any given job.
     const claimed = await jobs.findOneAndUpdate(
@@ -960,16 +1034,7 @@ export class MongoDriver implements JobsDriver {
         state: "waiting",
         runAt: { $lte: opts.now },
       },
-      {
-        $set: {
-          state: "active",
-          processedOn: opts.now,
-          lockToken: opts.token,
-          lockExpiresAt: opts.now + opts.lockMs,
-          workerId: opts.workerId,
-        },
-        $inc: { attemptsMade: 1 },
-      },
+      this.#claimUpdate(opts),
       {
         sort: { priority: 1, createdAt: 1, _id: 1 },
         returnDocument: "after",
@@ -977,6 +1042,161 @@ export class MongoDriver implements JobsDriver {
     );
 
     return claimed ? this.#toRecord(claimed) : null;
+  }
+
+  /** The update that turns a waiting job into one held by the claimer. */
+  #claimUpdate(opts: ClaimOptions): UpdateFilter<JobDocument> {
+    return {
+      $set: {
+        state: "active",
+        processedOn: opts.now,
+        lockToken: opts.token,
+        lockExpiresAt: opts.now + opts.lockMs,
+        workerId: opts.workerId,
+      },
+      $inc: { attemptsMade: 1 },
+    };
+  }
+
+  /**
+   * Claims the first due job whose name is not excluded, in bounded steps.
+   *
+   * `name` is not in the claim index, so filtering on it server-side fetches
+   * every excluded job ahead of the first allowed one. Instead candidates are
+   * read in index order from two windows — a short one at the head, so new
+   * work is seen promptly, and a longer one resuming from a per-queue cursor,
+   * so a block of excluded jobs is crossed a window per claim — filtered here,
+   * and taken one at a time by id. The take names `state: "waiting"`, so a
+   * candidate somebody else claimed first is simply passed over.
+   */
+  async #claimExcluding(
+    jobs: Collection<JobDocument>,
+    q: QueueRef,
+    opts: ClaimOptions,
+    excludeNames: string[],
+  ): Promise<JobRecord | null> {
+    const excluded = new Set(excludeNames);
+    const key = [q.ns, q.queue, ...[...excluded].sort()].join(" ");
+    const due: Filter<JobDocument> = {
+      ns: q.ns,
+      queue: q.queue,
+      state: "waiting",
+      runAt: { $lte: opts.now },
+    };
+
+    const head = await this.#claimWindow(
+      jobs,
+      due,
+      undefined,
+      EXCLUDE_HEAD_WINDOW,
+      excluded,
+      opts,
+    );
+
+    if (head.claimed) {
+      return head.claimed;
+    }
+
+    // The head held everything due: there is nothing past it to resume into.
+    if (!head.last || head.count < EXCLUDE_HEAD_WINDOW) {
+      this.#excludeCursors.delete(key);
+      return null;
+    }
+
+    // Resume from whichever is further in: the cursor, or the end of the head
+    // (a cursor the head has overtaken would only re-read the head).
+    const saved = this.#excludeCursors.get(key);
+    const from =
+      saved && compareClaimPositions(saved, head.last) > 0 ? saved : head.last;
+
+    const rest = await this.#claimWindow(
+      jobs,
+      due,
+      from,
+      EXCLUDE_SCAN_WINDOW,
+      excluded,
+      opts,
+    );
+
+    this.#excludeCursors.delete(key);
+
+    if (rest.count < EXCLUDE_SCAN_WINDOW || !rest.last) {
+      // Short: the window reached the end of what is due, so the next claim
+      // starts after the head again.
+      return rest.claimed;
+    }
+
+    // Full: nothing allowed means the next claim looks past this window;
+    // a claim means the window may hold more, so the next one reads it again.
+    this.#excludeCursors.set(key, rest.claimed ? from : rest.last);
+
+    if (this.#excludeCursors.size > EXCLUDE_CURSOR_LIMIT) {
+      const oldest = this.#excludeCursors.keys().next().value;
+
+      if (oldest !== undefined) {
+        this.#excludeCursors.delete(oldest);
+      }
+    }
+
+    return rest.claimed;
+  }
+
+  /**
+   * Reads one index-ordered window of due jobs after `after` (from the head
+   * when absent), and claims the first one whose name is allowed.
+   */
+  async #claimWindow(
+    jobs: Collection<JobDocument>,
+    due: Filter<JobDocument>,
+    after: ClaimPosition | undefined,
+    limit: number,
+    excluded: ReadonlySet<string>,
+    opts: ClaimOptions,
+  ): Promise<ClaimWindow> {
+    // "After" as a disjunction of compound comparisons, one per sort key, so
+    // each branch is a bounded range of the claim index rather than a filter
+    // applied to a scan from the start of the queue.
+    const filter: Filter<JobDocument> = after
+      ? {
+          ...due,
+          $or: [
+            { priority: { $gt: after.priority } },
+            { priority: after.priority, createdAt: { $gt: after.createdAt } },
+            {
+              priority: after.priority,
+              createdAt: after.createdAt,
+              _id: { $gt: after._id },
+            },
+          ],
+        }
+      : due;
+
+    const window = await jobs
+      .find<ClaimPosition>(filter, {
+        sort: { priority: 1, createdAt: 1, _id: 1 },
+        limit,
+        batchSize: limit,
+        projection: { _id: 1, name: 1, priority: 1, createdAt: 1 },
+      })
+      .toArray();
+
+    for (const candidate of window) {
+      if (excluded.has(candidate.name)) {
+        continue;
+      }
+
+      const claimed = await jobs.findOneAndUpdate(
+        { _id: candidate._id, state: "waiting", runAt: { $lte: opts.now } },
+        this.#claimUpdate(opts),
+        { returnDocument: "after" },
+      );
+
+      if (claimed) {
+        return { claimed: this.#toRecord(claimed), count: window.length };
+      }
+    }
+
+    return { claimed: null, count: window.length, last: window.at(-1) };
   }
 
   async extendJobLock(
@@ -1579,6 +1799,80 @@ export class MongoDriver implements JobsDriver {
     }
 
     return result.deletedCount;
+  }
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    const kv = await this.#kv();
+    const document = await kv.findOne({ _id: this.#queueStateId(q, name) });
+
+    return document?.value !== undefined && document.version !== undefined
+      ? { value: JSON.parse(document.value), version: document.version }
+      : null;
+  }
+
+  /**
+   * Each branch is a single-document write whose filter carries the
+   * condition, so the server checks and writes in one step: of many callers
+   * naming the same version, one matches and the rest match nothing. Creation
+   * gets the same guarantee from the `_id` being unique.
+   */
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    const kv = await this.#kv();
+    const _id = this.#queueStateId(q, name);
+
+    if (value === null) {
+      if (expected === null) {
+        // Deleting what must not exist changes nothing; it only succeeds if
+        // that is still true.
+        return (await kv.findOne({ _id }, { projection: { _id: 1 } }))
+          ? null
+          : 0;
+      }
+
+      const result = await kv.deleteOne({ _id, version: expected });
+      return result.deletedCount === 1 ? 0 : null;
+    }
+
+    const encoded = JSON.stringify(value);
+
+    if (expected === null) {
+      try {
+        await kv.insertOne({
+          _id,
+          ns: q.ns,
+          key: `q:${q.queue}:state:${name}`,
+          value: encoded,
+          version: 1,
+          updatedAt: Date.now(),
+        });
+        return 1;
+      } catch (error) {
+        if (isDuplicateKey(error)) {
+          return null;
+        }
+        throw new DriverError("mongodb", "setQueueState", error, {
+          queue: q.queue,
+        });
+      }
+    }
+
+    // `updateOne` rather than `findOneAndUpdate`: the new version is known
+    // without the document, so there is nothing worth sending back.
+    const result = await kv.updateOne(
+      { _id, version: expected },
+      {
+        $set: { value: encoded, version: expected + 1, updatedAt: Date.now() },
+      },
+    );
+    return result.matchedCount === 1 ? expected + 1 : null;
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {
@@ -2235,6 +2529,14 @@ export class MongoDriver implements JobsDriver {
   /** The `_id` of a runner's state document. */
   #stateId(ns: string, key: string): string {
     return `${ns}:${key}:state`;
+  }
+
+  /**
+   * The `_id` of a queue state entry. Built like a queue's `meta` key, so
+   * `purge` takes it with the rest of the namespace.
+   */
+  #queueStateId(q: QueueRef, name: string): string {
+    return `${q.ns}:q:${q.queue}:state:${name}`;
   }
 
   /** Applies an update to a runner's state, creating the document if needed. */

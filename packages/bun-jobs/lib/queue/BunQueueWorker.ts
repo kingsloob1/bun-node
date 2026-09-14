@@ -2,6 +2,7 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { JobRecord, JobsDriver, QueueRef } from "../drivers/index";
 import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
+import type { Reservation } from "./limits";
 import type {
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
@@ -43,10 +44,14 @@ import { createJobsLogger } from "../shared/logger";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { Job } from "./Job";
+import { QueueLimiter } from "./limits";
 import { nextOccurrence, repeatJobId } from "./repeat";
 
 /** How many jobs one maintenance sweep touches. */
 const MAINTENANCE_BATCH = 100;
+
+/** The longest a worker held back by a concurrency limit waits before asking again. */
+const LIMITED_RECHECK_MS = 100;
 
 /** How long a paused check is cached before the driver is asked again. */
 const PAUSE_CACHE_MS = 1000;
@@ -112,6 +117,16 @@ export class BunQueueWorker<
   readonly #token: string;
   /** Named backoff strategies, for jobs that name one. */
   readonly #backoffs: BackoffStrategies;
+  /**
+   * This worker's side of the queue's stored limits, when the driver can hold
+   * them. It costs one cached read a second on a queue with none.
+   */
+  readonly #limiter: QueueLimiter | undefined;
+  /**
+   * How long to wait before claiming again after a pass the limits held back,
+   * or `undefined` when the last pass was not limited.
+   */
+  #limitedFor: number | undefined;
   /** The dead-letter queue for jobs that do not name their own. */
   readonly #deadLetterQueue: string | undefined;
   /** Dead-letter queues opened so far, by name, closed with the worker. */
@@ -188,6 +203,15 @@ export class BunQueueWorker<
 
     this.#publishes = options.publish ?? false;
     this.#backoffs = BackoffStrategies.from(options.backoffStrategies);
+    this.#limiter = QueueLimiter.supports(driver)
+      ? new QueueLimiter(
+          driver,
+          this.ref,
+          this.id,
+          lockDuration,
+          options.limitsRefreshInterval,
+        )
+      : undefined;
     this.#deadLetterQueue =
       options.deadLetterQueue === undefined
         ? undefined
@@ -316,6 +340,9 @@ export class BunQueueWorker<
       // hold shutdown hostage; its lock lapses and the stalled sweep returns
       // the job to the queue, so the work is delayed rather than lost.
       await this.#closeDeadLetters();
+      await this.#limiter
+        ?.close()
+        .catch((error: unknown) => this.#emitError(error, "limits"));
 
       if (this.#ownsDriver) {
         await this.driver.close();
@@ -351,6 +378,9 @@ export class BunQueueWorker<
     }
 
     await this.#closeDeadLetters();
+    await this.#limiter
+      ?.close()
+      .catch((error: unknown) => this.#emitError(error, "limits"));
 
     if (this.#ownsDriver) {
       await this.driver.close();
@@ -426,6 +456,19 @@ export class BunQueueWorker<
     }
 
     if (claimed > 0) {
+      return;
+    }
+
+    if (this.#limitedFor !== undefined) {
+      // Held back by the queue's limits, not short of work: wait for the
+      // window to end or for one of this worker's own jobs to finish, and do
+      // not announce a drain that did not happen.
+      const wait = this.#limitedFor;
+      this.#limitedFor = undefined;
+      await Promise.race([
+        this.#sleepUntilWake(wait),
+        ...this.#active.values(),
+      ]).catch(() => {});
       return;
     }
 
@@ -533,6 +576,28 @@ export class BunQueueWorker<
       return 0;
     }
 
+    const now = Date.now();
+    const reservation = await this.#reserve(slots, now);
+
+    // Reading the limits is an await, and `pause()` or `close()` may have
+    // landed during it. The check at the top of the pass has already been
+    // made, so it is made again here, before anything is claimed — and any
+    // capacity reserved in the meantime goes straight back.
+    if (this.#paused || this.#closing) {
+      if (reservation && reservation.grant > 0) {
+        await this.#limiter!.commit(reservation, [], Date.now()).catch(
+          (error: unknown) => this.#emitError(error, "limits"),
+        );
+      }
+
+      return 0;
+    }
+
+    if (reservation && reservation.grant === 0) {
+      this.#limitedFor = this.#limitedWait(reservation.retryAfter);
+      return 0;
+    }
+
     const records = await claimJobBatch(
       this.driver,
       this.ref,
@@ -540,10 +605,28 @@ export class BunQueueWorker<
         workerId: this.id,
         token: this.#token,
         lockMs: this.#options.lockDuration,
-        now: Date.now(),
+        now,
+        ...(reservation && reservation.excludeNames.length > 0
+          ? { excludeNames: reservation.excludeNames }
+          : {}),
       },
-      slots,
+      reservation?.grant ?? slots,
     );
+
+    if (reservation) {
+      await this.#limiter!.commit(
+        reservation,
+        records.map((record) => record.name),
+        Date.now(),
+      ).catch((error: unknown) => this.#emitError(error, "limits"));
+
+      // Nothing came back while names were being skipped: there may well be
+      // work, all of it capped. Waiting for work would return at once and
+      // spin, so wait out the limit instead — and never call that drained.
+      if (records.length === 0 && reservation.excludeNames.length > 0) {
+        this.#limitedFor = this.#limitedWait(undefined);
+      }
+    }
 
     for (const record of records) {
       // Schedule the series' next occurrence *before* running this one, so a
@@ -561,6 +644,30 @@ export class BunQueueWorker<
     }
 
     return records.length;
+  }
+
+  /** Reserves capacity under the queue's limits, or `null` when it has none. */
+  async #reserve(slots: number, now: number): Promise<Reservation | null> {
+    if (!this.#limiter) {
+      return null;
+    }
+
+    try {
+      return await this.#limiter.reserve(slots, now);
+    } catch (error) {
+      // Limits that cannot be read are not a reason to stop consuming: the
+      // cost of running unlimited for a moment is less than a stalled queue.
+      this.#emitError(error, "limits");
+      return null;
+    }
+  }
+
+  /** How long a limited pass waits: until its window ends, within bounds. */
+  #limitedWait(retryAfter: number | undefined): number {
+    const recheck = Math.min(this.#options.pollInterval, LIMITED_RECHECK_MS);
+    return retryAfter === undefined
+      ? recheck
+      : Math.max(1, Math.min(retryAfter, this.#options.maxBlock));
   }
 
   /**
@@ -643,6 +750,7 @@ export class BunQueueWorker<
       await this.#recordFailure(job, record, error);
     } finally {
       clearInterval(heartbeat);
+      this.#limiter?.release(record.name);
     }
   }
 

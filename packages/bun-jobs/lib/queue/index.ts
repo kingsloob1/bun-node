@@ -17,6 +17,14 @@ export { JobDefinitions } from "./definitions";
 export { Job } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
 export {
+  DEFAULT_LIMITS_REFRESH_MS,
+  type NameLimits,
+  QueueLimiter,
+  type QueueLimits,
+  type RateLimit,
+  type StoredLimits,
+} from "./limits";
+export {
   DEFAULT_JOB_OPTIONS,
   resolveJobOptions,
   resolveRunAt,

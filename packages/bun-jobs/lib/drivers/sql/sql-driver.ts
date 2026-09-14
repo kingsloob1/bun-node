@@ -19,13 +19,14 @@ import type {
   LockInfo,
   QueuedTrigger,
   QueueRef,
+  QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
   RunRecord,
 } from "../driver";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
-import type { SqlAdapter, SqlDialect } from "./dialect";
+import type { ClaimCursor, SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
 import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
@@ -147,6 +148,16 @@ const PENDING: JobState[] = ["waiting", "delayed"];
  * maintenance tick from paying a query every second for nothing.
  */
 const LOG_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * How long a claim cursor lives without being used.
+ *
+ * A cursor is keyed by the set of names a claim skipped, and the set changes as
+ * limits fill and drain, so each one that is no longer asked for is dropped
+ * rather than kept for the life of the process. Losing one costs nothing but a
+ * pass from the head.
+ */
+const CLAIM_CURSOR_IDLE_MS = 60_000;
 
 /**
  * Whether an error is the engine saying the `log_key` column does not exist.
@@ -329,6 +340,23 @@ export class SqlDriver implements JobsDriver {
     string,
     { after?: { logKey: string; seq: string }; notBefore: number }
   >();
+
+  /**
+   * Where claims that skip names have got to, keyed by `ns`, `queue` and the
+   * sorted names skipped.
+   *
+   * `after` is the last row of the last full window a claim passed over, and
+   * `usedAt` when a claim last read it, for {@link CLAIM_CURSOR_IDLE_MS}. In
+   * memory and per driver: another process keeps its own, and a restart starts
+   * again from the head, which is only slower.
+   */
+  readonly #claimCursors = new Map<
+    string,
+    { after: ClaimCursor; usedAt: number }
+  >();
+
+  /** When {@link SqlDriver.#claimCursors} was last swept for idle entries. */
+  #claimCursorsSweptAt = 0;
 
   /**
    * Whether the `jobs` table was last seen without its `log_key` column — an
@@ -526,9 +554,15 @@ export class SqlDriver implements JobsDriver {
           WHERE ns = ${jobsQuery.bind(ns)}`,
         jobsQuery.values,
       ),
+      // Queue-state entries share the `q:` prefix, and one named `meta` (or
+      // ending in `:meta`) would otherwise surface as a queue called
+      // `<queue>:state`. The key alone cannot tell that apart from a queue
+      // whose own name contains `:state:`; such a queue still appears through
+      // its jobs, and only an empty one is hidden.
       this.#all<{ kv_key: string }>(
         `SELECT kv_key FROM ${this.#tables.kv}
-          WHERE ns = ${metaQuery.bind(ns)} AND kv_key LIKE ${metaQuery.bind("q:%:meta")}`,
+          WHERE ns = ${metaQuery.bind(ns)} AND kv_key LIKE ${metaQuery.bind("q:%:meta")}
+            AND kv_key NOT LIKE ${metaQuery.bind("q:%:state:%")}`,
         metaQuery.values,
       ),
     ]);
@@ -1159,6 +1193,27 @@ export class SqlDriver implements JobsDriver {
     // with `maintenance: false` promotes explicitly, which is what the
     // contract suite does.
 
+    if (!opts.excludeNames || opts.excludeNames.length === 0) {
+      return await this.#claimOne(q, opts, null);
+    }
+
+    const [job] = await this.#claimPastExclusions(q, opts, 1, async (after) => {
+      const claimed = await this.#claimOne(q, opts, after);
+      return claimed ? [claimed] : [];
+    });
+
+    return job ?? null;
+  }
+
+  /**
+   * Claims one job, from the head of the queue or, for a claim that skips
+   * names, from `after`.
+   */
+  async #claimOne(
+    q: QueueRef,
+    opts: ClaimOptions,
+    after: ClaimCursor | null,
+  ): Promise<JobRecord | null> {
     // Every engine claims differently — a CTE, a joined derived table, a
     // scalar subquery under a write lock — so the statement comes from the
     // dialect. What they share is the guarantee: at most one row, taken by
@@ -1174,6 +1229,8 @@ export class SqlDriver implements JobsDriver {
       token: opts.token,
       workerId: opts.workerId,
       lockMs: opts.lockMs,
+      excludeNames: opts.excludeNames,
+      after,
     });
 
     /** The claim, given whichever connection it should run on. */
@@ -1205,6 +1262,11 @@ export class SqlDriver implements JobsDriver {
           token: opts.token,
           workerId: opts.workerId,
           lockMs: opts.lockMs,
+          // Excluded names are filtered here, at the pick. The take below needs
+          // no filter of its own: it names this id, and a job's name never
+          // changes between the two.
+          excludeNames: opts.excludeNames,
+          after,
         }),
         pick.values,
         tx,
@@ -1283,6 +1345,28 @@ export class SqlDriver implements JobsDriver {
       return [];
     }
 
+    if (!opts.excludeNames || opts.excludeNames.length === 0) {
+      return await this.#claimMany(q, opts, limit, null);
+    }
+
+    return await this.#claimPastExclusions(
+      q,
+      opts,
+      limit,
+      async (after, wanted) => await this.#claimMany(q, opts, wanted, after),
+    );
+  }
+
+  /**
+   * `claimJobs`' single statement, from the head of the queue or, for a claim
+   * that skips names, from `after`.
+   */
+  async #claimMany(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+    after: ClaimCursor | null,
+  ): Promise<JobRecord[]> {
     const { bind, values } = this.#binder();
     const statement = this.dialect.claim({
       table: this.#tables.jobs,
@@ -1294,6 +1378,8 @@ export class SqlDriver implements JobsDriver {
       workerId: opts.workerId,
       lockMs: opts.lockMs,
       limit,
+      excludeNames: opts.excludeNames,
+      after,
     });
 
     const rows = await this.#all<Record<string, unknown>>(statement, values);
@@ -1308,6 +1394,116 @@ export class SqlDriver implements JobsDriver {
           a.createdAt - b.createdAt ||
           (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
       );
+  }
+
+  /**
+   * Runs a claim that skips names over two bounded windows of the queue.
+   *
+   * Each claim statement looks at no more than `CLAIM_WINDOW` waiting rows, so
+   * a job behind a longer run of skipped ones is out of its sight. The head
+   * window goes first, so a job that arrives at the front is taken on the very
+   * next claim however far back the cursor is; only when that falls short does
+   * the window at the cursor run. When the last window looked at was full and
+   * still fell short, everything in it was skipped or gone, so the cursor moves
+   * to its end; when it was not full it reached the end of the queue, and the
+   * cursor is dropped to start over from the head.
+   *
+   * `claim` runs one windowed claim for up to `wanted` jobs.
+   */
+  async #claimPastExclusions(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+    claim: (after: ClaimCursor | null, wanted: number) => Promise<JobRecord[]>,
+  ): Promise<JobRecord[]> {
+    const usedAt = Date.now();
+    this.#sweepClaimCursors(usedAt);
+
+    const key = JSON.stringify([
+      q.ns,
+      q.queue,
+      [...new Set(opts.excludeNames)].sort(),
+    ]);
+    const cursor = this.#claimCursors.get(key);
+    if (cursor) {
+      cursor.usedAt = usedAt;
+    }
+
+    const claimed = await claim(null, limit);
+    if (claimed.length >= limit) {
+      return claimed;
+    }
+
+    // Without a cursor the window at it *is* the head window, which has just
+    // fallen short; running it again would find the same nothing.
+    const from = cursor?.after ?? null;
+    if (from) {
+      claimed.push(...(await claim(from, limit - claimed.length)));
+      if (claimed.length >= limit) {
+        return claimed;
+      }
+    }
+
+    const end = await this.#claimWindowEnd(q, opts, from);
+    if (end) {
+      this.#claimCursors.set(key, { after: end, usedAt });
+    } else {
+      this.#claimCursors.delete(key);
+    }
+
+    return claimed;
+  }
+
+  /** The last row of the window at `after`, or `null` when it is not full. */
+  async #claimWindowEnd(
+    q: QueueRef,
+    opts: ClaimOptions,
+    after: ClaimCursor | null,
+  ): Promise<ClaimCursor | null> {
+    const { bind, values } = this.#binder();
+    const row = await this.#one<{
+      priority: number | string;
+      created_at: number | string | bigint;
+      id: string;
+    }>(
+      this.dialect.claimWindowEnd({
+        table: this.#tables.jobs,
+        bind,
+        ns: q.ns,
+        queue: q.queue,
+        now: opts.now,
+        token: opts.token,
+        workerId: opts.workerId,
+        lockMs: opts.lockMs,
+        excludeNames: opts.excludeNames,
+        after,
+      }),
+      values,
+    );
+
+    // Engines hand a `BIGINT` back as a number, a string or a bigint; an epoch
+    // millisecond is exact as a number whichever arrives.
+    return row
+      ? {
+          priority: Number(row.priority),
+          createdAt: Number(row.created_at),
+          id: String(row.id),
+        }
+      : null;
+  }
+
+  /** Drops claim cursors unused for {@link CLAIM_CURSOR_IDLE_MS}. */
+  #sweepClaimCursors(now: number): void {
+    if (now - this.#claimCursorsSweptAt < CLAIM_CURSOR_IDLE_MS) {
+      return;
+    }
+
+    this.#claimCursorsSweptAt = now;
+    for (const [key, cursor] of this.#claimCursors) {
+      if (now - cursor.usedAt > CLAIM_CURSOR_IDLE_MS) {
+        this.#claimCursors.delete(key);
+      }
+    }
   }
 
   async extendJobLock(
@@ -2059,6 +2255,99 @@ export class SqlDriver implements JobsDriver {
           AND state IN (${states.map((state) => bind(state)).join(", ")})`,
       values,
     );
+  }
+
+  async getQueueState(
+    q: QueueRef,
+    name: string,
+  ): Promise<QueueStateEntry | null> {
+    const entry = await this.#readKv<QueueStateEntry>(
+      q.ns,
+      this.#queueStateKey(q, name),
+    );
+
+    return entry ? { value: entry.value, version: entry.version } : null;
+  }
+
+  /**
+   * A compare-and-set on one `kv` row, as a single conditional statement.
+   *
+   * The version lives inside the stored document, `{ version, value }`, rather
+   * than in a column of its own: `kv` is shared with runner state and queue
+   * metadata, and a column only this uses would need a schema sync on every
+   * existing install to buy nothing a `WHERE` on the extracted field does not.
+   * The next version is computed here, not in SQL — the statement only matches
+   * a row still at `expected`, so `expected + 1` is exactly what it would say.
+   *
+   * No transaction and no read first. Each engine already re-checks an
+   * `UPDATE`'s condition against the row it waited for — Postgres re-evaluates
+   * it on the newer tuple, InnoDB reads the latest committed version under the
+   * row lock, SQLite has one writer — so of several callers naming one version
+   * exactly one matches, and the others affect nothing.
+   */
+  async setQueueState(
+    q: QueueRef,
+    name: string,
+    value: unknown,
+    expected: number | null,
+  ): Promise<number | null> {
+    await this.connect();
+
+    const { dialect } = this;
+    const table = this.#tables.kv;
+    const key = this.#queueStateKey(q, name);
+    const version = dialect.jsonInteger("value", "version");
+    const { bind, values } = this.#binder();
+
+    if (expected === null) {
+      // Deleting an entry only if there is none: nothing to write, just a
+      // question to answer, and a read is as atomic as that needs.
+      if (value === null) {
+        return (await this.getQueueState(q, name)) ? null : 0;
+      }
+
+      // Created only when absent. A re-created entry starts again from 1, which
+      // the contract allows: whoever held the old version saw the delete fail
+      // their compare-and-set already, or has yet to read the new entry.
+      const created = await this.#conditionalWrite(
+        dialect.insertIgnore(
+          table,
+          ["ns", "kv_key", "value", "updated_at"],
+          [
+            bind(q.ns),
+            bind(key),
+            dialect.jsonParameter(bind(dialect.jsonIn({ version: 1, value }))),
+            bind(Date.now()),
+          ],
+        ),
+        values,
+      );
+
+      return created ? 1 : null;
+    }
+
+    if (value === null) {
+      const deleted = await this.#conditionalWrite(
+        `DELETE FROM ${table}
+          WHERE ns = ${bind(q.ns)} AND kv_key = ${bind(key)}
+            AND ${version} = ${bind(expected)}`,
+        values,
+      );
+
+      return deleted ? 0 : null;
+    }
+
+    const next = expected + 1;
+    const updated = await this.#conditionalWrite(
+      `UPDATE ${table}
+          SET value = ${dialect.jsonParameter(bind(dialect.jsonIn({ version: next, value })))},
+              updated_at = ${bind(Date.now())}
+        WHERE ns = ${bind(q.ns)} AND kv_key = ${bind(key)}
+          AND ${version} = ${bind(expected)}`,
+      values,
+    );
+
+    return updated ? next : null;
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {
@@ -2880,6 +3169,38 @@ export class SqlDriver implements JobsDriver {
 
       this.#logKeyMissing = true;
     }
+  }
+
+  /**
+   * The `kv` key a queue-state entry lives under.
+   *
+   * Under the queue's own `q:<queue>:` prefix, so `purge(ns)` removes it with
+   * everything else and `listRunners`' `r:%` never sees it. `listQueues`
+   * matches `q:%:meta`, which a state *named* `meta` would also match, and so
+   * excludes this prefix explicitly.
+   */
+  #queueStateKey(q: QueueRef, name: string): string {
+    return `q:${q.queue}:state:${name}`;
+  }
+
+  /**
+   * Runs a conditional write and answers whether it matched a row.
+   *
+   * Judged by the most reliable count each engine offers. Where there is
+   * `RETURNING`, a returned row is the proof: Bun's SQLite client does not
+   * report an affected-row count that can be trusted. MySQL and MariaDB go
+   * through {@link SqlDriver.#run}'s same-connection `ROW_COUNT()`, which
+   * counts *changed* rows rather than matched ones — safe for every caller
+   * here, because each write either removes the row or bumps the version it
+   * holds, and so never leaves a matched row unchanged.
+   */
+  async #conditionalWrite(text: string, params: unknown[]): Promise<boolean> {
+    if (this.dialect.supportsReturning) {
+      const rows = await this.#all(`${text} RETURNING kv_key`, params);
+      return rows.length > 0;
+    }
+
+    return (await this.#run(text, params)) > 0;
   }
 
   /** Reads one key/value document. */

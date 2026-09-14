@@ -249,6 +249,16 @@ export class BunJobs {
       throw new ConfigError("A job definition needs a name", { name });
     }
 
+    if (
+      options.concurrency !== undefined &&
+      (!Number.isInteger(options.concurrency) || options.concurrency < 1)
+    ) {
+      throw new ConfigError(
+        `The concurrency for "${name}" must be a whole number of at least 1`,
+        { name, concurrency: options.concurrency },
+      );
+    }
+
     this.#definitions.set<TData, TResult>({ name, handler, options });
     return this;
   }
@@ -372,6 +382,8 @@ export class BunJobs {
       });
     }
 
+    await this.#storeDefinitionLimits();
+
     const worker = this.worker<unknown, unknown>(
       this.#registryQueue,
       async (job, context) => {
@@ -397,6 +409,42 @@ export class BunJobs {
     this.#registryWorker = worker;
     void worker.run();
     return worker;
+  }
+
+  /**
+   * Stores each definition's `concurrency` as a per-name limit on the
+   * registry's queue, so every process consuming it enforces the same cap.
+   *
+   * Merged into what is already stored rather than replacing it: the queue's
+   * rate, its overall concurrency and every name without a definition here
+   * stay exactly as they were. Nothing is written when nothing would change,
+   * so a fleet of processes starting together does not rewrite the limits
+   * once each.
+   */
+  async #storeDefinitionLimits(): Promise<void> {
+    const capped = this.#definitions
+      .all()
+      .filter((definition) => definition.options.concurrency !== undefined);
+
+    if (capped.length === 0) {
+      return;
+    }
+
+    const queue = this.queue(this.#registryQueue);
+    const current = await queue.getLimits();
+    const names = { ...current?.names };
+    let changed = false;
+
+    for (const { name, options } of capped) {
+      if (names[name]?.concurrency !== options.concurrency) {
+        names[name] = { ...names[name], concurrency: options.concurrency };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await queue.setLimits({ ...current, names });
+    }
   }
 
   /** Stops consuming defined jobs, leaving what is in flight to finish. */

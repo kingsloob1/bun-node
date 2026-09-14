@@ -253,6 +253,12 @@ export interface BunQueueWorkerOptions {
    * Unset by default: a dead job stays where it died.
    */
   deadLetterQueue?: string;
+  /**
+   * How long the queue's stored limits are trusted before a worker reads them
+   * again, in milliseconds. A change made with `queue.setLimits()` reaches
+   * every worker within this. Defaults to `1000`.
+   */
+  limitsRefreshInterval?: number;
 }
 
 /**
