@@ -41,6 +41,7 @@ import { queueEvent } from "../shared/events";
 import { newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
+import { waitForAny } from "../shared/wait";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { IsolatedProcessor } from "./isolation";
@@ -570,10 +571,9 @@ export class BunQueueWorker<
       // Full: wait for a slot rather than spinning on a claim that cannot
       // succeed — or for a wake, so `close()` is not left waiting on a loop
       // that is itself waiting on a job that may never finish.
-      await Promise.race([
+      await this.#sleepUntilWake(this.#options.lockDuration, [
         ...this.#active.values(),
-        this.#sleepUntilWake(this.#options.lockDuration),
-      ]).catch(() => {});
+      ]);
       return;
     }
 
@@ -587,10 +587,7 @@ export class BunQueueWorker<
       // not announce a drain that did not happen.
       const wait = this.#limitedFor;
       this.#limitedFor = undefined;
-      await Promise.race([
-        this.#sleepUntilWake(wait),
-        ...this.#active.values(),
-      ]).catch(() => {});
+      await this.#sleepUntilWake(wait, [...this.#active.values()]);
       return;
     }
 
@@ -1554,8 +1551,15 @@ export class BunQueueWorker<
     }
   }
 
-  /** Sleeps, unless `resume()` or `close()` wakes the worker first. */
-  async #sleepUntilWake(ms: number): Promise<void> {
+  /**
+   * Sleeps until `ms` pass, `resume()` or `close()` wakes the worker, or any of
+   * `alsoWhen` settles — whichever comes first — and leaves nothing behind on
+   * the wake signal, which lives as long as the worker. See `waitForAny`.
+   */
+  async #sleepUntilWake(
+    ms: number,
+    alsoWhen: Promise<unknown>[] = [],
+  ): Promise<void> {
     if (this.#closing) {
       return;
     }
@@ -1566,12 +1570,7 @@ export class BunQueueWorker<
     }
 
     const wake = this.#wake;
-
-    try {
-      await sleep(ms, { signal: wake.signal, unref: true });
-    } catch {
-      // Aborted: a pause changed, or the worker is closing.
-    }
+    await waitForAny(ms, { signal: wake.signal, others: alsoWhen });
 
     if (wake.signal.aborted) {
       this.#wake = new AbortController();

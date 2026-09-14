@@ -2609,10 +2609,25 @@ export class SqlDriver implements JobsDriver {
     // reconnects, and a job promoted by another process's maintenance sweep is
     // never announced at all.
     if (this.#notify) {
-      await Promise.race([
-        this.#arrivals.wait(q, timeoutMs, signal),
-        this.#pollForJob(q, deadline, signal),
-      ]);
+      // Whichever finishes first ends the other. The caller's signal outlives
+      // this wait — a worker passes the same one to every wait — so the two
+      // listen on a controller of their own, linked to it by one listener that
+      // goes when the race settles. Otherwise the loser kept going until its
+      // deadline: a poll loop still querying, or a notification waiter still
+      // registered, and a listener left on the caller's signal each time.
+      const local = new AbortController();
+      const onAbort = () => local.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        await Promise.race([
+          this.#arrivals.wait(q, timeoutMs, local.signal),
+          this.#pollForJob(q, deadline, local.signal),
+        ]);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        local.abort();
+      }
       return;
     }
 
@@ -2660,7 +2675,10 @@ export class SqlDriver implements JobsDriver {
         return true;
       }
 
+      // With the signal, so a wait that is called off stops polling now rather
+      // than after one more query.
       await sleep(Math.min(wait, Math.max(1, deadline - Date.now())), {
+        signal,
         unref: true,
       }).catch(() => {});
 

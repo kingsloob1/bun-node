@@ -25,11 +25,12 @@ import type {
   RunRecord,
 } from "../driver";
 import { Buffer } from "node:buffer";
-import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { jsonClone } from "@kingsleyweb/bun-common";
 import { RedisClient as BunRedis } from "bun";
 import { resolveConnectionUrl } from "../../shared/connection";
 import { DriverError } from "../../shared/errors";
 import { safeJsonParse } from "../../shared/json";
+import { waitForAny } from "../../shared/wait";
 import { RedisKeys } from "./keys";
 import * as scripts from "./scripts";
 
@@ -1196,10 +1197,16 @@ export class RedisDriver implements JobsDriver {
 
     // The signal cannot interrupt a blocking call, so the wait is bounded by
     // the timeout the caller asked for and checked again on the way out.
-    await Promise.race([
-      blocking.blpop(this.keys.queue(q).wake, seconds).catch(() => null),
-      sleep(timeoutMs, { signal, unref: true }).catch(() => null),
-    ]);
+    //
+    // The caller's signal outlives this wait — a worker passes the same one to
+    // every wait it makes — so nothing may be left listening on it when the
+    // pop wins, which on a busy queue is every job. See `waitForAny`.
+    await waitForAny(timeoutMs, {
+      signal,
+      others: [
+        blocking.blpop(this.keys.queue(q).wake, seconds).catch(() => null),
+      ],
+    });
   }
 
   async publish(event: DriverEvent): Promise<void> {
