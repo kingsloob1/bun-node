@@ -5,7 +5,14 @@ import process from "node:process";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
 import { queueStateListStatement } from "../lib/drivers/sql/sql-driver";
-import { ConfigError, createDriver, dialectFor, SqlDriver } from "../lib/index";
+import {
+  BunQueue,
+  BunQueueWorker,
+  ConfigError,
+  createDriver,
+  dialectFor,
+  SqlDriver,
+} from "../lib/index";
 import { takeBooleanParam } from "../lib/shared/connection";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
@@ -442,6 +449,187 @@ for (const engine of ENGINES) {
         await driver.close();
       }
     }, 120_000);
+  });
+}
+
+/**
+ * Several workers claiming, completing, failing and promoting on one queue
+ * keep every job moving.
+ *
+ * On InnoDB they collide: the promote sweep's `id IN (SELECT … LIMIT)` takes
+ * shared next-key locks under REPEATABLE READ and deadlocks against claims
+ * (1213), and MariaDB 11.8's `innodb_snapshot_isolation` refuses a claim that
+ * reads a row changed since its snapshot (1020). Both are "try again". The
+ * driver's transaction retry is meant to take them, but the error arrives
+ * wrapped in a `DriverError` whose own message says nothing of the engine's,
+ * so it was never recognised: each one escaped to the worker instead. There a
+ * failed completion leaves the job `active` until the stalled sweep, 30s plus
+ * later, and a failed claim leaks the per-name capacity it had reserved, which
+ * caps that name until the worker closes. Either way the queue stalls with
+ * nothing in the log unless someone listens for `error`.
+ *
+ * Every ingredient is here on purpose: separate drivers (so separate
+ * connection pools, like separate processes), concurrency above one, a
+ * per-name limit, jobs that fail their first attempt and back off briefly, and
+ * delayed jobs, so the promote sweep contends with claims.
+ */
+for (const engine of ENGINES) {
+  describe(`SQL driver: ${engine.adapter} under contending workers`, () => {
+    it("settles every job exactly once, well inside the lock duration", async () => {
+      /** Workers on the queue, each on its own driver and connection pool. */
+      const WORKERS = 4;
+      /** Jobs added. */
+      const JOBS = 120;
+      /** The lock a claim takes; a stranded job is invisible for this long. */
+      const LOCK_MS = 30_000;
+      /** How long every job has to settle: a third of the lock. */
+      const SETTLE_MS = 10_000;
+
+      let url: string;
+      if (engine.url) {
+        url = engine.url;
+      } else {
+        const tmp = await makeTmpDir("bun-jobs-sqlite-contention");
+        cleanups.push(tmp.cleanup);
+        url = `sqlite://${join(tmp.path, "jobs.db")}`;
+      }
+
+      /** A driver of its own, so each worker contends as another process would. */
+      const openDriver = () =>
+        new SqlDriver({
+          url,
+          ...(engine.url
+            ? { adapter: engine.adapter, tablePrefix: "bun_jobs_test_" }
+            : {}),
+        });
+
+      const namespace = testNamespace("contend");
+      const queueName = "contended";
+      const producerDriver = openDriver();
+      const queue = new BunQueue<{ index: number }>(queueName, {
+        namespace,
+        driver: producerDriver,
+      });
+
+      /** The attempts that ran, by job index, in the order they started. */
+      const attempts = new Map<number, number[]>();
+      /** How many times a job was reported completed, by job index. */
+      const completions = new Map<number, number>();
+      /** Everything the workers reported through `error`, with its causes. */
+      const errors: string[] = [];
+
+      /** An error and each `cause` beneath it, since the driver wraps them. */
+      const describeChain = (error: unknown): string => {
+        const parts: string[] = [];
+        for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+          const { message, errno } = at as {
+            message?: unknown;
+            errno?: unknown;
+          };
+          parts.push(
+            `${String(message)}${errno === undefined ? "" : ` (${String(errno)})`}`,
+          );
+          at = (at as { cause?: unknown }).cause;
+        }
+        return parts.join(" <- ");
+      };
+
+      const drivers: SqlDriver[] = [];
+      const workers: BunQueueWorker<{ index: number }>[] = [];
+
+      try {
+        // A per-name cap, so a claim that fails after reserving capacity shows
+        // up as a stall rather than passing unnoticed.
+        await queue.setLimits({ names: { capped: { concurrency: 2 } } });
+
+        for (let worker = 0; worker < WORKERS; worker++) {
+          const driver = openDriver();
+          drivers.push(driver);
+
+          const consumer = new BunQueueWorker<{ index: number }>(
+            queueName,
+            async (job, context) => {
+              const { index } = job.data;
+              attempts.set(index, [
+                ...(attempts.get(index) ?? []),
+                context.attempt,
+              ]);
+
+              // Every fourth job fails its first attempt, so it is written back
+              // as failed, backs off, and has to be promoted again.
+              if (index % 4 === 0 && context.attempt === 1) {
+                throw new Error(`first attempt of ${index} fails`);
+              }
+
+              await Bun.sleep(1 + (index % 3));
+              return index;
+            },
+            {
+              namespace,
+              driver,
+              concurrency: 6,
+              pollInterval: 5,
+              lockDuration: LOCK_MS,
+              autorun: true,
+            },
+          );
+
+          consumer.on("completed", (job) => {
+            const { index } = job.data;
+            completions.set(index, (completions.get(index) ?? 0) + 1);
+          });
+          consumer.on("error", (error, context) => {
+            errors.push(`${context}: ${describeChain(error)}`);
+          });
+
+          workers.push(consumer);
+        }
+
+        for (let index = 0; index < JOBS; index++) {
+          await queue.add(
+            index % 3 === 0 ? "capped" : "plain",
+            { index },
+            {
+              attempts: 3,
+              backoff: 20,
+              // Every fifth is delayed, so the promote sweep has work alongside
+              // the retries.
+              ...(index % 5 === 0 ? { delay: 30 } : {}),
+            },
+          );
+        }
+
+        const deadline = Date.now() + SETTLE_MS;
+        while (completions.size < JOBS && Date.now() < deadline) {
+          await Bun.sleep(25);
+        }
+
+        // Diagnostics first: when the queue stalls, this says why.
+        expect(errors).toEqual([]);
+        expect(completions.size).toBe(JOBS);
+
+        // Exactly once: one completion per job, and no attempt ran twice.
+        for (let index = 0; index < JOBS; index++) {
+          expect(completions.get(index)).toBe(1);
+          const ran = attempts.get(index) ?? [];
+          expect(ran).toEqual(index % 4 === 0 ? [1, 2] : [1]);
+        }
+
+        const counts = await queue.count();
+        expect(counts.completed).toBe(JOBS);
+        expect(counts.active).toBe(0);
+      } finally {
+        await Promise.allSettled(
+          workers.map(async (worker) => await worker.close()),
+        );
+        await producerDriver.purge(namespace).catch(() => {});
+        await queue.close();
+        await Promise.allSettled(
+          drivers.map(async (driver) => await driver.close()),
+        );
+        await producerDriver.close();
+      }
+    }, 60_000);
   });
 }
 

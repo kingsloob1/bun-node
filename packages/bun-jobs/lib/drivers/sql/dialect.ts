@@ -715,24 +715,75 @@ async function countFromResult(result: unknown): Promise<number> {
 const LOCK_RETRIES = 12;
 
 /**
+ * Server error numbers that mean "the statement was fine, the timing was not".
+ *
+ * MySQL and MariaDB report them as a numeric `errno`: 1213 is a deadlock, 1205
+ * a lock wait timeout, and 1020 is MariaDB's "record has changed since last
+ * read" — what `innodb_snapshot_isolation`, on by default since 11.6, raises
+ * when a transaction writes a row another committed after its snapshot.
+ * Postgres puts its SQLSTATE in `errno` as a string: `40001` serialization
+ * failure, `40P01` deadlock.
+ */
+const TRANSIENT_ERRNOS = new Set<unknown>([1213, 1205, 1020, "40001", "40P01"]);
+
+/**
+ * The same conditions as a `code` or `sqlState`: SQLSTATE `40001` is what
+ * MySQL sends alongside 1213, and Postgres's `code` carries the SQLSTATE too.
+ */
+const TRANSIENT_STATES = new Set<unknown>(["40001", "40P01"]);
+
+/**
  * Whether an error is the database saying "someone else had it, try again".
  *
- * Both engines have one, and both mean the same thing: the statement was
+ * Every engine has one, and they all mean the same thing: the statement was
  * fine, the timing was not. InnoDB breaks a lock cycle by aborting one
- * transaction and telling the loser to retry, and SQLite reports
- * `SQLITE_BUSY` when another connection holds the file's single write lock
- * for longer than the busy timeout allows. Neither is a defect in the query.
+ * transaction and telling the loser to retry, Postgres does the same, and
+ * SQLite reports `SQLITE_BUSY` when another connection holds the file's single
+ * write lock for longer than the busy timeout allows. None is a defect in the
+ * query.
+ *
+ * Walks the `cause` chain, and checks codes before wording. The driver wraps
+ * what the server said in a `DriverError` whose own message is only "sql
+ * driver failed during run", so the engine's code and message are one or more
+ * links down. Checking the outermost error alone never matched anything raised
+ * inside a transaction — on MySQL and MariaDB that is every counted write, so
+ * the retry around them never fired and each deadlock escaped to the worker.
  */
 export function isTransientLockError(error: unknown): boolean {
-  const message = (error as Error | null)?.message ?? "";
-  const code = (error as { code?: string } | null)?.code ?? "";
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
 
-  return (
-    code === "SQLITE_BUSY" ||
-    /deadlock|try restarting transaction|lock wait timeout|database (?:is|table is) locked/i.test(
-      message,
-    )
-  );
+    const { errno, code, sqlState, message } = at as {
+      errno?: unknown;
+      code?: unknown;
+      sqlState?: unknown;
+      message?: unknown;
+    };
+
+    if (
+      TRANSIENT_ERRNOS.has(errno) ||
+      TRANSIENT_STATES.has(code) ||
+      TRANSIENT_STATES.has(sqlState) ||
+      // `SQLITE_BUSY_SNAPSHOT` and the other extended forms mean the same.
+      (typeof code === "string" && code.startsWith("SQLITE_BUSY"))
+    ) {
+      return true;
+    }
+
+    if (
+      /deadlock|try restarting transaction|lock wait timeout|could not serialize access|database (?:is|table is) locked/i.test(
+        String(message ?? ""),
+      )
+    ) {
+      return true;
+    }
+
+    at = (at as { cause?: unknown }).cause;
+  }
+
+  return false;
 }
 
 /**
@@ -1116,8 +1167,50 @@ const mysql: SqlDialect = {
       .join(", ")}`,
   // "You can't specify target table for update in FROM clause" without this.
   limitedIdSubquery: (select) => `SELECT id FROM (${select}) AS picked`,
+  /**
+   * Runs `fn` in a READ COMMITTED transaction, retried on a transient lock
+   * error.
+   *
+   * InnoDB's default, REPEATABLE READ, takes gap and next-key locks on every
+   * locking read and range update. Several workers claiming, completing,
+   * retrying and promoting on one queue then deadlock on each other's gaps
+   * faster than a retry clears them. Measured with 4 workers on 600 jobs,
+   * a quarter failing once and a fifth delayed: MariaDB collapsed in 2 of 6
+   * runs (4 and 403 of 600 jobs done in 90s, over 10,000 deadlocks), where READ
+   * COMMITTED finished 8 of 8 at about 1,200 jobs/s. MySQL is as fast or faster
+   * under it everywhere. The cost is a single consumer draining a backlog on
+   * MariaDB, about 20% slower, and that cost is READ COMMITTED itself: setting
+   * it once per connection measured within 4% of this.
+   *
+   * It is set per transaction, not per session, because a session setting is
+   * lost silently whenever the pool replaces a connection. Nothing here relies
+   * on a snapshot: every write is conditional on the state and lock token it
+   * expects, and `ROW_COUNT()` reports whether it landed.
+   *
+   * Bun's `begin(options)` sends `START TRANSACTION <options>`, which both
+   * engines reject with an isolation level, so the connection is reserved and
+   * the statements are issued in order.
+   */
   transaction: async (sql, fn) =>
-    await withLockRetry(async () => (await sql.begin(fn as never)) as never),
+    await withLockRetry(async () => {
+      const connection = await sql.reserve();
+      try {
+        await connection.unsafe(
+          "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        );
+        await connection.unsafe("START TRANSACTION");
+        try {
+          const result = await fn(connection);
+          await connection.unsafe("COMMIT");
+          return result;
+        } catch (error) {
+          await connection.unsafe("ROLLBACK").catch(() => {});
+          throw error;
+        }
+      } finally {
+        connection.release();
+      }
+    }),
   /**
    * A join against a derived table. MySQL materialises it, so the `LIMIT 1`
    * bounds the update, and it also sidesteps the refusal to read the table

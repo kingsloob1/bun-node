@@ -711,20 +711,38 @@ export class BunQueueWorker<
       return 0;
     }
 
-    const records = await claimJobBatch(
-      this.driver,
-      this.ref,
-      {
-        workerId: this.id,
-        token: this.#token,
-        lockMs: this.#options.lockDuration,
-        now,
-        ...(reservation && reservation.excludeNames.length > 0
-          ? { excludeNames: reservation.excludeNames }
-          : {}),
-      },
-      reservation?.grant ?? slots,
-    );
+    let records: JobRecord[];
+
+    try {
+      records = await claimJobBatch(
+        this.driver,
+        this.ref,
+        {
+          workerId: this.id,
+          token: this.#token,
+          lockMs: this.#options.lockDuration,
+          now,
+          ...(reservation && reservation.excludeNames.length > 0
+            ? { excludeNames: reservation.excludeNames }
+            : {}),
+        },
+        reservation?.grant ?? slots,
+      );
+    } catch (error) {
+      // The reservation already charged every open limited name for the whole
+      // grant. Without the `commit` below nothing gives that back: the charge
+      // sits on this worker's own lease, which it keeps renewing, so the name
+      // reads as full until the worker closes. A claim that throws — InnoDB
+      // picking it as a deadlock victim, a dropped connection — claimed
+      // nothing, so all of it goes back before the error is reported.
+      if (reservation && reservation.grant > 0) {
+        await this.#limiter!.commit(reservation, [], Date.now()).catch(
+          (commitError: unknown) => this.#emitError(commitError, "limits"),
+        );
+      }
+
+      throw error;
+    }
 
     if (reservation) {
       await this.#limiter!.commit(
@@ -883,37 +901,111 @@ export class BunQueueWorker<
   }
 
   /**
+   * Runs a write that records how a job ended, retrying it while it throws.
+   *
+   * The job has already run, so a write that fails strands it: `active`, under
+   * a lock nobody renews, until the stalled sweep takes it back `lockDuration`
+   * plus up to `stalledInterval` later — a minute by default — and runs it a
+   * second time. Most such failures are the database saying "busy, try again"
+   * (a deadlock victim, a lock wait timeout), which a short wait cures.
+   *
+   * Every write retried here is conditional on this worker's lock token, so a
+   * repeat of one that did land, its reply lost, changes nothing and answers
+   * `false`. The retries stop at a quarter of the lock duration, so they can
+   * never outlive the lock they depend on.
+   */
+  async #persist<T>(write: () => Promise<T>): Promise<T> {
+    /** Attempts in all, the first included. */
+    const attempts = 5;
+    const giveUpAt = Date.now() + this.#options.lockDuration / 4;
+
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await write();
+      } catch (error) {
+        // Jittered and doubling — up to 50, 100, 200, 400ms — so two workers
+        // that lost the same deadlock do not collide again in step.
+        const wait = Math.random() * 25 * 2 ** attempt;
+
+        if (attempt >= attempts || Date.now() + wait > giveUpAt) {
+          throw error;
+        }
+
+        await sleep(wait, { unref: true }).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Makes a job this worker could not record claimable again as soon as the
+   * stalled sweep next runs, rather than a whole lock duration later.
+   *
+   * Only reached once {@link #persist} has given up, so the database is
+   * failing persistently and this may well fail too; that is fine, the lock
+   * then lapses on its own. Conditional on the token, like the write it stands
+   * in for, so a job whose outcome did land is left alone.
+   */
+  async #expireLock(record: JobRecord): Promise<void> {
+    await this.driver
+      .extendJobLock(this.ref, record.id, this.#token, 0, Date.now())
+      .catch(() => false);
+  }
+
+  /**
    * Records a finished job, off the critical path.
    *
    * The write is tracked so `close()` can wait for it. A failure here is not
-   * the job failing — it already ran — so it is reported rather than retried:
-   * losing the lock means someone else owns the outcome, and anything else is
-   * a driver error the caller needs to see. Either way the job stays `active`
-   * until the stalled sweep returns it, which is the same window a crash
-   * between running and recording has always had.
+   * the job failing — it already ran — so it is retried, not turned into a
+   * failed attempt; losing the lock means someone else owns the outcome. When
+   * the retries run out the error is reported and the job's lock expired, so
+   * the next stalled sweep returns it instead of one a lock duration later.
    */
   #settle(job: Job<TData, TResult>, record: JobRecord, result: TResult): void {
     const written = createDeferred<void>();
+    const stored = jsonClone(result ?? null);
+    const retention = record.opts.removeOnComplete;
+
+    /** Reports the outcome once the write has answered. */
+    const settled = (kept: boolean) => {
+      if (kept) {
+        this.safeEmitScoped("completed", record.name, job, result);
+        void this.#publish("completed", {
+          id: record.id,
+          returnValue: result ?? null,
+        });
+      } else {
+        this.safeEmit("lockLost", job);
+      }
+    };
 
     this.#completions.add({
       id: record.id,
-      result: jsonClone(result ?? null),
-      retention: record.opts.removeOnComplete,
+      result: stored,
+      retention,
       settle: (kept) => {
-        if (kept) {
-          this.safeEmitScoped("completed", record.name, job, result);
-          void this.#publish("completed", {
-            id: record.id,
-            returnValue: result ?? null,
-          });
-        } else {
-          this.safeEmit("lockLost", job);
-        }
+        settled(kept);
         written.resolve();
       },
-      fail: (error) => {
-        this.#emitError(error, "complete");
-        written.resolve();
+      // The batched attempt failed. This one job is retried alone: the batch
+      // it shared may have failed for a reason that was never its own.
+      fail: () => {
+        void this.#persist(
+          async () =>
+            await this.driver.completeJob(
+              this.ref,
+              record.id,
+              this.#token,
+              stored,
+              retention,
+              Date.now(),
+            ),
+        )
+          .then(settled)
+          .catch(async (error: unknown) => {
+            this.#emitError(error, "complete");
+            await this.#expireLock(record);
+          })
+          .finally(() => written.resolve());
       },
     });
 
@@ -966,17 +1058,23 @@ export class BunQueueWorker<
 
     const now = Date.now();
 
+    // Retried like a completion, for the same reason: see `#persist`. The
+    // write checks the lock token and the job's state itself, so a repeat of
+    // one that landed changes nothing.
     try {
       if (delay !== false) {
         const runAt = now + delay;
-        await this.driver.failJob(
-          this.ref,
-          record.id,
-          this.#token,
-          serialized,
-          { retry: true, runAt },
-          now,
-          record.opts.keepStacktraces,
+        await this.#persist(
+          async () =>
+            await this.driver.failJob(
+              this.ref,
+              record.id,
+              this.#token,
+              serialized,
+              { retry: true, runAt },
+              now,
+              record.opts.keepStacktraces,
+            ),
         );
 
         this.safeEmitScoped("failed", record.name, job, failure);
@@ -990,14 +1088,17 @@ export class BunQueueWorker<
         return;
       }
 
-      await this.driver.failJob(
-        this.ref,
-        record.id,
-        this.#token,
-        serialized,
-        { retry: false, retention: record.opts.removeOnFail },
-        now,
-        record.opts.keepStacktraces,
+      await this.#persist(
+        async () =>
+          await this.driver.failJob(
+            this.ref,
+            record.id,
+            this.#token,
+            serialized,
+            { retry: false, retention: record.opts.removeOnFail },
+            now,
+            record.opts.keepStacktraces,
+          ),
       );
 
       this.safeEmitScoped("failed", record.name, job, failure);
@@ -1006,6 +1107,7 @@ export class BunQueueWorker<
       void this.#publish("dead", { id: record.id, error: serialized });
     } catch (writeError) {
       this.#emitError(writeError, "failJob");
+      await this.#expireLock(record);
       return;
     }
 

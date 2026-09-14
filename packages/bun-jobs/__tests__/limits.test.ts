@@ -139,6 +139,144 @@ describe("queue limits: storage", () => {
   });
 });
 
+describe("queue limits: releases", () => {
+  /**
+   * A job that finishes while a limiter write is in flight must still be taken
+   * off the count.
+   *
+   * `release()` notes a finished job on the pending object in place, and the
+   * write that was already carrying that object used to forget everything on
+   * it once it landed — including releases noted after it was read. With a
+   * worker writing the counters on every claim pass, most completions land in
+   * that window, so a name's count only ever grew: after enough jobs it read
+   * as full with nothing running, and its jobs waited forever. No error, on
+   * every driver, with a single worker.
+   */
+  it("counts every finished job back, however the writes interleave", async () => {
+    const { driver, namespace, queue } = setup();
+    await queue.setLimits({ names: { capped: { concurrency: 2 } } });
+
+    // A round trip's worth of latency on the counter writes, as any networked
+    // backend has. The memory driver answers in the same tick, which leaves no
+    // window for a job to finish while a write is in flight — and so hides
+    // exactly the interleaving this is about. Reads stay instant: a slower
+    // read only moves the window, it does not widen it.
+    const setQueueState = driver.setQueueState!.bind(driver);
+    driver.setQueueState = async (...args) => {
+      await Bun.sleep(1);
+      return await setQueueState(...args);
+    };
+
+    /** Jobs added: one capped for every two plain. */
+    const JOBS = 120;
+    /** Jobs finished, of either name. */
+    let finished = 0;
+    /** Capped jobs running right now, and the most there ever were. */
+    const capped = { running: 0, peak: 0 };
+
+    // Built here rather than through `setup()`, whose worker re-reads the
+    // limits every 20ms. At the default one-second refresh a worker spends its
+    // idle passes on nothing but counter writes, which is the shape that lost
+    // releases: Postgres, running this same queue, stalled at 82 of 120.
+    const instance = new BunQueueWorker<{ index: number }>(
+      "limited",
+      async (job) => {
+        const isCapped = job.name === "capped";
+        if (isCapped) {
+          capped.running++;
+          capped.peak = Math.max(capped.peak, capped.running);
+        }
+        await Bun.sleep(1 + (job.data.index % 3));
+        if (isCapped) {
+          capped.running--;
+        }
+        finished++;
+        return null;
+      },
+      {
+        namespace,
+        driver,
+        logger: noopLogger,
+        concurrency: 6,
+        pollInterval: 5,
+        limitsRefreshInterval: 1000,
+      },
+    );
+    closers.push(() => instance.close({ force: true }));
+    void instance.run();
+
+    // The same queue, typed for this test's jobs rather than `setup()`'s.
+    const indexed = new BunQueue<{ index: number }>("limited", {
+      namespace,
+      driver,
+      logger: noopLogger,
+    });
+    closers.push(() => indexed.close());
+
+    for (let index = 0; index < JOBS; index++) {
+      await indexed.add(index % 3 === 0 ? "capped" : "plain", { index });
+    }
+
+    await waitFor(() => finished === JOBS, { timeout: 5000 });
+
+    expect(finished).toBe(JOBS);
+    expect(capped.peak).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("queue limits: a claim that fails", () => {
+  /**
+   * `reserve` charges a limited name for the whole grant before the claim, and
+   * `commit` gives back what the claim did not use. A claim that throws in
+   * between used to skip the `commit`, so the charge stayed on this worker's
+   * own lease — which it keeps renewing — and the name read as full until the
+   * worker closed. On MySQL and MariaDB a claim throws whenever InnoDB picks it
+   * as a deadlock victim, so this is not hypothetical.
+   */
+  it("gives back the reservation, so the capped name keeps running", async () => {
+    const { driver, queue, seen, worker } = setup();
+    await queue.setLimits({ names: { capped: { concurrency: 1 } } });
+
+    /** Claims to fail before handing them to the real driver. */
+    let failuresLeft = 1;
+    /** How many claims were made to fail. */
+    let failed = 0;
+    const fail = () => {
+      if (failuresLeft > 0) {
+        failuresLeft--;
+        failed++;
+        throw new Error("Deadlock found when trying to get lock");
+      }
+    };
+
+    const claimJob = driver.claimJob.bind(driver);
+    driver.claimJob = async (...args) => {
+      fail();
+      return await claimJob(...args);
+    };
+    if (driver.claimJobs) {
+      const claimJobs = driver.claimJobs.bind(driver);
+      driver.claimJobs = async (...args) => {
+        fail();
+        return await claimJobs(...args);
+      };
+    }
+
+    await queue.add("capped", { ms: 1 });
+    const errors: string[] = [];
+    const instance = worker(2);
+    instance.on("error", (_error, context) => errors.push(context));
+
+    // Well inside the lease the leaked charge would be renewed under forever.
+    await waitFor(() => seen.finished.length === 1, { timeout: 2000 });
+
+    expect(failed).toBe(1);
+    expect(seen.finished).toEqual(["capped"]);
+    // The failure is still reported, not swallowed.
+    expect(errors).toContain("loop");
+  });
+});
+
 describe("queue limits: enforcement", () => {
   it("runs as before when the queue has no limits", async () => {
     const { queue, seen, worker } = setup();

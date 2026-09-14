@@ -504,7 +504,16 @@ export class QueueLimiter {
         ? structuredClone(entry.value as LimiterState)
         : { holders: {}, windows: {} };
 
-      const pending = this.#pending;
+      // A copy, not the object. `release()` adds to `#pending` in place, so
+      // holding the live object let a release noted while this write was in
+      // flight ride along unwritten — and the subtraction below, seeing the
+      // very object it was given, then forgot it as written. Each lost release
+      // left a job counted as running for good, until a limited name read as
+      // full with nothing running.
+      const pending = {
+        total: this.#pending.total,
+        names: { ...this.#pending.names },
+      };
       pruneHolders(state, now, this.#holder);
       applyReleases(state, this.#holder, pending);
       mutate(state);
