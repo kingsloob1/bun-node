@@ -24,6 +24,7 @@ import type {
   Retention,
   RunRecord,
 } from "../driver";
+import { Buffer } from "node:buffer";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { RedisClient as BunRedis } from "bun";
 import { resolveConnectionUrl } from "../../shared/connection";
@@ -1026,17 +1027,74 @@ export class RedisDriver implements JobsDriver {
   ): Promise<number | null> {
     await this.connect();
 
+    const keys = this.keys.queue(q);
     const version = await this.#run(
       scripts.SET_QUEUE_STATE,
-      [`${this.keys.queue(q).statePrefix}${name}`],
+      [`${keys.statePrefix}${name}`, keys.stateNames],
       [
         expected === null ? "" : String(expected),
         value === null ? "1" : "0",
         value === null ? "" : (JSON.stringify(value) ?? "null"),
+        name,
       ],
     );
 
     return version === null || version === undefined ? null : Number(version);
+  }
+
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const limit = Math.floor(options.limit);
+
+    // Redis reads a negative LIMIT count as "no limit", so answer here.
+    if (!(limit > 0)) {
+      return [];
+    }
+
+    await this.connect();
+
+    const { prefix, after } = options;
+
+    // Start at whichever is later: just past `after`, or the prefix itself.
+    // An `after` that sorts below the prefix would otherwise start the range
+    // among names that do not match, and the cut below would stop at once.
+    // Compared as bytes, because that is how BYLEX compares.
+    const start =
+      after !== undefined &&
+      Buffer.compare(Buffer.from(after), Buffer.from(prefix)) >= 0
+        ? `(${after}`
+        : `[${prefix}`;
+
+    // Every member has score 0, so BYLEX orders them by their UTF-8 bytes.
+    // For ASCII — and any names without characters above U+FFFF — that is the
+    // JavaScript code-unit order the contract sorts by. Names mixing
+    // characters above U+FFFF with ones in U+E000–U+FFFF can order
+    // differently: UTF-16 puts the surrogate pair first, UTF-8 puts it last.
+    const members = (await this.#client.send("ZRANGE", [
+      this.keys.queue(q).stateNames,
+      start,
+      "+",
+      "BYLEX",
+      "LIMIT",
+      "0",
+      String(limit),
+    ])) as string[] | null;
+
+    // Names sharing a prefix are contiguous from the start, so the first one
+    // that does not begin with it ends the matches. Cutting after LIMIT still
+    // honours `limit`: every match is ahead of every non-match in the page.
+    const names: string[] = [];
+
+    for (const member of members ?? []) {
+      if (!member.startsWith(prefix)) {
+        break;
+      }
+      names.push(member);
+    }
+
+    return names;
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {

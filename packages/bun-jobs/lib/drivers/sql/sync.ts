@@ -1,13 +1,29 @@
 import type {
+  IndexRow as BaseIndexRow,
   ColumnRow,
-  IndexRow,
   ResolvedSyncOptions,
   SchemaChange,
   SyncBackend,
 } from "../schemaSync";
-import type { SqlDialect } from "./dialect";
+import type { AlterColumn, SqlDialect } from "./dialect";
 import type { IndexDefinition, TableDefinition } from "./schema";
-import { renderColumn, renderIndex } from "./schema";
+import { declaredCollation } from "./dialect";
+import { renderColumn, renderIndex, renderIndexColumn } from "./schema";
+
+/** An index as the SQL dialects describe it: the shared row plus its columns. */
+interface IndexRow extends BaseIndexRow {
+  /**
+   * The index's column names in order, comma-separated, where the engine
+   * renders no definition (MySQL, MariaDB); `null` elsewhere.
+   */
+  columns: string | null;
+}
+
+/** A column as the SQL dialects describe it: {@link ColumnRow} plus collation. */
+interface SqlColumnRow extends ColumnRow {
+  /** The column's collation, or `null` where the engine does not report one. */
+  collation: string | null;
+}
 
 /**
  * Bringing an existing database in line with the schema the driver expects.
@@ -45,6 +61,22 @@ function hasPredicate(definition: string): boolean {
 }
 
 /**
+ * The collated columns of an index, as `column COLLATE collation` phrases.
+ *
+ * Postgres renders a column's collation in `indexdef` only when the index's
+ * differs from the column's own, and the driver declares every column in the
+ * default one — so the phrases a definition carries are exactly the ones the
+ * driver asked for. Quotes are dropped and case folded, which is how the two
+ * sides are spelled alike.
+ */
+function collatedPhrases(definition: string): string[] {
+  return [...definition.matchAll(/(\w+)\s+COLLATE\s+("[^"]+"|[\w.-]+)/gi)]
+    .map((match) => `${match[1]} collate ${match[2]!.replace(/"/g, "")}`)
+    .map((phrase) => phrase.toLowerCase())
+    .sort();
+}
+
+/**
  * Works out what would have to change, and applies whichever of it is allowed.
  *
  * Returns every change it found, including the ones it declined to make, each
@@ -58,9 +90,14 @@ export async function syncSqlSchema(
   options: ResolvedSyncOptions,
 ): Promise<SchemaChange[]> {
   const changes: SchemaChange[] = [];
+  // Which column each `alter-column` change redefines, so the ones on one
+  // table can be applied together. Kept beside the changes rather than on
+  // them: a change's `statement` stays the one-column form, which is what a
+  // dry run reports and what a caller can run by hand.
+  const alterations = new Map<SchemaChange, AlterColumn>();
 
   for (const table of definition.tables) {
-    const existing = await backend.all<ColumnRow>(
+    const existing = await backend.all<SqlColumnRow>(
       dialect.describeColumns(table.name),
       [table.name],
     );
@@ -96,7 +133,20 @@ export async function syncSqlSchema(
       const want = dialect.normalizeType(column.type);
       const have = dialect.normalizeType(String(found.type));
 
-      if (want === have) {
+      // Collation, where the driver declares one and the engine reports one.
+      // A collation change rewrites the table exactly as a type change does —
+      // every index on the column is rebuilt in the new order — so it is the
+      // same blocking change, made by the same statement.
+      const wantCollation = declaredCollation(column.type);
+      const haveCollation = found.collation
+        ? String(found.collation).toLowerCase()
+        : null;
+      const recollate =
+        wantCollation !== null &&
+        haveCollation !== null &&
+        wantCollation !== haveCollation;
+
+      if (want === have && !recollate) {
         continue;
       }
 
@@ -104,17 +154,27 @@ export async function syncSqlSchema(
         table.name,
         column.name,
         column.type,
+        column.suffix,
       );
 
       if (statement) {
-        changes.push({
+        const change: SchemaChange = {
           kind: "alter-column",
           table: table.name,
           target: column.name,
           statement,
-          reason: `stored as ${have}, the driver would create it as ${want}`,
+          reason:
+            want !== have
+              ? `stored as ${have}, the driver would create it as ${want}`
+              : `compares in ${haveCollation}, the driver would compare in ${wantCollation}`,
           blocking: true,
           applied: false,
+        };
+        changes.push(change);
+        alterations.set(change, {
+          column: column.name,
+          type: column.type,
+          suffix: column.suffix,
         });
       }
     }
@@ -149,24 +209,44 @@ export async function syncSqlSchema(
         continue;
       }
 
-      // Predicate drift. Only meaningful where the engine both supports
-      // partial indexes and tells us about them.
+      // Predicate and collation drift. Only meaningful where the engine
+      // tells us how an index is defined; MySQL does not, and has neither.
+      const definitionText = String(found.definition);
       const wantsPredicate =
         index.predicate !== undefined &&
         dialect.partialIndex(index.predicate) !== "";
+      const predicateDrift =
+        definitionText !== "" &&
+        wantsPredicate !== hasPredicate(definitionText);
+      // Column drift, where the engine lists columns rather than rendering a
+      // definition. Names only: collations and predicates do not exist there.
+      const wantedColumns = index.columns
+        .map((column) => (typeof column === "string" ? column : column.name))
+        .join(",")
+        .toLowerCase();
+      const columnDrift =
+        found.columns != null &&
+        String(found.columns).toLowerCase() !== wantedColumns;
+      const collationDrift =
+        definitionText !== "" &&
+        collatedPhrases(definitionText).join(",") !==
+          collatedPhrases(index.columns.map(renderIndexColumn).join(", ")).join(
+            ",",
+          );
 
-      if (
-        found.definition !== "" &&
-        wantsPredicate !== hasPredicate(String(found.definition))
-      ) {
+      if (predicateDrift || collationDrift || columnDrift) {
         changes.push({
           kind: "drop-index",
           table,
           target: index.name,
           statement: dialect.dropIndex(index.name, table),
-          reason: wantsPredicate
-            ? "indexes every row where the driver would index only the relevant ones"
-            : "is partial where the driver would index every row",
+          reason: predicateDrift
+            ? wantsPredicate
+              ? "indexes every row where the driver would index only the relevant ones"
+              : "is partial where the driver would index every row"
+            : columnDrift
+              ? `covers (${String(found.columns)}) where the driver defines (${wantedColumns})`
+              : "orders its columns in a collation the driver does not define",
           blocking: false,
           applied: false,
         });
@@ -175,7 +255,11 @@ export async function syncSqlSchema(
           table,
           target: index.name,
           statement: renderIndex(index, dialect, true),
-          reason: "rebuilt with the predicate the driver defines",
+          reason: predicateDrift
+            ? "rebuilt with the predicate the driver defines"
+            : columnDrift
+              ? "rebuilt with the columns the driver defines"
+              : "rebuilt with the collation the driver defines",
           blocking: false,
           applied: false,
         });
@@ -219,7 +303,31 @@ export async function syncSqlSchema(
             ? options.add || options.indexes
             : options.indexes;
 
-    if (!allowed) {
+    if (!allowed || change.applied) {
+      continue;
+    }
+
+    // Every column change on a table, in one statement and so one rewrite of
+    // it, at the position of the first. `applied` is set only once that
+    // statement has succeeded, and a failure throws before any is set — the
+    // engine applies an `ALTER TABLE` whole or not at all.
+    if (change.kind === "alter-column") {
+      const group = changes.filter(
+        (other) =>
+          other.kind === "alter-column" && other.table === change.table,
+      );
+      const statement =
+        group.length > 1
+          ? dialect.alterColumnTypes(
+              change.table,
+              group.map((other) => alterations.get(other)!),
+            )
+          : change.statement;
+
+      await backend.run(statement ?? change.statement);
+      for (const other of group) {
+        other.applied = true;
+      }
       continue;
     }
 

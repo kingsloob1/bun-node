@@ -50,35 +50,88 @@ export interface SqlDialect {
    */
   readonly concurrentIndex: string;
   /**
-   * A query listing a table's columns as `name` and `type`.
+   * A query listing a table's columns as `name`, `type` and `collation`.
    *
    * Takes the table name as its one bind parameter. The `type` is whatever the
    * engine calls it, which is rarely what the DDL said — Postgres answers
    * `character varying` for a `VARCHAR(191)` — so a comparison has to go
    * through {@link SqlDialect.normalizeType}.
+   *
+   * `collation` is the column's collation where the engine reports one and the
+   * driver declares one: MySQL and MariaDB. Elsewhere it is `NULL`, and a sync
+   * compares only types.
    */
   describeColumns: (table: string) => string;
   /**
-   * A query listing a table's indexes as `name` and `definition`.
+   * A query listing a table's indexes as `name`, `definition` and `columns`.
    *
    * `definition` is the engine's own rendering where it has one, and `''`
-   * where it does not. It is read for one thing only: whether the index has a
-   * predicate, which is the one property of ours that has ever changed.
+   * where it does not; a sync reads a predicate and per-column collations out
+   * of it. `columns` is the index's column names in order, comma-separated,
+   * where the engine does not render a definition — MySQL and MariaDB — and
+   * `NULL` elsewhere, so an index whose columns changed is still noticed there.
    */
   describeIndexes: (table: string) => string;
+  /**
+   * Whether the claim index names `id` as its last column.
+   *
+   * Only MySQL. Claim order is `priority, created_at, id`, and InnoDB appends
+   * the primary key to every secondary index, so the index already ends in
+   * `id` — MariaDB and Postgres (whose index has no such suffix, and plans the
+   * tie-break differently) read it in that order. MySQL 8.4 does not use the
+   * implicit suffix to satisfy an `ORDER BY`: it reads every row of the queue
+   * through the primary key and sorts them, 9.3ms for one job from a queue of
+   * 20,000 against 0.29ms with `id` named, and a claim window that skips names
+   * is no longer bounded at all. Naming it makes the key 3,068 bytes, inside
+   * InnoDB's 3,072.
+   */
+  readonly claimIndexNamesId: boolean;
   /** Adds one column to an existing table. */
   addColumn: (table: string, column: string) => string;
   /**
-   * Changes one column's type, or `null` where the engine cannot.
+   * Changes one column's type or collation, or `null` where the engine cannot.
    *
    * Rewrites the table under a lock that blocks everything, so this is never
    * run unless it was explicitly asked for.
+   *
+   * `suffix` is the rest of the column's definition — `NOT NULL`, a default.
+   * MySQL's `MODIFY COLUMN` replaces the whole definition, so leaving it out
+   * would silently make a `NOT NULL` column nullable; Postgres changes only the
+   * type and ignores it.
    */
   alterColumnType: (
     table: string,
     column: string,
     type: string,
+    suffix?: string,
   ) => string | null;
+  /**
+   * Changes several columns of one table in a single statement, or `null`
+   * where the engine cannot.
+   *
+   * What a sync actually runs. Each `ALTER TABLE` that retypes or recollates
+   * a column copies the whole table under a lock, so nine columns changed one
+   * statement at a time are nine copies; MySQL, MariaDB and Postgres all apply
+   * every clause of one `ALTER TABLE` in a single rewrite.
+   */
+  alterColumnTypes: (
+    table: string,
+    columns: readonly AlterColumn[],
+  ) => string | null;
+  /**
+   * Whether `CREATE INDEX` takes `IF NOT EXISTS`.
+   *
+   * MySQL's does not — MariaDB's and every other engine's here do — so on
+   * MySQL an index that already exists makes the statement fail, and creating
+   * the schema stays repeatable only because that one failure is recognised by
+   * {@link SqlDialect.isDuplicateIndex} and ignored.
+   */
+  readonly indexIfNotExists: boolean;
+  /**
+   * Whether an error is "an index by that name already exists", which a
+   * repeated `CREATE INDEX` without `IF NOT EXISTS` raises.
+   */
+  isDuplicateIndex: (error: unknown) => boolean;
   /** Drops an index. MySQL needs the table; the others do not. */
   dropIndex: (name: string, table: string) => string;
   /**
@@ -90,8 +143,44 @@ export interface SqlDialect {
    * outage.
    */
   normalizeType: (type: string) => string;
-  /** Column type for an identifier: bounded on MySQL, whose indexes are. */
+  /**
+   * Column type for an identifier: an id, a queue, a state, a key, a token.
+   *
+   * Identifiers are compared exactly — case, accents and trailing spaces
+   * included — and ordered by code point, on every engine. Postgres and
+   * SQLite's default collations are already exact for equality, so `TEXT` is
+   * enough there. MySQL and MariaDB default to case- and accent-insensitive
+   * collations (`utf8mb4_uca1400_ai_ci` on MariaDB 11), under which `Report`
+   * and `report` are one primary key; their type names a binary, `NO PAD`
+   * collation explicitly. `NO PAD` because the plain `utf8mb4_bin` pads, which
+   * makes `a` and `a ` equal.
+   *
+   * Bounded on MySQL and MariaDB, whose index keys are: 191 characters is 764
+   * bytes in utf8mb4, and the widest key here, three of them plus two
+   * integers, stays under InnoDB's 3,072-byte limit. The collation does not
+   * change the width.
+   */
   readonly idType: string;
+  /**
+   * Column type for an identifier with no length bound: a job's name.
+   *
+   * Compared exactly for the same reason as {@link SqlDialect.idType} — a
+   * claim that skips `Report` must not skip `report` — but never indexed, so
+   * it need not be bounded.
+   */
+  readonly nameType: string;
+  /**
+   * The collation, as written after `COLLATE`, that orders an identifier
+   * column by code point where the column's own collation does not; `null`
+   * where it already does.
+   *
+   * Only Postgres: its `TEXT` sorts by the database's locale, which in
+   * `en_US.utf8` puts `a` before `B`, and `"C"` is byte order — for UTF-8,
+   * code-point order. SQLite's default `BINARY` and the binary collation
+   * {@link SqlDialect.idType} gives MySQL and MariaDB already are. An index
+   * carrying it is what lets a code-point range use an index at all.
+   */
+  readonly codePointCollation: string | null;
   /** Column type for an epoch-millisecond timestamp. */
   readonly timeType: string;
   /** Column type for an auto-incrementing primary key. */
@@ -322,6 +411,29 @@ export interface SqlDialect {
   jsonIn: (value: unknown) => string;
   /** Statements run once when the connection opens. */
   readonly pragmas: string[];
+}
+
+/** One column an `ALTER TABLE` changes. */
+export interface AlterColumn {
+  /** The column's name. */
+  column: string;
+  /** The type it should have, collation included where the driver sets one. */
+  type: string;
+  /**
+   * The rest of its definition — `NOT NULL`, a default. MySQL's `MODIFY
+   * COLUMN` replaces the whole definition and needs it; Postgres ignores it.
+   */
+  suffix?: string;
+}
+
+/** Postgres' clause changing one column's type. */
+function postgresAlterClause({ column, type }: AlterColumn): string {
+  return `ALTER COLUMN ${column} TYPE ${type} USING ${column}::${type}`;
+}
+
+/** MySQL's clause redefining one column, whose definition it replaces whole. */
+function mysqlAlterClause({ column, type, suffix }: AlterColumn): string {
+  return `MODIFY COLUMN ${column} ${type}${suffix ? ` ${suffix}` : ""}`;
 }
 
 /** What a dialect needs in order to write its claim statement. */
@@ -652,16 +764,6 @@ export async function withLockRetry<T>(work: () => Promise<T>): Promise<T> {
 /** Serialises SQLite writers inside one process; the file lock does the rest. */
 const sqliteWriteLock = new Mutex();
 
-/** Parses a JSON column that may arrive as text or already decoded. */
-/**
- * Reduces a type name to something two spellings of one type share.
- *
- * Deliberately blunt: lowercase, drop any parenthesised length or precision,
- * collapse whitespace, then map the synonyms engines actually report.
- * Everything else passes through unchanged and therefore compares equal only
- * to itself, which is the safe direction — an unrecognised pair reads as
- * "different" only when the strings really do differ.
- */
 /**
  * Whether an error says a unique constraint was violated.
  *
@@ -702,10 +804,54 @@ function isUniqueViolationError(
   return false;
 }
 
+/**
+ * The collation a declared column type names, lowercased, or `null` when it
+ * names none.
+ *
+ * Read from the driver's own DDL — `VARCHAR(191) CHARACTER SET utf8mb4 COLLATE
+ * utf8mb4_nopad_bin` gives `utf8mb4_nopad_bin` — so a sync compares a column's
+ * collation only where the driver actually chose one.
+ */
+export function declaredCollation(type: string): string | null {
+  const match = /\bCOLLATE\s+("[^"]+"|[\w.-]+)/i.exec(type);
+  return match ? match[1]!.replace(/"/g, "").toLowerCase() : null;
+}
+
+/**
+ * Reduces a type name to something two spellings of one type share.
+ *
+ * Deliberately blunt: lowercase, drop any parenthesised length or precision,
+ * and any `CHARACTER SET` or `COLLATE` clause (compared separately, through
+ * {@link declaredCollation}), collapse whitespace, then map the synonyms
+ * engines actually report. Everything else passes through unchanged and
+ * therefore compares equal only to itself, which is the safe direction — an
+ * unrecognised pair reads as "different" only when the strings really do
+ * differ.
+ */
+/**
+ * Whether an error, or one it wraps, carries one of `codes` — the server's own
+ * code sits one or more `cause` links below the client's wrapper.
+ */
+function hasErrorCode(error: unknown, codes: (string | number)[]): boolean {
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
+    const { errno, code } = at as { errno?: unknown; code?: unknown };
+    if (codes.some((wanted) => errno === wanted || code === wanted)) {
+      return true;
+    }
+    at = (at as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function normalizeSqlType(type: string): string {
   const bare = type
     .toLowerCase()
     .replace(/\([^)]*\)/g, "")
+    .replace(/\b(?:character set|charset)\s+\w+/g, "")
+    .replace(/\bcollate\s+(?:"[^"]+"|[\w.-]+)/g, "")
     .trim()
     .replace(/\s+/g, " ");
 
@@ -725,6 +871,7 @@ function normalizeSqlType(type: string): string {
   return synonyms[bare] ?? bare;
 }
 
+/** Parses a JSON column that may arrive as text or already decoded. */
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) {
     return fallback;
@@ -762,21 +909,30 @@ const postgres: SqlDialect = {
   jsonType: "JSON",
   partialIndex: (predicate) => ` WHERE ${predicate}`,
   concurrentIndex: "CONCURRENTLY ",
+  // No collation: every identifier is declared in the default one, and
+  // ordering by code point is `codePointCollation`'s job, not the column's.
   describeColumns: () =>
-    `SELECT column_name AS name, data_type AS type
+    `SELECT column_name AS name, data_type AS type, NULL AS collation
        FROM information_schema.columns
       WHERE table_name = $1 AND table_schema = ANY (current_schemas(false))`,
   describeIndexes: () =>
-    `SELECT indexname AS name, indexdef AS definition
+    `SELECT indexname AS name, indexdef AS definition, NULL AS columns
        FROM pg_indexes
       WHERE tablename = $1 AND schemaname = ANY (current_schemas(false))`,
   addColumn: (table, column) =>
     `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column}`,
   alterColumnType: (table, column, type) =>
-    `ALTER TABLE ${table} ALTER COLUMN ${column} TYPE ${type} USING ${column}::${type}`,
+    `ALTER TABLE ${table} ${postgresAlterClause({ column, type })}`,
+  alterColumnTypes: (table, columns) =>
+    `ALTER TABLE ${table} ${columns.map(postgresAlterClause).join(", ")}`,
+  indexIfNotExists: true,
+  isDuplicateIndex: (error) => hasErrorCode(error, ["42P07"]),
+  claimIndexNamesId: false,
   dropIndex: (name) => `DROP INDEX CONCURRENTLY IF EXISTS ${name}`,
   normalizeType: normalizeSqlType,
   idType: "TEXT",
+  nameType: "TEXT",
+  codePointCollation: '"C"',
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
   longTextType: "TEXT",
@@ -895,22 +1051,35 @@ const mysql: SqlDialect = {
   // the sync checks before it writes rather than relying on the statement.
   concurrentIndex: "",
   describeColumns: () =>
-    `SELECT COLUMN_NAME AS name, DATA_TYPE AS type
+    `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLLATION_NAME AS collation
        FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
   // No partial indexes, so there is no definition worth reading back: an index
   // either exists under its name or it does not.
   describeIndexes: () =>
-    `SELECT DISTINCT INDEX_NAME AS name, '' AS definition
+    `SELECT INDEX_NAME AS name, '' AS definition,
+            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') AS columns
        FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+      GROUP BY INDEX_NAME`,
   addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
-  alterColumnType: (table, column, type) =>
-    `ALTER TABLE ${table} MODIFY COLUMN ${column} ${type}`,
+  alterColumnType: (table, column, type, suffix) =>
+    `ALTER TABLE ${table} ${mysqlAlterClause({ column, type, suffix })}`,
+  alterColumnTypes: (table, columns) =>
+    `ALTER TABLE ${table} ${columns.map(mysqlAlterClause).join(", ")}`,
+  // MySQL 8 has no `CREATE INDEX IF NOT EXISTS`; see the interface.
+  indexIfNotExists: false,
+  // ER_DUP_KEYNAME: "Duplicate key name".
+  isDuplicateIndex: (error) =>
+    hasErrorCode(error, [1061, "1061", "ER_DUP_KEYNAME"]),
+  claimIndexNamesId: true,
   dropIndex: (name, table) => `DROP INDEX ${name} ON ${table}`,
   normalizeType: normalizeSqlType,
-  // utf8mb4 indexes cap a key at 191 characters, so ids are bounded.
-  idType: "VARCHAR(191)",
+  // Binary and `NO PAD`: see `idType` on the interface. `utf8mb4_0900_bin` is
+  // MySQL 8's; MariaDB has its own, below.
+  idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+  nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+  codePointCollation: null,
   timeType: "BIGINT",
   serialType: "BIGINT AUTO_INCREMENT PRIMARY KEY",
   longTextType: "MEDIUMTEXT",
@@ -988,11 +1157,30 @@ const mysql: SqlDialect = {
   countsNeedSameConnection: true,
 };
 
-/** MariaDB: MySQL, minus `UPDATE … RETURNING`. */
+/**
+ * MariaDB: MySQL, minus `UPDATE … RETURNING`, with its own binary collation
+ * and its own spelling of `JSON`.
+ */
 const mariadb: SqlDialect = {
   ...mysql,
   name: "mariadb",
   supportsReturning: false,
+  // MariaDB, unlike MySQL, has `CREATE INDEX IF NOT EXISTS`.
+  indexIfNotExists: true,
+  // And reads the claim index's implicit `id` suffix in order, so it need not
+  // be named: see the interface.
+  claimIndexNamesId: false,
+  // `utf8mb4_nopad_bin` has been MariaDB's exact collation since 10.2. It
+  // compares by code point, which for UTF-8 is byte order.
+  idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
+  nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
+  // MariaDB's `JSON` is an alias for `LONGTEXT` with a validity check, and
+  // `information_schema` reports `longtext`. Without this, a schema the driver
+  // has just created reports every JSON column as drift, forever.
+  normalizeType: (type) => {
+    const normalized = normalizeSqlType(type);
+    return normalized === "json" ? "longtext" : normalized;
+  },
 };
 
 /**
@@ -1010,9 +1198,10 @@ const sqlite: SqlDialect = {
   jsonType: "TEXT",
   partialIndex: (predicate) => ` WHERE ${predicate}`,
   concurrentIndex: "",
-  describeColumns: () => `SELECT name, type FROM pragma_table_info(?)`,
+  describeColumns: () =>
+    `SELECT name, type, NULL AS collation FROM pragma_table_info(?)`,
   describeIndexes: () =>
-    `SELECT name, COALESCE(sql, '') AS definition
+    `SELECT name, COALESCE(sql, '') AS definition, NULL AS columns
        FROM sqlite_master
       WHERE type = 'index' AND tbl_name = ?`,
   addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
@@ -1020,9 +1209,16 @@ const sqlite: SqlDialect = {
   // rebuilding the table and copying every row, which is not something to do
   // behind a connect.
   alterColumnType: () => null,
+  alterColumnTypes: () => null,
+  indexIfNotExists: true,
+  isDuplicateIndex: (error) =>
+    /index .* already exists/i.test(String((error as Error | null)?.message)),
+  claimIndexNamesId: false,
   dropIndex: (name) => `DROP INDEX IF EXISTS ${name}`,
   normalizeType: normalizeSqlType,
   idType: "TEXT",
+  nameType: "TEXT",
+  codePointCollation: null,
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",
   longTextType: "TEXT",

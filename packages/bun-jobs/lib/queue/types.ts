@@ -294,6 +294,17 @@ export interface BunQueueWorkerOptions {
    * every worker within this. Defaults to `1000`.
    */
   limitsRefreshInterval?: number;
+  /**
+   * Whether a running worker keeps the process alive while it waits for work.
+   * Defaults to `true`, as `BunRunner`'s option of the same name does.
+   *
+   * Every wait the worker makes is unref'd, so that it never holds up a
+   * process that has other reasons to exit. Without this, a process whose
+   * only work *is* a worker — a worker service — would exit the moment its
+   * queue went idle. Set `false` for a script that runs a worker alongside
+   * work of its own and should exit when that work is done.
+   */
+  waitToExit?: boolean;
 }
 
 /**

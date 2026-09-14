@@ -29,7 +29,11 @@ import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type { ClaimCursor, SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
-import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
+import {
+  resolveConnectionUrl,
+  resolveNames,
+  takeBooleanParam,
+} from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
 import { newId } from "../../shared/ids";
@@ -158,6 +162,115 @@ const LOG_SWEEP_INTERVAL_MS = 30_000;
  * pass from the head.
  */
 const CLAIM_CURSOR_IDLE_MS = 60_000;
+
+/**
+ * The exclusive upper bound of every string that begins with `value`, in
+ * code-point order: `value` with its last code point incremented.
+ *
+ * What lets a literal prefix match be a plain range, so a `%` or `_` in the
+ * prefix is just a character. A trailing U+10FFFF has no successor and is
+ * dropped first; an increment into the surrogate block skips past it, since a
+ * lone surrogate is not a character an engine would store. Callers pass a
+ * non-empty key base, so there is always a code point left to increment.
+ */
+function prefixSuccessor(value: string): string {
+  const points = Array.from(value);
+
+  while (points.length > 0) {
+    const last = points.pop()!.codePointAt(0)!;
+    if (last < 0x10ffff) {
+      const next = last + 1 === 0xd800 ? 0xe000 : last + 1;
+      return points.join("") + String.fromCodePoint(next);
+    }
+  }
+
+  return value;
+}
+
+/**
+ * The statement listing a queue's state names: a range scan over its
+ * `q:<queue>:state:` keys, never a `LIKE` on the name. The contract wants the
+ * prefix taken literally, and a half-open range `[base + prefix, successor)`
+ * has no wildcards to escape.
+ *
+ * Every comparison and the sort are made in code-point order, because that is
+ * what the contract's "ascending name order" means and what `after` pages by —
+ * a sweep that compared one way and sorted another could skip or repeat
+ * entries at a page boundary.
+ *
+ * SQLite's `BINARY`, and the binary collation `kv_key` has on MySQL and
+ * MariaDB, already are that order, so the primary key serves the range and the
+ * sort as it is. Postgres' key is in the database's locale, where `en_US` puts
+ * `a` before `B`: there every comparison is made `COLLATE "C"` (byte order,
+ * which for UTF-8 is code-point order), and the `(ns, kv_key COLLATE "C")`
+ * index is what serves it — without that index only the `ns` equality narrows
+ * the scan.
+ *
+ * Exported so a test can `EXPLAIN` exactly what the driver runs.
+ */
+export function queueStateListStatement(
+  dialect: SqlDialect,
+  table: string,
+  bind: (value: unknown) => string,
+  options: {
+    /** The namespace. */
+    ns: string;
+    /** The queue's state key prefix, `q:<queue>:state:`. */
+    base: string;
+    /** The name prefix to match literally; `""` for every name. */
+    prefix: string;
+    /** List only names after this one, when given. */
+    after?: string;
+    /** The most names to return; a positive integer. */
+    limit: number;
+  },
+): string {
+  const collate = dialect.codePointCollation
+    ? ` COLLATE ${dialect.codePointCollation}`
+    : "";
+  const key = `kv_key${collate}`;
+  const param = (value: string) => `${bind(value)}${collate}`;
+  const low = options.base + options.prefix;
+
+  // Built in the order the clauses appear in the statement: MySQL's `?`
+  // placeholders are positional, so a value bound out of text order would land
+  // on another clause's placeholder. Postgres's numbered `$n` hide that.
+  const where = [
+    `ns = ${bind(options.ns)}`,
+    `${key} >= ${param(low)}`,
+    `${key} < ${param(prefixSuccessor(low))}`,
+  ];
+  if (options.after !== undefined) {
+    where.push(`${key} > ${param(options.base + options.after)}`);
+  }
+
+  return `SELECT kv_key FROM ${table}
+        WHERE ${where.join(" AND ")}
+        ORDER BY ${key}
+        LIMIT ${Math.floor(options.limit)}`;
+}
+
+/**
+ * Whether an error is Bun's MySQL client refusing to fetch the server's RSA
+ * key: MySQL 8's `caching_sha2_password` asked for it over a connection
+ * without TLS, and `allowPublicKeyRetrieval` was not set. Read through the
+ * `cause` chain, since it may arrive wrapped.
+ */
+function isPublicKeyRetrievalRefusal(error: unknown): boolean {
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
+    if (
+      (at as { code?: unknown }).code ===
+      "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED"
+    ) {
+      return true;
+    }
+    at = (at as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /**
  * Whether an error is the engine saying the `log_key` column does not exist.
@@ -389,20 +502,49 @@ export class SqlDriver implements JobsDriver {
     this.#poll = options.pollInterval ?? POLL_MS;
     this.#ownsConnection = !options.sql;
 
-    this.#sql =
-      options.sql ??
-      new BunSQL({
-        url: resolveConnectionUrl(
-          options,
-          this.#urlDefaults(),
-          "The SQL driver",
-        ),
-      });
+    this.#sql = options.sql ?? this.#openClient(options);
 
     this.#notify = this.dialect.supportsListen && options.notify !== false;
     this.#syncOnConnect = options.syncSchema ?? false;
     this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
+  }
+
+  /**
+   * Opens the client this driver owns.
+   *
+   * On MySQL and MariaDB, `allowPublicKeyRetrieval` comes from the URL's query
+   * parameter or, for a connection given as fields, from that field — the URL
+   * wins, as it does for everything else. Bun's client ignores the parameter
+   * in a URL, so it is taken out and passed as the client option it has to be.
+   * Every other parameter, `ssl`/`tls`/`sslmode` included, stays in the URL for
+   * the client to read.
+   */
+  #openClient(options: SqlDriverOptions): SQL {
+    const resolved = resolveConnectionUrl(
+      options,
+      this.#urlDefaults(),
+      "The SQL driver",
+    );
+
+    if (this.adapter !== "mysql" && this.adapter !== "mariadb") {
+      return new BunSQL({ url: resolved });
+    }
+
+    const { url, value } = takeBooleanParam(
+      resolved,
+      "allowPublicKeyRetrieval",
+    );
+    const allowPublicKeyRetrieval =
+      value ??
+      (options.url ? undefined : options.connection?.allowPublicKeyRetrieval);
+
+    return new BunSQL({
+      url,
+      ...(allowPublicKeyRetrieval === undefined
+        ? {}
+        : { allowPublicKeyRetrieval }),
+    });
   }
 
   /** How a connection given as fields becomes a URL for this engine. */
@@ -2350,6 +2492,35 @@ export class SqlDriver implements JobsDriver {
     return updated ? next : null;
   }
 
+  /** See {@link queueStateListStatement}. */
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const limit = Math.floor(options.limit);
+    if (!(limit > 0)) {
+      return [];
+    }
+
+    await this.connect();
+
+    const base = this.#queueStateKey(q, "");
+    const { bind, values } = this.#binder();
+
+    const rows = await this.#all<{ kv_key: string }>(
+      queueStateListStatement(this.dialect, this.#tables.kv, bind, {
+        ns: q.ns,
+        base,
+        prefix: options.prefix,
+        after: options.after,
+        limit,
+      }),
+      values,
+    );
+
+    return rows.map((row) => String(row.kv_key).slice(base.length));
+  }
+
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#writeKv(q.ns, `q:${q.queue}:meta`, { paused: true }, true);
     this.#pauseCache.write(q, true);
@@ -2632,7 +2803,16 @@ export class SqlDriver implements JobsDriver {
       // waiting and repeating is exactly the right answer.
       for (const statement of createSchema(this.#tables, this.dialect)) {
         await withLockRetry(async () => {
-          await this.#sql.unsafe(statement);
+          try {
+            await this.#sql.unsafe(statement);
+          } catch (error) {
+            // An index that already exists, on an engine whose `CREATE INDEX`
+            // cannot say `IF NOT EXISTS` (MySQL). Exactly what the clause
+            // would have made a no-op.
+            if (!this.dialect.isDuplicateIndex(error)) {
+              throw error;
+            }
+          }
         });
       }
 
@@ -2646,6 +2826,19 @@ export class SqlDriver implements JobsDriver {
     } catch (error) {
       // A failed migration must not be remembered as done.
       this.#ready = undefined;
+
+      // The client's own wording names a client option the caller never sees
+      // and says nothing of the URL, so the driver says what to change.
+      if (isPublicKeyRetrievalRefusal(error)) {
+        throw new ConfigError(
+          `${this.adapter === "mariadb" ? "MariaDB" : "MySQL"} asked for its RSA public key to authenticate over a connection without TLS, which is refused by default. Either connect over TLS (add ?ssl=true to the URL, or tls: true to the connection), or allow the key to be fetched: add ?allowPublicKeyRetrieval=true to the URL, or allowPublicKeyRetrieval: true to the connection. Only do the latter on a trusted network, since the key is not authenticated.`,
+          {
+            adapter: this.adapter,
+            code: "ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED",
+          },
+        );
+      }
+
       throw new DriverError("sql", "migrate", error, { adapter: this.adapter });
     }
   }

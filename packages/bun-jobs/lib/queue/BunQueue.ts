@@ -33,6 +33,7 @@ import { Job } from "./Job";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+import { DEBOUNCE_PREFIX, sweepWindows, THROTTLE_PREFIX } from "./windows";
 
 /** How many times a debounce or throttle retries a pointer it lost. */
 const WINDOW_ATTEMPTS = 12;
@@ -450,6 +451,52 @@ export class BunQueue<
       : null;
   }
 
+  /**
+   * Removes debounce and throttle pointers that no longer stand for anything
+   * — a debounce whose job has started or gone, a throttle whose window has
+   * closed — and answers with how many went.
+   *
+   * Workers do this on their own once a minute; this is the same thing on
+   * demand. Safe while producers are adding: a pointer moved in the meantime
+   * is left alone.
+   */
+  async cleanWindows(options?: {
+    /** The most entries to examine. Defaults to `1000`. */
+    limit?: number;
+  }): Promise<number> {
+    await this.connect();
+    const driver = this.#requireDriver(
+      "cleanWindows()",
+      "listQueueState",
+      "getQueueState",
+      "setQueueState",
+    );
+
+    let remaining = Math.max(1, options?.limit ?? 1_000);
+    let after: string | undefined;
+    let removed = 0;
+
+    while (remaining > 0) {
+      const page = Math.min(remaining, 200);
+      const sweep = await sweepWindows(driver, this.ref, {
+        now: Date.now(),
+        limit: page,
+        ...(after !== undefined ? { after } : {}),
+      });
+
+      removed += sweep.removed;
+      remaining -= page;
+
+      if (sweep.next === undefined) {
+        break;
+      }
+
+      after = sweep.next;
+    }
+
+    return removed;
+  }
+
   /** A page of a job's log, oldest first unless asked otherwise. */
   async getJobLogs(
     id: string,
@@ -716,7 +763,7 @@ export class BunQueue<
       runAt: _runAt,
       ...rest
     } = options;
-    const pointerName = `${kind}:${window.id}`;
+    const pointerName = `${kind === "debounce" ? DEBOUNCE_PREFIX : THROTTLE_PREFIX}${window.id}`;
 
     for (let attempt = 0; attempt < WINDOW_ATTEMPTS; attempt++) {
       const now = Date.now();

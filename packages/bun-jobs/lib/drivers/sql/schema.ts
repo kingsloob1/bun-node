@@ -77,13 +77,13 @@ export const FRESH_JOB_COLUMNS = [
  * columns are `jsonb`.
  */
 export function jobColumnTypes(dialect: SqlDialect): string[] {
-  const { idType, timeType } = dialect;
+  const { idType, nameType, timeType } = dialect;
 
   return [
     idType,
     idType,
     idType,
-    "TEXT",
+    nameType,
 
     idType,
     "INTEGER",
@@ -133,14 +133,25 @@ export interface ColumnDefinition {
   retype?: boolean;
 }
 
+/** A column of an index that is ordered in a collation other than its own. */
+export interface CollatedIndexColumn {
+  /** The column's name. */
+  name: string;
+  /** The collation, exactly as written after `COLLATE`: `"C"`, quotes included. */
+  collation: string;
+}
+
 /** One index the driver maintains. */
 export interface IndexDefinition {
   /** The index's name, unique within the schema. */
   name: string;
   /** The table it is on. */
   table: string;
-  /** The columns it covers, in order. */
-  columns: string[];
+  /**
+   * The columns it covers, in order: a name, or a name with the collation the
+   * index orders it in when that is not the column's own.
+   */
+  columns: (string | CollatedIndexColumn)[];
   /** A partial-index predicate, where the engine has them. */
   predicate?: string;
 }
@@ -174,7 +185,16 @@ export function schemaDefinition(
   dialect: SqlDialect,
 ): { tables: TableDefinition[]; indexes: IndexDefinition[] } {
   const { jobs, locks, kv, events, logs } = tables;
-  const { idType, jsonType, timeType, serialType, longTextType } = dialect;
+  const {
+    idType,
+    nameType,
+    jsonType,
+    timeType,
+    serialType,
+    longTextType,
+    codePointCollation,
+    claimIndexNamesId,
+  } = dialect;
 
   // Index names have to be unique within a schema, so they are derived from
   // the table they belong to rather than from a prefix that may not exist.
@@ -189,7 +209,7 @@ export function schemaDefinition(
           { name: "ns", type: idType, suffix: "NOT NULL" },
           { name: "queue", type: idType, suffix: "NOT NULL" },
           { name: "id", type: idType, suffix: "NOT NULL" },
-          { name: "name", type: "TEXT", suffix: "NOT NULL" },
+          { name: "name", type: nameType, suffix: "NOT NULL" },
           { name: "state", type: idType, suffix: "NOT NULL" },
           { name: "priority", type: "INTEGER", suffix: "NOT NULL DEFAULT 0" },
           { name: "run_at", type: timeType, suffix: "NOT NULL" },
@@ -294,7 +314,16 @@ export function schemaDefinition(
       {
         name: `ix_${prefix}_claim`,
         table: jobs,
-        columns: ["ns", "queue", "state", "priority", "created_at"],
+        // `id` is the order's last key; named only where the engine will not
+        // read it from the primary-key suffix (MySQL, see the dialect).
+        columns: [
+          "ns",
+          "queue",
+          "state",
+          "priority",
+          "created_at",
+          ...(claimIndexNamesId ? ["id"] : []),
+        ],
       },
       // Promotion: what is due but not yet claimable.
       {
@@ -344,6 +373,24 @@ export function schemaDefinition(
         table: logs,
         columns: ["ns", "queue", "log_key", "seq"],
       },
+      // Queue state listed in code-point order, as a range rather than a
+      // filter. Only where the primary key cannot serve it: on Postgres the key
+      // is in the database's locale, so a `kv_key COLLATE "C"` bound is no
+      // bound on it and only `ns` narrows the scan. Everywhere else the key
+      // already is code-point order, and a second index would be a write per
+      // row for nothing.
+      ...(codePointCollation
+        ? [
+            {
+              name: `ix_${prefix}_kv_order`,
+              table: kv,
+              columns: [
+                "ns",
+                { name: "kv_key", collation: codePointCollation },
+              ],
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -351,6 +398,15 @@ export function schemaDefinition(
 /** One column, as it appears inside a `CREATE TABLE`. */
 export function renderColumn(column: ColumnDefinition): string {
   return `${column.name} ${column.type}${column.suffix ? ` ${column.suffix}` : ""}`;
+}
+
+/** One index column as it appears in a `CREATE INDEX`. */
+export function renderIndexColumn(
+  column: string | CollatedIndexColumn,
+): string {
+  return typeof column === "string"
+    ? column
+    : `${column.name} COLLATE ${column.collation}`;
 }
 
 /** The `CREATE INDEX` for one index definition. */
@@ -362,7 +418,9 @@ export function renderIndex(
   const where = index.predicate ? dialect.partialIndex(index.predicate) : "";
   const how = concurrently ? dialect.concurrentIndex : "";
 
-  return `CREATE INDEX ${how}IF NOT EXISTS ${index.name} ON ${index.table} (${index.columns.join(", ")})${where}`;
+  const ifNotExists = dialect.indexIfNotExists ? "IF NOT EXISTS " : "";
+
+  return `CREATE INDEX ${how}${ifNotExists}${index.name} ON ${index.table} (${index.columns.map(renderIndexColumn).join(", ")})${where}`;
 }
 
 /** Statements creating everything, each safe to run repeatedly. */

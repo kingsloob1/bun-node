@@ -200,6 +200,7 @@ export {
   LockUnavailableError,
   QueueClosedError,
   QueueFullError,
+  RunKilledError,
   RunnerStoppedError,
   SerializationError,
   UnrecoverableJobError,

@@ -39,6 +39,13 @@ import { EventRetention } from "../shared/eventRetention";
 import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
+import { compareCodePoints } from "../shared/strings";
+import {
+  decodeName,
+  decodeSegment,
+  encodeName,
+  encodeSegment,
+} from "./file-names";
 
 /**
  * A driver backed by a directory, for processes that share a filesystem.
@@ -186,15 +193,22 @@ export class FileDriver implements JobsDriver {
   }
 
   async purge(ns: string): Promise<void> {
-    await rm(join(this.root, ns), { recursive: true, force: true });
+    await rm(join(this.root, encodeSegment(ns)), {
+      recursive: true,
+      force: true,
+    });
   }
 
   async listRunners(ns: string): Promise<string[]> {
-    return await this.#list(join(this.root, ns, "runners"));
+    return await this.#listSegments(
+      join(this.root, encodeSegment(ns), "runners"),
+    );
   }
 
   async listQueues(ns: string): Promise<string[]> {
-    return await this.#list(join(this.root, ns, "queues"));
+    return await this.#listSegments(
+      join(this.root, encodeSegment(ns), "queues"),
+    );
   }
 
   /* --- runner: locks -------------------------------------------------- */
@@ -1312,6 +1326,48 @@ export class FileDriver implements JobsDriver {
     }
   }
 
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const names: string[] = [];
+
+    for (const file of await this.#list(join(this.#queueDir(q), "state"))) {
+      // Only a finished `<encoded name>.json` is an entry. The directory also
+      // holds `.lock` files (an orphan outlives a crashed compare-and-set),
+      // `.stale` locks mid-break and `.tmp` files from an interrupted atomic
+      // write. An encoded name never contains a dot, so the first dot ends it
+      // and only `.json` straight after makes an entry.
+      const dot = file.indexOf(".");
+      if (dot === -1 || file.slice(dot) !== ".json") {
+        continue;
+      }
+
+      const name = decodeName(file.slice(0, dot));
+      if (name === null) {
+        // Not a name this driver wrote; nothing it could be looked up by.
+        continue;
+      }
+
+      // Compared decoded, because the prefix is literal text rather than an
+      // encoded fragment — and with `compareCodePoints`, never `>`. JavaScript
+      // compares UTF-16 units, so `"\u{1F600}" > "￿"` is false, and a page
+      // ending at U+FFFF would silently drop the emoji from the next one.
+      if (
+        name.startsWith(options.prefix) &&
+        (options.after === undefined ||
+          compareCodePoints(name, options.after) > 0)
+      ) {
+        names.push(name);
+      }
+    }
+
+    // Code-point order, as the contract requires; the default `sort()` is
+    // UTF-16 order, which puts U+10000 and above ahead of U+E000–U+FFFF.
+    names.sort(compareCodePoints);
+    return names.slice(0, Math.max(0, options.limit));
+  }
+
   async pauseQueue(q: QueueRef): Promise<void> {
     await this.#setMeta(q, { paused: true });
     this.#pauseCache.write(q, true);
@@ -1504,8 +1560,8 @@ export class FileDriver implements JobsDriver {
   async #eventLogs(ns: string): Promise<string[]> {
     const logs: string[] = [];
 
-    const queues = join(this.root, ns, "queues");
-    const runners = join(this.root, ns, "runners");
+    const queues = join(this.root, encodeSegment(ns), "queues");
+    const runners = join(this.root, encodeSegment(ns), "runners");
 
     for (const [dir, targets] of [
       [queues, await this.#list(queues)],
@@ -1589,20 +1645,36 @@ export class FileDriver implements JobsDriver {
   }
 
   /* --- paths ------------------------------------------------------------ */
+  //
+  // Every name becomes a file name through `file-names.ts`, never as typed:
+  // on a case-insensitive filesystem (macOS, Windows) `Report` and `report`
+  // would otherwise be one file. Namespaces, queue names and runner ids go
+  // through `encodeSegment`, which keeps them readable; ids, state names and
+  // repeat keys through `encodeName`, which also keeps their order.
 
   /** Directory holding one runner's lock, state and events. */
   #runnerDir(ns: string, key: string): string {
-    return join(this.root, ns, "runners", key.replace(/^r:/, ""));
+    return join(
+      this.root,
+      encodeSegment(ns),
+      "runners",
+      encodeSegment(key.replace(/^r:/, "")),
+    );
   }
 
   /** Directory holding one queue. */
   #queueDir(q: QueueRef): string {
-    return join(this.root, q.ns, "queues", q.queue);
+    return join(
+      this.root,
+      encodeSegment(q.ns),
+      "queues",
+      encodeSegment(q.queue),
+    );
   }
 
   /** Path of a job's record. */
   #jobPath(q: QueueRef, id: string): string {
-    return join(this.#queueDir(q), "jobs", `${encodeURIComponent(id)}.json`);
+    return join(this.#queueDir(q), "jobs", `${encodeName(id)}.json`);
   }
 
   /**
@@ -1618,7 +1690,7 @@ export class FileDriver implements JobsDriver {
     return join(
       this.#queueDir(q),
       "logs",
-      `${encodeURIComponent(record.id)}.${record.createdAt}.jsonl`,
+      `${encodeName(record.id)}.${record.createdAt}.jsonl`,
     );
   }
 
@@ -1627,7 +1699,7 @@ export class FileDriver implements JobsDriver {
    * `purge` takes it with the queue, and a lock beside it shares the stem.
    */
   #statePath(q: QueueRef, name: string): string {
-    return join(this.#queueDir(q), "state", `${encodeURIComponent(name)}.json`);
+    return join(this.#queueDir(q), "state", `${encodeName(name)}.json`);
   }
 
   /** Directory markers are moved into while their job is being changed. */
@@ -1637,11 +1709,7 @@ export class FileDriver implements JobsDriver {
 
   /** Path of a repeat definition. */
   #repeatPath(q: QueueRef, key: string): string {
-    return join(
-      this.#queueDir(q),
-      "repeats",
-      `${encodeURIComponent(key)}.json`,
-    );
+    return join(this.#queueDir(q), "repeats", `${encodeName(key)}.json`);
   }
 
   /** Path of the events log for one target. */
@@ -1663,18 +1731,25 @@ export class FileDriver implements JobsDriver {
   /**
    * The marker name for a record. The prefix is what its state is ordered
    * by, zero-padded so a lexical `readdir` sort *is* the claim order.
+   *
+   * The id comes last, through `encodeName`, which preserves code-point order
+   * and emits ASCII only. So a marker name is all ASCII, the default `sort()`
+   * on markers is already byte (and so code-point) order, and ties on the
+   * prefix break by id exactly as `compareCodePoints` would — non-ASCII ids
+   * included, which `encodeURIComponent` (`%` sorting before every letter) got
+   * wrong. The encoded id never contains `-`, so the marker splits one way.
    */
   #markerFor(record: JobRecord): string {
     switch (record.state) {
       case "waiting":
-        return `${pad(record.priority + PRIORITY_OFFSET, 8)}-${pad(record.createdAt, 13)}-${encodeURIComponent(record.id)}`;
+        return `${pad(record.priority + PRIORITY_OFFSET, 8)}-${pad(record.createdAt, 13)}-${encodeName(record.id)}`;
       case "delayed":
       case "failed":
-        return `${pad(record.runAt, 13)}-${encodeURIComponent(record.id)}`;
+        return `${pad(record.runAt, 13)}-${encodeName(record.id)}`;
       case "active":
         return activeMarker(record.lockExpiresAt ?? 0, record.id);
       default:
-        return `${pad(record.finishedOn ?? record.createdAt, 13)}-${encodeURIComponent(record.id)}`;
+        return `${pad(record.finishedOn ?? record.createdAt, 13)}-${encodeName(record.id)}`;
     }
   }
 
@@ -2140,6 +2215,23 @@ export class FileDriver implements JobsDriver {
     }
   }
 
+  /**
+   * Directory names under `dir`, decoded back into the segments they encode.
+   * An entry `encodeSegment` could not have written is not one of ours.
+   */
+  async #listSegments(dir: string): Promise<string[]> {
+    const segments: string[] = [];
+
+    for (const entry of await this.#list(dir)) {
+      const segment = decodeSegment(entry);
+      if (segment !== null) {
+        segments.push(segment);
+      }
+    }
+
+    return segments;
+  }
+
   /** A file's text, or `""` when it is missing. */
   async #readText(path: string): Promise<string> {
     try {
@@ -2373,13 +2465,13 @@ function pad(value: number, width: number): string {
 
 /** The marker name of an active job, which is ordered by its lock expiry. */
 function activeMarker(lockExpiresAt: number, id: string): string {
-  return `${pad(lockExpiresAt, 13)}-${encodeURIComponent(id)}`;
+  return `${pad(lockExpiresAt, 13)}-${encodeName(id)}`;
 }
 
 /** Splits a hold's name into when it was taken and the marker it holds. */
 function parseHold(name: string): { stamp: number; marker: string } | null {
-  // `<stamp>.<state>.<marker>`: neither of the first two contains a dot, and
-  // the marker may (`encodeURIComponent` leaves dots alone).
+  // `<stamp>.<state>.<marker>`: none of the three contains a dot (an encoded
+  // id never does), but reading only the first two keeps that from mattering.
   const first = name.indexOf(".");
   const second = name.indexOf(".", first + 1);
   const stamp = Number(name.slice(0, first));
@@ -2416,10 +2508,17 @@ function dropLines(text: string, lines: number): string {
   return text.slice(at + 1);
 }
 
-/** The job id encoded in a marker name. */
+/**
+ * The job id encoded in a marker name.
+ *
+ * Everything after the last `-`, because `encodeName` never emits one. The
+ * old URI-encoded ids kept their dashes, and telling a waiting marker's two
+ * numeric prefixes from one prefix and an id that merely *began* with digits
+ * and a dash — `1700000000000-abc`, delayed — was a guess that got it wrong.
+ *
+ * `""` for a name this driver did not write: no record lives there, so every
+ * caller treats the file as litter.
+ */
 function markerId(marker: string): string {
-  const parts = marker.split("-");
-  // Ids are URI-encoded, so any "-" beyond the numeric prefixes is part of it.
-  const prefixes = parts.length > 2 && /^\d+$/.test(parts[1]) ? 2 : 1;
-  return decodeURIComponent(parts.slice(prefixes).join("-"));
+  return decodeName(marker.slice(marker.lastIndexOf("-") + 1)) ?? "";
 }

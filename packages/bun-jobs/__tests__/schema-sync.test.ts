@@ -1,8 +1,12 @@
-import type { JobsDriver } from "../lib/index";
+import type { JobsDriver, SchemaChange } from "../lib/index";
 import process from "node:process";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
-import { ConfigError, MongoDriver, SqlDriver } from "../lib/index";
+import { resolveSyncOptions } from "../lib/drivers/schemaSync";
+import { createSchema, schemaDefinition } from "../lib/drivers/sql/schema";
+import { syncSqlSchema } from "../lib/drivers/sql/sync";
+import { ConfigError, dialectFor, MongoDriver, SqlDriver } from "../lib/index";
+import { takeBooleanParam } from "../lib/shared/connection";
 import { queueEvent } from "../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "./helpers";
 
@@ -210,6 +214,59 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
   }, 45_000);
 
+  it("builds the code-point index on kv concurrently, as a safe change", async () => {
+    const prefix = makePrefix("kvord");
+    const driver = makeSqlDriver(prefix);
+    await driver.connect();
+
+    // An install from before `listQueueState` had an index to range over.
+    const name = `ix_${prefix}jobs_kv_order`;
+    await ddl([`DROP INDEX ${name}`]);
+
+    const planned = await driver.syncSchema({ dryRun: true });
+    expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
+      ["create-index", name, false],
+    ]);
+    expect(planned[0]!.statement).toBe(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${prefix}kv (ns, kv_key COLLATE "C")`,
+    );
+
+    // Safe, so a plain sync makes it.
+    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+    expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+
+    const [row] = await query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE tablename = '${prefix}kv' AND indexname = '${name}'`,
+    );
+    expect(String(row?.indexdef)).toContain(`kv_key COLLATE "C"`);
+  }, 45_000);
+
+  it("rebuilds the code-point index when it lost its collation", async () => {
+    const prefix = makePrefix("kvcoll");
+    const driver = makeSqlDriver(prefix);
+    await driver.connect();
+
+    // The right name over the wrong order: the default collation, which the
+    // primary key already provides and which cannot bound a `COLLATE "C"`
+    // range.
+    const name = `ix_${prefix}jobs_kv_order`;
+    await ddl([
+      `DROP INDEX ${name}`,
+      `CREATE INDEX ${name} ON ${prefix}kv (ns, kv_key)`,
+    ]);
+
+    const planned = await driver.syncSchema({ dryRun: true });
+    expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
+      ["drop-index", name, false],
+      ["create-index", name, false],
+    ]);
+    expect(planned[0]!.reason).toMatch(/collation/);
+
+    await driver.syncSchema();
+    expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+  }, 45_000);
+
   it("reports a column retype but will not make it unasked", async () => {
     const prefix = makePrefix("type");
     const driver = makeSqlDriver(prefix);
@@ -364,6 +421,500 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     expect(claimed?.id).toBe("works");
   }, 45_000);
 });
+
+/** The five table names under `prefix`. */
+function tablesFor(prefix: string) {
+  return {
+    jobs: `${prefix}jobs`,
+    locks: `${prefix}locks`,
+    kv: `${prefix}kv`,
+    events: `${prefix}events`,
+    logs: `${prefix}logs`,
+  };
+}
+
+/**
+ * MySQL and MariaDB, when configured: the engines whose identifier collation
+ * the driver names, and whose migrations recollate columns.
+ */
+const MYSQL_FAMILY: {
+  /** Which engine. */
+  adapter: "mysql" | "mariadb";
+  /** Its server, or undefined when the suite has none. */
+  url: string | undefined;
+  /** The binary `NO PAD` collation the driver gives identifiers there. */
+  binary: string;
+}[] = [
+  {
+    adapter: "mariadb",
+    url: process.env.BUN_JOBS_TEST_MARIADB_URL,
+    binary: "utf8mb4_nopad_bin",
+  },
+  {
+    adapter: "mysql",
+    url: process.env.BUN_JOBS_TEST_MYSQL_URL,
+    binary: "utf8mb4_0900_bin",
+  },
+];
+
+/** Table prefixes to drop when the suite ends, with the client to drop them on. */
+const familyTables: { client: SQL; prefix: string }[] = [];
+/** Clients opened for MySQL-family servers, closed when the suite ends. */
+const familyClients: SQL[] = [];
+
+afterAll(async () => {
+  for (const { client, prefix } of familyTables) {
+    for (const table of ["jobs", "locks", "kv", "events", "logs"]) {
+      await client
+        .unsafe(`DROP TABLE IF EXISTS ${prefix}${table}`)
+        .catch(() => undefined);
+    }
+  }
+  await Promise.allSettled(familyClients.map((client) => client.close()));
+});
+
+/**
+ * The case- and accent-insensitive identifiers an older version created.
+ * Named rather than left to the server's default, so a test means the same
+ * thing on every server; `utf8mb4_general_ci` exists on both engines.
+ */
+function legacyDialect(adapter: "mysql" | "mariadb") {
+  return {
+    ...dialectFor(adapter),
+    idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+    nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+  };
+}
+
+for (const engine of MYSQL_FAMILY) {
+  const { adapter, url, binary } = engine;
+
+  /** This engine's client, opened on first use. */
+  let shared: SQL | undefined;
+  const client = (): SQL => {
+    if (!shared) {
+      // For the DDL the driver has no API for. Honours the URL's
+      // `allowPublicKeyRetrieval` as the driver does; Bun's client ignores it.
+      const { url: bare, value } = takeBooleanParam(
+        url!,
+        "allowPublicKeyRetrieval",
+      );
+      shared = new SQL({
+        url: bare,
+        ...(value === undefined ? {} : { allowPublicKeyRetrieval: value }),
+      });
+      familyClients.push(shared);
+    }
+    return shared;
+  };
+
+  /** A prefix nothing else uses, dropped when the suite ends. */
+  const prefixFor = (label: string): string => {
+    const prefix = `sy_${label}_${Math.random().toString(36).slice(2, 8)}_`;
+    familyTables.push({ client: client(), prefix });
+    return prefix;
+  };
+
+  /** A driver over `prefix`'s tables, on this engine's client. */
+  const driverFor = (prefix: string): SqlDriver => {
+    const driver = new SqlDriver({
+      url,
+      adapter,
+      tablePrefix: prefix,
+    });
+    drivers.push(driver);
+    return driver;
+  };
+
+  /** A backend over this engine's client, recording what it runs. */
+  const recordingBackend = (run: string[] = []) => ({
+    all: async <T>(text: string, params: unknown[]) =>
+      (await client().unsafe(text, params)) as T[],
+    run: async (text: string) => {
+      run.push(text);
+      return await client().unsafe(text);
+    },
+  });
+
+  describe.skipIf(!url)(`schema sync: ${adapter} collation`, () => {
+    it("finds nothing to do against the schema it just created", async () => {
+      const driver = driverFor(prefixFor(`${adapter}_fresh`));
+      await driver.connect();
+
+      // Also the regression for MariaDB spelling `JSON` as `longtext`: before
+      // the dialect said so, this reported eight blocking retypes, forever.
+      expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+    }, 45_000);
+
+    it("reports a case-insensitive collation as blocking, and repairs it only when asked", async () => {
+      const prefix = prefixFor(`${adapter}_coll`);
+      const tables = tablesFor(prefix);
+      for (const statement of createSchema(tables, legacyDialect(adapter))) {
+        await client().unsafe(statement);
+      }
+
+      const driver = driverFor(prefix);
+      const q = { ns: testNamespace(), queue: "collation" };
+      const later = Date.now() + 60_000;
+
+      // The fixture really has the bug: `report` collides with `Report`.
+      expect(
+        (await driver.addJob(q, makeJob({ id: "Report", runAt: later }))).added,
+      ).toBe(true);
+      expect(
+        (await driver.addJob(q, makeJob({ id: "report", runAt: later }))).added,
+      ).toBe(false);
+
+      // Every identifier column, and nothing else, reported as one blocking
+      // change each.
+      const planned = await driver.syncSchema({ dryRun: true });
+      expect(new Set(planned.map((c) => c.kind))).toEqual(
+        new Set(["alter-column"]),
+      );
+      expect(planned.every((c) => c.blocking && !c.applied)).toBe(true);
+      const targets = planned.map((c) => `${c.table}.${c.target}`);
+      for (const column of [
+        "jobs.ns",
+        "jobs.queue",
+        "jobs.id",
+        "jobs.name",
+        "jobs.state",
+        "jobs.lock_token",
+        "jobs.worker_id",
+        "jobs.repeat_key",
+        "jobs.log_key",
+        "locks.lock_key",
+        "locks.token",
+        "kv.ns",
+        "kv.kv_key",
+        "events.channel",
+        "logs.job_id",
+      ]) {
+        expect(targets).toContain(`${prefix}${column}`);
+      }
+      for (const column of [
+        "jobs.data",
+        "jobs.opts",
+        "logs.message",
+        "kv.value",
+      ]) {
+        expect(targets).not.toContain(`${prefix}${column}`);
+      }
+      const id = planned.find(
+        (c) => c.target === "id" && c.table === tables.jobs,
+      )!;
+      expect(id.reason).toMatch(new RegExp(`utf8mb4_general_ci.*${binary}`));
+      // The whole definition, so `MODIFY` keeps the column `NOT NULL`.
+      expect(id.statement).toMatch(new RegExp(`COLLATE ${binary} NOT NULL$`));
+
+      // A plain sync declines every one of them.
+      expect((await driver.syncSchema()).some((c) => c.applied)).toBe(false);
+
+      // Asked for by name, it makes them, and then there is nothing left.
+      const applied = await driver.syncSchema({ alterColumns: true });
+      expect(applied.length).toBe(planned.length);
+      expect(applied.every((c) => c.applied)).toBe(true);
+      expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+
+      const nullable = (await client().unsafe(
+        `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${tables.jobs}'
+            AND IS_NULLABLE = 'YES' AND COLUMN_NAME IN ('ns', 'queue', 'id', 'name', 'state')`,
+      )) as { name: string }[];
+      expect(nullable).toEqual([]);
+
+      // And what the contract asks of ids, state names and queue names holds
+      // on the repaired tables — trailing spaces included, which a padding
+      // collation would fold together.
+      const variants = [
+        "Report",
+        "report",
+        "REPORT",
+        "résumé",
+        "resume",
+        "report ",
+      ];
+      for (const variant of variants.slice(1)) {
+        expect(
+          (await driver.addJob(q, makeJob({ id: variant, runAt: later })))
+            .added,
+        ).toBe(true);
+      }
+      for (const variant of variants) {
+        expect((await driver.getJob(q, variant))?.id).toBe(variant);
+        expect(await driver.setQueueState(q, variant, { variant }, null)).toBe(
+          1,
+        );
+      }
+      expect((await driver.countJobs(q)).waiting).toBe(variants.length);
+      expect(await driver.listQueueState(q, { prefix: "", limit: 10 })).toEqual(
+        [...variants].sort(),
+      );
+
+      const upper = { ns: q.ns, queue: "Mail" };
+      const lower = { ns: q.ns, queue: "mail" };
+      await driver.addJob(upper, makeJob({ id: "shared", runAt: later }));
+      expect(
+        (await driver.addJob(lower, makeJob({ id: "shared", runAt: later })))
+          .added,
+      ).toBe(true);
+      expect((await driver.countJobs(upper)).waiting).toBe(1);
+      expect((await driver.countJobs(lower)).waiting).toBe(1);
+    }, 90_000);
+  });
+
+  describe.skipIf(!url)(`schema sync: ${adapter} index columns`, () => {
+    it("rebuilds an index whose columns changed, as a safe change", async () => {
+      const prefix = prefixFor(`${adapter}_ixcol`);
+      const driver = driverFor(prefix);
+      await driver.connect();
+
+      // The claim index as it stood before MySQL's gained `id`: the right name
+      // over the wrong columns. Neither engine renders a definition, so only
+      // the column list can show the difference.
+      const name = `ix_${prefix}jobs_claim`;
+      const expected = dialectFor(adapter).claimIndexNamesId
+        ? "ns, queue, state, priority, created_at, id"
+        : "ns, queue, state, priority, created_at";
+      await client().unsafe(`DROP INDEX ${name} ON ${prefix}jobs`);
+      await client().unsafe(
+        `CREATE INDEX ${name} ON ${prefix}jobs (ns, queue, state, run_at)`,
+      );
+
+      const planned = await driver.syncSchema({ dryRun: true });
+      expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
+        ["drop-index", name, false],
+        ["create-index", name, false],
+      ]);
+      expect(planned[0]!.reason).toContain("ns,queue,state,run_at");
+      expect(planned[1]!.statement).toBe(
+        `CREATE INDEX ${name} ON ${prefix}jobs (${expected})`.replace(
+          "CREATE INDEX ",
+          `CREATE INDEX ${dialectFor(adapter).indexIfNotExists ? "IF NOT EXISTS " : ""}`,
+        ),
+      );
+
+      // Safe, so a plain sync makes it, and then there is nothing left.
+      expect((await driver.syncSchema()).every((c) => c.applied)).toBe(true);
+      expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+
+      const columns = (await client().unsafe(
+        `SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ', ') AS c
+           FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${prefix}jobs'
+            AND INDEX_NAME = '${name}'`,
+      )) as { c: string }[];
+      expect(columns[0]?.c).toBe(expected);
+    }, 60_000);
+  });
+
+  /**
+   * A migration rewrites each table once, however many of its columns change.
+   *
+   * Every `ALTER TABLE` that retypes or recollates a column copies the whole
+   * table under a lock. One per column made the collation migration nine copies
+   * of `jobs`; one per table is one.
+   *
+   * Counted by running the sync over a backend that records every statement:
+   * exact, and unaffected by anything else the server is doing, where a
+   * server-wide `Com_alter_table` counter would not be.
+   */
+  describe.skipIf(!url)(
+    `schema sync: one rewrite per table on ${adapter}`,
+    () => {
+      it("issues exactly one ALTER per table, and still reports every column", async () => {
+        const prefix = prefixFor(`${adapter}_one`);
+        const tables = tablesFor(prefix);
+        const dialect = dialectFor(adapter);
+        for (const statement of createSchema(tables, legacyDialect(adapter))) {
+          await client().unsafe(statement);
+        }
+
+        const run: string[] = [];
+        const backend = recordingBackend(run);
+        const definition = schemaDefinition(tables, dialect);
+
+        // A dry run still reports one change per column, each with the statement
+        // that changes that column alone.
+        const planned = await syncSqlSchema(
+          backend,
+          dialect,
+          definition,
+          resolveSyncOptions({ dryRun: true }),
+        );
+        const alters = planned.filter((c) => c.kind === "alter-column");
+        expect(alters.filter((c) => c.table === tables.jobs)).toHaveLength(9);
+        for (const change of alters) {
+          expect(change.blocking).toBe(true);
+          expect(change.statement.match(/MODIFY COLUMN/g)).toHaveLength(1);
+        }
+        expect(run).toEqual([]);
+
+        const applied = await syncSqlSchema(
+          backend,
+          dialect,
+          definition,
+          resolveSyncOptions({ alterColumns: true }),
+        );
+
+        // The same changes, reported the same way, and every one applied.
+        const shape = (c: SchemaChange) => [
+          c.kind,
+          c.table,
+          c.target,
+          c.statement,
+          c.blocking,
+        ];
+        expect(applied.map(shape)).toEqual(planned.map(shape));
+        expect(applied.every((c) => c.applied)).toBe(true);
+
+        // One ALTER per table with changes, carrying all of that table's columns.
+        const changedTables = [...new Set(alters.map((c) => c.table))];
+        const statements = run.filter((text) => text.startsWith("ALTER TABLE"));
+        expect(statements).toHaveLength(changedTables.length);
+        for (const table of changedTables) {
+          const mine = statements.filter((text) =>
+            text.startsWith(`ALTER TABLE ${table} `),
+          );
+          expect(mine).toHaveLength(1);
+          expect(mine[0]!.match(/MODIFY COLUMN/g)).toHaveLength(
+            alters.filter((c) => c.table === table).length,
+          );
+        }
+
+        // And the result is what the driver would have created.
+        expect(
+          await syncSqlSchema(
+            backend,
+            dialect,
+            definition,
+            resolveSyncOptions({ dryRun: true }),
+          ),
+        ).toEqual([]);
+      }, 90_000);
+
+      it("applies none of a table's columns when its ALTER fails, and throws", async () => {
+        const prefix = prefixFor(`${adapter}_fail`);
+        const tables = tablesFor(prefix);
+        const dialect = dialectFor(adapter);
+        for (const statement of createSchema(tables, legacyDialect(adapter))) {
+          await client().unsafe(statement);
+        }
+
+        // Make the combined statement for `jobs` fail the way a real one can:
+        // `name` is loosened to nullable and given a null, so redefining it
+        // `NOT NULL` alongside the other eight columns is refused by the server.
+        await client().unsafe(
+          `ALTER TABLE ${tables.jobs} MODIFY COLUMN name TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL`,
+        );
+        await client().unsafe(
+          `INSERT INTO ${tables.jobs} (ns, queue, id, name, state, run_at, created_at) VALUES ('n', 'q', 'broken', NULL, 'waiting', 0, 0)`,
+        );
+        const backend = recordingBackend();
+
+        await expect(
+          syncSqlSchema(
+            backend,
+            dialect,
+            schemaDefinition(tables, dialect),
+            resolveSyncOptions({ alterColumns: true }),
+          ),
+        ).rejects.toThrow();
+
+        // One statement, so all or nothing: not one of the other eight columns
+        // was recollated on its own ahead of the one that failed.
+        const collations = (await client().unsafe(
+          `SELECT DISTINCT COLLATION_NAME AS c FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${tables.jobs}'
+            AND COLUMN_NAME IN ('ns', 'queue', 'id', 'state', 'lock_token', 'worker_id', 'repeat_key', 'log_key')`,
+        )) as { c: string }[];
+        expect(collations.map((row) => row.c)).toEqual(["utf8mb4_general_ci"]);
+
+        // Still reported, still blocking, and not applied.
+        const after = await syncSqlSchema(
+          backend,
+          dialect,
+          schemaDefinition(tables, dialect),
+          resolveSyncOptions({ dryRun: true }),
+        );
+        const jobs = after.filter(
+          (c) => c.kind === "alter-column" && c.table === tables.jobs,
+        );
+        expect(jobs).toHaveLength(9);
+        expect(jobs.every((c) => c.blocking && !c.applied)).toBe(true);
+      }, 90_000);
+    },
+  );
+}
+
+/** Whether the Postgres role may create an event trigger, which needs superuser. */
+const POSTGRES_SUPERUSER = POSTGRES
+  ? await (async () => {
+      const probe = new SQL(POSTGRES);
+      try {
+        const [row] = (await probe.unsafe(
+          "SELECT rolsuper FROM pg_roles WHERE rolname = current_user",
+        )) as { rolsuper: boolean }[];
+        return row?.rolsuper === true;
+      } finally {
+        await probe.close();
+      }
+    })()
+  : false;
+
+describe.skipIf(!POSTGRES_SUPERUSER)(
+  "schema sync: one rewrite per table on Postgres (needs a superuser)",
+  () => {
+    it("rewrites jobs once for several retyped columns", async () => {
+      const prefix = makePrefix("pone");
+      const driver = makeSqlDriver(prefix);
+      await driver.connect();
+
+      // The `jsonb` payloads an older version created, on three columns.
+      await ddl(
+        ["data", "opts", "progress"].map(
+          (column) =>
+            `ALTER TABLE ${prefix}jobs ALTER COLUMN ${column} TYPE jsonb USING ${column}::jsonb`,
+        ),
+      );
+
+      // Postgres reports each actual rewrite to a `table_rewrite` event
+      // trigger — the engine's own count, not an inference from statements.
+      const log = `${prefix}rewrites`;
+      const fn = `${prefix}count_rewrite`;
+      const trigger = `${prefix}rewrite_trigger`;
+      await ddl([
+        `CREATE TABLE ${log} (tbl text)`,
+        `CREATE FUNCTION ${fn}() RETURNS event_trigger LANGUAGE plpgsql AS $$
+           BEGIN
+             IF pg_event_trigger_table_rewrite_oid()::regclass::text LIKE '${prefix}%' THEN
+               INSERT INTO ${log} VALUES (pg_event_trigger_table_rewrite_oid()::regclass::text);
+             END IF;
+           END $$`,
+        `CREATE EVENT TRIGGER ${trigger} ON table_rewrite EXECUTE FUNCTION ${fn}()`,
+      ]);
+
+      try {
+        const applied = await driver.syncSchema({ alterColumns: true });
+        const jobs = applied.filter(
+          (c) => c.kind === "alter-column" && c.table === `${prefix}jobs`,
+        );
+        expect(jobs.map((c) => c.target)).toEqual(["data", "opts", "progress"]);
+        expect(jobs.every((c) => c.blocking && c.applied)).toBe(true);
+
+        const rewrites = await query<{ tbl: string }>(`SELECT tbl FROM ${log}`);
+        expect(rewrites.map((row) => row.tbl)).toEqual([`${prefix}jobs`]);
+        expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+      } finally {
+        await ddl([
+          `DROP EVENT TRIGGER IF EXISTS ${trigger}`,
+          `DROP FUNCTION IF EXISTS ${fn}()`,
+          `DROP TABLE IF EXISTS ${log}`,
+        ]);
+      }
+    }, 60_000);
+  },
+);
 
 describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
   it("finds nothing to do against the indexes it just created", async () => {

@@ -699,6 +699,29 @@ export interface QueueDriver {
     value: unknown,
     expected: number | null,
   ) => Promise<number | null>;
+  /**
+   * Names of a queue's state entries that begin with `prefix`, in ascending
+   * **code-point order** — only those after `after` when it is given — at most
+   * `limit`.
+   *
+   * Code-point order is UTF-8 byte order, which is what a byte comparison
+   * gives on every backend; it is not JavaScript's default `sort()`, which
+   * compares UTF-16 units. `compareCodePoints` in `shared/strings.ts` is the
+   * reference. Names are compared exactly — case and accents included — and
+   * `prefix` is matched literally, with no pattern characters.
+   *
+   * Optional, with the other queue-state methods. It exists so entries whose
+   * purpose has passed can be found and removed: a debounce pointer to a job
+   * that has run, a throttle window that has closed. Without it they would
+   * accumulate, one per id ever used, for as long as the queue exists.
+   *
+   * Paging by `after` is what keeps a sweep bounded however many entries
+   * there are. A deleted entry is not listed.
+   */
+  listQueueState?: (
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ) => Promise<string[]>;
   /** Pauses claiming across every process. */
   pauseQueue: (q: QueueRef) => Promise<void>;
   /** Resumes claiming across every process. */

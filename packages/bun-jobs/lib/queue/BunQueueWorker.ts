@@ -46,6 +46,7 @@ import { BunQueue } from "./BunQueue";
 import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
 import { nextOccurrence, repeatJobId } from "./repeat";
+import { supportsWindowSweep, sweepWindows } from "./windows";
 
 /** How many jobs one maintenance sweep touches. */
 const MAINTENANCE_BATCH = 100;
@@ -122,6 +123,8 @@ export class BunQueueWorker<
    * them. It costs one cached read a second on a queue with none.
    */
   readonly #limiter: QueueLimiter | undefined;
+  /** Where the next sweep of debounce and throttle pointers resumes. */
+  #windowCursor: string | undefined;
   /**
    * How long to wait before claiming again after a pass the limits held back,
    * or `undefined` when the last pass was not limited.
@@ -160,8 +163,14 @@ export class BunQueueWorker<
   #paused = false;
   /** Resolves when the claim loop has stopped. */
   #stopped = createDeferred<void>();
+  /** Whether a running worker holds the process open. */
+  readonly #waitToExit: boolean;
+  /** The handle holding the process open while the loop runs, if any. */
+  #keepAlive: ReturnType<typeof setInterval> | undefined;
   /** Aborted to wake the loop out of a wait. */
   #wake = new AbortController();
+  /** Each running job's lock-renewal timer, by job id. */
+  readonly #heartbeats = new Map<string, ReturnType<typeof setInterval>>();
   /** Maintenance timers, cleared on close. */
   readonly #timers = new Set<ReturnType<typeof setInterval>>();
   /** Cached queue-paused flag and when it was read. */
@@ -202,6 +211,7 @@ export class BunQueueWorker<
     };
 
     this.#publishes = options.publish ?? false;
+    this.#waitToExit = options.waitToExit ?? true;
     this.#backoffs = BackoffStrategies.from(options.backoffStrategies);
     this.#limiter = QueueLimiter.supports(driver)
       ? new QueueLimiter(
@@ -282,6 +292,9 @@ export class BunQueueWorker<
     this.#armMaintenance();
     this.safeEmit("ready");
 
+    // Held only once the worker is actually running: a `run()` that failed to
+    // connect must not leave the process unable to exit.
+    this.#holdProcess();
     void this.#loop();
     return await this.#stopped.promise;
   }
@@ -317,6 +330,22 @@ export class BunQueueWorker<
    * job being lost.
    */
   async close(options?: { force?: boolean; timeout?: number }): Promise<void> {
+    // Held for as long as closing takes, whatever `waitToExit` says. A caller
+    // awaiting this in a signal handler has nothing else keeping the process
+    // alive — every wait the worker makes is unref'd — so without it Bun could
+    // exit halfway through draining in-flight work, completions and the
+    // driver, and the handler would never reach its next line.
+    const hold = setInterval(() => {}, 2_147_483_647);
+
+    try {
+      await this.#close(options);
+    } finally {
+      clearInterval(hold);
+    }
+  }
+
+  /** The body of {@link BunQueueWorker.close}, under its hold on the process. */
+  async #close(options?: { force?: boolean; timeout?: number }): Promise<void> {
     if (this.#closing) {
       await this.#stopped.promise;
       return;
@@ -332,9 +361,7 @@ export class BunQueueWorker<
     this.#timers.clear();
 
     if (options?.force) {
-      for (const controller of this.#aborts.values()) {
-        controller.abort();
-      }
+      this.#abandonActive();
 
       // Deliberately no wait. A processor that ignores its signal must not
       // hold shutdown hostage; its lock lapses and the stalled sweep returns
@@ -349,9 +376,12 @@ export class BunQueueWorker<
       }
 
       this.#running = false;
+      this.#releaseProcess();
       this.safeEmit("closed");
       return;
     }
+
+    let abandoned = false;
 
     if (this.#active.size > 0) {
       const timeout = options?.timeout ?? this.#options.lockDuration;
@@ -362,13 +392,17 @@ export class BunQueueWorker<
       ]);
 
       if (raced === "timeout") {
-        for (const controller of this.#aborts.values()) {
-          controller.abort();
-        }
+        // Out of patience: from here this is a forced close for whatever is
+        // still running. Waiting on those jobs again would hang on exactly the
+        // processor the timeout exists for — one that ignores its signal.
+        this.#abandonActive();
+        abandoned = true;
       }
     }
 
-    await Promise.allSettled([...this.#active.values()]);
+    if (!abandoned) {
+      await Promise.allSettled([...this.#active.values()]);
+    }
     // Jobs finish before their completions are written, so drain those too.
     await this.#completions.idle();
     await Promise.allSettled([...this.#settling]);
@@ -387,7 +421,53 @@ export class BunQueueWorker<
     }
 
     this.#running = false;
+    this.#releaseProcess();
     this.safeEmit("closed");
+  }
+
+  /**
+   * Gives up on every job still running: aborts its signal and stops renewing
+   * its lock.
+   *
+   * Stopping the renewal is the half that matters for a processor ignoring
+   * its signal. Its heartbeat would otherwise go on extending the lock for as
+   * long as the process lives, so the lock never lapses and the stalled sweep
+   * — in this process or any other — never returns the job to the queue.
+   */
+  #abandonActive(): void {
+    for (const controller of this.#aborts.values()) {
+      controller.abort();
+    }
+
+    for (const heartbeat of this.#heartbeats.values()) {
+      clearInterval(heartbeat);
+    }
+    this.#heartbeats.clear();
+  }
+
+  /**
+   * Keeps the process alive while the claim loop runs, when the worker was
+   * asked to — the default.
+   *
+   * A timer that never fires, whose only purpose is to count as pending work
+   * to the event loop. The alternative, ref'ing the loop's own waits, would
+   * make the rule depend on whichever wait happens to be in progress; one
+   * handle held for exactly the life of `run()` is a rule that can be read.
+   */
+  #holdProcess(): void {
+    if (!this.#waitToExit || this.#keepAlive) {
+      return;
+    }
+
+    this.#keepAlive = setInterval(() => {}, 2_147_483_647);
+  }
+
+  /** Lets the process exit on the worker's account. */
+  #releaseProcess(): void {
+    if (this.#keepAlive) {
+      clearInterval(this.#keepAlive);
+      this.#keepAlive = undefined;
+    }
   }
 
   /** Closes the dead-letter queues this worker opened. They share its driver. */
@@ -423,6 +503,7 @@ export class BunQueueWorker<
       }
     } finally {
       this.#running = false;
+      this.#releaseProcess();
       this.#stopped.resolve();
     }
   }
@@ -450,8 +531,12 @@ export class BunQueueWorker<
 
     if (this.#active.size >= this.#concurrency && this.#active.size > 0) {
       // Full: wait for a slot rather than spinning on a claim that cannot
-      // succeed.
-      await Promise.race([...this.#active.values()]).catch(() => {});
+      // succeed — or for a wake, so `close()` is not left waiting on a loop
+      // that is itself waiting on a job that may never finish.
+      await Promise.race([
+        ...this.#active.values(),
+        this.#sleepUntilWake(this.#options.lockDuration),
+      ]).catch(() => {});
       return;
     }
 
@@ -711,6 +796,7 @@ export class BunQueueWorker<
       void this.#heartbeat(record, controller);
     }, this.#options.heartbeatInterval);
     heartbeat.unref?.();
+    this.#heartbeats.set(record.id, heartbeat);
 
     const context: ProcessorContext = {
       signal: controller.signal,
@@ -751,6 +837,7 @@ export class BunQueueWorker<
       await this.#recordFailure(job, record, error);
     } finally {
       clearInterval(heartbeat);
+      this.#heartbeats.delete(record.id);
       this.#limiter?.release(record.name);
     }
   }
@@ -953,6 +1040,12 @@ export class BunQueueWorker<
     record: JobRecord,
     controller: AbortController,
   ): Promise<void> {
+    // An aborted job has been given up on — timed out, or its worker closed.
+    // Renewing its lock would keep it from ever being recovered.
+    if (controller.signal.aborted) {
+      return;
+    }
+
     try {
       const held = await this.driver.extendJobLock(
         this.ref,
@@ -1099,7 +1192,29 @@ export class BunQueueWorker<
     this.#every(60_000, async () => {
       await this.driver.pruneExpired(this.ref, Date.now(), MAINTENANCE_BATCH);
       await this.#healRepeats();
+      await this.#sweepWindows();
     });
+  }
+
+  /**
+   * Removes a page of stale debounce and throttle pointers, resuming where
+   * the last pass stopped, so a queue with many ids is covered over several
+   * passes rather than by one unbounded one.
+   */
+  async #sweepWindows(): Promise<void> {
+    if (!supportsWindowSweep(this.driver)) {
+      return;
+    }
+
+    const sweep = await sweepWindows(this.driver, this.ref, {
+      now: Date.now(),
+      limit: MAINTENANCE_BATCH,
+      ...(this.#windowCursor !== undefined
+        ? { after: this.#windowCursor }
+        : {}),
+    });
+
+    this.#windowCursor = sweep.next;
   }
 
   /**

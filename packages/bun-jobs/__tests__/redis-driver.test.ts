@@ -352,6 +352,43 @@ describe.skipIf(!URL)("Redis driver: queue state", () => {
     expect(await driver.setQueueState(q, "limiter", { n: 2 }, null)).toBe(1);
     await driver.purge(ns);
   });
+
+  it("lists names from a sorted set, bounded by prefix and after", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "listed" };
+    const keys = driver.keys.queue(q);
+
+    for (const name of ["a", "b:1", "b:2", "b:3", "c"]) {
+      await driver.setQueueState(q, name, {}, null);
+    }
+    // An update does not add the name twice; a delete removes it.
+    await driver.setQueueState(q, "a", { n: 1 }, 1);
+    await driver.setQueueState(q, "c", null, 1);
+
+    const raw = new BunRedis(URL!);
+    await raw.connect();
+    expect(
+      await raw.send("ZRANGE", [keys.stateNames, "-", "+", "BYLEX"]),
+    ).toEqual(["a", "b:1", "b:2", "b:3"]);
+
+    // An `after` below the prefix starts at the prefix, not among non-matches.
+    expect(
+      await driver.listQueueState(q, { prefix: "b:", after: "a", limit: 2 }),
+    ).toEqual(["b:1", "b:2"]);
+    // An `after` past every match lists nothing, not the names beyond it.
+    expect(
+      await driver.listQueueState(q, { prefix: "a", after: "a", limit: 10 }),
+    ).toEqual([]);
+    expect(await driver.listQueueState(q, { prefix: "b:", limit: 0 })).toEqual(
+      [],
+    );
+
+    // A purge sweeps the names set with the entries.
+    await driver.purge(ns);
+    expect(await raw.exists(keys.stateNames)).toBe(false);
+    raw.close();
+  });
 });
 
 describe.skipIf(!URL)("Redis driver: waiting and events", () => {

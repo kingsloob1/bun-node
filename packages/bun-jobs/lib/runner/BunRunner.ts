@@ -88,6 +88,11 @@ export class BunRunner<
   readonly #key: string;
   /** How runs execute. */
   readonly #executor: Executor;
+  /**
+   * Why each active run was asked to stop, by run id, so the `killed` event
+   * carries the caller's reason rather than a placeholder.
+   */
+  readonly #abortReasons = new Map<string, string>();
 
   /** Runs in flight in this process. */
   readonly #active = new Map<string, RunHandle>();
@@ -841,7 +846,14 @@ export class BunRunner<
 
     this.#active.set(runId, {
       record,
-      abort: (reason, abortOptions) => handle.stop(reason, abortOptions),
+      abort: (reason, abortOptions) => {
+        // The first reason wins: a kill followed by the runner stopping is
+        // still the kill the caller asked for.
+        if (!this.#abortReasons.has(runId)) {
+          this.#abortReasons.set(runId, reason);
+        }
+        handle.stop(reason, abortOptions);
+      },
       send: (message) => handle.send(message),
       done: settle,
     });
@@ -916,7 +928,8 @@ export class BunRunner<
     this.#clearHeartbeat();
 
     await this.#record(record, outcome);
-    this.#emitOutcome(record, outcome);
+    this.#emitOutcome(record, outcome, this.#abortReasons.get(runId));
+    this.#abortReasons.delete(runId);
 
     // Drain what is waiting before letting go of the lock, so a queued
     // trigger runs here rather than waiting for someone else to notice it.
@@ -957,7 +970,11 @@ export class BunRunner<
   }
 
   /** Emits the event matching a run's outcome. */
-  #emitOutcome(record: RunRecord, outcome: RunOutcome): void {
+  #emitOutcome(
+    record: RunRecord,
+    outcome: RunOutcome,
+    abortReason: string | undefined,
+  ): void {
     switch (outcome.status) {
       case "success":
         this.safeEmit("finished", record, outcome.result as TResult);
@@ -973,7 +990,7 @@ export class BunRunner<
         );
         break;
       case "killed":
-        this.safeEmit("killed", record, "killed");
+        this.safeEmit("killed", record, abortReason ?? "killed");
         this.safeEmit(
           "failed",
           record,

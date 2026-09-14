@@ -19,6 +19,7 @@ import type {
   RunRecord,
 } from "./driver";
 import { jsonClone } from "@kingsleyweb/bun-common";
+import { compareCodePoints } from "../shared/strings";
 
 /**
  * The in-process driver: `Map`s, no I/O, no dependencies.
@@ -873,6 +874,22 @@ export class MemoryDriver implements JobsDriver {
     const version = (current?.version ?? 0) + 1;
     state.set(name, { value: jsonClone(value), version });
     return version;
+  }
+
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const names = [...this.#queue(q).state.keys()]
+      .filter(
+        (name) =>
+          name.startsWith(options.prefix) &&
+          (options.after === undefined ||
+            compareCodePoints(name, options.after) > 0),
+      )
+      .sort(compareCodePoints);
+
+    return names.slice(0, Math.max(0, options.limit));
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {

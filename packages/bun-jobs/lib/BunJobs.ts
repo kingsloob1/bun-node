@@ -514,6 +514,21 @@ export class BunJobs {
    * whoever created it may still be using it.
    */
   async close(options?: { timeout?: number }): Promise<void> {
+    // Held until everything below has settled: the workers each hold the
+    // process while they close, but the queues and the driver close after
+    // them, and a caller awaiting this from a signal handler must not be cut
+    // off before the driver has let go of its connection or its file.
+    const hold = setInterval(() => {}, 2_147_483_647);
+
+    try {
+      await this.#close(options);
+    } finally {
+      clearInterval(hold);
+    }
+  }
+
+  /** The body of {@link BunJobs.close}, under its hold on the process. */
+  async #close(options?: { timeout?: number }): Promise<void> {
     await Promise.allSettled([
       this.runners.stopAll(options),
       ...[...this.#workers].map((worker) => worker.close(options)),

@@ -1,5 +1,12 @@
 import { afterAll, describe, expect, it } from "bun:test";
+import {
+  decodeName,
+  decodeSegment,
+  encodeName,
+  encodeSegment,
+} from "../lib/drivers/file-names";
 import { FileDriver } from "../lib/index";
+import { compareCodePoints } from "../lib/shared/strings";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
@@ -550,4 +557,442 @@ describe("file driver: waiting for work that is already there", () => {
       await tmp.cleanup();
     }
   }, 15_000);
+});
+
+describe("file driver: listing queue state after a crash", () => {
+  /**
+   * The state directory holds more than entries: the lock beside each one,
+   * a lock being broken, and the temp file of an atomic write. A crash can
+   * leave any of them behind with no entry, and a sweep that lists one would
+   * go looking for an entry that does not exist, every time, for good.
+   */
+  it("lists neither a leftover temp file nor an orphaned lock", async () => {
+    const tmp = await makeTmpDir("bun-jobs-state-list");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const q = { ns: testNamespace(), queue: "state-leftovers" };
+      await driver.ensureQueue(q);
+      // Names that themselves end in the suffixes being skipped must survive.
+      await driver.setQueueState(q, "debounce:live", {}, null);
+      await driver.setQueueState(q, "debounce:x.lock", {}, null);
+      await driver.setQueueState(q, "debounce:y.tmp", {}, null);
+
+      const { writeFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const dir = join(tmp.path, q.ns, "queues", q.queue, "state");
+      const gone = encodeName("debounce:gone");
+
+      // Exactly the shapes the driver writes: a crashed `#writeAtomic`, a
+      // crashed compare-and-set's lock, and a lock renamed aside to break it.
+      await writeFile(join(dir, `${gone}.json.${process.pid}.abc.tmp`), "{}");
+      await writeFile(join(dir, `${gone}.lock`), String(Date.now()));
+      await writeFile(join(dir, `${gone}.lock.abc.stale`), String(Date.now()));
+
+      expect(
+        await driver.listQueueState(q, { prefix: "debounce:", limit: 10 }),
+      ).toEqual(["debounce:live", "debounce:x.lock", "debounce:y.tmp"]);
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  });
+
+  it("answers [] for a queue with no state directory", async () => {
+    const tmp = await makeTmpDir("bun-jobs-state-none");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const q = { ns: testNamespace(), queue: "never-stated" };
+      expect(await driver.listQueueState(q, { prefix: "", limit: 10 })).toEqual(
+        [],
+      );
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  });
+});
+
+/**
+ * Every way a case-insensitive or normalization-insensitive filesystem could
+ * see two of our file names as one. macOS folds case and normalization, Windows
+ * folds case; Linux does neither, so a collision is invisible here unless the
+ * names themselves are checked.
+ */
+const FOLDS: [string, (value: string) => string][] = [
+  ["lowercase", (value) => value.toLowerCase()],
+  ["uppercase", (value) => value.toUpperCase()],
+  ["NFC + lowercase", (value) => value.normalize("NFC").toLowerCase()],
+  ["NFD + lowercase", (value) => value.normalize("NFD").toLowerCase()],
+  ["NFKC + lowercase", (value) => value.normalize("NFKC").toLowerCase()],
+];
+
+/** Names that differ only in ways some filesystem ignores. */
+const LOOKALIKES: [string, string][] = [
+  ["Report", "report"],
+  ["REPORT", "report"],
+  ["Report", "REPORT"],
+  ["A", "a"],
+  ["Z", "z"],
+  ["Mail:Welcome", "mail:welcome"],
+  ["résumé", "resume"],
+  ["é", "é"], // é precomposed, and e + combining acute
+  ["É", "é"], // É and é
+  ["Å", "Å"], // Å and the angstrom sign
+  ["ﬁ", "fi"], // the fi ligature
+  ["ǅ", "ǆ"], // titlecase and lowercase dž
+  ["İ", "i"], // dotted capital I
+  ["ß", "ss"],
+  ["\u{1F600}", "\uD83D"], // an emoji, and its lone high surrogate
+];
+
+describe("file driver: names on a case-insensitive filesystem", () => {
+  it("encodes lookalike names to files no fold can merge", () => {
+    for (const [left, right] of LOOKALIKES) {
+      const a = encodeName(left);
+      const b = encodeName(right);
+
+      for (const [fold, apply] of FOLDS) {
+        if (apply(a) === apply(b)) {
+          throw new Error(`${fold} merges ${a} (${left}) and ${b} (${right})`);
+        }
+      }
+
+      expect(decodeName(a)).toBe(left);
+      expect(decodeName(b)).toBe(right);
+    }
+  });
+
+  it("round-trips every UTF-16 unit, emoji included, and stays fold-proof", () => {
+    const encodings = new Set<string>();
+
+    for (let unit = 0; unit <= 0xffff; unit++) {
+      const name = String.fromCharCode(unit);
+      const encoded = encodeName(name);
+
+      if (decodeName(encoded) !== name) {
+        throw new Error(`U+${unit.toString(16)} does not round-trip`);
+      }
+      encodings.add(encoded.toLowerCase().normalize("NFKC"));
+    }
+
+    // Every one of the 65,536 still distinct once folded.
+    expect(encodings.size).toBe(0x10000);
+
+    for (const name of ["\u{1F600}", "a\u{10FFFF}b", "\u{10000}", "x\uDC00y"]) {
+      expect(decodeName(encodeName(name))).toBe(name);
+    }
+  });
+
+  it("writes only characters no filesystem folds or treats as a separator", () => {
+    for (const name of [
+      ...LOOKALIKES.flat(),
+      "order-42.retry",
+      "a/b\\c",
+      "  trailing. ",
+      "CON",
+    ]) {
+      // Lowercase ASCII, digits and the three escape characters: no letter to
+      // fold, nothing to normalize, and no `-` or `.` to split a marker on.
+      expect(encodeName(name)).toMatch(/^[0-9a-z%_~]*$/);
+    }
+  });
+
+  it("keeps the code-point order of the names it encodes", () => {
+    const alphabet = [
+      " ",
+      "!",
+      "-",
+      ".",
+      "/",
+      "0",
+      "9",
+      ":",
+      "@",
+      "A",
+      "Z",
+      "[",
+      "_",
+
+      "`",
+      "a",
+      "z",
+      "{",
+      "~",
+      "",
+      "",
+      "é",
+      "߿",
+
+      "ࠀ",
+      "퟿",
+      "",
+      "￿",
+      "\u{10000}",
+      "\u{1F600}",
+
+      "\u{10FFFF}",
+    ];
+    // Park–Miller: the product stays below 2^53, so every step is exact. A
+    // multiplier near 2^30 loses bits in a double and falls into a short
+    // cycle, and the loop below then never collects enough names.
+    let seed = 7;
+    const random = (limit: number) => {
+      seed = (seed * 48_271) % 2_147_483_647;
+      return seed % limit;
+    };
+
+    const names = new Set<string>(alphabet);
+    while (names.size < 3_000) {
+      let name = "";
+      for (let length = random(5); length >= 0; length--) {
+        name += alphabet[random(alphabet.length)];
+      }
+      names.add(name);
+    }
+
+    const byName = [...names].sort(compareCodePoints).map(encodeName);
+    // The default sort is what a directory of encoded names is sorted with.
+    expect(byName.toSorted()).toEqual(byName);
+  });
+
+  it("refuses a file name the encoder could not have written", () => {
+    for (const foreign of [
+      "Report", // uppercase is never literal
+      "a.b",
+      "a-b",
+      "%zz",
+      "%41", // `A` is written `_a`
+      "_",
+      "_7",
+      "~c3", // a truncated sequence
+      "~c1~81", // an overlong `A`
+      "~ed~a0~bd~ed~b8~80", // a pair written as two halves
+    ]) {
+      expect(decodeName(foreign)).toBeNull();
+    }
+
+    for (const foreign of ["Mail", "^", "^A", "~41", "a/b"]) {
+      expect(decodeSegment(foreign)).toBeNull();
+    }
+  });
+
+  it("keeps queue and namespace directories readable, and apart by case", () => {
+    // What `assertSegment` allows, lowercase: exactly as typed.
+    for (const segment of ["orders", "t-0199a8c2-1b2e", "mail_v2.retry"]) {
+      expect(encodeSegment(segment)).toBe(segment);
+    }
+
+    for (const [left, right] of [
+      ["Mail", "mail"],
+      ["MAIL", "mail"],
+      ["Orders-EU", "orders-eu"],
+      ["résumé", "resume"],
+      ["é", "é"],
+    ]) {
+      const a = encodeSegment(left!);
+      const b = encodeSegment(right!);
+
+      for (const [fold, apply] of FOLDS) {
+        if (apply(a) === apply(b)) {
+          throw new Error(`${fold} merges ${a} and ${b}`);
+        }
+      }
+
+      expect(decodeSegment(a)).toBe(left!);
+      expect(decodeSegment(b)).toBe(right!);
+    }
+
+    expect(encodeSegment("Mail")).toBe("^mail");
+  });
+
+  /**
+   * The driver has no seam for swapping its filesystem — every path goes
+   * straight to `node:fs` — so this cannot run it against a case-folding one.
+   * It checks the property that makes the fold harmless instead: after
+   * writing every kind of name the driver turns into a file, in lookalike
+   * pairs, no directory holds two entries that any fold would merge.
+   */
+  it("leaves no two files on disk that a folding filesystem would merge", async () => {
+    const tmp = await makeTmpDir("bun-jobs-fold");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const base = testNamespace();
+      const variants = [
+        "Report",
+        "report",
+        "REPORT",
+        "résumé",
+        "resume",
+        "résumé",
+      ];
+      const now = Date.now();
+
+      for (const ns of [`${base}-A`, `${base}-a`]) {
+        for (const queue of ["Mail", "mail"]) {
+          const q = { ns, queue };
+
+          for (const id of variants) {
+            expect(
+              (await driver.addJob(q, makeJob({ id, runAt: now }))).added,
+            ).toBe(true);
+            expect(await driver.addJobLog(q, id, `log of ${id}`, 0)).toBe(1);
+            expect(await driver.setQueueState(q, id, { id }, null)).toBe(1);
+          }
+
+          // Waiting, active and completed markers, and a delayed one.
+          const claimed = await driver.claimJob(q, {
+            workerId: "w",
+            token: "t",
+            lockMs: 30_000,
+            now,
+          });
+          await driver.completeJob(q, claimed!.id, "t", null, false, now);
+          await driver.claimJob(q, {
+            workerId: "w",
+            token: "t2",
+            lockMs: 30_000,
+            now,
+          });
+          await driver.updateJob(
+            q,
+            variants.at(-1)!,
+            { runAt: now + 60_000 },
+            now,
+          );
+
+          for (const id of variants) {
+            expect((await driver.getJob(q, id))?.id).toBe(id);
+            expect((await driver.getQueueState(q, id))?.value).toEqual({ id });
+            expect(
+              (
+                await driver.getJobLogs(q, id, {
+                  offset: 0,
+                  limit: 5,
+                  order: "asc",
+                })
+              ).logs,
+            ).toEqual([`log of ${id}`]);
+          }
+          expect(
+            await driver.listQueueState(q, { prefix: "", limit: 20 }),
+          ).toEqual(variants.toSorted(compareCodePoints));
+        }
+
+        for (const runner of ["r:Nightly", "r:nightly"]) {
+          expect(await driver.acquireLock(ns, runner, "t", 30_000, now)).toBe(
+            true,
+          );
+        }
+        expect((await driver.listQueues(ns)).toSorted()).toEqual([
+          "Mail",
+          "mail",
+        ]);
+        expect((await driver.listRunners(ns)).toSorted()).toEqual([
+          "Nightly",
+          "nightly",
+        ]);
+      }
+
+      const { readdir } = await import("node:fs/promises");
+      const entries = await readdir(tmp.path, { recursive: true });
+      expect(entries.length).toBeGreaterThan(50);
+
+      for (const [fold, apply] of FOLDS) {
+        const seen = new Map<string, string>();
+        for (const entry of entries) {
+          const folded = apply(entry);
+          const clash = seen.get(folded);
+          if (clash !== undefined) {
+            throw new Error(`${fold} merges ${clash} and ${entry}`);
+          }
+          seen.set(folded, entry);
+        }
+      }
+
+      // No uppercase letter and nothing outside ASCII anywhere below the root.
+      for (const entry of entries) {
+        expect(entry).toMatch(/^[\x21-\x7E]*$/);
+        expect(entry).not.toMatch(/[A-Z]/);
+      }
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  });
+
+  /**
+   * URI-encoded ids kept their dashes, so the id was found by guessing how
+   * many numeric prefixes a marker had. A delayed job whose id began with
+   * digits and a dash looked like a waiting marker, and lost its first part.
+   */
+  it("finds a job whose id looks like a marker prefix", async () => {
+    const tmp = await makeTmpDir("bun-jobs-marker-id");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const q = { ns: testNamespace(), queue: "marker-ids" };
+      const now = Date.now();
+      const id = "1700000000000-abc";
+
+      await driver.addJob(q, makeJob({ id, state: "delayed", runAt: now - 1 }));
+      expect(
+        (
+          await driver.listJobs(q, ["delayed"], {
+            offset: 0,
+            limit: 5,
+            order: "asc",
+          })
+        ).map((job) => job.id),
+      ).toEqual([id]);
+      expect(await driver.promoteDelayed(q, now, 10)).toBe(1);
+
+      const claimed = await driver.claimJob(q, {
+        workerId: "w",
+        token: "t",
+        lockMs: 30_000,
+        now,
+      });
+      expect(claimed?.id).toBe(id);
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  });
+
+  it("claims ties on priority and creation time in code-point order of id", async () => {
+    const tmp = await makeTmpDir("bun-jobs-tie-order");
+    const driver = new FileDriver({ root: tmp.path });
+
+    try {
+      const q = { ns: testNamespace(), queue: "ties" };
+      const now = Date.now();
+      const ids = ["\u{1F600}", "￿", "z", "é", "", "Y", "b", " ", "-"];
+
+      for (const id of ids) {
+        await driver.addJob(
+          q,
+          makeJob({ id, createdAt: now, runAt: now, priority: 0 }),
+        );
+      }
+
+      const claimed: string[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        const job = await driver.claimJob(q, {
+          workerId: "w",
+          token: `t${i}`,
+          lockMs: 30_000,
+          now,
+        });
+        claimed.push(job!.id);
+      }
+
+      expect(claimed).toEqual(ids.toSorted(compareCodePoints));
+    } finally {
+      await driver.close();
+      await tmp.cleanup();
+    }
+  });
 });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
-import { BunRunner, MemoryDriver } from "../lib/index";
+import { BunRunner, MemoryDriver, RunKilledError } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
 
 /**
@@ -241,4 +241,68 @@ describe("kill escalation: in-process", () => {
     // The honest answer: the work is still going somewhere in this process.
     expect(record.detached).toBe(true);
   }, 20_000);
+});
+
+describe("the reason a run was killed", () => {
+  /** Kills a cooperative run and reports what the runner said about it. */
+  async function killGracefully(
+    mode: ExecutionMode,
+    reason: string | undefined,
+  ) {
+    const runner = makeRunner(mode, {
+      file: fixture("graceful"),
+      closeTimeout: 2_000,
+      killTimeout: 2_000,
+      args: { ms: 10_000 },
+    });
+    await runner.start();
+
+    const killed = new Promise<string>((resolve) => {
+      runner.once("killed", (_run, why) => resolve(why));
+    });
+    const failed = new Promise<{ record: RunRecord; error: Error }>(
+      (resolve) => {
+        runner.once("failed", (record, error) => resolve({ record, error }));
+      },
+    );
+
+    const outcome = await runner.trigger();
+    const runId = outcome.outcome === "started" ? outcome.runId : undefined;
+    expect(runId).toBeDefined();
+    // Long enough for the handler to be running and watching its signal.
+    await Bun.sleep(300);
+
+    await runner.kill(runId, reason === undefined ? undefined : { reason });
+
+    return { why: await killed, ...(await failed) };
+  }
+
+  for (const mode of ["spawn", "worker"] as const) {
+    it(`carries the caller's reason, and says it was a kill: ${mode}`, async () => {
+      const { why, record, error } = await killGracefully(
+        mode,
+        "operator cancelled",
+      );
+
+      expect(why).toBe("operator cancelled");
+      expect(record.status).toBe("killed");
+      // Not "Child exited (code null, signal null) before reporting a result":
+      // the handler saw its signal and unwound, which is not a crash.
+      expect(record.error?.name).toBe("RunKilledError");
+      expect(error.message).toBe("Run was killed: operator cancelled");
+    }, 20_000);
+  }
+
+  it('says "killed" when no reason was given', async () => {
+    const { why, record } = await killGracefully("spawn", undefined);
+    expect(why).toBe("killed");
+    expect(record.error?.message).toBe("Run was killed: killed");
+  }, 20_000);
+
+  it("is an error with a stable code and the reason on it", () => {
+    const error = new RunKilledError("operator cancelled", { runId: "r1" });
+    expect(error.code).toBe("RUN_KILLED");
+    expect(error.reason).toBe("operator cancelled");
+    expect(error.message).toBe("Run was killed: operator cancelled");
+  });
 });

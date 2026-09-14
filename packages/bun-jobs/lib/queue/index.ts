@@ -50,3 +50,12 @@ export type {
   RepeatOptions,
   RetryAllOptions,
 } from "./types";
+export {
+  DEBOUNCE_PREFIX,
+  type DebouncePointer,
+  supportsWindowSweep,
+  sweepWindows,
+  THROTTLE_PREFIX,
+  type ThrottlePointer,
+  type WindowSweep,
+} from "./windows";

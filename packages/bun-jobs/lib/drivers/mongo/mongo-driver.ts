@@ -1076,7 +1076,7 @@ export class MongoDriver implements JobsDriver {
     excludeNames: string[],
   ): Promise<JobRecord | null> {
     const excluded = new Set(excludeNames);
-    const key = [q.ns, q.queue, ...[...excluded].sort()].join(" ");
+    const key = [q.ns, q.queue, ...[...excluded].sort()].join("\u0000");
     const due: Filter<JobDocument> = {
       ns: q.ns,
       queue: q.queue,
@@ -1873,6 +1873,50 @@ export class MongoDriver implements JobsDriver {
       },
     );
     return result.matchedCount === 1 ? expected + 1 : null;
+  }
+
+  /**
+   * A range on `_id` rather than a regex: the prefix is matched literally
+   * whatever it contains, and the range walks the `_id` index directly, so
+   * the query is covered — no document is fetched.
+   *
+   * Ordering is the server's, which for a collection without a collation (this
+   * driver never creates one) is UTF-8 byte order, i.e. code point order. That
+   * is JavaScript's order for every name except one that mixes U+E000–U+FFFF
+   * with characters above U+FFFF, which UTF-16 sorts the other way round.
+   *
+   * A deletion is a real `deleteOne`, so a deleted entry has no document left
+   * to be listed.
+   */
+  async listQueueState(
+    q: QueueRef,
+    options: { prefix: string; after?: string; limit: number },
+  ): Promise<string[]> {
+    const limit = Math.floor(options.limit);
+    // `limit(0)` means "no limit" to MongoDB, and a negative one means "a
+    // single batch", so a limit of nothing has to be answered here.
+    if (!(limit > 0)) {
+      return [];
+    }
+
+    const kv = await this.#kv();
+    const base = this.#queueStateId(q, "");
+    const lower = base + options.prefix;
+    const range: { $gte: string; $lt: string; $gt?: string } = {
+      $gte: lower,
+      $lt: prefixUpperBound(lower),
+    };
+    if (options.after !== undefined) {
+      range.$gt = base + options.after;
+    }
+
+    const documents = await kv
+      .find({ _id: range }, { projection: { _id: 1 } })
+      .sort({ _id: 1 })
+      .limit(limit)
+      .toArray();
+
+    return documents.map((document) => document._id.slice(base.length));
   }
 
   async pauseQueue(q: QueueRef): Promise<void> {
@@ -2736,6 +2780,32 @@ function isDuplicateKey(error: unknown): boolean {
     error !== null &&
     (error as { code?: number }).code === DUPLICATE_KEY
   );
+}
+
+/**
+ * The smallest string greater than every string that starts with `prefix`,
+ * in MongoDB's (code point) order: the prefix with its last code point
+ * incremented. Trailing U+10FFFF cannot be incremented, so it is dropped and
+ * the code point before it carries instead. Surrogates are skipped, since a
+ * string holding one lone cannot be stored.
+ *
+ * Callers pass a prefix ending in the `:` of a fixed base, so there is always
+ * a code point to increment.
+ */
+function prefixUpperBound(prefix: string): string {
+  const codePoints = Array.from(prefix, (char) => char.codePointAt(0)!);
+
+  while (codePoints.at(-1) === 0x10ffff) {
+    codePoints.pop();
+  }
+
+  const last = codePoints.pop();
+  if (last === undefined) {
+    throw new RangeError("A prefix of only U+10FFFF has no upper bound");
+  }
+
+  codePoints.push(last === 0xd7ff ? 0xe000 : last + 1);
+  return String.fromCodePoint(...codePoints);
 }
 
 /**

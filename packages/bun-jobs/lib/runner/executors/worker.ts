@@ -9,7 +9,11 @@ import type {
 } from "./executor";
 import process from "node:process";
 import { createDeferred, serializeError } from "@kingsleyweb/bun-common";
-import { ChildExitError, JobTimeoutError } from "../../shared/errors";
+import {
+  ChildExitError,
+  JobTimeoutError,
+  RunKilledError,
+} from "../../shared/errors";
 import { CHILD_ENV } from "../protocol";
 import { toSerializable } from "./spawn";
 
@@ -208,7 +212,7 @@ export class WorkerExecutor implements Executor {
           reported = {
             status: "killed",
             error: serializeError(
-              new ChildExitError(null, null, { runId: context.runId, reason }),
+              new RunKilledError(reason, { runId: context.runId }),
             ),
           };
         }

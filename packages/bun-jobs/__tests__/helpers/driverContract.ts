@@ -1404,6 +1404,166 @@ export function driverContract(
         expect(await driver.getQueueState!(sq, "limiter")).toBeNull();
       });
 
+      it("lists queue state names by prefix, in order, a page at a time", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-list" };
+        const names = [
+          "debounce:b",
+          "debounce:a",
+          "debounce:c",
+          "throttle:a",
+          "limiter",
+        ];
+
+        for (const name of names) {
+          await driver.setQueueState!(sq, name, { name }, null);
+        }
+        // Another queue and another namespace, with matching names.
+        await driver.setQueueState!(
+          { ns, queue: "queue-state-list-2" },
+          "debounce:z",
+          {},
+          null,
+        );
+        await driver.setQueueState!(
+          { ns: other, queue: "queue-state-list" },
+          "debounce:y",
+          {},
+          null,
+        );
+
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 10 }),
+        ).toEqual(["debounce:a", "debounce:b", "debounce:c"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 2 }),
+        ).toEqual(["debounce:a", "debounce:b"]);
+        expect(
+          await driver.listQueueState!(sq, {
+            prefix: "debounce:",
+            after: "debounce:b",
+            limit: 10,
+          }),
+        ).toEqual(["debounce:c"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "", limit: 10 }),
+        ).toEqual([
+          "debounce:a",
+          "debounce:b",
+          "debounce:c",
+          "limiter",
+          "throttle:a",
+        ]);
+
+        // A deleted entry is not listed.
+        const entry = await driver.getQueueState!(sq, "debounce:b");
+        await driver.setQueueState!(sq, "debounce:b", null, entry!.version);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "debounce:", limit: 10 }),
+        ).toEqual(["debounce:a", "debounce:c"]);
+
+        // Prefixes are literal: nothing that merely looks like a pattern.
+        await driver.setQueueState!(sq, "a%b_c*d", {}, null);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "a%b_", limit: 10 }),
+        ).toEqual(["a%b_c*d"]);
+        expect(
+          await driver.listQueueState!(sq, { prefix: "a_", limit: 10 }),
+        ).toEqual([]);
+      });
+
+      it("lists queue state in code-point order, whatever the characters", async () => {
+        const sq: QueueRef = { ns, queue: "queue-state-codepoints" };
+        // Accented, private-use, the last BMP character and an emoji: the
+        // characters where byte order, code-unit order and collations disagree.
+        const names = ["\u{1F600}", "\uFFFF", "z", "é", "\uE000", "Y", "b"];
+
+        for (const name of names) {
+          await driver.setQueueState!(sq, name, { name }, null);
+        }
+
+        const ordered = ["Y", "b", "z", "é", "\uE000", "\uFFFF", "\u{1F600}"];
+        expect(
+          await driver.listQueueState!(sq, { prefix: "", limit: 20 }),
+        ).toEqual(ordered);
+
+        // Paging agrees with the order across every boundary.
+        const paged: string[] = [];
+        let after: string | undefined;
+        for (;;) {
+          const page = await driver.listQueueState!(sq, {
+            prefix: "",
+            limit: 2,
+            ...(after !== undefined ? { after } : {}),
+          });
+          paged.push(...page);
+          if (page.length < 2) {
+            break;
+          }
+          after = page.at(-1);
+        }
+        expect(paged).toEqual(ordered);
+
+        for (const name of names) {
+          const entry = await driver.getQueueState!(sq, name);
+          await driver.setQueueState!(sq, name, null, entry!.version);
+        }
+      });
+
+      it("keeps ids and names that differ only by case or accent apart", async () => {
+        const now = Date.now();
+        const variants = ["Report", "report", "REPORT", "résumé", "resume"];
+
+        // Job ids: each is its own job, not a duplicate of another.
+        const cq: QueueRef = { ns, queue: "case-sensitive" };
+        for (const id of variants) {
+          const { added } = await driver.addJob(
+            cq,
+            makeJob({ id, state: "delayed", runAt: now + 60_000 }),
+          );
+          expect(added).toBe(true);
+        }
+        for (const id of variants) {
+          expect((await driver.getJob(cq, id))?.id).toBe(id);
+        }
+        expect((await driver.countJobs(cq)).delayed).toBe(variants.length);
+
+        // Queue state names.
+        for (const name of variants) {
+          expect(await driver.setQueueState!(cq, name, { name }, null)).toBe(1);
+        }
+        for (const name of variants) {
+          expect((await driver.getQueueState!(cq, name))?.value).toEqual({
+            name,
+          });
+        }
+
+        // Queue names that differ only by case are different queues.
+        const upper: QueueRef = { ns, queue: "Mail" };
+        const lower: QueueRef = { ns, queue: "mail" };
+        await driver.addJob(
+          upper,
+          makeJob({ id: "shared", state: "delayed", runAt: now + 60_000 }),
+        );
+        expect(
+          (
+            await driver.addJob(
+              lower,
+              makeJob({ id: "shared", state: "delayed", runAt: now + 60_000 }),
+            )
+          ).added,
+        ).toBe(true);
+        expect((await driver.countJobs(upper)).delayed).toBe(1);
+        expect((await driver.countJobs(lower)).delayed).toBe(1);
+
+        for (const name of variants) {
+          const entry = await driver.getQueueState!(cq, name);
+          await driver.setQueueState!(cq, name, null, entry!.version);
+        }
+        await driver.drainQueue(cq, true);
+        await driver.drainQueue(upper, true);
+        await driver.drainQueue(lower, true);
+      });
+
       it("lets exactly one of many concurrent compare-and-sets win", async () => {
         const sq: QueueRef = { ns, queue: "queue-state-race" };
         const base = await driver.setQueueState!(sq, "counter", { n: 0 }, null);

@@ -81,6 +81,7 @@ export class RedisKeys {
     jobPrefix: string;
     logPrefix: string;
     statePrefix: string;
+    stateNames: string;
   } {
     const base = `${this.namespace(q.ns)}:q:${this.#tag(q.queue)}`;
 
@@ -110,6 +111,14 @@ export class RedisKeys {
       // Under the queue's base, so it shares the queue's slot and a purge of
       // the namespace sweeps it with everything else.
       statePrefix: `${base}:state:`,
+      // Every state entry's name, in a sorted set at score 0 so members order
+      // by their bytes and `listQueueState` is a `ZRANGE BYLEX` rather than a
+      // keyspace `SCAN`. `state-names`, not `state:names`: under `statePrefix`
+      // it would be the hash of an entry called `names`. Kept in step by
+      // `SET_QUEUE_STATE`, in the same script as the write. Entries written
+      // before this key existed are not in it; queue state has not shipped in
+      // a release, so there is nothing to migrate.
+      stateNames: `${base}:state-names`,
     };
   }
 

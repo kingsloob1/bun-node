@@ -268,6 +268,179 @@ for (const backend of backends) {
       });
     });
 
+    describe("cleaning up", () => {
+      /** The debounce and throttle pointers still stored for the queue. */
+      async function pointers(driver: JobsDriver, queue: BunQueue<Doc>) {
+        const names = await driver.listQueueState!(queue.ref, {
+          prefix: "",
+          limit: 1_000,
+        });
+        return names.filter(
+          (name) =>
+            name.startsWith("debounce:") || name.startsWith("throttle:"),
+        );
+      }
+
+      it("removes a debounce pointer once its job has started, and keeps a pending one", async () => {
+        const { driver, queue } = await setup();
+
+        const started = await queue.add(
+          "reindex",
+          { version: 1 },
+          { debounce: { id: "ran", ttl: 1 } },
+        );
+        await queue.add(
+          "reindex",
+          { version: 1 },
+          { debounce: { id: "waiting", ttl: 60_000 } },
+        );
+
+        await Bun.sleep(5);
+        await driver.promoteDelayed(queue.ref, Date.now(), 10);
+        const claimed = await driver.claimJob(queue.ref, {
+          workerId: "w1",
+          token: newToken(),
+          lockMs: 30_000,
+          now: Date.now(),
+        });
+        expect(claimed?.id).toBe(started.id);
+
+        expect(await queue.cleanWindows()).toBe(1);
+        expect(await pointers(driver, queue)).toEqual(["debounce:waiting"]);
+
+        // Still debounces into the pending one.
+        const again = await queue.add(
+          "reindex",
+          { version: 2 },
+          { debounce: { id: "waiting", ttl: 60_000 } },
+        );
+        expect(again.wasAdded).toBe(false);
+      });
+
+      it("removes a debounce pointer whose job is gone", async () => {
+        const { driver, queue } = await setup();
+        const job = await queue.add(
+          "reindex",
+          { version: 1 },
+          { debounce: { id: "removed", ttl: 60_000 } },
+        );
+        await queue.remove(job.id);
+
+        expect(await queue.cleanWindows()).toBe(1);
+        expect(await pointers(driver, queue)).toEqual([]);
+      });
+
+      it("removes a throttle pointer once its window has closed, and keeps an open one", async () => {
+        const { driver, queue } = await setup();
+
+        await queue.add(
+          "digest",
+          { version: 1 },
+          { throttle: { id: "closed", ttl: 20 } },
+        );
+        await queue.add(
+          "digest",
+          { version: 1 },
+          { throttle: { id: "open", ttl: 60_000 } },
+        );
+        await Bun.sleep(40);
+
+        expect(await queue.cleanWindows()).toBe(1);
+        expect(await pointers(driver, queue)).toEqual(["throttle:open"]);
+      });
+
+      it("leaves other queue state alone", async () => {
+        const { driver, queue } = await setup();
+        await queue.setLimits({ concurrency: 5 });
+
+        expect(await queue.cleanWindows()).toBe(0);
+        expect(await queue.getLimits()).toEqual({ concurrency: 5 });
+        expect(await pointers(driver, queue)).toEqual([]);
+      });
+
+      it("covers many ids over several bounded passes", async () => {
+        const { driver, queue } = await setup();
+
+        for (let index = 0; index < 30; index++) {
+          await queue.add(
+            "digest",
+            { version: index },
+            {
+              throttle: {
+                id: `many-${String(index).padStart(2, "0")}`,
+                ttl: 10,
+              },
+            },
+          );
+        }
+        await Bun.sleep(30);
+
+        expect(await queue.cleanWindows({ limit: 10 })).toBe(10);
+        expect(await queue.cleanWindows({ limit: 1_000 })).toBe(20);
+        expect(await pointers(driver, queue)).toEqual([]);
+      });
+
+      it("is done by a worker's maintenance", async () => {
+        const { driver, namespace, queue } = await setup();
+        await queue.add(
+          "digest",
+          { version: 1 },
+          { throttle: { id: "swept", ttl: 10 } },
+        );
+        await Bun.sleep(30);
+
+        const worker = new BunQueueWorker<Doc>("windowed", async () => null, {
+          namespace,
+          driver,
+          logger: noopLogger,
+          pollInterval: 5,
+        });
+        closers.push(() => worker.close({ force: true }));
+        void worker.run();
+
+        await waitFor(
+          async () => (await pointers(driver, queue)).length === 0,
+          {
+            timeout: 5_000,
+            message: "the worker never swept the closed window",
+          },
+        );
+      });
+
+      it("never removes a pointer a producer has just moved", async () => {
+        const { driver, queue } = await setup();
+        const options = { debounce: { id: "busy", ttl: 1 } };
+
+        // Sweeps and adds interleaved: whatever the order, an add that says it
+        // debounced into a job must find that job still pointed to.
+        for (let round = 0; round < 10; round++) {
+          await Bun.sleep(3);
+          await driver.promoteDelayed(queue.ref, Date.now(), 100);
+          await driver.claimJob(queue.ref, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 30_000,
+            now: Date.now(),
+          });
+
+          const [added] = await Promise.all([
+            queue.add("reindex", { version: round }, options),
+            queue.cleanWindows(),
+          ]);
+
+          const pointer = await driver.getQueueState!(
+            queue.ref,
+            "debounce:busy",
+          );
+          if (added.wasAdded) {
+            expect(
+              (pointer?.value as { jobId: string } | undefined)?.jobId,
+            ).toBe(added.id);
+          }
+        }
+      });
+    });
+
     it("refuses combinations that cannot work", async () => {
       const { queue } = await setup();
       const window = { id: "x", ttl: 1_000 };

@@ -1218,9 +1218,13 @@ return reply
  * what the driver sends for "only if there is none". A delete removes the hash
  * outright, so a re-created entry starts again from 1.
  *
- * KEYS: state hash. ARGV: expected version (`''` for none), delete (`1`/`0`),
- * value as JSON. Returns the new version, 0 after a delete, or nothing when
- * the version had moved on.
+ * The names set is maintained here too, for `listQueueState`: a name joins it
+ * when its entry is created and leaves when the entry is deleted. Doing both
+ * in the script that writes the hash is what keeps the two from disagreeing.
+ *
+ * KEYS: state hash, names sorted set. ARGV: expected version (`''` for none),
+ * delete (`1`/`0`), value as JSON, the entry's name. Returns the new version,
+ * 0 after a delete, or nothing when the version had moved on.
  */
 export const SET_QUEUE_STATE = `
 local current = redis.call('HGET', KEYS[1], 'version')
@@ -1230,7 +1234,12 @@ end
 
 if ARGV[2] == '1' then
   redis.call('DEL', KEYS[1])
+  redis.call('ZREM', KEYS[2], ARGV[4])
   return 0
+end
+
+if not current then
+  redis.call('ZADD', KEYS[2], 0, ARGV[4])
 end
 
 local version = (tonumber(current) or 0) + 1

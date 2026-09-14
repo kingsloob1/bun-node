@@ -114,6 +114,25 @@ export class ChildExitError extends JobsError {
   }
 }
 
+/**
+ * A run was stopped on request — `kill()`, a stopping runner, a lost lock —
+ * rather than failing on its own.
+ *
+ * Distinct from {@link ChildExitError}, which means a child ended without
+ * reporting anything. A run asked to stop may well have unwound cleanly and
+ * exited, and describing that as a child that "exited before reporting a
+ * result" sent people looking for a crash that never happened.
+ */
+export class RunKilledError extends JobsError {
+  /** Why it was stopped, as the caller gave it. */
+  readonly reason: string;
+
+  constructor(reason: string, context?: Record<string, unknown>) {
+    super(`Run was killed: ${reason}`, "RUN_KILLED", { reason, ...context });
+    this.reason = reason;
+  }
+}
+
 /** A runner's file has no usable default export. */
 export class InvalidHandlerError extends JobsError {
   constructor(file: string, detail: string) {
