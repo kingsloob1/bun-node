@@ -63,6 +63,29 @@ const PAUSE_CACHE_MS = 1000;
 const SETTLED: Promise<void> = Promise.resolve();
 
 /**
+ * A processor's result as it is stored: what `jsonClone` makes of it, without
+ * paying for the round trip where it would change nothing. `null`, strings,
+ * booleans and finite numbers come back from JSON exactly as they went in;
+ * `NaN` and the infinities become `null`, as JSON makes them; anything else is
+ * cloned, so a result mutated after it was returned is stored as it was.
+ */
+function storedResult(result: unknown): unknown {
+  if (result === undefined || result === null) {
+    return null;
+  }
+
+  switch (typeof result) {
+    case "string":
+    case "boolean":
+      return result;
+    case "number":
+      return Number.isFinite(result) ? result : null;
+    default:
+      return jsonClone(result);
+  }
+}
+
+/**
  * The consumer side of a queue.
  *
  * Any number of workers, in any number of processes on any number of hosts,
@@ -879,9 +902,20 @@ export class BunQueueWorker<
     heartbeat.unref?.();
     this.#heartbeats.set(record.id, heartbeat);
 
+    // Built on first use: most processors never log, and a child logger is an
+    // object and a copy of its bindings for every job.
+    const parentLogger = this.#logger;
+    let jobLogger: Logger | undefined;
+
     const context: ProcessorContext = {
       signal: controller.signal,
-      logger: this.#logger.child({ jobId: record.id, jobName: record.name }),
+      get logger(): Logger {
+        jobLogger ??= parentLogger.child({
+          jobId: record.id,
+          jobName: record.name,
+        });
+        return jobLogger;
+      },
       workerId: this.id,
       attempt: record.attemptsMade,
       heartbeat: async () => {
@@ -894,26 +928,27 @@ export class BunQueueWorker<
     void this.#publish("active", { id: record.id });
 
     try {
-      const result = await withTimeout(
-        this.#isolated
-          ? this.#isolated.run(
-              job as Job<unknown, unknown>,
-              record,
-              context,
-              controller,
-              {
-                namespace: this.namespace,
-                queue: this.queueName,
-                workerId: this.id,
-              },
-            )
-          : Promise.resolve(this.#processor!(job, context)),
-        record.opts.timeout,
-        {
-          message: `Job ${record.id} exceeded its ${record.opts.timeout}ms timeout`,
-          onTimeout: () => controller.abort(),
-        },
-      );
+      const running = this.#isolated
+        ? this.#isolated.run(
+            job as Job<unknown, unknown>,
+            record,
+            context,
+            controller,
+            {
+              namespace: this.namespace,
+              queue: this.queueName,
+              workerId: this.id,
+            },
+          )
+        : Promise.resolve(this.#processor!(job, context));
+      // No timeout, no wrapper around it.
+      const result =
+        record.opts.timeout > 0
+          ? await withTimeout(running, record.opts.timeout, {
+              message: `Job ${record.id} exceeded its ${record.opts.timeout}ms timeout`,
+              onTimeout: () => controller.abort(),
+            })
+          : await running;
 
       // Not awaited, deliberately.
       //
@@ -997,7 +1032,7 @@ export class BunQueueWorker<
    */
   #settle(job: Job<TData, TResult>, record: JobRecord, result: TResult): void {
     const written = createDeferred<void>();
-    const stored = jsonClone(result ?? null);
+    const stored = storedResult(result);
     const retention = record.opts.removeOnComplete;
 
     /** Reports the outcome once the write has answered. */
