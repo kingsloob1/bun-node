@@ -59,6 +59,9 @@ const LIMITED_RECHECK_MS = 100;
 /** How long a paused check is cached before the driver is asked again. */
 const PAUSE_CACHE_MS = 1000;
 
+/** A publish that does nothing: already settled, and shared, so it costs nothing. */
+const SETTLED: Promise<void> = Promise.resolve();
+
 /**
  * The consumer side of a queue.
  *
@@ -609,6 +612,32 @@ export class BunQueueWorker<
   }
 
   /**
+   * Publishes an event, tracked so `close()` can wait for it.
+   *
+   * Callers fire it and move on, and a caller may close straight after — from
+   * the very listener the event was emitted to. Untracked, the close shut the
+   * driver under the write: a `completed` event from a process that closed on
+   * completion was lost, and on MongoDB, whose publish takes two round trips,
+   * reliably.
+   */
+  #publish<Name extends QueueEventName>(
+    type: Name,
+    payload: QueueEventPayloads[Name],
+  ): Promise<void> {
+    // Nothing to track, and nothing to allocate, for a worker that does not
+    // publish — which is most of them, on every job.
+    if (!this.#publishes) {
+      return SETTLED;
+    }
+
+    const publishing = this.#doPublish(type, payload).finally(() => {
+      this.#publishing.delete(publishing);
+    });
+    this.#publishing.add(publishing);
+    return publishing;
+  }
+
+  /**
    * Announces an event to other processes, when asked to.
    *
    * The worker is the only thing that knows a job became active, reported
@@ -622,35 +651,10 @@ export class BunQueueWorker<
    * failure to publish is logged and swallowed: an observer missing an event
    * must never fail the job that produced it.
    */
-  /**
-   * Publishes an event, tracked so `close()` can wait for it.
-   *
-   * Callers fire it and move on, and a caller may close straight after — from
-   * the very listener the event was emitted to. Untracked, the close shut the
-   * driver under the write: a `completed` event from a process that closed on
-   * completion was lost, and on MongoDB, whose publish takes two round trips,
-   * reliably.
-   */
-  #publish<Name extends QueueEventName>(
-    type: Name,
-    payload: QueueEventPayloads[Name],
-  ): Promise<void> {
-    const publishing = this.#doPublish(type, payload).finally(() => {
-      this.#publishing.delete(publishing);
-    });
-    this.#publishing.add(publishing);
-    return publishing;
-  }
-
-  /** The body of {@link #publish}. */
   async #doPublish<Name extends QueueEventName>(
     type: Name,
     payload: QueueEventPayloads[Name],
   ): Promise<void> {
-    if (!this.#publishes) {
-      return;
-    }
-
     await this.#publishGate?.();
 
     try {
@@ -719,7 +723,9 @@ export class BunQueueWorker<
     }
 
     const now = Date.now();
-    const reservation = await this.#reserve(slots, now);
+    const reservation = this.#limiter?.knownUnlimited(now)
+      ? null
+      : await this.#reserve(slots, now);
 
     // Reading the limits is an await, and `pause()` or `close()` may have
     // landed during it. The check at the top of the pass has already been

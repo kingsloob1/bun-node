@@ -477,6 +477,23 @@ export class QueueLimiter {
     });
   }
 
+  /**
+   * Whether the queue is known, right now, to have no limits: the stored limits
+   * were read within the refresh interval and there were none.
+   *
+   * Synchronous on purpose. A worker asks before every claim, and most queues
+   * have no limits; answering through `reserve()` cost three awaits between a
+   * job arriving and being claimed, on the path round-trip latency is measured
+   * along.
+   */
+  knownUnlimited(now: number): boolean {
+    return (
+      this.#limits !== undefined &&
+      this.#limits.value === null &&
+      now - this.#limits.readAt < this.#refreshMs
+    );
+  }
+
   /** The stored limits, read at most once per refresh interval. */
   async #readLimits(now: number): Promise<StoredLimits | null> {
     if (this.#limits && now - this.#limits.readAt < this.#refreshMs) {

@@ -41,6 +41,9 @@ import { SpawnExecutor } from "./executors/spawn";
 import { WorkerExecutor } from "./executors/worker";
 import { resolveRunnerOptions } from "./options";
 
+/** A publish that does nothing: already settled, and shared, so it costs nothing. */
+const SETTLED: Promise<void> = Promise.resolve();
+
 /**
  * Runs a JS/TS file on a schedule or on demand.
  *
@@ -1010,6 +1013,12 @@ export class BunRunner<
     type: Name,
     payload: RunnerEventPayloads[Name],
   ): Promise<void> {
+    // Nothing to track, and nothing to allocate, for a runner that does not
+    // publish.
+    if (!this.options.publish) {
+      return SETTLED;
+    }
+
     const publishing = this.#doPublish(type, payload).finally(() => {
       this.#publishing.delete(publishing);
     });
@@ -1022,10 +1031,6 @@ export class BunRunner<
     type: Name,
     payload: RunnerEventPayloads[Name],
   ): Promise<void> {
-    if (!this.options.publish) {
-      return;
-    }
-
     await this.#publishGate?.();
 
     try {
