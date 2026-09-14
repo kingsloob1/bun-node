@@ -14,6 +14,12 @@ export { BunQueueWorker } from "./BunQueueWorker";
  */
 export type { JobDefinition, JobDefinitionOptions } from "./definitions";
 export { JobDefinitions } from "./definitions";
+export {
+  defineProcessor,
+  IsolatedProcessor,
+  type IsolationMode,
+  type IsolationOptions,
+} from "./isolation";
 export { Job } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
 export {

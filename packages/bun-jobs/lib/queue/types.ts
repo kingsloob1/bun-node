@@ -1,7 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
-  ExecutionMode,
   JobsDriver,
   JobState,
   RepeatRecord,
@@ -14,6 +13,7 @@ import type {
   BackoffStrategy,
   JobBackoffOptions,
 } from "./backoff";
+import type { IsolationMode, IsolationOptions } from "./isolation";
 import type { Job } from "./Job";
 
 /**
@@ -268,11 +268,24 @@ export interface BunQueueWorkerOptions {
   /** Milliseconds of quiet before `drained` is emitted. Defaults to 0. */
   drainDelay?: number;
   /**
-   * Where a file-path processor runs. Only meaningful when the processor is
-   * a path: the job then runs through the runner's executors, one child per
-   * job. Defaults to `"in-process"`.
+   * Where a processor *file* runs each attempt:
+   *
+   * - `"in-process"` (the default) imports it once and calls it on the
+   *   worker's thread, exactly like a function processor.
+   * - `"worker"` runs each attempt in a fresh `Worker`: a separate JavaScript
+   *   context that can be terminated, in the same process.
+   * - `"spawn"` runs each attempt in a child process: the only mode where a
+   *   processor that ignores its signal can be killed for certain.
+   *
+   * Only for a processor given as a file path or URL. The file default-exports
+   * the same `(job, ctx) => result` a function processor is; `defineProcessor`
+   * types it. In a child, `job.log`, `job.updateProgress`, `job.touch` and
+   * `ctx.heartbeat` work through the worker; operations that change the
+   * stored job directly are unavailable.
    */
-  isolation?: ExecutionMode;
+  isolation?: IsolationMode;
+  /** Timeouts and executor options for isolated processors. */
+  isolationOptions?: IsolationOptions;
   /**
    * Named backoff strategies, for jobs whose `backoff.type` names one.
    *

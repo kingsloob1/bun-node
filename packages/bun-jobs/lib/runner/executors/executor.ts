@@ -1,5 +1,5 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
-import type { ExecutionMode, RunStatus } from "../../drivers/index";
+import type { ExecutionMode, JobRecord, RunStatus } from "../../drivers/index";
 import type { RunContext, RunnerHandler } from "../types";
 import { InvalidHandlerError } from "../../shared/errors";
 
@@ -82,6 +82,13 @@ export interface ExecutorStartOptions<TArgs = unknown> {
   forwardLogs: boolean;
   /** Callbacks for events the run produces. */
   events: ExecutorEvents;
+  /**
+   * What the file's default export is: a runner handler (the default), or a
+   * queue job processor, called with the job in `job`.
+   */
+  kind?: "run" | "job";
+  /** The job to process, when `kind` is `"job"`. */
+  job?: JobRecord;
 }
 
 /** One way of running a handler file. */

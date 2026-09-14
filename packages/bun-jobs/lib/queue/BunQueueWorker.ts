@@ -43,6 +43,7 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
+import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
 import { nextOccurrence, repeatJobId } from "./repeat";
@@ -93,7 +94,9 @@ export class BunQueueWorker<
   readonly driver: JobsDriver;
 
   /** What to run for each job. */
-  readonly #processor: JobProcessor<TData, TResult>;
+  readonly #processor: JobProcessor<TData, TResult> | undefined;
+  /** The processor file and where it runs, when the processor is a file. */
+  readonly #isolated: IsolatedProcessor | undefined;
   /** Options with defaults applied. */
   readonly #options: Required<
     Pick<
@@ -178,14 +181,39 @@ export class BunQueueWorker<
 
   constructor(
     queueName: string,
-    processor: JobProcessor<TData, TResult>,
+    /**
+     * What runs each job: a function, or the path (or URL) of a file that
+     * default-exports one — which `isolation` can then run in a child process
+     * or a `Worker`.
+     */
+    processor: JobProcessor<TData, TResult> | string | URL,
     options: BunQueueWorkerOptions,
   ) {
     super();
 
     this.queueName = assertSegment(queueName, "queue name");
     this.namespace = assertNamespace(options.namespace);
-    this.#processor = processor;
+    if (typeof processor === "function") {
+      if (
+        options.isolation !== undefined &&
+        options.isolation !== "in-process"
+      ) {
+        throw new ConfigError(
+          `isolation "${options.isolation}" needs a processor file: a function cannot be sent to another process or Worker`,
+          { isolation: options.isolation },
+        );
+      }
+
+      this.#processor = processor;
+      this.#isolated = undefined;
+    } else {
+      this.#processor = undefined;
+      this.#isolated = new IsolatedProcessor(
+        processor,
+        options.isolation ?? "in-process",
+        options.isolationOptions,
+      );
+    }
     this.id = options.id ?? newId();
     this.#token = newToken(this.id);
 
@@ -814,7 +842,19 @@ export class BunQueueWorker<
 
     try {
       const result = await withTimeout(
-        Promise.resolve(this.#processor(job, context)),
+        this.#isolated
+          ? this.#isolated.run(
+              job as Job<unknown, unknown>,
+              record,
+              context,
+              controller,
+              {
+                namespace: this.namespace,
+                queue: this.queueName,
+                workerId: this.id,
+              },
+            )
+          : Promise.resolve(this.#processor!(job, context)),
         record.opts.timeout,
         {
           message: `Job ${record.id} exceeded its ${record.opts.timeout}ms timeout`,
@@ -906,7 +946,13 @@ export class BunQueueWorker<
 
     const attempt = record.attemptsMade;
     const retryable =
-      attempt < record.maxAttempts && !(error instanceof UnrecoverableJobError);
+      attempt < record.maxAttempts &&
+      // By name too: an error from an isolated processor is rebuilt from its
+      // serialized form, and is no longer an instance of the class.
+      !(
+        error instanceof UnrecoverableJobError ||
+        (error instanceof Error && error.name === "UnrecoverableJobError")
+      );
     // `false` when the job's own strategy says to stop, attempts left or not.
     const delay = retryable
       ? nextBackoff(

@@ -206,7 +206,7 @@ export class BunJobs {
   /** Creates a worker consuming a queue in this namespace. */
   worker<TData = unknown, TResult = unknown>(
     name: string,
-    processor: JobProcessor<TData, TResult>,
+    processor: JobProcessor<TData, TResult> | string | URL,
     options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
   ): BunQueueWorker<TData, TResult> {
     const worker = new BunQueueWorker<TData, TResult>(name, processor, {

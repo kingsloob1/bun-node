@@ -1,6 +1,7 @@
 import type { LogEvent } from "@kingsleyweb/bun-common/lib/logging";
 import type {
   ChildToParent,
+  JobChannelReply,
   ParentToChild,
   SerializableContext,
 } from "../protocol";
@@ -17,9 +18,12 @@ import process from "node:process";
 //
 // `__tests__/runner-startup.test.ts` fails if the barrel comes back.
 import { createLogger } from "@kingsleyweb/bun-common/lib/logging";
-import { serializeError } from "@kingsleyweb/bun-common/lib/utils/native";
+import {
+  deserializeError,
+  serializeError,
+} from "@kingsleyweb/bun-common/lib/utils/native";
 import { toHandler } from "../executors/executor";
-import { CLOSE_EXIT_CODE } from "../protocol";
+import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
 
 /**
  * The child half of the protocol, shared by the spawned-process and worker
@@ -81,10 +85,23 @@ async function execute(
   const controller = new AbortController();
   const listeners = new Set<(message: unknown) => void>();
   const pending: unknown[] = [];
+  /** Replies awaited from the worker, by request number. */
+  const replies = new Map<number, (value: unknown) => void>();
   let settled = false;
 
   transport.onMessage((message) => {
     if (message?.t === "message" && message.runId === ctx.runId) {
+      const reply = message.data as Partial<JobChannelReply> | null;
+      if (
+        reply &&
+        typeof reply === "object" &&
+        reply[JOB_CHANNEL] === "reply"
+      ) {
+        replies.get(reply.seq ?? -1)?.(reply.value);
+        replies.delete(reply.seq ?? -1);
+        return;
+      }
+
       if (listeners.size === 0) {
         pending.push(message.data);
         return;
@@ -134,7 +151,12 @@ async function execute(
 
   try {
     const handler = toHandler(await import(ctx.file), ctx.file);
-    const result = await handler(context);
+    const result =
+      ctx.kind === "job" && ctx.job
+        ? await (handler as unknown as IsolatedProcessorFn)(
+            ...isolatedJob(transport, ctx, controller, replies),
+          )
+        : await handler(context);
     settled = true;
     transport.send({ t: "done", runId: ctx.runId, result: result ?? null });
     finish(transport, 0);
@@ -147,6 +169,109 @@ async function execute(
     });
     finish(transport, 1);
   }
+}
+
+/** A queue job processor, as a child calls it. */
+type IsolatedProcessorFn = (job: unknown, context: unknown) => unknown;
+
+/**
+ * The job and context an isolated processor is handed.
+ *
+ * The same shape a processor receives in the worker, less what needs a
+ * driver: the child has none, so log lines and lock renewals are asked of the
+ * worker and answered back, progress is forwarded, and the operations that
+ * would change the stored job directly say plainly that they cannot be used
+ * here rather than failing obscurely.
+ */
+function isolatedJob(
+  transport: ChildTransport,
+  ctx: SerializableContext<unknown>,
+  controller: AbortController,
+  replies: Map<number, (value: unknown) => void>,
+): [job: unknown, context: unknown] {
+  const record = ctx.job!;
+  let seq = 0;
+
+  const ask = async (
+    operation: "log" | "heartbeat",
+    fields: { line?: string } = {},
+  ): Promise<unknown> =>
+    await new Promise((resolve) => {
+      const id = ++seq;
+      replies.set(id, resolve);
+      transport.send({
+        t: "message",
+        runId: ctx.runId,
+        data: { [JOB_CHANNEL]: operation, seq: id, ...fields },
+      });
+    });
+
+  const unavailable = (method: string) => async () => {
+    throw new Error(
+      `job.${method}() is not available in an isolated job: it changes the stored job, and the driver stays in the worker process`,
+    );
+  };
+
+  const log = async (line: string) =>
+    Number(await ask("log", { line: String(line) }));
+  const extendLock = async () => Boolean(await ask("heartbeat"));
+
+  const job = {
+    id: record.id,
+    name: record.name,
+    data: record.data,
+    opts: record.opts,
+    state: record.state,
+    priority: record.priority,
+    runAt: record.runAt,
+    createdAt: record.createdAt,
+    processedOn: record.processedOn,
+    finishedOn: record.finishedOn,
+    expiresAt: record.expiresAt,
+    attemptsMade: record.attemptsMade,
+    maxAttempts: record.maxAttempts,
+    stalledCount: record.stalledCount,
+    progress: record.progress,
+    returnValue: record.returnValue,
+    failedReason: record.failedReason
+      ? deserializeError(record.failedReason)
+      : null,
+    stacktrace: record.stacktrace.map((entry) => deserializeError(entry)),
+    workerId: record.workerId,
+    repeatKey: record.repeatKey,
+    wasAdded: true,
+    queue: { ns: ctx.namespace, queue: ctx.runnerId },
+    isRepeat: record.repeatKey !== null,
+    lockToken: record.lockToken,
+    updateProgress: async (value: unknown) => {
+      transport.send({ t: "progress", runId: ctx.runId, value });
+    },
+    log,
+    extendLock,
+    touch: extendLock,
+    getLogs: unavailable("getLogs"),
+    updateData: unavailable("updateData"),
+    setPriority: unavailable("setPriority"),
+    reschedule: unavailable("reschedule"),
+    remove: unavailable("remove"),
+    retry: unavailable("retry"),
+    promote: unavailable("promote"),
+    refresh: unavailable("refresh"),
+    toJSON: () => ({ ...record }),
+  };
+
+  const context = {
+    signal: controller.signal,
+    logger: buildLogger(transport, ctx),
+    workerId: ctx.runnerName,
+    attempt: ctx.attempt,
+    heartbeat: async () => {
+      await extendLock();
+    },
+    log,
+  };
+
+  return [job, context];
 }
 
 /**

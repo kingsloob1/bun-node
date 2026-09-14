@@ -344,5 +344,8 @@ export function toSerializable<TArgs>(
     file: options.file,
     closeTimeout: options.closeTimeout,
     forwardLogs: options.forwardLogs ?? false,
+    ...(options.kind === "job" && options.job
+      ? { kind: "job" as const, job: options.job }
+      : {}),
   };
 }
