@@ -6,6 +6,7 @@ import {
   BunQueueWorker,
   ConfigError,
   MemoryDriver,
+  nextOccurrence,
   repeatJobId,
 } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
@@ -277,6 +278,42 @@ describe("repeatable jobs", () => {
       },
       { timeout: 10_000, message: "the series was never healed" },
     );
+  });
+
+  it("runs an interval series first at its start, not one interval later", async () => {
+    // "every 2 days from 1 December" runs on the 1st. The grid used to skip
+    // its own step zero, so it ran on the 3rd — unlike cron, which has always
+    // counted the start instant itself.
+    const queue = makeQueue(new MemoryDriver(), testNamespace());
+    const every = 2 * 86_400_000;
+    const startAt = Date.now() + 3_600_000;
+
+    const job = await queue.add("tick", {}, { repeat: { every, startAt } });
+
+    expect(job.runAt).toBe(startAt);
+    expect(job.state).toBe("delayed");
+  });
+
+  it("schedules the occurrence after the start one interval on, never the start twice", () => {
+    const startAt = Date.UTC(2026, 11, 1);
+    const every = 2 * 86_400_000;
+    const series = {
+      every,
+      startAt,
+      count: 0,
+      createdAt: startAt - 86_400_000,
+    };
+
+    // Asked before the start, it is the start; asked at an occurrence, the
+    // next one — which is what the worker does once one has been claimed.
+    expect(nextOccurrence(series, startAt - 86_400_000)).toBe(startAt);
+    expect(nextOccurrence(series, startAt)).toBe(startAt + every);
+    expect(nextOccurrence(series, startAt + every)).toBe(startAt + 2 * every);
+    // Mid-interval lands on the grid, not on the clock.
+    expect(nextOccurrence(series, startAt + 1_000)).toBe(startAt + every);
+    // Without a start the grid is anchored on creation, and "now" is not due.
+    const unstarted = { every, count: 0, createdAt: startAt };
+    expect(nextOccurrence(unstarted, startAt)).toBe(startAt + every);
   });
 
   it("refuses a repeat with neither cron nor every", async () => {

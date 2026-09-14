@@ -1,14 +1,18 @@
 import type { DriverConfig, JobsDriver } from "./drivers/index";
+import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
 import type {
   BunQueueOptions,
   BunQueueWorkerOptions,
+  Job,
   JobOptions,
   JobProcessor,
 } from "./queue/index";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { Logger, LoggerLike } from "./shared/logger";
 import { resolveDriver } from "./drivers/index";
+import { JobDefinitions } from "./queue/definitions";
 import { BunQueue, BunQueueWorker } from "./queue/index";
+import { JobBuilder } from "./queue/JobBuilder";
 import { BunRunnerManager } from "./runner/index";
 import { ConfigError } from "./shared/errors";
 import { assertNamespace } from "./shared/keys";
@@ -33,6 +37,14 @@ export interface BunJobsOptions {
   defaultJobOptions?: JobOptions;
   /** Options merged under every runner created here. */
   runnerDefaults?: Partial<Omit<BunRunnerOptions, "id" | "namespace" | "file">>;
+  /**
+   * The queue `define`/`now`/`schedule`/`every` use. Defaults to `"jobs"`.
+   *
+   * One queue for every defined name, dispatched by name — so a consumer runs
+   * one worker rather than one per kind of job. Name it if something else in
+   * the namespace already owns `jobs`.
+   */
+  registryQueue?: string;
 }
 
 /**
@@ -79,6 +91,12 @@ export class BunJobs {
   readonly #queues = new Map<string, BunQueue<any, any, any>>();
   /** Workers created here. */
   readonly #workers = new Set<BunQueueWorker<any, any>>();
+  /** Jobs defined by name, and how to run them. */
+  readonly #definitions = new JobDefinitions();
+  /** The queue the defined jobs are added to and consumed from. */
+  readonly #registryQueue: string;
+  /** The worker running defined jobs, once `start()` has been called. */
+  #registryWorker: BunQueueWorker<any, any> | undefined;
 
   constructor(options: BunJobsOptions) {
     this.namespace = assertNamespace(options.namespace);
@@ -92,6 +110,7 @@ export class BunJobs {
         ? (options.driver as DriverConfig)
         : undefined;
     this.#defaultJobOptions = options.defaultJobOptions;
+    this.#registryQueue = options.registryQueue ?? "jobs";
     this.#runnerDefaults = options.runnerDefaults;
     this.#logger = createJobsLogger(
       options.logger,
@@ -176,6 +195,209 @@ export class BunJobs {
 
     this.#workers.add(worker);
     return worker;
+  }
+
+  /* --- defined jobs ------------------------------------------------- */
+
+  /**
+   * Records how to run jobs of one name, and what they carry by default.
+   *
+   * ```ts
+   * jobs.define("sendEmail", async (job) => send(job.data), { attempts: 5 });
+   * await jobs.now("sendEmail", { to: "ops@example.com" });
+   * await jobs.start();
+   * ```
+   *
+   * The options are merged under every job added by that name, wherever it is
+   * added from. That is the point of declaring them here: `attempts: 5`
+   * belongs to what the job *is* rather than to each place that enqueues one,
+   * and spread across call sites is how two of them come to disagree.
+   *
+   * Defining a name twice replaces the first — what a caller reloading a
+   * module expects, and not silent, because they called `define` again.
+   */
+  define<TData = unknown, TResult = unknown>(
+    name: string,
+    handler: JobProcessor<TData, TResult>,
+    options: JobDefinitionOptions = {},
+  ): this {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new ConfigError("A job definition needs a name", { name });
+    }
+
+    this.#definitions.set<TData, TResult>({ name, handler, options });
+    return this;
+  }
+
+  /** Every job name defined here, with how to run it. */
+  definitions(): JobDefinition<never, never>[] {
+    return this.#definitions.all();
+  }
+
+  /**
+   * Describes a job to add, and answers with a builder.
+   *
+   * ```ts
+   * await jobs.schedule("sendMails").every("2 days").withData(list).start();
+   * await jobs.run("sendMail").in("5 minutes").withData(mail).start();
+   * await jobs.process("report").on("2nd december 2026").start();
+   * ```
+   *
+   * `schedule`, `run` and `process` are the same method under three names,
+   * because which one reads better depends on the sentence and none of them
+   * is worth making the caller remember. Nothing is added until `start()`.
+   *
+   * This replaced a positional form — `schedule(when, name, data, options)` —
+   * that put the least interesting argument first and gave every variation of
+   * "when" its own method with the same four parameters in a different order.
+   */
+  schedule<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    const definition = this.#definitions.get(name);
+
+    if (!definition) {
+      throw new ConfigError(
+        `No job is defined for "${name}"; call define() first`,
+        { name, defined: this.#definitions.names() },
+      );
+    }
+
+    // The definition's options sit under whatever the builder is told, so a
+    // caller changing one thing does not lose the rest.
+    const { concurrency: _concurrency, ...defaults } = definition.options;
+
+    return new JobBuilder<TData, TResult>(
+      this.queue<TData, TResult>(this.#registryQueue),
+      name,
+      data,
+      defaults,
+    );
+  }
+
+  /** {@link BunJobs.schedule}, for a sentence that reads better as "run". */
+  run<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    return this.schedule<TData, TResult>(name, data);
+  }
+
+  /** {@link BunJobs.schedule}, for a sentence that reads better as "process". */
+  process<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobBuilder<TData, TResult> {
+    return this.schedule<TData, TResult>(name, data);
+  }
+
+  /**
+   * Adds a job to run as soon as something claims it.
+   *
+   * The one case short enough not to need a sentence:
+   * `jobs.run(name, data).start()` says the same thing in more words.
+   */
+  async now<TData = unknown>(
+    name: string,
+    data?: TData,
+    options?: JobOptions,
+  ): Promise<Job<TData>> {
+    const builder = this.schedule<TData>(name, data);
+    return await (options ? builder.withOptions(options) : builder).start();
+  }
+
+  /**
+   * Starts consuming the defined jobs.
+   *
+   * One worker for every name, dispatching on `job.name` — which is why the
+   * definitions live in one place. Calling it twice is a no-op rather than a
+   * second consumer.
+   */
+  async start(
+    options?: Omit<
+      BunQueueWorkerOptions,
+      "namespace" | "driver" | "concurrency"
+    > & { concurrency?: number },
+  ): Promise<BunQueueWorker<unknown, unknown>> {
+    if (this.#registryWorker) {
+      return this.#registryWorker;
+    }
+
+    if (this.#definitions.size === 0) {
+      throw new ConfigError("start() has nothing to run: define a job first", {
+        namespace: this.namespace,
+      });
+    }
+
+    const worker = this.worker<unknown, unknown>(
+      this.#registryQueue,
+      async (job, context) => {
+        const definition = this.#definitions.get(job.name);
+
+        if (!definition) {
+          // A name this process does not know. Failing is right: another
+          // deployment may define it, and the job should be left for a worker
+          // that does rather than quietly dropped.
+          throw new ConfigError(`No job is defined for "${job.name}"`, {
+            name: job.name,
+            defined: this.#definitions.names(),
+          });
+        }
+
+        return await definition.handler(job as never, context);
+      },
+      {
+        ...options,
+      },
+    );
+
+    this.#registryWorker = worker;
+    void worker.run();
+    return worker;
+  }
+
+  /** Stops consuming defined jobs, leaving what is in flight to finish. */
+  async stop(options?: { force?: boolean; timeout?: number }): Promise<void> {
+    const worker = this.#registryWorker;
+    this.#registryWorker = undefined;
+
+    await worker?.close(options);
+  }
+
+  /** Removes every pending job from the registry's queue. */
+  async drain(options?: { delayed?: boolean }): Promise<number> {
+    return await this.queue(this.#registryQueue).drain(options);
+  }
+
+  /** Adds a job under a defined name, with that definition's defaults. */
+  async #addDefined<TData>(
+    name: string,
+    data: TData | undefined,
+    options?: JobOptions,
+  ): Promise<Job<TData>> {
+    const definition = this.#definitions.get(name);
+
+    if (!definition) {
+      throw new ConfigError(
+        `No job is defined for "${name}"; call define() first`,
+        { name, defined: this.#definitions.names() },
+      );
+    }
+
+    // The definition's options underneath, the call's on top: a caller asking
+    // for a delay on one job should not lose the retry policy the definition
+    // gave every job of that name.
+    const { concurrency: _concurrency, ...defaults } = definition.options;
+
+    return await this.queue<TData>(this.#registryQueue).add(
+      name,
+      data as TData,
+      {
+        ...defaults,
+        ...options,
+      },
+    );
   }
 
   /** Runner ids the backend knows about in this namespace. */

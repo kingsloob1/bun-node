@@ -18,18 +18,40 @@ import type { Job } from "./Job";
  * outcome is kept.
  */
 
-/** How a repeatable job repeats. */
+/**
+ * How a repeatable job repeats.
+ *
+ * ```ts
+ * { every: 60_000 }
+ * { every: "2 days" }                                     // or "every 2 days", "daily"
+ * { every: "0 9 * * 1", tz: "Europe/London" }             // cron, by its shape
+ * { every: "every 2 weeks starting 1st december 2026" }   // interval + start
+ * { every: "every day from 1 dec 2026 until 31 dec 2026" }// interval + window
+ * { every: "1 hour", startAt: "tomorrow at 9am" }
+ * ```
+ *
+ * Words are read when the job is added, so "starting tomorrow" means tomorrow
+ * from then. Reading dates needs the optional `chrono-node`; an interval alone
+ * does not. A series is identified by its schedule and start, so a phrase that
+ * names a relative start gives a new series each time it resolves differently;
+ * give `key` when re-adding one must update it.
+ */
 export interface RepeatOptions {
   /** Cron expression, five- or six-field (seconds first). */
   cron?: string;
   /** IANA time zone the cron expression is read in. */
   tz?: string;
-  /** Interval in milliseconds, as an alternative to `cron`. */
-  every?: number;
-  /** Do not run before this instant. */
-  startAt?: Date | number;
-  /** Do not run after this instant. */
-  endAt?: Date | number;
+  /**
+   * How often, as an alternative to `cron`: milliseconds, a duration
+   * (`"2 days"`), a cron expression, or a phrase that may also name the start
+   * and end (`"every 2 weeks starting 1st december 2026"`). Dates inside the
+   * phrase fill `startAt`/`endAt` only when those are not given.
+   */
+  every?: number | string;
+  /** Do not run before this instant — a `Date`, epoch milliseconds, or words. */
+  startAt?: Date | number | string;
+  /** Do not run after this instant — a `Date`, epoch milliseconds, or words. */
+  endAt?: Date | number | string;
   /** Stop after this many occurrences. */
   limit?: number;
   /** Identifies the series. Defaults to one derived from the other options. */

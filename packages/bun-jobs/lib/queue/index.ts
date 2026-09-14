@@ -1,9 +1,12 @@
+export { BunQueue } from "./BunQueue";
+export { BunQueueWorker } from "./BunQueueWorker";
 /**
  * The queue: producers, consumers and the job they exchange.
  */
-export { BunQueue } from "./BunQueue";
-export { BunQueueWorker } from "./BunQueueWorker";
+export type { JobDefinition, JobDefinitionOptions } from "./definitions";
+export { JobDefinitions } from "./definitions";
 export { Job } from "./Job";
+export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
 export {
   DEFAULT_JOB_OPTIONS,
   resolveJobOptions,
