@@ -134,6 +134,92 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
     expect(await driver.countQueuedTriggers(ns, key)).toBeLessThanOrEqual(3);
   });
 
+  it("keeps a job's priority and its options in agreement", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "reprioritised" };
+
+    await driver.addJob(q, makeJob({ id: "moved-up", priority: 5 }));
+    const updated = await driver.updateJob(q, "moved-up", { priority: 1 }, 0);
+
+    // `opts` is stored as a JSON string, so the plain field changing is not
+    // enough: both have to read back as the new value.
+    expect(updated?.priority).toBe(1);
+    expect(updated?.opts.priority).toBe(1);
+    expect((await driver.getJob(q, "moved-up"))?.opts.priority).toBe(1);
+
+    await driver.purge(ns);
+  });
+
+  it("keeps log lines off the job, and sweeps the ones a job left behind", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "log-sweep" };
+    const now = Date.now();
+
+    await driver.addJob(q, makeJob({ id: "chatty", runAt: now }));
+    await driver.addJobLog(q, "chatty", "one", 0);
+    await driver.addJobLog(q, "chatty", "two", 0);
+
+    const token = "sweep-token";
+    const claimed = await driver.claimJob(q, {
+      workerId: "w1",
+      token,
+      lockMs: 5_000,
+      now,
+    });
+    // A claim returns the whole document, which is why lines are not on it.
+    expect(Object.keys(claimed ?? {})).not.toContain("logs");
+
+    // Retention `true` deletes in one operation and leaves the lines behind.
+    await driver.completeJob(q, "chatty", token, null, true, now);
+
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(URL!);
+    await client.connect();
+
+    try {
+      const lines = client
+        .db(driver.database)
+        .collection(driver.collections.jobLogs);
+
+      expect(await lines.countDocuments({ ns })).toBe(2);
+
+      // The worker's periodic maintenance pass collects them.
+      await driver.pruneExpired(q, now, 100);
+      expect(await lines.countDocuments({ ns })).toBe(0);
+    } finally {
+      await client.close();
+      await driver.purge(ns);
+    }
+  });
+
+  it("purges a namespace's log lines with the rest of it", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "log-purge" };
+
+    await driver.addJob(q, makeJob({ id: "logged" }));
+    await driver.addJobLog(q, "logged", "kept until purge", 0);
+    await driver.purge(ns);
+
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(URL!);
+    await client.connect();
+
+    try {
+      expect(
+        await client
+          .db(driver.database)
+          .collection(driver.collections.jobLogs)
+          .countDocuments({ ns }),
+      ).toBe(0);
+    } finally {
+      await client.close();
+      await driver.purge(ns);
+    }
+  });
+
   it("trims history on the server, newest first", async () => {
     const driver = makeDriver();
     const ns = testNamespace();
@@ -174,6 +260,7 @@ describe.skipIf(!URL)("MongoDB driver: options", () => {
       locks: "custom_locks",
       kv: "custom_kv",
       events: "custom_events",
+      jobLogs: "custom_jobLogs",
     });
 
     const named = new MongoDriver({

@@ -39,6 +39,7 @@ export {
   FileDriver,
   type FileDriverOptions,
   type IndexRow,
+  type JobPatch,
   type JobRecord,
   type JobsDriver,
   type JobState,
@@ -79,14 +80,20 @@ export {
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
 export {
+  type BackoffContext,
+  BackoffStrategies,
+  type BackoffStrategy,
+  BUILT_IN_BACKOFFS,
   BunQueue,
   type BunQueueEvents,
   type BunQueueOptions,
   BunQueueWorker,
   type BunQueueWorkerEvents,
   type BunQueueWorkerOptions,
+  type DeadLetter,
   DEFAULT_JOB_OPTIONS,
   Job,
+  type JobBackoffOptions,
   JobBuilder,
   type JobBuilderOptions,
   type JobDefinition,
@@ -103,6 +110,7 @@ export {
   resolveJobOptions,
   resolveRunAt,
   retentionExpiry,
+  type RetryAllOptions,
   toRepeatRecord,
 } from "./queue/index";
 
@@ -190,6 +198,15 @@ export {
   UnrecoverableJobError,
   WorkerClosedError,
 } from "./shared/errors";
+// Reading dates in phrases: the parser interface, and the chrono range.
+export {
+  assertDateParser,
+  CHRONO_VERSION_RANGE,
+  type DateParseComponent,
+  type DateParseOptions,
+  type DateParser,
+  type DateParseResult,
+} from "./shared/humanTime";
 export { HOST, newId, newToken, parseToken } from "./shared/ids";
 export { assertJsonSafe, safeJsonParse, stringifyBounded } from "./shared/json";
 export {

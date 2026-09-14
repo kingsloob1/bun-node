@@ -1,14 +1,15 @@
+import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { JobRecord, JobsDriver, QueueRef } from "../drivers/index";
 import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type {
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
+  DeadLetter,
   JobProcessor,
   ProcessorContext,
 } from "./types";
 import {
-  computeBackoff,
   createDeferred,
   deserializeError,
   jsonClone,
@@ -30,6 +31,7 @@ import {
 } from "../shared/constants";
 import { TypedEmitterBase } from "../shared/emitter";
 import {
+  ConfigError,
   JobTimeoutError,
   LockLostError,
   UnrecoverableJobError,
@@ -38,6 +40,8 @@ import { queueEvent } from "../shared/events";
 import { newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
+import { BackoffStrategies, nextBackoff } from "./backoff";
+import { BunQueue } from "./BunQueue";
 import { Job } from "./Job";
 import { nextOccurrence, repeatJobId } from "./repeat";
 
@@ -106,6 +110,16 @@ export class BunQueueWorker<
   readonly #logger: Logger;
   /** The lock token every claim by this worker carries. */
   readonly #token: string;
+  /** Named backoff strategies, for jobs that name one. */
+  readonly #backoffs: BackoffStrategies;
+  /** The dead-letter queue for jobs that do not name their own. */
+  readonly #deadLetterQueue: string | undefined;
+  /** Dead-letter queues opened so far, by name, closed with the worker. */
+  readonly #deadLetters = new Map<
+    string,
+    BunQueue<DeadLetter, unknown, string>
+  >();
+
   /** Whether this worker announces its job events to other processes. */
   readonly #publishes: boolean;
   /** When the queue was first seen empty, for `drainDelay`. */
@@ -173,6 +187,11 @@ export class BunQueueWorker<
     };
 
     this.#publishes = options.publish ?? false;
+    this.#backoffs = BackoffStrategies.from(options.backoffStrategies);
+    this.#deadLetterQueue =
+      options.deadLetterQueue === undefined
+        ? undefined
+        : assertSegment(options.deadLetterQueue, "deadLetterQueue");
 
     this.#logger = createJobsLogger(
       options.logger,
@@ -296,6 +315,8 @@ export class BunQueueWorker<
       // Deliberately no wait. A processor that ignores its signal must not
       // hold shutdown hostage; its lock lapses and the stalled sweep returns
       // the job to the queue, so the work is delayed rather than lost.
+      await this.#closeDeadLetters();
+
       if (this.#ownsDriver) {
         await this.driver.close();
       }
@@ -329,12 +350,21 @@ export class BunQueueWorker<
       await this.#stopped.promise;
     }
 
+    await this.#closeDeadLetters();
+
     if (this.#ownsDriver) {
       await this.driver.close();
     }
 
     this.#running = false;
     this.safeEmit("closed");
+  }
+
+  /** Closes the dead-letter queues this worker opened. They share its driver. */
+  async #closeDeadLetters(): Promise<void> {
+    const queues = [...this.#deadLetters.values()];
+    this.#deadLetters.clear();
+    await Promise.allSettled(queues.map((queue) => queue.close()));
   }
 
   /* --- the claim loop ------------------------------------------------------ */
@@ -681,12 +711,22 @@ export class BunQueueWorker<
     const attempt = record.attemptsMade;
     const retryable =
       attempt < record.maxAttempts && !(error instanceof UnrecoverableJobError);
+    // `false` when the job's own strategy says to stop, attempts left or not.
+    const delay = retryable
+      ? nextBackoff(
+          attempt,
+          record,
+          failure,
+          this.#backoffs,
+          (message, fields) => this.#logger.warn(message, fields),
+        )
+      : false;
 
     const now = Date.now();
 
     try {
-      if (retryable) {
-        const runAt = now + computeBackoff(attempt, record.opts.backoff);
+      if (delay !== false) {
+        const runAt = now + delay;
         await this.driver.failJob(
           this.ref,
           record.id,
@@ -724,6 +764,78 @@ export class BunQueueWorker<
       void this.#publish("dead", { id: record.id, error: serialized });
     } catch (writeError) {
       this.#emitError(writeError, "failJob");
+      return;
+    }
+
+    const deadLetter = record.opts.deadLetter ?? this.#deadLetterQueue;
+
+    if (deadLetter !== undefined) {
+      await this.#fileDeadLetter(deadLetter, job, record, serialized, now);
+    }
+  }
+
+  /**
+   * Adds a copy of a dead job to its dead-letter queue.
+   *
+   * After the job is marked dead, never before: a worker that crashes between
+   * the two leaves a dead job with no letter, which is visible and re-drivable,
+   * rather than a letter for a job that is about to be retried. The letter's id
+   * is derived from the job's, so a death noticed twice files one letter — and
+   * from its creation time too, so a later job reusing the id files its own.
+   */
+  async #fileDeadLetter(
+    queueName: string,
+    job: Job<TData, TResult>,
+    record: JobRecord,
+    error: SerializedError,
+    now: number,
+  ): Promise<void> {
+    if (queueName === this.queueName) {
+      // A letter to itself would be claimed, fail, and file another.
+      this.#emitError(
+        new ConfigError(
+          `Job ${record.id} names its own queue "${queueName}" as its dead-letter queue`,
+          { jobId: record.id, queue: queueName },
+        ),
+        "deadLetter",
+      );
+      return;
+    }
+
+    try {
+      let queue = this.#deadLetters.get(queueName);
+
+      if (!queue) {
+        queue = new BunQueue<DeadLetter, unknown, string>(queueName, {
+          namespace: this.namespace,
+          driver: this.driver,
+          logger: this.#logger,
+        });
+        this.#deadLetters.set(queueName, queue);
+      }
+
+      const letter = await queue.add(
+        record.name,
+        {
+          queue: this.queueName,
+          id: record.id,
+          name: record.name,
+          data: record.data,
+          failedReason: error,
+          attemptsMade: record.attemptsMade,
+          diedAt: now,
+        },
+        { jobId: `${this.queueName}:${record.id}:${record.createdAt}` },
+      );
+
+      this.safeEmitScoped(
+        "deadLettered",
+        record.name,
+        job,
+        letter as Job<DeadLetter<TData>, unknown>,
+      );
+    } catch (letterError) {
+      this.#emitError(letterError, "deadLetter");
     }
   }
 

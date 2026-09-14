@@ -3,6 +3,7 @@ import type {
   RepeatRecord,
   ResolvedJobOptions,
 } from "../drivers/index";
+import type { DateParser } from "../shared/humanTime";
 import type { RepeatOptions } from "./types";
 import { nextCronDate } from "../shared/cron";
 import { ConfigError } from "../shared/errors";
@@ -151,6 +152,7 @@ export function resolveRepeat(
   repeat: RepeatOptions,
   now: number,
   what = "repeat",
+  parser?: DateParser,
 ): ResolvedRepeat {
   const { every, startAt, endAt, ...rest } = repeat;
   const resolved: ResolvedRepeat = { ...rest };
@@ -176,7 +178,7 @@ export function resolveRepeat(
 
       resolved.cron = every;
     } else {
-      const recurrence = readRecurrence(every, `${what}.every`, now);
+      const recurrence = readRecurrence(every, `${what}.every`, now, parser);
       resolved.every = recurrence.every;
       phraseStart = recurrence.startAt;
       phraseEnd = recurrence.endAt;
@@ -187,11 +189,11 @@ export function resolveRepeat(
   const end = endAt ?? phraseEnd;
 
   if (start !== undefined) {
-    resolved.startAt = readInstant(start, `${what}.startAt`, now);
+    resolved.startAt = readInstant(start, `${what}.startAt`, now, parser);
   }
 
   if (end !== undefined) {
-    resolved.endAt = readInstant(end, `${what}.endAt`, now);
+    resolved.endAt = readInstant(end, `${what}.endAt`, now, parser);
   }
 
   return resolved;
@@ -202,9 +204,10 @@ function readInstant(
   value: Date | number | string,
   what: string,
   now: number,
+  parser: DateParser | undefined,
 ): number {
   return typeof value === "string"
-    ? parseWhen(value, what, now)
+    ? parseWhen(value, what, now, parser)
     : toMs(value, what);
 }
 
@@ -216,8 +219,9 @@ export function toRepeatRecord(
   opts: ResolvedJobOptions,
   options: RepeatOptions,
   now: number,
+  parser?: DateParser,
 ): RepeatRecord {
-  const repeat = resolveRepeat(options, now);
+  const repeat = resolveRepeat(options, now, "repeat", parser);
 
   if (!repeat.cron && !(repeat.every && repeat.every > 0)) {
     throw new ConfigError("A repeat needs either a cron expression or every", {

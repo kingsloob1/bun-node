@@ -61,6 +61,8 @@ export interface JobBuilderOptions<TData = unknown> {
   backoff?: JobOptions["backoff"];
   /** An id of your choosing, which is also the idempotency key. */
   unique?: string;
+  /** A queue that receives a copy of the job if it dies. */
+  deadLetter?: string;
   /** What to do with the job once it completes. */
   removeOnComplete?: Retention;
   /** What to do with the job once it is dead. */
@@ -187,7 +189,7 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
 
     // Read now, so a phrase that is not an interval fails at this call rather
     // than when the job is added. The queue reads it again then, for its dates.
-    readRecurrence(interval, "every()");
+    readRecurrence(interval, "every()", Date.now(), this.#queue.dateParser);
     return this.#setSchedule({ every: interval });
   }
 
@@ -320,6 +322,15 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
   }
 
   /**
+   * Names a queue, in the same namespace, that receives a copy of the job if
+   * it dies — with its id, data and the error that killed it.
+   */
+  deadLetter(queue: string): this {
+    this.#options.deadLetter = queue;
+    return this;
+  }
+
+  /**
    * Describes the job with one object instead of a chain.
    *
    * ```ts
@@ -370,6 +381,7 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
     if (options.timeout !== undefined) this.timeout(options.timeout);
     if (options.backoff !== undefined) this.backoff(options.backoff);
     if (options.unique !== undefined) this.unique(options.unique);
+    if (options.deadLetter !== undefined) this.deadLetter(options.deadLetter);
     if (options.jobId !== undefined) this.unique(options.jobId);
 
     if (options.removeOnComplete !== undefined) {
@@ -399,7 +411,12 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
       : undefined;
 
     if (this.#whenPhrase !== undefined) {
-      const at = parseWhen(this.#whenPhrase, this.#whenIs);
+      const at = parseWhen(
+        this.#whenPhrase,
+        this.#whenIs,
+        Date.now(),
+        this.#queue.dateParser,
+      );
 
       if (this.#whenIs === "startAt" || repeat) {
         repeat = { ...repeat, startAt: at };

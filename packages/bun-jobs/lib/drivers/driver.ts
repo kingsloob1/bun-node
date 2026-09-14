@@ -264,11 +264,17 @@ export interface ResolvedJobOptions {
   priority: number;
   /** Total attempts, including the first. */
   attempts: number;
-  /** Delay schedule between attempts. */
+  /**
+   * Delay schedule between attempts.
+   *
+   * `type` is a built-in strategy or the name of one registered on the worker
+   * that runs the job — a name rather than a function, because this has to
+   * survive being stored and read back by another process.
+   */
   backoff:
     | number
     | {
-        type?: "fixed" | "exponential";
+        type?: string;
         delay?: number;
         factor?: number;
         max?: number;
@@ -282,6 +288,11 @@ export interface ResolvedJobOptions {
   removeOnFail: Retention;
   /** How many stack traces a failing job keeps. */
   keepStacktraces: number;
+  /**
+   * The queue a copy of the job is added to when it dies, in the same
+   * namespace. Absent unless the job, or the worker running it, names one.
+   */
+  deadLetter?: string;
 }
 
 /** A job as stored. */
@@ -342,6 +353,18 @@ export interface ClaimOptions {
   lockMs: number;
   /** The caller's clock, in epoch milliseconds. */
   now: number;
+}
+
+/** What {@link QueueDriver.updateJob} changes. Anything left out stays as it is. */
+export interface JobPatch {
+  /** The new payload. JSON only; `undefined` leaves the payload alone. */
+  data?: unknown;
+  /** The new priority. Lower runs first. */
+  priority?: number;
+  /** When the job becomes claimable. Only a `waiting` or `delayed` job moves. */
+  runAt?: number;
+  /** Change the job only while it is in one of these states. */
+  onlyIn?: JobState[];
 }
 
 /** What should happen to a job whose attempt failed. */
@@ -519,6 +542,65 @@ export interface QueueDriver {
     id: string,
     progress: unknown,
   ) => Promise<boolean>;
+  /**
+   * Changes a stored job's data, priority or due time, and answers with the
+   * job as it now is — or `null` when there is no such job, or it is in a state
+   * the patch does not allow.
+   *
+   * Optional, so a driver written against an earlier contract still compiles;
+   * every built-in driver implements it, and what depends on it — changing a
+   * job's data or priority, debouncing — says so when a driver lacks it.
+   *
+   * The rules:
+   *
+   * - **`runAt` moves only a `waiting` or `delayed` job**, and anything else
+   *   comes back `null` untouched: an active job belongs to its worker, and a
+   *   finished one has nothing to be due for. The state follows the new time —
+   *   later than `now` is `delayed`, otherwise `waiting` — so a job moved into
+   *   the future is not claimable and one moved to now does not wait for
+   *   promotion.
+   * - **A new priority reorders a waiting job** among the others.
+   * - **`onlyIn` is checked in the same step as the write.** A job claimed
+   *   between a caller reading it and calling this is not changed when
+   *   `onlyIn` leaves out `active`, which is what makes replacing a pending
+   *   job's data safe while workers are claiming.
+   */
+  updateJob?: (
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ) => Promise<JobRecord | null>;
+  /**
+   * Appends one line to a job's log, and says how many lines it now keeps —
+   * `0`, storing nothing, when there is no such job.
+   *
+   * `keep` caps the log at its most recent lines, dropping the oldest; `0`
+   * keeps every line.
+   *
+   * **A log lives exactly as long as its job**, however the job goes: removed,
+   * cleaned, drained, pruned, or deleted on completion by retention. A job
+   * added later under the same id starts with an empty log, rather than
+   * inheriting the lines of the one it replaced.
+   *
+   * Optional, as {@link QueueDriver.updateJob} is.
+   */
+  addJobLog?: (
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ) => Promise<number>;
+  /**
+   * A page of a job's log, and how many lines it keeps in total.
+   *
+   * `asc` is oldest first. A job with no log, or no such job, has none.
+   */
+  getJobLogs?: (
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ) => Promise<{ logs: string[]; count: number }>;
   /** One job by id, or `null`. */
   getJob: (q: QueueRef, id: string) => Promise<JobRecord | null>;
   /** Jobs in the given states, ordered by their state's natural order. */

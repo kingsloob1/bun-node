@@ -898,6 +898,287 @@ export function driverContract(
         expect(await driver.getRepeat(q, "nightly")).toBeNull();
       });
 
+      /* --- changing a stored job ---------------------------------------- */
+
+      /** Claims whatever is due in `ref`, with a fresh token. */
+      async function claimFrom(ref: QueueRef, now: number) {
+        const token = newToken();
+        const job = await driver.claimJob(ref, {
+          workerId: "w1",
+          token,
+          lockMs: 30_000,
+          now,
+        });
+        return { job, token };
+      }
+
+      it("updateJob replaces data, and answers with the job as it now is", async () => {
+        const uq: QueueRef = { ns, queue: "update-data" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "patched", runAt: now, data: { v: 1 } }),
+        );
+
+        const updated = await driver.updateJob!(
+          uq,
+          "patched",
+          { data: { v: 2, list: [1, 2] } },
+          now,
+        );
+
+        expect(updated?.data).toEqual({ v: 2, list: [1, 2] });
+        expect(updated?.state).toBe("waiting");
+        expect((await driver.getJob(uq, "patched"))?.data).toEqual({
+          v: 2,
+          list: [1, 2],
+        });
+        expect(
+          await driver.updateJob!(uq, "missing", { data: 1 }, now),
+        ).toBeNull();
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob with a new priority reorders what is claimed next", async () => {
+        const uq: QueueRef = { ns, queue: "update-priority" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "first-in", runAt: now, createdAt: now, priority: 5 }),
+        );
+        await driver.addJob(
+          uq,
+          makeJob({
+            id: "second-in",
+            runAt: now,
+            createdAt: now + 1,
+            priority: 5,
+          }),
+        );
+
+        const updated = await driver.updateJob!(
+          uq,
+          "second-in",
+          { priority: 1 },
+          now,
+        );
+        expect(updated?.priority).toBe(1);
+        expect((await driver.getJob(uq, "second-in"))?.priority).toBe(1);
+
+        expect((await claimFrom(uq, now)).job?.id).toBe("second-in");
+        expect((await claimFrom(uq, now)).job?.id).toBe("first-in");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob moves runAt between waiting and delayed, and refuses anything else", async () => {
+        const uq: QueueRef = { ns, queue: "update-runat" };
+        const now = Date.now();
+        await driver.addJob(uq, makeJob({ id: "moved", runAt: now }));
+
+        // Into the future: delayed, not claimable, not promoted early.
+        const later = await driver.updateJob!(
+          uq,
+          "moved",
+          { runAt: now + 60_000 },
+          now,
+        );
+        expect(later?.state).toBe("delayed");
+        expect(later?.runAt).toBe(now + 60_000);
+        expect((await claimFrom(uq, now)).job).toBeNull();
+        expect(await driver.promoteDelayed(uq, now, 10)).toBe(0);
+        expect(await driver.nextDelayedAt(uq)).toBe(now + 60_000);
+
+        // Back to now: waiting, claimable without a promotion pass.
+        const sooner = await driver.updateJob!(
+          uq,
+          "moved",
+          { runAt: now },
+          now,
+        );
+        expect(sooner?.state).toBe("waiting");
+        expect(await driver.nextDelayedAt(uq)).toBeNull();
+
+        const { job } = await claimFrom(uq, now);
+        expect(job?.id).toBe("moved");
+
+        // Active: its due time is no longer the queue's to move.
+        expect(
+          await driver.updateJob!(uq, "moved", { runAt: now + 5_000 }, now),
+        ).toBeNull();
+        expect((await driver.getJob(uq, "moved"))?.state).toBe("active");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("updateJob checks onlyIn in the same step as the write", async () => {
+        const uq: QueueRef = { ns, queue: "update-onlyin" };
+        const now = Date.now();
+        await driver.addJob(
+          uq,
+          makeJob({ id: "guarded", runAt: now, data: { v: 1 } }),
+        );
+        await claimFrom(uq, now);
+
+        const pending: ("waiting" | "delayed")[] = ["waiting", "delayed"];
+        expect(
+          await driver.updateJob!(
+            uq,
+            "guarded",
+            { data: { v: 2 }, onlyIn: pending },
+            now,
+          ),
+        ).toBeNull();
+        expect((await driver.getJob(uq, "guarded"))?.data).toEqual({ v: 1 });
+
+        // Without the guard, data may change on an active job.
+        const changed = await driver.updateJob!(
+          uq,
+          "guarded",
+          { data: { v: 3 } },
+          now,
+        );
+        expect(changed?.data).toEqual({ v: 3 });
+        expect(changed?.state).toBe("active");
+
+        await driver.drainQueue(uq, true);
+      });
+
+      it("keeps a job's log in order, capped, and paged", async () => {
+        const lq: QueueRef = { ns, queue: "logs" };
+        const now = Date.now();
+        await driver.addJob(lq, makeJob({ id: "logged", runAt: now }));
+
+        for (let line = 1; line <= 5; line++) {
+          expect(await driver.addJobLog!(lq, "logged", `line ${line}`, 0)).toBe(
+            line,
+          );
+        }
+
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({
+          logs: ["line 1", "line 2", "line 3", "line 4", "line 5"],
+          count: 5,
+        });
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 1,
+            limit: 2,
+            order: "desc",
+          }),
+        ).toEqual({ logs: ["line 4", "line 3"], count: 5 });
+
+        // A cap keeps the most recent lines.
+        expect(await driver.addJobLog!(lq, "logged", "line 6", 3)).toBe(3);
+        expect(
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({ logs: ["line 4", "line 5", "line 6"], count: 3 });
+
+        // Lines are kept verbatim, whatever they contain.
+        const awkward = 'quote " pipe | newline \n tab \t unicode ✓';
+        await driver.addJobLog!(lq, "logged", awkward, 0);
+        const [last] = (
+          await driver.getJobLogs!(lq, "logged", {
+            offset: 0,
+            limit: 1,
+            order: "desc",
+          })
+        ).logs;
+        expect(last).toBe(awkward);
+
+        // No job, no log.
+        expect(await driver.addJobLog!(lq, "no-such-job", "lost", 0)).toBe(0);
+        expect(
+          await driver.getJobLogs!(lq, "no-such-job", {
+            offset: 0,
+            limit: 10,
+            order: "asc",
+          }),
+        ).toEqual({ logs: [], count: 0 });
+
+        await driver.drainQueue(lq, true);
+      });
+
+      it("a log goes with its job, however the job goes", async () => {
+        const lq: QueueRef = { ns, queue: "log-lifetime" };
+        const page = { offset: 0, limit: 10, order: "asc" as const };
+        const now = Date.now();
+
+        /** Adds a job with one log line, runs `remove`, re-adds the same id. */
+        async function survivesRemoval(
+          id: string,
+          remove: () => Promise<unknown>,
+          state: Partial<{ runAt: number }> = {},
+        ) {
+          // Both jobs are created in the same millisecond, deliberately. A
+          // driver that tells the two apart by `createdAt` passes this only
+          // when the clock happens to tick between them — and a job completed
+          // and re-added under its id inside one millisecond is ordinary.
+          await driver.addJob(
+            lq,
+            makeJob({ id, runAt: now, createdAt: now, ...state }),
+          );
+          await driver.addJobLog!(lq, id, `before ${id}`, 0);
+          await remove();
+          expect(await driver.getJob(lq, id)).toBeNull();
+
+          // The same id, added again, is a new job with a new log.
+          await driver.addJob(
+            lq,
+            makeJob({ id, createdAt: now, runAt: now + 3_600_000 }),
+          );
+          expect(await driver.getJobLogs!(lq, id, page)).toEqual({
+            logs: [],
+            count: 0,
+          });
+          await driver.removeJob(lq, id);
+        }
+
+        await survivesRemoval("log-removed", async () => {
+          await driver.removeJob(lq, "log-removed");
+        });
+
+        await survivesRemoval("log-drained", () => driver.drainQueue(lq, true));
+
+        await survivesRemoval("log-completed", async () => {
+          const { job, token } = await claimFrom(lq, now);
+          expect(job?.id).toBe("log-completed");
+          // Retention `true` deletes on completion: the hot path.
+          await driver.completeJob(lq, "log-completed", token, null, true, now);
+        });
+
+        await survivesRemoval("log-cleaned", async () => {
+          const { token } = await claimFrom(lq, now);
+          await driver.completeJob(lq, "log-cleaned", token, null, false, now);
+          await driver.cleanJobs(lq, "completed", 0, 100, now + 1);
+        });
+
+        await survivesRemoval("log-expired", async () => {
+          const { token } = await claimFrom(lq, now);
+          await driver.completeJob(
+            lq,
+            "log-expired",
+            token,
+            null,
+            { ttl: 1 },
+            now,
+          );
+          await driver.pruneExpired(lq, now + 1_000, 100);
+        });
+
+        await driver.drainQueue(lq, true);
+      });
+
       it("keeps the same queue name in two namespaces apart", async () => {
         const mine: QueueRef = { ns, queue: "shared-name" };
         const theirs: QueueRef = { ns: other, queue: "shared-name" };

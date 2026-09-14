@@ -11,6 +11,7 @@ import type {
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -739,6 +740,90 @@ export class RedisDriver implements JobsDriver {
     return true;
   }
 
+  /**
+   * Changes a job's data, priority or due time in one script.
+   *
+   * Everything the script cannot know without a clock is settled here first:
+   * the state a new `runAt` leads to, and which states the patch allows. An
+   * empty allowed set can match nothing, so it costs no round trip at all.
+   */
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    const pending: JobState[] = ["waiting", "delayed"];
+    let allowed: JobState[] | undefined = patch.onlyIn;
+
+    // Only a pending job has a due time to move.
+    if (patch.runAt !== undefined) {
+      allowed = (allowed ?? pending).filter((state) => pending.includes(state));
+    }
+
+    if (allowed && allowed.length === 0) {
+      return null;
+    }
+
+    await this.connect();
+
+    const reply = await this.#runQueue(q, scripts.UPDATE_JOB, [
+      id,
+      patch.data === undefined ? "0" : "1",
+      patch.data === undefined ? "" : JSON.stringify(patch.data),
+      patch.priority === undefined ? "0" : "1",
+      patch.priority === undefined ? "" : String(patch.priority),
+      patch.runAt === undefined ? "0" : "1",
+      patch.runAt === undefined ? "" : String(patch.runAt),
+      patch.runAt !== undefined && patch.runAt > now ? "delayed" : "waiting",
+      ...(allowed ?? []),
+    ]);
+
+    const fields = this.#toObject(reply);
+    return fields ? this.#toRecord(fields) : null;
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    await this.connect();
+    const keys = this.keys.queue(q);
+
+    const count = await this.#run(
+      scripts.ADD_JOB_LOG,
+      [`${keys.jobPrefix}${id}`, `${keys.logPrefix}${id}`],
+      [line, String(Math.max(0, Math.floor(keep)))],
+    );
+
+    return Number(count ?? 0);
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    await this.connect();
+
+    const reply = await this.#run(
+      scripts.GET_JOB_LOGS,
+      [`${this.keys.queue(q).logPrefix}${id}`],
+      [
+        String(Math.max(0, Math.floor(opts.offset))),
+        String(Math.max(0, Math.floor(opts.limit))),
+        opts.order,
+      ],
+    );
+
+    // The count leads, and the lines follow in the order asked for. They are
+    // bulk strings, so they arrive exactly as they were pushed.
+    const [count, ...lines] = Array.isArray(reply) ? reply : [0];
+    return { logs: lines.map(String), count: Number(count ?? 0) };
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     await this.connect();
 
@@ -1301,15 +1386,22 @@ export class RedisDriver implements JobsDriver {
       opts?: ResolvedJobOptions;
     }>(fields.blob, {});
 
+    // `updateJob` never rewrites the blob — see `UPDATE_JOB` — so a patched
+    // payload sits in `data` and a patched priority in `optsPriority`, and
+    // either wins over the blob's copy. A record from before the blob keeps
+    // its payload in `data` too, so one rule reads both shapes.
+    const opts =
+      blob.opts ?? json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions);
+    const optsPriority = nullable("optsPriority");
+
     return {
       id: fields.id,
       name: blob.name ?? fields.name,
       data:
-        blob.name === undefined
+        fields.data !== undefined
           ? json<unknown>("data", null)
           : (blob.data ?? null),
-      opts:
-        blob.opts ?? json<ResolvedJobOptions>("opts", {} as ResolvedJobOptions),
+      opts: optsPriority === null ? opts : { ...opts, priority: optsPriority },
       state: fields.state as JobState,
       priority: number("priority"),
       runAt: number("runAt"),

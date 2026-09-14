@@ -67,6 +67,8 @@ export interface QueueEventPayloads {
   drained: { count: number };
   /** Finished jobs were removed. */
   cleaned: { ids: string[]; state: JobState };
+  /** Finished jobs were returned to the queue together. */
+  retried: { ids: string[] };
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: { key: string; nextRunAt: number };
 }

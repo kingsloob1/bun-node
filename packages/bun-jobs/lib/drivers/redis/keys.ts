@@ -78,6 +78,7 @@ export class RedisKeys {
     wake: string;
     repeats: string;
     jobPrefix: string;
+    logPrefix: string;
   } {
     const base = `${this.namespace(q.ns)}:q:${this.#tag(q.queue)}`;
 
@@ -93,6 +94,11 @@ export class RedisKeys {
       wake: `${base}:wake`,
       repeats: `${base}:repeat`,
       jobPrefix: `${base}:job:`,
+      // A sibling of `job:`, not a suffix on the job's key: ids are arbitrary
+      // strings, so `<job>:logs` would be the hash key of a job whose id ends
+      // in `:logs`. The queue scripts derive this from `jobPrefix` — see
+      // `logs(id)` in `scripts.ts` — so the two must keep this shape.
+      logPrefix: `${base}:log:`,
     };
   }
 

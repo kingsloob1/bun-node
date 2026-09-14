@@ -6,6 +6,7 @@ import type {
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -25,6 +26,7 @@ import {
   rename,
   rm,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -69,6 +71,14 @@ const LOCK_WAIT_MS = 15_000;
 
 /** How long to wait between attempts at a contended write lock. */
 const LOCK_RETRY_MS = 5;
+
+/**
+ * How long a transition keeps retrying a marker somebody else has moved.
+ *
+ * Twice `LOCK_STALE_MS`, because the marker may be held by a process that
+ * died holding it, and a hold is only healed once it is older than that.
+ */
+const HOLD_PATIENCE_MS = LOCK_STALE_MS * 2;
 
 /** How often `waitForJob` and event subscribers look for changes. */
 const POLL_MS = 25;
@@ -456,14 +466,38 @@ export class FileDriver implements JobsDriver {
 
     const waiting = join(this.#queueDir(q), "index", "waiting");
     const markers = (await this.#list(waiting)).sort();
+    const lockExpiresAt = opts.now + opts.lockMs;
 
     for (const marker of markers) {
       const id = markerId(marker);
+
+      // Whoever renames the marker owns the job, and the loser gets ENOENT.
+      //
+      // The rename comes *before* the record is read, which is what makes a
+      // claim safe against `updateJob`. Read first, and a patch that took the
+      // marker, rewrote the record and put the marker back under the same name
+      // lands in between: the rename still succeeds, and the claim writes the
+      // copy it read over the patch — the worker runs the old payload while
+      // `updateJob` has already answered with the new one. Holding the marker
+      // first means the record read below is the one that won. It costs
+      // nothing: the same rename, read and write, in a different order.
+      const taken = join(
+        this.#queueDir(q),
+        "index",
+        "active",
+        activeMarker(lockExpiresAt, id),
+      );
+      try {
+        await rename(join(waiting, marker), taken);
+      } catch {
+        continue;
+      }
+
       const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
 
       if (!record) {
         // The record is gone: the marker is litter from a removed job.
-        await rm(join(waiting, marker), { force: true });
+        await rm(taken, { force: true });
         continue;
       }
 
@@ -478,16 +512,23 @@ export class FileDriver implements JobsDriver {
         // The marker disagrees with its record. That is either litter from a
         // crash or a promotion in flight, and from here the two are
         // indistinguishable — so only a record that can no longer *become*
-        // waiting is safe to clean up after.
+        // waiting is safe to clean up after, and the rest goes back exactly
+        // where it was.
         //
-        // Deleting the rest loses jobs. `promoteDelayed` moved the marker into
-        // `waiting` before rewriting the record, so for that instant the record
-        // still read `failed`; a claim that removed the marker there left a
-        // record no index pointed at, and nothing ever ran it again. The
+        // Deleting the rest loses jobs. `promoteDelayed` once moved the marker
+        // into `waiting` before rewriting the record, so for that instant the
+        // record still read `failed`; a claim that removed the marker there
+        // left a record no index pointed at, and nothing ever ran it again. The
         // cross-process retry suite found it as jobs that simply never
         // finished, after 45 seconds of waiting each.
+        //
+        // A crash before the marker goes back leaves it in `active` under a
+        // record that is not, which `recoverStalled` re-files once the lock
+        // this claim would have taken has expired.
         if (record.state === "completed" || record.state === "dead") {
-          await rm(join(waiting, marker), { force: true });
+          await rm(taken, { force: true });
+        } else {
+          await rename(taken, join(waiting, marker)).catch(() => undefined);
         }
         continue;
       }
@@ -498,14 +539,9 @@ export class FileDriver implements JobsDriver {
         attemptsMade: record.attemptsMade + 1,
         processedOn: opts.now,
         lockToken: opts.token,
-        lockExpiresAt: opts.now + opts.lockMs,
+        lockExpiresAt,
         workerId: opts.workerId,
       };
-
-      // Whoever renames the marker owns the job. The loser gets ENOENT.
-      if (!(await this.#move(q, marker, "waiting", claimed))) {
-        continue;
-      }
 
       await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(claimed));
       return claimed;
@@ -521,20 +557,26 @@ export class FileDriver implements JobsDriver {
     lockMs: number,
     now: number,
   ): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || record.state !== "active" || record.lockToken !== token) {
-      return false;
+    const deadline = Date.now() + HOLD_PATIENCE_MS;
+
+    for (;;) {
+      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      if (!record || record.state !== "active" || record.lockToken !== token) {
+        return false;
+      }
+
+      const marker = this.#markerFor(record);
+      const updated = { ...record, lockExpiresAt: now + lockMs };
+
+      if (await this.#move(q, marker, "active", updated)) {
+        await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
+        return true;
+      }
+
+      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+        return false;
+      }
     }
-
-    const marker = this.#markerFor(record);
-    const updated = { ...record, lockExpiresAt: now + lockMs };
-
-    if (!(await this.#move(q, marker, "active", updated))) {
-      return false;
-    }
-
-    await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
-    return true;
   }
 
   async completeJob(
@@ -545,28 +587,40 @@ export class FileDriver implements JobsDriver {
     retention: Retention,
     now: number,
   ): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || record.state !== "active" || record.lockToken !== token) {
-      return false;
+    const deadline = Date.now() + HOLD_PATIENCE_MS;
+
+    for (;;) {
+      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      if (!record || record.state !== "active" || record.lockToken !== token) {
+        return false;
+      }
+
+      const completed: JobRecord = {
+        ...record,
+        state: "completed",
+        finishedOn: now,
+        returnValue: jsonClone(result),
+        expiresAt: expiryFor(retention, now, record.expiresAt),
+        lockToken: null,
+        lockExpiresAt: null,
+        workerId: null,
+      };
+
+      const marker = this.#markerFor(record);
+
+      if (await this.#move(q, marker, "active", completed)) {
+        await this.#writeAtomic(
+          this.#jobPath(q, id),
+          JSON.stringify(completed),
+        );
+        await this.#applyRetention(q, completed, retention);
+        return true;
+      }
+
+      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+        return false;
+      }
     }
-
-    const completed: JobRecord = {
-      ...record,
-      state: "completed",
-      finishedOn: now,
-      returnValue: jsonClone(result),
-      lockToken: null,
-      lockExpiresAt: null,
-      workerId: null,
-    };
-
-    if (!(await this.#move(q, this.#markerFor(record), "active", completed))) {
-      return false;
-    }
-
-    await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(completed));
-    await this.#applyRetention(q, completed, retention, now);
-    return true;
   }
 
   async failJob(
@@ -578,38 +632,51 @@ export class FileDriver implements JobsDriver {
     now: number,
     keepStacktraces: number,
   ): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || record.state !== "active" || record.lockToken !== token) {
-      return false;
+    const deadline = Date.now() + HOLD_PATIENCE_MS;
+
+    for (;;) {
+      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      if (!record || record.state !== "active" || record.lockToken !== token) {
+        return false;
+      }
+
+      const base: JobRecord = {
+        ...record,
+        failedReason: jsonClone(error),
+        stacktrace: [jsonClone(error), ...record.stacktrace].slice(
+          0,
+          Math.max(0, keepStacktraces),
+        ),
+        lockToken: null,
+        lockExpiresAt: null,
+        workerId: null,
+      };
+
+      const updated: JobRecord = outcome.retry
+        ? { ...base, state: "failed", runAt: outcome.runAt, finishedOn: null }
+        : {
+            ...base,
+            state: "dead",
+            finishedOn: now,
+            expiresAt: expiryFor(outcome.retention, now, base.expiresAt),
+          };
+
+      const marker = this.#markerFor(record);
+
+      if (await this.#move(q, marker, "active", updated)) {
+        await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
+
+        if (!outcome.retry) {
+          await this.#applyRetention(q, updated, outcome.retention);
+        }
+
+        return true;
+      }
+
+      if (!(await this.#retryLostRename(q, id, token, marker, deadline))) {
+        return false;
+      }
     }
-
-    const base: JobRecord = {
-      ...record,
-      failedReason: jsonClone(error),
-      stacktrace: [jsonClone(error), ...record.stacktrace].slice(
-        0,
-        Math.max(0, keepStacktraces),
-      ),
-      lockToken: null,
-      lockExpiresAt: null,
-      workerId: null,
-    };
-
-    const updated: JobRecord = outcome.retry
-      ? { ...base, state: "failed", runAt: outcome.runAt, finishedOn: null }
-      : { ...base, state: "dead", finishedOn: now };
-
-    if (!(await this.#move(q, this.#markerFor(record), "active", updated))) {
-      return false;
-    }
-
-    await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
-
-    if (!outcome.retry) {
-      await this.#applyRetention(q, updated, outcome.retention, now);
-    }
-
-    return true;
   }
 
   async updateProgress(
@@ -618,16 +685,190 @@ export class FileDriver implements JobsDriver {
     progress: unknown,
   ): Promise<boolean> {
     const path = this.#jobPath(q, id);
-    const record = await this.#readJson<JobRecord>(path);
-    if (!record) {
-      return false;
+    const active = join(this.#queueDir(q), "index", "active");
+    const deadline = Date.now() + HOLD_PATIENCE_MS;
+
+    for (;;) {
+      const record = await this.#readJson<JobRecord>(path);
+      if (!record) {
+        return false;
+      }
+
+      // Progress is reported by the processor, so this is nearly always an
+      // active job. Anything else is rare enough to take the full hold.
+      if (record.state !== "active") {
+        const updated = await this.#mutateJob(q, id, (current) => ({
+          ...current,
+          progress: jsonClone(progress),
+        }));
+        return updated !== null;
+      }
+
+      // A read-modify-write with nothing around it used to be safe, because
+      // nothing else rewrote an active job's record in place. `updateJob` does,
+      // and each would write over the other's change. So this renames the
+      // marker as `extendJobLock` does — one millisecond more lock gives it a
+      // new name — and the rename is the exclusion: a patch holding the marker
+      // makes it fail, and it makes a patch or completion that read the record
+      // first miss the old name and read again. One rename, and no second read.
+      //
+      // Every writer of an active record now changes the marker's name, which
+      // is what lets a successful rename prove the record read is current. The
+      // cost is a lock that creeps a millisecond per report until the next
+      // `extendJobLock` resets it.
+      const marker = this.#markerFor(record);
+      const updated: JobRecord = {
+        ...record,
+        progress: jsonClone(progress),
+        lockExpiresAt: (record.lockExpiresAt ?? 0) + 1,
+      };
+
+      let moved = true;
+      try {
+        await rename(
+          join(active, marker),
+          join(active, this.#markerFor(updated)),
+        );
+      } catch {
+        moved = false;
+      }
+
+      if (moved) {
+        await this.#writeAtomic(path, JSON.stringify(updated));
+        return true;
+      }
+
+      if (Date.now() >= deadline) {
+        return false;
+      }
+
+      const fresh = await this.#readJson<JobRecord>(path);
+      if (fresh?.state === "active" && this.#markerFor(fresh) === marker) {
+        await this.#healHolds(q);
+        await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+      }
+    }
+  }
+
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    const updated = await this.#mutateJob(q, id, (record) => {
+      // Judged against the record read *under the hold*, which is what makes
+      // `onlyIn` hold at the moment of the write rather than of some earlier
+      // read: a claim cannot slip between the check and the change.
+      if (patch.onlyIn && !patch.onlyIn.includes(record.state)) {
+        return null;
+      }
+
+      if (
+        patch.runAt !== undefined &&
+        record.state !== "waiting" &&
+        record.state !== "delayed"
+      ) {
+        return null;
+      }
+
+      const next: JobRecord = { ...record };
+
+      if (patch.data !== undefined) {
+        next.data = jsonClone(patch.data);
+      }
+
+      if (patch.priority !== undefined) {
+        next.priority = patch.priority;
+        next.opts = { ...next.opts, priority: patch.priority };
+      }
+
+      if (patch.runAt !== undefined) {
+        next.runAt = patch.runAt;
+        next.state = patch.runAt > now ? "delayed" : "waiting";
+      }
+
+      return next;
+    });
+
+    if (updated?.state === "waiting") {
+      await this.#touchWake(q);
     }
 
-    await this.#writeAtomic(
-      path,
-      JSON.stringify({ ...record, progress: jsonClone(progress) }),
-    );
-    return true;
+    return updated;
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    // Under the job's own hold, which removal takes too. That is what keeps a
+    // log from outliving its job: an append cannot land between a removal
+    // deleting the log and deleting the record, so a log file exists only
+    // while its record does. It also serialises appends to one job, which
+    // counting and trimming — a read and a rewrite — need.
+    const held = await this.#holdJob(q, id, () => true);
+    if (!held) {
+      return 0;
+    }
+
+    const path = this.#logPath(q, held.record);
+
+    try {
+      await mkdir(join(path, ".."), { recursive: true });
+      const existing = await this.#readText(path);
+      // Only newline-terminated lines count. A crash mid-append leaves a
+      // partial last line, and appending after it would fuse the two into one
+      // line that is neither.
+      const whole = existing.slice(0, existing.lastIndexOf("\n") + 1);
+      const encoded = `${JSON.stringify(line)}\n`;
+      let count = countLines(whole) + 1;
+
+      if (keep > 0 && count > keep) {
+        await this.#writeAtomic(path, dropLines(whole, count - keep) + encoded);
+        count = keep;
+      } else if (whole.length !== existing.length) {
+        await this.#writeAtomic(path, whole + encoded);
+      } else {
+        await writeFile(path, encoded, { flag: "a" });
+      }
+
+      return count;
+    } finally {
+      await this.#place(q, held.hold, held.record);
+
+      // A claim that found the marker held moved on, and may have gone to
+      // sleep believing the queue empty.
+      if (held.record.state === "waiting") {
+        await this.#touchWake(q);
+      }
+    }
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+    if (!record) {
+      return { logs: [], count: 0 };
+    }
+
+    const text = await this.#readText(this.#logPath(q, record));
+    // The last element is whatever follows the final newline: empty for a
+    // complete log, a partial line for one an append is still writing.
+    const lines = text.split("\n").slice(0, -1);
+    const ordered = opts.order === "desc" ? lines.toReversed() : lines;
+
+    return {
+      logs: ordered
+        .slice(opts.offset, opts.offset + opts.limit)
+        .map((encoded) => safeJsonParse<string>(encoded, encoded)),
+      count: lines.length,
+    };
   }
 
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
@@ -685,13 +926,7 @@ export class FileDriver implements JobsDriver {
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || record.state === "active") {
-      return false;
-    }
-
-    await this.#delete(q, record);
-    return true;
+    return await this.#deleteJob(q, id, (record) => record.state !== "active");
   }
 
   async retryJob(
@@ -700,40 +935,44 @@ export class FileDriver implements JobsDriver {
     resetAttempts: boolean,
     now: number,
   ): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || record.state === "active" || record.state === "waiting") {
+    // Under a hold, like `updateJob`: a retry that wrote the copy it read
+    // before the rename would put back whatever a patch had just replaced.
+    const updated = await this.#mutateJob(q, id, (record) => {
+      if (record.state === "active" || record.state === "waiting") {
+        return null;
+      }
+
+      return {
+        ...record,
+        state: "waiting",
+        runAt: now,
+        finishedOn: null,
+        expiresAt: null,
+        ...(resetAttempts ? { attemptsMade: 0, stalledCount: 0 } : {}),
+      };
+    });
+
+    if (!updated) {
       return false;
     }
 
-    const updated: JobRecord = {
-      ...record,
-      state: "waiting",
-      runAt: now,
-      finishedOn: null,
-      expiresAt: null,
-      ...(resetAttempts ? { attemptsMade: 0, stalledCount: 0 } : {}),
-    };
-
-    await this.#move(q, this.#markerFor(record), record.state, updated);
-    await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
     await this.#touchWake(q);
     return true;
   }
 
   async promoteJob(q: QueueRef, id: string, now: number): Promise<boolean> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
-    if (!record || !SCHEDULED_STATES.includes(record.state)) {
+    const updated = await this.#mutateJob(q, id, (record) => {
+      if (!SCHEDULED_STATES.includes(record.state)) {
+        return null;
+      }
+
+      return { ...record, state: "waiting", runAt: now };
+    });
+
+    if (!updated) {
       return false;
     }
 
-    const updated: JobRecord = { ...record, state: "waiting", runAt: now };
-    if (
-      !(await this.#move(q, this.#markerFor(record), record.state, updated))
-    ) {
-      return false;
-    }
-
-    await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
     await this.#touchWake(q);
     return true;
   }
@@ -759,18 +998,33 @@ export class FileDriver implements JobsDriver {
           break;
         }
 
+        // Hold the marker, then read. Reading first and writing `waiting` over
+        // what was read races `updateJob`: a patch that pushes this job's
+        // `runAt` back and replaces its data lands between the read and the
+        // write, and the promotion then writes the old copy over it — the
+        // debounce case, exactly when the job falls due.
+        const hold = await this.#hold(q, state, marker);
+        if (!hold) {
+          continue;
+        }
+
         const record = await this.#readJson<JobRecord>(
           this.#jobPath(q, markerId(marker)),
         );
+
+        if (!record) {
+          await rm(hold, { force: true });
+          continue;
+        }
 
         // `waiting` is allowed as well as the state being swept: a promotion
         // that wrote the record and then died leaves exactly that, and this
         // pass has to finish the job rather than skip it forever.
         if (
-          !record ||
           (record.state !== state && record.state !== "waiting") ||
           record.runAt > now
         ) {
+          await this.#place(q, hold, record);
           continue;
         }
 
@@ -778,16 +1032,19 @@ export class FileDriver implements JobsDriver {
 
         // Record first, marker second. The other order leaves a window where
         // the marker says `waiting` and the record does not, which a claim
-        // running at that moment cannot tell from litter.
-        await this.#writeAtomic(
-          this.#jobPath(q, record.id),
-          JSON.stringify(updated),
-        );
-
-        if (!(await this.#move(q, marker, state, updated))) {
-          continue;
+        // running at that moment cannot tell from litter. A crash in between
+        // leaves a hold that `recoverStalled` files by the record.
+        try {
+          await this.#writeAtomic(
+            this.#jobPath(q, record.id),
+            JSON.stringify(updated),
+          );
+        } catch (error) {
+          await this.#place(q, hold, record);
+          throw error;
         }
 
+        await this.#release(q, hold, record, updated);
         promoted++;
       }
     }
@@ -809,6 +1066,9 @@ export class FileDriver implements JobsDriver {
     const requeued: string[] = [];
     const dead: string[] = [];
 
+    // Markers taken out of the index by a process that died holding them.
+    await this.#healHolds(q);
+
     for (const marker of (await this.#list(dir)).sort()) {
       if (requeued.length + dead.length >= limit) {
         break;
@@ -822,7 +1082,20 @@ export class FileDriver implements JobsDriver {
       const record = await this.#readJson<JobRecord>(
         this.#jobPath(q, markerId(marker)),
       );
-      if (!record || record.state !== "active") {
+
+      if (!record) {
+        // Litter: a claim that found no record and died before removing it.
+        await rm(join(dir, marker), { force: true });
+        continue;
+      }
+
+      if (record.state !== "active") {
+        // A claim renames the marker before it writes the record, so one that
+        // died in between leaves the marker here under a record that is still
+        // `waiting`. Nothing else ever looks for it in `active`: file it where
+        // the record says it belongs. Only once the lock it would have taken
+        // has expired, so a claim still in flight is never disturbed.
+        await this.#place(q, join(dir, marker), record);
         continue;
       }
 
@@ -878,12 +1151,15 @@ export class FileDriver implements JobsDriver {
       const record = await this.#readJson<JobRecord>(
         this.#jobPath(q, markerId(marker)),
       );
-      if (!record || record.state !== state) {
+      if (!record) {
         continue;
       }
 
-      if ((record.finishedOn ?? record.createdAt) <= cutoff) {
-        await this.#delete(q, record);
+      const expired = (candidate: JobRecord) =>
+        candidate.state === state &&
+        (candidate.finishedOn ?? candidate.createdAt) <= cutoff;
+
+      if (await this.#deleteJob(q, record.id, expired, record)) {
         removed.push(record.id);
       }
     }
@@ -905,11 +1181,13 @@ export class FileDriver implements JobsDriver {
         const record = await this.#readJson<JobRecord>(
           this.#jobPath(q, markerId(marker)),
         );
-        if (record?.expiresAt !== null && (record?.expiresAt ?? 0) <= now) {
-          if (record) {
-            await this.#delete(q, record);
-            removed++;
-          }
+        const due = (candidate: JobRecord) =>
+          candidate.state === state &&
+          candidate.expiresAt !== null &&
+          candidate.expiresAt <= now;
+
+        if (record && (await this.#deleteJob(q, record.id, due, record))) {
+          removed++;
         }
       }
     }
@@ -930,8 +1208,15 @@ export class FileDriver implements JobsDriver {
         const record = await this.#readJson<JobRecord>(
           this.#jobPath(q, markerId(marker)),
         );
-        if (record && record.state === state) {
-          await this.#delete(q, record);
+        if (
+          record &&
+          (await this.#deleteJob(
+            q,
+            record.id,
+            (candidate) => candidate.state === state,
+            record,
+          ))
+        ) {
           removed++;
         }
       }
@@ -1233,6 +1518,28 @@ export class FileDriver implements JobsDriver {
     return join(this.#queueDir(q), "jobs", `${encodeURIComponent(id)}.json`);
   }
 
+  /**
+   * Path of a job's log: one JSON-encoded line per entry, so a line holding a
+   * newline still reads back as one entry.
+   *
+   * The name carries `createdAt` as well as the id. A job removed and added
+   * again under the same id is a different job with a different `createdAt`, so
+   * a log its predecessor left behind — a crash between deleting the record and
+   * the log, or an append racing the removal — is never read as its own.
+   */
+  #logPath(q: QueueRef, record: Pick<JobRecord, "id" | "createdAt">): string {
+    return join(
+      this.#queueDir(q),
+      "logs",
+      `${encodeURIComponent(record.id)}.${record.createdAt}.jsonl`,
+    );
+  }
+
+  /** Directory markers are moved into while their job is being changed. */
+  #heldDir(q: QueueRef): string {
+    return join(this.#queueDir(q), "held");
+  }
+
   /** Path of a repeat definition. */
   #repeatPath(q: QueueRef, key: string): string {
     return join(
@@ -1270,7 +1577,7 @@ export class FileDriver implements JobsDriver {
       case "failed":
         return `${pad(record.runAt, 13)}-${encodeURIComponent(record.id)}`;
       case "active":
-        return `${pad(record.lockExpiresAt ?? 0, 13)}-${encodeURIComponent(record.id)}`;
+        return activeMarker(record.lockExpiresAt ?? 0, record.id);
       default:
         return `${pad(record.finishedOn ?? record.createdAt, 13)}-${encodeURIComponent(record.id)}`;
     }
@@ -1306,26 +1613,358 @@ export class FileDriver implements JobsDriver {
     }
   }
 
-  /** Removes a job: its marker first, so nothing can claim a missing record. */
-  async #delete(q: QueueRef, record: JobRecord): Promise<void> {
-    await rm(
-      join(this.#queueDir(q), "index", record.state, this.#markerFor(record)),
-      {
-        force: true,
-      },
+  /**
+   * Changes one job while holding its marker, and answers with what was
+   * written — or `null` when there is no such job or `decide` refuses it.
+   *
+   * The marker is the job's lock everywhere else in this driver, so it is here
+   * too: renamed out of the index into `held/`, which no claim, completion or
+   * promotion looks in, the job cannot move under the change. The record is
+   * read again once held, `decide` judges *that* copy, the record is written,
+   * and the marker goes back wherever the new record says it belongs.
+   *
+   * Record before marker, as `promoteDelayed` does, so a crash at any point
+   * leaves a hold whose record is either the old job or the new one — both
+   * whole — and `#healHolds` files the marker by whichever it finds.
+   *
+   * `decide` is called twice, once to refuse without taking anything and once
+   * under the hold, so it must not have side effects.
+   */
+  async #mutateJob(
+    q: QueueRef,
+    id: string,
+    decide: (record: JobRecord) => JobRecord | null,
+  ): Promise<JobRecord | null> {
+    const held = await this.#holdJob(
+      q,
+      id,
+      (record) => decide(record) !== null,
     );
-    await rm(this.#jobPath(q, record.id), { force: true });
+    if (!held) {
+      return null;
+    }
+
+    const { record: current, hold } = held;
+    let updated = decide(current);
+
+    if (!updated) {
+      await this.#place(q, hold, current);
+      return null;
+    }
+
+    // An active job's marker is named by its lock expiry. A change that leaves
+    // that alone would put the marker back under the name it was taken from,
+    // and a completion that read the record before the change would still find
+    // it and write its stale copy over this one. One millisecond more lock
+    // renames the marker, so that completion misses and reads again instead.
+    if (
+      updated.state === "active" &&
+      current.state === "active" &&
+      this.#markerFor(updated) === this.#markerFor(current)
+    ) {
+      updated = { ...updated, lockExpiresAt: (current.lockExpiresAt ?? 0) + 1 };
+    }
+
+    try {
+      await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
+    } catch (error) {
+      await this.#place(q, hold, current);
+      throw error;
+    }
+
+    await this.#release(q, hold, current, updated);
+    return updated;
   }
 
-  /** Removes a finished job now, caps how many are kept, or stamps its TTL. */
+  /**
+   * Removes a job while holding its marker, and says whether it did — `false`
+   * when there is no such job, `accept` refuses the record read under the
+   * hold, or somebody else kept the marker past `HOLD_PATIENCE_MS`.
+   *
+   * Every path that deletes a job comes through here — `removeJob`,
+   * `cleanJobs`, `pruneExpired`, `drainQueue` and retention, by count or on
+   * completion — so none of them can forget the log, and none can race a
+   * change.
+   *
+   * **Why a hold, rather than `updateJob` checking afterwards.** A removal
+   * that just deleted the marker and the record could land while a patch held
+   * the marker, and the patch's record write then brought the job back.
+   * Having the patch look afterwards for a removal it missed and undo its write
+   * is a check-then-act of its own: between the look and the undo, the id can
+   * be added again, and the undo deletes the new job. Taking the same marker
+   * leaves no window. Whichever of the two renames it first, the other cannot
+   * until the first puts it back — and a removal never puts it back.
+   *
+   * **Log, then record, then the hold.** A crash after the log goes leaves a
+   * hold `#healHolds` returns to the index with its record, so the job survives
+   * the failed removal, without its log. A crash after the record goes leaves a
+   * hold with no record, which it discards. Neither leaves a log without a
+   * record, and `addJobLog` takes the same hold, so no append can recreate one
+   * in between.
+   *
+   * `known` stands in for the first read when the caller has just read the
+   * record anyway: a listing sweep, or retention straight after a completion.
+   * The record is still read again under the hold.
+   */
+  async #deleteJob(
+    q: QueueRef,
+    id: string,
+    accept: (record: JobRecord) => boolean,
+    known?: JobRecord,
+  ): Promise<boolean> {
+    const held = await this.#holdJob(q, id, accept, known);
+    if (!held) {
+      return false;
+    }
+
+    await unlink(this.#logPath(q, held.record)).catch(() => undefined);
+
+    try {
+      await unlink(this.#jobPath(q, id));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        await this.#place(q, held.hold, held.record);
+        throw new DriverError("file", "deleteJob", error, { id });
+      }
+    }
+
+    await unlink(held.hold).catch(() => undefined);
+    return true;
+  }
+
+  /**
+   * Takes a job's marker out of the index for as long as the caller needs the
+   * job to stand still, and answers with the record as read under the hold —
+   * or `null` when there is no such job, `accept` refuses it, or somebody else
+   * kept hold of it past `HOLD_PATIENCE_MS`.
+   *
+   * The caller owns the hold it gets back, and must end it: put the marker
+   * back with `#place`/`#release`, or delete it along with the job.
+   *
+   * `accept` is asked twice, once before taking anything and once of the copy
+   * read under the hold, so it must not have side effects.
+   */
+  async #holdJob(
+    q: QueueRef,
+    id: string,
+    accept: (record: JobRecord) => boolean,
+    known?: JobRecord,
+  ): Promise<HeldJob | null> {
+    const path = this.#jobPath(q, id);
+    const deadline = Date.now() + HOLD_PATIENCE_MS;
+    let first: JobRecord | undefined = known;
+
+    for (;;) {
+      const record = first ?? (await this.#readJson<JobRecord>(path));
+      first = undefined;
+
+      if (!record || !accept(record)) {
+        return null;
+      }
+
+      const marker = this.#markerFor(record);
+      const hold = await this.#hold(q, record.state, marker);
+
+      if (!hold) {
+        if (Date.now() >= deadline) {
+          return null;
+        }
+
+        // The marker is not where the record says. If the record has moved on
+        // since, somebody finished a transition: read again and decide afresh.
+        // If it has not, somebody is part-way through one — a claim renames
+        // before it writes — or holds the marker; wait for them.
+        const fresh = await this.#readJson<JobRecord>(path);
+        if (
+          fresh &&
+          fresh.state === record.state &&
+          this.#markerFor(fresh) === marker
+        ) {
+          await this.#healHolds(q);
+          await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+        }
+        continue;
+      }
+
+      const current = await this.#readJson<JobRecord>(path);
+
+      if (!current) {
+        await rm(hold, { force: true });
+        return null;
+      }
+
+      // The record moved between the first read and the hold: the marker held
+      // is not this record's. Put it where the record says and start over.
+      if (
+        current.state !== record.state ||
+        this.#markerFor(current) !== marker
+      ) {
+        await this.#place(q, hold, current);
+        continue;
+      }
+
+      if (!accept(current)) {
+        await this.#place(q, hold, current);
+        return null;
+      }
+
+      return { record: current, hold };
+    }
+  }
+
+  /**
+   * Takes a marker out of the index, and answers with where it now is — or
+   * `null` when somebody else got to it first.
+   *
+   * The hold's name starts with when it was taken, which is how `#healHolds`
+   * tells a hold whose process died from one still in use. A marker's own
+   * modification time would not do: `rename` keeps it, and it dates from when
+   * the job was added.
+   */
+  async #hold(
+    q: QueueRef,
+    state: JobState,
+    marker: string,
+  ): Promise<string | null> {
+    const dir = this.#heldDir(q);
+    const from = join(this.#queueDir(q), "index", state, marker);
+    const path = join(dir, `${Date.now()}.${state}.${marker}`);
+
+    try {
+      await rename(from, path);
+      return path;
+    } catch {
+      // Made on the first failure rather than in `ensureQueue`, which runs on
+      // every add and claim; a missing directory and a missing marker both
+      // arrive as ENOENT, so try once more.
+      await mkdir(dir, { recursive: true });
+    }
+
+    try {
+      await rename(from, path);
+      return path;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Moves a marker to where `record` says it belongs. `false` when it is gone. */
+  async #place(q: QueueRef, from: string, record: JobRecord): Promise<boolean> {
+    const dir = join(this.#queueDir(q), "index", record.state);
+    const target = join(dir, this.#markerFor(record));
+
+    try {
+      await rename(from, target);
+      return true;
+    } catch {
+      await mkdir(dir, { recursive: true }).catch(() => undefined);
+    }
+
+    try {
+      await rename(from, target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Returns a held marker to the index for `after`, the record just written.
+   *
+   * The hold can be gone: a holder slow enough to look dead has had it filed
+   * by `#healHolds`, which placed it by whichever record it read — `before` or
+   * `after`. If it was `before`, move it on from there.
+   */
+  async #release(
+    q: QueueRef,
+    hold: string,
+    before: JobRecord,
+    after: JobRecord,
+  ): Promise<void> {
+    if (await this.#place(q, hold, after)) {
+      return;
+    }
+
+    await this.#place(
+      q,
+      join(this.#queueDir(q), "index", before.state, this.#markerFor(before)),
+      after,
+    );
+  }
+
+  /** Files every hold older than `LOCK_STALE_MS` by its job's record. */
+  async #healHolds(q: QueueRef): Promise<void> {
+    const dir = this.#heldDir(q);
+    const now = Date.now();
+
+    for (const name of await this.#list(dir)) {
+      const hold = parseHold(name);
+      if (!hold || now - hold.stamp <= LOCK_STALE_MS) {
+        continue;
+      }
+
+      const path = join(dir, name);
+      const record = await this.#readJson<JobRecord>(
+        this.#jobPath(q, markerId(hold.marker)),
+      );
+
+      if (!record) {
+        await rm(path, { force: true });
+        continue;
+      }
+
+      await this.#place(q, path, record);
+    }
+  }
+
+  /**
+   * Whether a lock holder whose marker rename failed should read again and
+   * retry, rather than report the lock lost.
+   *
+   * A failed rename used to mean exactly that. It no longer does: `updateJob`
+   * may hold the marker for a moment, or have renamed it by bumping the lock a
+   * millisecond. So look at the record: if the lock is still this token's, the
+   * job is still ours, and the marker is either somewhere new (retry at once)
+   * or on its way back (wait a beat). Only the failure path pays for this.
+   */
+  async #retryLostRename(
+    q: QueueRef,
+    id: string,
+    token: string,
+    marker: string,
+    deadline: number,
+  ): Promise<boolean> {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    const fresh = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+    if (!fresh || fresh.state !== "active" || fresh.lockToken !== token) {
+      return false;
+    }
+
+    if (this.#markerFor(fresh) === marker) {
+      await this.#healHolds(q);
+      await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
+    }
+
+    return true;
+  }
+
+  /**
+   * Removes a finished job now, or caps how many are kept. A TTL is already in
+   * the record, put there by `expiryFor` when the job finished.
+   */
   async #applyRetention(
     q: QueueRef,
     record: JobRecord,
     retention: Retention,
-    now: number,
   ): Promise<void> {
+    const sameState = (candidate: JobRecord) =>
+      candidate.state === record.state;
+
     if (retention === true) {
-      await this.#delete(q, record);
+      await this.#deleteJob(q, record.id, sameState, record);
       return;
     }
 
@@ -1333,15 +1972,11 @@ export class FileDriver implements JobsDriver {
       return;
     }
 
+    // A TTL is not stamped here: `expiryFor` put it in the record the
+    // completion wrote. A second write afterwards, with nothing around it,
+    // could land over a patch — or a patch over it, and the job would then
+    // never expire.
     const count = typeof retention === "number" ? retention : retention.count;
-    const ttl = typeof retention === "number" ? undefined : retention.ttl;
-
-    if (ttl && ttl > 0) {
-      await this.#writeAtomic(
-        this.#jobPath(q, record.id),
-        JSON.stringify({ ...record, expiresAt: now + ttl }),
-      );
-    }
 
     if (count === undefined || count < 0) {
       return;
@@ -1359,7 +1994,7 @@ export class FileDriver implements JobsDriver {
         this.#jobPath(q, markerId(marker)),
       );
       if (stale) {
-        await this.#delete(q, stale);
+        await this.#deleteJob(q, stale.id, sameState, stale);
       }
     }
   }
@@ -1376,6 +2011,15 @@ export class FileDriver implements JobsDriver {
       return (await readdir(dir)).filter((entry) => !entry.endsWith(".tmp"));
     } catch {
       return [];
+    }
+  }
+
+  /** A file's text, or `""` when it is missing. */
+  async #readText(path: string): Promise<string> {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      return "";
     }
   }
 
@@ -1555,9 +2199,77 @@ export class FileDriver implements JobsDriver {
   }
 }
 
+/** A job whose marker the caller has taken out of the index. */
+interface HeldJob {
+  /** The job's record, as read once the marker was held. */
+  record: JobRecord;
+  /** Where the marker is while held; the caller must place or delete it. */
+  hold: string;
+}
+
+/**
+ * When a finished job should expire under `retention`: now plus its TTL when
+ * it has one, and otherwise whatever the record already said.
+ */
+function expiryFor(
+  retention: Retention,
+  now: number,
+  current: number | null,
+): number | null {
+  if (typeof retention === "object" && retention.ttl && retention.ttl > 0) {
+    return now + retention.ttl;
+  }
+  return current;
+}
+
 /** Left-pads a number so lexical order matches numeric order. */
 function pad(value: number, width: number): string {
   return String(Math.max(0, Math.floor(value))).padStart(width, "0");
+}
+
+/** The marker name of an active job, which is ordered by its lock expiry. */
+function activeMarker(lockExpiresAt: number, id: string): string {
+  return `${pad(lockExpiresAt, 13)}-${encodeURIComponent(id)}`;
+}
+
+/** Splits a hold's name into when it was taken and the marker it holds. */
+function parseHold(name: string): { stamp: number; marker: string } | null {
+  // `<stamp>.<state>.<marker>`: neither of the first two contains a dot, and
+  // the marker may (`encodeURIComponent` leaves dots alone).
+  const first = name.indexOf(".");
+  const second = name.indexOf(".", first + 1);
+  const stamp = Number(name.slice(0, first));
+
+  if (first <= 0 || second <= first || !Number.isFinite(stamp)) {
+    return null;
+  }
+
+  return { stamp, marker: name.slice(second + 1) };
+}
+
+/** How many newline-terminated lines `text` holds. */
+function countLines(text: string): number {
+  let count = 0;
+  for (
+    let at = text.indexOf("\n");
+    at !== -1;
+    at = text.indexOf("\n", at + 1)
+  ) {
+    count++;
+  }
+  return count;
+}
+
+/** `text` without its first `lines` lines. */
+function dropLines(text: string, lines: number): string {
+  let at = -1;
+  for (let dropped = 0; dropped < lines; dropped++) {
+    at = text.indexOf("\n", at + 1);
+    if (at === -1) {
+      return "";
+    }
+  }
+  return text.slice(at + 1);
 }
 
 /** The job id encoded in a marker name. */

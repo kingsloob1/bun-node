@@ -14,6 +14,7 @@ export type {
   DriverLifecycle,
   ExecutionMode,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,

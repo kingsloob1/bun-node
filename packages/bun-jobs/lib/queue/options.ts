@@ -6,6 +6,7 @@ import {
   DEFAULT_RESULT_TTL,
 } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
+import { assertSegment } from "../shared/keys";
 
 /** Widest priority the drivers can order on; keeps marker names sortable. */
 const PRIORITY_LIMIT = 1_048_576;
@@ -52,6 +53,13 @@ export function resolveJobOptions(
     removeOnFail: merged.removeOnFail ?? DEFAULT_JOB_OPTIONS.removeOnFail,
     keepStacktraces:
       merged.keepStacktraces ?? DEFAULT_JOB_OPTIONS.keepStacktraces,
+    // Only present when named, so the stored options of every other job are
+    // exactly what they were.
+    ...(merged.deadLetter === undefined
+      ? {}
+      : {
+          deadLetter: assertSegment(merged.deadLetter, "deadLetter queue name"),
+        }),
   };
 }
 

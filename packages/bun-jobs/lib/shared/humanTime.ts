@@ -99,9 +99,10 @@ export function looksLikeCron(input: string): boolean {
 /**
  * Reads an instant: a `Date`, epoch milliseconds, or words.
  *
- * Words go through `chrono-node`, which is an optional peer — so this says
- * what to install rather than failing obscurely, and a caller who never writes
- * one never needs it.
+ * Words go through `parser` when one is given, and otherwise through
+ * `chrono-node`, which is an optional peer — so this says what to install, or
+ * what to pass instead, rather than failing obscurely, and a caller who never
+ * writes a phrase never needs either.
  *
  * A bare duration is read as "from now", because `"in 20 minutes"` and
  * `"20 minutes"` plainly mean the same thing and only one of them reads well
@@ -111,6 +112,7 @@ export function parseWhen(
   when: Date | number | string,
   what: string,
   now = Date.now(),
+  parser?: DateParser,
 ): number {
   if (when instanceof Date) {
     const ms = when.getTime();
@@ -136,9 +138,7 @@ export function parseWhen(
     return now + duration;
   }
 
-  const parsed = loadChrono(what, when).parseDate(when, new Date(now), {
-    forwardDate: true,
-  });
+  const parsed = readDate(dateParserFor(parser, what, when), when, now, what);
 
   if (!parsed) {
     throw new ConfigError(`${what} could not be understood as a date`, {
@@ -294,6 +294,7 @@ export function readRecurrence(
   input: string,
   what: string,
   now = Date.now(),
+  parser?: DateParser,
 ): Recurrence {
   const body = input.trim().replace(/^(?:every|each)\s+/i, "");
   const plain = intervalFromWords(words(body));
@@ -302,9 +303,12 @@ export function readRecurrence(
     return { every: plain };
   }
 
-  const results = loadChrono(what, input).parse(body, new Date(now), {
-    forwardDate: true,
-  });
+  const results = readResults(
+    dateParserFor(parser, what, input),
+    body,
+    now,
+    what,
+  );
 
   let every: number | undefined;
   const moments: { start: number; end?: number; weekday: boolean }[] = [];
@@ -382,57 +386,321 @@ export function readRecurrence(
   };
 }
 
-/** One date chrono found in a phrase, and where. */
-interface ChronoResult {
-  /** Where in the phrase it starts. */
-  index: number;
-  /** The words it was read from. */
-  text: string;
-  /** The instant, or the start of a range. */
-  start: { date: () => Date };
-  /** The end of a range, when the words described one. */
-  end?: { date: () => Date } | null;
+/* --- date parsers ------------------------------------------------------ */
+
+/** The `chrono-node` versions this is written against. */
+export const CHRONO_VERSION_RANGE = ">=2.7.0 <3";
+
+/** One end of a date a parser found: the instant it names. */
+export interface DateParseComponent {
+  /** The instant, as a `Date`. */
+  date: () => Date;
 }
 
-/** What `chrono-node` is used for. */
-interface ChronoLike {
-  /** Reads a single date out of a phrase, relative to a reference instant. */
-  parseDate: (
-    text: string,
-    reference?: Date,
-    options?: { forwardDate?: boolean },
-  ) => Date | null;
-  /** Finds every date in a phrase, with where each one is. */
+/** One date a parser found in a phrase, and where it found it. */
+export interface DateParseResult {
+  /** Where in the phrase the date's words start. */
+  index: number;
+  /**
+   * The words the date was read from, exactly as they appear in the phrase —
+   * `phrase.slice(index, index + text.length) === text`. Whatever the results
+   * do not cover is what an interval is read from, so a result that misreports
+   * its position misreads the interval.
+   */
+  text: string;
+  /** The instant, or the start of a range. */
+  start: DateParseComponent;
+  /** The end of a range, when the words described one ("from … to …"). */
+  end?: DateParseComponent | null;
+}
+
+/** How a parser is asked to read a phrase. */
+export interface DateParseOptions {
+  /** Read an ambiguous date as the next one rather than the last ("monday"). */
+  forwardDate?: boolean;
+}
+
+/**
+ * Reads dates out of words. `chrono-node` is one, and the default.
+ *
+ * ```ts
+ * const payday: DateParser = {
+ *   parse(text, reference) {
+ *     const index = text.indexOf("payday");
+ *     if (index < 0) return [];
+ *     const date = nextPayday(reference);
+ *     return [{ index, text: "payday", start: { date: () => date } }];
+ *   },
+ * };
+ *
+ * new BunJobs({ namespace, driver, dateParser: payday });
+ * await jobs.run("salaries").on("payday").start();
+ * await jobs.run("report").every("every 2 weeks from payday").start();
+ * ```
+ *
+ * **Synchronous**, because a builder method reads its phrase where it was
+ * written and fails there. Results are checked against this shape; one that
+ * does not fit is reported as the parser's fault, naming what was wrong.
+ */
+export interface DateParser {
+  /**
+   * Every date in `text`, relative to `reference`, in any order; `[]` when
+   * there are none.
+   */
   parse: (
     text: string,
-    reference?: Date,
-    options?: { forwardDate?: boolean },
-  ) => ChronoResult[];
+    reference: Date,
+    options: DateParseOptions,
+  ) => DateParseResult[];
+  /**
+   * The one date `text` names, or `null`.
+   *
+   * Optional: without it the first result of `parse` is used, which is what
+   * chrono's own `parseDate` does.
+   */
+  parseDate?: (
+    text: string,
+    reference: Date,
+    options: DateParseOptions,
+  ) => Date | null;
+}
+
+/** The interface, as words, for an error to show someone writing one. */
+const DATE_PARSER_SHAPE = `{
+  parse(text: string, reference: Date, options: { forwardDate?: boolean }):
+    { index: number; text: string; start: { date(): Date }; end?: { date(): Date } | null }[];
+  parseDate?(text: string, reference: Date, options: { forwardDate?: boolean }): Date | null;
+}`;
+
+/**
+ * Checks that something is a {@link DateParser}, and says what one is when it
+ * is not.
+ *
+ * Called when a parser is configured, so a wrong one fails at construction
+ * rather than the first time somebody writes a phrase.
+ */
+export function assertDateParser(
+  value: unknown,
+  what = "dateParser",
+): DateParser {
+  const candidate = value as Partial<DateParser> | null;
+
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    typeof candidate.parse !== "function" ||
+    (candidate.parseDate !== undefined &&
+      typeof candidate.parseDate !== "function")
+  ) {
+    throw new ConfigError(
+      `${what} is not a date parser. It must be an object shaped like:\n${DATE_PARSER_SHAPE}`,
+      { received: describe(value) },
+    );
+  }
+
+  return candidate as DateParser;
+}
+
+/** The parser to use: the one given, or `chrono-node`. */
+function dateParserFor(
+  parser: DateParser | undefined,
+  what: string,
+  phrase: string,
+): DateParser {
+  return parser ?? loadChrono(what, phrase);
+}
+
+/** The single date a phrase names, checked. */
+function readDate(
+  parser: DateParser,
+  text: string,
+  now: number,
+  what: string,
+): Date | null {
+  if (!parser.parseDate) {
+    return readResults(parser, text, now, what)[0]?.start.date() ?? null;
+  }
+
+  const date = parser.parseDate(text, new Date(now), { forwardDate: true });
+
+  if (date !== null && !isValidDate(date)) {
+    throw new ConfigError(
+      `The date parser's parseDate returned ${describe(date)} for "${text}" in ${what}; it must return a valid Date or null`,
+      { text, received: describe(date) },
+    );
+  }
+
+  return date;
+}
+
+/**
+ * Every date a phrase names, checked against {@link DateParseResult}.
+ *
+ * The checks are what make a custom parser safe to accept: the interval is
+ * read from whatever the results do *not* cover, so a result that says it
+ * starts somewhere its words are not would quietly turn "every 2 days from
+ * payday" into some other interval.
+ */
+function readResults(
+  parser: DateParser,
+  text: string,
+  now: number,
+  what: string,
+): DateParseResult[] {
+  const results: unknown = parser.parse(text, new Date(now), {
+    forwardDate: true,
+  });
+
+  const fail = (problem: string, received: unknown): never => {
+    throw new ConfigError(
+      `The date parser's parse returned ${problem} for "${text}" in ${what}. Each result must be shaped like { index, text, start: { date() }, end? }, with text found at index in the phrase`,
+      { text, received: describe(received) },
+    );
+  };
+
+  if (!Array.isArray(results)) {
+    return fail("something other than an array", results);
+  }
+
+  for (const result of results as Partial<DateParseResult>[]) {
+    if (typeof result !== "object" || result === null) {
+      fail("a result that is not an object", result);
+    }
+
+    if (
+      typeof result.index !== "number" ||
+      typeof result.text !== "string" ||
+      text.slice(result.index, result.index + result.text.length) !==
+        result.text
+    ) {
+      fail(
+        `a result whose text is not at its index (index ${String(result.index)}, text ${JSON.stringify(result.text)})`,
+        result,
+      );
+    }
+
+    for (const end of ["start", "end"] as const) {
+      const component = result[end];
+
+      if (end === "end" && (component === undefined || component === null)) {
+        continue;
+      }
+
+      if (
+        typeof component?.date !== "function" ||
+        !isValidDate(component.date())
+      ) {
+        fail(`a result whose ${end}.date() is not a valid Date`, result);
+      }
+    }
+  }
+
+  return results as DateParseResult[];
+}
+
+/** Whether a value is a `Date` holding an actual instant. */
+function isValidDate(value: unknown): value is Date {
+  return value instanceof Date && Number.isFinite(value.getTime());
+}
+
+/** A short description of a value, for an error's fields. */
+function describe(value: unknown): string {
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return `Date(${value.toString()})`;
+  }
+
+  try {
+    return JSON.stringify(value)?.slice(0, 200) ?? typeof value;
+  } catch {
+    return typeof value;
+  }
 }
 
 /** `chrono-node`, loaded on first use and kept. */
-let chrono: ChronoLike | undefined;
+let chrono: DateParser | undefined;
 
 /**
- * Loads `chrono-node`, or explains what to install.
+ * Loads `chrono-node`, or explains what to install — or pass — instead.
  *
  * Loaded lazily, so its 2.7MB of parsing rules cost only the callers who write
  * a phrase — and synchronously through Bun's `import.meta.require`, so a
  * builder method can read a phrase and fail on the spot instead of deferring
  * every mistake to an `await` somewhere later.
  */
-function loadChrono(what: string, phrase: string): ChronoLike {
+function loadChrono(what: string, phrase: string): DateParser {
   if (chrono) {
     return chrono;
   }
 
+  let module: unknown;
+
   try {
-    chrono = import.meta.require("chrono-node") as ChronoLike;
-    return chrono;
+    module = import.meta.require("chrono-node");
   } catch (error) {
+    throw missingChronoError(what, phrase, String(error));
+  }
+
+  chrono = checkChrono(module, installedChronoVersion());
+  return chrono;
+}
+
+/** The installed `chrono-node` version, when its manifest can be read. */
+function installedChronoVersion(): string | undefined {
+  try {
+    const manifest = import.meta.require("chrono-node/package.json") as {
+      version?: unknown;
+    };
+    return typeof manifest.version === "string" ? manifest.version : undefined;
+  } catch {
+    // A package whose exports hide its manifest. The shape check still runs.
+    return undefined;
+  }
+}
+
+/**
+ * The error for a phrase with no parser to read it: which `chrono-node` to
+ * install, and the interface to implement instead.
+ */
+export function missingChronoError(
+  what: string,
+  phrase: string,
+  cause?: string,
+): ConfigError {
+  return new ConfigError(
+    `${what} is a phrase ("${phrase}"), which needs a date parser. Either install chrono-node ${CHRONO_VERSION_RANGE} (bun add chrono-node@"${CHRONO_VERSION_RANGE}"), or pass your own as the dateParser option, an object shaped like:\n${DATE_PARSER_SHAPE}`,
+    {
+      phrase,
+      chronoVersionRange: CHRONO_VERSION_RANGE,
+      ...(cause ? { cause } : {}),
+    },
+  );
+}
+
+/**
+ * Checks a loaded `chrono-node` against the versions and the interface this is
+ * written for.
+ *
+ * A version outside the range is refused even when its shape happens to fit:
+ * a major version is exactly where a parsing library changes what a phrase
+ * means without changing its function signatures.
+ */
+export function checkChrono(
+  module: unknown,
+  version: string | undefined,
+): DateParser {
+  if (
+    version !== undefined &&
+    !Bun.semver.satisfies(version, CHRONO_VERSION_RANGE)
+  ) {
     throw new ConfigError(
-      `${what} is a phrase ("${phrase}"), which needs the optional chrono-node package: bun add chrono-node`,
-      { phrase, cause: String(error) },
+      `chrono-node ${version} is installed, but ${CHRONO_VERSION_RANGE} is required (bun add chrono-node@"${CHRONO_VERSION_RANGE}"), or pass your own as the dateParser option, an object shaped like:\n${DATE_PARSER_SHAPE}`,
+      { installed: version, chronoVersionRange: CHRONO_VERSION_RANGE },
     );
   }
+
+  return assertDateParser(module, `chrono-node${version ? ` ${version}` : ""}`);
 }

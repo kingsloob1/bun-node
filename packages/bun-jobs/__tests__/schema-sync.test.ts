@@ -2,7 +2,7 @@ import type { JobsDriver } from "../lib/index";
 import process from "node:process";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
-import { MongoDriver, SqlDriver } from "../lib/index";
+import { ConfigError, MongoDriver, SqlDriver } from "../lib/index";
 import { queueEvent } from "../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "./helpers";
 
@@ -51,7 +51,7 @@ afterAll(async () => {
 
   if (POSTGRES && prefixes.length > 0) {
     for (const prefix of prefixes) {
-      for (const table of ["jobs", "locks", "kv", "events"]) {
+      for (const table of ["jobs", "locks", "kv", "events", "logs"]) {
         await connection()
           .unsafe(`DROP TABLE IF EXISTS ${prefix}${table} CASCADE`)
           .catch(() => undefined);
@@ -259,6 +259,88 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     await second.connect();
 
     expect(await second.syncSchema({ dryRun: true })).toEqual([]);
+  }, 45_000);
+
+  it("creates the log table an install from before job logs never had", async () => {
+    const prefix = makePrefix("logs");
+    const first = makeSqlDriver(prefix);
+    await first.connect();
+
+    // What a deployment upgrading from a version without job logs has: every
+    // other table, and no log table or its index.
+    await ddl([`DROP TABLE ${prefix}logs`]);
+
+    // A whole new table is not a sync's to add — the sync only compares what
+    // exists — so this is really asserting that connecting creates it, and
+    // that nothing about it is then reported as drift.
+    const second = makeSqlDriver(prefix, { syncSchema: true });
+    await second.connect();
+    expect(await second.syncSchema({ dryRun: true })).toEqual([]);
+
+    const found = await query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE tablename = '${prefix}logs'`,
+    );
+    expect(found.map((r) => String(r.indexname))).toContain(
+      `ix_${prefix}jobs_logs`,
+    );
+
+    // And the upgraded install can actually keep a log.
+    const q = { ns: testNamespace(), queue: "logs-after-upgrade" };
+    await second.addJob(q, makeJob({ id: "logged" }));
+    expect(await second.addJobLog(q, "logged", "hello", 0)).toBe(1);
+    expect(
+      await second.getJobLogs(q, "logged", {
+        offset: 0,
+        limit: 10,
+        order: "asc",
+      }),
+    ).toEqual({ logs: ["hello"], count: 1 });
+  }, 45_000);
+
+  it("says how to get job logs on a jobs table without log_key, and sync adds it", async () => {
+    const prefix = makePrefix("logkey");
+    const first = makeSqlDriver(prefix);
+    await first.connect();
+
+    // A `jobs` table from before job logs: `CREATE TABLE IF NOT EXISTS` leaves
+    // it exactly as it is, so the column only arrives through a sync.
+    await ddl([`ALTER TABLE ${prefix}jobs DROP COLUMN log_key`]);
+
+    const driver = makeSqlDriver(prefix);
+    const q = { ns: testNamespace(), queue: "logs-unsynced" };
+    await driver.addJob(q, makeJob({ id: "unsynced" }));
+
+    // The engine's "column does not exist" names neither the feature nor the
+    // fix, so the driver says both.
+    const failure = await driver
+      .addJobLog(q, "unsynced", "hello", 0)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConfigError);
+    expect(String((failure as Error).message)).toMatch(/log_key.*syncSchema/s);
+
+    // Everything else keeps working: removing a job tidies logs, and there
+    // can be none without the column, so it must not fail over it.
+    expect(await driver.removeJob(q, "unsynced")).toBe(true);
+    expect(await driver.pruneExpired(q, Date.now(), 10)).toBe(0);
+
+    // A new column is a safe change: planned as non-blocking, applied by a
+    // plain sync.
+    const planned = await driver.syncSchema({ dryRun: true });
+    expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
+      ["add-column", "log_key", false],
+    ]);
+    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+    expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
+
+    await driver.addJob(q, makeJob({ id: "synced" }));
+    expect(await driver.addJobLog(q, "synced", "hello", 0)).toBe(1);
+    expect(
+      await driver.getJobLogs(q, "synced", {
+        offset: 0,
+        limit: 10,
+        order: "asc",
+      }),
+    ).toEqual({ logs: ["hello"], count: 1 });
   }, 45_000);
 
   it("leaves a repaired schema usable as a queue", async () => {

@@ -10,13 +10,20 @@ import type {
   QueueEventName,
   QueueEventPayloads,
 } from "../shared/events";
+import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
-import type { BunQueueEvents, BunQueueOptions, JobOptions } from "./types";
+import type {
+  BunQueueEvents,
+  BunQueueOptions,
+  JobOptions,
+  RetryAllOptions,
+} from "./types";
 import { deserializeError } from "@kingsleyweb/bun-common";
 import { resolveDriver } from "../drivers/index";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, QueueClosedError } from "../shared/errors";
 import { queueEvent } from "../shared/events";
+import { assertDateParser } from "../shared/humanTime";
 import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
@@ -24,6 +31,12 @@ import { createJobsLogger } from "../shared/logger";
 import { Job } from "./Job";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+
+/** How many finished jobs `retryAll` reads at a time. */
+const RETRY_PAGE = 200;
+
+/** How many retries `retryJobs` and `retryAll` send the driver at once. */
+const RETRY_CONCURRENCY = 16;
 
 /**
  * The producer and management side of a queue.
@@ -81,6 +94,10 @@ export class BunQueue<
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#defaults = options.defaultJobOptions;
+    this.dateParser =
+      options.dateParser === undefined
+        ? undefined
+        : assertDateParser(options.dateParser);
     this.#subscribe = options.subscribe ?? false;
     // Defaults to `subscribe` so nothing changes for anyone relying on the
     // two being one flag; settable on its own so a producer can publish
@@ -92,6 +109,12 @@ export class BunQueue<
       `queue:${this.name}`,
     );
   }
+
+  /**
+   * What reads dates in phrases for jobs added here, when one was given;
+   * otherwise `chrono-node` does.
+   */
+  readonly dateParser: DateParser | undefined;
 
   /** This queue's reference, as the driver wants it. */
   get ref(): QueueRef {
@@ -278,6 +301,87 @@ export class BunQueue<
     );
   }
 
+  /**
+   * Returns several finished jobs to the queue, and answers with the ids that
+   * went — an id that was missing, running or already pending is left out.
+   */
+  async retryJobs(
+    ids: string[],
+    options?: { resetAttempts?: boolean },
+  ): Promise<string[]> {
+    await this.connect();
+    const retried = await this.#retryIds(ids, options?.resetAttempts ?? true);
+    await this.#announceRetried(retried);
+    return retried;
+  }
+
+  /**
+   * Returns every finished job in a state that matches to the queue — the
+   * re-drive for a dead-letter backlog once whatever killed it is fixed.
+   *
+   * ```ts
+   * await queue.retryAll("dead", { reason: /ECONNREFUSED/ });
+   * await queue.retryAll("dead", { name: "sendEmail", limit: 500 });
+   * ```
+   *
+   * Walks the state a page at a time rather than loading it whole, so a
+   * backlog of a million is as safe to re-drive as ten.
+   */
+  async retryAll(
+    state: "dead" | "failed" | "completed",
+    options: RetryAllOptions<TData, TResult> = {},
+  ): Promise<string[]> {
+    await this.connect();
+
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
+    const reset = options.resetAttempts ?? true;
+    const retried: string[] = [];
+    // Jobs that did not match stay in the state, so the next page starts after
+    // them; jobs that were retried left it, so they are not counted.
+    let offset = 0;
+
+    while (retried.length < limit) {
+      const page = await this.driver.listJobs(this.ref, [state], {
+        offset,
+        limit: RETRY_PAGE,
+        order: "asc",
+      });
+
+      if (page.length === 0) {
+        break;
+      }
+
+      const chosen: string[] = [];
+      let skipped = 0;
+
+      for (const record of page) {
+        if (retried.length + chosen.length >= limit) {
+          break;
+        }
+
+        if (this.#matchesRetry(record, options)) {
+          chosen.push(record.id);
+        } else {
+          skipped++;
+        }
+      }
+
+      const done = await this.#retryIds(chosen, reset);
+      retried.push(...done);
+      offset += skipped;
+
+      // A chosen job that was not retried has been taken by someone else and
+      // left the state, so it shifts nothing. But a page that moved nothing at
+      // all would be read again identically, forever; step past it instead.
+      if (done.length === 0 && skipped === 0) {
+        offset += page.length;
+      }
+    }
+
+    await this.#announceRetried(retried);
+    return retried;
+  }
+
   /** Makes a delayed or retry-pending job claimable now. */
   async promote(id: string): Promise<boolean> {
     await this.connect();
@@ -387,6 +491,74 @@ export class BunQueue<
 
   /* --- internals --------------------------------------------------------- */
 
+  /** Retries ids a bounded number at a time, and answers with those that went. */
+  async #retryIds(ids: string[], resetAttempts: boolean): Promise<string[]> {
+    const now = Date.now();
+    const retried: string[] = [];
+
+    for (let at = 0; at < ids.length; at += RETRY_CONCURRENCY) {
+      const chunk = ids.slice(at, at + RETRY_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((id) =>
+          this.driver.retryJob(this.ref, id, resetAttempts, now),
+        ),
+      );
+
+      chunk.forEach((id, index) => {
+        if (results[index]) {
+          retried.push(id);
+        }
+      });
+    }
+
+    return retried;
+  }
+
+  /** Whether a finished job is one `retryAll` was asked for. */
+  #matchesRetry(
+    record: JobRecord,
+    options: RetryAllOptions<TData, TResult>,
+  ): boolean {
+    if (options.name !== undefined && record.name !== options.name) {
+      return false;
+    }
+
+    if (options.reason !== undefined) {
+      if (!record.failedReason) {
+        return false;
+      }
+
+      const text = `${record.failedReason.name}: ${record.failedReason.message}`;
+
+      if (typeof options.reason === "string") {
+        if (!text.includes(options.reason)) {
+          return false;
+        }
+      } else {
+        // A global or sticky pattern remembers where it stopped; start over.
+        options.reason.lastIndex = 0;
+
+        if (!options.reason.test(text)) {
+          return false;
+        }
+      }
+    }
+
+    return options.filter
+      ? options.filter(new Job<TData, TResult>(this.driver, this.ref, record))
+      : true;
+  }
+
+  /** Emits and publishes one `retried` for a batch, when it retried anything. */
+  async #announceRetried(ids: string[]): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+
+    this.safeEmit("retried", ids);
+    await this.#publish("retried", { ids });
+  }
+
   /** Builds the record a driver stores, applying defaults and validation. */
   #buildRecord(
     name: string,
@@ -446,7 +618,15 @@ export class BunQueue<
     const now = Date.now();
     const opts = resolveJobOptions(this.#defaults, options);
     const repeat = options.repeat!;
-    const definition = toRepeatRecord(this.ref, name, data, opts, repeat, now);
+    const definition = toRepeatRecord(
+      this.ref,
+      name,
+      data,
+      opts,
+      repeat,
+      now,
+      this.dateParser,
+    );
 
     const existing = await this.driver.getRepeat(this.ref, definition.key);
     const merged: RepeatRecord = existing
@@ -596,6 +776,10 @@ export class BunQueue<
 
       case "stalled":
         this.safeEmit("stalled", event.payload.ids);
+        return;
+
+      case "retried":
+        this.safeEmit("retried", event.payload.ids);
         return;
 
       case "removed":

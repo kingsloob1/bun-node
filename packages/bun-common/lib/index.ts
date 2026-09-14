@@ -101,6 +101,7 @@ export {
 // tests and adapters use.
 export {
   type BackoffOptions,
+  type BackoffType,
   computeBackoff,
   createDeferred,
   type Deferred,

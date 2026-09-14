@@ -30,7 +30,7 @@
   },
   "peerDependencies": {
     "@types/bun": ">=1.4.2",
-    "chrono-node": ">=2.7",
+    "chrono-node": ">=2.7.0 <3",
     "mongodb": ">=6",
     "typescript": "^5.9.3"
   },

@@ -36,11 +36,13 @@ export const QUEUE_KEYS = [
  * table interned once when the script is cached rather than once per job.
  *
  * `blob` is `name`, `maxAttempts`, `data` and `opts` in one JSON value. No Lua
- * in this file reads or writes any of those four — checked, they appear zero
- * times — so they are only ever decoded by the driver, and storing them apart
- * bought nothing. Storing them together takes a brand-new job's `HSET` from
- * ten fields to seven, which is worth 83,525/s against 109,828/s on 5,000
- * jobs: the cost of that statement is dominated by how many fields it names.
+ * in this file reads any of those four, so they are only ever decoded by the
+ * driver, and storing them apart bought nothing. Storing them together takes a
+ * brand-new job's `HSET` from ten fields to seven, which is worth 83,525/s
+ * against 109,828/s on 5,000 jobs: the cost of that statement is dominated by
+ * how many fields it names. The one exception is {@link UPDATE_JOB}, which
+ * never touches `blob` but writes `data` and `optsPriority` beside it — see
+ * there for why, and `#toRecord` for how they win over the blob's copies.
  *
  * **The first {@link FRESH_JOB_FIELD_COUNT} are exactly what a brand-new job
  * carries**, which is why they lead. That makes the fresh set a prefix of the
@@ -118,6 +120,17 @@ local PREFIX = ARGV[1]
 
 local function job(id) return PREFIX .. id end
 
+-- A job's log list. The prefix is the job prefix with its trailing 'job:'
+-- swapped for 'log:', matching \`logPrefix\` in keys.ts, so it keeps the hash
+-- tag and lives in the same slot. Built on demand rather than once up front,
+-- so the scripts that never delete a job pay nothing for it.
+local function logs(id) return string.sub(PREFIX, 1, -5) .. 'log:' .. id end
+
+-- Deletes a job and its log in one call. Every path that removes a job goes
+-- through here, because a log must live exactly as long as its job — a job
+-- added later under the same id would otherwise inherit the old lines.
+local function drop(id) redis.call('DEL', job(id), logs(id)) end
+
 local function member(id)
   -- The ordering key a job was given when it was added. Kept on the hash so
   -- moving a job back into the wait set restores its original place in the
@@ -137,7 +150,7 @@ local function retain(id, set, mode, count, ttl, now)
   -- mode: 'remove' deletes now, 'keep' keeps everything, 'cap' keeps a number.
   if mode == 'remove' then
     redis.call('ZREM', set, id)
-    redis.call('DEL', job(id))
+    drop(id)
     return
   end
 
@@ -150,7 +163,7 @@ local function retain(id, set, mode, count, ttl, now)
     local stale = redis.call('ZREVRANGE', set, keep, -1)
     for _, staleId in ipairs(stale) do
       redis.call('ZREM', set, staleId)
-      redis.call('DEL', job(staleId))
+      drop(staleId)
     end
   end
 end
@@ -592,7 +605,7 @@ redis.call('ZREM', DELAYED, id)
 redis.call('ZREM', FAILED, id)
 redis.call('ZREM', COMPLETED, id)
 redis.call('ZREM', DEAD, id)
-redis.call('DEL', job(id))
+drop(id)
 return 1
 `;
 
@@ -664,7 +677,7 @@ if which == 'waiting' then
     local id = string.sub(entry, 18)
     if tonumber(redis.call('HGET', job(id), 'createdAt')) <= cutoff then
       redis.call('ZREM', set, entry)
-      redis.call('DEL', job(id))
+      drop(id)
       removed[#removed + 1] = id
     end
   end
@@ -674,7 +687,7 @@ end
 local ids = redis.call('ZRANGEBYSCORE', set, '-inf', cutoff, 'LIMIT', 0, limit)
 for _, id in ipairs(ids) do
   redis.call('ZREM', set, id)
-  redis.call('DEL', job(id))
+  drop(id)
   removed[#removed + 1] = id
 end
 return removed
@@ -695,7 +708,7 @@ for _, set in ipairs({ COMPLETED, DEAD }) do
     local expiresAt = redis.call('HGET', job(id), 'expiresAt')
     if expiresAt and expiresAt ~= '' and tonumber(expiresAt) <= now then
       redis.call('ZREM', set, id)
-      redis.call('DEL', job(id))
+      drop(id)
       removed = removed + 1
     end
   end
@@ -714,7 +727,7 @@ local includeDelayed = ARGV[2]
 local removed = 0
 
 for _, entry in ipairs(redis.call('ZRANGE', WAIT, 0, -1)) do
-  redis.call('DEL', job(string.sub(entry, 18)))
+  drop(string.sub(entry, 18))
   removed = removed + 1
 end
 redis.call('DEL', WAIT)
@@ -722,7 +735,7 @@ redis.call('DEL', WAIT)
 if includeDelayed == '1' then
   for _, set in ipairs({ DELAYED, FAILED }) do
     for _, id in ipairs(redis.call('ZRANGE', set, 0, -1)) do
-      redis.call('DEL', job(id))
+      drop(id)
       removed = removed + 1
     end
     redis.call('DEL', set)
@@ -775,6 +788,159 @@ return {
   redis.call('ZCARD', FAILED),
   redis.call('ZCARD', DEAD),
 }
+`;
+
+/**
+ * Changes a stored job's data, priority or due time, if its state allows.
+ *
+ * The state check and the write are one script, which is the whole point of
+ * `onlyIn`: a job claimed between the caller reading it and calling this must
+ * not be changed. The allowed states arrive already narrowed — `onlyIn`
+ * intersected with waiting/delayed when `runAt` is patched — and so does the
+ * state a new `runAt` leads to, since that depends only on `runAt` and `now`,
+ * both of which the caller has.
+ *
+ * **Nothing here decodes JSON.** `data` and `opts` live inside `blob`, and
+ * rewriting that in Lua would mean a cjson round trip, which changes the value:
+ * an empty array comes back as an object and large integers lose precision.
+ * Splicing the blob in the driver instead would need a read first, which is no
+ * longer one step. So a patched payload goes into a `data` field of its own,
+ * which the reader prefers over the blob's copy — the same field a record from
+ * before `blob` already uses, so both shapes read back through one rule. A new
+ * priority is written to `priority`, which the scripts already order by, and
+ * to `optsPriority`, which the reader lays over `opts.priority`; that one only
+ * exists once a priority has been patched, so an untouched job's `opts` reads
+ * back exactly as it was added.
+ *
+ * A new priority re-scores the job's existing wait-set member, whose sequence
+ * prefix is unchanged, so FIFO within a priority survives a reprioritisation.
+ *
+ * ARGV: prefix, id, setData, data, setPriority, priority, setRunAt, runAt,
+ * nextState, then the allowed states — none at all meaning any state.
+ * Returns the job's fields as they now are, or nothing when it was refused.
+ */
+export const UPDATE_JOB = `${QUEUE_PRELUDE}
+local id = ARGV[2]
+local setData, data = ARGV[3] == '1', ARGV[4]
+local setPriority, priority = ARGV[5] == '1', ARGV[6]
+local setRunAt, runAt, nextState = ARGV[7] == '1', ARGV[8], ARGV[9]
+
+local current = state(id)
+if not current then
+  return nil
+end
+
+if #ARGV >= 10 then
+  local allowed = false
+  for i = 10, #ARGV do
+    if ARGV[i] == current then
+      allowed = true
+      break
+    end
+  end
+  if not allowed then
+    return nil
+  end
+end
+
+if setData then
+  redis.call('HSET', job(id), 'data', data)
+end
+
+if setPriority then
+  redis.call('HSET', job(id), 'priority', priority, 'optsPriority', priority)
+  if current == 'waiting' then
+    -- ZADD on an existing member only moves its score, and the member keeps
+    -- the sequence it was given on add.
+    redis.call('ZADD', WAIT, tonumber(priority), member(id))
+  end
+end
+
+if setRunAt then
+  if current == 'waiting' then
+    redis.call('ZREM', WAIT, member(id))
+  else
+    redis.call('ZREM', DELAYED, id)
+  end
+
+  if nextState == 'delayed' then
+    redis.call('ZADD', DELAYED, tonumber(runAt), id)
+  else
+    redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
+  end
+
+  redis.call('HSET', job(id), 'state', nextState, 'runAt', runAt)
+  current = nextState
+end
+
+-- A job made claimable, or moved ahead of others, is worth a blocked worker
+-- looking again. A payload change alone makes nothing newly claimable.
+if current == 'waiting' and (setRunAt or setPriority) then
+  wake()
+end
+
+return redis.call('HGETALL', job(id))
+`;
+
+/**
+ * Appends a line to a job's log, and caps it at its most recent lines.
+ *
+ * The existence check is in the same script as the push: a job removed in
+ * between would otherwise be left an orphan log that nothing ever deletes.
+ *
+ * KEYS: job hash, log list. ARGV: line, keep (`0` keeps every line).
+ * Returns how many lines the log keeps, or 0 when there is no such job.
+ */
+export const ADD_JOB_LOG = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+
+redis.call('RPUSH', KEYS[2], ARGV[1])
+
+local keep = tonumber(ARGV[2])
+if keep > 0 then
+  redis.call('LTRIM', KEYS[2], -keep, -1)
+end
+
+return redis.call('LLEN', KEYS[2])
+`;
+
+/**
+ * A page of a job's log, and how many lines it keeps.
+ *
+ * A script rather than `LLEN` and `LRANGE` side by side, so the count and the
+ * page describe the same list — a line appended in between would otherwise
+ * shift a `desc` page by one.
+ *
+ * KEYS: log list. ARGV: offset, limit, order. Returns the count, then the
+ * lines in the order asked for.
+ */
+export const GET_JOB_LOGS = `
+local offset, limit = tonumber(ARGV[1]), tonumber(ARGV[2])
+local count = redis.call('LLEN', KEYS[1])
+local reply = { count }
+
+if limit <= 0 or offset >= count then
+  return reply
+end
+
+if ARGV[3] == 'desc' then
+  -- Newest first: count the offset back from the tail.
+  local stop = count - 1 - offset
+  local start = math.max(0, stop - limit + 1)
+  local lines = redis.call('LRANGE', KEYS[1], start, stop)
+  for i = #lines, 1, -1 do
+    reply[#reply + 1] = lines[i]
+  end
+else
+  local lines = redis.call('LRANGE', KEYS[1], offset, offset + limit - 1)
+  for _, line in ipairs(lines) do
+    reply[#reply + 1] = line
+  end
+end
+
+return reply
 `;
 
 /* ------------------------------------------------------------------ *

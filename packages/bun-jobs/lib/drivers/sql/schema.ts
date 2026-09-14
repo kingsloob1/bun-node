@@ -3,8 +3,9 @@ import type { SqlDialect } from "./dialect";
 /**
  * The tables, and the indexes that make the hot paths cheap.
  *
- * Four tables rather than one per concern: `jobs`, `locks`, `kv` (runner
- * state, queue metadata and repeat definitions) and `events`. Every table
+ * Five tables rather than one per concern: `jobs`, `locks`, `kv` (runner
+ * state, queue metadata and repeat definitions), `events` and `logs` (each
+ * job's log lines). Every table
  * carries `ns`, and every index leads with it, so one namespace's queries
  * never scan another's rows.
  */
@@ -163,11 +164,17 @@ export interface TableDefinition {
  * the whole point of a sync is to answer that question.
  */
 export function schemaDefinition(
-  tables: { jobs: string; locks: string; kv: string; events: string },
+  tables: {
+    jobs: string;
+    locks: string;
+    kv: string;
+    events: string;
+    logs: string;
+  },
   dialect: SqlDialect,
 ): { tables: TableDefinition[]; indexes: IndexDefinition[] } {
-  const { jobs, locks, kv, events } = tables;
-  const { idType, jsonType, timeType, serialType } = dialect;
+  const { jobs, locks, kv, events, logs } = tables;
+  const { idType, jsonType, timeType, serialType, longTextType } = dialect;
 
   // Index names have to be unique within a schema, so they are derived from
   // the table they belong to rather than from a prefix that may not exist.
@@ -215,6 +222,10 @@ export function schemaDefinition(
           { name: "lock_expires_at", type: timeType },
           { name: "worker_id", type: idType },
           { name: "repeat_key", type: idType },
+          // Which log lines are this job's: a random token given the first
+          // time the job logs anything, and null until then. Nothing on the
+          // insert, claim or completion paths names it.
+          { name: "log_key", type: idType },
         ],
       },
       {
@@ -246,6 +257,35 @@ export function schemaDefinition(
           { name: "channel", type: idType, suffix: "NOT NULL" },
           { name: "payload", type: jsonType },
           { name: "created_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      // A job's log, one row per line. Not a column on `jobs`: appending to a
+      // document means rewriting it whole, and a log is written a line at a
+      // time while the job runs.
+      //
+      // `log_key` is which job the line belongs to, not just which id.
+      // Deleting a job does not delete its lines — the delete on completion is
+      // a single statement on the hot path, and stays one — so every read
+      // matches it against the key of the job row that holds the id now. A
+      // job added later under the same id has no key yet, and so starts with
+      // an empty log while the old lines wait for the sweep.
+      //
+      // Not `created_at`, which was the first design: a job completed with
+      // `removeOnComplete` and re-added under its id lands in the same
+      // millisecond far too often to tell the two apart — measured on SQLite,
+      // 2,211 of 3,000 re-adds, each of which read the old job's lines.
+      //
+      // `job_id` stays so the sweep can find a line's job by primary key.
+      {
+        name: logs,
+        primaryKey: [],
+        columns: [
+          { name: "seq", type: serialType, retype: false },
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "queue", type: idType, suffix: "NOT NULL" },
+          { name: "job_id", type: idType, suffix: "NOT NULL" },
+          { name: "log_key", type: idType, suffix: "NOT NULL" },
+          { name: "message", type: longTextType, suffix: "NOT NULL" },
         ],
       },
     ],
@@ -295,6 +335,15 @@ export function schemaDefinition(
         table: events,
         columns: ["ns", "channel", "seq"],
       },
+      // One job's lines in order, reached through its key; and the orphan
+      // sweep's walk through a queue's lines, which pages on `(log_key, seq)`
+      // so it never scans past its page. One index serves both, so a line
+      // costs a single index write.
+      {
+        name: `ix_${prefix}_logs`,
+        table: logs,
+        columns: ["ns", "queue", "log_key", "seq"],
+      },
     ],
   };
 }
@@ -318,7 +367,13 @@ export function renderIndex(
 
 /** Statements creating everything, each safe to run repeatedly. */
 export function createSchema(
-  tables: { jobs: string; locks: string; kv: string; events: string },
+  tables: {
+    jobs: string;
+    locks: string;
+    kv: string;
+    events: string;
+    logs: string;
+  },
   dialect: SqlDialect,
 ): string[] {
   const { tables: definitions, indexes } = schemaDefinition(tables, dialect);

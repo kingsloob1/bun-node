@@ -1,3 +1,12 @@
+export {
+  type BackoffContext,
+  BackoffStrategies,
+  type BackoffStrategy,
+  type BackoffWarning,
+  BUILT_IN_BACKOFFS,
+  type JobBackoffOptions,
+  nextBackoff,
+} from "./backoff";
 export { BunQueue } from "./BunQueue";
 export { BunQueueWorker } from "./BunQueueWorker";
 /**
@@ -24,9 +33,11 @@ export type {
   BunQueueOptions,
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
+  DeadLetter,
   JobOptions,
   JobProcessor,
   ProcessorContext,
   Repeatable,
   RepeatOptions,
+  RetryAllOptions,
 } from "./types";

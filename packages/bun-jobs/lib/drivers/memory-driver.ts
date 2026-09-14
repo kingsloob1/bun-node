@@ -6,6 +6,7 @@ import type {
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -86,6 +87,14 @@ interface QueueState {
   scheduled: number;
   /** Repeat definitions, by key. */
   repeats: Map<string, RepeatRecord>;
+  /**
+   * Each job's log lines, oldest first, by job id.
+   *
+   * Removed in {@link MemoryDriver.#delete}, which every removal goes through,
+   * so a log cannot outlive its job or be inherited by a later job that
+   * reuses the id.
+   */
+  logs: Map<string, string[]>;
   /** Whether claiming is paused for every worker. */
   paused: boolean;
   /** Next insertion sequence number. */
@@ -517,6 +526,102 @@ export class MemoryDriver implements JobsDriver {
     return true;
   }
 
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
+
+    if (!job || (patch.onlyIn && !patch.onlyIn.includes(job.state))) {
+      return null;
+    }
+
+    if (
+      patch.runAt !== undefined &&
+      job.state !== "waiting" &&
+      job.state !== "delayed"
+    ) {
+      return null;
+    }
+
+    if (patch.data !== undefined) {
+      job.data = jsonClone(patch.data);
+    }
+
+    if (patch.priority !== undefined && patch.priority !== job.priority) {
+      // The waiting index is ordered by priority, so a waiting job has to be
+      // taken out before its key changes and put back after.
+      const reindex = job.state === "waiting";
+
+      if (reindex) {
+        this.#leaveWaiting(queue, id);
+      }
+
+      job.priority = patch.priority;
+      job.opts = { ...job.opts, priority: patch.priority };
+
+      if (reindex) {
+        this.#enterWaiting(queue, job);
+      }
+    }
+
+    if (patch.runAt !== undefined) {
+      job.runAt = patch.runAt;
+      this.#setState(queue, job, patch.runAt > now ? "delayed" : "waiting");
+    }
+
+    if (job.state === "waiting") {
+      this.#wake(queue);
+    }
+
+    return { ...job };
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    const queue = this.#queue(q);
+
+    if (!queue.jobs.has(id)) {
+      return 0;
+    }
+
+    let logs = queue.logs.get(id);
+
+    if (!logs) {
+      logs = [];
+      queue.logs.set(id, logs);
+    }
+
+    logs.push(line);
+
+    if (keep > 0 && logs.length > keep) {
+      logs.splice(0, logs.length - keep);
+    }
+
+    return logs.length;
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    const logs = this.#queue(q).logs.get(id) ?? [];
+    const ordered = opts.order === "desc" ? logs.toReversed() : logs;
+
+    return {
+      logs: ordered.slice(opts.offset, opts.offset + opts.limit),
+      count: logs.length,
+    };
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     const job = this.#queue(q).jobs.get(id);
     return job ? { ...job } : null;
@@ -902,6 +1007,7 @@ export class MemoryDriver implements JobsDriver {
         waitingFrom: 0,
         scheduled: 0,
         repeats: new Map(),
+        logs: new Map(),
         paused: false,
         seq: 0,
         waiters: new Set(),
@@ -927,6 +1033,7 @@ export class MemoryDriver implements JobsDriver {
     }
 
     queue.order.delete(id);
+    queue.logs.delete(id);
     this.#leaveWaiting(queue, id);
     return queue.jobs.delete(id);
   }

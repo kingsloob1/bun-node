@@ -1,4 +1,5 @@
 import type { DriverConfig, JobsDriver } from "./drivers/index";
+import type { BackoffStrategy } from "./queue/backoff";
 import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
 import type {
   BunQueueOptions,
@@ -8,13 +9,16 @@ import type {
   JobProcessor,
 } from "./queue/index";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
+import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
 import { resolveDriver } from "./drivers/index";
+import { BackoffStrategies } from "./queue/backoff";
 import { JobDefinitions } from "./queue/definitions";
 import { BunQueue, BunQueueWorker } from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
 import { BunRunnerManager } from "./runner/index";
 import { ConfigError } from "./shared/errors";
+import { assertDateParser } from "./shared/humanTime";
 import { assertNamespace } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
 
@@ -45,6 +49,11 @@ export interface BunJobsOptions {
    * the namespace already owns `jobs`.
    */
   registryQueue?: string;
+  /**
+   * Reads the dates in phrases for every queue created here, unless a queue is
+   * given its own. Defaults to `chrono-node`. See `DateParser` for the shape.
+   */
+  dateParser?: DateParser;
 }
 
 /**
@@ -93,8 +102,17 @@ export class BunJobs {
   readonly #workers = new Set<BunQueueWorker<any, any>>();
   /** Jobs defined by name, and how to run them. */
   readonly #definitions = new JobDefinitions();
+  /**
+   * Backoff strategies registered with `defineBackoff`.
+   *
+   * Handed to every worker created here by reference, so a strategy defined
+   * after a worker was built still reaches it.
+   */
+  readonly #backoffs = new BackoffStrategies();
   /** The queue the defined jobs are added to and consumed from. */
   readonly #registryQueue: string;
+  /** Reads dates in phrases for queues created here, when one was given. */
+  readonly #dateParser: DateParser | undefined;
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: BunQueueWorker<any, any> | undefined;
 
@@ -111,6 +129,10 @@ export class BunJobs {
         : undefined;
     this.#defaultJobOptions = options.defaultJobOptions;
     this.#registryQueue = options.registryQueue ?? "jobs";
+    this.#dateParser =
+      options.dateParser === undefined
+        ? undefined
+        : assertDateParser(options.dateParser);
     this.#runnerDefaults = options.runnerDefaults;
     this.#logger = createJobsLogger(
       options.logger,
@@ -174,6 +196,7 @@ export class BunJobs {
       driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
       defaultJobOptions: options?.defaultJobOptions ?? this.#defaultJobOptions,
+      dateParser: options?.dateParser ?? this.#dateParser,
     });
 
     this.#queues.set(name, queue);
@@ -191,6 +214,7 @@ export class BunJobs {
       namespace: this.namespace,
       driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
+      backoffStrategies: options?.backoffStrategies ?? this.#backoffs,
     });
 
     this.#workers.add(worker);
@@ -226,6 +250,24 @@ export class BunJobs {
     }
 
     this.#definitions.set<TData, TResult>({ name, handler, options });
+    return this;
+  }
+
+  /**
+   * Registers a backoff strategy that jobs can name.
+   *
+   * ```ts
+   * jobs.defineBackoff("slowRamp", ({ attempt }) => attempt * 30_000);
+   * await jobs.now("sync", data, { attempts: 5, backoff: { type: "slowRamp" } });
+   * ```
+   *
+   * The job stores the name; the worker that runs it calls the function. So
+   * every process that consumes such jobs has to define the strategy too — one
+   * that does not falls back to the default backoff and logs a warning.
+   * Return `false` to stop retrying.
+   */
+  defineBackoff(name: string, strategy: BackoffStrategy): this {
+    this.#backoffs.define(name, strategy);
     return this;
   }
 

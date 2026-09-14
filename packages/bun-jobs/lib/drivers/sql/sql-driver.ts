@@ -12,6 +12,7 @@ import type {
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -30,6 +31,7 @@ import { SQL as BunSQL } from "bun";
 import { resolveConnectionUrl, resolveNames } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
+import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
 import { resolveSyncOptions } from "../schemaSync";
@@ -134,8 +136,49 @@ const STATES: JobState[] = [
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
 
+/** States whose due time `updateJob` may move. */
+const PENDING: JobState[] = ["waiting", "delayed"];
+
+/**
+ * How long the orphaned-log sweep rests after a full pass over a queue.
+ *
+ * Orphans only make lines nobody can read take up disk — every read already
+ * ignores them — so there is no hurry. Resting keeps an idle queue's
+ * maintenance tick from paying a query every second for nothing.
+ */
+const LOG_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * Whether an error is the engine saying the `log_key` column does not exist.
+ *
+ * Each engine words it differently — Postgres "column … does not exist",
+ * MySQL and MariaDB "Unknown column", SQLite "no such column" — and the
+ * engine's error sits one or more `cause` links below the driver's wrapper,
+ * so the whole chain is read.
+ */
+function isMissingLogKey(error: unknown): boolean {
+  for (let at = error, depth = 0; at != null && depth < 5; depth++) {
+    if (typeof at !== "object") {
+      break;
+    }
+
+    const message = String((at as { message?: unknown }).message ?? "");
+
+    if (
+      /log_key/.test(message) &&
+      /does not exist|unknown column|no such column/i.test(message)
+    ) {
+      return true;
+    }
+
+    at = (at as { cause?: unknown }).cause;
+  }
+
+  return false;
+}
+
 /** The tables this driver uses. */
-export const SQL_TABLES = ["jobs", "locks", "kv", "events"] as const;
+export const SQL_TABLES = ["jobs", "locks", "kv", "events", "logs"] as const;
 
 /** One of the tables this driver uses. */
 export type SqlTable = (typeof SQL_TABLES)[number];
@@ -273,6 +316,29 @@ export class SqlDriver implements JobsDriver {
   readonly #pauseCache = new PauseCache();
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /**
+   * Where the orphaned-log sweep has got to in each queue, keyed by
+   * `ns` and `queue`.
+   *
+   * `after` is the last line looked at, or absent at the start of a pass;
+   * `notBefore` is when the next page may run, which is only in the future
+   * once a pass has finished. In memory, so a restart simply starts a pass
+   * over — the sweep is idempotent.
+   */
+  readonly #logSweeps = new Map<
+    string,
+    { after?: { logKey: string; seq: string }; notBefore: number }
+  >();
+
+  /**
+   * Whether the `jobs` table was last seen without its `log_key` column — an
+   * install from before job logs that has not been synced.
+   *
+   * Lets removal and maintenance skip log housekeeping without sending a
+   * statement that is known to fail. Cleared by a sync, and by any log call
+   * that succeeds, since another process may have run the sync.
+   */
+  #logKeyMissing = false;
 
   constructor(options: SqlDriverOptions) {
     // A URL names its engine; fields do not, so `adapter` is required there.
@@ -382,6 +448,9 @@ export class SqlDriver implements JobsDriver {
    * wait on the promise it is running inside.
    */
   async #syncSchema(options: SchemaSyncOptions): Promise<SchemaChange[]> {
+    // A sync may be what adds `log_key`, so log housekeeping asks again.
+    this.#logKeyMissing = false;
+
     return await syncSqlSchema(
       {
         all: async (text, params) => await this.#all(text, params),
@@ -1510,6 +1579,198 @@ export class SqlDriver implements JobsDriver {
     return updated > 0;
   }
 
+  /**
+   * Changes a job's data, priority or due time in one conditional write.
+   *
+   * The state a new `runAt` leads to depends only on `runAt` and `now`, both
+   * known here, so it is decided before the statement rather than in it — and
+   * that lets every rule the patch has become a state condition in the
+   * `WHERE`. A job claimed a moment before this runs no longer matches, which
+   * is what makes `onlyIn` safe against a worker claiming concurrently.
+   */
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    await this.connect();
+
+    // `runAt` narrows the job to the states that have a due time to move, and
+    // `onlyIn` narrows it further. `null` is no condition at all.
+    let allowed: JobState[] | null = patch.onlyIn ? [...patch.onlyIn] : null;
+
+    if (patch.runAt !== undefined) {
+      allowed = (allowed ?? PENDING).filter((state) => PENDING.includes(state));
+    }
+
+    if (allowed?.length === 0) {
+      return null;
+    }
+
+    const table = this.#tables.jobs;
+
+    /** The `SET` list, bound in statement order by whichever binder runs it. */
+    const assignments = (bind: (value: unknown) => string): string[] => {
+      const set: string[] = [];
+
+      if (patch.data !== undefined) {
+        set.push(`data = ${bind(this.dialect.jsonIn(patch.data))}`);
+      }
+
+      // The column is what claiming orders by and what a record reads back;
+      // the copy in `opts` is kept in step so the two never disagree.
+      if (patch.priority !== undefined) {
+        set.push(`priority = ${bind(patch.priority)}`);
+        set.push(
+          `opts = ${this.dialect.jsonSetInteger("opts", "priority", bind(patch.priority))}`,
+        );
+      }
+
+      if (patch.runAt !== undefined) {
+        set.push(`run_at = ${bind(patch.runAt)}`);
+        set.push(`state = ${bind(patch.runAt > now ? "delayed" : "waiting")}`);
+      }
+
+      return set;
+    };
+
+    /** Which job, and in which states it may be changed. */
+    const where = (bind: (value: unknown) => string): string =>
+      `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}${
+        allowed
+          ? ` AND state IN (${allowed.map((state) => bind(state)).join(", ")})`
+          : ""
+      }`;
+
+    // Nothing to write: the answer is the job, if it is in a state allowed.
+    if (assignments(() => "?").length === 0) {
+      const read = this.#binder();
+      const row = await this.#one<Record<string, unknown>>(
+        `SELECT * FROM ${table} WHERE ${where(read.bind)}`,
+        read.values,
+      );
+      return row ? this.#toRecord(row) : null;
+    }
+
+    if (this.dialect.supportsReturning) {
+      const { bind, values } = this.#binder();
+      const set = assignments(bind).join(", ");
+      const rows = await this.#all<Record<string, unknown>>(
+        `UPDATE ${table} SET ${set} WHERE ${where(bind)} RETURNING *`,
+        values,
+      );
+      return rows[0] ? this.#toRecord(rows[0]) : null;
+    }
+
+    // MySQL and MariaDB cannot return the row, and their affected-row count is
+    // rows *changed*, not rows matched — a patch that sets what is already
+    // stored reports zero. So the row is locked in the allowed state first,
+    // which is the check, and then written and read back under that lock.
+    return await this.dialect.transaction(this.#sql, async (tx) => {
+      const lock = this.#binder();
+      const held = await this.#one<{ id: string }>(
+        `SELECT id FROM ${table} WHERE ${where(lock.bind)} FOR UPDATE`,
+        lock.values,
+        tx,
+      );
+
+      if (!held) {
+        return null;
+      }
+
+      const write = this.#binder();
+      const set = assignments(write.bind).join(", ");
+      await this.#all(
+        `UPDATE ${table} SET ${set}
+          WHERE ns = ${write.bind(q.ns)} AND queue = ${write.bind(q.queue)}
+            AND id = ${write.bind(id)}`,
+        write.values,
+        tx,
+      );
+
+      const read = this.#binder();
+      const row = await this.#one<Record<string, unknown>>(
+        `SELECT * FROM ${table}
+          WHERE ns = ${read.bind(q.ns)} AND queue = ${read.bind(q.queue)}
+            AND id = ${read.bind(id)}`,
+        read.values,
+        tx,
+      );
+
+      return row ? this.#toRecord(row) : null;
+    });
+  }
+
+  /**
+   * Appends a line to a job's log.
+   *
+   * Lines belong to a job through its `log_key`, a random token the job is
+   * given the first time it logs anything. An id repeats, and so does a
+   * `created_at` — a job completed with `removeOnComplete` and re-added under
+   * its id lands in the same millisecond most of the time — but a re-added job
+   * starts with no key, so none of the old lines are its.
+   */
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    await this.connect();
+
+    return await this.#requireLogKey(async () => {
+      // Every line after the first: the job has its key, and the insert reads
+      // it in the same statement, so `jobs` is not written to at all.
+      const added = await this.#insertLogLine(q, id, line);
+
+      if (added === 0) {
+        // Either the job's first line, or no such job. Stamping answers both.
+        const key = await this.#stampLogKey(q, id);
+
+        if (key === null) {
+          return 0;
+        }
+
+        const { bind, values } = this.#binder();
+        await this.#run(
+          `INSERT INTO ${this.#tables.logs} (ns, queue, job_id, log_key, message)
+           VALUES (${bind(q.ns)}, ${bind(q.queue)}, ${bind(id)}, ${bind(key)}, ${bind(line)})`,
+          values,
+        );
+      }
+
+      if (keep > 0) {
+        await this.#trimJobLog(q, id, keep);
+      }
+
+      return await this.#countJobLogs(q, id);
+    });
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    await this.connect();
+
+    return await this.#requireLogKey(async () => {
+      const page = this.#binder();
+      const [rows, count] = await Promise.all([
+        this.#all<{ message: string }>(
+          `SELECT l.message ${this.#logsOfJob(q, id, page.bind)}
+            ORDER BY l.seq ${opts.order === "desc" ? "DESC" : "ASC"}
+            LIMIT ${page.bind(opts.limit)} OFFSET ${page.bind(opts.offset)}`,
+          page.values,
+        ),
+        this.#countJobLogs(q, id),
+      ]);
+
+      return { logs: rows.map((row) => String(row.message)), count };
+    });
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     await this.connect();
 
@@ -1582,6 +1843,11 @@ export class SqlDriver implements JobsDriver {
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     await this.connect();
+
+    // Its log first, while the job's key can still be read — on the same
+    // condition as the removal, so an active job keeps its log. A line written
+    // between the two statements is left for the sweep.
+    await this.#forgetLogs(q, [id], true);
 
     const { bind, values } = this.#binder();
     const removed = await this.#run(
@@ -1720,6 +1986,12 @@ export class SqlDriver implements JobsDriver {
       scan.values,
     );
 
+    // Before the jobs go, while their keys can still be read.
+    await this.#forgetLogs(
+      q,
+      rows.map((row) => row.id),
+    );
+
     for (const row of rows) {
       await this.#deleteJob(q, row.id);
     }
@@ -1739,10 +2011,20 @@ export class SqlDriver implements JobsDriver {
       scan.values,
     );
 
+    // Before the jobs go, while their keys can still be read.
+    await this.#forgetLogs(
+      q,
+      rows.map((row) => row.id),
+    );
+
     let removed = 0;
     for (const row of rows) {
       removed += await this.#deleteJob(q, row.id);
     }
+
+    // The maintenance tick is where lines orphaned by the paths that cannot
+    // afford to delete them — completion and failure with retention — go.
+    await this.#sweepOrphanLogs(q, now, limit);
 
     return removed;
   }
@@ -1751,6 +2033,24 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const states = includeDelayed ? ["waiting", ...SCHEDULED] : ["waiting"];
+
+    // The lines of the jobs about to go, found through those jobs' keys rather
+    // than by scanning the queue's whole log, so the cost follows what is
+    // drained. Before the drain, because afterwards the keys are gone too.
+    await this.#ifLogKey(async () => {
+      const logs = this.#binder();
+      await this.#run(
+        `DELETE FROM ${this.#tables.logs}
+          WHERE ns = ${logs.bind(q.ns)} AND queue = ${logs.bind(q.queue)}
+            AND log_key IN (
+              SELECT log_key FROM ${this.#tables.jobs}
+               WHERE ns = ${logs.bind(q.ns)} AND queue = ${logs.bind(q.queue)}
+                 AND state IN (${states.map((state) => logs.bind(state)).join(", ")})
+            )`,
+        logs.values,
+      );
+    });
+
     const { bind, values } = this.#binder();
 
     return await this.#run(
@@ -2287,6 +2587,299 @@ export class SqlDriver implements JobsDriver {
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
       values,
     );
+  }
+
+  /**
+   * `FROM … WHERE …` selecting one job's log lines, as `l`.
+   *
+   * Starts from the job, by primary key, and joins its lines on `log_key`. A
+   * job that has never logged has a null key, which joins nothing — so a job
+   * re-added under a reused id sees none of the lines of the one it replaced.
+   */
+  #logsOfJob(
+    q: QueueRef,
+    id: string,
+    bind: (value: unknown) => string,
+  ): string {
+    const { jobs, logs } = this.#tables;
+
+    return `FROM ${jobs} JOIN ${logs} l
+        ON l.ns = ${jobs}.ns AND l.queue = ${jobs}.queue
+       AND l.log_key = ${jobs}.log_key
+     WHERE ${jobs}.ns = ${bind(q.ns)} AND ${jobs}.queue = ${bind(q.queue)}
+       AND ${jobs}.id = ${bind(id)}`;
+  }
+
+  /** How many lines a job's log holds, counting only the current job's. */
+  async #countJobLogs(q: QueueRef, id: string): Promise<number> {
+    const { bind, values } = this.#binder();
+    const row = await this.#one<{ total: number | string }>(
+      `SELECT COUNT(*) AS total ${this.#logsOfJob(q, id, bind)}`,
+      values,
+    );
+
+    return Number(row?.total ?? 0);
+  }
+
+  /**
+   * Appends a line under the key the job already has, reading it in the same
+   * statement. Returns how many rows went in: none for a job without a key
+   * yet, and none for no job at all.
+   */
+  async #insertLogLine(q: QueueRef, id: string, line: string): Promise<number> {
+    const { jobs, logs } = this.#tables;
+    const { bind, values } = this.#binder();
+
+    const statement = `INSERT INTO ${logs} (ns, queue, job_id, log_key, message)
+       SELECT ns, queue, id, log_key, ${bind(line)} FROM ${jobs}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND id = ${bind(id)} AND log_key IS NOT NULL`;
+
+    // Counted from `RETURNING` where the engine has it. Bun's SQLite client
+    // reports a count of 0 for an `INSERT … SELECT` that did insert a row, so
+    // the affected-row count would say every job is missing.
+    return this.dialect.supportsReturning
+      ? (
+          await this.#all<{ seq: unknown }>(
+            `${statement} RETURNING seq`,
+            values,
+          )
+        ).length
+      : await this.#run(statement, values);
+  }
+
+  /**
+   * Gives a job its log key if it has none, and answers with the key it has —
+   * or `null` when there is no such job.
+   *
+   * `COALESCE` makes it one atomic step: two first lines racing both write,
+   * and the second writes back the key the first chose.
+   */
+  async #stampLogKey(q: QueueRef, id: string): Promise<string | null> {
+    const jobs = this.#tables.jobs;
+    const token = newId();
+
+    /** The update, bound in statement order by whichever binder runs it. */
+    const stamp = (bind: (value: unknown) => string): string =>
+      `UPDATE ${jobs} SET log_key = COALESCE(log_key, ${bind(token)})
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`;
+
+    if (this.dialect.supportsReturning) {
+      const { bind, values } = this.#binder();
+      const row = await this.#one<{ log_key: string | null }>(
+        `${stamp(bind)} RETURNING log_key`,
+        values,
+      );
+      return row?.log_key == null ? null : String(row.log_key);
+    }
+
+    // MySQL and MariaDB cannot return it, and their affected-row count cannot
+    // tell "no job" from "already had a key". Reading it back on the same
+    // connection, inside the transaction, sees exactly what the update left.
+    return await this.dialect.transaction(this.#sql, async (tx) => {
+      const write = this.#binder();
+      await this.#all(stamp(write.bind), write.values, tx);
+
+      const read = this.#binder();
+      const row = await this.#one<{ log_key: string | null }>(
+        `SELECT log_key FROM ${jobs}
+          WHERE ns = ${read.bind(q.ns)} AND queue = ${read.bind(q.queue)}
+            AND id = ${read.bind(id)}`,
+        read.values,
+        tx,
+      );
+      return row?.log_key == null ? null : String(row.log_key);
+    });
+  }
+
+  /** Drops a job's log lines beyond its `keep` most recent. */
+  async #trimJobLog(q: QueueRef, id: string, keep: number): Promise<void> {
+    const { jobs, logs } = this.#tables;
+    const { bind, values } = this.#binder();
+
+    // The derived table is for MySQL, which will not read the table a `DELETE`
+    // is deleting from any other way; the others do not mind it.
+    await this.#run(
+      `DELETE FROM ${logs}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND log_key = (
+            SELECT log_key FROM ${jobs}
+             WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
+          )
+          AND seq < (
+            SELECT seq FROM (
+              SELECT l.seq ${this.#logsOfJob(q, id, bind)}
+               ORDER BY l.seq DESC
+               LIMIT 1 OFFSET ${Math.max(0, Math.floor(keep) - 1)}
+            ) AS newest
+          )`,
+      values,
+    );
+  }
+
+  /**
+   * Deletes the log lines of jobs about to be removed, through their keys.
+   *
+   * Called before the removal, while the keys can still be read. `idle` limits
+   * it to jobs that are not active, for a removal that will skip those.
+   */
+  async #forgetLogs(q: QueueRef, ids: string[], idle = false): Promise<void> {
+    await this.#ifLogKey(async () => {
+      const { logs, jobs } = this.#tables;
+
+      for (let start = 0; start < ids.length; start += INSERT_CHUNK) {
+        const chunk = ids.slice(start, start + INSERT_CHUNK);
+        const { bind, values } = this.#binder();
+
+        await this.#run(
+          `DELETE FROM ${logs}
+            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+              AND log_key IN (
+                SELECT log_key FROM ${jobs}
+                 WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+                   AND id IN (${chunk.map((id) => bind(id)).join(", ")})${
+                     idle ? " AND state <> 'active'" : ""
+                   }
+              )`,
+          values,
+        );
+      }
+    });
+  }
+
+  /**
+   * Deletes log lines whose job is gone, one bounded page at a time.
+   *
+   * These come from the removals that deliberately do not touch the log:
+   * completion with `removeOnComplete: true` is one `DELETE` on the hot path,
+   * and adding a second statement there to tidy a table most queues never
+   * write to would charge every job for it. Nothing reads an orphan — every
+   * read goes through the key of a job that exists — so they only cost disk
+   * until here.
+   *
+   * A line is an orphan when no job has its key. Each call looks at no more
+   * than `limit` lines, walking the queue's log in `(log_key, seq)` order from
+   * where the last call stopped, and checks each line's job by primary key, so
+   * the cost of a call does not grow with the log. A finished pass rests for
+   * {@link LOG_SWEEP_INTERVAL_MS}.
+   */
+  async #sweepOrphanLogs(
+    q: QueueRef,
+    now: number,
+    limit: number,
+  ): Promise<void> {
+    // Encoded rather than joined, so no pair of names can produce another's key.
+    const key = JSON.stringify([q.ns, q.queue]);
+    const sweep = this.#logSweeps.get(key) ?? { notBefore: 0 };
+
+    if (now < sweep.notBefore) {
+      return;
+    }
+
+    await this.#ifLogKey(async () => {
+      const { logs, jobs } = this.#tables;
+      const size = Math.max(1, Math.floor(limit));
+
+      const scan = this.#binder();
+      const after = sweep.after;
+      const rows = await this.#all<{
+        seq: number | string;
+        log_key: string;
+        live: string | null;
+      }>(
+        `SELECT l.seq, l.log_key, ${jobs}.id AS live
+           FROM ${logs} l LEFT JOIN ${jobs}
+             ON ${jobs}.ns = l.ns AND ${jobs}.queue = l.queue
+            AND ${jobs}.id = l.job_id AND ${jobs}.log_key = l.log_key
+          WHERE l.ns = ${scan.bind(q.ns)} AND l.queue = ${scan.bind(q.queue)}${
+            after
+              ? ` AND (l.log_key > ${scan.bind(after.logKey)}
+                   OR (l.log_key = ${scan.bind(after.logKey)} AND l.seq > ${scan.bind(after.seq)}))`
+              : ""
+          }
+          ORDER BY l.log_key ASC, l.seq ASC
+          LIMIT ${size}`,
+        scan.values,
+      );
+
+      const orphans = rows.filter((row) => row.live === null);
+
+      if (orphans.length > 0) {
+        const { bind, values } = this.#binder();
+        await this.#run(
+          `DELETE FROM ${logs}
+            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+              AND seq IN (${orphans.map((row) => bind(row.seq)).join(", ")})`,
+          values,
+        );
+      }
+
+      const last = rows.at(-1);
+
+      // A short page is the end of the log: rest, then start over.
+      this.#logSweeps.set(
+        key,
+        rows.length < size || !last
+          ? { notBefore: now + LOG_SWEEP_INTERVAL_MS }
+          : {
+              after: { logKey: String(last.log_key), seq: String(last.seq) },
+              notBefore: 0,
+            },
+      );
+    });
+  }
+
+  /**
+   * Runs log work that a caller asked for, translating a missing `log_key`
+   * column into an error that says what to do about it.
+   *
+   * `CREATE TABLE IF NOT EXISTS` gives a new install the column, but an
+   * install created before job logs existed keeps its old `jobs` table until a
+   * sync adds it — and the engine's own "unknown column" names neither the
+   * feature nor the fix.
+   */
+  async #requireLogKey<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      const result = await work();
+      this.#logKeyMissing = false;
+      return result;
+    } catch (error) {
+      if (!isMissingLogKey(error)) {
+        throw error;
+      }
+
+      this.#logKeyMissing = true;
+      throw new ConfigError(
+        `Job logs need the log_key column on ${this.#tables.jobs}, which this database does not have yet. Run driver.syncSchema(), or construct the driver with syncSchema: true, to add it.`,
+        { table: this.#tables.jobs, column: "log_key" },
+      );
+    }
+  }
+
+  /**
+   * Runs log housekeeping on a removal or maintenance path, skipping it where
+   * the `log_key` column does not exist.
+   *
+   * Without the column no job can have logged anything, so there is nothing
+   * to tidy — and failing a `removeJob` or the worker's maintenance tick over
+   * a feature the application may not use would break an install that worked
+   * before the upgrade. Once seen missing it is not asked about again until a
+   * sync, or a log call that succeeds, says otherwise.
+   */
+  async #ifLogKey(work: () => Promise<void>): Promise<void> {
+    if (this.#logKeyMissing) {
+      return;
+    }
+
+    try {
+      await work();
+    } catch (error) {
+      if (!isMissingLogKey(error)) {
+        throw error;
+      }
+
+      this.#logKeyMissing = true;
+    }
   }
 
   /** Reads one key/value document. */

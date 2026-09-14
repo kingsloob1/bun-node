@@ -1,4 +1,4 @@
-import type { BackoffOptions } from "@kingsleyweb/bun-common";
+import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
   ExecutionMode,
@@ -7,7 +7,13 @@ import type {
   RepeatRecord,
   Retention,
 } from "../drivers/index";
+import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
+import type {
+  BackoffStrategies,
+  BackoffStrategy,
+  JobBackoffOptions,
+} from "./backoff";
 import type { Job } from "./Job";
 
 /**
@@ -84,7 +90,7 @@ export interface JobOptions {
    * Delay between attempts: a number of milliseconds, or a schedule.
    * Defaults to exponential from 1s, capped at 5 minutes, with jitter.
    */
-  backoff?: number | BackoffOptions;
+  backoff?: number | JobBackoffOptions;
   /** Per-attempt timeout in milliseconds. `0` (the default) means none. */
   timeout?: number;
   /**
@@ -97,6 +103,13 @@ export interface JobOptions {
   removeOnFail?: Retention;
   /** How many stack traces a failing job keeps. Defaults to `5`. */
   keepStacktraces?: number;
+  /**
+   * A queue, in the same namespace, that receives a copy of this job when it
+   * dies — as a {@link DeadLetter} carrying the original id, data and error.
+   * Wins over the worker's `deadLetterQueue`. The dead job itself is kept or
+   * removed by `removeOnFail` as usual.
+   */
+  deadLetter?: string;
   /** Makes this a repeatable job. */
   repeat?: RepeatOptions;
 }
@@ -161,6 +174,15 @@ export interface BunQueueOptions {
    * trip per job.
    */
   publish?: boolean;
+  /**
+   * Reads the dates in phrases — `on("2nd december 2026")`, `every("every 2
+   * weeks from payday")`, `repeat: { startAt: "tomorrow at 9am" }`. Defaults
+   * to `chrono-node`, loaded when a phrase first needs it.
+   *
+   * Give one to read dates `chrono-node` does not, or to avoid installing it.
+   * Checked when the queue is built; see `DateParser` for the shape.
+   */
+  dateParser?: DateParser;
 }
 
 /** Options for a {@link BunQueueWorker}. */
@@ -216,6 +238,63 @@ export interface BunQueueWorkerOptions {
    * job. Defaults to `"in-process"`.
    */
   isolation?: ExecutionMode;
+  /**
+   * Named backoff strategies, for jobs whose `backoff.type` names one.
+   *
+   * Resolved here, on the worker, because a job's options are stored and a
+   * function cannot be. A job naming a strategy this worker was not given
+   * falls back to the default backoff and logs a warning rather than losing
+   * its remaining attempts. A worker from `BunJobs` is given the strategies
+   * registered with `defineBackoff`.
+   */
+  backoffStrategies?: BackoffStrategies | Record<string, BackoffStrategy>;
+  /**
+   * The dead-letter queue for jobs that do not name their own `deadLetter`.
+   * Unset by default: a dead job stays where it died.
+   */
+  deadLetterQueue?: string;
+}
+
+/**
+ * What a dead-letter queue receives: the job that died, as it was.
+ *
+ * Added under the original job's name, so a worker on the dead-letter queue
+ * can dispatch on it exactly as the original worker did, and with an id
+ * derived from the original's, so a failure noticed twice files one letter.
+ */
+export interface DeadLetter<TData = unknown> {
+  /** The queue the job died in. */
+  queue: string;
+  /** Its id there. */
+  id: string;
+  /** Its name. */
+  name: string;
+  /** What it carried. */
+  data: TData;
+  /** The failure that killed it. */
+  failedReason: SerializedError;
+  /** How many attempts it had made. */
+  attemptsMade: number;
+  /** When it died, in epoch milliseconds. */
+  diedAt: number;
+}
+
+/** Which finished jobs {@link BunQueue.retryAll} returns to the queue. */
+export interface RetryAllOptions<TData = unknown, TResult = unknown> {
+  /** Only jobs with this name. */
+  name?: string;
+  /**
+   * Only jobs whose last failure matches: a substring of, or a pattern tested
+   * against, `"<error name>: <message>"`. A job with no failure never matches,
+   * so this selects nothing among completed jobs.
+   */
+  reason?: string | RegExp;
+  /** Only jobs this returns `true` for. Applied after `name` and `reason`. */
+  filter?: (job: Job<TData, TResult>) => boolean;
+  /** Stop after this many. Defaults to every match. */
+  limit?: number;
+  /** Start their attempts again from zero. Defaults to `true`, as `retry()` does. */
+  resetAttempts?: boolean;
 }
 
 /**
@@ -236,7 +315,8 @@ export type JobScopedEvent =
   | "completed"
   | "failed"
   | "retrying"
-  | "dead";
+  | "dead"
+  | "deadLettered";
 
 /**
  * The same job events, qualified by the job's name.
@@ -300,6 +380,8 @@ type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
   drained: (count: number) => void;
   /** Finished jobs were removed. */
   cleaned: (ids: string[], state: JobState) => void;
+  /** Finished jobs were returned to the queue together, by `retryJobs` or `retryAll`. */
+  retried: (ids: string[]) => void;
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: (key: string, nextRunAt: number) => void;
   /** Something failed outside a job. */
@@ -333,6 +415,11 @@ type BunQueueWorkerBaseEvents<TData = unknown, TResult = unknown> = {
   retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
   /** A job exhausted its attempts. */
   dead: (job: Job<TData, TResult>, error: Error) => void;
+  /** A dead job was copied to its dead-letter queue, as `letter`. */
+  deadLettered: (
+    job: Job<TData, TResult>,
+    letter: Job<DeadLetter<TData>, unknown>,
+  ) => void;
   /** Jobs were recovered from workers that died holding them. */
   stalled: (ids: string[]) => void;
   /** A job's lock was lost mid-attempt. */

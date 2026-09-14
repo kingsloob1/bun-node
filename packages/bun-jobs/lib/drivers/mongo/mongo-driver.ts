@@ -5,6 +5,7 @@ import type {
   Filter,
   MongoClient,
   MongoClientOptions,
+  ObjectId,
   UpdateFilter,
 } from "mongodb";
 import type {
@@ -18,6 +19,7 @@ import type {
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobPatch,
   JobRecord,
   JobsDriver,
   JobState,
@@ -65,8 +67,21 @@ import { resolveSyncOptions } from "../schemaSync";
 /** How often a polling wait re-checks, in milliseconds. */
 const POLL_MS = 50;
 
-/** The collections this driver uses. */
-export const MONGO_COLLECTIONS = ["jobs", "locks", "kv", "events"] as const;
+/**
+ * The collections this driver uses.
+ *
+ * Job logs have a collection of their own rather than an array on the job:
+ * a claim returns the whole document, so lines kept on it would ride along on
+ * every claim of a job that logs, and grow the document the claim index
+ * points at.
+ */
+export const MONGO_COLLECTIONS = [
+  "jobs",
+  "locks",
+  "kv",
+  "events",
+  "jobLogs",
+] as const;
 
 /** One of the collections this driver uses. */
 export type MongoCollection = (typeof MONGO_COLLECTIONS)[number];
@@ -112,6 +127,27 @@ const INSERT_CHUNK = 1_000;
 
 /** States holding a job that is due later. */
 const SCHEDULED: JobState[] = ["delayed", "failed"];
+
+/** The states whose due time `updateJob` may move. */
+const PENDING: JobState[] = ["waiting", "delayed"];
+
+/**
+ * How many times a priority change may lose the race to rewrite `opts`.
+ *
+ * It can only lose to another priority change landing between its read and
+ * its write, so one retry is the reasoning, and this is the margin on it.
+ */
+const PATCH_RETRIES = 3;
+
+/**
+ * How many log lines one orphan sweep reads, per job the maintenance batch
+ * allows.
+ *
+ * The sweep walks lines rather than jobs because that is what the index can
+ * bound; a job's lines are adjacent in it, so this is roughly how many lines a
+ * logging job is assumed to keep before a sweep spans fewer jobs than asked.
+ */
+const LOG_SWEEP_LINES_PER_JOB = 10;
 
 /** Options for {@link MongoDriver}. */
 export interface MongoDriverOptions extends ConnectionInput {
@@ -211,6 +247,16 @@ interface JobDocument {
   failedReason?: string;
   /** Recent failures, as JSON. Absent until it has one. */
   stacktrace?: string;
+  /**
+   * Names this job's log lines. Absent until the job logs its first line, so
+   * adding, claiming and settling a job never write it — and never read back
+   * through `#toRecord`, which is not part of the record.
+   *
+   * A random token rather than anything derived from the job: a job completed
+   * and re-added under its id in the same millisecond is identical in every
+   * field that could be derived, and has to start with an empty log anyway.
+   */
+  logKey?: string;
 }
 
 /** A lock as it is stored. */
@@ -247,6 +293,33 @@ interface KvDocument {
   value?: string;
   /** When it last changed. */
   updatedAt: number;
+}
+
+/** One line of a job's log, as it is stored. */
+interface JobLogDocument {
+  /** Assigned by the server; not used for ordering. */
+  _id?: ObjectId;
+  /** The namespace the job belongs to. */
+  ns: string;
+  /** The queue it belongs to. */
+  queue: string;
+  /** The job's id within that queue. Used only by the orphan sweep. */
+  jobId: string;
+  /**
+   * The owning job's `logKey`.
+   *
+   * What ties a line to one *incarnation* of an id. Completing with retention
+   * `true` deletes the job in one operation and leaves its lines behind — a
+   * second delete there would tax the hottest path for a feature most jobs
+   * never use. Reads and trims match on this, so a job added later under the
+   * same id, which gets a key of its own, sees none of those lines, and a sweep
+   * removes them eventually.
+   */
+  logKey: string;
+  /** Orders lines within a job; see `MongoDriver.#nextLogSeq`. */
+  seq: number;
+  /** The line, verbatim. */
+  line: string;
 }
 
 /** An event as it is stored. */
@@ -299,6 +372,16 @@ export class MongoDriver implements JobsDriver {
   readonly #ownsClient: boolean;
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /**
+   * Where each queue's orphaned-log sweep resumes: the last job id it read,
+   * keyed by `<ns>:<queue>`. Absent means start from the beginning. Per
+   * instance, which is all a rotation needs — several workers sweeping from
+   * different points only covers the log sooner.
+   */
+  readonly #logSweepFrom = new Map<string, string>();
+
+  /** The last log sequence number this instance handed out. */
+  #lastLogSeq = 0;
 
   /** The client, once connected. */
   #client: MongoClient | undefined;
@@ -1028,6 +1111,178 @@ export class MongoDriver implements JobsDriver {
     return result.matchedCount > 0;
   }
 
+  async updateJob(
+    q: QueueRef,
+    id: string,
+    patch: JobPatch,
+    now: number,
+  ): Promise<JobRecord | null> {
+    // Which states may be changed. The state a moved job lands in depends only
+    // on the new time and `now`, both known here, so the whole rule becomes
+    // part of the filter — and the check and the write are one operation.
+    const allowed =
+      patch.runAt === undefined
+        ? patch.onlyIn
+        : (patch.onlyIn ?? PENDING).filter((state) => PENDING.includes(state));
+
+    if (allowed?.length === 0) {
+      return null;
+    }
+
+    const filter: Filter<JobDocument> = {
+      _id: this.#jobId(q, id),
+      ...(allowed ? { state: { $in: allowed } } : {}),
+    };
+
+    // Written in the encoding `#toDocument` uses, so a patched job reads back
+    // exactly as an added one does.
+    const set: Partial<JobDocument> = {};
+
+    if (patch.data !== undefined) {
+      set.data = JSON.stringify(patch.data);
+    }
+
+    if (patch.runAt !== undefined) {
+      set.runAt = patch.runAt;
+      set.state = patch.runAt > now ? "delayed" : "waiting";
+    }
+
+    const jobs = await this.#jobs();
+
+    if (patch.priority === undefined) {
+      if (Object.keys(set).length === 0) {
+        const found = await jobs.findOne(filter);
+        return found ? this.#toRecord(found) : null;
+      }
+
+      const updated = await jobs.findOneAndUpdate(
+        filter,
+        { $set: set },
+        { returnDocument: "after" },
+      );
+
+      return updated ? this.#toRecord(updated) : null;
+    }
+
+    // Priority lives twice: the plain field the claim index sorts on, which is
+    // all reordering needs, and inside `opts`, which is a JSON string the
+    // server cannot edit in place. The two may legitimately differ on a stored
+    // record, so the reader cannot simply trust one — `opts` has to be
+    // rewritten, and the read it is built from is pinned in the write's filter
+    // so a concurrent change to it is retried rather than overwritten.
+    for (let attempt = 0; attempt <= PATCH_RETRIES; attempt++) {
+      const current = await jobs.findOne(filter, { projection: { opts: 1 } });
+
+      if (!current) {
+        return null;
+      }
+
+      const opts = JSON.parse(current.opts) as ResolvedJobOptions;
+
+      const updated = await jobs.findOneAndUpdate(
+        { ...filter, opts: current.opts },
+        {
+          $set: {
+            ...set,
+            priority: patch.priority,
+            opts: JSON.stringify({ ...opts, priority: patch.priority }),
+          },
+        },
+        { returnDocument: "after" },
+      );
+
+      if (updated) {
+        return this.#toRecord(updated);
+      }
+    }
+
+    throw new DriverError("mongodb", "updateJob", undefined, {
+      id,
+      reason: "the job's options kept changing underneath this",
+    });
+  }
+
+  async addJobLog(
+    q: QueueRef,
+    id: string,
+    line: string,
+    keep: number,
+  ): Promise<number> {
+    const logKey = await this.#stampLogKey(q, id);
+
+    if (logKey === null) {
+      return 0;
+    }
+
+    const logs = await this.#jobLogs();
+    const owner = { ns: q.ns, queue: q.queue, logKey };
+
+    // A job removed between the stamp above and this insert leaves one
+    // orphaned line. No job holds its key, so no later job under the id can
+    // see it, and the sweep collects it.
+    await logs.insertOne({
+      ...owner,
+      jobId: id,
+      seq: this.#nextLogSeq(),
+      line,
+    });
+
+    const count = await logs.countDocuments(owner);
+
+    if (keep <= 0 || count <= keep) {
+      return count;
+    }
+
+    const oldest = await logs
+      .find(owner)
+      .sort({ seq: 1 })
+      .limit(count - keep)
+      .project<{ _id: ObjectId }>({ _id: 1 })
+      .toArray();
+
+    const removed = await logs.deleteMany({
+      _id: { $in: oldest.map((document) => document._id) },
+    });
+
+    return count - removed.deletedCount;
+  }
+
+  async getJobLogs(
+    q: QueueRef,
+    id: string,
+    opts: { offset: number; limit: number; order: "asc" | "desc" },
+  ): Promise<{ logs: string[]; count: number }> {
+    const jobs = await this.#jobs();
+    const job = await jobs.findOne(
+      { _id: this.#jobId(q, id) },
+      { projection: { logKey: 1 } },
+    );
+
+    // No key means the job has never logged: nothing to look for.
+    if (!job?.logKey) {
+      return { logs: [], count: 0 };
+    }
+
+    const logs = await this.#jobLogs();
+    const owner = { ns: q.ns, queue: q.queue, logKey: job.logKey };
+
+    const [count, page] = await Promise.all([
+      logs.countDocuments(owner),
+      // A limit of 0 means "no limit" to MongoDB, and "nothing" to the caller.
+      opts.limit > 0
+        ? logs
+            .find(owner)
+            .sort({ seq: opts.order === "asc" ? 1 : -1 })
+            .skip(Math.max(0, opts.offset))
+            .limit(opts.limit)
+            .project<{ line: string }>({ _id: 0, line: 1 })
+            .toArray()
+        : Promise.resolve([]),
+    ]);
+
+    return { logs: page.map((document) => document.line), count };
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     const jobs = await this.#jobs();
     const document = await jobs.findOne({ _id: this.#jobId(q, id) });
@@ -1093,12 +1348,19 @@ export class MongoDriver implements JobsDriver {
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     const jobs = await this.#jobs();
 
-    const result = await jobs.deleteOne({
-      _id: this.#jobId(q, id),
-      state: { $ne: "active" },
-    });
+    // `findOneAndDelete` rather than `deleteOne`: still one operation, and it
+    // hands back the `logKey` that says which lines were this job's.
+    const removed = await jobs.findOneAndDelete(
+      { _id: this.#jobId(q, id), state: { $ne: "active" } },
+      { projection: { logKey: 1 } },
+    );
 
-    return result.deletedCount > 0;
+    if (!removed) {
+      return false;
+    }
+
+    await this.#deleteLogs(q, [removed]);
+    return true;
   }
 
   async retryJob(
@@ -1261,6 +1523,8 @@ export class MongoDriver implements JobsDriver {
     await jobs.deleteMany({
       _id: { $in: stale.map((document) => document._id) },
     });
+    await this.#deleteLogs(q, stale);
+
     return stale.map((document) => document.id);
   }
 
@@ -1274,18 +1538,25 @@ export class MongoDriver implements JobsDriver {
         expiresAt: { $ne: null, $lte: now },
       })
       .limit(Math.max(1, Math.floor(limit)))
-      .project<{ _id: string }>({ _id: 1 })
+      .project<{ _id: string; logKey?: string }>({ _id: 1, logKey: 1 })
       .toArray();
 
-    if (expired.length === 0) {
-      return 0;
+    let deleted = 0;
+
+    if (expired.length > 0) {
+      const result = await jobs.deleteMany({
+        _id: { $in: expired.map((document) => document._id) },
+      });
+      await this.#deleteLogs(q, expired);
+      deleted = result.deletedCount;
     }
 
-    const result = await jobs.deleteMany({
-      _id: { $in: expired.map((document) => document._id) },
-    });
+    // The worker calls this once a minute whether or not anything expired,
+    // which makes it the place to collect what the paths that delete without
+    // a second operation — retention on completion, a drain — left behind.
+    await this.#sweepLogs(q, limit);
 
-    return result.deletedCount;
+    return deleted;
   }
 
   async drainQueue(q: QueueRef, includeDelayed: boolean): Promise<number> {
@@ -1299,6 +1570,13 @@ export class MongoDriver implements JobsDriver {
       queue: q.queue,
       state: { $in: states },
     });
+
+    // A drain deletes without knowing which jobs it deleted, so their lines
+    // cannot be named. A drain is an operator's action rather than a hot path,
+    // so it pays for one bounded sweep; anything past the bound goes later.
+    if (result.deletedCount > 0) {
+      await this.#sweepLogs(q, result.deletedCount);
+    }
 
     return result.deletedCount;
   }
@@ -1597,6 +1875,18 @@ export class MongoDriver implements JobsDriver {
         collection: this.collections.events,
         key: { ns: 1, channel: 1, _id: 1 },
       },
+      // A job's log: counted, paged and trimmed by its key, in `seq` order.
+      {
+        collection: this.collections.jobLogs,
+        key: { ns: 1, queue: 1, logKey: 1, seq: 1 },
+      },
+      // The orphan sweep walks a queue's lines by job id. `logKey` is in the
+      // key so that walk is answered from the index alone, without fetching a
+      // single line.
+      {
+        collection: this.collections.jobLogs,
+        key: { ns: 1, queue: 1, jobId: 1, logKey: 1 },
+      },
     ];
   }
 
@@ -1780,6 +2070,160 @@ export class MongoDriver implements JobsDriver {
   async #events(): Promise<Collection<EventDocument>> {
     return (await this.#db()).collection<EventDocument>(
       this.collections.events,
+    );
+  }
+
+  /** The job-logs collection. */
+  async #jobLogs(): Promise<Collection<JobLogDocument>> {
+    return (await this.#db()).collection<JobLogDocument>(
+      this.collections.jobLogs,
+    );
+  }
+
+  /**
+   * A job's log key, giving it one if it has none yet; `null` when there is
+   * no such job.
+   *
+   * Read first, stamp only when absent. Once a job has logged, every further
+   * line costs one read of its document and no write to it — which matters
+   * because a job that logs is usually active, and its worker is writing that
+   * same document. A pipeline update with `$ifNull` would also be one round
+   * trip, but a write on every line. The stamp's filter requires the key to be
+   * absent, so two first lines racing agree on whichever key landed.
+   */
+  async #stampLogKey(q: QueueRef, id: string): Promise<string | null> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, id);
+
+    const existing = await jobs.findOne({ _id }, { projection: { logKey: 1 } });
+
+    if (!existing) {
+      return null;
+    }
+
+    if (existing.logKey) {
+      return existing.logKey;
+    }
+
+    const stamped = await jobs.findOneAndUpdate(
+      { _id, logKey: { $exists: false } },
+      { $set: { logKey: crypto.randomUUID() } },
+      { projection: { logKey: 1 }, returnDocument: "after" },
+    );
+
+    if (stamped?.logKey) {
+      return stamped.logKey;
+    }
+
+    // Lost the race to another first line, or the job has just gone.
+    const raced = await jobs.findOne({ _id }, { projection: { logKey: 1 } });
+    return raced?.logKey ?? null;
+  }
+
+  /**
+   * The next log sequence number: strictly increasing within this instance,
+   * and close to wall-clock order across instances.
+   *
+   * Not the `ObjectId`, which looks ordered and is not quite: its low bytes
+   * are a counter that starts at a random value and wraps, and the bytes above
+   * it are random per process, so two lines in one second can sort either way.
+   * Not `Date.now()` alone, which repeats within a millisecond. Milliseconds
+   * times 1024 leave room for 1024 lines a millisecond before the `+ 1` takes
+   * over, and stay exact in a double until the 23rd century.
+   */
+  #nextLogSeq(): number {
+    this.#lastLogSeq = Math.max(Date.now() * 1024, this.#lastLogSeq + 1);
+    return this.#lastLogSeq;
+  }
+
+  /**
+   * Deletes the lines of jobs that are gone. A job that never logged has no
+   * key, and costs nothing here.
+   */
+  async #deleteLogs(q: QueueRef, owners: { logKey?: string }[]): Promise<void> {
+    const keys = owners
+      .map((owner) => owner.logKey)
+      .filter((key): key is string => typeof key === "string");
+
+    if (keys.length === 0) {
+      return;
+    }
+
+    const logs = await this.#jobLogs();
+
+    for (let start = 0; start < keys.length; start += INSERT_CHUNK) {
+      await logs.deleteMany({
+        ns: q.ns,
+        queue: q.queue,
+        logKey: { $in: keys.slice(start, start + INSERT_CHUNK) },
+      });
+    }
+  }
+
+  /**
+   * Deletes a bounded slice of a queue's orphaned log lines: those whose job
+   * is gone, or has since been replaced by a job with the same id.
+   *
+   * Rotates through the queue by job id, resuming where the last sweep
+   * stopped, so every call costs the same three bounded operations however
+   * large the log is — a covered index read of the lines, one read of their
+   * jobs, one delete — and repeated calls cover all of it.
+   */
+  async #sweepLogs(q: QueueRef, limit: number): Promise<void> {
+    const logs = await this.#jobLogs();
+    const key = `${q.ns}:${q.queue}`;
+    const after = this.#logSweepFrom.get(key);
+    const lines = Math.max(1, Math.floor(limit)) * LOG_SWEEP_LINES_PER_JOB;
+
+    const scanned = await logs
+      .find({
+        ns: q.ns,
+        queue: q.queue,
+        ...(after === undefined ? {} : { jobId: { $gt: after } }),
+      })
+      .sort({ jobId: 1, logKey: 1 })
+      .limit(lines)
+      .project<{ jobId: string; logKey: string }>({
+        _id: 0,
+        jobId: 1,
+        logKey: 1,
+      })
+      .toArray();
+
+    // A short read reached the end, so the next sweep starts over. A full one
+    // resumes after the last job it saw — skipping that job's remaining lines,
+    // whose incarnation was judged here already.
+    if (scanned.length < lines) {
+      this.#logSweepFrom.delete(key);
+    } else {
+      this.#logSweepFrom.set(key, scanned.at(-1)!.jobId);
+    }
+
+    if (scanned.length === 0) {
+      return;
+    }
+
+    const jobs = await this.#jobs();
+    const live = await jobs
+      .find({
+        _id: {
+          $in: [...new Set(scanned.map((line) => line.jobId))].map((id) =>
+            this.#jobId(q, id),
+          ),
+        },
+      })
+      .project<{ logKey?: string }>({ _id: 0, logKey: 1 })
+      .toArray();
+
+    // A line is an orphan when no job holds its key: its job is gone, or was
+    // replaced by one under the same id, which got a key of its own.
+    const held = new Set(live.map((job) => job.logKey));
+
+    await this.#deleteLogs(
+      q,
+      [...new Set(scanned.map((line) => line.logKey))]
+        .filter((logKey) => !held.has(logKey))
+        .map((logKey) => ({ logKey })),
     );
   }
 

@@ -96,6 +96,24 @@ export interface SqlDialect {
   readonly timeType: string;
   /** Column type for an auto-incrementing primary key. */
   readonly serialType: string;
+  /**
+   * Column type for free text of any length: a job's log line.
+   *
+   * `TEXT` everywhere except MySQL and MariaDB, where `TEXT` stops at 64KB and
+   * a longer value is an error in strict mode — one stack trace logged whole
+   * is enough to hit it. `MEDIUMTEXT` holds 16MB.
+   */
+  readonly longTextType: string;
+  /**
+   * An expression that is `column`, a JSON object, with `key` set to the
+   * integer bound at `placeholder`.
+   *
+   * Used to keep a job's `opts.priority` in step with its `priority` column
+   * without reading the document back first. The value is cast to an integer
+   * in the expression, because the clients bind numbers as doubles on some
+   * engines and the document would otherwise say `1.0`.
+   */
+  jsonSetInteger: (column: string, key: string, placeholder: string) => string;
   /** Whether `UPDATE … RETURNING` is available. MariaDB's is not. */
   readonly supportsReturning: boolean;
   /** Whether `FOR UPDATE SKIP LOCKED` is available. */
@@ -553,6 +571,21 @@ const postgres: SqlDialect = {
   idType: "TEXT",
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
+  longTextType: "TEXT",
+  // Through `jsonb`, which has the setter, and back: the result is assigned to
+  // a `json` column or, on a table created before that became the type, a
+  // `jsonb` one, and Postgres converts either way on assignment.
+  //
+  // A single-row insert binds the document as untyped text, which Postgres
+  // stores as a JSON *string* holding the object — `jsonOut` parses it twice,
+  // so reads never notice. The setter cannot reach into a string, so one is
+  // unwrapped first; what is written back is the object itself.
+  jsonSetInteger: (column, key, placeholder) => {
+    const document = `COALESCE(${column}::jsonb, '{}'::jsonb)`;
+    const object = `(CASE WHEN jsonb_typeof(${document}) = 'string' THEN (${document} #>> '{}')::jsonb ELSE ${document} END)`;
+
+    return `jsonb_set(${object}, '{${key}}', to_jsonb(${placeholder}::integer))`;
+  },
   supportsReturning: true,
   supportsSkipLocked: true,
   insertIgnore: (table, columns) =>
@@ -668,6 +701,9 @@ const mysql: SqlDialect = {
   idType: "VARCHAR(191)",
   timeType: "BIGINT",
   serialType: "BIGINT AUTO_INCREMENT PRIMARY KEY",
+  longTextType: "MEDIUMTEXT",
+  jsonSetInteger: (column, key, placeholder) =>
+    `JSON_SET(COALESCE(${column}, JSON_OBJECT()), '$.${key}', CAST(${placeholder} AS SIGNED))`,
   supportsReturning: false,
   supportsSkipLocked: true,
   insertIgnore: (table, columns) =>
@@ -772,6 +808,9 @@ const sqlite: SqlDialect = {
   idType: "TEXT",
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",
+  longTextType: "TEXT",
+  jsonSetInteger: (column, key, placeholder) =>
+    `json_set(COALESCE(${column}, '{}'), '$.${key}', CAST(${placeholder} AS INTEGER))`,
   supportsReturning: true,
   supportsSkipLocked: false,
   insertIgnore: (table, columns) =>
