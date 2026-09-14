@@ -14,7 +14,8 @@ import {
   SqlDriver,
 } from "../lib/index";
 import { takeBooleanParam } from "../lib/shared/connection";
-import { makeJob, makeTmpDir, testNamespace } from "./helpers";
+import { queueEvent } from "../lib/shared/events";
+import { makeJob, makeTmpDir, testNamespace, waitFor } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
 /**
@@ -90,6 +91,78 @@ for (const server of SERVERS) {
       tablePrefix: `bun_jobs_test_`,
     }),
   }));
+}
+
+/**
+ * An event is delivered even when its insert commits after a later one's.
+ *
+ * A sequence number is taken at insert and seen at commit, and those orders
+ * differ under concurrent publishers: the later event commits, a poll moves
+ * the cursor past the earlier one's number, and the earlier then commits. A
+ * subscription that only asked for numbers above its cursor never saw it — the
+ * cause of a `stalled` event that never arrived on MariaDB. Held open here with
+ * an explicit transaction, so the order is certain rather than a race.
+ */
+for (const server of SERVERS) {
+  describe.skipIf(!server.url)(
+    `SQL driver: ${server.adapter} events that commit out of order`,
+    () => {
+      it("delivers an event whose insert commits after a later event's", async () => {
+        const tablePrefix = "bun_jobs_test_";
+        const driver = new SqlDriver({
+          url: server.url,
+          adapter: server.adapter,
+          tablePrefix,
+        });
+        const raw = rawClient(server.url!);
+        const namespace = testNamespace("late");
+        const heard: string[] = [];
+
+        try {
+          await driver.connect();
+          const unsubscribe = await driver.subscribe(
+            namespace,
+            "queue",
+            "late",
+            (event) => heard.push((event.payload as { id: string }).id),
+          );
+
+          // The first event takes its sequence number now and commits last.
+          const early = await raw.reserve();
+          await early.unsafe(
+            server.adapter === "postgres" ? "BEGIN" : "START TRANSACTION",
+          );
+          const event = (id: string) =>
+            queueEvent(
+              { ns: namespace, target: "late", type: "added", origin: "test" },
+              { id },
+            );
+          const first = event("first");
+          await early.unsafe(
+            `INSERT INTO ${tablePrefix}events (ns, channel, payload, created_at)
+             VALUES (${server.adapter === "postgres" ? "$1, $2, $3, $4" : "?, ?, ?, ?"})`,
+            [namespace, "queue:late", JSON.stringify(first), first.at],
+          );
+
+          // The second commits first, and a poll moves the cursor past it.
+          await driver.publish(event("second"));
+          await waitFor(() => heard.includes("second"), { timeout: 5_000 });
+
+          await early.unsafe("COMMIT");
+          early.release();
+
+          await waitFor(() => heard.includes("first"), {
+            timeout: 5_000,
+            message: "an event that committed late was never delivered",
+          });
+          await unsubscribe();
+        } finally {
+          await driver.purge(namespace).catch(() => {});
+          await driver.close().catch(() => {});
+        }
+      }, 20_000);
+    },
+  );
 }
 
 const cleanups: (() => Promise<void>)[] = [];

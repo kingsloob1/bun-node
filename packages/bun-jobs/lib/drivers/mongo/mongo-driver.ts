@@ -42,6 +42,7 @@ import {
 import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
 import { PauseCache } from "../../shared/pauseCache";
+import { EventGaps } from "../eventGaps";
 import { resolveSyncOptions } from "../schemaSync";
 
 /**
@@ -382,11 +383,22 @@ interface EventDocument {
   ns: string;
   /** `<kind>:<target>`. */
   channel: string;
+  /**
+   * The event's place in its channel, from a counter the server increments.
+   * Absent on events published before events were numbered.
+   */
+  seq?: number;
   /** The event, as JSON. */
   payload: string;
   /** When it was published. */
   at: number;
 }
+
+/**
+ * Prefix of the key-value entry holding a channel's event counter. Starts with
+ * an underscore pair so it cannot collide with a runner's key.
+ */
+const EVENT_SEQ_PREFIX = "__events_seq:";
 
 export class MongoDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
@@ -2029,13 +2041,36 @@ export class MongoDriver implements JobsDriver {
     }
   }
 
+  /**
+   * Stores an event under the next number in its channel.
+   *
+   * Numbered by a counter the server increments, not ordered by `_id`: an
+   * ObjectId is made by the client, and only its first four bytes are time — to
+   * the second — so within a second two processes' ids sort by their random
+   * middle bytes. A subscriber following `_id` passed over a second process's
+   * events for good whenever that came out lower, about half the time. The
+   * counter costs one round trip per published event, which only producers
+   * that asked to publish pay.
+   */
   async publish(event: DriverEvent): Promise<void> {
     this.#pruneEvents(event.ns);
-    const events = await this.#events();
+    const channel = `${event.kind}:${event.target}`;
+    const [kv, events] = await Promise.all([this.#kv(), this.#events()]);
+    const key = `${EVENT_SEQ_PREFIX}${channel}`;
+
+    const counter = await kv.findOneAndUpdate(
+      { _id: `${event.ns}:${key}` },
+      {
+        $inc: { "counters.seq": 1 },
+        $setOnInsert: { ns: event.ns, key },
+      },
+      { upsert: true, returnDocument: "after" },
+    );
 
     await events.insertOne({
       ns: event.ns,
-      channel: `${event.kind}:${event.target}`,
+      channel,
+      seq: counter?.counters?.seq ?? 0,
       payload: JSON.stringify(event),
       at: event.at,
     });
@@ -2081,15 +2116,14 @@ export class MongoDriver implements JobsDriver {
     const channel = `${kind}:${target}`;
 
     // Start from the present: a subscriber is told what happens next, not the
-    // history it was not there for. ObjectIds increase over time, so they
-    // order the log without a counter.
+    // history it was not there for.
     const latest = await events
-      .find({ ns, channel })
-      .sort({ _id: -1 })
+      .find({ ns, channel, seq: { $exists: true } })
+      .sort({ seq: -1 })
       .limit(1)
       .toArray();
 
-    let cursor = latest[0]?._id;
+    const gaps = new EventGaps(latest[0]?.seq ?? 0);
     let stopped = false;
 
     const timer = setInterval(() => {
@@ -2098,19 +2132,25 @@ export class MongoDriver implements JobsDriver {
           return;
         }
 
+        const now = Date.now();
+        const retry = gaps.retry(now);
         const documents = await events
           .find({
             ns,
             channel,
-            ...(cursor ? { _id: { $gt: cursor } } : {}),
+            $or: [
+              { seq: { $gt: gaps.cursor } },
+              ...(retry.length > 0 ? [{ seq: { $in: retry } }] : []),
+            ],
           })
-          .sort({ _id: 1 })
+          .sort({ seq: 1 })
           .limit(200)
           .toArray();
 
         for (const document of documents) {
-          cursor = document._id;
-          deliver(JSON.parse(document.payload) as DriverEvent);
+          if (document.seq !== undefined && gaps.accept(document.seq, now)) {
+            deliver(JSON.parse(document.payload) as DriverEvent);
+          }
         }
       })().catch(() => {
         // A failed poll is retried on the next tick.
@@ -2212,6 +2252,12 @@ export class MongoDriver implements JobsDriver {
       {
         collection: this.collections.events,
         key: { ns: 1, channel: 1, _id: 1 },
+      },
+      // Following a channel: by its number, and asking again for the ones a
+      // poll passed over.
+      {
+        collection: this.collections.events,
+        key: { ns: 1, channel: 1, seq: 1 },
       },
       // A job's log: counted, paged and trimmed by its key, in `seq` order.
       {

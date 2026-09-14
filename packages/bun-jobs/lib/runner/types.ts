@@ -297,6 +297,13 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * costs a write per event on backends that store events.
    */
   publish?: boolean;
+  /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */

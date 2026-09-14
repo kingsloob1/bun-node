@@ -82,6 +82,8 @@ export class BunQueue<
   readonly #subscribe: boolean;
   /** Whether this queue announces its events to other processes. */
   readonly #publishes: boolean;
+  /** Awaited before each publish; see `BunQueueOptions.publishGate`. */
+  readonly #publishGate: (() => Promise<void>) | undefined;
 
   /** Cancels the cross-process subscription, once opened. */
   #unsubscribe?: () => Promise<void>;
@@ -109,6 +111,7 @@ export class BunQueue<
     // two being one flag; settable on its own so a producer can publish
     // without also paying for a subscription.
     this.#publishes = options.publish ?? this.#subscribe;
+    this.#publishGate = options.publishGate;
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: this.namespace, queue: this.name },
@@ -1062,6 +1065,8 @@ export class BunQueue<
     if (!this.#publishes) {
       return;
     }
+
+    await this.#publishGate?.();
 
     try {
       await this.driver.publish(

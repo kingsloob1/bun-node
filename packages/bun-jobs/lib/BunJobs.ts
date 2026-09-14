@@ -187,6 +187,7 @@ export class BunJobs {
     return this.runners.add<TArgs, TResult>({
       ...this.#runnerDefaults,
       ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       // Children get the config, since an instance cannot be serialised.
       ...(this.#childDriver ? { childDriver: this.#childDriver } : {}),
       ...options,
@@ -209,6 +210,7 @@ export class BunJobs {
 
     const queue = new BunQueue<TData, TResult, TName>(name, {
       ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       ...options,
       namespace: this.namespace,
       driver: this.driver,
@@ -230,6 +232,7 @@ export class BunJobs {
   ): BunQueueWorker<TData, TResult> {
     const worker = new BunQueueWorker<TData, TResult>(name, processor, {
       ...(this.#publishEvents ? { publish: true } : {}),
+      publishGate: this.#publishGate,
       ...options,
       namespace: this.namespace,
       driver: this.driver,
@@ -600,10 +603,32 @@ export class BunJobs {
     for (const notifier of this.#notifiers) {
       // A notifier given a list keeps exactly that list.
       if (notifier.wants(kind, target)) {
-        void notifier.follow(kind, target).catch(() => undefined);
+        const following = notifier
+          .follow(kind, target)
+          .catch(() => undefined)
+          .finally(() => this.#pendingFollows.delete(following));
+        this.#pendingFollows.add(following);
       }
     }
   }
+
+  /**
+   * Subscriptions {@link #followInNotifiers} has started and not finished.
+   * `queue()`, `worker()` and `runner()` cannot await them — they return
+   * synchronously — so what they create awaits them instead, through
+   * {@link #publishGate}, before its first publish.
+   */
+  readonly #pendingFollows = new Set<Promise<void>>();
+
+  /**
+   * Resolves once no follow is pending. Free when none is: it returns without
+   * touching the event loop, so a context with no notifier pays nothing.
+   */
+  readonly #publishGate = async (): Promise<void> => {
+    while (this.#pendingFollows.size > 0) {
+      await Promise.all(this.#pendingFollows);
+    }
+  };
 
   /** The body of {@link BunJobs.close}, under its hold on the process. */
   async #close(options?: { timeout?: number }): Promise<void> {

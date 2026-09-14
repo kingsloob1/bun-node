@@ -143,6 +143,8 @@ export class BunQueueWorker<
 
   /** Whether this worker announces its job events to other processes. */
   readonly #publishes: boolean;
+  /** Awaited before each publish; see `BunQueueWorkerOptions.publishGate`. */
+  readonly #publishGate: (() => Promise<void>) | undefined;
   /** When the queue was first seen empty, for `drainDelay`. */
   #emptySince: number | undefined;
   /** Whether `drained` has been emitted for the current quiet spell. */
@@ -153,6 +155,8 @@ export class BunQueueWorker<
   readonly #aborts = new Map<string, AbortController>();
   /** Completion writes still in flight, so `close()` does not abandon one. */
   readonly #settling = new Set<Promise<void>>();
+  /** Publishes still in flight, which `close()` waits for. */
+  readonly #publishing = new Set<Promise<void>>();
   /** Batches finished jobs, so a burst settles in one round trip. */
   readonly #completions: CompletionBatcher;
 
@@ -239,6 +243,7 @@ export class BunQueueWorker<
     };
 
     this.#publishes = options.publish ?? false;
+    this.#publishGate = options.publishGate;
     this.#waitToExit = options.waitToExit ?? true;
     this.#backoffs = BackoffStrategies.from(options.backoffStrategies);
     this.#limiter = QueueLimiter.supports(driver)
@@ -398,6 +403,7 @@ export class BunQueueWorker<
       await this.#limiter
         ?.close()
         .catch((error: unknown) => this.#emitError(error, "limits"));
+      await Promise.allSettled([...this.#publishing]);
 
       if (this.#ownsDriver) {
         await this.driver.close();
@@ -434,6 +440,9 @@ export class BunQueueWorker<
     // Jobs finish before their completions are written, so drain those too.
     await this.#completions.idle();
     await Promise.allSettled([...this.#settling]);
+    // Events published on the way here — `completed` among them — before the
+    // driver they are written through can be closed.
+    await Promise.allSettled([...this.#publishing]);
 
     if (this.#running) {
       await this.#stopped.promise;
@@ -616,13 +625,36 @@ export class BunQueueWorker<
    * failure to publish is logged and swallowed: an observer missing an event
    * must never fail the job that produced it.
    */
-  async #publish<Name extends QueueEventName>(
+  /**
+   * Publishes an event, tracked so `close()` can wait for it.
+   *
+   * Callers fire it and move on, and a caller may close straight after — from
+   * the very listener the event was emitted to. Untracked, the close shut the
+   * driver under the write: a `completed` event from a process that closed on
+   * completion was lost, and on MongoDB, whose publish takes two round trips,
+   * reliably.
+   */
+  #publish<Name extends QueueEventName>(
+    type: Name,
+    payload: QueueEventPayloads[Name],
+  ): Promise<void> {
+    const publishing = this.#doPublish(type, payload).finally(() => {
+      this.#publishing.delete(publishing);
+    });
+    this.#publishing.add(publishing);
+    return publishing;
+  }
+
+  /** The body of {@link #publish}. */
+  async #doPublish<Name extends QueueEventName>(
     type: Name,
     payload: QueueEventPayloads[Name],
   ): Promise<void> {
     if (!this.#publishes) {
       return;
     }
+
+    await this.#publishGate?.();
 
     try {
       await this.driver.publish(

@@ -210,6 +210,13 @@ export interface BunQueueOptions {
    */
   publish?: boolean;
   /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
+  /**
    * Reads the dates in phrases — `on("2nd december 2026")`, `every("every 2
    * weeks from payday")`, `repeat: { startAt: "tomorrow at 9am" }`. Defaults
    * to `chrono-node`, loaded when a phrase first needs it.
@@ -234,6 +241,13 @@ export interface BunQueueWorkerOptions {
    * that is the dominant cost of turning it on, which is why it is a choice.
    */
   publish?: boolean;
+  /**
+   * Awaited before each event is published. `BunJobs` passes one so an event
+   * published the moment a queue, worker or runner is created waits for the
+   * notifiers it opened to finish subscribing, instead of being lost. Unset,
+   * nothing is awaited.
+   */
+  publishGate?: () => Promise<void>;
   /** The namespace to consume from. Must match the producer's. */
   namespace: string;
   /** Where jobs live. A config is built and closed here; an instance is shared. */

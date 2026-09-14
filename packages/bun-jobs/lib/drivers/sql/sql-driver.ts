@@ -39,6 +39,7 @@ import { EventRetention } from "../../shared/eventRetention";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
+import { EventGaps } from "../eventGaps";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
@@ -2735,7 +2736,9 @@ export class SqlDriver implements JobsDriver {
       head.values,
     );
 
-    let cursor = Number(latest?.seq ?? 0);
+    // Numbers are handed out at insert and seen at commit, in different
+    // orders; `EventGaps` remembers the ones a poll passes over.
+    const gaps = new EventGaps(Number(latest?.seq ?? 0));
     let stopped = false;
 
     const timer = setInterval(() => {
@@ -2744,20 +2747,29 @@ export class SqlDriver implements JobsDriver {
           return;
         }
 
+        const now = Date.now();
         const page = this.#binder();
+        const retry = gaps.retry(now);
         const rows = await this.#all<{
           seq: number | string;
           payload: unknown;
         }>(
           `SELECT seq, payload FROM ${this.#tables.events}
             WHERE ns = ${page.bind(ns)} AND channel = ${page.bind(channel)}
-              AND seq > ${page.bind(cursor)}
+              AND (seq > ${page.bind(gaps.cursor)}${
+                retry.length > 0
+                  ? ` OR seq IN (${retry.map((seq) => page.bind(seq)).join(", ")})`
+                  : ""
+              })
             ORDER BY seq ASC LIMIT 200`,
           page.values,
         );
 
         for (const row of rows) {
-          cursor = Math.max(cursor, Number(row.seq));
+          if (!gaps.accept(Number(row.seq), now)) {
+            continue;
+          }
+
           const event = this.dialect.jsonOut<DriverEvent | null>(
             row.payload,
             null,

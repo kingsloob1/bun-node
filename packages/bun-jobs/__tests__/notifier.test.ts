@@ -308,6 +308,37 @@ describe("publishEvents on BunJobs", () => {
     expect(heard.every((event) => event.startsWith("queue:jobs:"))).toBe(true);
   });
 
+  it("hears an event published the instant its queue is created, however slow the subscribe", async () => {
+    const driver = new MemoryDriver();
+    // A networked driver's subscribe takes a round trip; this makes the window
+    // between creating a queue and being subscribed to it wide and certain.
+    const subscribe = driver.subscribe.bind(driver);
+    driver.subscribe = (async (ns, kind, target, listener) => {
+      await Bun.sleep(50);
+      return await subscribe(ns, kind, target, listener);
+    }) as typeof driver.subscribe;
+
+    const jobs = new BunJobs({
+      namespace: testNamespace(),
+      driver,
+      logger: noopLogger,
+      publishEvents: true,
+    });
+    closers.push(() => jobs.close());
+
+    const notifier = await jobs.notifier({ discoveryInterval: 60_000 });
+    const heard: string[] = [];
+    notifier.on("event", (event) => heard.push(describeEvent(event)));
+
+    // No await between creating the queue and publishing from it.
+    await jobs.queue("instant").add("x", {});
+
+    await waitFor(() => heard.includes("queue:instant:added"), {
+      timeout: 2_000,
+      message: "the add was published before the notifier had subscribed",
+    });
+  });
+
   it("publishes nothing by default", async () => {
     const jobs = new BunJobs({
       namespace: testNamespace(),

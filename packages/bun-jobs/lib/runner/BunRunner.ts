@@ -92,6 +92,8 @@ export class BunRunner<
   readonly #executor: Executor;
   /** Identifies this runner's published events as coming from this process. */
   readonly #origin = newToken();
+  /** Awaited before each publish; see `BunRunnerOptions.publishGate`. */
+  readonly #publishGate: (() => Promise<void>) | undefined;
   /**
    * Why each active run was asked to stop, by run id, so the `killed` event
    * carries the caller's reason rather than a placeholder.
@@ -114,6 +116,8 @@ export class BunRunner<
    * the lock it was holding.
    */
   readonly #settling = new Set<Promise<unknown>>();
+  /** Publishes still in flight, which `close()` waits for. */
+  readonly #publishing = new Set<Promise<void>>();
 
   /** The schedule ticker, while started. */
   #ticker: Ticker | undefined;
@@ -147,6 +151,7 @@ export class BunRunner<
     this.#key = runnerKey(resolved.id);
     this.#paused = resolved.startPaused;
     this.#schedule = resolved.schedule;
+    this.#publishGate = options.publishGate;
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: resolved.namespace, runnerId: resolved.id },
@@ -261,6 +266,7 @@ export class BunRunner<
     await Promise.allSettled([...this.#active.values()].map((run) => run.done));
     // Then whatever is still being written for runs that already settled.
     await Promise.allSettled([...this.#settling]);
+    await Promise.allSettled([...this.#publishing]);
 
     this.#clearHeartbeat();
     await this.#releaseLock();
@@ -983,13 +989,36 @@ export class BunRunner<
    * A failure to publish is logged and swallowed: an observer missing an event
    * must never fail the run that produced it.
    */
-  async #publish<Name extends RunnerEventName>(
+  /**
+   * Publishes an event, tracked so `close()` can wait for it.
+   *
+   * Callers fire it and move on, and a caller may close straight after — from
+   * the very listener the event was emitted to. Untracked, the close shut the
+   * driver under the write: a `completed` event from a process that closed on
+   * completion was lost, and on MongoDB, whose publish takes two round trips,
+   * reliably.
+   */
+  #publish<Name extends RunnerEventName>(
+    type: Name,
+    payload: RunnerEventPayloads[Name],
+  ): Promise<void> {
+    const publishing = this.#doPublish(type, payload).finally(() => {
+      this.#publishing.delete(publishing);
+    });
+    this.#publishing.add(publishing);
+    return publishing;
+  }
+
+  /** The body of {@link #publish}. */
+  async #doPublish<Name extends RunnerEventName>(
     type: Name,
     payload: RunnerEventPayloads[Name],
   ): Promise<void> {
     if (!this.options.publish) {
       return;
     }
+
+    await this.#publishGate?.();
 
     try {
       await this.driver.publish(

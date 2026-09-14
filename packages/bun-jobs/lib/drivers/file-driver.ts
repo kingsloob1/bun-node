@@ -1591,16 +1591,21 @@ export class FileDriver implements JobsDriver {
 
     let offset = await this.#size(path);
     let stopped = false;
+    /** Whether a poll is still reading, so the next one does not overlap it. */
+    let reading = false;
 
     const timer = setInterval(() => {
-      void (async () => {
-        if (stopped) {
-          return;
-        }
+      if (stopped || reading) {
+        return;
+      }
 
+      reading = true;
+      void (async () => {
         const size = await this.#size(path);
         if (size <= offset) {
-          // A truncated (rotated) file starts over.
+          // A truncated (rotated) file starts over. Only trustworthy because
+          // polls never overlap: a stale one could otherwise see a size below
+          // an offset its successor had already moved, and replay the log.
           offset = size < offset ? 0 : offset;
           return;
         }
@@ -1612,10 +1617,29 @@ export class FileDriver implements JobsDriver {
 
         try {
           const buffer = Buffer.alloc(size - offset);
-          await handle.read(buffer, 0, buffer.length, offset);
-          offset = size;
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            buffer.length,
+            offset,
+          );
 
-          for (const line of buffer.toString("utf8").split("\n")) {
+          // Complete lines only. A line can be caught half written — another
+          // process's append split across writes, or a short read — and the
+          // offset used to move past it all the same, so the half failed to
+          // parse and the rest never started a line: the event was lost. The
+          // tail after the last newline is read again, whole, next time.
+          const chunk = buffer.subarray(0, bytesRead);
+          const end = chunk.lastIndexOf(0x0a);
+          if (end === -1) {
+            return;
+          }
+          offset += end + 1;
+
+          for (const line of chunk
+            .subarray(0, end)
+            .toString("utf8")
+            .split("\n")) {
             if (!line.trim()) {
               continue;
             }
@@ -1627,7 +1651,13 @@ export class FileDriver implements JobsDriver {
         } finally {
           await handle.close();
         }
-      })();
+      })()
+        .catch(() => {
+          // A failed poll is retried on the next tick.
+        })
+        .finally(() => {
+          reading = false;
+        });
     }, this.#poll);
     timer.unref?.();
 
