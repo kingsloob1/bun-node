@@ -118,6 +118,19 @@ export class InProcessExecutor implements Executor {
         onTimeout: () => controller.abort(),
       });
 
+      // A run stopped on request is a kill even when the handler saw its
+      // signal and returned cleanly, exactly as in the other two modes.
+      const reason = controller.signal.aborted ? stopReason() : undefined;
+      if (reason !== undefined) {
+        return {
+          status: "killed",
+          error: serializeError(
+            new RunKilledError(reason, { runId: context.runId }),
+          ),
+          pid: process.pid,
+        };
+      }
+
       return { status: "success", result, pid: process.pid };
     } catch (error) {
       if (error instanceof Error && error.name === "TimeoutError") {

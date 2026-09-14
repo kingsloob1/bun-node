@@ -176,7 +176,11 @@ export class BunRunner<
 
   /** Replaces the logger, keeping this runner's bindings. */
   set logger(logger: Logger) {
-    this.#logger = logger;
+    this.#logger = createJobsLogger(
+      logger,
+      { namespace: this.namespace, runnerId: this.id },
+      this.name,
+    );
   }
 
   /** What this instance is doing. */
@@ -476,6 +480,10 @@ export class BunRunner<
     ]);
 
     const owner = lock ? parseToken(lock.token) : null;
+    // The lock is taken before its run exists and outlives it until the drain
+    // finishes, so the token cannot name the run; the holder records each run
+    // it starts, and that is the one in flight.
+    const runningRunId = state.lastRunId;
     const lastError = state.lastError
       ? (JSON.parse(state.lastError) as { name: string; message: string })
       : undefined;
@@ -494,12 +502,12 @@ export class BunRunner<
       status: this.#status,
       isPaused: state.paused === "1",
       isRunning: lock !== null,
-      ...(owner
+      ...(owner && runningRunId
         ? {
             runningOn: {
               host: owner.host,
               pid: owner.pid,
-              runId: owner.scope ?? owner.id,
+              runId: runningRunId,
               since: lock ? lock.expiresAt - this.options.lockTtl : now,
             },
           }
@@ -1164,8 +1172,13 @@ export class BunRunner<
     const failure =
       error instanceof Error ? error : deserializeError(serializeError(error));
 
-    if (!this.safeEmit("error", failure, context)) {
+    // Asked of `error` itself: a listener for any other event makes `emit`
+    // throw on an unheard `error`, which `safeEmit` swallows as "heard".
+    if (this.listenerCount("error") === 0) {
       this.#logger.error(failure, { context });
+      return;
     }
+
+    this.safeEmit("error", failure, context);
   }
 }

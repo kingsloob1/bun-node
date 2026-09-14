@@ -144,7 +144,10 @@ export interface RunnerInfo {
   isPaused: boolean;
   /** Whether *any* process is running it, from the lock. */
   isRunning: boolean;
-  /** Who is running it, when the lock says so. */
+  /**
+   * Who is running it, when the lock says so: the lock holder's host and pid,
+   * the run it started most recently — the one in flight — and since when.
+   */
   runningOn?: { host: string; pid: number; runId: string; since: number };
   /** Runs in flight in this process. */
   activeRuns: RunRecord[];

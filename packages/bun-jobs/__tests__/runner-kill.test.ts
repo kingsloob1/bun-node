@@ -277,7 +277,7 @@ describe("the reason a run was killed", () => {
     return { why: await killed, ...(await failed) };
   }
 
-  for (const mode of ["spawn", "worker"] as const) {
+  for (const mode of ["spawn", "worker", "in-process"] as const) {
     it(`carries the caller's reason, and says it was a kill: ${mode}`, async () => {
       const { why, record, error } = await killGracefully(
         mode,

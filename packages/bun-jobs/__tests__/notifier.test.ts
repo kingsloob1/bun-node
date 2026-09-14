@@ -126,8 +126,8 @@ describe("JobsNotifier", () => {
     });
 
     const runId = outcome.outcome === "started" ? outcome.runId : undefined;
-    // In-process, a handler that unwinds on its signal finishes rather than
-    // dying, so this is heard as success; the reason test uses a kill below.
+    // Heard as `killed`, with the reason, even though the handler unwinds
+    // cleanly on its signal: a run stopped on request is a kill in every mode.
     await runner.kill(runId, { reason: "operator cancelled" });
 
     await waitFor(
