@@ -28,6 +28,7 @@ const PROJECTS = [
   "packages/bun-jobs/tsconfig.json",
   "packages/bun-jobs/bench/tsconfig.json",
   "benchmarks/tsconfig.json",
+  "examples/bun-jobs/tsconfig.json",
 ] as const;
 
 /**

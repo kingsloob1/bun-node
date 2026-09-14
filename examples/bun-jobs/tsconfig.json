@@ -1,0 +1,13 @@
+{
+  // The examples are an unpublished project of their own, checked by
+  // `bun scripts/typecheck.ts` like every other project in the repo. They
+  // import `@kingsleyweb/bun-jobs` by its package name — exactly as a consumer
+  // would — and it resolves to the workspace package through the root
+  // `node_modules`, so an example can never reach into `lib/` internals.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["../../node_modules/@types"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

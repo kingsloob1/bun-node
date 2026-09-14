@@ -1,0 +1,11 @@
+{
+  "name": "bun-node-examples-bun-jobs",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable, commented examples for @kingsleyweb/bun-jobs: queues, workers, the job registry, scheduling, flow control, failures, the runner, drivers and integrations",
+  "scripts": {
+    "all": "bun run-all.ts",
+    "quick-start": "bun 01-quick-start/index.ts"
+  }
+}
