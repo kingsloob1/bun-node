@@ -1,0 +1,133 @@
+import type { TypedEmitter } from "@kingsleyweb/bun-common";
+import { EventEmitter } from "node:events";
+
+/**
+ * A typed event surface backed by a lazily-created `node:events` emitter.
+ *
+ * `BunRunner`, `BunQueue` and `BunQueueWorker` all emit events, and all of
+ * them are frequently used without a listener (a producer that only calls
+ * `add`, a runner driven entirely by its schedule). Building the emitter on
+ * the first `on`/`once` call keeps those instances free, and `emit` is a
+ * no-op until someone listens. The pattern is bun-common's `BunWebSocket`,
+ * generalised so three classes do not each re-implement fifteen methods.
+ */
+export abstract class TypedEmitterBase<
+  Events extends Record<string, (...args: any[]) => any>,
+> implements TypedEmitter<Events> {
+  /** The emitter, absent until something listens. */
+  #emitter: EventEmitter | undefined = undefined;
+
+  /** Returns the emitter, creating it on demand. */
+  protected get events(): EventEmitter {
+    if (!this.#emitter) {
+      const emitter = new EventEmitter();
+      // Runners and workers legitimately attract many listeners (one per
+      // in-flight job); the ten-listener warning would be noise.
+      emitter.setMaxListeners(0);
+      this.#emitter = emitter;
+    }
+    return this.#emitter;
+  }
+
+  /** The event name as `node:events` wants it. */
+  #name(event: keyof Events): string | symbol {
+    return event as string | symbol;
+  }
+
+  addListener<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.events.addListener(this.#name(event), listener);
+    return this;
+  }
+
+  on<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.events.on(this.#name(event), listener);
+    return this;
+  }
+
+  once<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.events.once(this.#name(event), listener);
+    return this;
+  }
+
+  prependListener<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.events.prependListener(this.#name(event), listener);
+    return this;
+  }
+
+  prependOnceListener<E extends keyof Events>(
+    event: E,
+    listener: Events[E],
+  ): this {
+    this.events.prependOnceListener(this.#name(event), listener);
+    return this;
+  }
+
+  off<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.#emitter?.off(this.#name(event), listener);
+    return this;
+  }
+
+  removeListener<E extends keyof Events>(event: E, listener: Events[E]): this {
+    this.#emitter?.removeListener(this.#name(event), listener);
+    return this;
+  }
+
+  removeAllListeners<E extends keyof Events>(event?: E): this {
+    // `removeAllListeners` branches on `arguments.length`, not on the
+    // argument's value: forwarding `undefined` explicitly reads as "remove
+    // listeners for the event named `undefined`", which removes nothing.
+    if (event === undefined) {
+      this.#emitter?.removeAllListeners();
+    } else {
+      this.#emitter?.removeAllListeners(this.#name(event));
+    }
+    return this;
+  }
+
+  /** Emits an event; `false` when nothing is listening. */
+  emit<E extends keyof Events>(
+    event: E,
+    ...args: Parameters<Events[E]>
+  ): boolean {
+    return this.#emitter
+      ? this.#emitter.emit(this.#name(event), ...args)
+      : false;
+  }
+
+  eventNames(): (keyof Events | string | symbol)[] {
+    return this.#emitter?.eventNames() ?? [];
+  }
+
+  listeners<E extends keyof Events>(event: E): Events[E][] {
+    return (this.#emitter?.listeners(this.#name(event)) ?? []) as Events[E][];
+  }
+
+  listenerCount<E extends keyof Events>(event: E): number {
+    return this.#emitter?.listenerCount(this.#name(event)) ?? 0;
+  }
+
+  getMaxListeners(): number {
+    return this.#emitter?.getMaxListeners() ?? EventEmitter.defaultMaxListeners;
+  }
+
+  setMaxListeners(maxListeners: number): this {
+    this.events.setMaxListeners(maxListeners);
+    return this;
+  }
+
+  /**
+   * Emits `event`, guaranteeing a listener's throw cannot take down the
+   * caller — a failing metrics listener must not fail the job it observed.
+   * Returns whether anything was listening.
+   */
+  protected safeEmit<E extends keyof Events>(
+    event: E,
+    ...args: Parameters<Events[E]>
+  ): boolean {
+    try {
+      return this.emit(event, ...args);
+    } catch {
+      return true;
+    }
+  }
+}

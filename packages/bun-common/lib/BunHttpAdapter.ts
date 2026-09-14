@@ -11,7 +11,6 @@ import type {
   BunServeNormalOptions,
   BunServer,
   BunWebSocketServerType,
-  Logger,
   matchedRoute,
   NextFunction,
   RouterErrorMiddlewareHandler,
@@ -20,6 +19,7 @@ import type {
   ServeStaticOptions,
   WebSocketClientData,
 } from "./index";
+import type { LoggerLike } from "./logging";
 import { EventEmitter } from "node:events";
 import { isIPv4, isIPv6 } from "node:net";
 import process from "node:process";
@@ -28,6 +28,7 @@ import { isPromise } from "node:util/types";
 import { BunRouter, FETCH_STUB_SERVER, toNativeRequest } from "./BunRouter";
 import { cors } from "./cors";
 import { BunRequest, BunResponse, BunWebSocket } from "./index";
+import { resolveLogger } from "./logging";
 import { createServeStaticHandler } from "./serveStatic";
 import {
   each,
@@ -98,9 +99,11 @@ export class BunHttpAdapter<
       websocket?: Partial<WebsocketOptions<customWebsocketDataType>>;
       /**
        * Logger used for adapter diagnostics; also passed to the underlying
-       * {@link BunRouter}. Defaults to the global `console`.
+       * {@link BunRouter}. Accepts a `Logger` or any supported logging library
+       * (pino, winston, consola, log4js, tslog, bunyan, NestJS) — see
+       * `resolveLogger`. Defaults to a console logger.
        */
-      logger?: Logger;
+      logger?: LoggerLike;
       /**
        * Options for the underlying {@link BunRouter} (e.g. `caseSensitive`,
        * `debug`). Defaults to `{ caseSensitive: true, debug: false }`.
@@ -137,7 +140,9 @@ export class BunHttpAdapter<
       debug: false,
     };
 
-    const logger = options?.logger || console;
+    // Resolved once here so the adapter and its router share one instance
+    // rather than each adapting the same input separately.
+    const logger = resolveLogger(options?.logger);
 
     super({
       caseSensitive: false,
@@ -636,9 +641,7 @@ export class BunHttpAdapter<
 
       return this._serverInstance;
     } catch (e) {
-      const errorMessage = "Error while binding to listener...";
-      this.logger.log(errorMessage);
-      this.logger.log(e);
+      this.logger.error("Error while binding to listener", { error: e });
       process.exit(1);
     }
   }
@@ -798,10 +801,9 @@ export class BunHttpAdapter<
         await this._serverInstance.stop(true);
       }
     } catch (err) {
-      this.logger.error(
-        "An error occurred while closing bun http adapter ====> ",
-        err,
-      );
+      this.logger.error("An error occurred while closing bun http adapter", {
+        error: err,
+      });
     }
     this.eventEmitter.emit("close");
     this._serverInstance = undefined;

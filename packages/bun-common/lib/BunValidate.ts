@@ -165,6 +165,48 @@ function writeTarget(
   }
 }
 
+/**
+ * Wraps a plain validate function as a
+ * [Standard Schema](https://standardschema.dev), for a library that does not
+ * implement one itself.
+ *
+ * zod, yup, valibot and arktype all expose `~standard` natively and can be
+ * passed to {@link validate} directly. Others (superstruct, joi, a bespoke
+ * check) need one line:
+ *
+ * ```ts
+ * const Page = toStandardSchema<unknown, { page: number }>((input) => {
+ *   const page = Number((input as { page?: unknown })?.page);
+ *   return Number.isInteger(page)
+ *     ? { value: { page } }
+ *     : { issues: [{ message: "page must be a whole number", path: ["page"] }] };
+ * });
+ * ```
+ *
+ * The returned schema is a real Standard Schema, so it works anywhere one is
+ * accepted — not just here.
+ */
+export function toStandardSchema<TInput = unknown, TOutput = TInput>(
+  validate: (
+    value: unknown,
+  ) =>
+    | StandardSchemaV1.Result<TOutput>
+    | Promise<StandardSchemaV1.Result<TOutput>>,
+  options?: {
+    /** Name reported as the schema's vendor. Defaults to `"custom"`. */
+    vendor?: string;
+  },
+): StandardSchemaV1<TInput, TOutput> {
+  return {
+    "~standard": {
+      version: 1,
+      vendor: options?.vendor ?? "custom",
+      validate,
+      types: undefined as unknown as StandardSchemaV1.Types<TInput, TOutput>,
+    },
+  };
+}
+
 /** Renders a Standard Schema issue path as a dotted string. */
 function formatPath(issue: StandardSchemaV1.Issue): string {
   if (!issue.path || issue.path.length === 0) {

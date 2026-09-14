@@ -3,7 +3,9 @@ import { describe, expect, it } from "bun:test";
 import {
   appendVary,
   cloneDeep,
+  computeBackoff,
   createDeferred,
+  deserializeError,
   each,
   encodeUrl,
   etag,
@@ -13,6 +15,7 @@ import {
   fresh,
   get,
   getPort,
+  isAbortError,
   isAnyArrayBuffer,
   isArray,
   isArrayBufferView,
@@ -31,24 +34,32 @@ import {
   isObject,
   isString,
   isUndefined,
+  jsonClone,
   jsonCookies,
   keys,
   lastIndexOf,
   merge,
+  Mutex,
   omit,
   orderBy,
   parseCookie,
   parseXmlToObject,
   pick,
   rangeParser,
+  retry,
+  Semaphore,
   serializeCookie,
+  serializeError,
   set,
   signCookie,
+  sleep,
+  TimeoutError,
   toHttpDate,
   ucwords,
   unsignCookie,
   values,
   waitUntil,
+  withTimeout,
 } from "../lib/utils/native";
 
 describe("native: type guards", () => {
@@ -585,5 +596,450 @@ describe("native: parseXmlToObject", () => {
 
   it("throws when there is no XML element", () => {
     expect(() => parseXmlToObject("   ")).toThrow();
+  });
+});
+
+describe("native: sleep", () => {
+  it("resolves after the delay", async () => {
+    const started = Date.now();
+    await sleep(20);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(15);
+  });
+
+  it("rejects when the signal aborts mid-wait", async () => {
+    const controller = new AbortController();
+    const waiting = sleep(1000, { signal: controller.signal });
+    controller.abort();
+
+    await expect(waiting).rejects.toThrow();
+    expect(await waiting.catch((error) => isAbortError(error))).toBe(true);
+  });
+
+  it("rejects immediately for an already-aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(
+      await sleep(1000, { signal: controller.signal }).catch((error) =>
+        isAbortError(error),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("native: isAbortError", () => {
+  it("recognises AbortError by name and by code", () => {
+    const named = new Error("stopped");
+    named.name = "AbortError";
+    const coded = Object.assign(new Error("stopped"), { code: "ABORT_ERR" });
+
+    expect(isAbortError(named)).toBe(true);
+    expect(isAbortError(coded)).toBe(true);
+    expect(isAbortError(new Error("other"))).toBe(false);
+    expect(isAbortError("nope")).toBe(false);
+  });
+});
+
+describe("native: withTimeout", () => {
+  it("passes the value through when the work finishes in time", async () => {
+    expect(await withTimeout(Promise.resolve("ok"), 1000)).toBe("ok");
+    expect(await withTimeout(() => "lazy", 1000)).toBe("lazy");
+  });
+
+  it("rejects with a TimeoutError carrying the budget", async () => {
+    const work = new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("late"), 1000);
+      timer.unref?.();
+    });
+
+    const error = await withTimeout(work, 10).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect((error as TimeoutError).ms).toBe(10);
+  });
+
+  it("calls onTimeout so the work can be aborted", async () => {
+    const controller = new AbortController();
+    const work = sleep(1000, { signal: controller.signal, unref: true });
+
+    await withTimeout(work, 10, {
+      onTimeout: () => controller.abort(),
+    }).catch(() => {});
+
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it("treats a non-positive budget as no timeout", async () => {
+    expect(await withTimeout(Promise.resolve(1), 0)).toBe(1);
+    expect(await withTimeout(Promise.resolve(2), -5)).toBe(2);
+  });
+
+  it("swallows a rejection arriving after the timeout", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const work = new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("too late")), 20);
+        timer.unref?.();
+      });
+
+      await expect(withTimeout(work, 5)).rejects.toThrow(TimeoutError);
+      await sleep(40);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("native: computeBackoff", () => {
+  it("holds the delay steady when fixed", () => {
+    expect(computeBackoff(1, { delay: 100 })).toBe(100);
+    expect(computeBackoff(5, { delay: 100 })).toBe(100);
+    expect(computeBackoff(3, 250)).toBe(250);
+  });
+
+  it("grows by the factor when exponential", () => {
+    const options = { type: "exponential", delay: 100, factor: 2 } as const;
+    expect(computeBackoff(1, options)).toBe(100);
+    expect(computeBackoff(2, options)).toBe(200);
+    expect(computeBackoff(4, options)).toBe(800);
+  });
+
+  it("caps at max", () => {
+    expect(
+      computeBackoff(10, {
+        type: "exponential",
+        delay: 100,
+        factor: 2,
+        max: 1000,
+      }),
+    ).toBe(1000);
+  });
+
+  it("keeps jitter within the requested fraction", () => {
+    for (let i = 0; i < 50; i++) {
+      const value = computeBackoff(1, { delay: 1000, jitter: 0.1 });
+      expect(value).toBeGreaterThanOrEqual(900);
+      expect(value).toBeLessThanOrEqual(1100);
+    }
+
+    // `true` is shorthand for ±10%.
+    const shorthand = computeBackoff(1, { delay: 1000, jitter: true });
+    expect(shorthand).toBeGreaterThanOrEqual(900);
+    expect(shorthand).toBeLessThanOrEqual(1100);
+  });
+});
+
+describe("native: retry", () => {
+  it("returns the first success", async () => {
+    let attempts = 0;
+    const value = await retry(
+      () => {
+        attempts++;
+        if (attempts < 3) {
+          throw new Error("not yet");
+        }
+        return "done";
+      },
+      { attempts: 5, backoff: 1 },
+    );
+
+    expect(value).toBe("done");
+    expect(attempts).toBe(3);
+  });
+
+  it("gives up after the configured attempts and rethrows the last error", async () => {
+    let attempts = 0;
+    const failing = retry(
+      () => {
+        attempts++;
+        throw new Error(`attempt ${attempts}`);
+      },
+      { attempts: 3, backoff: 1 },
+    );
+
+    await expect(failing).rejects.toThrow("attempt 3");
+    expect(attempts).toBe(3);
+  });
+
+  it("stops early when shouldRetry says the error is final", async () => {
+    let attempts = 0;
+    const failing = retry(
+      () => {
+        attempts++;
+        throw new Error("fatal");
+      },
+      {
+        attempts: 5,
+        backoff: 1,
+        shouldRetry: (error) => (error as Error).message !== "fatal",
+      },
+    );
+
+    await expect(failing).rejects.toThrow("fatal");
+    expect(attempts).toBe(1);
+  });
+
+  it("reports each wait through onRetry", async () => {
+    const waits: number[] = [];
+    await retry(
+      (attempt) => {
+        if (attempt < 3) {
+          throw new Error("again");
+        }
+        return attempt;
+      },
+      {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 2, factor: 2 },
+        onRetry: (_error, _attempt, delay) => waits.push(delay),
+      },
+    );
+
+    expect(waits).toEqual([2, 4]);
+  });
+
+  it("aborts between attempts", async () => {
+    const controller = new AbortController();
+    let attempts = 0;
+
+    const failing = retry(
+      () => {
+        attempts++;
+        controller.abort();
+        throw new Error("boom");
+      },
+      { attempts: 5, backoff: 50, signal: controller.signal },
+    );
+
+    expect(await failing.catch((error) => isAbortError(error))).toBe(true);
+    expect(attempts).toBe(1);
+  });
+});
+
+describe("native: serializeError / deserializeError", () => {
+  it("round-trips name, message, stack and code", () => {
+    const original = Object.assign(new TypeError("bad input"), {
+      code: "ERR_BAD",
+    });
+
+    const serialized = serializeError(original);
+    expect(serialized).toMatchObject({
+      name: "TypeError",
+      message: "bad input",
+      code: "ERR_BAD",
+    });
+    expect(JSON.parse(JSON.stringify(serialized))).toEqual(serialized);
+
+    const restored = deserializeError(serialized);
+    expect(restored).toBeInstanceOf(Error);
+    expect(restored.name).toBe("TypeError");
+    expect(restored.message).toBe("bad input");
+    expect(restored.stack).toBe(serialized.stack);
+    expect((restored as Error & { code?: string }).code).toBe("ERR_BAD");
+  });
+
+  it("follows the cause chain", () => {
+    const root = new Error("socket closed");
+    const wrapper = new Error("query failed", { cause: root });
+
+    const serialized = serializeError(wrapper);
+    expect(serialized.cause?.message).toBe("socket closed");
+
+    const restored = deserializeError(serialized);
+    expect((restored.cause as Error).message).toBe("socket closed");
+  });
+
+  it("stops following causes at maxDepth", () => {
+    const deep = new Error("a", {
+      cause: new Error("b", { cause: new Error("c") }),
+    });
+
+    const serialized = serializeError(deep, { maxDepth: 1 });
+    expect(serialized.cause?.message).toBe("b");
+    expect(serialized.cause?.cause).toBeUndefined();
+  });
+
+  it("keeps extra own properties under data", () => {
+    const error = Object.assign(new Error("nope"), {
+      jobId: "j1",
+      attempt: 2,
+    });
+
+    expect(serializeError(error).data).toEqual({ jobId: "j1", attempt: 2 });
+    expect(
+      (deserializeError(serializeError(error)) as Error & { jobId?: string })
+        .jobId,
+    ).toBe("j1");
+  });
+
+  it("keeps a non-Error visible rather than dropping it", () => {
+    expect(serializeError("just a string")).toEqual({
+      name: "NonError",
+      message: "just a string",
+    });
+    expect(serializeError(42).message).toBe("42");
+    expect(serializeError(undefined).name).toBe("NonError");
+  });
+
+  it("truncates a very long stack", () => {
+    const error = new Error("long");
+    error.stack = "x".repeat(5000);
+
+    const serialized = serializeError(error, { maxStackBytes: 100 });
+    expect(serialized.stack?.length).toBeLessThan(200);
+    expect(serialized.stack).toContain("truncated");
+  });
+});
+
+describe("native: jsonClone", () => {
+  it("returns a structurally equal but distinct value", () => {
+    const source = { a: 1, nested: { b: [1, 2, 3] } };
+    const cloned = jsonClone(source);
+
+    expect(cloned).toEqual(source);
+    expect(cloned).not.toBe(source);
+    expect(cloned.nested).not.toBe(source.nested);
+  });
+
+  it("documents the losses that cross a boundary", () => {
+    // `jsonClone<T>(value: T): T` keeps the input type for ergonomics, but a
+    // `Date` really does come back as a string — the loss under test — so
+    // these assertions look at the runtime value rather than the static type.
+    const clone = (value: unknown): unknown => jsonClone(value);
+
+    expect(clone({ a: undefined, b: 1 })).toEqual({ b: 1 });
+    expect(clone({ at: new Date("2020-01-01T00:00:00.000Z") })).toEqual({
+      at: "2020-01-01T00:00:00.000Z",
+    });
+    expect(clone({ m: new Map([["a", 1]]), s: new Set([1]) })).toEqual({
+      m: {},
+      s: {},
+    });
+    expect(clone(undefined)).toBeUndefined();
+  });
+
+  it("throws on values JSON cannot represent", () => {
+    expect(() => jsonClone({ big: 1n })).toThrow(TypeError);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => jsonClone(cyclic)).toThrow();
+  });
+});
+
+describe("native: Mutex", () => {
+  it("serialises holders", async () => {
+    const mutex = new Mutex();
+    const order: string[] = [];
+
+    const first = mutex.runExclusive(async () => {
+      order.push("first:start");
+      await sleep(10);
+      order.push("first:end");
+    });
+    const second = mutex.runExclusive(() => {
+      order.push("second");
+    });
+
+    await Promise.all([first, second]);
+    expect(order).toEqual(["first:start", "first:end", "second"]);
+  });
+
+  it("hands the lock to waiters in arrival order", async () => {
+    const mutex = new Mutex();
+    const order: number[] = [];
+
+    const release = await mutex.acquire();
+    expect(mutex.locked).toBe(true);
+
+    const waiters = [1, 2, 3].map(async (id) => {
+      const done = await mutex.acquire();
+      order.push(id);
+      done();
+    });
+
+    expect(mutex.waiting).toBe(3);
+    release();
+    await Promise.all(waiters);
+
+    expect(order).toEqual([1, 2, 3]);
+    expect(mutex.locked).toBe(false);
+  });
+
+  it("ignores a second release", async () => {
+    const mutex = new Mutex();
+    const release = await mutex.acquire();
+
+    release();
+    release();
+
+    expect(mutex.locked).toBe(false);
+    const next = await mutex.acquire();
+    expect(mutex.locked).toBe(true);
+    next();
+  });
+
+  it("releases the lock when the body throws", async () => {
+    const mutex = new Mutex();
+    await expect(
+      mutex.runExclusive(() => {
+        throw new Error("inner");
+      }),
+    ).rejects.toThrow("inner");
+    expect(mutex.locked).toBe(false);
+  });
+});
+
+describe("native: Semaphore", () => {
+  it("bounds concurrency", async () => {
+    const semaphore = new Semaphore(2);
+    let active = 0;
+    let peak = 0;
+
+    const task = () =>
+      semaphore.runExclusive(async () => {
+        active++;
+        peak = Math.max(peak, active);
+        await sleep(5);
+        active--;
+      });
+
+    await Promise.all(Array.from({ length: 6 }, task));
+
+    expect(peak).toBe(2);
+    expect(semaphore.available).toBe(2);
+  });
+
+  it("tryAcquire never waits", async () => {
+    const semaphore = new Semaphore(1);
+    const held = semaphore.tryAcquire();
+
+    expect(held).not.toBeNull();
+    expect(semaphore.tryAcquire()).toBeNull();
+
+    held?.();
+    expect(semaphore.tryAcquire()).not.toBeNull();
+  });
+
+  it("wakes waiters when permits are added", async () => {
+    const semaphore = new Semaphore(1);
+    const first = await semaphore.acquire();
+    const order: string[] = [];
+
+    const waiter = semaphore.acquire().then((release) => {
+      order.push("second");
+      release();
+    });
+
+    expect(semaphore.waiting).toBe(1);
+    semaphore.setPermits(2);
+    await waiter;
+
+    expect(order).toEqual(["second"]);
+    first();
+    expect(semaphore.permits).toBe(2);
   });
 });

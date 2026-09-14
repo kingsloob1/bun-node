@@ -1,0 +1,92 @@
+import type { DriverConfig } from "./shared";
+import { appendFileSync } from "node:fs";
+import process from "node:process";
+import { BunJobs, noopLogger } from "./shared";
+
+/**
+ * A consumer, as its own process.
+ *
+ * Every job it takes is appended to a shared log with this process's id, so
+ * the test can prove that each job was processed exactly once and see which
+ * consumer took it.
+ */
+
+const jobs = new BunJobs({
+  namespace: process.env.NAMESPACE ?? "test",
+  driver: JSON.parse(process.env.DRIVER_CONFIG ?? "{}") as DriverConfig,
+  logger: noopLogger,
+});
+
+const consumerId = process.env.CONSUMER_ID ?? String(process.pid);
+const log = process.env.RUN_LOG ?? "";
+const failFirst = process.env.FAIL_FIRST === "1";
+const seen = new Set<string>();
+
+const worker = jobs.worker(
+  process.env.QUEUE ?? "work",
+  async (job) => {
+    // A job that fails its first attempt proves a retry is picked up by
+    // whichever consumer is free, not necessarily the one that failed it.
+    if (failFirst && !seen.has(job.id)) {
+      seen.add(job.id);
+      throw new Error(`first attempt at ${job.id} failed`);
+    }
+
+    if (log) {
+      appendFileSync(log, `${consumerId}:${job.id}\n`);
+    }
+
+    await Bun.sleep(Number(process.env.JOB_MS ?? 5));
+    return { by: consumerId };
+  },
+  {
+    id: consumerId,
+    concurrency: Number(process.env.CONCURRENCY ?? 2),
+    pollInterval: 20,
+    maxBlock: 50,
+    lockDuration: 2000,
+    stalledInterval: 200,
+  },
+);
+
+// Surfaced rather than swallowed: a worker that stops consuming should say
+// why in the test's output, not leave a stalled queue to be puzzled over.
+worker.on("error", (error, context) => {
+  console.error(`worker error (${context}): ${error.message}`);
+});
+
+void worker.run();
+console.log(JSON.stringify({ event: "ready", consumerId }));
+
+/** How many processed lines the test is waiting for, if it said. */
+const stopAfter = Number(process.env.STOP_AFTER ?? 0);
+
+/** How long to keep consuming regardless, as a backstop. */
+const deadline = Date.now() + Number(process.env.RUN_FOR_MS ?? 2000);
+
+/** Lines every consumer has appended so far. */
+const processedCount = async (): Promise<number> => {
+  if (!log) {
+    return 0;
+  }
+  const contents = await Bun.file(log)
+    .text()
+    .catch(() => "");
+  return contents.split("\n").filter(Boolean).length;
+};
+
+// Stop on the signal rather than on a stopwatch. A fixed lifetime makes a
+// test's outcome depend on how loaded the machine is, which is how a suite
+// acquires flakes; the deadline stays only as a backstop.
+while (Date.now() < deadline) {
+  if (stopAfter > 0 && (await processedCount()) >= stopAfter) {
+    break;
+  }
+  await Bun.sleep(25);
+}
+
+await worker.close({ timeout: 2000 });
+
+console.log(JSON.stringify({ event: "closed", consumerId }));
+await jobs.close();
+process.exit(0);

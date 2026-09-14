@@ -5,6 +5,7 @@ import type {
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
 import { BunRouter } from "../lib/BunRouter";
+import { createTestLogger, isLogger } from "../lib/logging";
 import { makeRequest } from "./helpers";
 
 /** Convenience: layers matched for a request signature. */
@@ -300,13 +301,37 @@ describe("BunRouter: group & domain", () => {
 });
 
 describe("BunRouter: logger", () => {
-  it("falls back to console and accepts a custom logger", () => {
+  it("defaults to a structured console logger", () => {
     const router = new BunRouter();
-    expect(router.logger).toBe(console);
+    expect(isLogger(router.logger)).toBe(true);
+    expect(router.logger.level).toBe("info");
+  });
 
-    const custom = { log() {}, error() {}, warn() {} };
+  it("returns a structured logger unchanged", () => {
+    const { logger, events } = createTestLogger();
+    const router = new BunRouter({ logger });
+
+    expect(router.logger).toBe(logger);
+    router.logger.warn("careful");
+    expect(events.at(-1)).toMatchObject({ level: "warn", message: "careful" });
+  });
+
+  it("adapts a console-like logger, so old call sites keep working", () => {
+    const lines: unknown[][] = [];
+    const custom = {
+      log: (...args: unknown[]) => lines.push(args),
+      error: () => {},
+      warn: () => {},
+    };
+
+    const router = new BunRouter();
     router.setLogger(custom);
-    expect(router.logger).toBe(custom);
+
+    expect(isLogger(router.logger)).toBe(true);
+    router.logger.info("hello", { requestId: "abc" });
+    expect(lines).toHaveLength(1);
+    expect(String(lines[0][0])).toContain("hello");
+    expect(lines[0][1]).toEqual({ requestId: "abc" });
   });
 });
 

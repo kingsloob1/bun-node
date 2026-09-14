@@ -5,16 +5,17 @@
   "private": true,
   "workspaces": [
     "packages/bun-common",
-    "packages/bun-nest"
+    "packages/bun-nest",
+    "packages/bun-jobs"
   ],
   "devDependencies": {
     "@nx/eslint": "22.7.2",
     "lerna": "^9.0.7",
     "nx": "22.7.2"
   },
-  "packageManager": "bun@1.3.0",
+  "packageManager": "bun@1.4.2",
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.4.2"
   },
   "dependencies": {}
 }

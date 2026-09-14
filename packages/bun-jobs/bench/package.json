@@ -1,0 +1,35 @@
+{
+  "name": "bun-jobs-benchmarks",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throughput and latency benchmarks: @kingsleyweb/bun-jobs vs BullMQ, bee-queue, node-resque, pg-boss, graphile-worker, Agenda, Bree and the in-process cron schedulers",
+  "scripts": {
+    "queue": "bun queue.ts",
+    "runner": "bun runner.ts"
+  },
+  "dependencies": {
+    "@agendajs/mongo-backend": "^4",
+    "@agendajs/postgres-backend": "^3",
+    "@agendajs/redis-backend": "^3",
+    "agenda": "^6.2.6",
+    "bee-queue": "^2.0.0",
+    "bree": "^9.2.9",
+    "bullmq": "^6.3.4",
+    "croner": "^10.0.1",
+    "graphile-worker": "^0.18.0",
+    "ioredis": "^5.4.1",
+    "mongodb": "^6.10.0",
+    "node-cron": "^4.0.0",
+    "node-resque": "^9.7.1",
+    "node-schedule": "^2.1.1",
+    "pg": "^8.13.1",
+    "pg-boss": "^12.30.0",
+    "toad-scheduler": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node-schedule": "^2.1.7",
+    "@types/pg": "^8.11.10"
+  }
+}

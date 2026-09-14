@@ -1,8 +1,8 @@
 ---
 name: bun-node-check
 description: >-
-  Verify changes to the bun-node monorepo (the @kingsleyweb/bun-common and
-  @kingsleyweb/bun-nest packages). Use after editing anything under
+  Verify changes to the bun-node monorepo (the @kingsleyweb/bun-common,
+  @kingsleyweb/bun-nest and @kingsleyweb/bun-jobs packages). Use after editing anything under
   packages/*/lib or packages/*/__tests__, or when asked to check / validate /
   verify the build, types, lint, or tests for this repo.
 ---
@@ -14,8 +14,8 @@ Everything runs with **Bun** (`bun` / `bunx`). Source ships as raw `.ts`.
 
 ## Steps
 
-For **each affected package** (`packages/bun-common`, `packages/bun-nest`),
-from that package's directory:
+For **each affected package** (`packages/bun-common`, `packages/bun-nest`,
+`packages/bun-jobs`), from that package's directory:
 
 1. **Typecheck** — `bunx tsc --noEmit`
    Must be clean. Ignore the single pre-existing `eslint.config.mjs` `TS2742`
@@ -30,8 +30,8 @@ from that package's directory:
 3. **Test** — `bun test`
    Every test must pass.
 
-If you changed **`bun-common`**, always run all three for **`bun-nest`** too —
-bun-nest depends on bun-common at the source level.
+If you changed **`bun-common`**, always run all three for **`bun-nest`** and
+**`bun-jobs`** too — both depend on bun-common at the source level.
 
 ## Conventions to uphold
 
@@ -44,6 +44,9 @@ bun-nest depends on bun-common at the source level.
   new dependencies.
 - `BunHttpAdapter.close()` must `stop(true)` (force-close) so ports are fully
   released — see CLAUDE.md "Port-release pitfall".
+- bun-jobs tests must never leave a runner, worker, timer or child process
+  alive after the test (register cleanup in `afterEach`/`afterAll`), or
+  `bun test` hangs; use unique temp dirs and unique namespaces per suite.
 
 ## Report
 

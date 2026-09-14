@@ -4,8 +4,8 @@ import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
 import type { ValidatorMiddleware } from "./BunValidate";
 import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
+import type { Logger, LoggerLike } from "./logging";
 import type {
-  Logger,
   NextFunction,
   RouterCallback,
   RouterErrorMiddlewareHandler,
@@ -17,6 +17,7 @@ import process from "node:process";
 import { Router } from "@routejs/router";
 import { BunRequest as BunRequestClass } from "./BunRequest";
 import { BunResponse as BunResponseClass } from "./BunResponse";
+import { resolveLogger } from "./logging";
 import {
   isArray,
   isError,
@@ -335,7 +336,13 @@ export class BunRouter<
       caseSensitive?: boolean;
       host?: string;
       debug?: boolean;
-      logger?: Logger;
+      /**
+       * Logger for router diagnostics. Accepts a {@link Logger} or any
+       * supported logging library (pino, winston, consola, log4js, tslog,
+       * bunyan, NestJS) — see {@link resolveLogger}. Defaults to a console
+       * logger.
+       */
+      logger?: LoggerLike;
       /**
        * Upper bound on the matched-pipeline cache before FIFO eviction kicks
        * in. Defaults to {@link DEFAULT_ROUTE_CACHE_MAX} (50 000). Pass `0` to
@@ -381,24 +388,23 @@ export class BunRouter<
     return this;
   }
 
+  /**
+   * The router's logger, resolved once on first use: the constructor option
+   * when given (adapted from pino/winston/console/... by
+   * {@link resolveLogger}), else a default console logger.
+   */
   get logger(): Logger {
-    if (this._logger) {
-      return this._logger;
-    }
-
-    if (this.localOptions?.logger) {
-      return this.localOptions.logger;
-    }
-
-    // Fall back to the console rather than recursing into this getter.
-    return console;
+    this._logger ??= resolveLogger(this.localOptions?.logger);
+    return this._logger;
   }
 
-  set logger(logger: Logger) {
-    this._logger = logger;
+  /** Replaces the logger. Accepts any {@link LoggerLike}. */
+  set logger(logger: LoggerLike) {
+    this._logger = resolveLogger(logger);
   }
 
-  setLogger(logger: Logger) {
+  /** Replaces the logger and returns the router, for chaining. */
+  setLogger(logger: LoggerLike) {
     this.logger = logger;
     return this;
   }
@@ -4145,7 +4151,7 @@ export class BunRouter<
       }
 
       if (this.localOptions?.debug) {
-        this.logger.log({
+        this.logger.debug("pipeline layer executed", {
           state: layer.isErrorHandler
             ? "error_handler"
             : layer.isRouteHandler

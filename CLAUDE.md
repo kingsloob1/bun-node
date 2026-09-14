@@ -4,7 +4,7 @@ Project knowledge for Claude Code and contributors. Auto-loaded each session.
 
 ## What this repo is
 
-`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with two
+`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with three
 published packages under `packages/`:
 
 - **`@kingsleyweb/bun-common`** — an Express-like HTTP layer for `Bun.serve`:
@@ -14,10 +14,23 @@ published packages under `packages/`:
 - **`@kingsleyweb/bun-nest`** — a NestJS adapter built on bun-common:
   `BunHttpAdapter` (extends NestJS `AbstractHttpAdapter`),
   `BunWebSocketAdapter`, file interceptors, decorators.
+- **`@kingsleyweb/bun-jobs`** — background work on top of bun-common's
+  primitives: `BunRunner` (run a JS/TS file on a schedule or on demand, in a
+  child process, a `Worker` or in-process), `BunQueue`/`BunQueueWorker` (a
+  job queue across processes and services) and the per-service `BunJobs`
+  context, over pluggable drivers (memory, file, Redis, SQL). Being
+  assembled in phases — see its `README.md` for what has landed.
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
-typecheck, ESLint via `@antfu/eslint-config`. Runtime is Bun. Source ships as
-raw `.ts` (`main`/`types` point at `lib/index.ts`).
+typecheck, ESLint via `@antfu/eslint-config`. Source ships as raw `.ts`
+(`main`/`types` point at `lib/index.ts`).
+
+Runtime is **Bun ≥ 1.4.2**: `engines.bun` says so in the root and in every
+package, `bun-types`/`@types/bun` devDeps are `^1.4.2`, and each package
+declares an optional `@types/bun >=1.4.2` peer so a consumer on older types
+is warned instead of hitting opaque type errors. The floor matters because
+bun-jobs' Redis and SQL drivers use `RedisClient.eval`/`xadd`/… and
+`sql.listen`, which 1.4.2 is the first `bun-types` release to declare.
 
 bun-nest's `BunHttpAdapter.use/get/post/...` delegate to `this.instance`,
 which is a bun-common `BunRouter` — so routing/middleware behaviour lives in
@@ -31,11 +44,34 @@ bunx eslint lib __tests__  # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
 
-After changing bun-common, also run bun-nest's checks (it depends on
-bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
+bun-jobs' integration suites need database servers, and skip (visibly) when
+their URL is unset. `bun scripts/setup-databases.ts` provides them — system
+packages by default, `--docker` for containers, `--dry-run` to see the plan
+first. It never reinstalls an existing server and configures one only when a
+connection with the expected credentials fails.
+
+After changing bun-common, also run bun-nest's and bun-jobs' checks (both
+depend on bun-common). The `eslint.config.mjs` `TS2742` portability hint is pre-existing
 noise — ignore it. There may be a couple of intentional `no-console` ESLint
 *warnings* (error logging in catch blocks with no logger in scope); warnings
 do not fail lint.
+
+`packages/bun-jobs/bench/` is a **separate, unpublished package** with its own
+`package.json`, lockfile and `node_modules` (the same shape as the root
+`benchmarks/`, and excluded from the root `workspaces` list). It holds the
+third-party comparators — BullMQ, bee-queue, node-resque, pg-boss,
+graphile-worker, Agenda, Bree and the cron timers — so none of them reach a
+published package's dependency tree. Neither `bunx tsc --noEmit` nor
+`bunx eslint lib __tests__` covers it; when you change it, run its own pass
+from the package directory:
+
+```bash
+bunx tsc --noEmit -p bench/tsconfig.json
+bunx eslint bench --ignore-pattern 'bench/node_modules/**'
+```
+
+It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
+never the test suite's, so the two can never disturb each other.
 
 **Test files are not in `tsconfig`'s `include`** (`./lib/**/*` only), so
 `bunx tsc --noEmit` doesn't catch type errors in `__tests__/`. The IDE does,
@@ -60,7 +96,9 @@ keep the dependency surface small.
   **`packages/bun-common/lib/utils/native.ts`** (type guards, `get/set/merge/
   cloneDeep/orderBy/omit/pick/each`, `etag`, cookie parse/serialize/sign,
   `fresh`, `rangeParser`, `appendVary`, `encodeUrl`, `getPort`,
-  `createDeferred`, `waitUntil`) and **`lib/cors.ts`** (native CORS).
+  `createDeferred`, `waitUntil`, `sleep`, `withTimeout`, `computeBackoff`,
+  `retry`, `serializeError`/`deserializeError`, `jsonClone`, `Mutex`,
+  `Semaphore`) and **`lib/cors.ts`** (native CORS).
   `lib/index.ts` re-exports them via `export * from "./utils/native"`.
 - `qs` → `picoquery` for query parsing (`DEFAULT_PARSE_QUERY_OPTS` uses
   `nestingSyntax: "js"`, `arrayRepeat: true`; strip a leading `?` before
@@ -82,7 +120,9 @@ Two rules follow, and must hold for every dependency you add:
   the consumer's tree, so the type collapses to `any`/error for them.
   `@types/accepts`, `@types/busboy`, `@types/type-is` are therefore
   `dependencies`. Exceptions: `@types/bun` stays a devDep (runtime-env types the
-  consumer already provides; pinning it risks a version clash), and libs that
+  consumer already provides; pinning it risks a version clash) — the minimum
+  is expressed instead as an *optional* peer range,
+  `peerDependencies["@types/bun"] = ">=1.4.2"`, never a pin — and libs that
   bundle their own types (`file-type`, `mime`, `parse-domain`) need no `@types`.
 - **Re-export third-party types that appear in the public type surface.**
   `lib/index.ts` has `export type { BusboyConfig, FieldInfo, FileInfo } from
@@ -91,6 +131,41 @@ Two rules follow, and must hold for every dependency you add:
   consumer can *use* the composed types but cannot *name* the base types, and TS
   declaration emit raises `TS2742` "cannot be named". bun-nest inherits
   bun-common's types transitively, so fixing bun-common usually suffices.
+
+## Logging (`packages/bun-common/lib/logging.ts`)
+
+`Logger` is **structured, not console-shaped**: six levels (`trace` `debug`
+`info` `warn` `error` `fatal`), each `(message: string | Error, fields?)`,
+plus `log` (alias of `info`), `child(bindings, { name?, level? })` and
+`isLevelEnabled(level)`. No variadic `unknown[]` anywhere — that was the old
+shape, and it typed nothing.
+
+- `createLogger({ level, name, bindings, sink, enabled, time })` is the only
+  implementation; sinks are `consoleSink({ console, format: "pretty"|"json" })`,
+  `multiSink`, `collectSink`. `noopLogger` drops everything;
+  `createTestLogger()` returns `{ logger, events }` for assertions.
+- An `Error` logged as the message, or passed as `fields.error`, is lifted
+  onto `LogEvent.error` — a sink has one place to look.
+- **Options accept `LoggerLike`, not `Logger`**: a `Logger`, a bare `LogSink`
+  function, or a pino / bunyan / winston / consola / log4js / tslog / NestJS /
+  console-like logger. `resolveLogger(input?, fallback?)` returns a `Logger`
+  as-is and otherwise detects the shape in a fixed order (pino → bunyan →
+  winston → consola → log4js → tslog → Nest → console) and wraps it. Name the
+  adapter (`fromPino`, `fromWinston`, ...) to skip detection.
+- Adapters are **structural** — nothing imports those libraries. Each builds a
+  `LogSink` and reuses `createLogger`, so `child()`, level filtering and error
+  handling behave identically underneath any of them; bindings are passed in
+  the library's structured slot (pino/bunyan's object argument, winston's
+  meta), and adapters default to `level: "trace"` so the wrapped library stays
+  the authority on its own threshold, delegating via `isLevelEnabled` when it
+  has one.
+- `BunRouter.logger` resolves once on first access; `setLogger`/`set logger`
+  accept any `LoggerLike`. Call sites use `logger.error("message", { error })`,
+  never `logger.error("message", err)`.
+
+Compile-time guarantees are asserted in `__tests__/logging.type-test.ts`
+(checked by the tests typecheck, not `bun test`); runtime behaviour and every
+adapter's call mapping in `__tests__/logging.test.ts`.
 
 ## Router — Express 5 semantics
 
@@ -154,6 +229,39 @@ Three constraints discovered while building this, all verified by spike:
 - Preceding positions are typed `RouterHandler`, not a union — a union gives
   TypeScript no single signature to contextually type an inline arrow against,
   and its parameters land on implicit `any`.
+
+### Validation libraries
+
+`BunValidate` accepts any [Standard Schema](https://standardschema.dev), so
+nothing needs adapting. Verified against the real libraries, each passed in
+directly, in `__tests__/bunValidate.libraries.test.ts` (runtime) and
+`__tests__/bunValidate.libraries.type-test.ts` (inference):
+
+| Library | Version | `~standard` |
+|---|---|---|
+| zod | 4 | native |
+| yup | 1.7 | native |
+| valibot | 1 | native |
+| arktype | 2 | native |
+| superstruct | 2 | **none** — wrap it |
+
+They are **devDependencies of bun-common only** — the library imports none of
+them, and the runtime dependency surface is unchanged. They exist so the
+"works with any Standard Schema" claim is checked against four independent
+implementations rather than asserted.
+
+- **Inference is the point.** After `validate({ query: schema })` the
+  handler's `req.query` is the *library's* inferred output: `z.coerce.number()`
+  gives `number`, not `string`. The type test carries a negative control —
+  flip one assertion and it must fail.
+- **Issues follow the spec.** A failure is normalised to
+  `{ target, message, path }`, where `path` is the spec's segments (plain or
+  `{ key }`) joined with dots. Every library's messages arrive intact.
+- **For a library without `~standard`**, `toStandardSchema(validate, { vendor })`
+  wraps a plain (sync or async) validate function into a real Standard Schema,
+  usable anywhere one is accepted. `superstruct` is covered that way.
+- arktype gotcha: a bound cannot follow a morph, so `"string.integer.parse >= 1"`
+  is a parse error — express the range inside the definition instead.
 
 ### Mounted sub-routers
 

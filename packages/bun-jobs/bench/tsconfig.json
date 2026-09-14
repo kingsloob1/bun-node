@@ -1,0 +1,18 @@
+{
+  // The benchmarks are intentionally excluded from the package `tsconfig.json`
+  // (`include` is `./lib/**/*` only), so `bunx tsc --noEmit` skips them, and
+  // they are excluded from `files` so they are never published. This config
+  // exists so the IDE — and the explicit CLI pass in this directory's README —
+  // type-check them against the package's real compiler options rather than an
+  // inferred project. `moduleResolution` is switched to `node16` because the
+  // third-party comparators are resolved from this directory's own
+  // `node_modules`, not the workspace's.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {},
+    "types": ["bun"],
+    "noEmit": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}
