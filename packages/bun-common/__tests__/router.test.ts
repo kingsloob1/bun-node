@@ -1362,3 +1362,148 @@ describe("BunRouter: accepts a typed RouterErrorMiddlewareHandler", () => {
     expect(router.routes().length).toBe(1);
   });
 });
+
+describe("BunRouter: Express 5 named wildcards", () => {
+  /** Params captured by `path` when `url` is matched. */
+  function paramsFor(path: string, url: string): Record<string, string> {
+    const router = new BunRouter();
+    router.get(path, () => {});
+    const layers = layersFor(router, "GET", url);
+    expect(layers).toHaveLength(1);
+    return layers[0].matched.params as Record<string, string>;
+  }
+
+  it("exposes *name as req.params.name, keeping the positional key", () => {
+    expect(paramsFor("/assets/*splat", "/assets/css/site/app.css")).toEqual({
+      "0": "css/site/app.css",
+      splat: "css/site/app.css",
+    });
+  });
+
+  it("supports the braced {*name} form", () => {
+    expect(paramsFor("/assets/{*splat}", "/assets/a/b.css")).toEqual({
+      "0": "a/b.css",
+      splat: "a/b.css",
+    });
+  });
+
+  it("leaves a bare * positional only", () => {
+    expect(paramsFor("/assets/*", "/assets/a/b.css")).toEqual({
+      "0": "a/b.css",
+    });
+  });
+
+  it("maps several named wildcards positionally", () => {
+    expect(paramsFor("/f/*a/g/*b", "/f/one/g/two")).toEqual({
+      "0": "one",
+      "1": "two",
+      a: "one",
+      b: "two",
+    });
+  });
+
+  it("names a wildcard alongside a regexp-constrained param", () => {
+    expect(paramsFor("/n/:id(\\d+)/*rest", "/n/42/x/y")).toEqual({
+      "0": "x/y",
+      id: "42",
+      rest: "x/y",
+    });
+  });
+
+  it("withholds names when a bare regexp group shares the counter", () => {
+    // routejs numbers bare groups and wildcards from one counter, so the nth
+    // numeric key is not reliably the nth wildcard — binding a name here could
+    // attach it to the wrong capture, so only positional keys are published.
+    const params = paramsFor("/n/(\\d+)/*rest", "/n/42/x/y");
+    expect(params).toEqual({ "0": "42", "1": "x/y" });
+    expect(params).not.toHaveProperty("rest");
+  });
+});
+
+describe("BunRouter: params are bound per route, not per callback", () => {
+  it("lets a middleware replace params for later callbacks of the same route", async () => {
+    const router = new BunRouter();
+    const seen: unknown[] = [];
+    router.get(
+      "/u/:id",
+      (req, _res, next) => {
+        // Replace wholesale — the bound object comes from the pipeline cache
+        // and is shared by every request with this signature.
+        req.params = { ...req.params, id: String(Number(req.params.id) * 2) };
+        next();
+      },
+      (req, res) => {
+        seen.push({ ...req.params });
+        res.send("ok");
+      },
+    );
+
+    const request = await makeRequest({ url: "http://localhost/u/21" });
+    const response = new BunResponse(request);
+    await router.handle({
+      requestHost: request.host,
+      requestMethod: "GET",
+      requestUrl: "/u/21",
+      request,
+      response,
+    });
+
+    expect(seen).toEqual([{ id: "42" }]);
+  });
+
+  it("rebinds params when the pipeline moves to a different route", async () => {
+    const router = new BunRouter();
+    const seen: unknown[] = [];
+    router.get("/u/:id", (req, _res, next) => {
+      req.params = { id: "clobbered" };
+      next();
+    });
+    router.get("/u/:other", (req, res) => {
+      seen.push({ ...req.params });
+      res.send("ok");
+    });
+
+    const request = await makeRequest({ url: "http://localhost/u/7" });
+    const response = new BunResponse(request);
+    await router.handle({
+      requestHost: request.host,
+      requestMethod: "GET",
+      requestUrl: "/u/7",
+      request,
+      response,
+    });
+
+    // The second route's own params win — the first route's edit does not leak.
+    expect(seen).toEqual([{ other: "7" }]);
+  });
+
+  it("does not leak a replacement into a later request on the same path", async () => {
+    const router = new BunRouter();
+    const seen: string[] = [];
+    router.get(
+      "/p/:id",
+      (req, _res, next) => {
+        req.params = { ...req.params, id: "replaced" };
+        next();
+      },
+      (req, res) => {
+        seen.push(req.params.id as string);
+        res.send("ok");
+      },
+    );
+
+    for (const url of ["/p/1", "/p/1"]) {
+      const request = await makeRequest({ url: `http://localhost${url}` });
+      const response = new BunResponse(request);
+      await router.handle({
+        requestHost: request.host,
+        requestMethod: "GET",
+        requestUrl: url,
+        request,
+        response,
+      });
+    }
+
+    expect(seen).toEqual(["replaced", "replaced"]);
+  });
+});

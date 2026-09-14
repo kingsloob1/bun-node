@@ -187,16 +187,45 @@ export {
   type QueryParserOpts,
 } from "./BunRequest";
 export { BunResponse } from "./BunResponse";
+export {
+  BunValidate,
+  type BunValidateOptions,
+  type InferValidatedShape,
+  type TargetHooks,
+  validate,
+  ValidationError,
+  type ValidationFailureMode,
+  type ValidationIssue,
+  type ValidationSchemas,
+  type ValidationTarget,
+  type ValidatorMiddleware,
+} from "./BunValidate";
+export type { StandardSchemaV1 } from "./types/standardSchema";
 export { createServeStaticHandler } from "./serveStatic";
+export type { ExtractRouteParams } from "./types/routeParams";
+export type {
+  EmptyShape,
+  MergeShape,
+  MountedHandler,
+  ResolveBody,
+  ResolvedHandler,
+  ResolveParams,
+  ResolveQuery,
+  ValidationShape,
+} from "./types/routeTyping";
 export {
   BunRouter,
   type CachedRouteMatch,
   DEFAULT_ROUTE_CACHE_MAX,
+  FETCH_STUB_SERVER,
+  type FetchInput,
   type matchedRoute,
   RouteClass,
   type RouteConstructorOption,
   type RouteMatchMethodOptionType,
   routeModulePath,
+  toNativeRequest,
+  type UnmountedRouter,
 } from "./BunRouter";
 export {
   BunHttpAdapter,
@@ -213,6 +242,7 @@ export {
   type BunServer,
   type BunServeUnixNormalOptions,
   type Constructor,
+  type DefaultRequestBody,
   type Logger,
   type MultiPartFieldRecord,
   type MultiPartFileRecord,
@@ -225,6 +255,7 @@ export {
   type RouterMiddlewareHandler,
   type SendFileOptions,
   type ServeStaticOptions,
+  type TypedRouteHandler,
 } from "./types/general";
 
 /* ------------------------------------------------------------------ *

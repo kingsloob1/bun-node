@@ -626,3 +626,37 @@ describe("BunResponse: keep-alive detection", () => {
     expect(res.req.isKeepAlive).toBe(false);
   });
 });
+
+describe("BunResponse: removeAllListeners argument handling", () => {
+  it("removes every listener when called with no argument", async () => {
+    const res = await makeResponse();
+    res.on("finish", () => {});
+    res.once("close", () => {});
+    res.on("error", () => {});
+
+    res.removeAllListeners();
+
+    expect(res.eventNames()).toHaveLength(0);
+    expect(res.listenerCount("finish")).toBe(0);
+    expect(res.listenerCount("close")).toBe(0);
+    expect(res.listenerCount("error")).toBe(0);
+  });
+
+  it("removes only the named event when given one", async () => {
+    const res = await makeResponse();
+    res.on("finish", () => {});
+    res.on("close", () => {});
+
+    res.removeAllListeners("finish");
+
+    expect(res.listenerCount("finish")).toBe(0);
+    expect(res.listenerCount("close")).toBe(1);
+    expect(res.eventNames()).toEqual(["close"]);
+  });
+
+  it("is a no-op before any listener is registered", async () => {
+    const res = await makeResponse();
+    expect(() => res.removeAllListeners()).not.toThrow();
+    expect(res.eventNames()).toHaveLength(0);
+  });
+});
