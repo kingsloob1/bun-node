@@ -928,6 +928,55 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
   }, 45_000);
 
+  it("leaves a retired index alone unless syncSchema applies the change", async () => {
+    const prefix = `sy_keep_${Math.random().toString(36).slice(2, 8)}_`;
+    const retired = "ns_1_queue_1_state_1_priority_1_createdAt_1";
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(MONGODB!);
+    await client.connect();
+    const jobs = client.db().collection(`${prefix}jobs`);
+
+    try {
+      // Present before any driver connects, as an older version left it.
+      await jobs.createIndex({
+        ns: 1,
+        queue: 1,
+        state: 1,
+        priority: 1,
+        createdAt: 1,
+      });
+      const names = async () =>
+        (await jobs.indexes()).map((index) => String(index.name));
+
+      for (const syncSchema of [
+        false,
+        { dryRun: true },
+        { indexes: false },
+      ] as const) {
+        const driver = new MongoDriver({
+          url: MONGODB,
+          collectionPrefix: prefix,
+          syncSchema,
+        });
+        drivers.push(driver);
+        await driver.connect();
+        await driver.close();
+        expect(await names()).toContain(retired);
+      }
+
+      const applying = new MongoDriver({
+        url: MONGODB,
+        collectionPrefix: prefix,
+      });
+      drivers.push(applying);
+      await applying.syncSchema();
+      expect(await names()).not.toContain(retired);
+    } finally {
+      await jobs.drop().catch(() => undefined);
+      await client.close();
+    }
+  }, 45_000);
+
   it("retires an index an older version created", async () => {
     const prefix = `sy_old_${Math.random().toString(36).slice(2, 8)}_`;
     const driver = new MongoDriver({ url: MONGODB, collectionPrefix: prefix });

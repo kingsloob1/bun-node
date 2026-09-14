@@ -452,6 +452,30 @@ export function driverContract(
         }
       });
 
+      it("keeps a job's data, progress and return value when they are strings", async () => {
+        const now = Date.now();
+        const token = newToken();
+        // Plain strings, the empty one, and one that is itself valid JSON:
+        // each must come back as the same string, not null or a number.
+        await driver.addJob(
+          q,
+          makeJob({ id: "stringly", data: "done", runAt: now }),
+        );
+        expect((await driver.getJob(q, "stringly"))?.data).toBe("done");
+
+        await driver.claimJob(q, { workerId: "w1", token, lockMs: 1000, now });
+        expect(await driver.updateProgress(q, "stringly", "42")).toBe(true);
+        expect((await driver.getJob(q, "stringly"))?.progress).toBe("42");
+
+        await driver.completeJob(q, "stringly", token, "", false, now);
+        const done = await driver.getJob(q, "stringly");
+        expect(done?.state).toBe("completed");
+        expect(done?.returnValue).toBe("");
+        expect(done?.data).toBe("done");
+
+        await driver.removeJob(q, "stringly");
+      });
+
       it("stamps the claim on the job", async () => {
         const now = Date.now();
         const token = newToken();
@@ -477,6 +501,51 @@ export function driverContract(
         await driver.completeJob(q, "stamped", token, null, true, now);
       });
 
+      it("lists delayed jobs by when they are due, not when they were added", async () => {
+        const now = Date.now();
+        await driver.addJobs(q, [
+          makeJob({
+            id: "due-last",
+            state: "delayed",
+            createdAt: now - 3,
+            runAt: now + 30_000,
+          }),
+          makeJob({
+            id: "due-first",
+            state: "delayed",
+            createdAt: now - 2,
+            runAt: now + 10_000,
+          }),
+          makeJob({
+            id: "due-middle",
+            state: "delayed",
+            createdAt: now - 1,
+            runAt: now + 20_000,
+          }),
+        ]);
+
+        const ids = async (order: "asc" | "desc") =>
+          (
+            await driver.listJobs(q, ["delayed"], {
+              offset: 0,
+              limit: 10,
+              order,
+            })
+          ).map((job) => job.id);
+
+        expect(await ids("asc")).toEqual([
+          "due-first",
+          "due-middle",
+          "due-last",
+        ]);
+        expect(await ids("desc")).toEqual([
+          "due-last",
+          "due-middle",
+          "due-first",
+        ]);
+        await driver.drainQueue(q, true);
+      });
+
       it("does not claim a job before its runAt", async () => {
         const now = Date.now();
         await driver.addJob(
@@ -494,6 +563,17 @@ export function driverContract(
         ).toBeNull();
 
         expect(await driver.nextDelayedAt(q)).toBe(now + 60_000);
+
+        // Due is not enough: a claim does not promote, because promotion is
+        // the worker's maintenance and `maintenance: false` turns it off.
+        expect(
+          await driver.claimJob(q, {
+            workerId: "w1",
+            token: newToken(),
+            lockMs: 1000,
+            now: now + 60_001,
+          }),
+        ).toBeNull();
 
         // Once due, promotion makes it claimable.
         expect(await driver.promoteDelayed(q, now + 60_001, 10)).toBe(1);
@@ -824,6 +904,37 @@ export function driverContract(
         expect(await driver.cleanJobs(q, "completed", 50_000, 10, now)).toEqual(
           ["old"],
         );
+
+        // Age, not due time: a job due in a minute but created long ago is old.
+        await driver.addJobs(q, [
+          makeJob({
+            id: "old-delayed",
+            state: "delayed",
+            createdAt: now - 100_000,
+            runAt: now + 60_000,
+          }),
+          makeJob({
+            id: "new-delayed",
+            state: "delayed",
+            createdAt: now,
+            runAt: now + 60_000,
+          }),
+          makeJob({
+            id: "old-failed",
+            state: "failed",
+            createdAt: now - 200_000,
+            finishedOn: now - 100_000,
+            runAt: now + 60_000,
+          }),
+        ]);
+        expect(await driver.cleanJobs(q, "delayed", 50_000, 10, now)).toEqual([
+          "old-delayed",
+        ]);
+        expect(await driver.cleanJobs(q, "failed", 50_000, 10, now)).toEqual([
+          "old-failed",
+        ]);
+        expect(await driver.getJob(q, "new-delayed")).not.toBeNull();
+        await driver.drainQueue(q, true);
 
         await driver.addJob(
           q,
@@ -1762,6 +1873,18 @@ export function driverContract(
     /* --- discovery and purge ------------------------------------------ */
 
     describe("discovery and purge", () => {
+      it("lists a runner that has written state but never taken a lock", async () => {
+        const ns = testNamespace("unlocked");
+
+        await driver.setState(ns, runnerKey("never-locked"), {
+          paused: "0",
+          updatedAt: Date.now(),
+        });
+
+        expect(await driver.listRunners(ns)).toContain("never-locked");
+        await driver.purge(ns);
+      });
+
       it("lists what the namespace holds and purges only it", async () => {
         const doomed = testNamespace("doomed");
         const kept = testNamespace("kept");

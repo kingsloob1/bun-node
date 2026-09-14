@@ -1134,6 +1134,19 @@ const mysql: SqlDialect = {
   timeType: "BIGINT",
   serialType: "BIGINT AUTO_INCREMENT PRIMARY KEY",
   longTextType: "MEDIUMTEXT",
+  /**
+   * Reads a JSON column as the client already decoded it.
+   *
+   * Bun's MySQL client decodes a `JSON` column itself — MariaDB's too, whose
+   * `JSON` is `LONGTEXT` with a validity check — so a stored `"done"` arrives
+   * as the string `done`, an object as an object. Parsing that again, as the
+   * shared reader does for engines that hand back text, threw on every plain
+   * string and fell back to `null`, and turned a string that happens to be
+   * valid JSON, such as `"42"`, into a different type. A job's data, progress
+   * and return value were all lost that way whenever they were a string.
+   */
+  jsonOut: <T>(value: unknown, fallback: T): T =>
+    value === null || value === undefined ? fallback : (value as T),
   jsonSetInteger: (column, key, placeholder) =>
     `JSON_SET(COALESCE(${column}, JSON_OBJECT()), '$.${key}', CAST(${placeholder} AS SIGNED))`,
   // MySQL's `JSON_EXTRACT` yields a JSON number and MariaDB's (whose `JSON` is

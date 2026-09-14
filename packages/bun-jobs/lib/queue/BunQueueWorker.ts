@@ -1582,8 +1582,13 @@ export class BunQueueWorker<
     const failure =
       error instanceof Error ? error : deserializeError(serializeError(error));
 
-    if (!this.safeEmit("error", failure, context)) {
+    // Asked of `error` itself: a listener for any other event makes `emit`
+    // throw on an unheard `error`, which `safeEmit` swallows as "heard".
+    if (this.listenerCount("error") === 0) {
       this.#logger.error(failure, { context });
+      return;
     }
+
+    this.safeEmit("error", failure, context);
   }
 }

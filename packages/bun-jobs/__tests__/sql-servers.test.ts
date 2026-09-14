@@ -94,6 +94,66 @@ for (const server of SERVERS) {
 }
 
 /**
+ * `removeOnComplete: { count, ttl }` keeps at most `count` completed jobs, and
+ * still does when a worker settles several completions in one batch.
+ *
+ * Postgres settles a batch in one statement, and that path used to take any
+ * retention with a TTL, skipping the count sweep — 10 jobs at concurrency 8
+ * with `{ count: 3 }` left 5. A batch of one takes the singular path, which is
+ * why it only showed up some of the time.
+ */
+for (const server of SERVERS) {
+  describe.skipIf(!server.url)(
+    `SQL driver: ${server.adapter} count and TTL retention`,
+    () => {
+      it("keeps only `count` completed jobs when completions are batched", async () => {
+        const driver = new SqlDriver({
+          url: server.url,
+          adapter: server.adapter,
+          tablePrefix: "bun_jobs_test_",
+        });
+        const namespace = testNamespace("retain");
+        const queue = new BunQueue("retain", { namespace, driver });
+        const worker = new BunQueueWorker("retain", async () => "done", {
+          namespace,
+          driver,
+          concurrency: 8,
+          pollInterval: 5,
+          autorun: false,
+          waitToExit: false,
+        });
+
+        try {
+          await queue.addBulk(
+            Array.from({ length: 10 }, (_, index) => ({
+              name: "x",
+              data: { index },
+              opts: { removeOnComplete: { count: 3, ttl: 60_000 } },
+            })),
+          );
+
+          const settled = new Set<string>();
+          worker.on("completed", (job) => settled.add(job.id));
+          void worker.run();
+          await waitFor(() => settled.size === 10, { timeout: 15_000 });
+          await worker.close();
+
+          await waitFor(async () => (await queue.count("completed")) === 3, {
+            timeout: 5_000,
+            message: "more than `count` completed jobs were kept",
+          });
+        } finally {
+          await worker.close({ force: true }).catch(() => {});
+          await driver.purge(namespace).catch(() => {});
+          await queue.close().catch(() => {});
+          await driver.close().catch(() => {});
+        }
+      }, 30_000);
+    },
+  );
+}
+
+/**
  * An event is delivered even when its insert commits after a later one's.
  *
  * A sequence number is taken at insert and seen at commit, and those orders

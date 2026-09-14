@@ -603,15 +603,9 @@ if redis.call('HGET', META, 'paused') == '1' then
   return {}
 end
 
--- Anything due is claimable, so promote before looking. Once, not per job.
-for _, set in ipairs({ DELAYED, FAILED }) do
-  local due = redis.call('ZRANGEBYSCORE', set, '-inf', now, 'LIMIT', 0, limit)
-  for _, id in ipairs(due) do
-    redis.call('ZREM', set, id)
-    redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
-    redis.call('HSET', job(id), 'state', 'waiting')
-  end
-end
+-- Due delayed and retrying jobs are not promoted here: that is the worker's
+-- maintenance (PROMOTE_DELAYED), which \`maintenance: false\` turns off, as on
+-- every other driver. ARGV[6] stays in place so the names after it do not move.
 
 -- Names to skip arrive after count. Without any, this is the plain head read
 -- it always was: #ARGV is a length check in the VM, not a call to Redis.
@@ -663,15 +657,9 @@ if redis.call('HGET', META, 'paused') == '1' then
   return nil
 end
 
--- Anything due is claimable, so promote before looking.
-for _, set in ipairs({ DELAYED, FAILED }) do
-  local due = redis.call('ZRANGEBYSCORE', set, '-inf', now, 'LIMIT', 0, limit)
-  for _, id in ipairs(due) do
-    redis.call('ZREM', set, id)
-    redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
-    redis.call('HSET', job(id), 'state', 'waiting')
-  end
-end
+-- Due delayed and retrying jobs are not promoted here: that is the worker's
+-- maintenance (PROMOTE_DELAYED), which \`maintenance: false\` turns off, as on
+-- every other driver. ARGV[6] stays in place so the names after it do not move.
 
 -- Names to skip arrive after promoteLimit. Without any, this is the plain head
 -- read it always was: #ARGV is a length check in the VM, not a call to Redis.
@@ -933,20 +921,34 @@ local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, completed = C
 local set = sets[which]
 local removed = {}
 
-if which == 'waiting' then
-  -- The wait set is scored by priority, so age lives on the hash.
-  local entries = redis.call('ZRANGE', set, 0, limit - 1)
-  for _, entry in ipairs(entries) do
-    local id = string.sub(entry, 18)
-    if tonumber(redis.call('HGET', job(id), 'createdAt')) <= cutoff then
-      redis.call('ZREM', set, entry)
-      drop(id)
-      removed[#removed + 1] = id
+if which == 'waiting' or which == 'delayed' or which == 'failed' then
+  -- These sets are scored by priority or by when a job is due, neither of
+  -- which is its age. Age lives on the hash, as every other driver measures
+  -- it: finishedOn when the job has one, else createdAt. The whole set is
+  -- walked in pages, so a limit is never mistaken for the end of the matches.
+  local offset, page = 0, 500
+  while #removed < limit do
+    local entries = redis.call('ZRANGE', set, offset, offset + page - 1)
+    if #entries == 0 then
+      break
+    end
+    for _, entry in ipairs(entries) do
+      local id = which == 'waiting' and string.sub(entry, 18) or entry
+      local times = redis.call('HMGET', job(id), 'finishedOn', 'createdAt')
+      local age = tonumber(times[1]) or tonumber(times[2])
+      if age and age <= cutoff and #removed < limit then
+        redis.call('ZREM', set, entry)
+        drop(id)
+        removed[#removed + 1] = id
+      else
+        offset = offset + 1
+      end
     end
   end
   return removed
 end
 
+-- Completed and dead are scored by when they finished, which is their age.
 local ids = redis.call('ZRANGEBYSCORE', set, '-inf', cutoff, 'LIMIT', 0, limit)
 for _, id in ipairs(ids) do
   redis.call('ZREM', set, id)

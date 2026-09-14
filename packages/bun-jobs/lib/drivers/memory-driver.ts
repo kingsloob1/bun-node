@@ -415,8 +415,8 @@ export class MemoryDriver implements JobsDriver {
       return null;
     }
 
-    // Anything due is claimable, so promote before looking.
-    this.#promoteDue(queue, opts.now, Number.POSITIVE_INFINITY);
+    // Due delayed jobs are not promoted here: that is the worker's maintenance,
+    // which `maintenance: false` turns off, as on every other driver.
 
     // The index is already in claim order, so the first due entry is the
     // answer. Walking past a not-yet-due one matters because `runAt` can move

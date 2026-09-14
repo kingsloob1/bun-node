@@ -1529,16 +1529,24 @@ export class MongoDriver implements JobsDriver {
     const jobs = await this.#jobs();
     const direction = opts.order === "asc" ? 1 : -1;
 
-    // A single state is listed in its own natural order; several states share
-    // only creation time.
-    const sort =
-      states.length === 1 && states[0] === "waiting"
+    // A single state is listed in its own natural order — the one every driver
+    // shares, see `JobsDriver.listJobs` — and several states share only
+    // creation time. Delayed and failed ride the promotion index.
+    const single = states.length === 1 ? states[0] : undefined;
+    const sort: Record<string, 1 | -1> =
+      single === "waiting"
         ? { priority: direction, createdAt: direction, _id: direction }
-        : { createdAt: direction, _id: direction };
+        : single === "delayed" || single === "failed"
+          ? { runAt: direction, _id: direction }
+          : single === "active"
+            ? { lockExpiresAt: direction, _id: direction }
+            : single === "completed" || single === "dead"
+              ? { finishedOn: direction, _id: direction }
+              : { createdAt: direction, _id: direction };
 
     const documents = await jobs
       .find({ ns: q.ns, queue: q.queue, state: { $in: states } })
-      .sort(sort as Record<string, 1 | -1>)
+      .sort(sort)
       .skip(opts.offset)
       .limit(opts.limit)
       .toArray();
@@ -2420,13 +2428,10 @@ export class MongoDriver implements JobsDriver {
         .createIndexes(keys.map((key) => ({ key })));
     }
 
-    for (const name of RETIRED_INDEXES) {
-      // Best-effort: absent on a fresh database, and may already be gone.
-      await db
-        .collection(this.collections.jobs)
-        .dropIndex(name)
-        .catch(() => undefined);
-    }
+    // Retired indexes are not dropped here. Dropping one is a schema change,
+    // and schema changes are `syncSchema`'s to plan and apply — so a plain
+    // connect, `syncSchema: false`, `dryRun` and `indexes: false` all leave
+    // them where they are.
   }
 
   /** The database, connecting on first use. */

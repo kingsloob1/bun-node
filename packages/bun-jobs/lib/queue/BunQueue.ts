@@ -798,6 +798,18 @@ export class BunQueue<
           await this.#publish("debounced", { id: updated.id });
           return view;
         }
+
+        // A `null` should mean the pending job has started or is gone, and
+        // only then may the window move to a new one. But a driver can also
+        // answer `null` because it could not get at the job in time — the file
+        // driver gives up on a marker somebody else holds — and replacing the
+        // job then would leave two where the caller asked for one. So look:
+        // still waiting or delayed means the update simply did not land, and
+        // it is tried again.
+        const pending = await this.driver.getJob(this.ref, current.jobId);
+        if (pending?.state === "waiting" || pending?.state === "delayed") {
+          continue;
+        }
       }
 
       if (current && kind === "throttle" && (current.until ?? 0) > now) {

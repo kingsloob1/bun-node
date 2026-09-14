@@ -330,6 +330,14 @@ export interface BunQueueWorkerOptions {
    * only work *is* a worker — a worker service — would exit the moment its
    * queue went idle. Set `false` for a script that runs a worker alongside
    * work of its own and should exit when that work is done.
+   *
+   * `false` releases only the worker's own hold. Whether anything else holds
+   * the process depends on the driver's client: the Redis, Postgres and
+   * MongoDB clients keep an open connection that holds it by itself, and none
+   * of them can be unref'd — with one of those, close the driver (or
+   * `jobs.close()`) once the script's own work is done. Bun's MySQL client,
+   * used for MySQL and MariaDB, does not hold the process, and neither do the
+   * memory, file and SQLite drivers, so an idle process on any of those exits.
    */
   waitToExit?: boolean;
 }

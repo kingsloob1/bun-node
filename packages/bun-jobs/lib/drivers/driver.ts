@@ -626,7 +626,13 @@ export interface QueueDriver {
   ) => Promise<{ logs: string[]; count: number }>;
   /** One job by id, or `null`. */
   getJob: (q: QueueRef, id: string) => Promise<JobRecord | null>;
-  /** Jobs in the given states, ordered by their state's natural order. */
+  /**
+   * Jobs in the given states, ordered by their state's natural order, which
+   * every driver shares for a single state: `waiting` by priority then
+   * creation, `delayed` and `failed` by when they are due, `active` by lock
+   * expiry, `completed` and `dead` by when they finished. Several states are
+   * ordered by creation. `asc` is that order, `desc` its reverse.
+   */
   listJobs: (
     q: QueueRef,
     states: JobState[],

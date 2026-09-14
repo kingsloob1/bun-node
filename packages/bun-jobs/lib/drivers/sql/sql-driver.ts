@@ -1787,9 +1787,12 @@ export class SqlDriver implements JobsDriver {
     }
 
     // Anything with a count-based retention still needs the per-state sweep the
-    // singular path does, so it takes that path rather than being half-batched.
+    // singular path does, so it takes that path rather than being half-batched
+    // — `{ count, ttl }` included, which has a TTL but must still be capped.
     const batchable = keeping.filter(
-      (one) => one.retention === false || this.#ttlOf(one.retention) !== null,
+      (one) =>
+        one.retention === false ||
+        (this.#ttlOf(one.retention) !== null && !this.#hasCount(one.retention)),
     );
     const individual = keeping.filter((one) => !batchable.includes(one));
 
@@ -1835,6 +1838,16 @@ export class SqlDriver implements JobsDriver {
   }
 
   /** The TTL a retention asks for, or `null` when it names none. */
+  /** Whether a retention caps how many finished jobs are kept. */
+  #hasCount(retention: Retention): boolean {
+    return (
+      typeof retention === "number" ||
+      (typeof retention === "object" &&
+        retention !== null &&
+        retention.count !== undefined)
+    );
+  }
+
   #ttlOf(retention: Retention): number | null {
     return typeof retention === "object" && retention?.ttl && retention.ttl > 0
       ? retention.ttl
@@ -2132,12 +2145,24 @@ export class SqlDriver implements JobsDriver {
 
     const { bind, values } = this.#binder();
 
-    // A single state is listed in its own natural order; several states share
-    // only creation time.
-    const order =
-      states.length === 1 && states[0] === "waiting"
-        ? `priority ${opts.order}, created_at ${opts.order}, id ${opts.order}`
-        : `created_at ${opts.order}, id ${opts.order}`;
+    // A single state is listed in its own natural order — the one every driver
+    // shares, see `JobsDriver.listJobs` — and several states share only
+    // creation time. The id breaks ties, so a page boundary is stable.
+    const direction = opts.order === "desc" ? "DESC" : "ASC";
+    const single = states.length === 1 ? states[0] : undefined;
+    const columns =
+      single === "waiting"
+        ? ["priority", "created_at"]
+        : single === "delayed" || single === "failed"
+          ? ["run_at"]
+          : single === "active"
+            ? ["lock_expires_at"]
+            : single === "completed" || single === "dead"
+              ? ["finished_on"]
+              : ["created_at"];
+    const order = [...columns, "id"]
+      .map((column) => `${column} ${direction}`)
+      .join(", ");
 
     const rows = await this.#all<Record<string, unknown>>(
       `SELECT * FROM ${this.#tables.jobs}

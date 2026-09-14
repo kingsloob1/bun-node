@@ -117,7 +117,13 @@ export interface RedisDriverOptions extends ConnectionInput {
    * per runner, because a script may only touch one slot.
    */
   cluster?: boolean;
-  /** An already-connected client, when the application has one to share. */
+  /**
+   * An already-connected client, when the application has one to share. It
+   * carries commands and scripts only; `url` is still required, because
+   * blocking waits and pub/sub each need a connection of their own, and the
+   * driver opens those from it. Without `url` the constructor throws a
+   * `ConfigError`.
+   */
   client?: RedisClient;
   /** How long a blocking wait lasts, at most. Defaults to 5 seconds. */
   maxBlockSeconds?: number;
@@ -359,6 +365,10 @@ export class RedisDriver implements JobsDriver {
         set.push(field, String(value));
       }
     }
+
+    // A runner exists once it has written state — on `start()`, whether or
+    // not it ever takes a lock, as a parallel-mode runner never does.
+    await this.#client.sadd(this.keys.runners(ns), this.#runnerId(key));
 
     if (set.length > 0) {
       await this.#client.send("HSET", [stateKey, ...set]);
