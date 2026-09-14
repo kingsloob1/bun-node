@@ -110,8 +110,37 @@ export interface JobOptions {
    * removed by `removeOnFail` as usual.
    */
   deadLetter?: string;
+  /**
+   * Keeps one pending job per `id` instead of adding another each time.
+   *
+   * While a job added under this id has not started, a further add replaces
+   * its data and pushes its run time back to `ttl` from now; once it has
+   * started, the next add is a new job. The first add's other options stay.
+   * `ttl` is milliseconds or a duration such as `"30 seconds"`. Not with
+   * `repeat`, `jobId` or `throttle`.
+   */
+  debounce?: DebounceOptions;
+  /**
+   * Adds at most one job per `id` per `ttl`: an add inside the window adds
+   * nothing and answers with the job that opened it. Not with `repeat`,
+   * `jobId` or `debounce`.
+   */
+  throttle?: DebounceOptions;
+  /**
+   * How many log lines the job keeps, newest last; older lines are dropped.
+   * `0` keeps every line. Defaults to `1000`.
+   */
+  keepLogs?: number;
   /** Makes this a repeatable job. */
   repeat?: RepeatOptions;
+}
+
+/** Which debounce or throttle a job belongs to, and for how long. */
+export interface DebounceOptions {
+  /** Jobs sharing this id are debounced or throttled together. */
+  id: string;
+  /** The window: milliseconds, or a duration such as `"30 seconds"`. */
+  ttl: number | string;
 }
 
 /** What a worker calls for each job. */
@@ -138,6 +167,12 @@ export interface ProcessorContext {
    * For a step that will take longer than `lockDuration` on its own.
    */
   heartbeat: () => Promise<void>;
+  /**
+   * Appends a line to the job's log, which outlives this attempt — readable
+   * with `job.getLogs()` or `queue.getJobLogs(id)` from anywhere. Answers with
+   * how many lines the log keeps.
+   */
+  log: (line: string) => Promise<number>;
 }
 
 /** Options for a {@link BunQueue}. */
@@ -322,7 +357,9 @@ export type JobScopedEvent =
   | "failed"
   | "retrying"
   | "dead"
-  | "deadLettered";
+  | "deadLettered"
+  | "debounced"
+  | "throttled";
 
 /**
  * The same job events, qualified by the job's name.
@@ -388,6 +425,13 @@ type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
   cleaned: (ids: string[], state: JobState) => void;
   /** Finished jobs were returned to the queue together, by `retryJobs` or `retryAll`. */
   retried: (ids: string[]) => void;
+  /**
+   * An add found a pending job with the same debounce id, replaced its data
+   * and pushed its run time back, rather than adding another.
+   */
+  debounced: (job: Job<TData, TResult>) => void;
+  /** An add fell inside a throttle window; `job` is the one that opened it. */
+  throttled: (job: Job<TData, TResult>) => void;
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: (key: string, nextRunAt: number) => void;
   /** Something failed outside a job. */

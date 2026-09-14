@@ -92,6 +92,7 @@ export {
   type BunQueueWorkerEvents,
   type BunQueueWorkerOptions,
   type DeadLetter,
+  type DebounceOptions,
   DEFAULT_JOB_OPTIONS,
   Job,
   type JobBackoffOptions,

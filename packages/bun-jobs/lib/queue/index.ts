@@ -42,6 +42,7 @@ export type {
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
   DeadLetter,
+  DebounceOptions,
   JobOptions,
   JobProcessor,
   ProcessorContext,

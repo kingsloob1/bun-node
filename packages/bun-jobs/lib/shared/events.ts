@@ -69,6 +69,10 @@ export interface QueueEventPayloads {
   cleaned: { ids: string[]; state: JobState };
   /** Finished jobs were returned to the queue together. */
   retried: { ids: string[] };
+  /** An add replaced a pending debounced job's data instead of adding one. */
+  debounced: { id: string };
+  /** An add fell inside a throttle window, so nothing was added. */
+  throttled: { id: string };
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: { key: string; nextRunAt: number };
 }

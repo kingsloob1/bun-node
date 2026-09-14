@@ -720,6 +720,7 @@ export class BunQueueWorker<
       heartbeat: async () => {
         await this.#heartbeat(record, controller);
       },
+      log: async (line) => await job.log(line),
     };
 
     this.safeEmitScoped("active", record.name, job);

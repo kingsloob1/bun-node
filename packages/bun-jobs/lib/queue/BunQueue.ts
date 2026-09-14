@@ -24,7 +24,7 @@ import { resolveDriver } from "../drivers/index";
 import { TypedEmitterBase } from "../shared/emitter";
 import { ConfigError, QueueClosedError } from "../shared/errors";
 import { queueEvent } from "../shared/events";
-import { assertDateParser } from "../shared/humanTime";
+import { assertDateParser, parseDuration } from "../shared/humanTime";
 import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
@@ -33,6 +33,9 @@ import { Job } from "./Job";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+
+/** How many times a debounce or throttle retries a pointer it lost. */
+const WINDOW_ATTEMPTS = 12;
 
 /** How many finished jobs `retryAll` reads at a time. */
 const RETRY_PAGE = 200;
@@ -173,6 +176,10 @@ export class BunQueue<
     options?: JobOptions,
   ): Promise<Job<TData, TResult>> {
     await this.connect();
+
+    if (options?.debounce || options?.throttle) {
+      return await this.#addWindowed(name, data, options);
+    }
 
     if (options?.repeat) {
       return await this.#addRepeatable(name, data, options);
@@ -384,6 +391,87 @@ export class BunQueue<
     return retried;
   }
 
+  /**
+   * Changes a stored job's data, priority or run time, and answers with the
+   * job as it now is — or `null` when there is no such job, or it is in a
+   * state the patch cannot apply to.
+   *
+   * `runAt` moves only a waiting or delayed job. `onlyIn` makes the whole
+   * change conditional on the job's state, checked in the same step as the
+   * write.
+   */
+  async update(
+    id: string,
+    patch: {
+      /** The new payload. */
+      data?: TData;
+      /** The new priority. */
+      priority?: number;
+      /** When it may run: a `Date`, or epoch milliseconds. */
+      runAt?: Date | number;
+      /** Change it only while it is in one of these states. */
+      onlyIn?: JobState[];
+    },
+  ): Promise<Job<TData, TResult> | null> {
+    await this.connect();
+    const driver = this.#requireDriver("update()", "updateJob");
+
+    if (patch.priority !== undefined && !Number.isFinite(patch.priority)) {
+      throw new ConfigError("priority must be a number", {
+        priority: patch.priority,
+      });
+    }
+
+    const runAt =
+      patch.runAt instanceof Date ? patch.runAt.getTime() : patch.runAt;
+
+    if (runAt !== undefined && !Number.isFinite(runAt)) {
+      throw new ConfigError("runAt must be a valid date or timestamp", {
+        runAt: patch.runAt,
+      });
+    }
+
+    const record = await driver.updateJob!(
+      this.ref,
+      id,
+      {
+        ...(patch.data !== undefined
+          ? { data: assertJsonSafe(patch.data, "job data") }
+          : {}),
+        ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+        ...(runAt !== undefined ? { runAt } : {}),
+        ...(patch.onlyIn ? { onlyIn: patch.onlyIn } : {}),
+      },
+      Date.now(),
+    );
+
+    return record
+      ? new Job<TData, TResult>(this.driver, this.ref, record, false)
+      : null;
+  }
+
+  /** A page of a job's log, oldest first unless asked otherwise. */
+  async getJobLogs(
+    id: string,
+    options?: {
+      /** Lines to skip. Defaults to `0`. */
+      offset?: number;
+      /** Lines to return. Defaults to `100`. */
+      limit?: number;
+      /** `asc` is oldest first, the default. */
+      order?: "asc" | "desc";
+    },
+  ): Promise<{ logs: string[]; count: number }> {
+    await this.connect();
+    const driver = this.#requireDriver("getJobLogs()", "getJobLogs");
+
+    return await driver.getJobLogs!(this.ref, id, {
+      offset: options?.offset ?? 0,
+      limit: options?.limit ?? 100,
+      order: options?.order ?? "asc",
+    });
+  }
+
   /** Makes a delayed or retry-pending job claimable now. */
   async promote(id: string): Promise<boolean> {
     await this.connect();
@@ -561,6 +649,172 @@ export class BunQueue<
   }
 
   /* --- internals --------------------------------------------------------- */
+
+  /**
+   * Adds a debounced or throttled job.
+   *
+   * Both keep a pointer per id in queue state — the job that currently stands
+   * for that id — and move it with a compare-and-set, which is what keeps a
+   * crowd of producers adding at once down to one job:
+   *
+   * - **Debounce** replaces a pointed-to job's data and pushes its run time
+   *   back, but only while it is still waiting or delayed (checked in the same
+   *   step as the write). A job that has started, or is gone, is replaced.
+   * - **Throttle** answers with the pointed-to job while its window is open,
+   *   and otherwise opens a new window with a new job.
+   *
+   * The pointer is moved *before* the job is added. A crash between the two
+   * leaves a pointer to a job that does not exist, which the next add treats
+   * exactly like a finished one; the reverse order could leave a second job.
+   */
+  async #addWindowed(
+    name: TName,
+    data: TData,
+    options: JobOptions,
+  ): Promise<Job<TData, TResult>> {
+    const kind = options.debounce ? "debounce" : "throttle";
+    const window = (options.debounce ?? options.throttle)!;
+
+    if (options.debounce && options.throttle) {
+      throw new ConfigError("A job cannot be both debounced and throttled", {
+        debounce: options.debounce,
+        throttle: options.throttle,
+      });
+    }
+
+    if (options.repeat || options.jobId !== undefined) {
+      throw new ConfigError(
+        `${kind} cannot be combined with ${options.repeat ? "repeat" : "jobId"}: it chooses the job's id itself`,
+        { [kind]: window },
+      );
+    }
+
+    if (typeof window.id !== "string" || window.id.length === 0) {
+      throw new ConfigError(`${kind}.id is required`, { [kind]: window });
+    }
+
+    const ttl =
+      typeof window.ttl === "string" ? parseDuration(window.ttl) : window.ttl;
+
+    if (ttl === null || !Number.isFinite(ttl) || ttl <= 0) {
+      throw new ConfigError(
+        `${kind}.ttl must be a positive number of milliseconds or a duration such as "30 seconds"`,
+        { ttl: window.ttl },
+      );
+    }
+
+    const driver = this.#requireDriver(
+      `${kind}`,
+      "getQueueState",
+      "setQueueState",
+      "updateJob",
+    );
+    const {
+      debounce: _debounce,
+      throttle: _throttle,
+      delay: _delay,
+      runAt: _runAt,
+      ...rest
+    } = options;
+    const pointerName = `${kind}:${window.id}`;
+
+    for (let attempt = 0; attempt < WINDOW_ATTEMPTS; attempt++) {
+      const now = Date.now();
+      const pointer = await driver.getQueueState!(this.ref, pointerName);
+      const current = pointer?.value as
+        | { jobId: string; until?: number }
+        | undefined;
+
+      if (current && kind === "debounce") {
+        const updated = await driver.updateJob!(
+          this.ref,
+          current.jobId,
+          {
+            data: assertJsonSafe(data, "job data"),
+            runAt: now + ttl,
+            onlyIn: ["waiting", "delayed"],
+          },
+          now,
+        );
+
+        if (updated) {
+          const view = new Job<TData, TResult>(
+            this.driver,
+            this.ref,
+            updated,
+            false,
+          );
+          this.safeEmitScoped("debounced", name, view);
+          await this.#publish("debounced", { id: updated.id });
+          return view;
+        }
+      }
+
+      if (current && kind === "throttle" && (current.until ?? 0) > now) {
+        const existing = await this.driver.getJob(this.ref, current.jobId);
+
+        if (existing) {
+          const view = new Job<TData, TResult>(
+            this.driver,
+            this.ref,
+            existing,
+            false,
+          );
+          this.safeEmitScoped("throttled", name, view);
+          await this.#publish("throttled", { id: existing.id });
+          return view;
+        }
+      }
+
+      const jobId = `${pointerName}:${newId()}`;
+      const moved = await driver.setQueueState!(
+        this.ref,
+        pointerName,
+        kind === "throttle" ? { jobId, until: now + ttl } : { jobId },
+        pointer?.version ?? null,
+      );
+
+      if (moved === null) {
+        // Another producer moved the pointer first: its job is now the one to
+        // debounce into, or the window it opened is the one to respect.
+        continue;
+      }
+
+      return await this.add(name, data, {
+        ...rest,
+        jobId,
+        ...(kind === "debounce"
+          ? { runAt: now + ttl }
+          : options.runAt !== undefined
+            ? { runAt: options.runAt }
+            : options.delay !== undefined
+              ? { delay: options.delay }
+              : {}),
+      });
+    }
+
+    throw new ConfigError(
+      `Could not ${kind} "${window.id}": it kept changing underneath`,
+      { [kind]: window },
+    );
+  }
+
+  /** The driver, checked to implement the optional methods a feature needs. */
+  #requireDriver(
+    what: string,
+    ...methods: (keyof JobsDriver & string)[]
+  ): JobsDriver {
+    for (const method of methods) {
+      if (typeof this.driver[method] !== "function") {
+        throw new ConfigError(
+          `${what} needs a driver that implements ${method}, and the ${this.driver.name} driver does not`,
+          { driver: this.driver.name, method },
+        );
+      }
+    }
+
+    return this.driver;
+  }
 
   /** Retries ids a bounded number at a time, and answers with those that went. */
   async #retryIds(ids: string[], resetAttempts: boolean): Promise<string[]> {
@@ -877,6 +1131,8 @@ export class BunQueue<
     switch (event.type) {
       case "added":
       case "duplicate":
+      case "debounced":
+      case "throttled":
       case "waiting":
       case "active":
         this.safeEmitScoped(event.type, job.name, job);

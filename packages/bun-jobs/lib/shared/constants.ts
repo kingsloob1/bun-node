@@ -58,6 +58,13 @@ export const DEFAULT_RESULT_TTL = 86_400_000;
 /** How many stack traces a failing job keeps. */
 export const DEFAULT_KEEP_STACKTRACES = 5;
 
+/**
+ * How many log lines a job keeps, newest last, when it names no `keepLogs`.
+ * Enough for a long job's story; bounded so a chatty loop cannot grow one
+ * record's log without end.
+ */
+export const DEFAULT_KEEP_LOGS = 1_000;
+
 /** Default backoff between a job's attempts. */
 export const DEFAULT_JOB_BACKOFF = {
   type: "exponential",

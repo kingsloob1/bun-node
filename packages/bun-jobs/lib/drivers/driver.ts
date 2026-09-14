@@ -293,6 +293,11 @@ export interface ResolvedJobOptions {
    * namespace. Absent unless the job, or the worker running it, names one.
    */
   deadLetter?: string;
+  /**
+   * How many log lines the job keeps, newest last. Absent unless the job set
+   * one; readers fall back to the default.
+   */
+  keepLogs?: number;
 }
 
 /** A job as stored. */

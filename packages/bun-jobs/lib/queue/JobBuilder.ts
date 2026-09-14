@@ -63,6 +63,12 @@ export interface JobBuilderOptions<TData = unknown> {
   unique?: string;
   /** A queue that receives a copy of the job if it dies. */
   deadLetter?: string;
+  /** Keep one pending job per id: see {@link JobOptions.debounce}. */
+  debounce?: JobOptions["debounce"];
+  /** At most one job per id per window: see {@link JobOptions.throttle}. */
+  throttle?: JobOptions["throttle"];
+  /** How many log lines the job keeps. */
+  keepLogs?: number;
   /** What to do with the job once it completes. */
   removeOnComplete?: Retention;
   /** What to do with the job once it is dead. */
@@ -331,6 +337,34 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
   }
 
   /**
+   * Keeps one pending job per `id`: adding again before it starts replaces
+   * its data and pushes its run time back to `ttl` from now.
+   *
+   * ```ts
+   * await jobs.run("reindex", { doc }).debounce(doc.id, "30 seconds").start();
+   * ```
+   */
+  debounce(id: string, ttl: number | string): this {
+    this.#options.debounce = { id, ttl };
+    return this;
+  }
+
+  /**
+   * Adds at most one job per `id` per `ttl`; an add inside the window adds
+   * nothing and answers with the job that opened it.
+   */
+  throttle(id: string, ttl: number | string): this {
+    this.#options.throttle = { id, ttl };
+    return this;
+  }
+
+  /** How many log lines the job keeps, newest last. `0` keeps every line. */
+  keepLogs(lines: number): this {
+    this.#options.keepLogs = lines;
+    return this;
+  }
+
+  /**
    * Describes the job with one object instead of a chain.
    *
    * ```ts
@@ -382,6 +416,13 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
     if (options.backoff !== undefined) this.backoff(options.backoff);
     if (options.unique !== undefined) this.unique(options.unique);
     if (options.deadLetter !== undefined) this.deadLetter(options.deadLetter);
+    if (options.debounce !== undefined) {
+      this.debounce(options.debounce.id, options.debounce.ttl);
+    }
+    if (options.throttle !== undefined) {
+      this.throttle(options.throttle.id, options.throttle.ttl);
+    }
+    if (options.keepLogs !== undefined) this.keepLogs(options.keepLogs);
     if (options.jobId !== undefined) this.unique(options.jobId);
 
     if (options.removeOnComplete !== undefined) {
