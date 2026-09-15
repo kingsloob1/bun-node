@@ -1,11 +1,16 @@
 import type { LogEvent } from "@kingsleyweb/bun-common/lib/logging";
+import type { SerializedError } from "@kingsleyweb/bun-common/lib/utils/native";
+import type { ProcessorContext } from "../../queue/types";
+import type { IsolatedJob } from "../executors/executor";
 import type {
   ChildToParent,
+  JobChannelOperation,
+  JobChannelReplies,
   JobChannelReply,
   ParentToChild,
   SerializableContext,
 } from "../protocol";
-import type { RunContext } from "../types";
+import type { RunContext, RunProgress } from "../types";
 import process from "node:process";
 // Deep paths, deliberately, not the `@kingsleyweb/bun-common` barrel.
 //
@@ -22,6 +27,7 @@ import {
   deserializeError,
   serializeError,
 } from "@kingsleyweb/bun-common/lib/utils/native";
+import { ProtocolError } from "../../shared/errors";
 import { toHandler } from "../executors/executor";
 import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
 
@@ -33,6 +39,10 @@ import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
  * handler, building its context, honouring `close`, reporting the outcome —
  * lives here once. That is what makes the three execution modes genuinely
  * interchangeable rather than approximately so.
+ *
+ * A child runs whatever handler the file holds, so it never knows that
+ * handler's declared argument or message types: those stay `unknown` here,
+ * and are the handler's to narrow.
  */
 
 /** How a child talks to its parent. */
@@ -45,6 +55,75 @@ export interface ChildTransport {
   disconnect?: () => void;
   /** Ends the process, when the transport can. */
   exit?: (code: number) => void;
+}
+
+/**
+ * Settles one pending job-channel request with its reply as it arrived over
+ * IPC: read as a `Partial`, so unchecked until {@link readReply} checks it.
+ */
+type ReplyResolver = (reply: Partial<JobChannelReply>) => void;
+
+/** A check that a reply's value is what one operation answers. */
+type ReplyCheck<TValue> = (value: unknown) => value is TValue;
+
+/** Whether a value is a plain object keyed by strings. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** How each operation's reply value is checked before a processor sees it. */
+const REPLY_CHECKS: {
+  [Operation in JobChannelOperation]: ReplyCheck<JobChannelReplies[Operation]>;
+} = {
+  log: (value): value is number =>
+    typeof value === "number" && Number.isFinite(value),
+  heartbeat: (value): value is boolean => typeof value === "boolean",
+  childrenValues: isRecord,
+  childrenFailures: (value): value is Record<string, SerializedError> =>
+    isRecord(value) &&
+    Object.values(value).every(
+      (error) => isRecord(error) && typeof error.message === "string",
+    ),
+};
+
+/**
+ * The value a job-channel reply answers, checked against its operation.
+ *
+ * A reply the worker marked as an error rejects with that error, rebuilt. A
+ * reply with no value — or a value of the wrong shape — rejects with a
+ * {@link ProtocolError}. Those used to resolve `NaN` for `job.log()` and
+ * `false` for `extendLock()`: numbers and flags a processor would act on,
+ * invented from a message that did not say anything. The typed results of
+ * `log()` (`number`) and `extendLock()` (`boolean`) leave no room for
+ * `undefined` either, so rejecting is the one honest answer.
+ */
+function readReply<TOperation extends JobChannelOperation>(
+  operation: TOperation,
+  reply: Partial<JobChannelReply>,
+): JobChannelReplies[TOperation] {
+  if (reply.error !== undefined) {
+    throw deserializeError(reply.error);
+  }
+
+  const what = `job channel "${operation}"`;
+
+  if (reply.value === undefined) {
+    throw new ProtocolError(what, "the reply carried no value", {
+      seq: reply.seq,
+    });
+  }
+
+  const check: ReplyCheck<JobChannelReplies[TOperation]> =
+    REPLY_CHECKS[operation];
+  if (!check(reply.value)) {
+    throw new ProtocolError(
+      what,
+      `the reply's value is not what "${operation}" answers`,
+      { seq: reply.seq, received: typeof reply.value },
+    );
+  }
+
+  return reply.value;
 }
 
 /** How long before `closeTimeout` the child stops waiting and exits itself. */
@@ -67,7 +146,7 @@ export function runChildProtocol(transport: ChildTransport): void {
     }
 
     running = true;
-    void execute(transport, message.ctx as SerializableContext<unknown>);
+    void execute(transport, message.ctx);
   });
 
   transport.send({
@@ -80,13 +159,13 @@ export function runChildProtocol(transport: ChildTransport): void {
 /** Imports the handler, runs it, and reports how it ended. */
 async function execute(
   transport: ChildTransport,
-  ctx: SerializableContext<unknown>,
+  ctx: SerializableContext,
 ): Promise<void> {
   const controller = new AbortController();
   const listeners = new Set<(message: unknown) => void>();
   const pending: unknown[] = [];
   /** Replies awaited from the worker, by request number. */
-  const replies = new Map<number, (value: unknown) => void>();
+  const replies = new Map<number, ReplyResolver>();
   let settled = false;
 
   transport.onMessage((message) => {
@@ -97,7 +176,7 @@ async function execute(
         typeof reply === "object" &&
         reply[JOB_CHANNEL] === "reply"
       ) {
-        replies.get(reply.seq ?? -1)?.(reply.value);
+        replies.get(reply.seq ?? -1)?.(reply);
         replies.delete(reply.seq ?? -1);
         return;
       }
@@ -118,7 +197,7 @@ async function execute(
     }
   });
 
-  const context: RunContext<unknown> = {
+  const context: RunContext = {
     runId: ctx.runId,
     runnerId: ctx.runnerId,
     runnerName: ctx.runnerName,
@@ -150,13 +229,15 @@ async function execute(
   transport.send({ t: "started", runId: ctx.runId });
 
   try {
-    const handler = toHandler(await import(ctx.file), ctx.file);
+    const module: unknown = await import(ctx.file);
     const result =
       ctx.kind === "job" && ctx.job
-        ? await (handler as unknown as IsolatedProcessorFn)(
-            ...isolatedJob(transport, ctx, controller, replies),
-          )
-        : await handler(context);
+        ? await toHandler(
+            module,
+            ctx.file,
+            "job",
+          )(...isolatedJob(transport, ctx, controller, replies))
+        : await toHandler(module, ctx.file)(context);
     settled = true;
     transport.send({ t: "done", runId: ctx.runId, result: result ?? null });
     finish(transport, 0);
@@ -171,9 +252,6 @@ async function execute(
   }
 }
 
-/** A queue job processor, as a child calls it. */
-type IsolatedProcessorFn = (job: unknown, context: unknown) => unknown;
-
 /**
  * The job and context an isolated processor is handed.
  *
@@ -185,26 +263,49 @@ type IsolatedProcessorFn = (job: unknown, context: unknown) => unknown;
  */
 function isolatedJob(
   transport: ChildTransport,
-  ctx: SerializableContext<unknown>,
+  ctx: SerializableContext,
   controller: AbortController,
-  replies: Map<number, (value: unknown) => void>,
-): [job: unknown, context: unknown] {
+  replies: Map<number, ReplyResolver>,
+): [job: IsolatedJob, context: ProcessorContext] {
   const record = ctx.job!;
   let seq = 0;
 
-  const ask = async (
-    operation: "log" | "heartbeat",
+  /**
+   * Asks the worker for one job-channel operation and resolves its checked
+   * answer. Rejects with the worker's error, or with a `ProtocolError` for a
+   * reply that does not say what the operation answers (see `readReply`).
+   */
+  function ask(
+    operation: "log",
+    fields: { line: string },
+  ): Promise<JobChannelReplies["log"]>;
+  function ask(operation: "heartbeat"): Promise<JobChannelReplies["heartbeat"]>;
+  function ask(
+    operation: "childrenValues",
+  ): Promise<JobChannelReplies["childrenValues"]>;
+  function ask(
+    operation: "childrenFailures",
+  ): Promise<JobChannelReplies["childrenFailures"]>;
+  async function ask(
+    operation: JobChannelOperation,
     fields: { line?: string } = {},
-  ): Promise<unknown> =>
-    await new Promise((resolve) => {
+  ): Promise<JobChannelReplies[JobChannelOperation]> {
+    return await new Promise((resolve, reject) => {
       const id = ++seq;
-      replies.set(id, resolve);
+      replies.set(id, (reply) => {
+        try {
+          resolve(readReply(operation, reply));
+        } catch (error) {
+          reject(error);
+        }
+      });
       transport.send({
         t: "message",
         runId: ctx.runId,
         data: { [JOB_CHANNEL]: operation, seq: id, ...fields },
       });
     });
+  }
 
   const unavailable = (method: string) => async () => {
     throw new Error(
@@ -212,11 +313,10 @@ function isolatedJob(
     );
   };
 
-  const log = async (line: string) =>
-    Number(await ask("log", { line: String(line) }));
-  const extendLock = async () => Boolean(await ask("heartbeat"));
+  const log = async (line: string) => await ask("log", { line: String(line) });
+  const extendLock = async () => await ask("heartbeat");
 
-  const job = {
+  const job: IsolatedJob = {
     id: record.id,
     name: record.name,
     data: record.data,
@@ -243,7 +343,7 @@ function isolatedJob(
     queue: { ns: ctx.namespace, queue: ctx.runnerId },
     isRepeat: record.repeatKey !== null,
     lockToken: record.lockToken,
-    updateProgress: async (value: unknown) => {
+    updateProgress: async (value: RunProgress) => {
       transport.send({ t: "progress", runId: ctx.runId, value });
     },
     log,
@@ -257,10 +357,22 @@ function isolatedJob(
     retry: unavailable("retry"),
     promote: unavailable("promote"),
     refresh: unavailable("refresh"),
+    // Read from the record, exactly as `Job`'s constructor does: the child has
+    // it already, so there is nothing to ask the worker.
+    parent: record.flow?.parent ?? null,
+    // Read fresh by the worker's real `Job`, which has the driver.
+    getChildrenValues: async () => await ask("childrenValues"),
+    getChildrenFailures: async () =>
+      Object.fromEntries(
+        Object.entries(await ask("childrenFailures")).map(([key, error]) => [
+          key,
+          deserializeError(error),
+        ]),
+      ),
     toJSON: () => ({ ...record }),
   };
 
-  const context = {
+  const context: ProcessorContext = {
     signal: controller.signal,
     logger: buildLogger(transport, ctx),
     workerId: ctx.runnerName,
@@ -278,10 +390,7 @@ function isolatedJob(
  * A logger that either forwards to the parent (so its records surface as the
  * runner's `log` event) or writes to the child's own stdout.
  */
-function buildLogger(
-  transport: ChildTransport,
-  ctx: SerializableContext<unknown>,
-) {
+function buildLogger(transport: ChildTransport, ctx: SerializableContext) {
   if (!ctx.forwardLogs) {
     return createLogger({
       name: ctx.runnerName,
@@ -311,7 +420,7 @@ function buildLogger(
  * signal, and a wedged one still stops before the escalation reaches it.
  */
 function scheduleSelfExit(
-  ctx: SerializableContext<unknown>,
+  ctx: SerializableContext,
   hasSettled: () => boolean,
   transport: ChildTransport,
 ): void {

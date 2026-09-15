@@ -5,22 +5,31 @@ import {
   assertNamespace,
   assertSegment,
   ChildExitError,
+  ChildFailedError,
   ConfigError,
   DriverError,
   HOST,
+  InvalidHandlerError,
   JobsError,
   JobTimeoutError,
   LockLostError,
+  LockUnavailableError,
   newId,
   newToken,
   parseToken,
+  ProtocolError,
+  QueueClosedError,
+  QueueFullError,
   queueKey,
+  RunKilledError,
   runnerKey,
+  RunnerStoppedError,
   safeJsonParse,
   SerializationError,
   stringifyBounded,
   TypedEmitterBase,
   UnrecoverableJobError,
+  WorkerClosedError,
 } from "../lib/index";
 
 describe("errors", () => {
@@ -75,6 +84,102 @@ describe("errors", () => {
     expect(exit.exitCode).toBeNull();
     expect(exit.signalCode).toBe("SIGKILL");
     expect(exit.message).toContain("SIGKILL");
+  });
+
+  it("fills in the context fields each error declares, beside the caller's", () => {
+    // Read without a cast: each class declares what it puts in `context`.
+    const timeout = new JobTimeoutError(250, { jobId: "j1" });
+    const ms: number = timeout.context.ms;
+    expect(ms).toBe(250);
+    expect(timeout.context.jobId).toBe("j1");
+
+    const lost = new LockLostError("r:1", { runId: "run-1" });
+    expect(lost.context.key).toBe("r:1");
+    expect(lost.context.runId).toBe("run-1");
+    expect(new LockUnavailableError("r:2").context.key).toBe("r:2");
+
+    expect(new ChildExitError(137, "SIGKILL").context).toEqual({
+      exitCode: 137,
+      signalCode: "SIGKILL",
+    });
+    expect(new RunKilledError("stop", { runId: "r1" }).context).toEqual({
+      reason: "stop",
+      runId: "r1",
+    });
+    expect(
+      new ChildFailedError({ queue: "q", id: "1" }, { message: "boom" })
+        .context,
+    ).toEqual({ child: "q:1", cause: "boom" });
+
+    expect(new InvalidHandlerError("f.ts", "no default").context).toEqual({
+      file: "f.ts",
+    });
+    expect(new RunnerStoppedError("r").context).toEqual({ id: "r" });
+    expect(new QueueClosedError("emails").context).toEqual({
+      queue: "emails",
+    });
+    expect(new WorkerClosedError("w1").context).toEqual({ id: "w1" });
+    expect(new SerializationError("job.data").context).toEqual({
+      what: "job.data",
+    });
+    expect(new QueueFullError("trigger queue", 3).context).toEqual({
+      what: "trigger queue",
+      max: 3,
+    });
+  });
+
+  it("keeps its own context fields when a caller's detail names them too", () => {
+    // A JavaScript caller, or one past a cast: the types refuse these keys,
+    // so this is the only way to send them. The error's own values must win.
+    const detail: Record<string, unknown> = {
+      ms: 1,
+      key: "someone else's",
+      exitCode: 0,
+      signalCode: "SIGINT",
+      child: "other:0",
+      cause: "other",
+      reason: "other",
+      operation: "other",
+      problem: "other",
+      jobId: "j1",
+    };
+    const untyped = detail as never;
+
+    const timeout = new JobTimeoutError(250, untyped);
+    expect(timeout.context.ms).toBe(250);
+    expect(timeout.context.jobId).toBe("j1");
+    expect(new LockLostError("r:1", untyped).context.key).toBe("r:1");
+    expect(new LockUnavailableError("r:2", untyped).context.key).toBe("r:2");
+    expect(new ChildExitError(137, "SIGKILL", untyped).context).toMatchObject({
+      exitCode: 137,
+      signalCode: "SIGKILL",
+    });
+    expect(
+      new ChildFailedError(
+        { queue: "q", id: "1" },
+        { message: "boom" },
+        untyped,
+      ).context,
+    ).toMatchObject({ child: "q:1", cause: "boom" });
+    expect(new RunKilledError("stop", untyped).context.reason).toBe("stop");
+    expect(
+      new ProtocolError('job channel "log"', "no value", untyped).context,
+    ).toMatchObject({ operation: 'job channel "log"', problem: "no value" });
+  });
+
+  it("names the exchange and the problem in a ProtocolError", () => {
+    const error = new ProtocolError('job channel "log"', "no value", {
+      seq: 3,
+    });
+
+    expect(error).toBeInstanceOf(JobsError);
+    expect(error.code).toBe("PROTOCOL");
+    expect(error.message).toBe('Protocol error in job channel "log": no value');
+    expect(error.context).toEqual({
+      seq: 3,
+      operation: 'job channel "log"',
+      problem: "no value",
+    });
   });
 });
 

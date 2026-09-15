@@ -1,10 +1,12 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
   ExecutionMode,
   JobRecord,
   RunSource,
 } from "../drivers/index";
+import type { LogFields } from "../shared/logger";
+import type { RunProgress } from "./types";
 import process from "node:process";
 
 /**
@@ -86,29 +88,79 @@ export interface SerializableContext<TArgs = unknown> {
  */
 export const JOB_CHANNEL = "__bunJobsJob";
 
+/**
+ * What the worker answers each job-channel operation with, by name: the
+ * log's line count for `"log"`, whether the lock is still held for
+ * `"heartbeat"`.
+ */
+export interface JobChannelReplies {
+  /** How many lines the job's log keeps after the append. */
+  log: number;
+  /** Whether the job's lock is still held. */
+  heartbeat: boolean;
+  /** `job.getChildrenValues()`: completed children's results, keyed `queue:id`. */
+  childrenValues: Record<string, unknown>;
+  /**
+   * `job.getChildrenFailures()`: the failures of children marked
+   * `ignoreFailure`, keyed `queue:id`, serialised to cross the boundary.
+   */
+  childrenFailures: Record<string, SerializedError>;
+}
+
+/** An operation an isolated job can ask of its worker. */
+export type JobChannelOperation = keyof JobChannelReplies;
+
 /** A request an isolated job makes of its worker. */
 export interface JobChannelRequest {
   /** Marks the message; the operation asked for. */
-  [JOB_CHANNEL]: "log" | "heartbeat";
+  [JOB_CHANNEL]: JobChannelOperation;
   /** Pairs the reply with the request. */
   seq: number;
   /** The line to log, for `"log"`. */
   line?: string;
 }
 
-/** The worker's answer to a {@link JobChannelRequest}. */
-export interface JobChannelReply {
+/** What every {@link JobChannelReply} carries, whatever the outcome. */
+interface JobChannelReplyBase {
   /** Marks the message as a reply. */
   [JOB_CHANNEL]: "reply";
   /** The request this answers. */
   seq: number;
-  /** The result: a line count for `"log"`, whether the lock is held for `"heartbeat"`. */
-  value: unknown;
 }
+
+/** A reply carrying the operation's answer. */
+export interface JobChannelValueReply extends JobChannelReplyBase {
+  /** The answer, shaped per operation as {@link JobChannelReplies} says. */
+  value: JobChannelReplies[JobChannelOperation];
+  /** Absent: a reply carries a value or an error, never both. */
+  error?: never;
+}
+
+/**
+ * A reply saying the operation failed in the worker. Only operations with no
+ * safe fallback answer (reading a flow's children) reply this way; `log` and
+ * `heartbeat` answer `0` and `false`.
+ */
+export interface JobChannelErrorReply extends JobChannelReplyBase {
+  /** What the operation threw in the worker, serialised. */
+  error: SerializedError;
+  /** Absent: a reply carries a value or an error, never both. */
+  value?: never;
+}
+
+/**
+ * The worker's answer to a {@link JobChannelRequest}. A reply with neither a
+ * value nor an error breaks the protocol, and the child rejects the request
+ * with a `ProtocolError` rather than inventing an answer.
+ */
+export type JobChannelReply = JobChannelValueReply | JobChannelErrorReply;
 
 /** Messages the parent sends. */
 export type ParentToChild =
-  | { t: "start"; runId: string; ctx: SerializableContext<any> }
+  | { t: "start"; runId: string; ctx: SerializableContext }
+  // `data` is kept `unknown` on the wire: it is either a user message (whose
+  // type only the handler knows) or a `JobChannelReply`, and the child tells
+  // them apart at runtime.
   | { t: "message"; runId: string; data: unknown }
   | {
       t: "close";
@@ -120,15 +172,18 @@ export type ParentToChild =
 export type ChildToParent =
   | { t: "ready"; pid: number; protocol: number }
   | { t: "started"; runId: string }
-  | { t: "progress"; runId: string; value: unknown }
+  | { t: "progress"; runId: string; value: RunProgress }
+  // A user message or a `JobChannelRequest`; the parent tells them apart.
   | { t: "message"; runId: string; data: unknown }
   | {
       t: "log";
       runId: string;
-      level: string;
+      level: LogLevel;
       message: string;
-      fields: unknown;
+      fields: LogFields;
     }
+  // The handler's return value, after a JSON round trip: nothing about its
+  // type survives the crossing.
   | { t: "done"; runId: string; result: unknown }
   | { t: "error"; runId: string; error: SerializedError };
 
