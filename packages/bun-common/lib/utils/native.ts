@@ -11,7 +11,129 @@ import { Buffer } from "node:buffer";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /* ------------------------------------------------------------------ *
+ * Shared type helpers
+ * ------------------------------------------------------------------ */
+
+/** `true` when `T` is `any` — the one type every conditional must special-case. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/** Flattens an intersection into one object type, for readable hovers. */
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+/** A value `JSON.parse` can produce: what survives a JSON round trip. */
+export type JsonPrimitive = string | number | boolean | null;
+
+/** Any JSON document — a primitive, an array of them, or an object of them. */
+export type JsonValue =
+  | JsonPrimitive
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * What `JSON.stringify` refuses to write: it drops such a property from an
+ * object, writes `null` for it in an array, and yields `undefined` for it at
+ * the top level.
+ */
+type JsonUnrepresentable = undefined | symbol | ((...args: never[]) => unknown);
+
+/** What JSON makes of a `Map` or a `Set`: an object with no properties. */
+type EmptyJsonObject = Record<string, never>;
+
+/**
+ * An object property after JSON. The unrepresentable part of a union is gone,
+ * leaving `undefined` in its place — the key may be absent — and `unknown` is
+ * any JSON value or `undefined`.
+ */
+type JsonifyProperty<V> =
+  IsAny<V> extends true
+    ? V
+    : unknown extends V
+      ? JsonValue | undefined
+      :
+          | JsonifyValue<Exclude<V, JsonUnrepresentable>>
+          | ([Extract<V, JsonUnrepresentable>] extends [never]
+              ? never
+              : undefined);
+
+/** An array element after JSON: an unrepresentable element becomes `null`. */
+type JsonifyElement<E> =
+  IsAny<E> extends true
+    ? E
+    : unknown extends E
+      ? JsonValue
+      : E extends JsonUnrepresentable
+        ? null
+        : JsonifyValue<E>;
+
+/**
+ * The keys JSON can write: a symbol key is never written, nor a property whose
+ * every possible value is unrepresentable.
+ */
+type JsonKey<T, K extends keyof T> = K extends symbol
+  ? never
+  : unknown extends T[K]
+    ? K
+    : [Exclude<T[K], JsonUnrepresentable>] extends [never]
+      ? never
+      : K;
+
+/**
+ * An object after JSON, one property at a time. Optional keys stay optional;
+ * a key whose value is only sometimes unrepresentable stays too, typed with
+ * `| undefined` — reading it gives what an optional key would, and the result
+ * still assigns back to `T` where `T` was already JSON-shaped.
+ */
+type JsonifyObject<T extends object> = {
+  -readonly [K in keyof T as JsonKey<T, K>]: JsonifyProperty<T[K]>;
+};
+
+/** One member of a union after JSON (distributes over `T`). */
+type JsonifyValue<T> = T extends JsonValue
+  ? T
+  : T extends { toJSON: (...args: never[]) => infer R }
+    ? Jsonify<R>
+    : T extends JsonPrimitive
+      ? T
+      : T extends bigint
+        ? never
+        : T extends JsonUnrepresentable
+          ? undefined
+          : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown>
+            ? EmptyJsonObject
+            : T extends readonly unknown[]
+              ? { -readonly [I in keyof T]: JsonifyElement<T[I]> }
+              : T extends object
+                ? JsonifyObject<T>
+                : never;
+
+/**
+ * The type `JSON.parse(JSON.stringify(value))` produces for a `T` — what
+ * {@link jsonClone} returns.
+ *
+ * It follows `JSON.stringify`: `toJSON()` is honoured (so a `Date` is a
+ * `string`); a function, symbol or `undefined` property is dropped (optional
+ * when only part of its type is), and the same value in an array is `null`;
+ * a `Map` or `Set` is an empty object; `readonly` is gone; a symbol key is
+ * gone. A top-level function, symbol or `undefined` is `undefined`, and a
+ * `bigint` is `never`, because stringifying one throws. `unknown` becomes
+ * `JsonValue` (plus `undefined` at the top level); `any` stays `any`.
+ *
+ * A type already made of JSON values comes back unchanged. `NaN` and
+ * `Infinity` still type as `number`, although they serialise as `null`.
+ */
+export type Jsonify<T> =
+  IsAny<T> extends true
+    ? T
+    : unknown extends T
+      ? JsonValue | undefined
+      : JsonifyValue<T>;
+
+/* ------------------------------------------------------------------ *
  * Type guards (lodash-es replacements)
+ *
+ * Each guard takes `unknown` on purpose: inspecting a value of unknown type
+ * is what a guard is for, and the `value is X` predicate narrows a caller's
+ * union to the members assignable to `X`.
  * ------------------------------------------------------------------ */
 
 export const isArray = Array.isArray;
@@ -184,24 +306,103 @@ export function parseByteSize(value: number | string): number | undefined {
  * Collection helpers (lodash-es replacements)
  * ------------------------------------------------------------------ */
 
+/**
+ * The own enumerable keys of `value`, `[]` for `null`/`undefined`. Typed
+ * `string[]` rather than `keyof T` for the reason `Object.keys` is: an object
+ * may carry more keys than its type declares. Accepts anything, as
+ * `Object.keys` does (a string yields its indexes).
+ */
 export const keys = (value: unknown): string[] =>
   value == null ? [] : Object.keys(value as object);
 
-export const values = <T = unknown>(value: unknown): T[] =>
-  value == null ? [] : (Object.values(value as object) as T[]);
+/** The string keys of an object type; `string` when it declares none. */
+type ObjectKey<C> = [Extract<keyof C, string>] extends [never]
+  ? string
+  : Extract<keyof C, string>;
+
+/** The value type at the string keys of an object type; `unknown` when it declares none. */
+type ObjectValue<C> = [Extract<keyof C, string>] extends [never]
+  ? unknown
+  : C[Extract<keyof C, string>];
+
+/**
+ * The key {@link each} passes for a collection: the index for an array, the
+ * string key for an object. Distributes over a union of collections.
+ */
+export type EachKey<C> = C extends readonly unknown[]
+  ? number
+  : C extends object
+    ? ObjectKey<C>
+    : never;
+
+/**
+ * The value {@link each} passes for a collection: the element for an array,
+ * the property value for an object. Distributes over a union of collections.
+ */
+export type EachValue<C> = C extends readonly unknown[]
+  ? C[number]
+  : C extends object
+    ? ObjectValue<C>
+    : never;
+
+/**
+ * The element type {@link values} returns for `C`, mirroring `Object.values`:
+ * nothing for `null`/`undefined` and for number/boolean/bigint/symbol, the
+ * characters of a string, an array's elements, an object's property values.
+ */
+export type ValuesOf<C> = C extends null | undefined
+  ? never
+  : C extends readonly unknown[]
+    ? C[number]
+    : C extends string
+      ? string
+      : C extends number | boolean | bigint | symbol
+        ? never
+        : C extends object
+          ? ObjectValue<C>
+          : unknown;
+
+/** The own enumerable property values of `value`, `[]` for `null`/`undefined`. */
+export const values = <C>(value: C): ValuesOf<C>[] =>
+  value == null ? [] : (Object.values(value as object) as ValuesOf<C>[]);
 
 export const first = <T>(
   value: ArrayLike<T> | null | undefined,
 ): T | undefined => (value && value.length ? value[0] : undefined);
 
-export function flattenDeep<T = any>(value: readonly unknown[]): T[] {
-  return value.flat(Infinity as 1) as T[];
+/** An array nested to any depth, whose leaves are `T`. */
+export type NestedArray<T> = T | readonly NestedArray<T>[];
+
+/** The leaf type of a nested array type: `DeepFlatten<(1 | 2[])[]>` is `1 | 2`. */
+export type DeepFlatten<T> = T extends readonly (infer E)[]
+  ? DeepFlatten<E>
+  : T;
+
+/**
+ * Flattens `value` recursively, however deep. The element type is inferred
+ * from the input; `flattenDeep<T>(value)` states the leaf type instead, and
+ * then requires every leaf of `value` to be a `T`.
+ */
+export function flattenDeep<A extends readonly unknown[]>(
+  value: A,
+): DeepFlatten<A>[];
+export function flattenDeep<T>(value: readonly NestedArray<T>[]): T[];
+export function flattenDeep(value: readonly unknown[]): unknown[] {
+  return value.flat(Infinity as 1);
 }
 
-/** Iterate arrays or plain objects, calling `fn(value, key)`. */
-export function each<T = any>(
-  collection: T[] | Record<string, T> | object | null | undefined,
-  fn: (value: T, key: any) => void,
+/**
+ * Iterate arrays or plain objects, calling `fn(value, key)` — the index for an
+ * array, the own enumerable string key for an object. `null`/`undefined` is a
+ * no-op.
+ */
+export function each<C extends object>(
+  collection: C | null | undefined,
+  fn: (value: EachValue<C>, key: EachKey<C>) => void,
+): void;
+export function each(
+  collection: object | null | undefined,
+  fn: (value: unknown, key: string | number) => void,
 ): void {
   if (collection == null) {
     return;
@@ -215,17 +416,44 @@ export function each<T = any>(
   }
 
   for (const key of Object.keys(collection)) {
-    fn((collection as Record<string, T>)[key], key);
+    fn((collection as Record<string, unknown>)[key], key);
   }
 }
 
-export function omit<T extends object>(
+/** `Omit` applied to each member of a union separately, so no member loses its own keys. */
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
+/**
+ * What {@link omit} returns: `T` without the keys `K`. A `K` of plain `string`
+ * (keys not known at compile time) could have removed anything, so it gives
+ * `Partial<T>`.
+ */
+export type OmitResult<T, K extends string> = string extends K
+  ? Partial<T>
+  : DistributiveOmit<T, K>;
+
+/**
+ * A shallow copy of `obj`'s own enumerable string keys, without those in
+ * `paths`. `null`/`undefined` gives `{}`, which is why the nullable overload
+ * returns a `Partial`.
+ */
+export function omit<T extends object, K extends string>(
+  obj: T,
+  paths: readonly K[],
+): OmitResult<T, K>;
+export function omit<T extends object, K extends string>(
   obj: T | null | undefined,
-  paths: string[],
-): Partial<T> {
+  paths: readonly K[],
+): Partial<OmitResult<T, K>>;
+export function omit(
+  obj: object | null | undefined,
+  paths: readonly string[],
+): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   if (obj == null) {
-    return result as Partial<T>;
+    return result;
   }
 
   const exclude = new Set(paths);
@@ -235,16 +463,33 @@ export function omit<T extends object>(
     }
   }
 
-  return result as Partial<T>;
+  return result;
 }
 
+/**
+ * A shallow copy of the keys in `paths` that `obj` has (`key in obj`). Keys the
+ * type declares give a `Pick`; any other string is accepted too and gives a
+ * `Partial<T>`, since such a key is copied only when present at runtime.
+ */
+export function pick<T extends object, K extends Extract<keyof T, string>>(
+  obj: T,
+  paths: readonly K[],
+): Pick<T, K>;
+export function pick<T extends object, K extends Extract<keyof T, string>>(
+  obj: T | null | undefined,
+  paths: readonly K[],
+): Partial<Pick<T, K>>;
 export function pick<T extends object>(
   obj: T | null | undefined,
-  paths: string[],
-): Partial<T> {
+  paths: readonly string[],
+): Partial<T>;
+export function pick(
+  obj: object | null | undefined,
+  paths: readonly string[],
+): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   if (obj == null) {
-    return result as Partial<T>;
+    return result;
   }
 
   for (const key of paths) {
@@ -253,9 +498,14 @@ export function pick<T extends object>(
     }
   }
 
-  return result as Partial<T>;
+  return result;
 }
 
+/**
+ * Deletes `key` from `obj`. Answers `true` for any object (even when the key
+ * was absent) and `false` for anything else, which is why it accepts
+ * `unknown`.
+ */
 export function unset(obj: unknown, key: string | number): boolean {
   if (obj != null && typeof obj === "object") {
     delete (obj as Record<string | number, unknown>)[key];
@@ -271,8 +521,8 @@ export function cloneDeep<T>(value: T): T {
 
 /* ----- property paths (lodash get/set) --------------------------- */
 
-function toPath(path: string | (string | number)[]): (string | number)[] {
-  if (Array.isArray(path)) {
+function toPath(path: PropertyPath): readonly (string | number)[] {
+  if (typeof path !== "string") {
     return path;
   }
 
@@ -286,27 +536,114 @@ function toPath(path: string | (string | number)[]): (string | number)[] {
   return result;
 }
 
-export function get<T = unknown>(
+/** A property path: a dotted/bracketed string (`"a.b[0].c"`) or its segments. */
+export type PropertyPath = string | readonly (string | number)[];
+
+/**
+ * Splits a string path exactly as `get`/`set` do at runtime: on `.`, `[` and
+ * `]`, dropping empty segments — `"a.b[0].c"` is `["a", "b", "0", "c"]`.
+ */
+export type PathSegments<
+  P extends string,
+  Current extends string = "",
+  Out extends string[] = [],
+> = P extends `${infer C}${infer Rest}`
+  ? C extends "." | "[" | "]"
+    ? PathSegments<Rest, "", Current extends "" ? Out : [...Out, Current]>
+    : PathSegments<Rest, `${Current}${C}`, Out>
+  : Current extends ""
+    ? Out
+    : [...Out, Current];
+
+/**
+ * The value one segment down from `T`. A nullish `T` gives `undefined` (the
+ * walk stops there); a key the type does not declare gives `unknown`, since
+ * the object may still carry it at runtime.
+ */
+type SegmentValue<T, K extends string> = T extends null | undefined
+  ? undefined
+  : K extends keyof T
+    ? T[K]
+    : T extends readonly unknown[]
+      ? K extends `${number}`
+        ? T[number] | undefined
+        : unknown
+      : K extends `${infer N extends number}`
+        ? N extends keyof T
+          ? T[N]
+          : unknown
+        : unknown;
+
+/** Walks `T` along a tuple of segments. */
+type WalkPath<T, S extends readonly (string | number)[]> =
+  IsAny<T> extends true
+    ? T
+    : S extends readonly [
+          infer H extends string | number,
+          ...infer R extends readonly (string | number)[],
+        ]
+      ? WalkPath<SegmentValue<T, `${H}`>, R>
+      : S extends readonly []
+        ? T
+        : unknown;
+
+/**
+ * The type `get(obj, path)` reads from a `T`. A path only known as `string` or
+ * `(string | number)[]` at compile time gives `unknown`.
+ */
+export type PathValue<T, P extends PropertyPath> = P extends string
+  ? string extends P
+    ? unknown
+    : WalkPath<T, PathSegments<P>>
+  : P extends readonly (string | number)[]
+    ? WalkPath<T, P>
+    : unknown;
+
+/**
+ * Reads the value at `path` in `obj` (lodash `get`). Without a default the
+ * result is the type at that path; with one, a missing (`undefined`) value is
+ * replaced, so the result is that type minus `undefined`, or the default's.
+ *
+ * `get<T>(obj, path)` states the result type instead of inferring it, for an
+ * `obj` whose type does not describe the path.
+ */
+export function get<T, const P extends PropertyPath>(
+  obj: T,
+  path: P,
+): PathValue<T, P>;
+export function get<T, const P extends PropertyPath, D>(
+  obj: T,
+  path: P,
+  defaultValue: D,
+): Exclude<PathValue<T, P>, undefined> | D;
+export function get<T>(obj: unknown, path: PropertyPath): T | undefined;
+export function get<T>(obj: unknown, path: PropertyPath, defaultValue: T): T;
+export function get(
   obj: unknown,
-  path: string | (string | number)[],
-  defaultValue?: T,
-): T {
+  path: PropertyPath,
+  defaultValue?: unknown,
+): unknown {
   const segments = toPath(path);
   let current: any = obj;
 
   for (const segment of segments) {
     if (current == null) {
-      return defaultValue as T;
+      return defaultValue;
     }
     current = current[segment];
   }
 
-  return (current === undefined ? defaultValue : current) as T;
+  return current === undefined ? defaultValue : current;
 }
 
+/**
+ * Writes `value` at `path` in `obj`, creating missing containers, and returns
+ * `obj`. `value` is `unknown` because any value may be written, and the path
+ * need not exist in `T`.
+ */
 export function set<T extends object>(
   obj: T,
-  path: string | (string | number)[],
+  path: PropertyPath,
   value: unknown,
 ): T {
   const segments = toPath(path);
@@ -329,11 +666,17 @@ export function set<T extends object>(
   return obj;
 }
 
-export function lastIndexOf<T>(
-  collection: string | readonly T[],
-  value: T,
+/**
+ * The last index of `value` in `collection`, `-1` when absent. A string is
+ * searched for a substring, so its `value` must be a string too.
+ */
+export function lastIndexOf(collection: string, value: string): number;
+export function lastIndexOf<T>(collection: readonly T[], value: T): number;
+export function lastIndexOf(
+  collection: string | readonly unknown[],
+  value: unknown,
 ): number {
-  return (collection as readonly T[]).lastIndexOf(value as T);
+  return (collection as readonly unknown[]).lastIndexOf(value);
 }
 
 /* ----- deep merge (lodash merge) --------------------------------- */
@@ -369,8 +712,120 @@ function mergeInto(target: any, source: any): any {
   return target;
 }
 
-/** Recursively merges `sources` into `target`, mutating and returning it. */
-export function merge<T extends object>(target: T, ...sources: unknown[]): T {
+/** Values `merge` assigns by reference instead of merging into: anything that is not a plain object or an array. */
+type MergeOpaque =
+  | Date
+  | RegExp
+  | Map<unknown, unknown>
+  | Set<unknown>
+  | WeakMap<WeakKey, unknown>
+  | WeakSet<WeakKey>
+  | Promise<unknown>
+  | Error
+  | ArrayBufferView
+  | ArrayBufferLike
+  | ((...args: never[]) => unknown);
+
+/** The base a plain-object source merges into: the target value when it is a plain object, else a fresh `{}`. */
+type MergeObjectBase<A> = [A] extends [never]
+  ? Record<never, never>
+  : A extends readonly unknown[] | MergeOpaque
+    ? Record<never, never>
+    : A extends object
+      ? A
+      : Record<never, never>;
+
+/** The element type of an array type, `never` for anything else. */
+type ArrayElement<A> = A extends readonly (infer E)[] ? E : never;
+
+/** An array source merged index by index into an array target (or into `[]`). */
+type MergeArray<A, B extends readonly unknown[]> = Array<
+  ArrayElement<A> | MergeValue<ArrayElement<A>, B[number]>
+>;
+
+/** One plain-object source merged into one object target. */
+type MergeObject<A, B> = A extends unknown
+  ? Simplify<
+      { [K in keyof A as K extends keyof B ? never : K]: A[K] } & {
+        [K in keyof A as K extends keyof B ? K : never]: K extends keyof B
+          ? MergeValue<A[K], B[K]>
+          : never;
+      } & {
+        [K in keyof B as K extends keyof A ? never : K]: MergeValue<
+          never,
+          B[K]
+        >;
+      }
+    >
+  : never;
+
+/** A defined source value merged into a target value. */
+type MergeDefined<A, B> = B extends readonly unknown[]
+  ? MergeArray<A, B>
+  : B extends MergeOpaque
+    ? B
+    : B extends object
+      ? MergeObject<MergeObjectBase<A>, B>
+      : B;
+
+/** A source value merged into a target value; an `undefined` source leaves the target as it was. */
+type MergeValue<A, B> =
+  IsAny<B> extends true
+    ? A | B
+    : [Exclude<B, undefined>] extends [never]
+      ? A
+      : undefined extends B
+        ? A | MergeDefined<A, Exclude<B, undefined>>
+        : MergeDefined<A, B>;
+
+/**
+ * The type of `merge(target, source)`: plain objects merge key by key, arrays
+ * index by index, `undefined` source values are skipped, and anything else
+ * (a `Date`, a `Map`, a primitive) replaces the target's value. A `null` or
+ * `undefined` source changes nothing. Distributes over a union of sources.
+ */
+export type MergeResult<T, S> =
+  IsAny<T> extends true
+    ? T
+    : IsAny<S> extends true
+      ? T
+      : S extends null | undefined
+        ? T
+        : S extends readonly unknown[]
+          ? T extends readonly unknown[]
+            ? MergeArray<T, S>
+            : T
+          : S extends object
+            ? MergeObject<T, S>
+            : T;
+
+/** {@link MergeResult} applied to each source in turn, left to right. */
+export type MergeSources<T, S extends readonly unknown[]> = S extends readonly [
+  infer H,
+  ...infer R,
+]
+  ? MergeSources<MergeResult<T, H>, R>
+  : S extends readonly []
+    ? T
+    : MergeResult<T, S[number]>;
+
+/**
+ * Recursively merges `sources` into `target`, mutating and returning it. The
+ * result type is the merged shape; `merge<T>(target, ...sources)` states it
+ * as `T` instead.
+ */
+export function merge<
+  T extends object,
+  S extends readonly (object | null | undefined)[],
+>(target: T, ...sources: S): MergeSources<T, S>;
+export function merge<T extends object>(
+  target: T,
+  ...sources: readonly (object | null | undefined)[]
+): T;
+export function merge(
+  target: object,
+  ...sources: readonly (object | null | undefined)[]
+): object {
   for (const source of sources) {
     mergeInto(target, source);
   }
@@ -379,10 +834,15 @@ export function merge<T extends object>(target: T, ...sources: unknown[]): T {
 
 /* ----- ordering (lodash orderBy) --------------------------------- */
 
+/**
+ * A stable sort by several keys, each with its own direction. An iteratee may
+ * return anything: keys are compared with `<`/`>`, which is defined for every
+ * value, so its result is deliberately `unknown`.
+ */
 export function orderBy<T>(
   collection: readonly T[],
-  iteratees: ((item: T) => unknown)[],
-  orders: ("asc" | "desc")[],
+  iteratees: readonly ((item: T) => unknown)[],
+  orders: readonly ("asc" | "desc")[],
 ): T[] {
   return [...collection].sort((a, b) => {
     for (let i = 0; i < iteratees.length; i++) {
@@ -422,20 +882,39 @@ export function ucwords(str: string): string {
 // eslint-disable-next-line regexp/no-obscure-range -- spec-derived safe-character set
 const ENCODE_CHARS = /(?:[^!#-;=?-_|~]|%(?![0-9A-F]{2}))+/gi;
 
+// A high surrogate not followed by a low one, or a low surrogate not preceded
+// by a high one — the same pattern (and replacement) `encodeurl` uses.
+const UNMATCHED_SURROGATE =
+  /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF]([^\uDC00-\uDFFF]|$)/g;
+
 /**
  * Encodes a URL while leaving already-percent-encoded sequences intact, matching
- * the behaviour of the `encodeurl` package.
+ * the behaviour of the `encodeurl` package: an unmatched surrogate is replaced
+ * with U+FFFD (encoded as `%EF%BF%BD`) rather than making `encodeURI` throw.
  */
 export function encodeUrl(url: string): string {
-  return String(url).replace(ENCODE_CHARS, (match) => encodeURI(match));
+  return String(url)
+    .replace(UNMATCHED_SURROGATE, "$1\uFFFD$2")
+    .replace(ENCODE_CHARS, (match) => encodeURI(match));
 }
 
 /* ------------------------------------------------------------------ *
  * Date formatting (date-fns replacement)
  * ------------------------------------------------------------------ */
 
-export function isDateValid(date: Date): boolean {
-  return date instanceof Date && !Number.isNaN(date.getTime());
+/**
+ * Whether `value` is a `Date` holding a real instant — `false` for an
+ * `Invalid Date` and for anything that is not a `Date` at all (a date string
+ * included).
+ *
+ * Called with something not already typed `Date`, it is a type guard. Called
+ * with a `Date` it answers a plain `boolean`: a guard there would narrow the
+ * `false` branch to `never`, although an invalid `Date` is still a `Date`.
+ */
+export function isDateValid(date: Date): boolean;
+export function isDateValid(value: unknown): value is Date;
+export function isDateValid(value: unknown): boolean {
+  return value instanceof Date && !Number.isNaN(value.getTime());
 }
 
 /** Formats a date as an HTTP-date (RFC 7231), e.g. `Last-Modified`. */
@@ -723,6 +1202,11 @@ export interface CookieSerializeOptions {
   secure?: boolean;
   partitioned?: boolean;
   priority?: "low" | "medium" | "high";
+  /**
+   * The `SameSite` attribute. `true` means `Strict`; `false` omits the
+   * attribute, as the `cookie` package does. Left unset, Bun's default
+   * `SameSite=Lax` is emitted.
+   */
   sameSite?: boolean | "lax" | "strict" | "none";
 }
 
@@ -749,6 +1233,8 @@ export function parseCookie(
  * Serializes a name/value pair into a `Set-Cookie` header string using Bun's
  * native `Cookie`. Bun applies `Path=/` and `SameSite=Lax` defaults; the
  * `Priority` attribute (unsupported by `Bun.Cookie`) is appended manually.
+ * `sameSite: false` omits `SameSite` entirely, matching the `cookie` package —
+ * `Bun.Cookie` cannot express that, so its trailing default is stripped.
  */
 export function serializeCookie(
   name: string,
@@ -773,6 +1259,12 @@ export function serializeCookie(
     partitioned: opts.partitioned,
     sameSite,
   }).serialize();
+
+  if (opts.sameSite === false) {
+    // Bun always writes SameSite, and always as the last attribute; names,
+    // values and paths cannot contain `;`, so the anchored match is exact.
+    serialized = serialized.replace(/; SameSite=Lax$/, "");
+  }
 
   if (opts.priority) {
     const priority = opts.priority;
@@ -816,23 +1308,40 @@ export function unsignCookie(input: string, secret: string): string | false {
   return false;
 }
 
-/** Parses any `j:`-prefixed JSON cookie values in place (cookie-parser). */
+/**
+ * Parses any `j:`-prefixed JSON cookie values in place and returns the same
+ * object, exactly as cookie-parser's `JSONCookies` does. A value that is not
+ * valid JSON is left raw — and so, as in cookie-parser, is one that parses to
+ * a falsy value (`j:null`, `j:false`, `j:0`, `j:""`).
+ */
 export function jsonCookies<T extends Record<string, string>>(
   cookies: T,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...cookies };
+): JsonCookies<T> {
+  const result: Record<string, JsonValue> = cookies;
   for (const key of Object.keys(result)) {
     const value = result[key];
-    if (typeof value === "string" && value.startsWith("j:")) {
-      try {
-        result[key] = JSON.parse(value.slice(2));
-      } catch {
-        // leave the raw value in place
-      }
+    if (typeof value !== "string" || !value.startsWith("j:")) {
+      continue;
+    }
+
+    let parsed: JsonValue;
+    try {
+      parsed = JSON.parse(value.slice(2));
+    } catch {
+      continue;
+    }
+
+    if (parsed) {
+      result[key] = parsed;
     }
   }
-  return result;
+  return result as JsonCookies<T>;
 }
+
+/** {@link jsonCookies}' result: each cookie is its raw string or, for a `j:` value, the parsed JSON. */
+export type JsonCookies<T extends Record<string, string>> = {
+  [K in keyof T]: T[K] | JsonValue;
+};
 
 /**
  * Splits parsed cookies into successfully verified signed cookies (cookie-parser
@@ -868,14 +1377,29 @@ export function extractSignedCookies(
  * Async helpers (until-promise replacement)
  * ------------------------------------------------------------------ */
 
+/** Options for {@link waitUntil}. */
+export interface WaitUntilOptions {
+  /** Milliseconds between evaluations. Defaults to `5`. */
+  interval?: number;
+  /** Milliseconds before rejecting with `waitUntil timed out`. `0` (the default) waits forever. */
+  timeout?: number;
+}
+
+/** A promise together with the functions that settle it. */
 export interface Deferred<T> {
+  /** The promise `resolve`/`reject` settle. */
   promise: Promise<T>;
+  /** Fulfils `promise` with a value (or adopts another promise's outcome). */
   resolve: (value: T | PromiseLike<T>) => void;
+  /** Rejects `promise`. The reason is `unknown`, as any value may be thrown. */
   reject: (reason?: unknown) => void;
 }
 
-/** Creates an externally-resolvable promise. */
-export function createDeferred<T>(): Deferred<T> {
+/**
+ * Creates an externally-resolvable promise. `T` defaults to `void`, for a
+ * deferred that only signals completion (`resolve()` with no argument).
+ */
+export function createDeferred<T = void>(): Deferred<T> {
   let resolve!: Deferred<T>["resolve"];
   let reject!: Deferred<T>["reject"];
   const promise = new Promise<T>((res, rej) => {
@@ -887,12 +1411,23 @@ export function createDeferred<T>(): Deferred<T> {
 
 /**
  * Repeatedly evaluates `getValue` until `predicate` is satisfied, then resolves
- * with that value. Replaces the `until-promise` package.
+ * with that value. Replaces the `until-promise` package. A type-guard
+ * `predicate` narrows the resolved value.
  */
+export async function waitUntil<T, U extends T>(
+  getValue: () => T | Promise<T>,
+  predicate: (value: T) => value is U,
+  options?: WaitUntilOptions,
+): Promise<U>;
 export async function waitUntil<T>(
   getValue: () => T | Promise<T>,
   predicate: (value: T) => boolean,
-  options?: { interval?: number; timeout?: number },
+  options?: WaitUntilOptions,
+): Promise<T>;
+export async function waitUntil<T>(
+  getValue: () => T | Promise<T>,
+  predicate: (value: T) => boolean,
+  options?: WaitUntilOptions,
 ): Promise<T> {
   const interval = options?.interval ?? 5;
   const timeout = options?.timeout ?? 0;
@@ -915,8 +1450,13 @@ export async function waitUntil<T>(
 /** Options for {@link sleep}. */
 export interface SleepOptions {
   /**
-   * Cuts the wait short. The promise then rejects with the signal's `reason`
-   * when it carries one, otherwise with an `Error` named `"AbortError"`.
+   * Cuts the wait short. The promise always rejects with an `Error`: the
+   * signal's `reason` itself when that is an `Error` (a plain `abort()` gives
+   * a `DOMException` named `"AbortError"`; `AbortSignal.timeout()` one named
+   * `"TimeoutError"`), otherwise a new `Error` named `"AbortError"` whose
+   * `cause` is the reason — so `abort("because")` rejects with an error that
+   * {@link isAbortError} recognises and whose `cause` is `"because"`. This is
+   * how Node's `timers/promises` treats a non-`Error` reason too.
    */
   signal?: AbortSignal;
   /**
@@ -928,15 +1468,19 @@ export interface SleepOptions {
 
 /**
  * Builds the error an aborted wait rejects with: the signal's own `reason`
- * when it has one (a `DOMException` in the standard case), else an `Error`
- * named `"AbortError"` so {@link isAbortError} recognises it either way.
+ * when it is an `Error` (a `DOMException` in the standard case), else an
+ * `Error` named `"AbortError"` carrying the reason as its `cause`, so a
+ * rejection is always an `Error` and a non-`Error` reason is not lost.
  */
 function toAbortError(reason: unknown, message: string): Error {
   if (reason instanceof Error) {
     return reason;
   }
 
-  const error = new Error(message);
+  const error = new Error(
+    message,
+    reason === undefined ? undefined : { cause: reason },
+  );
   error.name = "AbortError";
   return error;
 }
@@ -1022,13 +1566,21 @@ export interface WithTimeoutOptions {
  * `ms <= 0` means "no timeout" and simply awaits the work. The original
  * promise keeps a terminal handler either way, so a rejection arriving *after*
  * the timeout can never surface as an `unhandledRejection`.
+ *
+ * Always returns a promise: a `work` function that throws synchronously
+ * produces a rejected promise, never an exception out of `withTimeout`.
  */
 export function withTimeout<T>(
   work: Promise<T> | (() => Promise<T> | T),
   ms: number,
   options?: WithTimeoutOptions,
 ): Promise<T> {
-  const promise = Promise.resolve(isFunction(work) ? work() : work);
+  let promise: Promise<T>;
+  try {
+    promise = Promise.resolve(isFunction(work) ? work() : work);
+  } catch (error) {
+    return Promise.reject(error);
+  }
 
   if (!(ms > 0)) {
     return promise;
@@ -1212,8 +1764,20 @@ export interface RetryOptions {
   shouldRetry?: (error: unknown, attempt: number) => boolean;
   /** Called before each wait, with the error that caused it. */
   onRetry?: (error: unknown, attempt: number, delayMs: number) => void;
-  /** Aborts between attempts and is forwarded to `fn`. */
+  /**
+   * Aborts between attempts and is forwarded to `fn`. An abort rejects with
+   * the same error {@link sleep} does: the signal's `reason` when it is an
+   * `Error`, otherwise an `Error` named `"AbortError"` with the reason as its
+   * `cause`. It does not interrupt an attempt already running — `fn` must
+   * watch the signal for that.
+   */
   signal?: AbortSignal;
+  /**
+   * When `true` the waits between attempts do not keep the process alive
+   * (`timer.unref()`), so a process with nothing else pending may exit before
+   * the next attempt. Defaults to `false`, as {@link SleepOptions.unref} does.
+   */
+  unref?: boolean;
 }
 
 /**
@@ -1247,7 +1811,7 @@ export async function retry<T>(
 
       const delay = computeBackoff(attempt, options?.backoff);
       options?.onRetry?.(error, attempt, delay);
-      await sleep(delay, { signal, unref: true });
+      await sleep(delay, { signal, unref: options?.unref ?? false });
     }
   }
 
@@ -1328,8 +1892,11 @@ export class Mutex {
 export class Semaphore {
   /** Resolvers of the queued `acquire()` calls, in arrival order. */
   readonly #queue: (() => void)[] = [];
-  /** Permits currently free. */
-  #available: number;
+  /**
+   * Permits currently held. Can briefly exceed {@link permits} after the
+   * limit is lowered, until enough holders release.
+   */
+  #held = 0;
   /** Total permits, adjustable via {@link setPermits}. */
   #permits: number;
 
@@ -1338,12 +1905,11 @@ export class Semaphore {
     permits: number,
   ) {
     this.#permits = Math.max(1, Math.floor(permits));
-    this.#available = this.#permits;
   }
 
-  /** Permits currently free. */
+  /** Permits currently free. Never below `0`, even after lowering the limit. */
   get available(): number {
-    return this.#available;
+    return Math.max(0, this.#permits - this.#held);
   }
 
   /** How many callers are waiting for a permit. */
@@ -1373,11 +1939,11 @@ export class Semaphore {
 
   /** Takes a permit if one is free, else returns `null` without waiting. */
   tryAcquire(): (() => void) | null {
-    if (this.#available <= 0) {
+    if (this.#held >= this.#permits) {
       return null;
     }
 
-    this.#available--;
+    this.#held++;
     return this.#createRelease();
   }
 
@@ -1394,16 +1960,18 @@ export class Semaphore {
   /**
    * Changes the permit count at runtime. Raising it wakes waiters
    * immediately; lowering it never revokes a permit already held, so the
-   * limit takes effect as holders release.
+   * limit takes effect as holders release: no waiter is admitted until the
+   * number of holders has fallen below the new limit.
    */
   setPermits(permits: number): void {
-    const next = Math.max(1, Math.floor(permits));
-    const delta = next - this.#permits;
-    this.#permits = next;
-    this.#available += delta;
+    this.#permits = Math.max(1, Math.floor(permits));
+    this.#drain();
+  }
 
-    while (this.#available > 0 && this.#queue.length > 0) {
-      this.#available--;
+  /** Admits queued waiters, FIFO, while the holder count is under the limit. */
+  #drain(): void {
+    while (this.#held < this.#permits && this.#queue.length > 0) {
+      this.#held++;
       this.#queue.shift()?.();
     }
   }
@@ -1417,13 +1985,10 @@ export class Semaphore {
       }
       released = true;
 
-      const next = this.#queue.shift();
-      if (next) {
-        // Pass the permit straight on; `#available` stays as-is.
-        next();
-      } else {
-        this.#available = Math.min(this.#permits, this.#available + 1);
-      }
+      this.#held--;
+      // Waiters are admitted before this returns, so a fresh `tryAcquire`
+      // can never jump the queue.
+      this.#drain();
     };
   }
 }
@@ -1495,6 +2060,30 @@ export async function getPort(options?: {
  * DOCTYPE are ignored; CDATA sections are treated as text.
  * ------------------------------------------------------------------ */
 
+/** A leaf of a parsed XML document: text, or a coerced number/boolean. */
+export type XmlPrimitive = string | number | boolean;
+
+/**
+ * A parsed element carrying attributes or children: attribute keys (under
+ * `attributeNamePrefix`), child element names, and `textNodeName` for its text.
+ */
+export interface XmlElement<L extends XmlPrimitive = XmlPrimitive> {
+  /** An attribute, a child element (an array when repeated) or the element's text. */
+  [key: string]: XmlNode<L>;
+}
+
+/** Any value in a parsed XML document: a leaf, an element, or repeated siblings. */
+export type XmlNode<L extends XmlPrimitive = XmlPrimitive> =
+  | L
+  | XmlElement<L>
+  | (L | XmlElement<L>)[];
+
+/** What {@link parseXmlToObject} returns: the root element's value under its name. */
+export type XmlDocument<L extends XmlPrimitive = XmlPrimitive> = Record<
+  string,
+  L | XmlElement<L>
+>;
+
 export interface ParseXmlOptions {
   /** Prefix used for attribute keys. Defaults to `"@_"`. */
   attributeNamePrefix?: string;
@@ -1503,7 +2092,10 @@ export interface ParseXmlOptions {
    * elements. Defaults to `"#text"`.
    */
   textNodeName?: string;
-  /** When `false`, attributes are dropped entirely. Defaults to `true`. */
+  /**
+   * When `true`, attributes are dropped entirely. Defaults to `false`
+   * (attributes are kept under `attributeNamePrefix`).
+   */
   ignoreAttributes?: boolean;
   /**
    * When `true`, text that looks like a number/boolean is coerced to a
@@ -1523,7 +2115,8 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
 /**
  * Decodes the XML predefined entities (`&amp; &lt; &gt; &quot; &apos;`) and
  * numeric character references (`&#nn;` / `&#xhh;`) in `text`. Unknown
- * entities are left untouched.
+ * entities are left untouched, and so is a numeric reference past U+10FFFF,
+ * which names no code point.
  */
 export function decodeXmlEntities(text: string): string {
   if (!text.includes("&")) {
@@ -1536,7 +2129,9 @@ export function decodeXmlEntities(text: string): string {
         body[1] === "x" || body[1] === "X"
           ? Number.parseInt(body.slice(2), 16)
           : Number.parseInt(body.slice(1), 10);
-      return Number.isNaN(codePoint) ? match : String.fromCodePoint(codePoint);
+      return Number.isNaN(codePoint) || codePoint > 0x10ffff
+        ? match
+        : String.fromCodePoint(codePoint);
     }
     const decoded = XML_NAMED_ENTITIES[body.toLowerCase()];
     return decoded === undefined ? match : decoded;
@@ -1550,8 +2145,16 @@ export function decodeXmlEntities(text: string): string {
  */
 export function coerceXmlPrimitive(
   text: string,
+  parsePrimitives: false,
+): string;
+export function coerceXmlPrimitive(
+  text: string,
   parsePrimitives: boolean,
-): unknown {
+): XmlPrimitive;
+export function coerceXmlPrimitive(
+  text: string,
+  parsePrimitives: boolean,
+): XmlPrimitive {
   const trimmed = text.trim();
   if (!parsePrimitives) {
     return trimmed;
@@ -1594,11 +2197,22 @@ function isXmlBlank(text: string): boolean {
  * (no intermediate node tree, no second walk) and scans with `charCodeAt` to
  * avoid per-character string allocations — both meaningfully faster than the
  * naive two-pass approach on large documents.
+ *
+ * With `parsePrimitives: false` every leaf is a string; otherwise a leaf may
+ * also be a `number` or `boolean`.
  */
 export function parseXmlToObject(
   xml: string,
+  options: ParseXmlOptions & { parsePrimitives: false },
+): XmlDocument<string>;
+export function parseXmlToObject(
+  xml: string,
   options?: ParseXmlOptions,
-): Record<string, unknown> {
+): XmlDocument;
+export function parseXmlToObject(
+  xml: string,
+  options?: ParseXmlOptions,
+): XmlDocument {
   const attributeNamePrefix = options?.attributeNamePrefix ?? "@_";
   const textNodeName = options?.textNodeName ?? "#text";
   const ignoreAttributes = options?.ignoreAttributes ?? false;
@@ -1611,12 +2225,12 @@ export function parseXmlToObject(
   // wrapper object allocation per element.
   let lastName = "";
 
-  const value = (text: string): unknown =>
+  const value = (text: string): XmlPrimitive =>
     coerceXmlPrimitive(text, parsePrimitives);
 
   // Parses one element (cursor positioned just after its opening `<`) and
   // returns its value; leaves the element's name in `lastName`.
-  function parseElement(): unknown {
+  function parseElement(): XmlPrimitive | XmlElement {
     const nameStart = i;
     while (i < len) {
       const c = xml.charCodeAt(i);
@@ -1626,7 +2240,7 @@ export function parseXmlToObject(
       i++;
     }
     const name = xml.slice(nameStart, i);
-    let obj: Record<string, unknown> | null = null;
+    let obj: XmlElement | null = null;
 
     // Attributes (up to the closing `>` or self-closing `/>`).
     for (;;) {
@@ -1832,8 +2446,13 @@ export function parseXmlToObject(
  * losslessly enough to rebuild a real `Error` on the far side.
  * ------------------------------------------------------------------ */
 
-/** A plain-object form of an `Error`, safe to `JSON.stringify`. */
-export interface SerializedError {
+/**
+ * A plain-object form of an `Error`, safe to `JSON.stringify`. `TData` is the
+ * shape of `data`, the error's extra properties.
+ */
+export interface SerializedError<
+  TData extends object = Record<string, JsonValue>,
+> {
   /** The error's `name` (`"Error"`, `"TypeError"`, a custom class name, ...). */
   name: string;
   /** The error's `message`. */
@@ -1845,14 +2464,37 @@ export interface SerializedError {
   /** The serialised `cause`, up to `maxDepth` levels deep. */
   cause?: SerializedError;
   /** Remaining own enumerable properties, JSON-cloned. */
-  data?: Record<string, unknown>;
+  data?: TData;
 }
+
+/**
+ * What {@link deserializeError} rebuilds: an `Error` with the restored `code`
+ * and `cause`, plus `TData`'s properties when the input's `data` declared a
+ * shape (they are optional, as `data` itself is). `data` keys named `name`,
+ * `message`, `stack`, `code` or `cause` are left out: those fields only ever
+ * come from the serialised error's top level, so `data` cannot retype them.
+ */
+export type DeserializedError<TData extends object = Record<never, never>> =
+  Error & {
+    /** The restored `code`, when the original carried one. */
+    code?: string | number;
+    /** The restored `cause`, itself rebuilt. */
+    cause?: DeserializedError;
+  } & (string extends keyof TData
+      ? unknown
+      : TData extends unknown
+        ? Partial<Omit<TData, "name" | "message" | "stack" | "code" | "cause">>
+        : never);
 
 /** Options for {@link serializeError}. */
 export interface SerializeErrorOptions {
   /** How many `cause` levels to follow. Defaults to `5`. */
   maxDepth?: number;
-  /** Byte cap on the retained stack. Defaults to `8192`. */
+  /**
+   * Cap on the retained stack, in UTF-8 bytes. A longer stack is cut on a
+   * character boundary (so it may keep slightly fewer bytes than the cap) and
+   * `\n… (stack truncated)` is appended beyond it. Defaults to `8192`.
+   */
   maxStackBytes?: number;
 }
 
@@ -1899,10 +2541,7 @@ export function serializeError(
   };
 
   if (source.stack) {
-    serialized.stack =
-      source.stack.length > maxStackBytes
-        ? `${source.stack.slice(0, maxStackBytes)}\n… (stack truncated)`
-        : source.stack;
+    serialized.stack = truncateUtf8(source.stack, maxStackBytes);
   }
 
   if (isString(source.code) || isNumber(source.code)) {
@@ -1916,7 +2555,7 @@ export function serializeError(
     });
   }
 
-  const data: Record<string, unknown> = {};
+  const data: Record<string, JsonValue> = {};
   let hasData = false;
   for (const key of Object.keys(source)) {
     if (SERIALIZED_ERROR_KEYS.has(key)) {
@@ -1943,12 +2582,19 @@ export function serializeError(
  * `stack`, `code`, `cause` and any `data` properties. The result is a real
  * `Error` instance whose `name` is the original one — not the original class,
  * which cannot cross a process boundary.
+ *
+ * `name`, `message`, `stack`, `code` and `cause` come only from the input's
+ * top-level fields. A `data` key with one of those names — which
+ * `serializeError` never emits, but hand-built or foreign input may carry — is
+ * dropped rather than allowed to overwrite the real field. Every other `data`
+ * key becomes an own enumerable property, defined rather than assigned, so a
+ * key such as `__proto__` from parsed JSON stays a plain property instead of
+ * replacing the error's prototype.
  */
-export function deserializeError(input: SerializedError): Error {
-  const error = new Error(input.message) as Error & {
-    code?: string | number;
-    cause?: unknown;
-  };
+export function deserializeError<TData extends object>(
+  input: SerializedError<TData>,
+): DeserializedError<TData> {
+  const error = new Error(input.message) as DeserializedError;
 
   error.name = input.name;
 
@@ -1965,10 +2611,21 @@ export function deserializeError(input: SerializedError): Error {
   }
 
   if (input.data) {
-    Object.assign(error, input.data);
+    for (const [key, value] of Object.entries(input.data)) {
+      if (SERIALIZED_ERROR_KEYS.has(key)) {
+        continue;
+      }
+
+      Object.defineProperty(error, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
   }
 
-  return error;
+  return error as DeserializedError<TData>;
 }
 
 /**
@@ -1980,22 +2637,61 @@ export function deserializeError(input: SerializedError): Error {
  * `Map`/`Set`/class instance becomes a plain object, and a `BigInt` or a
  * cycle throws `TypeError`. Use it at a boundary so the value a handler sees
  * locally matches what it would see remotely.
+ *
+ * The return type, {@link Jsonify}, says what came back rather than what went
+ * in: a `Date` property is a `string`, a function property is gone.
+ *
+ * `TResult` exists for one reason: code written against the earlier
+ * `jsonClone<T>(value: T): T` — typically a generic `(value: T): T` wrapper,
+ * where a deferred `Jsonify<T>` can never be assigned to `T` — may still
+ * claim the input type, through an explicit type argument or a contextual
+ * return type. It may claim nothing else: without such a context the result
+ * is `Jsonify<T>`.
  */
-export function jsonClone<T>(value: T): T {
+export function jsonClone<T, TResult extends Jsonify<T> | T = Jsonify<T>>(
+  value: T,
+): TResult {
   const json = JSON.stringify(value);
   if (json === undefined) {
-    return undefined as T;
+    return undefined as TResult;
   }
-  return JSON.parse(json) as T;
+  return JSON.parse(json) as TResult;
 }
 
-/** {@link jsonClone} that yields `undefined` instead of throwing. */
-function tryJsonClone(value: unknown): unknown {
+/**
+ * {@link jsonClone} that yields `undefined` instead of throwing. The input is
+ * any value; the output is what JSON made of it.
+ */
+function tryJsonClone(value: unknown): JsonValue | undefined {
   try {
-    return jsonClone(value);
+    return jsonClone(value) as JsonValue | undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `text` unchanged when it fits in `maxBytes` UTF-8 bytes; otherwise its
+ * longest prefix that does, cut on a character boundary, plus a marker.
+ */
+function truncateUtf8(text: string, maxBytes: number): string {
+  // Each UTF-16 unit is at most 3 UTF-8 bytes: skip the encode when it fits.
+  if (text.length * 3 <= maxBytes) {
+    return text;
+  }
+
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) {
+    return text;
+  }
+
+  let end = Math.max(0, Math.floor(maxBytes));
+  // Back off any continuation bytes (10xxxxxx) so no character is split.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) {
+    end--;
+  }
+
+  return `${bytes.subarray(0, end).toString("utf8")}\n… (stack truncated)`;
 }
 
 /** `String(value)` that survives a throwing `toString`/getter. */

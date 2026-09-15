@@ -1,10 +1,12 @@
+import type { SerializedError } from "../lib/utils/native";
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
   appendVary,
   cloneDeep,
   computeBackoff,
   createDeferred,
+  decodeXmlEntities,
   deserializeError,
   each,
   encodeUrl,
@@ -308,6 +310,11 @@ describe("native: dates", () => {
   it("isDateValid", () => {
     expect(isDateValid(new Date())).toBe(true);
     expect(isDateValid(new Date("nonsense"))).toBe(false);
+    // Not a Date at all — the guard overload's domain.
+    expect(isDateValid("2020-01-01")).toBe(false);
+    expect(isDateValid(Date.now())).toBe(false);
+    expect(isDateValid(null)).toBe(false);
+    expect(isDateValid({ getTime: () => 0 })).toBe(false);
   });
 
   it("toHttpDate produces an RFC 7231 string", () => {
@@ -648,7 +655,7 @@ describe("native: withTimeout", () => {
 
   it("rejects with a TimeoutError carrying the budget", async () => {
     const work = new Promise<string>((resolve) => {
-      const timer = setTimeout(() => resolve("late"), 1000);
+      const timer = setTimeout(resolve, 1000, "late");
       timer.unref?.();
     });
 
@@ -950,6 +957,39 @@ describe("native: serializeError / deserializeError", () => {
     ).toBe("j1");
   });
 
+  it("never lets data overwrite the rebuilt error's own fields", () => {
+    // Parsed from JSON, as stored or foreign input would be: that is the only
+    // way `__proto__` arrives as an own key rather than setting a prototype.
+    const input = JSON.parse(`{
+      "name": "LockLostError",
+      "message": "real message",
+      "stack": "real stack",
+      "code": "LOCK_LOST",
+      "cause": { "name": "Error", "message": "real cause" },
+      "data": {
+        "name": "FakeName",
+        "message": "fake message",
+        "stack": "fake stack",
+        "code": "FAKE",
+        "cause": "fake cause",
+        "__proto__": { "hijacked": true },
+        "jobId": "j1",
+        "ms": 250
+      }
+    }`) as SerializedError;
+    const restored = deserializeError(input) as Error & Record<string, unknown>;
+
+    expect(restored).toBeInstanceOf(Error);
+    expect(restored.name).toBe("LockLostError");
+    expect(restored.message).toBe("real message");
+    expect(restored.stack).toBe("real stack");
+    expect(restored.code).toBe("LOCK_LOST");
+    expect((restored.cause as Error).message).toBe("real cause");
+    expect(restored.jobId).toBe("j1");
+    expect(restored.ms).toBe(250);
+    expect(restored.hijacked).toBeUndefined();
+  });
+
   it("keeps a non-Error visible rather than dropping it", () => {
     expect(serializeError("just a string")).toEqual({
       name: "NonError",
@@ -980,20 +1020,31 @@ describe("native: jsonClone", () => {
   });
 
   it("documents the losses that cross a boundary", () => {
-    // `jsonClone<T>(value: T): T` keeps the input type for ergonomics, but a
-    // `Date` really does come back as a string — the loss under test — so
-    // these assertions look at the runtime value rather than the static type.
-    const clone = (value: unknown): unknown => jsonClone(value);
+    // The return type is `Jsonify<T>`, so each expectation below is also
+    // what the compiler says comes back (asserted in native.type-test.ts).
+    const dropped = jsonClone({ a: undefined, b: 1, fn: () => 1 });
+    expect(dropped).toEqual({ b: 1 });
+    expect("a" in dropped).toBe(false);
 
-    expect(clone({ a: undefined, b: 1 })).toEqual({ b: 1 });
-    expect(clone({ at: new Date("2020-01-01T00:00:00.000Z") })).toEqual({
-      at: "2020-01-01T00:00:00.000Z",
-    });
-    expect(clone({ m: new Map([["a", 1]]), s: new Set([1]) })).toEqual({
+    const dated = jsonClone({ at: new Date("2020-01-01T00:00:00.000Z") });
+    expect(dated).toEqual({ at: "2020-01-01T00:00:00.000Z" });
+    expect(dated.at.startsWith("2020")).toBe(true);
+
+    expect(jsonClone({ m: new Map([["a", 1]]), s: new Set([1]) })).toEqual({
       m: {},
       s: {},
     });
-    expect(clone(undefined)).toBeUndefined();
+    expect(jsonClone([undefined, () => 1, Symbol("s"), 2])).toEqual([
+      null,
+      null,
+      null,
+      2,
+    ]);
+    expect(jsonClone({ custom: { toJSON: () => "custom" } })).toEqual({
+      custom: "custom",
+    });
+    expect(jsonClone(undefined)).toBeUndefined();
+    expect(jsonClone(() => 1)).toBeUndefined();
   });
 
   it("throws on values JSON cannot represent", () => {
@@ -1116,5 +1167,227 @@ describe("native: Semaphore", () => {
     expect(order).toEqual(["second"]);
     first();
     expect(semaphore.permits).toBe(2);
+  });
+});
+
+/*
+ * Code/documentation harmonization — each case below failed before its fix.
+ */
+describe("native: behaviour matches the documentation", () => {
+  it("encodeUrl replaces an unmatched surrogate with U+FFFD, as encodeurl does", () => {
+    expect(encodeUrl("/\uD800")).toBe("/%EF%BF%BD");
+    expect(encodeUrl("/\uDC00x")).toBe("/%EF%BF%BDx");
+    expect(encodeUrl("/x\uD800b")).toBe("/x%EF%BF%BDb");
+    expect(encodeUrl("/\uDFFF\uD800")).toBe("/%EF%BF%BD%EF%BF%BD");
+    // A well-formed pair is still encoded as the character it forms.
+    expect(encodeUrl("/😀")).toBe("/%F0%9F%98%80");
+  });
+
+  it("jsonCookies parses in place and returns the same object, as cookie-parser does", () => {
+    const cookies: Record<string, string> = {
+      a: 'j:{"x":1}',
+      b: "plain",
+      c: "j:not json",
+      d: "j:null",
+      e: "j:false",
+      f: "j:[1]",
+    };
+    const result = jsonCookies(cookies);
+
+    expect(result).toBe(cookies);
+    // cookie-parser only replaces a value that parses to something truthy.
+    expect(cookies as Record<string, unknown>).toEqual({
+      a: { x: 1 },
+      b: "plain",
+      c: "j:not json",
+      d: "j:null",
+      e: "j:false",
+      f: [1],
+    });
+  });
+
+  it("serializeCookie omits SameSite for sameSite: false, as the cookie package does", () => {
+    expect(serializeCookie("a", "1", { sameSite: false })).toBe("a=1; Path=/");
+    expect(
+      serializeCookie("a", "1", { sameSite: false, priority: "high" }),
+    ).toBe("a=1; Path=/; Priority=High");
+    // Unset still gets Bun's documented default.
+    expect(serializeCookie("a", "1")).toContain("SameSite=Lax");
+  });
+
+  it("sleep rejects with an AbortError carrying a non-Error reason as its cause", async () => {
+    const controller = new AbortController();
+    controller.abort("because");
+    const early = await sleep(1000, { signal: controller.signal }).catch(
+      (error: unknown) => error,
+    );
+    expect(early).toBeInstanceOf(Error);
+    expect(isAbortError(early)).toBe(true);
+    expect((early as Error).cause).toBe("because");
+
+    const later = new AbortController();
+    const waiting = sleep(1000, { signal: later.signal });
+    later.abort(42);
+    const midWait = await waiting.catch((error: unknown) => error);
+    expect(isAbortError(midWait)).toBe(true);
+    expect((midWait as Error).cause).toBe(42);
+
+    // An Error reason is still rejected as-is.
+    const reason = new Error("shutting down");
+    const withError = new AbortController();
+    withError.abort(reason);
+    expect(
+      await sleep(1000, { signal: withError.signal }).catch((e: unknown) => e),
+    ).toBe(reason);
+  });
+
+  it("retry rejects the same way for a non-Error abort reason", async () => {
+    const controller = new AbortController();
+    controller.abort("stop");
+    const error = await retry(() => 1, { signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+    expect(isAbortError(error)).toBe(true);
+    expect((error as Error).cause).toBe("stop");
+  });
+
+  it("withTimeout rejects, never throws, when the work function throws synchronously", async () => {
+    let returned: Promise<unknown> | undefined;
+    expect(() => {
+      returned = withTimeout(() => {
+        throw new Error("sync");
+      }, 100);
+    }).not.toThrow();
+    await expect(returned).rejects.toThrow("sync");
+
+    let noBudget: Promise<unknown> | undefined;
+    expect(() => {
+      noBudget = withTimeout(() => {
+        throw new Error("sync, no budget");
+      }, 0);
+    }).not.toThrow();
+    await expect(noBudget).rejects.toThrow("sync, no budget");
+  });
+
+  it("withTimeout's timeout rejection is named TimeoutError", async () => {
+    const error = await withTimeout(new Promise(() => {}), 5).catch(
+      (e: unknown) => e,
+    );
+    expect((error as Error).name).toBe("TimeoutError");
+    expect(new TimeoutError(1).name).toBe("TimeoutError");
+  });
+
+  it("Semaphore never runs more holders than a lowered limit, nor reports negative availability", async () => {
+    const semaphore = new Semaphore(2);
+    const first = await semaphore.acquire();
+    const second = await semaphore.acquire();
+    let thirdHolding = false;
+    const third = semaphore.acquire().then((release) => {
+      thirdHolding = true;
+      return release;
+    });
+
+    semaphore.setPermits(1);
+    expect(semaphore.available).toBe(0);
+
+    first();
+    await sleep(5);
+    expect(thirdHolding).toBe(false);
+    expect(semaphore.available).toBe(0);
+    expect(semaphore.tryAcquire()).toBeNull();
+
+    second();
+    const releaseThird = await third;
+    expect(thirdHolding).toBe(true);
+    expect(semaphore.available).toBe(0);
+
+    releaseThird();
+    expect(semaphore.available).toBe(1);
+    expect(semaphore.permits).toBe(1);
+  });
+
+  it("Semaphore keeps its peak at the limit through a lowering under load", async () => {
+    const semaphore = new Semaphore(4);
+    let active = 0;
+    let overLimit = false;
+
+    const task = () =>
+      semaphore.runExclusive(async () => {
+        active++;
+        if (active > semaphore.permits) {
+          overLimit = true;
+        }
+        await sleep(2);
+        active--;
+      });
+
+    const all = Promise.all(Array.from({ length: 20 }, task));
+    await sleep(1);
+    semaphore.setPermits(2);
+    // Holders admitted before the change may still be finishing; after they
+    // drain nothing new starts above the lowered limit.
+    await sleep(10);
+    overLimit = false;
+    await all;
+
+    expect(overLimit).toBe(false);
+    expect(semaphore.available).toBe(2);
+  });
+
+  it("decodeXmlEntities leaves a reference past U+10FFFF untouched", () => {
+    expect(decodeXmlEntities("&#1114112;")).toBe("&#1114112;");
+    expect(decodeXmlEntities("&#x110000; &#x10FFFF;")).toBe(
+      "&#x110000; \u{10FFFF}",
+    );
+    expect(decodeXmlEntities("&#99999999999999999999;")).toBe(
+      "&#99999999999999999999;",
+    );
+    expect(parseXmlToObject("<m>&#1114112;</m>")).toEqual({ m: "&#1114112;" });
+  });
+
+  it("serializeError counts maxStackBytes in UTF-8 bytes and cuts on a character boundary", () => {
+    const error = new Error("multibyte");
+    error.stack = "é".repeat(10); // 20 UTF-8 bytes, 10 characters
+
+    // Fits in bytes: untouched.
+    expect(serializeError(error, { maxStackBytes: 20 }).stack).toBe(
+      "é".repeat(10),
+    );
+    // 10 characters but 20 bytes: a 10-byte cap keeps 5 characters.
+    expect(serializeError(error, { maxStackBytes: 10 }).stack).toBe(
+      `${"é".repeat(5)}\n… (stack truncated)`,
+    );
+    // An odd cap cannot split a two-byte character.
+    expect(serializeError(error, { maxStackBytes: 9 }).stack).toBe(
+      `${"é".repeat(4)}\n… (stack truncated)`,
+    );
+
+    const emoji = new Error("astral");
+    emoji.stack = "😀😀"; // 8 bytes
+    expect(serializeError(emoji, { maxStackBytes: 6 }).stack).toBe(
+      "😀\n… (stack truncated)",
+    );
+  });
+
+  it("retry's waits keep the process alive by default, and unref: true lets it exit", () => {
+    const nativePath = new URL("../lib/utils/native.ts", import.meta.url)
+      .pathname;
+    const run = (options: string): string => {
+      const child = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "-e",
+          `import { retry } from ${JSON.stringify(nativePath)};
+           retry(() => { throw new Error("down"); }, { attempts: 2, backoff: 150${options} })
+             .catch(() => console.log("gave up"));`,
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return child.stdout.toString().trim();
+    };
+
+    expect(run("")).toBe("gave up");
+    expect(run(", unref: true")).toBe("");
   });
 });
