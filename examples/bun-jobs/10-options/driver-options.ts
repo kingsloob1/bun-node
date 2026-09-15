@@ -412,6 +412,8 @@ checkEqual(
     kv: "app_kv",
     events: "legacy_event_log",
     logs: "app_logs",
+    workers: "app_workers",
+    metrics: "app_metrics",
   },
 );
 checkEqual(
@@ -429,7 +431,9 @@ await checkRejects(
 checkEqual(
   "SQL_TABLES",
   [...SQL_TABLES],
-  ["jobs", "locks", "kv", "events", "logs"],
+  // `workers` holds each worker's heartbeat record and `metrics` the
+  // per-minute throughput counts, both read by the queue's read APIs.
+  ["jobs", "locks", "kv", "events", "logs", "workers", "metrics"],
 );
 checkEqual(
   "MONGO_COLLECTIONS",
@@ -634,6 +638,8 @@ checkEqual(
     `${EXAMPLE_PREFIX}kv`,
     `${EXAMPLE_PREFIX}locks`,
     `${EXAMPLE_PREFIX}logs`,
+    `${EXAMPLE_PREFIX}metrics`,
+    `${EXAMPLE_PREFIX}workers`,
   ],
 );
 
@@ -925,6 +931,8 @@ if (!postgresUrl) {
       `${SERVER_PREFIX}kv`,
       `${SERVER_PREFIX}locks`,
       `${SERVER_PREFIX}logs`,
+      `${SERVER_PREFIX}metrics`,
+      `${SERVER_PREFIX}workers`,
     ],
   );
 

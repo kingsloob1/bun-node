@@ -36,6 +36,7 @@ import {
   ConfigError,
   createDriver,
   JobDraft,
+  MAX_TIMER_MS,
   RedisDriver,
 } from "@kingsleyweb/bun-jobs";
 import {
@@ -53,8 +54,8 @@ const WAIT = { timeout: 30_000, interval: 10 };
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
-/** The longest a timer can wait, as the errors and README state it. */
-const MAX_TIMER = 2_147_483_647;
+/** The bound the refusals name, built from the constant rather than repeated. */
+const TOO_LONG = new RegExp(String(MAX_TIMER_MS));
 
 /** What a mail job carries. */
 interface Mail {
@@ -1133,7 +1134,7 @@ step("processEvery(): what it reads, and what it refuses");
     ["250ms", 250],
     ["every 2 seconds", 2_000],
     ["1m 30s", 90_000],
-    [MAX_TIMER, MAX_TIMER],
+    [MAX_TIMER_MS, MAX_TIMER_MS],
   ] as const) {
     check(
       `processEvery(${JSON.stringify(input)}) chains`,
@@ -1156,16 +1157,16 @@ step("processEvery(): what it reads, and what it refuses");
       { name: "ConfigError", code: "CONFIG", message: /processEvery\(\)/ },
     );
   }
-  for (const tooLong of ["30 days", MAX_TIMER + 1]) {
+  for (const tooLong of ["30 days", MAX_TIMER_MS + 1]) {
     const error = await checkRejects(
       `processEvery(${JSON.stringify(tooLong)}): longer than a timer can wait`,
       () => ctx.jobs.processEvery(tooLong),
-      { name: "ConfigError", code: "CONFIG", message: /2147483647/ },
+      { name: "ConfigError", code: "CONFIG", message: TOO_LONG },
     );
     checkEqual(
       `processEvery(${JSON.stringify(tooLong)}): context carries the max`,
       (error as ConfigError | undefined)?.context?.max,
-      MAX_TIMER,
+      MAX_TIMER_MS,
     );
     await checkRejects(
       `new BunJobs({ processEvery: ${JSON.stringify(tooLong)} })`,
@@ -1175,7 +1176,7 @@ step("processEvery(): what it reads, and what it refuses");
           driver: ctx.driver,
           processEvery: tooLong,
         }),
-      { name: "ConfigError", message: /2147483647/ },
+      { name: "ConfigError", message: TOO_LONG },
     );
   }
   for (const bad of [0, -1, Number.NaN, "whenever", "0s"]) {
@@ -1199,7 +1200,7 @@ step("processEvery(): what it reads, and what it refuses");
 
   await ctx.jobs.stop();
   const waitsBefore = ctx.waits.length;
-  ctx.jobs.processEvery(MAX_TIMER);
+  ctx.jobs.processEvery(MAX_TIMER_MS);
   await ctx.jobs.start();
   await waitFor("a first wait", () => ctx.waits.length > waitsBefore, WAIT);
   check(
@@ -1300,13 +1301,13 @@ step("BunQueueWorker: pollInterval and maxBlock at runtime");
     });
   }
   for (const [label, set] of [
-    ["pollInterval = MAX + 1", () => (worker.pollInterval = MAX_TIMER + 1)],
-    ["maxBlock = MAX + 1", () => (worker.maxBlock = MAX_TIMER + 1)],
+    ["pollInterval = MAX + 1", () => (worker.pollInterval = MAX_TIMER_MS + 1)],
+    ["maxBlock = MAX + 1", () => (worker.maxBlock = MAX_TIMER_MS + 1)],
   ] as const) {
     await checkRejects(label, set, {
       name: "ConfigError",
       code: "CONFIG",
-      message: /2147483647/,
+      message: TOO_LONG,
     });
   }
   checkEqual(
@@ -1314,12 +1315,12 @@ step("BunQueueWorker: pollInterval and maxBlock at runtime");
     [worker.pollInterval, worker.maxBlock],
     [1_000, 5_000],
   );
-  worker.pollInterval = MAX_TIMER;
-  worker.maxBlock = MAX_TIMER;
+  worker.pollInterval = MAX_TIMER_MS;
+  worker.maxBlock = MAX_TIMER_MS;
   checkEqual(
     "the longest a timer can wait is accepted",
     [worker.pollInterval, worker.maxBlock],
-    [MAX_TIMER, MAX_TIMER],
+    [MAX_TIMER_MS, MAX_TIMER_MS],
   );
 
   worker.pollInterval = 10;

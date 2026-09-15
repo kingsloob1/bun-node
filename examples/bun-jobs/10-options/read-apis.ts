@@ -1,0 +1,920 @@
+/**
+ * Option tour: the read APIs a management UI needs — `list`, `page`,
+ * `getJobs`, `listWorkers`, `getThroughput` and `getQueueSummaries` — with
+ * every option and every edge asserted.
+ *
+ * ```bash
+ * bun 10-options/read-apis.ts
+ * EXAMPLE_DRIVER=sqlite bun 10-options/read-apis.ts
+ * ```
+ *
+ * Worth knowing:
+ *
+ * - A `search` is taken **literally** on every engine: `%`, `_`, `!`, quotes,
+ *   backslashes and regular-expression characters match themselves. Each one
+ *   below has a job whose name contains it and a near-twin that would match if
+ *   the search were read as a pattern.
+ * - Case is folded for ASCII everywhere. Beyond ASCII it follows the engine,
+ *   and SQLite's `LOWER` folds ASCII only — so this tour asserts the
+ *   difference rather than skipping it.
+ * - Every driver method behind these reads is **optional**. The sections on a
+ *   wrapped driver hide them one at a time and assert the fallback gives the
+ *   same answer. Only throughput has no fallback.
+ * - A worker writes one heartbeat per `reportInterval`, never per job, and its
+ *   record lapses three intervals after the last write. The tour waits for
+ *   records rather than sleeping, except where it has to prove a negative.
+ */
+import type {
+  JobsDriver,
+  ListJobsOptions,
+  NotSupportedError,
+  WorkerInfo,
+} from "@kingsleyweb/bun-jobs";
+import process from "node:process";
+import {
+  BunJobs,
+  BunQueue,
+  BunQueueWorker,
+  createDriver,
+  HOST,
+  MAX_TIMER_MS,
+  registerWorkerRecord,
+  THROUGHPUT_BUCKET_MS,
+} from "@kingsleyweb/bun-jobs";
+import {
+  crossProcessDriver,
+  exampleBackend,
+  exampleDriver,
+  exampleNamespace,
+} from "../shared/backend";
+import { check, checkEqual, checkRejects, summary } from "../shared/check";
+import { show, step, title, waitFor } from "../shared/console";
+
+title("Read APIs: search, paging, workers, throughput");
+
+const backend = exampleBackend();
+const driver = createDriver(exampleDriver());
+const namespace = exampleNamespace("read-apis");
+
+/** How long to wait for anything a busy server might slow down. */
+const LONG = { timeout: 30_000 };
+
+/**
+ * The same driver with some optional methods hidden, as a driver written
+ * before them would be. Methods are bound to the real driver so its private
+ * state still works.
+ */
+function without(real: JobsDriver, methods: (keyof JobsDriver)[]): JobsDriver {
+  return new Proxy(real, {
+    get(target, property) {
+      if (methods.includes(property as keyof JobsDriver)) {
+        return undefined;
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/**
+ * Waits out a window in which something must *not* happen. The only sleep in
+ * the tour: a negative cannot be waited for.
+ */
+async function quietWindow(ms: number): Promise<void> {
+  await Bun.sleep(ms);
+}
+
+/* ------------------------------------------------------------------ */
+step("Seed: one job per awkward character, plus near-twins");
+
+/**
+ * The search seed. Ids are limited to letters, digits, `_`, `.` and `-`, so
+ * the characters a backend might read as a pattern live in the **name** —
+ * which is searched just as the id is. Each tricky entry has a twin with the
+ * character replaced by `X`, so a search read as a pattern would match both.
+ */
+const seed: { id: string; name: string }[] = [
+  { id: "inv-001", name: "sendEmail" },
+  { id: "inv-002", name: "SendEmail" },
+  { id: "INV-003", name: "report" },
+  { id: "under_1", name: "plain" },
+  { id: "underX1", name: "plain" },
+  { id: "dot.star", name: "plain" },
+  { id: "dotXstar", name: "plain" },
+  { id: "pct-1", name: "pct%1" },
+  { id: "pct-2", name: "pctX1" },
+  { id: "bang-1", name: "bang!1" },
+  { id: "back-1", name: "back\\slash" },
+  { id: "quote-1", name: "it's" },
+  { id: "dq-1", name: 'say "hi"' },
+  { id: "brack-1", name: "brack[et]" },
+  { id: "caret-1", name: "caret^$" },
+  { id: "accent-1", name: "CAFÉ" },
+];
+
+const reads = new BunQueue(`reads`, { namespace, driver });
+
+await reads.addBulk(
+  seed.map((entry) => ({
+    name: entry.name,
+    // Every payload holds the characters a search must never find.
+    data: { note: "needle %_ in the payload only" },
+    opts: { jobId: entry.id },
+  })),
+);
+
+/** Matching ids, sorted, so an assertion does not depend on the order. */
+const ids = async (options: ListJobsOptions): Promise<string[]> =>
+  (await reads.list("waiting", { limit: 100, ...options }))
+    .map((job) => job.id)
+    .sort();
+
+/** Matching ids in the order the driver returned them. */
+const ordered = async (options: ListJobsOptions): Promise<string[]> =>
+  (await reads.list("waiting", { limit: 100, ...options })).map(
+    (job) => job.id,
+  );
+
+checkEqual(
+  "the seed is all waiting",
+  await reads.count("waiting"),
+  seed.length,
+);
+
+/* ------------------------------------------------------------------ */
+step("search: every character taken literally");
+
+checkEqual("% is a per cent sign, not a wildcard", await ids({ search: "%" }), [
+  "pct-1",
+]);
+checkEqual(
+  "_ is an underscore, not any character",
+  await ids({ search: "r_1" }),
+  ["under_1"],
+);
+checkEqual(
+  "! — the escape character SQL LIKE uses",
+  await ids({ search: "!" }),
+  ["bang-1"],
+);
+checkEqual("a backslash", await ids({ search: "\\" }), ["back-1"]);
+checkEqual("a single quote", await ids({ search: "'" }), ["quote-1"]);
+checkEqual("a double quote", await ids({ search: '"' }), ["dq-1"]);
+checkEqual("…and a quoted phrase", await ids({ search: 'say "h' }), ["dq-1"]);
+// As a character class this would match every name holding an `e` or a `t`.
+checkEqual("square brackets", await ids({ search: "[et]" }), ["brack-1"]);
+// As a pattern, `^$` matches the empty string — that is, everything.
+checkEqual("a caret and a dollar", await ids({ search: "^$" }), ["caret-1"]);
+// As a pattern, `.` matches any character, so `dotXstar` would match too.
+checkEqual("a dot", await ids({ search: "t.s" }), ["dot.star"]);
+
+/* ------------------------------------------------------------------ */
+step("search: case, and what is never searched");
+
+checkEqual("folds ASCII case, matching ids", await ids({ search: "INV" }), [
+  "INV-003",
+  "inv-001",
+  "inv-002",
+]);
+checkEqual("…and names", await ids({ search: "sendemail" }), [
+  "inv-001",
+  "inv-002",
+]);
+checkEqual("…in either direction", await ids({ search: "REPORT" }), [
+  "INV-003",
+]);
+checkEqual("never the payload", await ids({ search: "needle" }), []);
+checkEqual(
+  "…not even its awkward characters",
+  await ids({ search: "in the payload" }),
+  [],
+);
+checkEqual(
+  "an empty search is no search at all",
+  (await ids({ search: "" })).length,
+  seed.length,
+);
+
+// Beyond ASCII the engine decides. SQLite's `LOWER` folds ASCII only, so `É`
+// stays `É` and never matches `é`; every other backend here folds it.
+const foldsBeyondAscii = backend !== "sqlite";
+checkEqual(
+  foldsBeyondAscii
+    ? `${backend}: case is folded beyond ASCII too, so "café" matches "CAFÉ"`
+    : `${backend}: LOWER folds ASCII only, so "café" does not match "CAFÉ"`,
+  await ids({ search: "café" }),
+  foldsBeyondAscii ? ["accent-1"] : [],
+);
+checkEqual(
+  "…while the ASCII part of that same name matches everywhere",
+  await ids({ search: "caf" }),
+  ["accent-1"],
+);
+
+/* ------------------------------------------------------------------ */
+step("name: exact, one or several");
+
+checkEqual("one name, exactly", await ids({ name: "sendEmail" }), ["inv-001"]);
+// `SendEmail` is a different name: a name filter never folds case.
+checkEqual("…case and all", await ids({ name: "SendEmail" }), ["inv-002"]);
+checkEqual("several names", await ids({ name: ["sendEmail", "report"] }), [
+  "INV-003",
+  "inv-001",
+]);
+checkEqual("an empty array matches nothing", await ids({ name: [] }), []);
+checkEqual("a name nobody used", await ids({ name: "nope" }), []);
+checkEqual(
+  "a name and a search compose",
+  await ids({ name: ["plain"], search: "r_1" }),
+  ["under_1"],
+);
+
+/* ------------------------------------------------------------------ */
+step("offset, limit and order, with a filter");
+
+const allPlain = await ordered({ name: "plain" });
+checkEqual("the four jobs named plain", allPlain.length, 4);
+
+checkEqual(
+  "offset and limit count matches, not jobs",
+  await ordered({ name: "plain", offset: 1, limit: 2 }),
+  allPlain.slice(1, 3),
+);
+checkEqual(
+  "order: desc is the same jobs, reversed",
+  await ordered({ name: "plain", order: "desc" }),
+  [...allPlain].reverse(),
+);
+checkEqual(
+  "…and desc pages from the other end",
+  await ordered({ name: "plain", order: "desc", offset: 1, limit: 2 }),
+  [...allPlain].reverse().slice(1, 3),
+);
+checkEqual(
+  "an offset past the last match is empty",
+  await ordered({ name: "plain", offset: 99 }),
+  [],
+);
+checkEqual(
+  "a search pages the same way",
+  await ordered({ search: "inv", offset: 1, limit: 1 }),
+  (await ordered({ search: "inv" })).slice(1, 2),
+);
+
+/* ------------------------------------------------------------------ */
+step("page: the slice and the total together");
+
+const filtered = await reads.page("waiting", {
+  name: "plain",
+  offset: 1,
+  limit: 2,
+});
+checkEqual(
+  "page: the slice asked for",
+  filtered.jobs.map((job) => job.id),
+  allPlain.slice(1, 3),
+);
+checkEqual(
+  "page: the total is every match, ignoring offset and limit",
+  filtered.total,
+  allPlain.length,
+);
+
+const searched = await reads.page("waiting", { search: "inv", limit: 1 });
+checkEqual(
+  "page: a searched total",
+  [searched.jobs.length, searched.total],
+  [1, 3],
+);
+
+const unfiltered = await reads.page("waiting", { limit: 5 });
+checkEqual(
+  "page: an unfiltered total is the states' counts",
+  [unfiltered.jobs.length, unfiltered.total],
+  [5, seed.length],
+);
+checkEqual(
+  "page: several states total together",
+  (await reads.page(["waiting", "completed"], { limit: 2 })).total,
+  seed.length,
+);
+checkEqual(
+  "page: nothing matched",
+  await reads.page("waiting", { search: "no-such-thing" }),
+  {
+    jobs: [],
+    total: 0,
+  },
+);
+
+/* ------------------------------------------------------------------ */
+step("getJobs: ids in, jobs out, in that order");
+
+const got = await reads.getJobs(["dot.star", "missing", "inv-001", "dot.star"]);
+
+checkEqual(
+  "one entry per id, in the order asked, null for a missing one",
+  got.map((job) => job?.id ?? null),
+  ["dot.star", null, "inv-001", "dot.star"],
+);
+checkEqual("…carrying the job itself", got[2]?.name, "sendEmail");
+check(
+  "a repeated id is answered twice, as its own job",
+  got[0] !== got[3] && got[0]?.id === got[3]?.id,
+  { first: got[0]?.id, second: got[3]?.id, same: got[0] === got[3] },
+);
+checkEqual("no ids, no jobs", await reads.getJobs([]), []);
+checkEqual("every id missing", await reads.getJobs(["nope-1", "nope-2"]), [
+  null,
+  null,
+]);
+
+/* ------------------------------------------------------------------ */
+step("The fallbacks: the same answers from a driver without the methods");
+
+// `findJobs` and `getJobs` are optional on the contract. Hidden, the queue
+// pages through `listJobs` and filters, and reads ids one at a time.
+const olderDriver = without(driver, ["findJobs", "getJobs"]);
+const older = new BunQueue(`reads`, { namespace, driver: olderDriver });
+
+checkEqual(
+  "without findJobs: the scan fallback filters the same way",
+  (await older.list("waiting", { search: "%", limit: 100 })).map(
+    (job) => job.id,
+  ),
+  ["pct-1"],
+);
+const olderPage = await older.page("waiting", {
+  name: "plain",
+  offset: 1,
+  limit: 2,
+});
+checkEqual(
+  "without findJobs: the same page and total",
+  [olderPage.jobs.map((job) => job.id), olderPage.total],
+  [allPlain.slice(1, 3), allPlain.length],
+);
+checkEqual(
+  "without findJobs: an unfiltered read still goes to listJobs",
+  (await older.list("waiting", { limit: 3 })).map((job) => job.id),
+  (await reads.list("waiting", { limit: 3 })).map((job) => job.id),
+);
+checkEqual(
+  "without getJobs: read one id at a time, same answer",
+  (await older.getJobs(["dot.star", "missing", "inv-001"])).map(
+    (job) => job?.id ?? null,
+  ),
+  ["dot.star", null, "inv-001"],
+);
+
+await older.close();
+
+/* ------------------------------------------------------------------ */
+step("listWorkers: every field of a live worker's record");
+
+/** Holds a job until it is released, so a worker can be seen busy. */
+const held = Promise.withResolvers<void>();
+const workersQueue = new BunQueue("workers", { namespace, driver });
+
+const worker = new BunQueueWorker("workers", async () => await held.promise, {
+  namespace,
+  driver,
+  id: "reader-1",
+  concurrency: 3,
+  // Short only so the tour does not wait ten seconds for the first heartbeat.
+  reportInterval: 200,
+  pollInterval: 25,
+});
+void worker.run();
+
+// The first report is deliberately not awaited inside `run()`: a worker is
+// listed moments after `ready`, not necessarily by it.
+await waitFor(
+  "the worker to report",
+  async () => (await workersQueue.listWorkers()).length === 1,
+  LONG,
+);
+
+const [listed] = await workersQueue.listWorkers();
+checkEqual(
+  "WorkerInfo: who and where",
+  {
+    id: listed?.id,
+    queue: listed?.queue,
+    host: listed?.host,
+    pid: listed?.pid,
+    concurrency: listed?.concurrency,
+    active: listed?.active,
+    paused: listed?.paused,
+  },
+  {
+    id: "reader-1",
+    queue: "workers",
+    host: HOST,
+    pid: process.pid,
+    concurrency: 3,
+    active: 0,
+    paused: false,
+  },
+);
+check(
+  "startedAt is when it began consuming, heartbeatAt when it last reported",
+  !!listed &&
+    listed.startedAt <= listed.heartbeatAt &&
+    listed.heartbeatAt <= Date.now(),
+  listed,
+);
+checkEqual(
+  "expiresAt is three report intervals past the heartbeat",
+  listed!.expiresAt - listed!.heartbeatAt,
+  3 * 200,
+);
+
+/* ------------------------------------------------------------------ */
+step("listWorkers: the record follows the worker");
+
+await workersQueue.add("held", {});
+await waitFor("the job to be picked up", () => worker.activeCount === 1, LONG);
+await worker.pause();
+await waitFor(
+  "the pause to be reported",
+  async () => (await workersQueue.listWorkers())[0]?.paused === true,
+  LONG,
+);
+checkEqual(
+  "…with the job still in flight",
+  (await workersQueue.listWorkers())[0]?.active,
+  1,
+);
+
+worker.concurrency = 5;
+await waitFor(
+  "a concurrency change to be reported",
+  async () => (await workersQueue.listWorkers())[0]?.concurrency === 5,
+  LONG,
+);
+
+worker.resume();
+await waitFor(
+  "the resume to be reported",
+  async () => (await workersQueue.listWorkers())[0]?.paused === false,
+  LONG,
+);
+
+held.resolve();
+await worker.close();
+checkEqual(
+  "a worker that closes removes its record at once",
+  await workersQueue.listWorkers(),
+  [],
+);
+
+/* ------------------------------------------------------------------ */
+step("reportInterval: the default, and 0");
+
+const defaultsQueue = new BunQueue("defaults", { namespace, driver });
+const defaultWorker = new BunQueueWorker("defaults", async () => undefined, {
+  namespace,
+  driver,
+  id: "default-1",
+  pollInterval: 25,
+});
+void defaultWorker.run();
+
+await waitFor(
+  "the default worker to report",
+  async () => (await defaultsQueue.listWorkers()).length === 1,
+  LONG,
+);
+const [byDefault] = await defaultsQueue.listWorkers();
+checkEqual(
+  "reportInterval defaults to 10s, so a record stands for 30s",
+  byDefault!.expiresAt - byDefault!.heartbeatAt,
+  30_000,
+);
+await defaultWorker.close();
+
+const silentQueue = new BunQueue("silent", { namespace, driver });
+const silentWorker = new BunQueueWorker("silent", async () => undefined, {
+  namespace,
+  driver,
+  id: "silent-1",
+  reportInterval: 0,
+  pollInterval: 25,
+});
+void silentWorker.run();
+await waitFor("the silent worker to run", () => silentWorker.isRunning, LONG);
+await quietWindow(200);
+checkEqual(
+  "reportInterval: 0 writes no record at all",
+  await silentQueue.listWorkers(),
+  [],
+);
+await silentWorker.close();
+
+await checkRejects(
+  "a negative reportInterval is refused",
+  () =>
+    new BunQueueWorker("silent", async () => undefined, {
+      namespace,
+      driver,
+      reportInterval: -1,
+    }),
+  { name: "ConfigError", code: "CONFIG" },
+);
+
+/* ------------------------------------------------------------------ */
+step("listWorkers: a record lapses three intervals after its last heartbeat");
+
+const lapsedQueue = new BunQueue("lapsed", { namespace, driver });
+await lapsedQueue.connect();
+
+// A worker on another host that died: nothing removes its record, so it
+// stands until it lapses — three of its report intervals after its last
+// heartbeat, which is how a dead worker leaves the list.
+const interval = 150;
+const wrote = Date.now();
+const crashed: WorkerInfo = {
+  id: "crashed-1",
+  queue: "lapsed",
+  host: "another-host",
+  pid: 4242,
+  concurrency: 2,
+  active: 1,
+  paused: false,
+  startedAt: wrote - 5_000,
+  heartbeatAt: wrote,
+  expiresAt: wrote + 3 * interval,
+};
+await registerWorkerRecord(lapsedQueue.driver, lapsedQueue.ref, crashed);
+
+checkEqual(
+  "a record written by another process is listed",
+  (await lapsedQueue.listWorkers()).map((worker_) => worker_.id),
+  ["crashed-1"],
+);
+
+await waitFor(
+  "the lapsed record to drop out of the list",
+  async () => (await lapsedQueue.listWorkers()).length === 0,
+  LONG,
+);
+check(
+  "…and not before its three intervals were up",
+  Date.now() - wrote >= 3 * interval,
+  { waited: Date.now() - wrote, needed: 3 * interval },
+);
+
+/* ------------------------------------------------------------------ */
+step("listWorkers: the queue-state fallback, and when there is none");
+
+// Without the three worker methods, records live in queue state instead.
+const stateDriver = without(driver, [
+  "registerWorker",
+  "removeWorker",
+  "listWorkers",
+]);
+const stateQueue = new BunQueue("state-workers", {
+  namespace,
+  driver: stateDriver,
+});
+const stateWorker = new BunQueueWorker("state-workers", async () => undefined, {
+  namespace,
+  driver: stateDriver,
+  id: "state-1",
+  reportInterval: 200,
+  pollInterval: 25,
+});
+void stateWorker.run();
+
+await waitFor(
+  "the queue-state record to appear",
+  async () => (await stateQueue.listWorkers()).length === 1,
+  LONG,
+);
+checkEqual(
+  "without a worker registry, records are kept in queue state",
+  (await stateQueue.listWorkers()).map((worker_) => worker_.id),
+  ["state-1"],
+);
+await stateWorker.close();
+checkEqual(
+  "…and removed on close just the same",
+  await stateQueue.listWorkers(),
+  [],
+);
+await stateQueue.close();
+
+// With neither a registry nor queue state there is no inventory to give, and
+// an empty list would read as "no workers" — so it says so instead.
+const noWorkersDriver = without(driver, [
+  "registerWorker",
+  "removeWorker",
+  "listWorkers",
+  "getQueueState",
+  "setQueueState",
+  "listQueueState",
+]);
+const noWorkersQueue = new BunQueue("workers", {
+  namespace,
+  driver: noWorkersDriver,
+});
+const notSupported = await checkRejects(
+  "listWorkers on a driver that can keep no records",
+  () => noWorkersQueue.listWorkers(),
+  { name: "NotSupportedError", code: "CONFIG" },
+);
+checkEqual(
+  "…naming the driver, the method and what it needed",
+  (notSupported as NotSupportedError | undefined)?.context,
+  {
+    driver: driver.name,
+    method: "listWorkers",
+    needs: "worker records or queue state",
+  },
+);
+
+const noWorkersJobs = new BunJobs({ namespace, driver: noWorkersDriver });
+await checkRejects(
+  "jobs.listWorkers() answers the same way, not with an empty list",
+  () => noWorkersJobs.listWorkers(),
+  { name: "NotSupportedError", code: "CONFIG" },
+);
+await noWorkersJobs.close();
+await noWorkersQueue.close();
+
+/* ------------------------------------------------------------------ */
+step("getThroughput: the minutes bound");
+
+const throughputQueue = new BunQueue("throughput", { namespace, driver });
+
+for (const minutes of [0, 1.5, 1441, Number.NaN]) {
+  await checkRejects(
+    `minutes: ${String(minutes)} is refused`,
+    () => throughputQueue.getThroughput({ minutes }),
+    { name: "ConfigError", code: "CONFIG", message: /1 to 1440/ },
+  );
+}
+
+checkEqual(
+  "minutes: 1 is the current minute alone",
+  (await throughputQueue.getThroughput({ minutes: 1 })).buckets.length,
+  1,
+);
+checkEqual(
+  "minutes: 1440 is a full day of buckets",
+  (await throughputQueue.getThroughput({ minutes: 1440 })).buckets.length,
+  1440,
+);
+checkEqual(
+  "minutes defaults to 60",
+  (await throughputQueue.getThroughput()).buckets.length,
+  60,
+);
+
+/* ------------------------------------------------------------------ */
+step("getThroughput: buckets, completions and every failed attempt");
+
+await throughputQueue.addBulk([
+  { name: "ok", data: {} },
+  { name: "ok", data: {} },
+  // Three attempts, no wait between them: three failures, then dead.
+  { name: "bad", data: {}, opts: { attempts: 3, backoff: 0 } },
+]);
+
+const counter = new BunQueueWorker(
+  "throughput",
+  async (job) => {
+    if (job.name === "bad") {
+      throw new Error("no");
+    }
+    return "done";
+  },
+  { namespace, driver, concurrency: 3, pollInterval: 25 },
+);
+void counter.run();
+
+await waitFor(
+  "two completions and one buried job",
+  async () =>
+    (await throughputQueue.count("completed")) === 2 &&
+    (await throughputQueue.count("dead")) === 1,
+  LONG,
+);
+
+// A reader in this process sees its own counts: the drivers that gather counts
+// in memory write what is pending before answering.
+const measured = await throughputQueue.getThroughput({ minutes: 5 });
+
+checkEqual("interval is one minute", measured.interval, THROUGHPUT_BUCKET_MS);
+checkEqual("minutes asked for is buckets returned", measured.buckets.length, 5);
+checkEqual(
+  "from and to are the first and last bucket",
+  [measured.from, measured.to],
+  [measured.buckets[0]!.at, measured.buckets.at(-1)!.at],
+);
+check(
+  "buckets are consecutive minutes, oldest first",
+  measured.buckets.every(
+    (bucket, index) =>
+      index === 0 ||
+      bucket.at - measured.buckets[index - 1]!.at === THROUGHPUT_BUCKET_MS,
+  ),
+  measured.buckets.map((bucket) => bucket.at),
+);
+checkEqual(
+  "the newest bucket is the current minute",
+  measured.to,
+  Math.floor(Date.now() / THROUGHPUT_BUCKET_MS) * THROUGHPUT_BUCKET_MS,
+);
+checkEqual("completed counts the jobs that finished", measured.completed, 2);
+// The job that died failed three times, and every attempt counts — not just
+// the last one.
+checkEqual(
+  "failed counts every attempt, the retried ones included",
+  measured.failed,
+  3,
+);
+checkEqual(
+  "the totals are the buckets summed",
+  [
+    measured.buckets.reduce((sum, bucket) => sum + bucket.completed, 0),
+    measured.buckets.reduce((sum, bucket) => sum + bucket.failed, 0),
+  ],
+  [measured.completed, measured.failed],
+);
+check(
+  "minutes with nothing in them are still there, as zeros",
+  measured.buckets.filter(
+    (bucket) => bucket.completed === 0 && bucket.failed === 0,
+  ).length >= 3,
+  measured.buckets,
+);
+
+await counter.close();
+
+/* ------------------------------------------------------------------ */
+step("getThroughput: a closing worker writes what it gathered");
+
+// MySQL, MariaDB, SQLite, MongoDB and the file driver gather counts in memory
+// and write them about once a second; Redis, Postgres and memory count inside
+// the completion itself. Either way, closing writes what is pending — even on
+// a driver the worker does not own. Two driver instances on one backend show
+// it: the reader has no memory of the writer's counts.
+const sharedConfig = crossProcessDriver();
+const writerDriver = createDriver(sharedConfig);
+const readerDriver = createDriver(sharedConfig);
+
+const flushQueue = new BunQueue("flush", { namespace, driver: writerDriver });
+const flushWorker = new BunQueueWorker("flush", async () => "ok", {
+  namespace,
+  driver: writerDriver,
+  pollInterval: 25,
+});
+void flushWorker.run();
+
+await flushQueue.add("n", {});
+await waitFor(
+  "the job to complete",
+  async () => (await flushQueue.count("completed")) === 1,
+  LONG,
+);
+
+// The worker does not own this driver — the tour built it — and still flushes.
+await flushWorker.close();
+
+const readerQueue = new BunQueue("flush", { namespace, driver: readerDriver });
+checkEqual(
+  "another reader sees the count as soon as the worker has closed",
+  (await readerQueue.getThroughput({ minutes: 5 })).completed,
+  1,
+);
+
+await readerQueue.close();
+await flushQueue.close();
+await writerDriver.purge(namespace);
+await Promise.all([writerDriver.close(), readerDriver.close()]);
+
+/* ------------------------------------------------------------------ */
+step("getThroughput: the one read with no fallback");
+
+// Counts that were never kept cannot be rebuilt from jobs retention removed,
+// so this is the only read here that refuses rather than falling back. It
+// carries the `CONFIG` code, as every configuration mistake does.
+const noCountsQueue = new BunQueue("throughput", {
+  namespace,
+  driver: without(driver, ["getThroughput"]),
+});
+await checkRejects(
+  "getThroughput on a driver that keeps no counts",
+  () => noCountsQueue.getThroughput(),
+  { code: "CONFIG", message: /getThroughput/ },
+);
+await noCountsQueue.close();
+
+/* ------------------------------------------------------------------ */
+step("getQueueSummaries: every queue in the namespace");
+
+const summaryNamespace = exampleNamespace("read-apis-summary");
+const jobs = new BunJobs({ namespace: summaryNamespace, driver });
+
+await jobs.queue("mail").add("send", {});
+await jobs.queue("mail").add("send", {}, { delay: 60_000 });
+await jobs.queue("images").add("resize", {});
+await jobs.queue("images").pause();
+
+const summaries = await jobs.getQueueSummaries();
+
+checkEqual(
+  "ordered by name",
+  summaries.map((entry) => entry.name),
+  ["images", "mail"],
+);
+checkEqual(
+  "counts, total and the cluster-wide pause flag",
+  summaries.map((entry) => ({
+    name: entry.name,
+    total: entry.total,
+    paused: entry.paused,
+    waiting: entry.counts.waiting,
+    delayed: entry.counts.delayed,
+  })),
+  [
+    { name: "images", total: 1, paused: true, waiting: 1, delayed: 0 },
+    { name: "mail", total: 2, paused: false, waiting: 1, delayed: 1 },
+  ],
+);
+checkEqual(
+  "counts carry every state, zeros included",
+  Object.keys(summaries[0]!.counts).sort(),
+  [
+    "active",
+    "completed",
+    "dead",
+    "delayed",
+    "failed",
+    "waiting",
+    "waiting-children",
+  ],
+);
+checkEqual(
+  "total is the counts summed",
+  summaries.map((entry) =>
+    Object.values(entry.counts).reduce((sum, count) => sum + count, 0),
+  ),
+  summaries.map((entry) => entry.total),
+);
+// The tour's other namespace holds many more queues, and none of them is here.
+check(
+  "nothing outside the namespace is counted",
+  summaries.every((entry) => ["images", "mail"].includes(entry.name)),
+  summaries.map((entry) => entry.name),
+);
+
+// `countJobsByQueue` is optional too: without it, each queue is counted on its
+// own and the answer is the same.
+const fallbackJobs = new BunJobs({
+  namespace: summaryNamespace,
+  driver: without(driver, ["countJobsByQueue"]),
+});
+checkEqual(
+  "without countJobsByQueue: counted queue by queue, same answer",
+  (await fallbackJobs.getQueueSummaries()).map((entry) => [
+    entry.name,
+    entry.total,
+    entry.paused,
+  ]),
+  summaries.map((entry) => [entry.name, entry.total, entry.paused]),
+);
+await fallbackJobs.close();
+
+/* ------------------------------------------------------------------ */
+step("MAX_TIMER_MS");
+
+// Exported from the package root, so a caller scheduling far ahead can clamp
+// a delay to what a timer can hold rather than discovering the limit.
+checkEqual(
+  "MAX_TIMER_MS is the longest a timer can be set for",
+  MAX_TIMER_MS,
+  2_147_483_647,
+);
+
+/* ------------------------------------------------------------------ */
+step("Cleanup");
+
+show("backend", backend);
+
+await jobs.purge();
+await jobs.close();
+await Promise.all([
+  reads.close(),
+  workersQueue.close(),
+  defaultsQueue.close(),
+  silentQueue.close(),
+  lapsedQueue.close(),
+  throughputQueue.close(),
+]);
+await driver.purge(namespace);
+await driver.close();
+
+summary();

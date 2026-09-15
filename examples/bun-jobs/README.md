@@ -63,6 +63,8 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`job-lifecycle.ts`](./02-queues/job-lifecycle.ts) | `updateData`, `setPriority`, `reschedule`, `promote`, progress, job logs, retrying a dead job, `remove` |
 | [`events.ts`](./02-queues/events.ts) | every queue and worker event, name-scoped events (`completed:refund`), watching another process with `subscribe` / `publish` |
 | [`bulk-and-management.ts`](./02-queues/bulk-and-management.ts) | `addBulk`, `count`, `list`, `update`, cluster-wide `pause` / `resume`, `drain`, `clean` |
+| [`searching-and-paging.ts`](./02-queues/searching-and-paging.ts) | `list` narrowed by `name` and `search`, `page` with the total a paginated table needs, `getJobs` by id |
+| [`workers-and-throughput.ts`](./02-queues/workers-and-throughput.ts) | `listWorkers` and `reportInterval`, `getThroughput` a minute at a time, `getQueueSummaries`, printed as a dashboard |
 | [`isolated-processors.ts`](./02-queues/isolated-processors.ts) | a processor **file** run `in-process`, in a `Worker` and in a child process; a runaway processor stopped by its timeout; `defineProcessor` |
 
 ### 03 — The job registry
@@ -153,6 +155,7 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 | [`runner-options.ts`](./10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, every runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](./10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`draft-and-process-every.ts`](./10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, precedence, saving twice, refused combinations; `processEvery` (option and method) and a worker's runtime `pollInterval` / `maxBlock`: limits, precedence, waits in progress per driver, the promotion sweep, pause, a failed `run()`, Redis `maxBlockSeconds` |
+| [`read-apis.ts`](./10-options/read-apis.ts) | every `ListJobsOptions` field; `search` taken literally and folded for case per engine; `page` totals; `getJobs` order, gaps and repeats; `listWorkers` fields, `reportInterval` and a lapsed record; `getThroughput` bounds, buckets and retried failures; `getQueueSummaries`; each driver fallback |
 | [`notifier.ts`](./10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published queue and runner event and its payload |
 | [`driver-options.ts`](./10-options/driver-options.ts) | every option of every driver and connection helper; server sections run when their URL is set |
 | [`errors.ts`](./10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
