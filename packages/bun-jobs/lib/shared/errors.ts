@@ -269,6 +269,34 @@ export class RunnerStoppedError extends JobsError {
   }
 }
 
+/**
+ * No runner by that id is registered in this process or known to the backend
+ * in this namespace — raised by `BunRunnerManager.remote()` and by a
+ * {@link RemoteRunner} whose runner has since been purged.
+ */
+export class RunnerNotFoundError extends JobsError {
+  /** The runner id that was asked for, and the namespace it was looked up in. */
+  declare readonly context: { id: string; namespace: string } & Record<
+    string,
+    unknown
+  >;
+
+  constructor(
+    /** The runner id that was asked for. */
+    id: string,
+    /** The namespace it was looked up in. */
+    namespace: string,
+    /** Extra detail, safe to log. May not set `id` or `namespace`. */
+    context?: ErrorContext<"id" | "namespace">,
+  ) {
+    super(
+      `No runner "${id}" is known in namespace "${namespace}"`,
+      "RUNNER_NOT_FOUND",
+      { ...context, id, namespace },
+    );
+  }
+}
+
 /** A queue was used after `close()`. */
 export class QueueClosedError extends JobsError {
   /** The queue's name. */

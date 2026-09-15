@@ -33,11 +33,14 @@ export {
   PROTOCOL_VERSION,
   type SerializableContext,
 } from "./protocol";
+export { RemoteRunner, type RemoteRunnerOptions } from "./RemoteRunner";
 export {
   type BunRunnerEvents,
   type BunRunnerOptions,
   defineHandler,
   type InProcessOptions,
+  type RemoteRunnerInfo,
+  type RemoteRunRecord,
   type ResolvedRunnerOptions,
   type RunContext,
   type RunHandle,
@@ -48,5 +51,6 @@ export {
   type RunProgress,
   type SpawnOptions,
   type TriggerOutcome,
+  type TruncatedRunResult,
   type WorkerOptions,
 } from "./types";

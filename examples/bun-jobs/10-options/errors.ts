@@ -32,6 +32,7 @@ import {
   BunQueue,
   BunQueueWorker,
   BunRunner,
+  BunRunnerManager,
   ChildExitError,
   ConfigError,
   createDriver,
@@ -44,6 +45,7 @@ import {
   QueueClosedError,
   QueueFullError,
   RunKilledError,
+  RunnerNotFoundError,
   RunnerStoppedError,
   SerializationError,
   UnrecoverableJobError,
@@ -428,6 +430,33 @@ checkEqual(
   await stoppedRunner.trigger({ source: "schedule" }),
   { outcome: "skipped", reason: "stopped" },
 );
+
+/* ------------------------------------------------------------------ */
+step("RunnerNotFoundError: controlling a runner nobody registered");
+
+const notFound = await checkRejects(
+  "BunRunnerManager.remote() with an unknown id",
+  () => new BunRunnerManager({ namespace, driver }).remote("nobody"),
+  {
+    name: "RunnerNotFoundError",
+    code: "RUNNER_NOT_FOUND",
+    message: /No runner "nobody" is known in namespace/,
+  },
+);
+checkJobsError(
+  "RunnerNotFoundError",
+  notFound,
+  "RunnerNotFoundError",
+  "RUNNER_NOT_FOUND",
+);
+check(
+  "RunnerNotFoundError: instanceof",
+  notFound instanceof RunnerNotFoundError,
+);
+checkEqual("RunnerNotFoundError: context", fields(notFound).context, {
+  id: "nobody",
+  namespace,
+});
 
 /* ------------------------------------------------------------------ */
 step("Runs that fail: a recorder for runner outcomes");

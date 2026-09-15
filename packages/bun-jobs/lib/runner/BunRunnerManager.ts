@@ -1,9 +1,10 @@
 import type { JobsDriver } from "../drivers/index";
 import type { LoggerLike } from "../shared/logger";
 import type { BunRunnerOptions, RunnerInfo } from "./types";
-import { ConfigError } from "../shared/errors";
-import { assertNamespace } from "../shared/keys";
+import { ConfigError, RunnerNotFoundError } from "../shared/errors";
+import { assertNamespace, assertSegment } from "../shared/keys";
 import { BunRunner } from "./BunRunner";
+import { RemoteRunner } from "./RemoteRunner";
 
 /** Options for a {@link BunRunnerManager}. */
 export interface BunRunnerManagerOptions {
@@ -166,6 +167,48 @@ export class BunRunnerManager {
   /** A snapshot of every registered runner. */
   async info(): Promise<RunnerInfo[]> {
     return await Promise.all(this.list().map((runner) => runner.info()));
+  }
+
+  /**
+   * A controller for a runner registered by **any** process sharing this
+   * manager's driver and namespace: `info`, `pause`, `resume`,
+   * `updateSchedule`, `trigger`, `history` and `stats`.
+   *
+   * When the runner is registered here the controller delegates to it;
+   * otherwise it works through the backend alone — see {@link RemoteRunner}
+   * for how each call reaches the owning process, and how soon. A run cannot
+   * be killed remotely: only the process executing it can stop it.
+   *
+   * Rejects with {@link RunnerNotFoundError} when the id is neither
+   * registered here nor known to the backend, and with a `ConfigError` when
+   * it is not a valid runner id.
+   */
+  async remote<TArgs = unknown, TResult = unknown>(
+    id: string,
+  ): Promise<RemoteRunner<TArgs, TResult>> {
+    assertSegment(id, "runner id");
+    // As with get(): the caller names the types it registered the runner with.
+    const local = this.get<TArgs, TResult>(id);
+
+    if (!local && !this.driver) {
+      throw new RunnerNotFoundError(id, this.namespace, {
+        reason: "not registered, and the manager has no driver to ask",
+      });
+    }
+
+    const controller = new RemoteRunner<TArgs, TResult>({
+      id,
+      namespace: this.namespace,
+      driver: this.driver,
+      local,
+      logger: this.#logger,
+    });
+
+    if (!(await controller.exists())) {
+      throw new RunnerNotFoundError(id, this.namespace);
+    }
+
+    return controller;
   }
 
   /** Runner ids the backend knows about, including other processes'. */

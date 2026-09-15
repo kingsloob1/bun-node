@@ -99,6 +99,7 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
     syncInterval: options.syncInterval ?? DEFAULT_SYNC_INTERVAL,
     forwardLogs: options.forwardLogs ?? false,
     publish: options.publish ?? false,
+    remoteControl: options.remoteControl ?? false,
     args: options.args,
     childDriver,
     spawn: {

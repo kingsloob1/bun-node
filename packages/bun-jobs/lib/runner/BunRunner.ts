@@ -140,6 +140,10 @@ export class BunRunner<
   #heartbeat: ReturnType<typeof setInterval> | undefined;
   /** Set while the lock holder drains queued triggers, to avoid re-entering. */
   #draining = false;
+  /** The drain of triggers queued while nothing ran here, while one is in flight. */
+  #drainingQueued: Promise<void> | undefined;
+  /** Ends the `control` subscription, while `remoteControl` holds one. */
+  #unsubscribeControl: (() => Promise<void>) | undefined;
 
   constructor(options: BunRunnerOptions<TArgs>) {
     super();
@@ -234,6 +238,15 @@ export class BunRunner<
       paused: this.#paused ? "1" : "0",
       schedule: JSON.stringify(this.#schedule),
       file: this.file,
+      // What a remote controller needs to describe the runner and to queue a
+      // trigger within its cap, from a process that never saw the options.
+      name: this.name,
+      executionMode: this.options.executionMode,
+      runMode: this.options.runMode,
+      queueRuns: this.options.queueRuns ? "1" : "0",
+      maxQueuedRuns: String(this.options.maxQueuedRuns),
+      maxConcurrency: String(this.options.maxConcurrency),
+      lockTtl: String(this.options.lockTtl),
       updatedAt: Date.now(),
       updatedBy: newToken(),
     });
@@ -241,6 +254,11 @@ export class BunRunner<
     this.#status = this.#paused ? "paused" : "running";
     this.#armTicker();
     this.#armSync();
+    await this.#subscribeControl();
+
+    // A trigger queued while no instance was running — by a remote
+    // controller, or left behind by a holder that crashed — runs now.
+    await this.#drainQueued();
 
     return this;
   }
@@ -254,6 +272,7 @@ export class BunRunner<
     this.#ticker?.stop();
     this.#ticker = undefined;
     this.#clearSync();
+    await this.#unsubscribeFromControl();
 
     const timeout = options?.timeout ?? this.options.closeTimeout;
 
@@ -623,6 +642,136 @@ export class BunRunner<
       this.#schedule = state.schedule;
       this.#armTicker();
     }
+
+    await this.#drainQueued();
+  }
+
+  /**
+   * Subscribes to this runner's `control` events when `remoteControl` asks,
+   * so a remote change is adopted as soon as it is published rather than at
+   * the next sync. A failure is reported and the sync carries on regardless.
+   */
+  async #subscribeControl(): Promise<void> {
+    if (!this.options.remoteControl || this.#unsubscribeControl) {
+      return;
+    }
+
+    try {
+      this.#unsubscribeControl = await this.driver.subscribe(
+        this.namespace,
+        "runner",
+        this.id,
+        (event) => {
+          if (event.type === "control" && this.#status !== "stopped") {
+            void this.#sync().catch((error: unknown) => {
+              this.#emitError(error, "control");
+            });
+          }
+        },
+      );
+    } catch (error) {
+      this.#emitError(error, "subscribeControl");
+    }
+  }
+
+  /** Ends the `control` subscription, if there is one. */
+  async #unsubscribeFromControl(): Promise<void> {
+    const unsubscribe = this.#unsubscribeControl;
+    this.#unsubscribeControl = undefined;
+
+    try {
+      await unsubscribe?.();
+    } catch (error) {
+      this.#emitError(error, "unsubscribeControl");
+    }
+  }
+
+  /**
+   * Starts triggers waiting in the driver while nothing runs here.
+   *
+   * The lock holder drains the queue when its run finishes, but a trigger
+   * queued while *no* run is in flight — by a remote controller, or by a
+   * holder that died before draining — has nobody finishing a run to notice
+   * it. This is that somebody: called on start, on every sync and on every
+   * `control` event.
+   *
+   * In `single` mode it takes the lock first, and leaves the queue to whoever
+   * holds it when it cannot. Queued triggers run whether or not the runner is
+   * paused, exactly as they do in the holder's drain: the pause is checked
+   * when a trigger is requested, because a queued trigger does not record
+   * whether it was forced.
+   */
+  async #drainQueued(): Promise<void> {
+    if (this.#drainingQueued) {
+      return await this.#drainingQueued;
+    }
+
+    const draining = this.#doDrainQueued().finally(() => {
+      this.#drainingQueued = undefined;
+    });
+    this.#drainingQueued = draining;
+    return await draining;
+  }
+
+  /** The body of {@link #drainQueued}. */
+  async #doDrainQueued(): Promise<void> {
+    if (
+      (this.#status !== "running" && this.#status !== "paused") ||
+      this.#draining
+    ) {
+      return;
+    }
+
+    try {
+      if (this.options.runMode === "parallel") {
+        // Re-read on every pass: `stop()` may land while a run is starting,
+        // which the narrowing from the check above cannot know about.
+        while (
+          this.#active.size < this.options.maxConcurrency &&
+          (this.#status as RunnerStatus) !== "stopped"
+        ) {
+          const trigger = await this.driver.popQueuedTrigger(
+            this.namespace,
+            this.#key,
+          );
+          if (!trigger) {
+            return;
+          }
+
+          const args = (trigger.args as TArgs | undefined) ?? this.options.args;
+          this.safeEmit("dequeued", { id: trigger.id, args });
+          await this.#startRun(args, "queued");
+        }
+        return;
+      }
+
+      // A run in flight here holds the lock and drains when it finishes.
+      if (this.#active.size > 0) {
+        return;
+      }
+
+      const queued = await this.driver.countQueuedTriggers(
+        this.namespace,
+        this.#key,
+      );
+      if (queued === 0) {
+        return;
+      }
+
+      if (!this.#lockToken) {
+        const token = newToken(this.id);
+        if (!(await this.#acquireLock(token))) {
+          // Held elsewhere: that holder drains when its run finishes.
+          return;
+        }
+        this.#lockToken = token;
+      }
+    } catch (error) {
+      this.#emitError(error, "drainQueued");
+      return;
+    }
+
+    await this.#drain();
   }
 
   /**
@@ -1147,11 +1296,11 @@ export class BunRunner<
           break;
         }
 
-        this.safeEmit("dequeued", {
-          id: trigger.id,
-          args: trigger.args as TArgs,
-        });
-        await this.#startRun(trigger.args as TArgs, "queued");
+        // A remote controller queues a trigger without knowing the runner's
+        // default arguments; a local trigger has already resolved them.
+        const args = (trigger.args as TArgs | undefined) ?? this.options.args;
+        this.safeEmit("dequeued", { id: trigger.id, args });
+        await this.#startRun(args, "queued");
       }
     } catch (error) {
       this.#emitError(error, "drain");

@@ -281,3 +281,15 @@ export {
   ProtocolError,
 } from "./shared/errors";
 export type { RunProgress } from "./shared/progress";
+
+// Remote runner control: a runner registered by any process sharing the
+// driver and namespace, reached through `BunRunnerManager.remote()`.
+export {
+  RemoteRunner,
+  type RemoteRunnerInfo,
+  type RemoteRunnerOptions,
+  type RemoteRunRecord,
+  type TruncatedRunResult,
+} from "./runner/index";
+export { RunnerNotFoundError } from "./shared/errors";
+export type { RunnerControlAction } from "./shared/events";
