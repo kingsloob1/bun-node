@@ -240,7 +240,10 @@ export function toRepeatRecord(
     ...(repeat.startAt !== undefined ? { startAt: repeat.startAt } : {}),
     ...(repeat.endAt !== undefined ? { endAt: repeat.endAt } : {}),
     ...(repeat.limit !== undefined ? { limit: repeat.limit } : {}),
-    ...(repeat.catchUp ? { catchUp: true } : {}),
+    // Stored as given, `false` included, so a series reads back the way it was
+    // created. Left out only when unset — the worker reads absent as `false`,
+    // which is also how a series stored before `false` was kept reads back.
+    ...(repeat.catchUp !== undefined ? { catchUp: repeat.catchUp } : {}),
     count: 0,
     nextRunAt: null,
     nextJobId: null,

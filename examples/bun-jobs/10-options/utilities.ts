@@ -841,18 +841,23 @@ checkEqual(
   [limited.limit, limited.catchUp, limited.key],
   [5, true, "nightly"],
 );
+checkEqual(
+  "toRepeatRecord: catchUp false is stored as false",
+  toRepeatRecord(
+    ref,
+    "report",
+    null,
+    opts,
+    { every: 60_000, catchUp: false },
+    now,
+  ).catchUp,
+  false,
+);
 check(
-  "toRepeatRecord: catchUp false is left out",
+  "toRepeatRecord: an unset catchUp is left out",
   !(
     "catchUp" in
-    toRepeatRecord(
-      ref,
-      "report",
-      null,
-      opts,
-      { every: 60_000, catchUp: false },
-      now,
-    )
+    toRepeatRecord(ref, "report", null, opts, { every: 60_000 }, now)
   ),
 );
 await checkConfig(

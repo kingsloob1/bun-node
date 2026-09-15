@@ -494,14 +494,14 @@ step("repeatEvery(): every RepeatEveryOptions field");
     ["mail", 2 * DAY, 3, start, end, true],
   );
 
-  // `false` is the default, and a series stores only a `true`.
+  // `false` is the default, and a series given it explicitly reports it back.
   await jobs
     .create<Mail>("mail")
     .repeatEvery("1 day", { key: "no-catch-up", catchUp: false })
     .save();
   checkEqual(
-    "catchUp: false (the default) is stored as absent",
-    (await seriesFor("no-catch-up"))?.catchUp ?? false,
+    "catchUp: false is stored as false",
+    (await seriesFor("no-catch-up"))?.catchUp,
     false,
   );
   checkEqual(
