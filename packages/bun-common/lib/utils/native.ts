@@ -7,8 +7,16 @@
  * until-promise) with lean implementations backed by the standard library
  * and Bun primitives.
  */
-import { Buffer } from "node:buffer";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { Buffer, kMaxLength } from "node:buffer";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  gunzipSync,
+  inflateSync,
+  zstdCompressSync,
+  zstdDecompressSync,
+} from "node:zlib";
 
 /* ------------------------------------------------------------------ *
  * Shared type helpers
@@ -2701,4 +2709,1145 @@ function safeStringify(value: unknown): string {
   } catch {
     return Object.prototype.toString.call(value);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Request-body decompression (Content-Encoding)
+ *
+ * Each encoding uses the fastest decoder that behaves exactly like
+ * body-parser's `zlib.createGunzip`/`createInflate`/`createBrotliDecompress`,
+ * measured on Bun 1.4.3:
+ *
+ * - `gzip`: `Bun.gunzipSync` (libdeflate), 1.6-2.2x node:zlib. It decodes only
+ *   the first gzip member and ignores what follows, so its result is kept only
+ *   when that member provably spans the whole body; anything else is decoded
+ *   again by node:zlib, which handles multi-member bodies and rejects junk.
+ * - `deflate`: `Bun.inflateSync` with `windowBits: 15` (zlib-wrapped, as HTTP
+ *   `deflate` is), up to 1.6x node:zlib and never meaningfully slower.
+ * - `br`: node:zlib `brotliDecompressSync`. Bun has no brotli API of its own,
+ *   and `DecompressionStream("brotli")` is slower.
+ *
+ * Neither Bun API can cap its output, so they run only while the format's
+ * worst-case expansion (`compressed length × 1032`) fits `fastPathLimit`, and
+ * their output is held to `maxOutputLength` afterwards. A larger body goes to
+ * node:zlib with `maxOutputLength`, which stops as soon as it overflows.
+ *
+ * Beyond body-parser, which decodes exactly one of those three:
+ *
+ * - `zstd` (RFC 8878 frames; the content coding of RFC 9659). The frames are
+ *   walked before anything is decoded ({@link scanZstdFrames}). Block headers
+ *   carry every block's size, so a truncated frame, trailing junk, a reserved
+ *   bit, a Dictionary_ID or a window over RFC 9659's 8 MiB is refused up front
+ *   — which matters, because node:zlib's `zstdDecompressSync` returns empty or
+ *   partial output for truncated input instead of throwing. The walk also
+ *   bounds each frame's output: its declared Frame_Content_Size, or else its
+ *   Raw/RLE block sizes plus Block_Maximum_Size (at most 128 KiB) per
+ *   Compressed block. zstd has no fixed expansion ratio (a 4-byte RLE block
+ *   decodes to 128 KiB), so that bound stands in for DEFLATE's `× 1032`: a
+ *   body whose declared floor already passes `maxOutputLength` is refused
+ *   without decoding; one whose bound fits `fastPathLimit` is decoded frame by
+ *   frame by `Bun.zstdDecompressSync`; anything else by node:zlib, capped at
+ *   what is left of `maxOutputLength`. Either way every frame's output must
+ *   fit its bound and match its declared size. (`DecompressionStream("zstd")`
+ *   could stop at a limit too, but only asynchronously.)
+ * - Stacked codings (RFC 9110 §8.4): `Content-Encoding: gzip, br` lists them
+ *   in the order they were applied, so they are decoded last to first, each
+ *   layer's output held to `maxOutputLength`. At most `maxCodings` may be
+ *   stacked (default 5, the limit undici's fetch and curl apply).
+ * - `dcb`/`dcz`, Dictionary-Compressed Brotli and Zstandard (RFC 9842): a
+ *   fixed header (magic number, then the dictionary's SHA-256) before a
+ *   stream compressed against that dictionary as a raw prefix. Decoded by
+ *   node:zlib with its `dictionary` option — which Bun forwards to libbrotli
+ *   and libzstd, verified once at runtime ({@link dictionaryDecodingSupported})
+ *   — and only when the caller supplies `dictionaries`.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The `Content-Encoding` codings {@link decompressBody} decodes: `gzip` (and
+ * its alias `x-gzip`), zlib-wrapped `deflate`, `br`, `zstd`, and — given
+ * `dictionaries` — `dcb` and `dcz`. `identity` is the absence of a coding.
+ */
+export type SupportedContentEncoding =
+  | "identity"
+  | "gzip"
+  | "x-gzip"
+  | "deflate"
+  | "br"
+  | "zstd"
+  | "dcb"
+  | "dcz";
+
+/**
+ * The dictionary-compressed codings of RFC 9842: `dcb` (Dictionary-Compressed
+ * Brotli, §4) and `dcz` (Dictionary-Compressed Zstandard, §5).
+ */
+export type DictionaryContentEncoding = "dcb" | "dcz";
+
+/**
+ * Which codings a body may use: `"*"` for every
+ * {@link SupportedContentEncoding}, or a list admitting only its members —
+ * unless it holds a `"*"` as well. Typed so a misspelt coding is a compile
+ * error. (A `*` *sent* in `Content-Encoding` is never a wildcard: RFC 9110
+ * defines `*` for `Accept-Encoding` only, so it is an unknown coding.)
+ */
+export type ContentEncodingAllowlist =
+  | "*"
+  | readonly (SupportedContentEncoding | "*")[];
+
+/**
+ * Finds the dictionary a `dcb`/`dcz` body was compressed with, from the
+ * SHA-256 its header carries (a 32-byte copy — `hash.toString("hex")` or
+ * `"base64"` makes a map key). Answers the dictionary's bytes, or `undefined`
+ * when it has none. Called synchronously, once per body; what it answers is
+ * hashed and must match.
+ */
+export type CompressionDictionaryResolver = (
+  hash: Buffer,
+  encoding: DictionaryContentEncoding,
+) => Uint8Array | undefined;
+
+/**
+ * The dictionaries `dcb`/`dcz` bodies may name: the dictionaries themselves,
+ * or a {@link CompressionDictionaryResolver}. An array is indexed by SHA-256
+ * the first time it is used, so replace it rather than mutating it.
+ */
+export type CompressionDictionaries =
+  | readonly Uint8Array[]
+  | CompressionDictionaryResolver;
+
+/** Options for {@link decompressBody}. */
+export interface DecompressBodyOptions {
+  /**
+   * Largest decoded size accepted, in bytes; a body that would inflate past it
+   * throws {@link DecompressionLimitError} without being fully inflated (the
+   * decompression-bomb guard, body-parser's `limit` applied after inflation).
+   * With stacked codings every layer's output is held to it, not only the
+   * last. `identity` bodies are held to it too. Default: unbounded
+   * (`undefined` or `Infinity`), which still stops at `buffer.kMaxLength`. On
+   * the fast path (see `fastPathLimit`) it is checked once Bun has decoded the
+   * layer — for `zstd`, each frame.
+   */
+  maxOutputLength?: number | undefined;
+  /**
+   * The most memory, in bytes, a single uncapped Bun decode may use in the
+   * worst case. `gzip`/`deflate` layers whose `length × 1032` (DEFLATE's
+   * maximum expansion) fits take Bun's faster decoder whatever
+   * `maxOutputLength` is; larger ones take node:zlib, capped at
+   * `maxOutputLength`. A `zstd` layer's worst case is the size its frames
+   * declare, or else what their blocks can hold (128 KiB per compressed
+   * block). `0` disables the fast path, `Infinity` always takes it (speed over
+   * bomb safety). `br`, `dcb` and `dcz` never take it. Applied per layer.
+   * Default: {@link DEFAULT_DECOMPRESS_FAST_PATH_LIMIT} (32 MiB).
+   */
+  fastPathLimit?: number | undefined;
+  /**
+   * The codings a body may use (see {@link ContentEncodingAllowlist}); a body
+   * listing another, in any layer, makes {@link decompressBody} answer
+   * `undefined`. `identity` is always admitted, and `"gzip"` admits `x-gzip`.
+   * Default `"*"`. An entry that is not a {@link SupportedContentEncoding}
+   * throws `RangeError`.
+   */
+  encodings?: ContentEncodingAllowlist | undefined;
+  /**
+   * The most codings one `Content-Encoding` may stack — `identity` and empty
+   * list elements not counted. More throws {@link ContentCodingLimitError}
+   * before anything is decoded, so a many-layered bomb costs nothing. `0`
+   * admits only `identity`. Default {@link DEFAULT_MAX_CONTENT_CODINGS} (5); a
+   * negative or `NaN` value throws `RangeError`.
+   */
+  maxCodings?: number | undefined;
+  /**
+   * Dictionaries for `dcb`/`dcz` bodies (see {@link CompressionDictionaries}).
+   * Without it those codings are not decoded (`undefined`); with it, a body
+   * whose header names a dictionary it lacks throws
+   * {@link UnknownCompressionDictionaryError}. Default: none.
+   */
+  dictionaries?: CompressionDictionaries | undefined;
+}
+
+/**
+ * Default {@link DecompressBodyOptions.fastPathLimit}: 32 MiB, which admits
+ * compressed bodies up to 32,520 bytes to Bun's decoders.
+ */
+export const DEFAULT_DECOMPRESS_FAST_PATH_LIMIT = 32 * 1024 * 1024;
+
+/**
+ * Default {@link DecompressBodyOptions.maxCodings}: 5 — the limit undici's
+ * `fetch` (`maxContentEncodings`) and curl (`MAX_ENCODE_STACK`, since the fix
+ * for CVE-2022-32206) put on the codings one response may stack.
+ */
+export const DEFAULT_MAX_CONTENT_CODINGS: number = 5;
+
+/**
+ * Raised by {@link decompressBody} when the decoded body would exceed
+ * `maxOutputLength` (map it to `413 Payload Too Large`). Deliberately not a
+ * {@link DecompressionError}: the data may be perfectly valid. Its `cause` is
+ * node:zlib's `ERR_BUFFER_TOO_LARGE` when node:zlib stopped at the cap, and
+ * absent when the size was checked after decoding (the fast path, `identity`).
+ */
+export class DecompressionLimitError extends RangeError {
+  /** Stable machine-readable code: `"ERR_DECOMPRESSION_LIMIT"`. */
+  readonly code = "ERR_DECOMPRESSION_LIMIT";
+  /** The cap that was exceeded, in bytes. */
+  readonly limit: number;
+  /** The normalised (trimmed, lower-cased) `Content-Encoding` being decoded. */
+  readonly encoding: string;
+
+  constructor(encoding: string, limit: number, options?: ErrorOptions) {
+    super(
+      `Decoded "${encoding}" body exceeds the ${limit}-byte limit`,
+      options,
+    );
+    this.name = "DecompressionLimitError";
+    this.encoding = encoding;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Raised by {@link decompressBody} when the body is not valid data for its
+ * encoding — corrupt, truncated, trailing junk after a gzip member, or raw
+ * DEFLATE sent as `deflate` (map it to `400 Bad Request`). The decoder's own
+ * error is the `cause`.
+ */
+export class DecompressionError extends Error {
+  /** Stable machine-readable code: `"ERR_DECOMPRESSION_FAILED"`. */
+  readonly code = "ERR_DECOMPRESSION_FAILED";
+  /** The normalised (trimmed, lower-cased) `Content-Encoding` being decoded. */
+  readonly encoding: string;
+
+  constructor(encoding: string, options?: ErrorOptions) {
+    super(`Invalid "${encoding}" compressed body`, options);
+    this.name = "DecompressionError";
+    this.encoding = encoding;
+  }
+}
+
+/**
+ * Raised by {@link decompressBody} when `Content-Encoding` stacks more codings
+ * than `maxCodings` (map it to `415 Unsupported Media Type`: a coding list the
+ * server does not accept). Raised before anything is decoded.
+ */
+export class ContentCodingLimitError extends RangeError {
+  /** Stable machine-readable code: `"ERR_CONTENT_CODING_LIMIT"`. */
+  readonly code = "ERR_CONTENT_CODING_LIMIT";
+  /** How many codings the header stacked, `identity` not counted. */
+  readonly count: number;
+  /** The most that are accepted (`maxCodings`). */
+  readonly limit: number;
+
+  constructor(count: number, limit: number) {
+    super(
+      `Content-Encoding stacks ${count} codings; at most ${limit} are accepted`,
+    );
+    this.name = "ContentCodingLimitError";
+    this.count = count;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Raised by {@link decompressBody} when a `dcb`/`dcz` body names a dictionary
+ * `dictionaries` does not hold. RFC 9842 defines these codings for responses
+ * and prescribes no status for a request body; like any body that cannot be
+ * decoded it is a {@link DecompressionError}, so map it to `400 Bad Request`.
+ */
+export class UnknownCompressionDictionaryError extends DecompressionError {
+  /** The SHA-256 the body's header carries, as lower-case hex. */
+  readonly dictionaryHash: string;
+
+  constructor(encoding: DictionaryContentEncoding, hash: Uint8Array) {
+    super(encoding);
+    this.dictionaryHash = Buffer.from(hash).toString("hex");
+    this.message = `No "${encoding}" dictionary has SHA-256 ${this.dictionaryHash}`;
+    this.name = "UnknownCompressionDictionaryError";
+  }
+}
+
+/**
+ * The most bytes DEFLATE can emit per input byte (a 258-byte match coded in
+ * 2 bits), so no gzip or zlib body inflates past `length * 1032`.
+ */
+const DEFLATE_MAX_EXPANSION = 1032;
+
+/** A zero-copy `Buffer` view over `bytes`. */
+function bufferView(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes)
+    ? bytes
+    : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+/** Validates `maxOutputLength`: `undefined` for unbounded, else whole bytes. */
+function resolveOutputLimit(
+  maxOutputLength: number | undefined,
+): number | undefined {
+  if (maxOutputLength === undefined || maxOutputLength === Infinity) {
+    return undefined;
+  }
+  if (!(maxOutputLength >= 0)) {
+    throw new RangeError(
+      `maxOutputLength must be a non-negative number, got ${maxOutputLength}`,
+    );
+  }
+  return Math.floor(maxOutputLength);
+}
+
+/** Validates `fastPathLimit`, defaulting to {@link DEFAULT_DECOMPRESS_FAST_PATH_LIMIT}. */
+function resolveFastPathLimit(fastPathLimit: number | undefined): number {
+  if (fastPathLimit === undefined) {
+    return DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+  }
+  if (!(fastPathLimit >= 0)) {
+    throw new RangeError(
+      `fastPathLimit must be a non-negative number, got ${fastPathLimit}`,
+    );
+  }
+  return fastPathLimit;
+}
+
+/** Whether a Bun (uncappable) decoder's worst case fits `fastPathLimit`. */
+function takesFastPath(body: Uint8Array, fastPathLimit: number): boolean {
+  return (
+    fastPathLimit > 0 && body.length * DEFLATE_MAX_EXPANSION <= fastPathLimit
+  );
+}
+
+/** `decode()`'s output, or `undefined` if it threw (node:zlib then decides). */
+function attemptDecode(decode: () => Uint8Array): Uint8Array | undefined {
+  try {
+    return decode();
+  } catch {
+    return undefined;
+  }
+}
+
+/** A fast-path output as a `Buffer`, held to `limit` after the fact. */
+function checkedFastPathOutput(
+  output: Uint8Array,
+  encoding: string,
+  limit: number | undefined,
+): Buffer {
+  if (limit !== undefined && output.length > limit) {
+    throw new DecompressionLimitError(encoding, limit);
+  }
+  return bufferView(output);
+}
+
+/**
+ * Whether `output` is the whole of `body`, i.e. `body` was one gzip member.
+ * Bun already checked that member's own trailer; its end must also be the
+ * body's end. The trailer (CRC-32 and size of `output`) therefore has to be
+ * the body's final 8 bytes, and must not occur earlier — an earlier copy is
+ * where the decoded member really ended (`gzip(a) + gzip(a)`, or junk that
+ * repeats the trailer). A chance earlier match only costs a node:zlib retry.
+ */
+function isWholeGzipMember(body: Buffer, output: Uint8Array): boolean {
+  const end = body.length;
+  if (end < 18) {
+    return false;
+  }
+  return (
+    body.readUInt32LE(end - 8) === Bun.hash.crc32(output) &&
+    body.readUInt32LE(end - 4) === output.length >>> 0 &&
+    body.indexOf(body.subarray(end - 8)) === end - 8
+  );
+}
+
+/**
+ * A node:zlib sync decoder or encoder, typed with only the options used here.
+ * Bun forwards `dictionary` to its brotli and zstd codecs as well, though
+ * `@types/node` declares it for zlib alone.
+ */
+type ZlibSyncCodec = (
+  body: Buffer,
+  options?: { maxOutputLength?: number; dictionary?: Uint8Array },
+) => Buffer;
+
+/**
+ * Decodes with a node:zlib sync decoder, mapping its errors to ours. `cap` is
+ * the most output node:zlib may produce; `reportedLimit` is the limit an
+ * overflow names — they differ when the cap is what remains of the limit.
+ */
+function decodeWithZlib(
+  decode: ZlibSyncCodec,
+  body: Buffer,
+  encoding: string,
+  cap: number | undefined,
+  reportedLimit: number | undefined = cap,
+  dictionary?: Uint8Array,
+): Buffer {
+  const options: { maxOutputLength?: number; dictionary?: Uint8Array } = {};
+  if (cap !== undefined) {
+    // node:zlib rejects 0; a 1-byte cap plus the check below covers it.
+    options.maxOutputLength = Math.min(Math.max(cap, 1), kMaxLength);
+  }
+  if (dictionary !== undefined) {
+    options.dictionary = dictionary;
+  }
+  let output: Buffer;
+  try {
+    output = decode(body, options);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new DecompressionLimitError(encoding, reportedLimit ?? kMaxLength, {
+        cause: error,
+      });
+    }
+    throw new DecompressionError(encoding, { cause: error });
+  }
+  if (cap !== undefined && output.length > cap) {
+    throw new DecompressionLimitError(encoding, reportedLimit ?? cap);
+  }
+  return output;
+}
+
+/** A {@link DecompressionError} whose `cause` says what is wrong with the data. */
+function malformed(encoding: string, detail: string): DecompressionError {
+  return new DecompressionError(encoding, { cause: new Error(detail) });
+}
+
+/* --- zstd frames (RFC 8878 §3.1) ------------------------------------ */
+
+/** Magic_Number of a Zstandard frame, read little-endian (RFC 8878 §3.1.1). */
+const ZSTD_FRAME_MAGIC = 0xfd2fb528;
+/** Skippable frames' Magic_Number: 0x184D2A5?, any low nibble (§3.1.2). */
+const ZSTD_SKIPPABLE_MAGIC = 0x184d2a50;
+/** The most a block may hold, compressed or decoded: 128 KiB (§3.1.1.2). */
+const ZSTD_BLOCK_SIZE_MAX = 128 * 1024;
+/** The largest Window_Size the `zstd` content coding allows (RFC 9659 §3). */
+const ZSTD_CONTENT_CODING_MAX_WINDOW = 8 * 1024 * 1024;
+/** The largest Window_Size a `dcz` body may use (RFC 9842 §5). */
+const DCZ_MAX_WINDOW = 128 * 1024 * 1024;
+
+/** What {@link scanZstdFrames} learnt about one frame, without decoding it. */
+interface ZstdFrame {
+  /** Offset of the frame's Magic_Number in the body. */
+  start: number;
+  /** Offset just past the frame, its Content_Checksum included. */
+  end: number;
+  /** Frame_Content_Size, when the header declares one. */
+  contentSize: number | undefined;
+  /** The fewest bytes the frame decodes to: its Raw and RLE blocks' sizes. */
+  minOutput: number;
+  /** The most: `minOutput` plus Block_Maximum_Size per Compressed block. */
+  maxOutput: number;
+}
+
+/**
+ * Walks the zstd frames of `body` from `start` without decoding them — each
+ * frame's header and block headers — skipping skippable frames. Frames are
+ * independent and their outputs concatenate (RFC 8878 §3.1), so a body is any
+ * sequence of the two kinds, and nothing else.
+ *
+ * @throws {DecompressionError} for no frame at all, bytes that are not a
+ * frame, a truncated frame, a Reserved_Bit or reserved Block_Type, a
+ * Block_Size over 128 KiB, a Dictionary_ID (no dictionary can be named), a
+ * Window_Size over `maxWindow`, or a Frame_Content_Size its blocks cannot
+ * produce.
+ */
+function scanZstdFrames(
+  body: Buffer,
+  start: number,
+  encoding: string,
+  maxWindow: number,
+): ZstdFrame[] {
+  if (start >= body.length) {
+    throw malformed(encoding, "no zstd frame");
+  }
+  const frames: ZstdFrame[] = [];
+  let offset = start;
+  while (offset < body.length) {
+    if (body.length - offset < 4) {
+      throw malformed(encoding, `truncated frame at byte ${offset}`);
+    }
+    const magic = body.readUInt32LE(offset);
+    if ((magic & 0xfffffff0) === ZSTD_SKIPPABLE_MAGIC) {
+      const end =
+        body.length - offset < 8
+          ? Infinity
+          : offset + 8 + body.readUInt32LE(offset + 4);
+      if (end > body.length) {
+        throw malformed(
+          encoding,
+          `truncated skippable frame at byte ${offset}`,
+        );
+      }
+      offset = end;
+      continue;
+    }
+    if (magic !== ZSTD_FRAME_MAGIC) {
+      throw malformed(encoding, `no zstd frame at byte ${offset}`);
+    }
+    const frame = scanZstdFrame(body, offset, encoding, maxWindow);
+    frames.push(frame);
+    offset = frame.end;
+  }
+  return frames;
+}
+
+/** {@link scanZstdFrames} for the one frame whose Magic_Number is at `start`. */
+function scanZstdFrame(
+  body: Buffer,
+  start: number,
+  encoding: string,
+  maxWindow: number,
+): ZstdFrame {
+  const fail = (detail: string): DecompressionError =>
+    malformed(encoding, `zstd frame at byte ${start}: ${detail}`);
+
+  // Frame_Header_Descriptor (§3.1.1.1.1).
+  let offset = start + 4;
+  if (offset >= body.length) {
+    throw fail("truncated Frame_Header");
+  }
+  const descriptor = body[offset++];
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const hasChecksum = (descriptor & 0x04) !== 0;
+  const fcsFlag = descriptor >> 6;
+  const fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : 1 << fcsFlag;
+  const didSize = [0, 1, 2, 4][descriptor & 0x03];
+  if ((descriptor & 0x08) !== 0) {
+    throw fail("Reserved_Bit is set");
+  }
+  if (offset + (singleSegment ? 0 : 1) + didSize + fcsSize > body.length) {
+    throw fail("truncated Frame_Header");
+  }
+
+  // Window_Descriptor (§3.1.1.1.2), absent from a single-segment frame.
+  let windowSize = 0;
+  if (!singleSegment) {
+    const windowDescriptor = body[offset++];
+    const windowBase = 2 ** (10 + (windowDescriptor >> 3));
+    windowSize = windowBase + (windowBase / 8) * (windowDescriptor & 0x07);
+  }
+
+  // Dictionary_ID (§3.1.1.1.3): 0 means none. A frame needing a formatted
+  // dictionary cannot be decoded — no Content-Encoding names one.
+  if (didSize > 0 && body.readUIntLE(offset, didSize) !== 0) {
+    throw fail("it needs a dictionary by Dictionary_ID");
+  }
+  offset += didSize;
+
+  // Frame_Content_Size (§3.1.1.1.4); a 2-byte field is offset by 256.
+  let contentSize: number | undefined;
+  if (fcsSize === 1) {
+    contentSize = body[offset];
+  } else if (fcsSize === 2) {
+    contentSize = body.readUInt16LE(offset) + 256;
+  } else if (fcsSize === 4) {
+    contentSize = body.readUInt32LE(offset);
+  } else if (fcsSize === 8) {
+    contentSize = Number(body.readBigUInt64LE(offset));
+  }
+  offset += fcsSize;
+  if (singleSegment) {
+    windowSize = contentSize ?? 0;
+  }
+  if (windowSize > maxWindow) {
+    throw fail(`Window_Size ${windowSize} exceeds ${maxWindow} bytes`);
+  }
+
+  // Blocks (§3.1.1.2): 3-byte Block_Header, Last_Block in bit 0, Block_Type
+  // in bits 1-2, Block_Size above. Block_Maximum_Size bounds a block's
+  // decoded size as well as its compressed size.
+  const blockMaximum = Math.min(windowSize, ZSTD_BLOCK_SIZE_MAX);
+  let minOutput = 0;
+  let maxOutput = 0;
+  let lastBlock = false;
+  while (!lastBlock) {
+    if (offset + 3 > body.length) {
+      throw fail("truncated Block_Header");
+    }
+    const blockHeader = body.readUIntLE(offset, 3);
+    offset += 3;
+    lastBlock = (blockHeader & 1) === 1;
+    const blockType = (blockHeader >> 1) & 0x03;
+    const blockSize = blockHeader >>> 3;
+    if (blockType === 3) {
+      throw fail("reserved Block_Type");
+    }
+    if (blockSize > ZSTD_BLOCK_SIZE_MAX) {
+      throw fail(`Block_Size ${blockSize} exceeds 128 KiB`);
+    }
+    if (blockType === 2) {
+      // Compressed_Block: Block_Size bytes, decoding to at most the maximum.
+      offset += blockSize;
+      maxOutput += blockMaximum;
+    } else {
+      // Raw_Block holds its Block_Size bytes; RLE_Block one byte repeated.
+      offset += blockType === 1 ? 1 : blockSize;
+      minOutput += blockSize;
+      maxOutput += blockSize;
+    }
+    if (offset > body.length) {
+      throw fail("truncated block");
+    }
+  }
+  if (hasChecksum) {
+    offset += 4;
+    if (offset > body.length) {
+      throw fail("truncated Content_Checksum");
+    }
+  }
+  if (
+    contentSize !== undefined &&
+    (contentSize < minOutput || contentSize > maxOutput)
+  ) {
+    throw fail(
+      `Frame_Content_Size ${contentSize} is impossible for its blocks (${minOutput} to ${maxOutput} bytes)`,
+    );
+  }
+  return { start, end: offset, contentSize, minOutput, maxOutput };
+}
+
+/**
+ * Decodes the zstd frames of `input` from `payloadStart` (0, or past a `dcz`
+ * header), with `dictionary` as a raw-content dictionary when given. See the
+ * section comment for the bomb strategy.
+ */
+function decodeZstd(
+  input: Buffer,
+  payloadStart: number,
+  encoding: string,
+  limit: number | undefined,
+  fastPathLimit: number,
+  dictionary?: Uint8Array,
+): Buffer {
+  const maxWindow =
+    dictionary === undefined
+      ? ZSTD_CONTENT_CODING_MAX_WINDOW
+      : Math.min(
+          Math.max(ZSTD_CONTENT_CODING_MAX_WINDOW, dictionary.length * 1.25),
+          DCZ_MAX_WINDOW,
+        );
+  const frames = scanZstdFrames(input, payloadStart, encoding, maxWindow);
+
+  let floor = 0;
+  let worstCase = 0;
+  for (const frame of frames) {
+    floor += frame.contentSize ?? frame.minOutput;
+    worstCase += frame.contentSize ?? frame.maxOutput;
+  }
+  // A body certain to overflow is refused before a byte is decoded.
+  const cap = limit ?? kMaxLength;
+  if (floor > cap) {
+    throw new DecompressionLimitError(encoding, cap);
+  }
+
+  // Bun's decoder cannot stop at a limit (and allocates a declared size up
+  // front), so it runs only while the worst case fits the fast-path budget.
+  const fast =
+    dictionary === undefined && fastPathLimit > 0 && worstCase <= fastPathLimit;
+  const outputs: Buffer[] = [];
+  let total = 0;
+  for (const frame of frames) {
+    const bytes = input.subarray(frame.start, frame.end);
+    let output: Buffer;
+    if (fast) {
+      try {
+        output = Bun.zstdDecompressSync(bytes);
+      } catch (error) {
+        throw new DecompressionError(encoding, { cause: error });
+      }
+    } else {
+      output = decodeWithZlib(
+        zstdDecompressSync,
+        bytes,
+        encoding,
+        limit === undefined ? undefined : limit - total,
+        limit,
+        dictionary,
+      );
+    }
+    if (
+      output.length < frame.minOutput ||
+      output.length > frame.maxOutput ||
+      (frame.contentSize !== undefined && output.length !== frame.contentSize)
+    ) {
+      throw malformed(
+        encoding,
+        `zstd frame at byte ${frame.start} decoded to ${output.length} bytes, which its header rules out`,
+      );
+    }
+    total += output.length;
+    if (limit !== undefined && total > limit) {
+      throw new DecompressionLimitError(encoding, limit);
+    }
+    outputs.push(output);
+  }
+  return outputs.length === 1 ? outputs[0] : Buffer.concat(outputs, total);
+}
+
+/* --- Dictionary-compressed content (RFC 9842) ----------------------- */
+
+/** The `dcb` header's magic number (RFC 9842 §4). */
+const DCB_MAGIC = Buffer.from([0xff, 0x44, 0x43, 0x42]);
+/**
+ * The `dcz` header's magic number (RFC 9842 §5): a zstd skippable frame
+ * (0x184D2A5E) 32 bytes long — the SHA-256 that follows.
+ */
+const DCZ_MAGIC = Buffer.from([0x5e, 0x2a, 0x4d, 0x18, 0x20, 0x00, 0x00, 0x00]);
+/** Length of a SHA-256 digest. */
+const SHA256_LENGTH = 32;
+
+/** The magic number starting a `dcb` or `dcz` body. */
+function dictionaryMagic(encoding: DictionaryContentEncoding): Buffer {
+  return encoding === "dcb" ? DCB_MAGIC : DCZ_MAGIC;
+}
+
+/**
+ * The SHA-256 of a compression dictionary: how `dcb`/`dcz` headers and the
+ * `Available-Dictionary` request header identify it (RFC 9842 §2.2, §4, §5).
+ */
+export function compressionDictionaryHash(dictionary: Uint8Array): Buffer {
+  return createHash("sha256").update(dictionary).digest();
+}
+
+/**
+ * The length of the fixed header starting a `dcb` (36 bytes) or `dcz` (40
+ * bytes) body — where the compressed stream begins.
+ */
+export function dictionaryCompressedHeaderLength(
+  encoding: DictionaryContentEncoding,
+): number {
+  return dictionaryMagic(encoding).length + SHA256_LENGTH;
+}
+
+/**
+ * Builds the header that starts a `dcb` or `dcz` body: the coding's magic
+ * number, then the dictionary's SHA-256 (RFC 9842 §4, §5). An encoder writes
+ * it, then the stream compressed against the dictionary.
+ *
+ * @throws {RangeError} when `dictionaryHash` is not 32 bytes.
+ */
+export function dictionaryCompressedHeader(
+  encoding: DictionaryContentEncoding,
+  dictionaryHash: Uint8Array,
+): Buffer {
+  if (dictionaryHash.length !== SHA256_LENGTH) {
+    throw new RangeError(
+      `dictionaryHash must be a 32-byte SHA-256, got ${dictionaryHash.length} bytes`,
+    );
+  }
+  return Buffer.concat([dictionaryMagic(encoding), dictionaryHash]);
+}
+
+/**
+ * The dictionary SHA-256 a `dcb`/`dcz` body's header carries — a view into
+ * `body` — or `undefined` when the body is shorter than the header or does not
+ * start with the coding's magic number. The compressed stream starts at
+ * {@link dictionaryCompressedHeaderLength}.
+ */
+export function parseDictionaryCompressedHeader(
+  body: Uint8Array,
+  encoding: DictionaryContentEncoding,
+): Buffer | undefined {
+  const magic = dictionaryMagic(encoding);
+  const view = bufferView(body);
+  if (
+    view.length < magic.length + SHA256_LENGTH ||
+    !view.subarray(0, magic.length).equals(magic)
+  ) {
+    return undefined;
+  }
+  return view.subarray(magic.length, magic.length + SHA256_LENGTH);
+}
+
+/**
+ * The SHA-256 an `Available-Dictionary` request header names (RFC 9842
+ * §2.2): a Structured Field Byte Sequence, `:base64:` (RFC 9651 §3.3.5), whose
+ * parameters are ignored. `undefined` for a missing or malformed value, or a
+ * digest that is not 32 bytes.
+ */
+export function parseAvailableDictionary(
+  value: string | null | undefined,
+): Buffer | undefined {
+  const match = /^[ \t]*:([a-z0-9+/]*={0,2}):[ \t]*(?:;.*)?$/i.exec(
+    value ?? "",
+  );
+  if (!match) {
+    return undefined;
+  }
+  const hash = Buffer.from(match[1], "base64");
+  return hash.length === SHA256_LENGTH ? hash : undefined;
+}
+
+/** Per dictionary array, its dictionaries by lower-case hex SHA-256. */
+const dictionaryIndexes = new WeakMap<
+  readonly Uint8Array[],
+  Map<string, Uint8Array>
+>();
+
+/**
+ * The dictionary `hash` names, or `undefined` when there is none.
+ *
+ * @throws {Error} when a resolver answers a dictionary whose SHA-256 is not
+ * `hash` — a server misconfiguration, not the client's fault.
+ */
+function findDictionary(
+  dictionaries: CompressionDictionaries,
+  hash: Buffer,
+  encoding: DictionaryContentEncoding,
+): Uint8Array | undefined {
+  if (typeof dictionaries === "function") {
+    const dictionary = dictionaries(Buffer.from(hash), encoding);
+    if (
+      dictionary !== undefined &&
+      !compressionDictionaryHash(dictionary).equals(hash)
+    ) {
+      throw new Error(
+        `The "${encoding}" dictionary resolver answered a dictionary whose SHA-256 is not ${hash.toString("hex")}`,
+      );
+    }
+    return dictionary;
+  }
+  let index = dictionaryIndexes.get(dictionaries);
+  if (!index) {
+    index = new Map();
+    for (const dictionary of dictionaries) {
+      index.set(
+        compressionDictionaryHash(dictionary).toString("hex"),
+        dictionary,
+      );
+    }
+    dictionaryIndexes.set(dictionaries, index);
+  }
+  return index.get(hash.toString("hex"));
+}
+
+/** Whether this runtime decodes `dcb` and `dcz` with a dictionary; probed once. */
+let dictionarySupport: Record<DictionaryContentEncoding, boolean> | undefined;
+
+/**
+ * Whether node:zlib really honours `dictionary` for `encoding`'s format. Bun
+ * forwards it to libbrotli and libzstd, but `@types/node` declares it for
+ * neither, and a runtime that silently ignored it would reject every such body
+ * as corrupt (400) instead of unsupported (415). One tiny round trip decides:
+ * it must succeed with the dictionary and fail without it.
+ */
+function dictionaryDecodingSupported(
+  encoding: DictionaryContentEncoding,
+): boolean {
+  dictionarySupport ??= {
+    dcb: roundTripsOnlyWithDictionary(brotliCompressSync, brotliDecompressSync),
+    dcz: roundTripsOnlyWithDictionary(zstdCompressSync, zstdDecompressSync),
+  };
+  return dictionarySupport[encoding];
+}
+
+/** See {@link dictionaryDecodingSupported}. */
+function roundTripsOnlyWithDictionary(
+  compress: ZlibSyncCodec,
+  decompress: ZlibSyncCodec,
+): boolean {
+  const dictionary = Buffer.from(
+    "bun-common probe: a sentence only the dictionary holds, twice over.",
+  );
+  const sample = Buffer.concat([dictionary, Buffer.from("!")]);
+  let packed: Buffer;
+  try {
+    packed = compress(sample, { dictionary });
+    if (!decompress(packed, { dictionary }).equals(sample)) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  try {
+    return !decompress(packed).equals(sample);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Decodes a `dcb`/`dcz` layer: checks the header, finds its dictionary, and
+ * decodes the stream after the header against it.
+ */
+function decodeDictionaryCompressed(
+  input: Buffer,
+  encoding: DictionaryContentEncoding,
+  limit: number | undefined,
+  dictionaries: CompressionDictionaries,
+): Buffer {
+  const hash = parseDictionaryCompressedHeader(input, encoding);
+  if (hash === undefined) {
+    throw malformed(
+      encoding,
+      `no ${encoding} header (magic number and dictionary SHA-256)`,
+    );
+  }
+  const dictionary = findDictionary(dictionaries, hash, encoding);
+  if (dictionary === undefined) {
+    throw new UnknownCompressionDictionaryError(encoding, hash);
+  }
+  const payloadStart = dictionaryCompressedHeaderLength(encoding);
+  if (encoding === "dcz") {
+    // The dcz header is itself a skippable frame; the walk starts past it.
+    return decodeZstd(input, payloadStart, encoding, limit, 0, dictionary);
+  }
+  return decodeWithZlib(
+    brotliDecompressSync,
+    input.subarray(payloadStart),
+    encoding,
+    limit,
+    limit,
+    dictionary,
+  );
+}
+
+/* --- Content-Encoding lists and allowlists -------------------------- */
+
+/** Every coding {@link decompressBody} can decode. */
+const DECODABLE_CODINGS: ReadonlySet<string> =
+  new Set<SupportedContentEncoding>([
+    "identity",
+    "gzip",
+    "x-gzip",
+    "deflate",
+    "br",
+    "zstd",
+    "dcb",
+    "dcz",
+  ]);
+
+/** A coding's canonical name: `x-gzip` is an alias of `gzip` (RFC 9110 §8.4.1.3). */
+function canonicalCoding(coding: string): string {
+  return coding === "x-gzip" ? "gzip" : coding;
+}
+
+/**
+ * The codings a `Content-Encoding` value lists, in the order they were
+ * applied (RFC 9110 §8.4) — so a recipient decodes them last to first. Each
+ * element is trimmed and lower-cased (codings are case-insensitive); empty
+ * elements, which RFC 9110 §5.6.1 requires a recipient to accept, and
+ * `identity`, which changes nothing, are dropped. `[]` means no coding.
+ */
+export function parseContentCodings(value: string): string[] {
+  const codings: string[] = [];
+  for (const element of value.split(",")) {
+    const coding = element.trim().toLowerCase();
+    if (coding !== "" && coding !== "identity") {
+      codings.push(coding);
+    }
+  }
+  return codings;
+}
+
+/**
+ * Validates an `encodings` allowlist, answering `undefined` when it admits
+ * every coding (`"*"`, a list holding `"*"`, or no allowlist) and otherwise the
+ * canonical codings it admits.
+ *
+ * @throws {RangeError} for a value that is neither `"*"` nor an array, or an
+ * entry that is not a {@link SupportedContentEncoding}.
+ */
+export function resolveContentEncodingAllowlist(
+  encodings: ContentEncodingAllowlist | undefined,
+): ReadonlySet<string> | undefined {
+  if (encodings === undefined || encodings === "*") {
+    return undefined;
+  }
+  if (!Array.isArray(encodings)) {
+    throw new RangeError(
+      `encodings must be "*" or an array of content codings, got ${safeStringify(encodings)}`,
+    );
+  }
+  const allowed = new Set<string>();
+  let wildcard = false;
+  for (const entry of encodings as readonly unknown[]) {
+    if (entry === "*") {
+      wildcard = true;
+      continue;
+    }
+    const coding =
+      typeof entry === "string" ? entry.trim().toLowerCase() : undefined;
+    if (coding === undefined || !DECODABLE_CODINGS.has(coding)) {
+      throw new RangeError(
+        `encodings: ${safeStringify(entry)} is not a content coding this library decodes`,
+      );
+    }
+    allowed.add(canonicalCoding(coding));
+  }
+  return wildcard ? undefined : allowed;
+}
+
+/**
+ * Whether `coding` (one list element) passes `encodings`: `identity` (or an
+ * empty element) always does; a coding {@link decompressBody} cannot decode —
+ * a literal `*` included — never does.
+ *
+ * @throws {RangeError} for an invalid allowlist, as
+ * {@link resolveContentEncodingAllowlist}.
+ */
+export function isContentCodingAllowed(
+  coding: string,
+  encodings: ContentEncodingAllowlist | undefined,
+): boolean {
+  const name = coding.trim().toLowerCase();
+  if (name === "" || name === "identity") {
+    return true;
+  }
+  const allowed = resolveContentEncodingAllowlist(encodings);
+  return (
+    DECODABLE_CODINGS.has(name) &&
+    (allowed === undefined || allowed.has(canonicalCoding(name)))
+  );
+}
+
+/** Validates `maxCodings`, defaulting to {@link DEFAULT_MAX_CONTENT_CODINGS}. */
+function resolveMaxCodings(maxCodings: number | undefined): number {
+  if (maxCodings === undefined) {
+    return DEFAULT_MAX_CONTENT_CODINGS;
+  }
+  if (!(maxCodings >= 0)) {
+    throw new RangeError(
+      `maxCodings must be a non-negative number, got ${maxCodings}`,
+    );
+  }
+  return Math.floor(maxCodings);
+}
+
+/** Decodes one layer; `coding` has been admitted by {@link decompressBody}. */
+function decodeLayer(
+  input: Buffer,
+  coding: string,
+  limit: number | undefined,
+  fastPathLimit: number,
+  dictionaries: CompressionDictionaries | undefined,
+): Buffer {
+  // Bun's decoders are typed for ArrayBuffer-backed arrays; they read any view.
+  const bytes = input as Uint8Array<ArrayBuffer>;
+
+  switch (coding) {
+    case "gzip":
+    case "x-gzip": {
+      // Invalid for Bun, or not one member spanning the body: node:zlib
+      // decides, and supplies any error.
+      const output = takesFastPath(input, fastPathLimit)
+        ? attemptDecode(() => Bun.gunzipSync(bytes, { library: "libdeflate" }))
+        : undefined;
+      if (output && isWholeGzipMember(input, output)) {
+        return checkedFastPathOutput(output, coding, limit);
+      }
+      return decodeWithZlib(gunzipSync, input, coding, limit);
+    }
+
+    case "deflate": {
+      const output = takesFastPath(input, fastPathLimit)
+        ? attemptDecode(() => Bun.inflateSync(bytes, { windowBits: 15 }))
+        : undefined;
+      if (output) {
+        return checkedFastPathOutput(output, coding, limit);
+      }
+      return decodeWithZlib(inflateSync, input, coding, limit);
+    }
+
+    case "br":
+      return decodeWithZlib(brotliDecompressSync, input, coding, limit);
+
+    case "zstd":
+      return decodeZstd(input, 0, coding, limit, fastPathLimit);
+
+    case "dcb":
+    case "dcz":
+      if (dictionaries !== undefined) {
+        return decodeDictionaryCompressed(input, coding, limit, dictionaries);
+      }
+      break;
+  }
+  throw new Error(`decompressBody admitted "${coding}" without a decoder`);
+}
+
+/**
+ * Decodes a request body per its `Content-Encoding`: `gzip` (and its RFC 9110
+ * alias `x-gzip`), zlib-wrapped `deflate` and `br` with body-parser's
+ * semantics — plus `zstd`, `dcb`/`dcz` given `dictionaries`, and stacked
+ * codings, all of which body-parser refuses. The value is read as RFC 9110's
+ * list ({@link parseContentCodings}) and its codings decoded last to first
+ * (§8.4). With no coding left (empty, `identity`) the body is returned as a
+ * zero-copy `Buffer` view.
+ *
+ * Contract:
+ * - returns the decoded `Buffer`;
+ * - returns `undefined` when a listed coding is one it does not decode
+ *   (`compress`, a literal `*`), is outside `encodings`, or is `dcb`/`dcz`
+ *   without `dictionaries` — answer `415`. Every layer is checked before any
+ *   is decoded;
+ * - throws {@link ContentCodingLimitError} (`code: "ERR_CONTENT_CODING_LIMIT"`)
+ *   when more than `maxCodings` are stacked — answer `415`;
+ * - throws {@link DecompressionLimitError} (`code: "ERR_DECOMPRESSION_LIMIT"`)
+ *   when any layer's output would exceed `maxOutputLength` — answer `413`;
+ * - throws {@link DecompressionError} (`code: "ERR_DECOMPRESSION_FAILED"`) on
+ *   invalid data in any layer, including raw DEFLATE sent as `deflate` and
+ *   truncated zstd, or its subclass {@link UnknownCompressionDictionaryError}
+ *   for a dictionary `dictionaries` lacks — answer `400`. `encoding` names the
+ *   failing layer;
+ * - throws `RangeError` for a negative or `NaN` `maxOutputLength`,
+ *   `fastPathLimit` or `maxCodings`, or an invalid `encodings`; and lets
+ *   through whatever a dictionary resolver throws, or an `Error` when the
+ *   dictionary it answers does not match the hash.
+ *
+ * @example
+ * const body = decompressBody(raw, req.headers.get("content-encoding") ?? "", {
+ *   maxOutputLength: 100 * 1024,
+ * });
+ */
+export function decompressBody(
+  body: Uint8Array,
+  encoding: Exclude<SupportedContentEncoding, DictionaryContentEncoding>,
+  options?: DecompressBodyOptions & { encodings?: "*" | undefined },
+): Buffer;
+export function decompressBody(
+  body: Uint8Array,
+  encoding: string,
+  options?: DecompressBodyOptions,
+): Buffer | undefined;
+export function decompressBody(
+  body: Uint8Array,
+  encoding: string,
+  options?: DecompressBodyOptions,
+): Buffer | undefined {
+  const codings = parseContentCodings(encoding);
+  const limit = resolveOutputLimit(options?.maxOutputLength);
+  const fastPathLimit = resolveFastPathLimit(options?.fastPathLimit);
+  const maxCodings = resolveMaxCodings(options?.maxCodings);
+  const allowed = resolveContentEncodingAllowlist(options?.encodings);
+  const dictionaries = options?.dictionaries;
+  let output = bufferView(body);
+
+  if (codings.length > maxCodings) {
+    throw new ContentCodingLimitError(codings.length, maxCodings);
+  }
+  for (const coding of codings) {
+    if (
+      !DECODABLE_CODINGS.has(coding) ||
+      (allowed !== undefined && !allowed.has(canonicalCoding(coding)))
+    ) {
+      return undefined;
+    }
+    if (
+      (coding === "dcb" || coding === "dcz") &&
+      (dictionaries === undefined || !dictionaryDecodingSupported(coding))
+    ) {
+      return undefined;
+    }
+  }
+
+  if (codings.length === 0) {
+    if (limit !== undefined && output.length > limit) {
+      throw new DecompressionLimitError("identity", limit);
+    }
+    return output;
+  }
+  for (let layer = codings.length - 1; layer >= 0; layer--) {
+    output = decodeLayer(
+      output,
+      codings[layer],
+      limit,
+      fastPathLimit,
+      dictionaries,
+    );
+  }
+  return output;
 }

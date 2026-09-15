@@ -4,12 +4,46 @@
  */
 import type { App } from "supertest/types";
 import { Buffer } from "node:buffer";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+  brotliCompressSync,
+  deflateRawSync,
+  deflateSync,
+  gzipSync,
+  zstdCompressSync,
+} from "node:zlib";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest, PayloadTooLargeError } from "../lib/BunRequest";
-import { parseByteSize } from "../lib/utils/native";
+import {
+  compressionDictionaryHash,
+  dictionaryCompressedHeader,
+  parseByteSize,
+} from "../lib/utils/native";
 import { makeRequest, testServer } from "./helpers";
+
+/** node:zlib's zstd compressor; `@types/node` does not declare `dictionary` for it. */
+const zstdWithDictionary: (
+  bytes: Uint8Array,
+  options: { dictionary: Uint8Array; maxOutputLength?: number },
+) => Buffer = zstdCompressSync;
+
+/** A `dcz` body (RFC 9842 §5): the header, then `bytes` compressed against `dictionary`. */
+function dczBody(bytes: Uint8Array, dictionary: Uint8Array): Buffer {
+  return Buffer.concat([
+    dictionaryCompressedHeader("dcz", compressionDictionaryHash(dictionary)),
+    zstdWithDictionary(bytes, { dictionary }),
+  ]);
+}
+
+/** `bytes` gzipped `count` times, and the `Content-Encoding` naming each layer. */
+function gzipLayers(bytes: Uint8Array, count: number): [Buffer, string] {
+  let body: Buffer = Buffer.from(bytes);
+  for (let i = 0; i < count; i++) {
+    body = gzipSync(body);
+  }
+  return [body, Array.from({ length: count }).fill("gzip").join(", ")];
+}
 
 describe("parseByteSize", () => {
   it("returns finite non-negative numbers unchanged", () => {
@@ -356,5 +390,519 @@ describe("parseBody: adapter 413 integration", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual(payload);
+  });
+});
+
+describe("parseBody: empty bodies (body-parser semantics)", () => {
+  it("a declared empty JSON body is {}, and no body at all is undefined", async () => {
+    const declared = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": "0" },
+      options: { parseBody: true },
+    });
+    expect(declared.body).toEqual({});
+
+    const none = await makeRequest({
+      headers: { "Content-Type": "application/json" },
+      options: { parseBody: true },
+    });
+    expect(none.body).toBeUndefined();
+  });
+});
+
+describe("handleBodyParsing: body-parser options", () => {
+  const jsonPost = (body: string, headers: Record<string, string> = {}) =>
+    makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body,
+    });
+
+  it("limit rejects a larger body with 413, even one already buffered", async () => {
+    const req = await jsonPost('{"a":"0123456789"}');
+    await expect(
+      req.handleBodyParsing(true, { limit: 5 }),
+    ).rejects.toBeInstanceOf(PayloadTooLargeError);
+    await expect(
+      req.handleBodyParsing(true, { limit: 5 }),
+    ).rejects.toMatchObject({ status: 413, statusCode: 413 });
+    expect(req.isPayloadTooLarge).toBe(true);
+
+    const within = await jsonPost('{"a":1}');
+    const buffer = await within.handleBodyParsing(true, { limit: "1kb" });
+    expect(buffer?.toString()).toBe('{"a":1}');
+  });
+
+  it("returnBuffer: true resolves undefined when parseBody is off or the body was consumed", async () => {
+    const off = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"a":1}',
+      options: { parseBody: false },
+    });
+    expect(await off.handleBodyParsing(true)).toBeUndefined();
+
+    const consumed = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"a":1}',
+      options: { parseBody: false },
+    });
+    await consumed.request.text();
+    consumed.setParseBodyOptions(true);
+    expect(await consumed.handleBodyParsing(true)).toBeUndefined();
+  });
+
+  it("type (or the parser kind's default) skips a request that does not match", async () => {
+    const req = await jsonPost('{"a":1}');
+    expect(
+      await req.handleBodyParsing(true, { type: "text/plain" }),
+    ).toBeUndefined();
+    expect(await req.handleBodyParsing(true, {}, "text")).toBeUndefined();
+    expect((await req.handleBodyParsing(true, {}, "json"))?.toString()).toBe(
+      '{"a":1}',
+    );
+    expect(
+      await req.handleBodyParsing(true, { type: () => false }),
+    ).toBeUndefined();
+    expect(
+      (
+        await req.handleBodyParsing(true, { type: ["text/*", "json"] })
+      )?.toString(),
+    ).toBe('{"a":1}');
+  });
+
+  it("inflates a gzip body; inflate: false rejects an encoded body with 415", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "gzip",
+      },
+      body: Bun.gzipSync(Buffer.from('{"a":1}')),
+    });
+    expect(req.body).toEqual({ a: 1 });
+    await expect(
+      req.handleBodyParsing(true, { inflate: false }),
+    ).rejects.toMatchObject({ statusCode: 415 });
+  });
+});
+
+describe("Content-Encoding: decompression limits and errors", () => {
+  const json = Buffer.from('{"a":1}');
+  /** 10 MiB of zeros: a few KB gzipped, far past any sensible body limit. */
+  const bomb = gzipSync(Buffer.alloc(10 * 1024 * 1024));
+
+  /** A JSON request sent with `encoding`, parsed while it is built. */
+  const encoded = (
+    body: Uint8Array,
+    encoding: string,
+    parseBody: Parameters<BunRequest["setParseBodyOptions"]>[0] = true,
+  ) =>
+    makeRequest({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": encoding,
+      },
+      body,
+      options: { parseBody },
+    });
+
+  /** The same request with its body still unread, for `handleBodyParsing`. */
+  const unread = async (
+    body: Uint8Array,
+    encoding: string,
+    parseBody: Parameters<BunRequest["setParseBodyOptions"]>[0] = true,
+  ) => {
+    const req = await encoded(body, encoding, false);
+    req.setParseBodyOptions(parseBody);
+    return req;
+  };
+
+  it("parses a gzip, deflate and br JSON body", async () => {
+    for (const [encoding, body] of [
+      ["gzip", gzipSync(json)],
+      ["deflate", deflateSync(json)],
+      ["br", brotliCompressSync(json)],
+    ] as const) {
+      const req = await encoded(body, encoding);
+      expect(req.body).toEqual({ a: 1 });
+    }
+  });
+
+  it("a gzip bomb inflating past the limit is a 413, on the fast path", async () => {
+    const req = await encoded(bomb, "gzip", { maxContentLength: "64kb" });
+    expect(bomb.length).toBeLessThan(64 * 1024);
+    expect(req.isPayloadTooLarge).toBe(true);
+    expect(req.payloadTooLarge?.limit).toBe(64 * 1024);
+    expect(BunRequest.payloadTooLargeResponse(req).status).toBe(413);
+
+    const later = await unread(bomb, "gzip");
+    await expect(
+      later.handleBodyParsing(true, { limit: "64kb" }),
+    ).rejects.toBeInstanceOf(PayloadTooLargeError);
+    expect(later.isPayloadTooLarge).toBe(true);
+  });
+
+  it("a gzip bomb is a 413 with decompressionFastPathLimit: 0 (node:zlib, capped)", async () => {
+    const req = await unread(bomb, "gzip");
+    await expect(
+      req.handleBodyParsing(true, {
+        limit: "64kb",
+        decompressionFastPathLimit: 0,
+      }),
+    ).rejects.toMatchObject({ status: 413, statusCode: 413 });
+    expect(req.payloadTooLarge?.limit).toBe(64 * 1024);
+  });
+
+  it("a body inflating within the limit parses with either path", async () => {
+    for (const decompressionFastPathLimit of [0, undefined]) {
+      const req = await unread(gzipSync(json), "gzip");
+      const buffer = await req.handleBodyParsing(true, {
+        limit: "1kb",
+        decompressionFastPathLimit,
+      });
+      expect(buffer?.toString()).toBe('{"a":1}');
+      expect(req.body).toEqual({ a: 1 });
+    }
+  });
+
+  it("corrupt gzip is a 400", async () => {
+    const corrupt = Buffer.from(gzipSync(json));
+    corrupt.fill(0xff, 10, 20);
+    const req = await unread(corrupt, "gzip");
+    await expect(req.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it("raw deflate sent as deflate is a 400", async () => {
+    const req = await unread(deflateRawSync(json), "deflate");
+    await expect(req.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it("an unsupported encoding (compress) is a 415", async () => {
+    const req = await unread(json, "compress");
+    await expect(req.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 415,
+      message: 'unsupported content encoding "compress"',
+    });
+  });
+
+  it("a literal * Content-Encoding is not a wildcard: a 415", async () => {
+    const req = await unread(json, "*");
+    await expect(req.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 415,
+    });
+  });
+
+  it("parses a zstd body, and stacked codings decoded last to first", async () => {
+    for (const [encoding, body] of [
+      ["zstd", Bun.zstdCompressSync(json)],
+      ["gzip, br", brotliCompressSync(gzipSync(json))],
+      ["deflate, zstd", Bun.zstdCompressSync(deflateSync(json))],
+      [" GZIP ,, identity, Br", brotliCompressSync(gzipSync(json))],
+    ] as const) {
+      expect((await encoded(body, encoding)).body).toEqual({ a: 1 });
+      const later = await unread(body, encoding);
+      expect((await later.handleBodyParsing(true))?.toString()).toBe('{"a":1}');
+    }
+  });
+
+  it("a zstd bomb is a 413; truncated zstd is a 400, never a partial body", async () => {
+    const zstdBomb = Bun.zstdCompressSync(Buffer.alloc(10 * 1024 * 1024));
+    const req = await encoded(zstdBomb, "zstd", { maxContentLength: "64kb" });
+    expect(req.isPayloadTooLarge).toBe(true);
+    expect(req.payloadTooLarge?.limit).toBe(64 * 1024);
+
+    const frame = Bun.zstdCompressSync(json);
+    const truncated = await unread(frame.subarray(0, frame.length - 1), "zstd");
+    await expect(truncated.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(truncated.body).toBeUndefined();
+  });
+
+  it("a layer decoding past the limit is a 413 even when the outer layer fits", async () => {
+    const req = await unread(brotliCompressSync(bomb), "gzip, br");
+    await expect(
+      req.handleBodyParsing(true, { limit: "64kb" }),
+    ).rejects.toBeInstanceOf(PayloadTooLargeError);
+  });
+
+  it("a corrupt inner layer is a 400", async () => {
+    const corrupt = Buffer.from(gzipSync(json));
+    corrupt.fill(0xff, 10, 20);
+    const req = await unread(brotliCompressSync(corrupt), "gzip, br");
+    await expect(req.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 400,
+    });
+  });
+
+  it("more stacked codings than maxContentCodings (default 5) is a 415, before decoding", async () => {
+    const [six, sixHeader] = gzipLayers(json, 6);
+    const refused = await unread(six, sixHeader);
+    await expect(refused.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 415,
+      message: "too many content encodings (6, at most 5)",
+    });
+
+    const raised = await unread(six, sixHeader);
+    expect(
+      (
+        await raised.handleBodyParsing(true, { maxContentCodings: 6 })
+      )?.toString(),
+    ).toBe('{"a":1}');
+
+    const [two, twoHeader] = gzipLayers(json, 2);
+    const lowered = await unread(two, twoHeader);
+    await expect(
+      lowered.handleBodyParsing(true, { maxContentCodings: 1 }),
+    ).rejects.toMatchObject({ statusCode: 415 });
+
+    const invalid = await unread(two, twoHeader);
+    await expect(
+      invalid.handleBodyParsing(true, { maxContentCodings: -1 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it("encodings: a coding outside the allowlist is a 415, in any layer", async () => {
+    const onlyBr = await unread(brotliCompressSync(json), "br");
+    await expect(
+      onlyBr.handleBodyParsing(true, { encodings: ["gzip"] }),
+    ).rejects.toMatchObject({
+      statusCode: 415,
+      message: 'unsupported content encoding "br"',
+    });
+
+    const stacked = await unread(
+      brotliCompressSync(gzipSync(json)),
+      "gzip, br",
+    );
+    await expect(
+      stacked.handleBodyParsing(true, { encodings: ["gzip"] }),
+    ).rejects.toMatchObject({ statusCode: 415 });
+
+    const alias = await unread(gzipSync(json), "x-gzip");
+    await alias.handleBodyParsing(true, { encodings: ["gzip"] });
+    expect(alias.body).toEqual({ a: 1 });
+
+    const wildcard = await unread(Bun.zstdCompressSync(json), "zstd");
+    await wildcard.handleBodyParsing(true, { encodings: ["gzip", "*"] });
+    expect(wildcard.body).toEqual({ a: 1 });
+
+    const misspelt = await unread(gzipSync(json), "gzip");
+    await expect(
+      misspelt.handleBodyParsing(true, { encodings: ["gzpi" as never] }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it("compressionDictionaries: dcz decodes with its dictionary, is a 400 without it, a 415 with none", async () => {
+    const dictionary = Buffer.from('{"a":1,"dictionary":"shared"}');
+    const body = dczBody(json, dictionary);
+
+    const decoded = await unread(body, "dcz");
+    await decoded.handleBodyParsing(true, {
+      compressionDictionaries: [dictionary],
+    });
+    expect(decoded.body).toEqual({ a: 1 });
+
+    const unknown = await unread(body, "dcz");
+    await expect(
+      unknown.handleBodyParsing(true, {
+        compressionDictionaries: [Buffer.from("another")],
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: "unknown compression dictionary",
+    });
+
+    const none = await unread(body, "dcz");
+    await expect(none.handleBodyParsing(true)).rejects.toMatchObject({
+      statusCode: 415,
+    });
+
+    const invalid = await unread(body, "dcz");
+    await expect(
+      invalid.handleBodyParsing(true, {
+        compressionDictionaries: "shared" as never,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("inflate: false refuses an unread gzip body with a 415", async () => {
+    const req = await unread(gzipSync(json), "gzip");
+    await expect(
+      req.handleBodyParsing(true, { inflate: false }),
+    ).rejects.toMatchObject({ statusCode: 415 });
+  });
+});
+
+describe("Content-Encoding: parseBody's decoding options, applied while the request is built", () => {
+  const json = Buffer.from('{"a":1}');
+
+  /** A JSON request sent with `encoding`, parsed by `init` with `parseBody`. */
+  const built = (
+    body: Uint8Array,
+    encoding: string,
+    parseBody: Parameters<BunRequest["setParseBodyOptions"]>[0],
+  ) =>
+    makeRequest({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": encoding,
+      },
+      body,
+      options: { parseBody },
+    });
+
+  it("parseBody.inflate: false refuses a gzip body at init, recorded as bodyDecodingError (415)", async () => {
+    const req = await built(gzipSync(json), "gzip", { inflate: false });
+    expect(req.body).toBeUndefined();
+    expect(req.isPayloadTooLarge).toBe(false);
+    expect(req.bodyDecodingError).toMatchObject({
+      status: 415,
+      statusCode: 415,
+      expose: true,
+      message: "content encoding unsupported",
+    });
+  });
+
+  it("parseBody.inflate: false still parses an identity body", async () => {
+    const req = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: json,
+      options: { parseBody: { inflate: false } },
+    });
+    expect(req.body).toEqual({ a: 1 });
+    expect(req.bodyDecodingError).toBeUndefined();
+  });
+
+  it("records a 400 for a corrupt stream and a 415 for an unsupported coding at init", async () => {
+    const corrupt = Buffer.from(gzipSync(json));
+    corrupt.fill(0xff, 10, 20);
+    expect((await built(corrupt, "gzip", {})).bodyDecodingError?.status).toBe(
+      400,
+    );
+    expect((await built(json, "compress", {})).bodyDecodingError?.status).toBe(
+      415,
+    );
+  });
+
+  it("parseBody.encodings, maxContentCodings and compressionDictionaries reach the init parse", async () => {
+    expect((await built(Bun.zstdCompressSync(json), "zstd", {})).body).toEqual({
+      a: 1,
+    });
+
+    const onlyGzip = { encodings: ["gzip"] } as const;
+    expect((await built(gzipSync(json), "gzip", onlyGzip)).body).toEqual({
+      a: 1,
+    });
+    const refused = await built(brotliCompressSync(json), "br", onlyGzip);
+    expect(refused.body).toBeUndefined();
+    expect(refused.bodyDecodingError).toMatchObject({
+      status: 415,
+      message: 'unsupported content encoding "br"',
+    });
+
+    const [two, twoHeader] = gzipLayers(json, 2);
+    const tooDeep = await built(two, twoHeader, { maxContentCodings: 1 });
+    expect(tooDeep.bodyDecodingError?.status).toBe(415);
+    expect((await built(two, twoHeader, {})).body).toEqual({ a: 1 });
+
+    const dictionary = Buffer.from('{"a":1,"dictionary":"shared"}');
+    const dcz = dczBody(json, dictionary);
+    expect(
+      (await built(dcz, "dcz", { compressionDictionaries: [dictionary] })).body,
+    ).toEqual({ a: 1 });
+    expect((await built(dcz, "dcz", {})).bodyDecodingError?.status).toBe(415);
+    expect(
+      (
+        await built(dcz, "dcz", {
+          compressionDictionaries: [Buffer.from("another")],
+        })
+      ).bodyDecodingError,
+    ).toMatchObject({ status: 400, message: "unknown compression dictionary" });
+  });
+
+  it("an invalid encodings, maxContentCodings or compressionDictionaries is a misconfiguration at init", async () => {
+    await expect(
+      built(gzipSync(json), "gzip", { encodings: ["gzpi" as never] }),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      built(gzipSync(json), "gzip", { maxContentCodings: Number.NaN }),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      built(gzipSync(json), "gzip", { compressionDictionaries: {} as never }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("a request with no body is never refused for its Content-Encoding", async () => {
+    const req = await makeRequest({
+      headers: { "Content-Encoding": "gzip" },
+      options: { parseBody: { inflate: false } },
+    });
+    expect(req.bodyDecodingError).toBeUndefined();
+    expect(req.body).toBeUndefined();
+  });
+
+  it("the object form without inflate, and parseBody: true, still inflate", async () => {
+    for (const parseBody of [true, {}, { inflate: true }] as const) {
+      const req = await built(gzipSync(json), "gzip", parseBody);
+      expect(req.body).toEqual({ a: 1 });
+      expect(req.bodyDecodingError).toBeUndefined();
+    }
+  });
+
+  it("parseBody.decompressionFastPathLimit reaches the init parse: a bomb is a 413 by node:zlib", async () => {
+    const bomb = gzipSync(Buffer.alloc(10 * 1024 * 1024));
+    const gunzip = spyOn(Bun, "gunzipSync");
+    try {
+      // Control: by default the bomb's worst case fits the 32 MiB fast path,
+      // so Bun's own decoder runs (and the size is checked afterwards).
+      const fast = await built(bomb, "gzip", { maxContentLength: "64kb" });
+      expect(fast.isPayloadTooLarge).toBe(true);
+      expect(gunzip).toHaveBeenCalledTimes(1);
+      gunzip.mockClear();
+
+      const req = await built(bomb, "gzip", {
+        maxContentLength: "64kb",
+        decompressionFastPathLimit: 0,
+      });
+      expect(req.isPayloadTooLarge).toBe(true);
+      expect(req.payloadTooLarge?.limit).toBe(64 * 1024);
+      // `0` disables Bun's uncapped decoder: node:zlib stopped at the limit.
+      expect(gunzip).not.toHaveBeenCalled();
+    } finally {
+      gunzip.mockRestore();
+    }
+  });
+
+  it("setParseBodyOptions re-resolves the decoding options, back to the defaults when omitted", async () => {
+    const req = await built(gzipSync(json), "gzip", false);
+    req.setParseBodyOptions({ inflate: false });
+    await expect(req.parseBody()).rejects.toMatchObject({ statusCode: 415 });
+
+    const reset = await built(gzipSync(json), "gzip", false);
+    reset.setParseBodyOptions({ inflate: false });
+    reset.setParseBodyOptions({});
+    expect((await reset.parseBody()).body).toEqual({ a: 1 });
+  });
+
+  it("a decompressionFastPathLimit that is not a non-negative number is a RangeError", async () => {
+    const req = await built(gzipSync(json), "gzip", false);
+    for (const decompressionFastPathLimit of [-1, Number.NaN]) {
+      expect(() =>
+        req.setParseBodyOptions({ decompressionFastPathLimit }),
+      ).toThrow(RangeError);
+      await expect(
+        req.handleBodyParsing(true, { decompressionFastPathLimit }),
+      ).rejects.toBeInstanceOf(RangeError);
+    }
   });
 });
