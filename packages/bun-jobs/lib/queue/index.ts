@@ -22,6 +22,7 @@ export {
 } from "./isolation";
 export { Job } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
+export { JobDraft, type RepeatEveryOptions } from "./JobDraft";
 export {
   DEFAULT_LIMITS_REFRESH_MS,
   type NameLimits,
