@@ -3,10 +3,30 @@
   "type": "module",
   "version": "2.2.0",
   "private": false,
-  "description": "> TODO: description",
+  "description": "An Express-like HTTP layer for Bun.serve: BunRouter with Express 5 semantics, BunHttpAdapter, BunRequest/BunResponse, Standard Schema validation, CORS, static files, compression, multipart uploads, WebSockets and structured logging",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
-  "homepage": "",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-common#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-common"
+  },
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
+  "keywords": [
+    "bun",
+    "http",
+    "router",
+    "express",
+    "middleware",
+    "websocket",
+    "multipart",
+    "validation",
+    "standard-schema",
+    "cors"
+  ],
   "main": "lib/index.ts",
   "types": "lib/index.ts",
   "publishConfig": {

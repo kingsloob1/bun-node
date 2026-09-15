@@ -3,10 +3,29 @@
   "type": "module",
   "version": "2.2.0",
   "private": false,
-  "description": "> TODO: description",
+  "description": "NestJS on Bun: an HTTP adapter matching @nestjs/platform-express, multer-style file upload interceptors and a WebSocket adapter for @WebSocketGateway, built on @kingsleyweb/bun-common",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
-  "homepage": "",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-nest#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-nest"
+  },
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
+  "keywords": [
+    "bun",
+    "nestjs",
+    "nest",
+    "adapter",
+    "http-adapter",
+    "websocket",
+    "gateway",
+    "file-upload",
+    "multipart"
+  ],
   "main": "lib/index.ts",
   "types": "lib/index.ts",
   "publishConfig": {
