@@ -25,6 +25,8 @@ export { BunJobs, type BunJobsOptions, jobsFromContext } from "./BunJobs";
  * backends implementing it.
  * ------------------------------------------------------------------ */
 export {
+  type ChildOutcome,
+  type ChildRecordResult,
   type ClaimOptions,
   type ColumnRow,
   createDriver,
@@ -39,8 +41,10 @@ export {
   FileDriver,
   type FileDriverOptions,
   type IndexRow,
+  type JobFlow,
   type JobPatch,
   type JobRecord,
+  type JobRef,
   type JobsDriver,
   type JobState,
   type LockInfo,
@@ -201,6 +205,7 @@ export { TypedEmitterBase } from "./shared/emitter";
  * ------------------------------------------------------------------ */
 export {
   ChildExitError,
+  ChildFailedError,
   ConfigError,
   DriverError,
   InvalidHandlerError,

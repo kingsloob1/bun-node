@@ -253,9 +253,101 @@ export type JobState =
   | "active"
   | "completed"
   | "failed"
-  | "dead";
+  | "dead"
+  /** A parent in a flow, not yet runnable: some of its children have not settled. */
+  | "waiting-children";
 
-/** How long finished jobs are kept. */
+/** Where a job in a flow lives: its queue, in the same namespace, and its id. */
+export interface JobRef {
+  /** The queue the job belongs to. */
+  queue: string;
+  /** The job's id. */
+  id: string;
+}
+
+/**
+ * A job's place in a flow — a parent waiting on children, a child with a
+ * parent, or both, in a tree more than one level deep.
+ *
+ * Kept as one value on the record so every driver stores it the same way:
+ * one column, field or hash entry rather than one per detail.
+ */
+export interface JobFlow {
+  /** The job this one is a child of, when it is one. */
+  parent: JobRef | null;
+  /** The jobs this one waits on, when it is a parent. */
+  children: JobRef[];
+  /** How many of `children` have not settled yet. */
+  pending: number;
+  /** Results of children that completed, keyed `queue:id`. */
+  values: Record<string, unknown>;
+  /** Failures of children marked `ignoreFailure`, keyed `queue:id`. */
+  failures: Record<string, SerializedError>;
+  /**
+   * Whether this child's outcome has been recorded on its parent. Until it
+   * has, the child is kept whatever its retention says, so its outcome can
+   * still be delivered after a crash between the two steps.
+   */
+  recorded: boolean;
+}
+
+/** How a child ended, as recorded on its parent. */
+export type ChildOutcome =
+  | {
+      /** The child completed. */
+      completed: true;
+      /** What its processor returned. */
+      value: unknown;
+    }
+  | {
+      /** The child failed for good. */
+      completed: false;
+      /** Why. */
+      error: SerializedError;
+      /** Whether the child was marked `ignoreFailure`, so the parent carries on. */
+      ignored: boolean;
+    };
+
+/**
+ * What recording a child's outcome on its parent did.
+ *
+ * Every answer but `"missing"` and `"parent-dead"` means the parent has what it
+ * will ever need from this child, so the child's own retention may apply.
+ */
+export type ChildRecordResult =
+  /**
+   * The outcome was new and is now on the parent, which still waits on other
+   * children — or is `dead`, and keeps a completed or ignored outcome for when
+   * it is retried.
+   */
+  | "recorded"
+  /**
+   * The outcome was new, and was the last one the parent waited on: it is now
+   * `waiting`, or `delayed` when its `runAt` is later.
+   */
+  | "released"
+  /** The outcome was a failure not ignored, and buried the parent: `dead`. */
+  | "buried"
+  /** The parent already had it, or has moved on and no longer waits. */
+  | "already"
+  /**
+   * The parent is `dead` and the outcome is a failure not ignored, so nothing
+   * was stored. The child should stay as it is — a retry of the parent sees it
+   * unsettled, and the child can be retried in turn.
+   */
+  | "parent-dead"
+  /**
+   * There is no such parent, or it does not list this child: a flow still
+   * being added children first, one cut short, or a parent removed.
+   */
+  | "missing";
+
+/**
+ * How long finished jobs are kept.
+ *
+ * Neither a count sweep nor a TTL ever removes a child in a flow whose outcome
+ * its parent has not recorded yet (`flow.parent` set, `flow.recorded` false).
+ */
 export type Retention = boolean | number | { count?: number; ttl?: number };
 
 /** A job's options after defaults are applied. */
@@ -298,6 +390,11 @@ export interface ResolvedJobOptions {
    * one; readers fall back to the default.
    */
   keepLogs?: number;
+  /**
+   * For a child in a flow: whether its failing leaves its parent to carry on
+   * rather than failing it. Absent means `false`.
+   */
+  ignoreFailure?: boolean;
 }
 
 /** A job as stored. */
@@ -346,6 +443,8 @@ export interface JobRecord {
   workerId: string | null;
   /** The repeat definition that produced it, when it is a repeat instance. */
   repeatKey: string | null;
+  /** Its place in a flow, or `null` for a job that is in none. */
+  flow: JobFlow | null;
 }
 
 /** A value stored on a queue, and the version a write must name to replace it. */
@@ -624,6 +723,70 @@ export interface QueueDriver {
     id: string,
     opts: { offset: number; limit: number; order: "asc" | "desc" },
   ) => Promise<{ logs: string[]; count: number }>;
+  /**
+   * Records how a child ended on its parent, in `q`, and moves the parent on,
+   * atomically.
+   *
+   * Repeat-safe: an outcome the parent already holds changes nothing and
+   * answers `"already"`, which is what lets a crash between completing a child
+   * and recording it be healed by recording again. A parent that does not list
+   * `child` among its children answers `"missing"`, as a parent that does not
+   * exist does.
+   *
+   * - **Parent in `waiting-children`:** a completed child, or a failure marked
+   *   ignored, is stored and counted off — `"recorded"`, or `"released"` when
+   *   none are left and the parent becomes `waiting` (or `delayed`, if its
+   *   `runAt` is later). A failure not ignored buries the parent: `dead`, with
+   *   `error` as its reason — `"buried"`.
+   * - **Parent `dead`:** a completed or ignored outcome is stored, with no
+   *   change to the state or the count, so a retry of the parent finds it —
+   *   `"recorded"`. A failure not ignored stores nothing — `"parent-dead"`.
+   * - **Any other state:** `"already"`.
+   */
+  recordChild?: (
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ) => Promise<ChildRecordResult>;
+  /**
+   * Returns a parent that was buried by a child's failure to waiting on the
+   * children it has no outcome for, with the reason it was buried cleared.
+   * Answers whether it moved.
+   *
+   * Acts only on a `dead` job with a flow. The count left is taken in the same
+   * atomic step, from the parent's children with no entry in `values` or
+   * `failures` — never from the children's states, since a child removed after
+   * its outcome was stored has settled, and a failed child removed before one
+   * was has not. Outcomes already recorded are kept. With none left the parent
+   * goes to `waiting`, or `delayed` when its `runAt` is later; otherwise to
+   * `waiting-children`.
+   *
+   * This, not {@link QueueDriver.retryJob}, is how a queue retries a buried
+   * parent. Optional, with `recordChild` and `markChildRecorded`: a driver
+   * without all three cannot run flows.
+   */
+  requeueParent?: (q: QueueRef, id: string, now: number) => Promise<boolean>;
+  /**
+   * Marks a child's outcome as recorded on its parent, and applies the
+   * retention its completion or failure deferred.
+   *
+   * `retention` is the child's `removeOnComplete` or `removeOnFail`, applied
+   * exactly as `completeJob` and `failJob` would have: removal, a TTL expiry,
+   * or the count sweep — only while the job is `completed` or `dead`. Answers
+   * `false` when there is no such job.
+   *
+   * Also how a flow's top-level parent, buried by a child, gets the
+   * `removeOnFail` its bury could not apply: it has no parent, so the mark
+   * itself means nothing for it.
+   */
+  markChildRecorded?: (
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ) => Promise<boolean>;
   /** One job by id, or `null`. */
   getJob: (q: QueueRef, id: string) => Promise<JobRecord | null>;
   /**
@@ -642,7 +805,24 @@ export interface QueueDriver {
   countJobs: (q: QueueRef) => Promise<Record<JobState, number>>;
   /** Removes a job. Refuses (returns `false`) while it is active. */
   removeJob: (q: QueueRef, id: string) => Promise<boolean>;
-  /** Returns a finished job to `waiting`, optionally resetting its attempts. */
+  /**
+   * Returns a finished job to `waiting`, optionally resetting its attempts.
+   *
+   * Refuses (returns `false`) a job that is `active`, `waiting` or
+   * `waiting-children` — the last is not finished, and moving it would run a
+   * parent before its children have settled.
+   *
+   * **Not flow-aware, on purpose.** A `dead` parent that a child's failure
+   * buried goes straight to `waiting` here, and would run without the results
+   * it waits on. A queue must route such a parent through
+   * {@link QueueDriver.requeueParent} instead, as `BunQueue.retry`,
+   * `retryJobs`, `retryAll` and `Job.retry` all do; calling this directly on
+   * one is the caller's decision to run the parent regardless.
+   *
+   * A child in a flow has its `flow.recorded` cleared by the same write: the
+   * outcome it will end with has not reached its parent yet, so until it does
+   * its retention must wait and maintenance must be able to find it.
+   */
   retryJob: (
     q: QueueRef,
     id: string,
@@ -663,15 +843,33 @@ export interface QueueDriver {
     maxStalledCount: number,
     limit: number,
   ) => Promise<{ requeued: string[]; dead: string[] }>;
-  /** Removes finished jobs older than `olderThanMs`, returning their ids. */
+  /**
+   * Removes jobs in `state` older than `olderThanMs`, returning their ids.
+   *
+   * Age is `finishedOn` when the job has one, else `createdAt`. Cleaning a
+   * parent in `waiting-children` leaves its children: they record into a
+   * missing parent, then their own retention applies.
+   */
   cleanJobs: (
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
   ) => Promise<string[]>;
-  /** Removes jobs whose retention TTL has passed. */
+  /**
+   * Removes jobs whose retention TTL has passed.
+   *
+   * Like the count sweep every retention runs, it skips a child in a flow whose
+   * outcome has not been recorded on its parent (`flow.parent` set,
+   * `flow.recorded` false): removing it would lose that outcome.
+   */
   pruneExpired: (q: QueueRef, now: number, limit: number) => Promise<number>;
   /** Removes every pending job, returning how many went. */
   drainQueue: (q: QueueRef, includeDelayed: boolean) => Promise<number>;

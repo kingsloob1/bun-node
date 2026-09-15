@@ -133,6 +133,46 @@ export interface JobOptions {
   keepLogs?: number;
   /** Makes this a repeatable job. */
   repeat?: RepeatOptions;
+  /**
+   * For a child in a flow: when it fails for good, its parent carries on,
+   * with the failure available beside the other children's results. By
+   * default a failed child fails its parent. Defaults to `false`.
+   */
+  ignoreFailure?: boolean;
+}
+
+/**
+ * One job in a flow, with the jobs it waits on.
+ *
+ * A job with `children` is added waiting on them and runs once they have all
+ * settled; it reads their results with `job.getChildrenValues()`. Children
+ * may be in any queue of the same namespace, and have children of their own.
+ */
+export interface FlowNode<TData = unknown> {
+  /** The job's name. */
+  name: string;
+  /** Its payload. */
+  data: TData;
+  /**
+   * Its options. `repeat`, `debounce` and `throttle` are not allowed in a
+   * flow; `ignoreFailure` on a child lets its parent carry on without it.
+   */
+  opts?: JobOptions;
+  /**
+   * The queue it goes in, in the same namespace. Defaults to its parent's
+   * queue, and for the top of the flow to the queue `addFlow` is called on.
+   */
+  queue?: string;
+  /** The jobs that must settle before this one runs. */
+  children?: FlowNode[];
+}
+
+/** A flow as it was added: each job, with its children in the same shape. */
+export interface FlowResult<TData = unknown, TResult = unknown> {
+  /** The job. */
+  job: Job<TData, TResult>;
+  /** Its children, in the order they were given. */
+  children: FlowResult[];
 }
 
 /** Which debounce or throttle a job belongs to, and for how long. */

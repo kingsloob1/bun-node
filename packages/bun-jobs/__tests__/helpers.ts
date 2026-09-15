@@ -77,6 +77,7 @@ export function makeJob(overrides: Partial<JobRecord> = {}): JobRecord {
     lockExpiresAt: null,
     workerId: null,
     repeatKey: null,
+    flow: null,
     ...overrides,
   };
 }

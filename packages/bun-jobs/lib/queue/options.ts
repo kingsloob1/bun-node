@@ -63,6 +63,8 @@ export function resolveJobOptions(
       : {
           deadLetter: assertSegment(merged.deadLetter, "deadLetter queue name"),
         }),
+    // Only present when set, like the others above.
+    ...(merged.ignoreFailure ? { ignoreFailure: true } : {}),
   };
 }
 

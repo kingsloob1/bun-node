@@ -1,5 +1,12 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
-import type { JobRecord, JobsDriver, QueueRef } from "../drivers/index";
+import type {
+  ChildOutcome,
+  ChildRecordResult,
+  JobRecord,
+  JobRef,
+  JobsDriver,
+  QueueRef,
+} from "../drivers/index";
 import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
 import type { Reservation } from "./limits";
@@ -18,6 +25,7 @@ import {
   sleep,
   withTimeout,
 } from "@kingsleyweb/bun-common";
+import { awaitsDelivery, flowKey } from "../drivers/flow";
 import {
   claimJobBatch,
   CompletionBatcher,
@@ -32,6 +40,7 @@ import {
 } from "../shared/constants";
 import { TypedEmitterBase } from "../shared/emitter";
 import {
+  ChildFailedError,
   ConfigError,
   JobTimeoutError,
   LockLostError,
@@ -52,6 +61,58 @@ import { supportsWindowSweep, sweepWindows } from "./windows";
 
 /** How many jobs one maintenance sweep touches. */
 const MAINTENANCE_BATCH = 100;
+
+/**
+ * How long a parent may list a child that does not exist before the child is
+ * treated as failed. Long enough for a flow still being added to finish; a
+ * child still missing after it was never added, or was removed by hand.
+ */
+const FLOW_MISSING_GRACE_MS = 60_000;
+
+/**
+ * How many times an unfinished flow delivery is retried on its own short timer
+ * before it is left to the maintenance passes. A flow is added children first,
+ * so a quick child can finish before its parent exists; these retries are what
+ * deliver it promptly once the parent does, rather than a `stalledInterval`
+ * later.
+ */
+const FAST_REDELIVERY_ATTEMPTS = 8;
+
+/** The first fast retry's delay; each one after waits twice as long, to 5s. */
+const FAST_REDELIVERY_BASE_MS = 50;
+
+/**
+ * How many children one maintenance pass reads while checking the parents
+ * waiting on them. Bounds the pass however wide a flow is; the next pass
+ * resumes at the child this one stopped on.
+ */
+const FLOW_HEAL_LOOKUPS = 100;
+
+/** How a finished child ended, before it is shaped for its parent. */
+type SettledOutcome =
+  | {
+      /** It completed. */
+      completed: true;
+      /** What its processor returned, as stored. */
+      value: unknown;
+    }
+  | {
+      /** It failed for good. */
+      completed: false;
+      /** Its own reason, not yet wrapped for the parent. */
+      error: SerializedError;
+    };
+
+/** How a stored `completed` or `dead` job ended. */
+function settledOutcome(record: JobRecord): SettledOutcome {
+  return record.state === "completed"
+    ? { completed: true, value: record.returnValue }
+    : {
+        completed: false,
+        error:
+          record.failedReason ?? serializeError(new Error("the child failed")),
+      };
+}
 
 /** The longest a worker held back by a concurrency limit waits before asking again. */
 const LIMITED_RECHECK_MS = 100;
@@ -155,6 +216,41 @@ export class BunQueueWorker<
   readonly #limiter: QueueLimiter | undefined;
   /** Where the next sweep of debounce and throttle pointers resumes. */
   #windowCursor: string | undefined;
+  /**
+   * Where the next pass over parents waiting on children resumes: a page
+   * offset into them, and the child of that page's first parent to start at.
+   * Wraps to the start after the last page.
+   */
+  #parentsCursor = { offset: 0, child: 0 };
+  /**
+   * Where the next pass over finished jobs looking for unrecorded children
+   * resumes: the state, `completed` then `dead`, and an offset into it.
+   */
+  #childrenCursor: { state: "completed" | "dead"; offset: number } = {
+    state: "completed",
+    offset: 0,
+  };
+
+  /**
+   * Flow deliveries this worker started and could not finish — a write that
+   * failed, or a parent not there yet — by `queue:id`, with how many tries
+   * they have had and the fast retry timer, if one is set. Tried again before
+   * any maintenance scan.
+   */
+  readonly #redeliveries = new Map<
+    string,
+    {
+      /** The child's queue. */
+      queue: string;
+      /** The child's id. */
+      id: string;
+      /** Tries so far. */
+      attempts: number;
+      /** The pending fast retry, if any. */
+      timer?: ReturnType<typeof setTimeout>;
+    }
+  >();
+
   /**
    * How long to wait before claiming again after a pass the limits held back,
    * or `undefined` when the last pass was not limited.
@@ -646,6 +742,7 @@ export class BunQueueWorker<
   #publish<Name extends QueueEventName>(
     type: Name,
     payload: QueueEventPayloads[Name],
+    target: string = this.queueName,
   ): Promise<void> {
     // Nothing to track, and nothing to allocate, for a worker that does not
     // publish — which is most of them, on every job.
@@ -653,7 +750,7 @@ export class BunQueueWorker<
       return SETTLED;
     }
 
-    const publishing = this.#doPublish(type, payload).finally(() => {
+    const publishing = this.#doPublish(type, payload, target).finally(() => {
       this.#publishing.delete(publishing);
     });
     this.#publishing.add(publishing);
@@ -673,10 +770,14 @@ export class BunQueueWorker<
    * error here rather than a surprise in a subscriber somewhere else. A
    * failure to publish is logged and swallowed: an observer missing an event
    * must never fail the job that produced it.
+   *
+   * `target` is the queue the event is about: this worker's own, or — for a
+   * flow parent a child here released or buried — the parent's.
    */
   async #doPublish<Name extends QueueEventName>(
     type: Name,
     payload: QueueEventPayloads[Name],
+    target: string,
   ): Promise<void> {
     await this.#publishGate?.();
 
@@ -685,7 +786,7 @@ export class BunQueueWorker<
         queueEvent(
           {
             ns: this.namespace,
-            target: this.queueName,
+            target,
             type,
             origin: this.#token,
           },
@@ -1034,6 +1135,9 @@ export class BunQueueWorker<
     const written = createDeferred<void>();
     const stored = storedResult(result);
     const retention = record.opts.removeOnComplete;
+    // A child's record stays until its parent has its result, so a crash
+    // between the two can still deliver it; its retention applies after.
+    const completionRetention = record.flow?.parent ? false : retention;
 
     /** Reports the outcome once the write has answered. */
     const settled = (kept: boolean) => {
@@ -1043,6 +1147,15 @@ export class BunQueueWorker<
           id: record.id,
           returnValue: result ?? null,
         });
+
+        if (record.flow?.parent) {
+          this.#track(
+            this.#deliverSafely(this.queueName, record, {
+              completed: true,
+              value: stored,
+            }),
+          );
+        }
       } else {
         this.safeEmit("lockLost", job);
       }
@@ -1051,7 +1164,7 @@ export class BunQueueWorker<
     this.#completions.add({
       id: record.id,
       result: stored,
-      retention,
+      retention: completionRetention,
       settle: (kept) => {
         settled(kept);
         written.resolve();
@@ -1066,7 +1179,7 @@ export class BunQueueWorker<
               record.id,
               this.#token,
               stored,
-              retention,
+              completionRetention,
               Date.now(),
             ),
         )
@@ -1084,6 +1197,494 @@ export class BunQueueWorker<
     });
 
     this.#settling.add(tracked);
+  }
+
+  /** Keeps `close()` waiting for work started off the critical path. */
+  #track(work: Promise<unknown>): void {
+    const tracked = work
+      .then(() => undefined)
+      .finally(() => {
+        this.#settling.delete(tracked);
+      });
+    this.#settling.add(tracked);
+  }
+
+  /* --- flows ---------------------------------------------------------------- */
+
+  /**
+   * {@link #deliver}, reporting rather than throwing. A delivery that fails is
+   * remembered and tried again soon, and on every maintenance pass after that,
+   * so a transient error does not wait for a scan to find it.
+   */
+  async #deliverSafely(
+    queue: string,
+    record: JobRecord,
+    outcome: SettledOutcome,
+  ): Promise<ChildRecordResult | undefined> {
+    try {
+      return await this.#deliver(queue, record, outcome);
+    } catch (error) {
+      this.#rememberDelivery(queue, record.id);
+      this.#emitError(error, "flow");
+      return undefined;
+    }
+  }
+
+  /**
+   * Tells a finished child's parent how it ended, then lets the child's own
+   * retention apply, then follows through on what that did to the parent: a
+   * released parent is announced, a buried one gets the events, dead-lettering
+   * and retention a normal bury has, and its failure travels on up the flow.
+   *
+   * Every step is repeat-safe, so a crash anywhere in here is healed by doing
+   * the whole thing again; the parent's record of the outcome is what counts.
+   *
+   * The child is marked recorded — letting its retention remove it — only once
+   * the parent needs nothing more from it. Not while there is no parent yet
+   * (a flow is added children first, so a quick child can finish before it),
+   * and not when a buried parent refuses a failure: that failed child stays, so
+   * a retry of the parent waits on it and it can be retried in turn.
+   */
+  async #deliver(
+    queue: string,
+    record: JobRecord,
+    outcome: SettledOutcome,
+  ): Promise<ChildRecordResult | undefined> {
+    const parent = record.flow?.parent;
+    if (!parent || !this.driver.recordChild || !this.driver.markChildRecorded) {
+      return undefined;
+    }
+
+    const child: JobRef = { queue, id: record.id };
+    const childRef: QueueRef = { ns: this.namespace, queue };
+    const parentRef: QueueRef = { ns: this.namespace, queue: parent.queue };
+    const ignored = record.opts.ignoreFailure === true;
+    const delivered: ChildOutcome = outcome.completed
+      ? outcome
+      : {
+          completed: false,
+          ignored,
+          error: ignored
+            ? outcome.error
+            : serializeError(new ChildFailedError(child, outcome.error)),
+        };
+    const retention = outcome.completed
+      ? record.opts.removeOnComplete
+      : record.opts.removeOnFail;
+
+    const result = await this.#persist(
+      async () =>
+        await this.driver.recordChild!(
+          parentRef,
+          parent.id,
+          child,
+          delivered,
+          Date.now(),
+        ),
+    );
+
+    // A repeat of the delivery that buried the parent — its first attempt died
+    // before the mark — reads as a refusal, and is told apart by the reason.
+    const repeatOfBury =
+      result === "parent-dead" &&
+      (await this.#wasBuriedBy(parentRef, parent.id, child));
+
+    if (result === "missing") {
+      const finishedAt = record.finishedOn ?? Date.now();
+      if (Date.now() - finishedAt <= FLOW_MISSING_GRACE_MS) {
+        // Most likely a flow still being added: its parent arrives last.
+        this.#rememberDelivery(queue, record.id);
+        return result;
+      }
+      // Past the grace period the parent is not coming: an orphan, whose own
+      // retention may now apply.
+    } else if (result === "parent-dead" && !repeatOfBury) {
+      this.#forgetDelivery(queue, record.id);
+      return result;
+    }
+
+    await this.#persist(
+      async () =>
+        await this.driver.markChildRecorded!(
+          childRef,
+          record.id,
+          retention,
+          Date.now(),
+        ),
+    );
+    this.#forgetDelivery(queue, record.id);
+
+    if (result === "released") {
+      await this.#announceReleased(parentRef, parent.id);
+    } else if (result === "buried" || repeatOfBury) {
+      const error = delivered.completed ? undefined : delivered.error;
+      await this.#afterBury(parentRef, parent.id, error, {
+        announce: result === "buried",
+      });
+    }
+
+    return result;
+  }
+
+  /** Whether a buried parent's reason names `child` as what buried it. */
+  async #wasBuriedBy(
+    ref: QueueRef,
+    id: string,
+    child: JobRef,
+  ): Promise<boolean> {
+    const parent = await this.driver.getJob(ref, id);
+    return (
+      parent?.state === "dead" &&
+      parent.failedReason?.name === ChildFailedError.name &&
+      parent.failedReason.data?.child === flowKey(child)
+    );
+  }
+
+  /** Publishes the state a parent was released to, on the parent's queue. */
+  async #announceReleased(ref: QueueRef, id: string): Promise<void> {
+    const parent = await this.driver.getJob(ref, id);
+
+    if (parent?.state === "waiting") {
+      await this.#publish("waiting", { id }, ref.queue);
+    } else if (parent?.state === "delayed") {
+      await this.#publish("delayed", { id, runAt: parent.runAt }, ref.queue);
+    }
+  }
+
+  /**
+   * Does for a parent a child buried what failing does for any job that dies:
+   * `failed` and `dead` events, a dead letter when one is configured, and
+   * retention. A nested parent's retention waits for its own parent to record
+   * it, like any child's; its failure is delivered there, which carries it on
+   * up the flow. A top-level parent applies its `removeOnFail` now.
+   */
+  async #afterBury(
+    ref: QueueRef,
+    id: string,
+    reason: SerializedError | undefined,
+    options: {
+      /** Whether to emit and publish `failed` and `dead`; not on a repeat. */
+      announce: boolean;
+    },
+  ): Promise<void> {
+    const record = await this.driver.getJob(ref, id);
+    if (!record || record.state !== "dead") {
+      return;
+    }
+
+    const error =
+      record.failedReason ??
+      reason ??
+      serializeError(new Error("buried by a child"));
+    // Local listeners hear about jobs in this worker's own queue only; other
+    // queues' listeners hear through the published events.
+    const own = ref.queue === this.queueName;
+    const job = own
+      ? new Job<TData, TResult>(this.driver, ref, record)
+      : undefined;
+
+    if (options.announce) {
+      if (job) {
+        const failure = deserializeError(error);
+        this.safeEmitScoped("failed", record.name, job, failure);
+        this.safeEmitScoped("dead", record.name, job, failure);
+      }
+      await this.#publish("failed", { id, error }, ref.queue);
+      await this.#publish("dead", { id, error }, ref.queue);
+    }
+
+    const deadLetter =
+      record.opts.deadLetter ?? (own ? this.#deadLetterQueue : undefined);
+    if (deadLetter !== undefined) {
+      await this.#fileDeadLetter(
+        deadLetter,
+        ref.queue,
+        job,
+        record,
+        error,
+        Date.now(),
+      );
+    }
+
+    if (record.flow?.parent) {
+      await this.#deliver(ref.queue, record, { completed: false, error });
+      return;
+    }
+
+    await this.#persist(
+      async () =>
+        await this.driver.markChildRecorded!(
+          ref,
+          id,
+          record.opts.removeOnFail,
+          Date.now(),
+        ),
+    );
+  }
+
+  /**
+   * Keeps a delivery that did not finish for another try: soon, on a short
+   * doubling delay for its first few attempts, and on every maintenance pass
+   * until it goes through or the child is gone.
+   */
+  #rememberDelivery(queue: string, id: string): void {
+    const key = flowKey({ queue, id });
+    const entry = this.#redeliveries.get(key) ?? { queue, id, attempts: 0 };
+    entry.attempts++;
+    this.#redeliveries.set(key, entry);
+
+    if (
+      this.#closing ||
+      entry.timer !== undefined ||
+      entry.attempts > FAST_REDELIVERY_ATTEMPTS
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(
+      () => {
+        this.#timers.delete(timer);
+        entry.timer = undefined;
+        if (!this.#closing) {
+          this.#track(this.#redeliver(key));
+        }
+      },
+      Math.min(FAST_REDELIVERY_BASE_MS * 2 ** (entry.attempts - 1), 5_000),
+    );
+    timer.unref?.();
+    entry.timer = timer;
+    this.#timers.add(timer);
+  }
+
+  /** Drops a remembered delivery that went through, or no longer applies. */
+  #forgetDelivery(queue: string, id: string): void {
+    const key = flowKey({ queue, id });
+    const entry = this.#redeliveries.get(key);
+    if (entry?.timer !== undefined) {
+      clearTimeout(entry.timer);
+      this.#timers.delete(entry.timer);
+    }
+    this.#redeliveries.delete(key);
+  }
+
+  /** Tries a remembered delivery again, from the child as it is stored now. */
+  async #redeliver(key: string): Promise<void> {
+    const entry = this.#redeliveries.get(key);
+    if (!entry) {
+      return;
+    }
+
+    const record = await this.driver
+      .getJob({ ns: this.namespace, queue: entry.queue }, entry.id)
+      .catch(() => undefined);
+
+    if (record === undefined) {
+      // The read failed: keep it for the next pass.
+      return;
+    }
+
+    if (
+      !record ||
+      !awaitsDelivery(record) ||
+      (record.state !== "completed" && record.state !== "dead")
+    ) {
+      this.#forgetDelivery(entry.queue, entry.id);
+      return;
+    }
+
+    await this.#deliverSafely(entry.queue, record, settledOutcome(record));
+  }
+
+  /**
+   * Finishes what a crash, a failed write or an early finish left half done
+   * in this queue's flows. Three steps, each bounded and resumed across passes:
+   *
+   * 1. Deliveries this worker remembers as unfinished, first.
+   * 2. Parents here waiting on children: a child that settled without the
+   *    parent knowing is delivered again; one that does not exist, once the
+   *    parent is older than the grace period, counts as failed.
+   * 3. Children here that finished and were never recorded on their parent:
+   *    delivered again, or released to their retention once their parent has
+   *    been missing past the grace period.
+   *
+   * Per pass that is at most one page of {@link MAINTENANCE_BATCH} parents,
+   * {@link FLOW_HEAL_LOOKUPS} child reads, and one page of finished jobs, plus
+   * a delivery for each thing found in need of one.
+   */
+  async #healFlows(): Promise<void> {
+    if (!this.driver.recordChild || !this.driver.markChildRecorded) {
+      return;
+    }
+
+    for (const key of [...this.#redeliveries.keys()]) {
+      if (this.#closing) {
+        return;
+      }
+      await this.#redeliver(key);
+    }
+
+    await this.#healParents();
+    await this.#healChildren();
+  }
+
+  /** Step 2 of {@link #healFlows}: parents waiting on children. */
+  async #healParents(): Promise<void> {
+    const cursor = this.#parentsCursor;
+    const parents = await this.driver.listJobs(this.ref, ["waiting-children"], {
+      offset: cursor.offset,
+      limit: MAINTENANCE_BATCH,
+      order: "asc",
+    });
+
+    // Past the end: the next pass starts again from the first parent.
+    this.#parentsCursor =
+      parents.length < MAINTENANCE_BATCH
+        ? { offset: 0, child: 0 }
+        : { offset: cursor.offset + parents.length, child: 0 };
+
+    let lookups = FLOW_HEAL_LOOKUPS;
+
+    for (const [index, parent] of parents.entries()) {
+      const flow = parent.flow;
+      if (!flow) {
+        continue;
+      }
+
+      const from = index === 0 ? cursor.child : 0;
+
+      for (let at = from; at < flow.children.length; at++) {
+        if (this.#closing) {
+          return;
+        }
+
+        const child = flow.children[at]!;
+        const key = flowKey(child);
+        if (
+          Object.hasOwn(flow.values, key) ||
+          Object.hasOwn(flow.failures, key)
+        ) {
+          continue;
+        }
+
+        if (lookups-- <= 0) {
+          // Out of reads for this pass: resume at this very child next time.
+          this.#parentsCursor = { offset: cursor.offset + index, child: at };
+          return;
+        }
+
+        const buried = await this.#healChild(parent, child);
+        if (buried) {
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Looks at one unsettled child of a waiting parent, and delivers what it
+   * finds. Answers whether the parent is now buried.
+   */
+  async #healChild(parent: JobRecord, child: JobRef): Promise<boolean> {
+    const stored = await this.driver.getJob(
+      { ns: this.namespace, queue: child.queue },
+      child.id,
+    );
+    const ours =
+      stored?.flow?.parent?.queue === this.queueName &&
+      stored.flow.parent.id === parent.id;
+
+    if (stored && ours) {
+      if (stored.state === "completed") {
+        return (
+          (await this.#deliverSafely(
+            child.queue,
+            stored,
+            settledOutcome(stored),
+          )) === "buried"
+        );
+      }
+
+      if (stored.state !== "dead") {
+        return false;
+      }
+
+      // A failure already delivered once buried this parent, which has been
+      // retried since: it waits for the child to be retried too, rather than
+      // being buried again by the failure it was retried past.
+      if (stored.opts.ignoreFailure !== true && stored.flow?.recorded) {
+        return false;
+      }
+
+      return (
+        (await this.#deliverSafely(
+          child.queue,
+          stored,
+          settledOutcome(stored),
+        )) === "buried"
+      );
+    }
+
+    // Absent, or a job of the same id that is not this parent's child.
+    if (Date.now() - parent.createdAt <= FLOW_MISSING_GRACE_MS) {
+      return false;
+    }
+
+    const error = serializeError(
+      new ChildFailedError(
+        child,
+        serializeError(
+          new Error(
+            "the child does not exist: it was never added, or was removed",
+          ),
+        ),
+      ),
+    );
+    const result = await this.driver.recordChild!(
+      this.ref,
+      parent.id,
+      child,
+      { completed: false, error, ignored: false },
+      Date.now(),
+    );
+
+    if (result !== "buried") {
+      return false;
+    }
+
+    await this.#afterBury(this.ref, parent.id, error, { announce: true });
+    return true;
+  }
+
+  /** Step 3 of {@link #healFlows}: finished children never recorded. */
+  async #healChildren(): Promise<void> {
+    const cursor = this.#childrenCursor;
+    const page = await this.driver.listJobs(this.ref, [cursor.state], {
+      offset: cursor.offset,
+      limit: MAINTENANCE_BATCH,
+      order: "asc",
+    });
+
+    this.#childrenCursor =
+      page.length < MAINTENANCE_BATCH
+        ? {
+            state: cursor.state === "completed" ? "dead" : "completed",
+            offset: 0,
+          }
+        : { state: cursor.state, offset: cursor.offset + page.length };
+
+    for (const record of page) {
+      if (this.#closing) {
+        return;
+      }
+
+      if (awaitsDelivery(record)) {
+        await this.#deliverSafely(
+          this.queueName,
+          record,
+          settledOutcome(record),
+        );
+      }
+    }
   }
 
   /** Decides whether a failed attempt is retried, and tells the driver. */
@@ -1165,7 +1766,10 @@ export class BunQueueWorker<
             record.id,
             this.#token,
             serialized,
-            { retry: false, retention: record.opts.removeOnFail },
+            {
+              retry: false,
+              retention: record.flow?.parent ? false : record.opts.removeOnFail,
+            },
             now,
             record.opts.keepStacktraces,
           ),
@@ -1181,10 +1785,24 @@ export class BunQueueWorker<
       return;
     }
 
+    if (record.flow?.parent) {
+      await this.#deliverSafely(this.queueName, record, {
+        completed: false,
+        error: serialized,
+      });
+    }
+
     const deadLetter = record.opts.deadLetter ?? this.#deadLetterQueue;
 
     if (deadLetter !== undefined) {
-      await this.#fileDeadLetter(deadLetter, job, record, serialized, now);
+      await this.#fileDeadLetter(
+        deadLetter,
+        this.queueName,
+        job,
+        record,
+        serialized,
+        now,
+      );
     }
   }
 
@@ -1196,15 +1814,20 @@ export class BunQueueWorker<
    * rather than a letter for a job that is about to be retried. The letter's id
    * is derived from the job's, so a death noticed twice files one letter — and
    * from its creation time too, so a later job reusing the id files its own.
+   *
+   * `source` is the queue the dead job is in: this worker's, or another's for
+   * a flow parent a child here buried. `job` is the view local listeners get,
+   * and is left out for a job in another queue, which they do not hear about.
    */
   async #fileDeadLetter(
     queueName: string,
-    job: Job<TData, TResult>,
+    source: string,
+    job: Job<TData, TResult> | undefined,
     record: JobRecord,
     error: SerializedError,
     now: number,
   ): Promise<void> {
-    if (queueName === this.queueName) {
+    if (queueName === source) {
       // A letter to itself would be claimed, fail, and file another.
       this.#emitError(
         new ConfigError(
@@ -1231,7 +1854,7 @@ export class BunQueueWorker<
       const letter = await queue.add(
         record.name,
         {
-          queue: this.queueName,
+          queue: source,
           id: record.id,
           name: record.name,
           data: record.data,
@@ -1239,15 +1862,17 @@ export class BunQueueWorker<
           attemptsMade: record.attemptsMade,
           diedAt: now,
         },
-        { jobId: `${this.queueName}:${record.id}:${record.createdAt}` },
+        { jobId: `${source}:${record.id}:${record.createdAt}` },
       );
 
-      this.safeEmitScoped(
-        "deadLettered",
-        record.name,
-        job,
-        letter as Job<DeadLetter<TData>, unknown>,
-      );
+      if (job) {
+        this.safeEmitScoped(
+          "deadLettered",
+          record.name,
+          job,
+          letter as Job<DeadLetter<TData>, unknown>,
+        );
+      }
     } catch (letterError) {
       this.#emitError(letterError, "deadLetter");
     }
@@ -1359,6 +1984,8 @@ export class BunQueueWorker<
         lockToken: null,
         lockExpiresAt: null,
         workerId: null,
+        // A new occurrence, in no flow, whatever the finished one belonged to.
+        flow: null,
       });
 
       await this.driver.upsertRepeat(this.ref, {
@@ -1394,6 +2021,8 @@ export class BunQueueWorker<
         void this.#publish("stalled", { ids: recovered });
         this.#wake.abort();
       }
+
+      await this.#healFlows();
     });
 
     this.#every(Math.min(this.#options.pollInterval, 1000), async () => {
@@ -1507,6 +2136,7 @@ export class BunQueueWorker<
         lockExpiresAt: null,
         workerId: null,
         repeatKey: definition.key,
+        flow: null,
       });
 
       await this.driver.upsertRepeat(this.ref, {

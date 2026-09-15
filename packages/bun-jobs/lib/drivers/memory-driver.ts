@@ -1,13 +1,17 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,
@@ -20,6 +24,7 @@ import type {
 } from "./driver";
 import { jsonClone } from "@kingsleyweb/bun-common";
 import { compareCodePoints } from "../shared/strings";
+import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 
 /**
  * The in-process driver: `Map`s, no I/O, no dependencies.
@@ -631,6 +636,126 @@ export class MemoryDriver implements JobsDriver {
     return job ? { ...job } : null;
   }
 
+  async recordChild(
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ): Promise<ChildRecordResult> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(parentId);
+    // A job that does not list this child is not its parent, whatever the
+    // child believes: a flow re-added under the same parent id, say.
+    if (!job?.flow || !listsChild(job.flow, child)) {
+      return "missing";
+    }
+
+    const flow = job.flow;
+    const key = flowKey(child);
+    if (Object.hasOwn(flow.values, key) || Object.hasOwn(flow.failures, key)) {
+      return "already";
+    }
+
+    const settles = outcome.completed || outcome.ignored;
+
+    if (job.state === "dead") {
+      if (!settles) {
+        return "parent-dead";
+      }
+      // Kept for a retry of the parent, which then does not wait on it.
+      this.#storeOutcome(flow, key, outcome);
+      return "recorded";
+    }
+
+    if (job.state !== "waiting-children") {
+      return "already";
+    }
+
+    if (!settles) {
+      // A child that failed buries its parent, which can then never run.
+      job.failedReason = jsonClone(outcome.error);
+      job.finishedOn = now;
+      this.#setState(queue, job, "dead");
+      return "buried";
+    }
+
+    this.#storeOutcome(flow, key, outcome);
+    flow.pending = Math.max(0, flow.pending - 1);
+    if (flow.pending > 0) {
+      return "recorded";
+    }
+
+    const released = job.runAt > now ? "delayed" : "waiting";
+    this.#setState(queue, job, released);
+    if (released === "waiting") {
+      this.#wake(queue);
+    }
+    return "released";
+  }
+
+  /** Stores a settled child's value or ignored failure on its parent's flow. */
+  #storeOutcome(flow: JobFlow, key: string, outcome: ChildOutcome): void {
+    if (outcome.completed) {
+      flow.values[key] = jsonClone(outcome.value ?? null);
+    } else {
+      flow.failures[key] = jsonClone(outcome.error);
+    }
+  }
+
+  async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
+    if (!job || job.state !== "dead" || !job.flow) {
+      return false;
+    }
+
+    job.flow.pending = unsettledChildren(job.flow);
+    job.failedReason = null;
+    job.finishedOn = null;
+    job.expiresAt = null;
+
+    if (job.flow.pending > 0) {
+      this.#setState(queue, job, "waiting-children");
+    } else {
+      const released = job.runAt > now ? "delayed" : "waiting";
+      this.#setState(queue, job, released);
+      if (released === "waiting") {
+        this.#wake(queue);
+      }
+    }
+
+    return true;
+  }
+
+  async markChildRecorded(
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
+    if (!job) {
+      return false;
+    }
+
+    job.flow = {
+      parent: job.flow?.parent ?? null,
+      children: job.flow?.children ?? [],
+      pending: job.flow?.pending ?? 0,
+      values: job.flow?.values ?? {},
+      failures: job.flow?.failures ?? {},
+      recorded: true,
+    };
+
+    if (job.state === "completed" || job.state === "dead") {
+      this.#applyRetention(queue, job, retention, now);
+    }
+
+    return true;
+  }
+
   async listJobs(
     q: QueueRef,
     states: JobState[],
@@ -666,6 +791,7 @@ export class MemoryDriver implements JobsDriver {
       completed: 0,
       failed: 0,
       dead: 0,
+      "waiting-children": 0,
     };
 
     for (const job of this.#queue(q).jobs.values()) {
@@ -693,7 +819,14 @@ export class MemoryDriver implements JobsDriver {
   ): Promise<boolean> {
     const queue = this.#queue(q);
     const job = queue.jobs.get(id);
-    if (!job || job.state === "active" || job.state === "waiting") {
+    // A parent waiting on children is not finished; moving it would run it
+    // before they settle.
+    if (
+      !job ||
+      job.state === "active" ||
+      job.state === "waiting" ||
+      job.state === "waiting-children"
+    ) {
       return false;
     }
 
@@ -701,6 +834,10 @@ export class MemoryDriver implements JobsDriver {
     job.runAt = now;
     job.finishedOn = null;
     job.expiresAt = null;
+    if (job.flow) {
+      // The outcome it ends with this time has not reached its parent.
+      job.flow.recorded = false;
+    }
     if (resetAttempts) {
       job.attemptsMade = 0;
       job.stalledCount = 0;
@@ -779,7 +916,13 @@ export class MemoryDriver implements JobsDriver {
 
   async cleanJobs(
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
@@ -816,7 +959,11 @@ export class MemoryDriver implements JobsDriver {
         break;
       }
 
-      if (job.expiresAt !== null && job.expiresAt <= now) {
+      if (
+        job.expiresAt !== null &&
+        job.expiresAt <= now &&
+        !awaitsDelivery(job)
+      ) {
         this.#delete(queue, job.id);
         removed++;
       }
@@ -832,6 +979,7 @@ export class MemoryDriver implements JobsDriver {
     for (const job of [...queue.jobs.values()]) {
       const drainable =
         job.state === "waiting" ||
+        job.state === "waiting-children" ||
         (includeDelayed && SCHEDULED_STATES.includes(job.state));
 
       if (drainable) {
@@ -1293,7 +1441,10 @@ export class MemoryDriver implements JobsDriver {
         );
 
       for (const stale of sameState.slice(count)) {
-        this.#delete(queue, stale.id);
+        // A child whose parent has not taken its outcome yet stays.
+        if (!awaitsDelivery(stale)) {
+          this.#delete(queue, stale.id);
+        }
       }
     }
   }

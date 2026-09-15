@@ -115,6 +115,35 @@ export class ChildExitError extends JobsError {
 }
 
 /**
+ * Why a parent in a flow was buried: one of its children failed for good, and
+ * was not marked `ignoreFailure`. Names the child, and carries its message.
+ */
+export class ChildFailedError extends JobsError {
+  /** The child that failed, as `queue:id`. */
+  readonly child: string;
+
+  constructor(
+    /** The child that failed: its queue, in the parent's namespace, and id. */
+    child: { queue: string; id: string },
+    /**
+     * Why the child failed — its own reason, or for a child that was itself a
+     * buried parent, the `ChildFailedError` that buried it. Only the message is
+     * carried, into this error's message and `context.cause`.
+     */
+    cause: { name?: string; message: string },
+    /** Extra detail to record beside `child` and `cause`, safe to log. */
+    context?: Record<string, unknown>,
+  ) {
+    super(
+      `Child ${child.queue}:${child.id} failed: ${cause.message}`,
+      "CHILD_FAILED",
+      { child: `${child.queue}:${child.id}`, cause: cause.message, ...context },
+    );
+    this.child = `${child.queue}:${child.id}`;
+  }
+}
+
+/**
  * A run was stopped on request — `kill()`, a stopping runner, a lost lock —
  * rather than failing on its own.
  *
