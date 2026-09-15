@@ -193,6 +193,94 @@ export interface RunnerInfo {
 /** What a runner instance is doing. */
 export type RunnerStatus = "idle" | "running" | "paused" | "stopped";
 
+/**
+ * What `maxResultBytes` stores in place of a result too large to keep: the
+ * size it would have been and the start of its JSON.
+ */
+export interface TruncatedRunResult {
+  /** Always `true`: marks the value as a stand-in. */
+  __truncated: true;
+  /** The size of the result's JSON, in bytes. */
+  bytes: number;
+  /** The start of the result's JSON. */
+  preview: string;
+}
+
+/**
+ * A run record as a {@link RemoteRunner} reads it: `result` typed as the
+ * runner's result — or the marker stored when it was too large to keep.
+ */
+export type RemoteRunRecord<TResult = unknown> = Omit<RunRecord, "result"> & {
+  /** The handler's return value, or the marker `maxResultBytes` left in its place. */
+  result?: TResult | TruncatedRunResult;
+};
+
+/**
+ * A snapshot of a runner assembled from what the backend holds, so it reads
+ * the same from any process sharing the driver and namespace.
+ *
+ * The configuration fields are what the owning process persisted when it
+ * started; a runner last started by a version that did not persist them
+ * reports them as `undefined`.
+ */
+export interface RemoteRunnerInfo<TResult = unknown> {
+  /** The runner's id. */
+  id: string;
+  /** The namespace it belongs to. */
+  namespace: string;
+  /** Whether the controller delegates to a runner registered in this process. */
+  isLocal: boolean;
+  /** Its display name; the id when none was persisted. */
+  name: string;
+  /** The handler file, as its owner resolved it. */
+  file?: string;
+  /** Its schedule, normalised. */
+  schedule: RunnerSchedule;
+  /**
+   * When the schedule next fires, computed from the stored schedule. An
+   * interval without an anchor counts from now, so for one it is an estimate.
+   */
+  nextRunAt: Date | null;
+  /** Where its runs execute. */
+  executionMode?: ExecutionMode;
+  /** Whether runs may overlap. */
+  runMode?: "parallel" | "single";
+  /** Whether its owner queues triggers that cannot start at once. */
+  queueRuns?: boolean;
+  /** The trigger queue's cap. */
+  maxQueuedRuns?: number;
+  /** Concurrency cap in `parallel` mode. */
+  maxConcurrency?: number;
+  /** Whether it is paused. */
+  isPaused: boolean;
+  /** Whether any process holds its single-run lock. */
+  isRunning: boolean;
+  /** Who is running it — host, pid, run id and since when — from the lock. */
+  runningOn?: { host: string; pid: number; runId: string; since: number };
+  /** Triggers waiting for an owner to drain them. */
+  queuedTriggers: number;
+  /** Lifetime counters. */
+  stats: RunnerStats;
+  /** The most recent run. */
+  lastRun?: RemoteRunRecord<TResult>;
+  /** The most recent failure. */
+  lastError?: { name: string; message: string };
+  /** When its persisted state last changed, in epoch milliseconds. */
+  updatedAt?: number;
+  /**
+   * This process's own view, present only when the runner is registered
+   * here: its instance status, its runs in flight and its ticker's next fire.
+   */
+  local?: {
+    /** The local instance's status. */
+    status: RunnerStatus;
+    /** Runs in flight in this process. */
+    activeRuns: RunRecord[];
+    /** When this instance's ticker next fires. */
+    nextRunAt: Date | null;
+  };
+}
+
 /** A run in flight in this process. */
 export interface RunHandle {
   /** The run's record, updated as it progresses. */
@@ -342,6 +430,15 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * nothing is awaited.
    */
   publishGate?: () => Promise<void>;
+  /**
+   * Subscribe to `control` events, so a change made through
+   * `BunRunnerManager.remote()` in another process — pause, resume, a new
+   * schedule, a queued trigger — applies within the driver's event latency
+   * (tens of milliseconds on every backend) instead of at the next
+   * `syncInterval`. Defaults to `false`: a subscription holds a poll, a
+   * change stream or a pub/sub connection per runner, depending on the backend.
+   */
+  remoteControl?: boolean;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */
@@ -376,6 +473,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
     | "syncInterval"
     | "forwardLogs"
     | "publish"
+    | "remoteControl"
   >
 > {
   /** The resolved absolute path (or URL string) of the handler file. */

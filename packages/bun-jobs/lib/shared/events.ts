@@ -77,8 +77,21 @@ export interface QueueEventPayloads {
   repeatScheduled: { key: string; nextRunAt: number };
 }
 
+/**
+ * What a `control` event says changed: a remote controller paused, resumed or
+ * rescheduled a runner, or queued a trigger for it.
+ */
+export type RunnerControlAction = "pause" | "resume" | "schedule" | "trigger";
+
 /** What each runner event carries on the wire, by name. */
 export interface RunnerEventPayloads {
+  /**
+   * A controller (`BunRunnerManager.remote()`) changed the runner's persisted
+   * state or queued a trigger. Published whatever the runner's `publish`
+   * option says, because it is addressed to the processes that own the
+   * runner: one started with `remoteControl` re-reads its state on hearing it.
+   */
+  control: { action: RunnerControlAction };
   /** A run began. */
   started: { runId: string };
   /** A run finished successfully. */
