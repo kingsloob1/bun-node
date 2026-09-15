@@ -262,10 +262,13 @@ adapter's call mapping in `__tests__/logging.test.ts`.
 Express 5 pipeline walk over `getMatchedLayers()` — every callback of every
 matched route.
 
-- Middleware and error handlers run in **route-registration order**; when
-  several **route handlers** match, they run in **specificity** order
-  (`routeSpecificityIteratees` — static beats param, fewer params / more
-  regexp constraints win), with registration order as the stable tie-break.
+- Middleware and error handlers run in **route-registration order**. When
+  several **route handlers** match, they also run in registration order by
+  default, like Express; the `routeSpecificity` option (or
+  `setRouteSpecificity()`) opts into **specificity** order instead — `true` for
+  the built-in ranking (`routeSpecificityIteratees` — static beats param, fewer
+  params / more regexp constraints win) or a custom comparator — with
+  registration order as the stable tie-break.
 - A callback with **4 parameters** is an **error handler**.
 - A thrown error, a rejected promise, or `next(err)` switches the pipeline to
   *error mode*: regular layers are skipped, only error handlers run (invoked
