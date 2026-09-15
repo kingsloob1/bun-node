@@ -1,0 +1,710 @@
+import type {
+  JobPage,
+  JobQuery,
+  JobRecord,
+  JobsDriver,
+  JobState,
+  QueueDriver,
+  QueueRef,
+  ThroughputBucket,
+  WorkerInfo,
+} from "./driver";
+
+/**
+ * What a management UI reads, and the fallbacks that make each read work on a
+ * driver that does not implement it natively.
+ *
+ * Every method these build on is **optional** on the contract, as the plural
+ * claim and completion were: an external driver is a supported extension
+ * point, and a required method would break every one written before it. So the
+ * queue never calls the optional method directly — it calls the function here,
+ * which takes the native path when there is one and a correct, slower one when
+ * there is not.
+ */
+
+/** How long one throughput bucket is: a minute. */
+export const THROUGHPUT_BUCKET_MS = 60_000;
+
+/**
+ * How long throughput buckets are kept, measured back from the latest minute a
+ * driver counted in: a day, which is 1,440 buckets per queue at most.
+ */
+export const THROUGHPUT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How often a driver that cannot count inside its completion statement writes
+ * what it has gathered: once a second, whatever the rate.
+ */
+export const THROUGHPUT_FLUSH_MS = 1_000;
+
+/**
+ * The queue-state prefix worker records are kept under on a driver with no
+ * native worker registry. Distinct from the debounce and throttle prefixes, so
+ * their sweep never reads one.
+ */
+export const WORKER_STATE_PREFIX = "workers:";
+
+/** How many jobs a scan reads at a time, when filtering without a native query. */
+const SCAN_PAGE = 500;
+
+/** How many single reads `getJobsByIds` sends at once without a native batch. */
+const GET_CONCURRENCY = 16;
+
+/** How many compare-and-set rounds a queue-state worker write tries. */
+const WORKER_WRITE_ATTEMPTS = 8;
+
+/** Every job state, in the order counts are reported. */
+export const JOB_STATES: readonly JobState[] = [
+  "waiting",
+  "delayed",
+  "active",
+  "completed",
+  "failed",
+  "dead",
+  "waiting-children",
+];
+
+/** A count of zero for every state. */
+export function emptyCounts(): Record<JobState, number> {
+  return {
+    waiting: 0,
+    delayed: 0,
+    active: 0,
+    completed: 0,
+    failed: 0,
+    dead: 0,
+    "waiting-children": 0,
+  };
+}
+
+/** The start of the minute `now` falls in. */
+export function throughputBucket(now: number): number {
+  return Math.floor(now / THROUGHPUT_BUCKET_MS) * THROUGHPUT_BUCKET_MS;
+}
+
+/* ------------------------------------------------------------------ *
+ * Filtering
+ * ------------------------------------------------------------------ */
+
+/**
+ * A query's filters, normalised once: `search` lower-cased and dropped when
+ * empty, `names` as a set. `null` means the query filters nothing.
+ */
+export interface JobFilter {
+  /** Names to match exactly, or `undefined` for any. */
+  names: Set<string> | undefined;
+  /** The search, lower-cased, or `undefined` for none. */
+  search: string | undefined;
+}
+
+/** The filters a query asks for, or `null` when it asks for none. */
+export function jobFilter(
+  query: Pick<JobQuery, "names" | "search">,
+): JobFilter | null {
+  const search =
+    query.search === undefined || query.search === ""
+      ? undefined
+      : query.search.toLowerCase();
+  const names = query.names === undefined ? undefined : new Set(query.names);
+
+  return search === undefined && names === undefined ? null : { names, search };
+}
+
+/**
+ * Whether an id and name pass a filter: the name is one of `names`, and the
+ * search is a substring of the id or the name, ignoring case.
+ */
+export function matchesFilter(
+  filter: JobFilter,
+  id: string,
+  name: string,
+): boolean {
+  if (filter.names && !filter.names.has(name)) {
+    return false;
+  }
+
+  if (filter.search === undefined) {
+    return true;
+  }
+
+  return (
+    id.toLowerCase().includes(filter.search) ||
+    name.toLowerCase().includes(filter.search)
+  );
+}
+
+/**
+ * `value` escaped for a SQL `LIKE` whose escape character is `!`, so `%`, `_`
+ * and `!` match themselves. `!` rather than a backslash: MySQL reads a
+ * backslash inside a string literal as an escape of its own, so `ESCAPE '\'`
+ * cannot be spelled the same way on every engine, and `!` can.
+ */
+export function escapeLike(value: string): string {
+  return value.replace(/[!%_]/g, (character) => `!${character}`);
+}
+
+/** `value` escaped so a regular expression matches it literally. */
+export function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/**
+ * A page of jobs matching a query, with a total when asked for.
+ *
+ * The native {@link QueueDriver.findJobs} when the driver has it. Otherwise:
+ *
+ * - **no filter** is one `listJobs`, and a total is the sum of those states'
+ *   counts, so an unfiltered page costs what it always did plus one count;
+ * - **a filter** walks the states in their natural order a page of
+ *   {@link SCAN_PAGE} at a time, skipping `offset` matches and keeping `limit`.
+ *   Linear in the jobs in those states — it stops early unless a total is
+ *   wanted, which has to see every one.
+ */
+export async function findJobPage(
+  driver: QueueDriver,
+  q: QueueRef,
+  query: JobQuery,
+): Promise<JobPage> {
+  if (driver.findJobs) {
+    return await driver.findJobs(q, query);
+  }
+
+  return await findJobsByScan(driver, q, query);
+}
+
+/** {@link findJobPage} without the native path: exported so it can be tested on every driver. */
+export async function findJobsByScan(
+  driver: QueueDriver,
+  q: QueueRef,
+  query: JobQuery,
+): Promise<JobPage> {
+  const filter = jobFilter(query);
+  const offset = Math.max(0, Math.floor(query.offset));
+  const limit = Math.max(0, Math.floor(query.limit));
+
+  if (!filter) {
+    const jobs =
+      limit === 0
+        ? []
+        : await driver.listJobs(q, query.states, {
+            offset,
+            limit,
+            order: query.order,
+          });
+
+    if (!query.total) {
+      return { jobs };
+    }
+
+    return { jobs, total: sumStates(await driver.countJobs(q), query.states) };
+  }
+
+  const jobs: JobRecord[] = [];
+  let skip = offset;
+  let total = 0;
+  let from = 0;
+
+  for (;;) {
+    const page = await driver.listJobs(q, query.states, {
+      offset: from,
+      limit: SCAN_PAGE,
+      order: query.order,
+    });
+
+    for (const record of page) {
+      if (!matchesFilter(filter, record.id, record.name)) {
+        continue;
+      }
+
+      total++;
+
+      if (skip > 0) {
+        skip--;
+      } else if (jobs.length < limit) {
+        jobs.push(record);
+      }
+    }
+
+    if (page.length < SCAN_PAGE || (!query.total && jobs.length >= limit)) {
+      break;
+    }
+
+    from += page.length;
+  }
+
+  return query.total ? { jobs, total } : { jobs };
+}
+
+/** The sum of the counts of some states, each counted once. */
+export function sumStates(
+  counts: Record<JobState, number>,
+  states: JobState[],
+): number {
+  let sum = 0;
+  for (const state of new Set(states)) {
+    sum += counts[state] ?? 0;
+  }
+  return sum;
+}
+
+/* ------------------------------------------------------------------ *
+ * Batch reads
+ * ------------------------------------------------------------------ */
+
+/**
+ * Several jobs by id: one entry per id in the order given, `null` for a
+ * missing one. The native {@link QueueDriver.getJobs} when the driver has it,
+ * otherwise {@link getJobsByLoop}.
+ */
+export async function getJobsByIds(
+  driver: QueueDriver,
+  q: QueueRef,
+  ids: string[],
+): Promise<(JobRecord | null)[]> {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  if (driver.getJobs) {
+    return await driver.getJobs(q, ids);
+  }
+
+  return await getJobsByLoop(driver, q, ids);
+}
+
+/**
+ * {@link getJobsByIds} through `getJob`, {@link GET_CONCURRENCY} at a time, and
+ * each distinct id read once however often it is given.
+ */
+export async function getJobsByLoop(
+  driver: QueueDriver,
+  q: QueueRef,
+  ids: string[],
+): Promise<(JobRecord | null)[]> {
+  const distinct = [...new Set(ids)];
+  const found = new Map<string, JobRecord | null>();
+
+  for (let at = 0; at < distinct.length; at += GET_CONCURRENCY) {
+    const chunk = distinct.slice(at, at + GET_CONCURRENCY);
+    const records = await Promise.all(
+      chunk.map(async (id) => await driver.getJob(q, id)),
+    );
+    chunk.forEach((id, index) => found.set(id, records[index] ?? null));
+  }
+
+  return orderByIds(ids, found);
+}
+
+/**
+ * Answers `ids` in order from records found in any order: a record per id,
+ * `null` where none was found. Each answer is its own object, so a caller
+ * changing one entry of a repeated id does not change the other.
+ */
+export function orderByIds(
+  ids: string[],
+  found: Map<string, JobRecord | null>,
+): (JobRecord | null)[] {
+  const seen = new Set<string>();
+
+  return ids.map((id) => {
+    const record = found.get(id) ?? null;
+    if (!record) {
+      return null;
+    }
+    if (seen.has(id)) {
+      return structuredClone(record);
+    }
+    seen.add(id);
+    return record;
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Workers
+ * ------------------------------------------------------------------ */
+
+/**
+ * Whether a driver can keep worker records at all: natively, or in queue
+ * state.
+ */
+export function supportsWorkers(driver: QueueDriver): boolean {
+  return (
+    hasNativeWorkers(driver) ||
+    (typeof driver.getQueueState === "function" &&
+      typeof driver.setQueueState === "function" &&
+      typeof driver.listQueueState === "function")
+  );
+}
+
+/** Whether a driver implements all three worker methods itself. */
+function hasNativeWorkers(driver: QueueDriver): boolean {
+  return (
+    typeof driver.registerWorker === "function" &&
+    typeof driver.removeWorker === "function" &&
+    typeof driver.listWorkers === "function"
+  );
+}
+
+/**
+ * Writes a worker's record: natively, or as a queue-state entry named
+ * `workers:<id>`.
+ *
+ * The queue-state path costs a read and a compare-and-set per report, which at
+ * one report every few seconds is nothing — and never anything per job. A write
+ * that keeps losing the compare-and-set is given up rather than retried
+ * forever: the next report writes again.
+ */
+export async function registerWorkerRecord(
+  driver: QueueDriver,
+  q: QueueRef,
+  worker: WorkerInfo,
+): Promise<void> {
+  if (hasNativeWorkers(driver)) {
+    await driver.registerWorker!(q, worker);
+    return;
+  }
+
+  const name = `${WORKER_STATE_PREFIX}${worker.id}`;
+
+  for (let attempt = 0; attempt < WORKER_WRITE_ATTEMPTS; attempt++) {
+    const current = await driver.getQueueState!(q, name);
+    const written = await driver.setQueueState!(
+      q,
+      name,
+      worker,
+      current?.version ?? null,
+    );
+
+    if (written !== null) {
+      break;
+    }
+  }
+
+  // Records lapsed as of this report go now, not only when somebody lists: a
+  // queue nobody watches would otherwise keep every dead worker's entry.
+  await listWorkerRecords(driver, q, worker.heartbeatAt);
+}
+
+/** Removes a worker's record, answering whether there was one. */
+export async function removeWorkerRecord(
+  driver: QueueDriver,
+  q: QueueRef,
+  id: string,
+): Promise<boolean> {
+  if (hasNativeWorkers(driver)) {
+    return await driver.removeWorker!(q, id);
+  }
+
+  const name = `${WORKER_STATE_PREFIX}${id}`;
+
+  for (let attempt = 0; attempt < WORKER_WRITE_ATTEMPTS; attempt++) {
+    const current = await driver.getQueueState!(q, name);
+    if (!current) {
+      return false;
+    }
+
+    if (
+      (await driver.setQueueState!(q, name, null, current.version)) !== null
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * The live workers on a queue at `now`, ordered by `startedAt` then id.
+ *
+ * Through queue state this is a listing and a read per record, and every
+ * lapsed record found is deleted on the way — conditionally on the version
+ * read, so a worker that reported again in between keeps its record.
+ */
+export async function listWorkerRecords(
+  driver: QueueDriver,
+  q: QueueRef,
+  now: number,
+): Promise<WorkerInfo[]> {
+  if (hasNativeWorkers(driver)) {
+    return await driver.listWorkers!(q, now);
+  }
+
+  const live: WorkerInfo[] = [];
+  let after: string | undefined;
+
+  for (;;) {
+    const names = await driver.listQueueState!(q, {
+      prefix: WORKER_STATE_PREFIX,
+      limit: 200,
+      ...(after !== undefined ? { after } : {}),
+    });
+
+    for (const name of names) {
+      const entry = await driver.getQueueState!(q, name);
+      const worker = entry?.value as WorkerInfo | undefined;
+
+      if (!entry || !worker) {
+        continue;
+      }
+
+      if (worker.expiresAt > now) {
+        live.push(worker);
+      } else {
+        await driver.setQueueState!(q, name, null, entry.version);
+      }
+    }
+
+    if (names.length < 200) {
+      break;
+    }
+
+    after = names.at(-1);
+  }
+
+  return sortWorkers(live);
+}
+
+/** Workers ordered by when they started, then by id. */
+export function sortWorkers(workers: WorkerInfo[]): WorkerInfo[] {
+  return workers.sort(
+    (a, b) =>
+      a.startedAt - b.startedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Aggregates
+ * ------------------------------------------------------------------ */
+
+/**
+ * Counts per state for every queue in a namespace: every queue `listQueues`
+ * names, and any the counts name that it does not, each with every state.
+ *
+ * The native {@link QueueDriver.countJobsByQueue} is one query; without it,
+ * one `countJobs` per queue.
+ */
+export async function countQueues(
+  driver: JobsDriver,
+  ns: string,
+): Promise<Map<string, Record<JobState, number>>> {
+  const names = await driver.listQueues(ns);
+  const counts = new Map<string, Record<JobState, number>>();
+
+  if (driver.countJobsByQueue) {
+    const grouped = await driver.countJobsByQueue(ns);
+
+    for (const name of new Set([...names, ...Object.keys(grouped)])) {
+      counts.set(name, { ...emptyCounts(), ...grouped[name] });
+    }
+  } else {
+    for (const name of names) {
+      counts.set(name, await driver.countJobs({ ns, queue: name }));
+    }
+  }
+
+  return new Map([...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+/* ------------------------------------------------------------------ *
+ * Throughput
+ * ------------------------------------------------------------------ */
+
+/**
+ * Buckets summed by minute, oldest first, dropping any outside `[from, to]`
+ * and any with nothing in them. For a backend that stores a minute in more
+ * than one row — one per process, so writers never contend on a row.
+ */
+export function sumBuckets(
+  rows: Iterable<{ at: number; completed: number; failed: number }>,
+  range: { from: number; to: number },
+): ThroughputBucket[] {
+  const byMinute = new Map<number, ThroughputBucket>();
+
+  for (const row of rows) {
+    const at = Number(row.at);
+    if (at < range.from || at > range.to) {
+      continue;
+    }
+
+    const bucket = byMinute.get(at) ?? { at, completed: 0, failed: 0 };
+    bucket.completed += Number(row.completed) || 0;
+    bucket.failed += Number(row.failed) || 0;
+    byMinute.set(at, bucket);
+  }
+
+  return [...byMinute.values()]
+    .filter((bucket) => bucket.completed > 0 || bucket.failed > 0)
+    .sort((a, b) => a.at - b.at);
+}
+
+/** Counts gathered for one queue and minute, waiting to be written. */
+export interface PendingThroughput {
+  /** The queue. */
+  q: QueueRef;
+  /** The minute. */
+  at: number;
+  /** Jobs completed. */
+  completed: number;
+  /** Attempts failed. */
+  failed: number;
+}
+
+/**
+ * What a throughput writer answers with: the counts that did not land, and why
+ * — so only those are written again, and the failure still reaches whoever
+ * asked for the write.
+ */
+export interface ThroughputWriteResult {
+  /** Counts that did not land, to be written again on the next tick. */
+  unwritten: PendingThroughput[];
+  /**
+   * The first failure behind them, when there was one. The flush that wrote
+   * the batch rejects with it once the unwritten counts are back.
+   */
+  error?: unknown;
+}
+
+/**
+ * Throughput counts gathered in memory and written once a second, for a
+ * backend that cannot count inside its completion statement.
+ *
+ * Counting a job is a `Map` update — no I/O — and the write is one statement
+ * per second per process however many jobs finished, so no job ever pays a
+ * round trip for it. The price is honesty about two things: a count reaches
+ * the backend up to {@link THROUGHPUT_FLUSH_MS} after the job finished, and a
+ * process that dies hard loses what it had not written yet.
+ *
+ * A writer answers with the counts that did **not** land, and only those are
+ * merged back and tried again on the next tick. Putting the whole batch back
+ * on any failure — as this first did — counted twice everything that had
+ * landed before the failure: the SQL writer's upserts are separate statements,
+ * and both writers delete old minutes after writing.
+ *
+ * The timer is unref'd and started only once something is counted, so an idle
+ * driver holds no process open and does no work.
+ */
+export class ThroughputBuffer {
+  /** Writes one batch, answering with the counts that did not land. */
+  readonly #write: (
+    batch: PendingThroughput[],
+  ) => Promise<ThroughputWriteResult>;
+
+  /** What has been counted and not yet written, by queue and minute. */
+  #pending = new Map<string, PendingThroughput>();
+  /** The flush timer, while one is armed. */
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  /** The write in flight, so flushes never overlap. */
+  #flushing: Promise<void> | undefined;
+
+  constructor(
+    /**
+     * Writes one batch of counts and answers with those that did not land and
+     * why; called at most once at a time. Throwing puts the whole batch back,
+     * so a writer that can tell what landed should answer rather than throw.
+     */
+    write: (batch: PendingThroughput[]) => Promise<ThroughputWriteResult>,
+  ) {
+    this.#write = write;
+  }
+
+  /** Counts one completion or failure for a queue at `now`. */
+  add(q: QueueRef, now: number, completed: number, failed: number): void {
+    if (completed === 0 && failed === 0) {
+      return;
+    }
+
+    const at = throughputBucket(now);
+    const key = `${q.ns}\n${q.queue}\n${at}`;
+    const entry = this.#pending.get(key);
+
+    if (entry) {
+      entry.completed += completed;
+      entry.failed += failed;
+    } else {
+      this.#pending.set(key, { q, at, completed, failed });
+    }
+
+    if (!this.#timer) {
+      this.#timer = setTimeout(() => {
+        this.#timer = undefined;
+        void this.flush().catch(() => undefined);
+      }, THROUGHPUT_FLUSH_MS);
+      this.#timer.unref?.();
+    }
+  }
+
+  /** Forgets everything counted for a namespace, as purging it must. */
+  forget(ns: string): void {
+    for (const [key, entry] of this.#pending) {
+      if (entry.q.ns === ns) {
+        this.#pending.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Writes everything counted so far, waiting for a write already in flight
+   * first. Resolves once nothing counted before the call is still pending.
+   */
+  async flush(): Promise<void> {
+    // A write another caller started failing is that caller's to hear about:
+    // this one only needs it finished before taking what is left.
+    while (this.#flushing) {
+      await this.#flushing.catch(() => undefined);
+    }
+
+    if (this.#pending.size === 0) {
+      return;
+    }
+
+    const batch = [...this.#pending.values()];
+    this.#pending = new Map();
+
+    this.#flushing = (async () => {
+      let result: ThroughputWriteResult;
+
+      try {
+        result = await this.#write(batch);
+      } catch (error) {
+        // A writer that throws says nothing about what landed.
+        this.#restore(batch);
+        throw error;
+      }
+
+      this.#restore(result.unwritten);
+
+      // Only the counts that failed go back, but the failure is still this
+      // caller's to hear about: swallowed, a write failing the same way every
+      // second would look, from outside, like a queue with nothing to count.
+      if (result.error !== undefined) {
+        throw result.error;
+      }
+    })().finally(() => {
+      this.#flushing = undefined;
+    });
+
+    await this.#flushing;
+  }
+
+  /** Puts counts that did not land back, for the next tick to write. */
+  #restore(entries: PendingThroughput[]): void {
+    for (const entry of entries) {
+      this.add(entry.q, entry.at, entry.completed, entry.failed);
+    }
+  }
+
+  /** Stops the timer and writes what is left. */
+  async close(): Promise<void> {
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
+
+    await this.flush().catch(() => undefined);
+
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
+  }
+}

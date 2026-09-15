@@ -1,14 +1,35 @@
 import type {
   ChildOutcome,
   JobFlow,
+  JobPage,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
+  JobState,
   QueueRef,
+  WorkerInfo,
 } from "../../lib/index";
 import { serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { newToken, runnerKey } from "../../lib/index";
+import {
+  countQueues,
+  emptyCounts,
+  findJobPage,
+  findJobsByScan,
+  getJobsByIds,
+  getJobsByLoop,
+  jobFilter,
+  listWorkerRecords,
+  matchesFilter,
+  newToken,
+  registerWorkerRecord,
+  removeWorkerRecord,
+  runnerKey,
+  THROUGHPUT_BUCKET_MS,
+  THROUGHPUT_RETENTION_MS,
+  throughputBucket,
+} from "../../lib/index";
 import { queueEvent } from "../../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "../helpers";
 
@@ -2537,6 +2558,898 @@ export function driverContract(
     });
 
     /* --- discovery and purge ------------------------------------------ */
+
+    /* --- read APIs ---------------------------------------------------- */
+
+    describe("read APIs", () => {
+      /**
+       * The driver with some methods hidden, so the shared fallback a queue
+       * uses for a driver without them runs against this backend too.
+       */
+      function without(methods: (keyof JobsDriver)[]): JobsDriver {
+        return new Proxy(driver, {
+          get(target, property) {
+            if (methods.includes(property as keyof JobsDriver)) {
+              return undefined;
+            }
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      }
+
+      /** A page the way a queue reads one: native first, else the scan. */
+      const finders: [
+        string,
+        (target: QueueRef, query: JobQuery) => Promise<JobPage>,
+      ][] = [
+        [
+          "driver",
+          async (target, query) => await findJobPage(driver, target, query),
+        ],
+        [
+          "scan fallback",
+          async (target, query) => await findJobsByScan(driver, target, query),
+        ],
+      ];
+
+      /**
+       * What a query must answer, worked out independently: every job in the
+       * states in the driver's own `listJobs` order, filtered here.
+       */
+      async function expected(
+        target: QueueRef,
+        query: Omit<JobQuery, "offset" | "limit">,
+      ): Promise<string[]> {
+        const all = await driver.listJobs(target, query.states, {
+          offset: 0,
+          limit: 10_000,
+          order: query.order,
+        });
+        const filter = jobFilter(query);
+        return all
+          .filter((job) => !filter || matchesFilter(filter, job.id, job.name))
+          .map((job) => job.id);
+      }
+
+      /** Ids that need care in `LIKE`, a regex, a key or a file name. */
+      const tricky: { id: string; name: string }[] = [
+        { id: "inv-001", name: "sendEmail" },
+        { id: "inv-002", name: "SendEmail" },
+        { id: "INV-003", name: "report" },
+        { id: "pct%1", name: "x" },
+        { id: "under_1", name: "x" },
+        { id: "underX1", name: "x" },
+        { id: "dot.star*", name: "x" },
+        { id: "dotXstarX", name: "x" },
+        { id: "quote'1", name: "x" },
+        { id: 'dq"1', name: "x" },
+        { id: "back\\slash", name: "x" },
+        { id: "bang!1", name: "x" },
+        { id: "paren(1)", name: "brack[et]" },
+        { id: "caret^$", name: "x" },
+        { id: "nm-1", name: 'say "hi"' },
+        { id: "nm-2", name: "back\\name" },
+        { id: "nm-3", name: "it's" },
+        { id: "plain", name: "plain-name" },
+      ];
+
+      /** Adds the tricky jobs to a fresh queue, waiting, oldest first. */
+      async function seedTricky(queue: string): Promise<QueueRef> {
+        const target: QueueRef = { ns, queue };
+        const base = Date.now() - 60_000;
+        await driver.addJobs(
+          target,
+          tricky.map((seed, index) =>
+            makeJob({
+              ...seed,
+              createdAt: base + index,
+              data: { note: "needle %_ in the payload only" },
+            }),
+          ),
+        );
+        return target;
+      }
+
+      for (const [label, find] of finders) {
+        it(`${label}: searches id and name ignoring case, never the payload`, async () => {
+          const target = await seedTricky(
+            `find-search-${label.replace(/\W/g, "")}`,
+          );
+          const ids = async (search: string): Promise<string[]> => {
+            const page = await find(target, {
+              states: ["waiting"],
+              offset: 0,
+              limit: 100,
+              order: "asc",
+              search,
+            });
+            return page.jobs.map((job) => job.id).sort();
+          };
+
+          expect(await ids("INV")).toEqual(["INV-003", "inv-001", "inv-002"]);
+          expect(await ids("sendemail")).toEqual(["inv-001", "inv-002"]);
+          expect(await ids("REPORT")).toEqual(["INV-003"]);
+          expect(await ids("needle")).toEqual([]);
+          expect(await ids("in the payload")).toEqual([]);
+        });
+
+        it(`${label}: takes every character of a search literally`, async () => {
+          const target = await seedTricky(
+            `find-literal-${label.replace(/\W/g, "")}`,
+          );
+          const ids = async (search: string): Promise<string[]> => {
+            const page = await find(target, {
+              states: ["waiting"],
+              offset: 0,
+              limit: 100,
+              order: "asc",
+              search,
+            });
+            return page.jobs.map((job) => job.id).sort();
+          };
+
+          expect(await ids("%")).toEqual(["pct%1"]);
+          expect(await ids("_")).toEqual(["under_1"]);
+          // `.` and `*` as a pattern would match `dotXstarX` too.
+          expect(await ids(".star*")).toEqual(["dot.star*"]);
+          expect(await ids("t.s")).toEqual(["dot.star*"]);
+          expect(await ids("'")).toEqual(["nm-3", "quote'1"]);
+          expect(await ids('"')).toEqual(['dq"1', "nm-1"]);
+          expect(await ids("\\")).toEqual(["back\\slash", "nm-2"]);
+          expect(await ids("!")).toEqual(["bang!1"]);
+          expect(await ids("[et]")).toEqual(["paren(1)"]);
+          expect(await ids("(1)")).toEqual(["paren(1)"]);
+          expect(await ids("^$")).toEqual(["caret^$"]);
+          expect(await ids("r_1")).toEqual(["under_1"]);
+          // The same characters in a name, which a backend may store escaped —
+          // Redis keeps names inside JSON.
+          expect(await ids('"hi"')).toEqual(["nm-1"]);
+          expect(await ids('SAY "H')).toEqual(["nm-1"]);
+          expect(await ids("\\name")).toEqual(["nm-2"]);
+          expect(await ids("t's")).toEqual(["nm-3"]);
+          // Empty is no search at all.
+          expect((await ids("")).length).toBe(tricky.length);
+        });
+
+        it(`${label}: filters by exact name, one or several, and composes with a search`, async () => {
+          const target = await seedTricky(
+            `find-names-${label.replace(/\W/g, "")}`,
+          );
+          const ids = async (query: Partial<JobQuery>): Promise<string[]> => {
+            const page = await find(target, {
+              states: ["waiting"],
+              offset: 0,
+              limit: 100,
+              order: "asc",
+              ...query,
+            });
+            return page.jobs.map((job) => job.id).sort();
+          };
+
+          expect(await ids({ names: ["sendEmail"] })).toEqual(["inv-001"]);
+          expect(await ids({ names: ["sendEmail", "report"] })).toEqual([
+            "INV-003",
+            "inv-001",
+          ]);
+          expect(await ids({ names: [] })).toEqual([]);
+          expect(await ids({ names: ["brack[et]"], search: "1" })).toEqual([
+            "paren(1)",
+          ]);
+          expect(await ids({ names: ["x"], search: "1" })).toEqual([
+            "bang!1",
+            'dq"1',
+            "pct%1",
+            "quote'1",
+            // Code-unit order: `X` sorts before `_`.
+            "underX1",
+            "under_1",
+          ]);
+        });
+
+        it(`${label}: pages a filtered read in order, with the total of every match`, async () => {
+          const target: QueueRef = {
+            ns,
+            queue: `find-pages-${label.replace(/\W/g, "")}`,
+          };
+          const base = Date.now() - 100_000;
+          const seeds: JobRecord[] = [];
+          for (let index = 0; index < 16; index++) {
+            const job = makeJob({
+              id: `page-${String(index).padStart(2, "0")}`,
+              name: index % 2 === 0 ? "even" : "odd",
+              createdAt: base + index,
+            });
+            if (index % 4 === 3) {
+              job.state = "dead";
+              job.finishedOn = base + 1000 + index;
+            }
+            seeds.push(job);
+          }
+          await driver.addJobs(target, seeds);
+
+          for (const states of [
+            ["waiting"],
+            ["waiting", "dead"],
+          ] as JobState[][]) {
+            for (const order of ["asc", "desc"] as const) {
+              const want = await expected(target, {
+                states,
+                order,
+                names: ["odd"],
+              });
+              expect(want.length).toBeGreaterThan(3);
+
+              const seen: string[] = [];
+              for (let offset = 0; offset < want.length + 3; offset += 3) {
+                const page = await find(target, {
+                  states,
+                  order,
+                  offset,
+                  limit: 3,
+                  names: ["odd"],
+                  total: true,
+                });
+                expect(page.total).toBe(want.length);
+                expect(page.jobs.every((job) => job.name === "odd")).toBe(true);
+                seen.push(...page.jobs.map((job) => job.id));
+              }
+
+              expect(seen).toEqual(want);
+            }
+          }
+
+          // The same for a search, which every job's id matches differently.
+          const searched = await expected(target, {
+            states: ["waiting", "dead"],
+            order: "asc",
+            search: "PAGE-1",
+          });
+          const page = await find(target, {
+            states: ["waiting", "dead"],
+            order: "asc",
+            offset: 1,
+            limit: 2,
+            search: "PAGE-1",
+            total: true,
+          });
+          expect(page.jobs.map((job) => job.id)).toEqual(searched.slice(1, 3));
+          expect(page.total).toBe(searched.length);
+        });
+
+        it(`${label}: totals an unfiltered read from the counts, and only when asked`, async () => {
+          const target = await seedTricky(
+            `find-total-${label.replace(/\W/g, "")}`,
+          );
+          await driver.addJob(
+            target,
+            makeJob({ id: "gone", state: "completed", finishedOn: Date.now() }),
+          );
+
+          const page = await find(target, {
+            states: ["waiting", "completed"],
+            offset: 0,
+            limit: 2,
+            order: "asc",
+            total: true,
+          });
+          expect(page.jobs).toHaveLength(2);
+          expect(page.total).toBe(tricky.length + 1);
+
+          const untotalled = await find(target, {
+            states: ["waiting"],
+            offset: 0,
+            limit: 2,
+            order: "asc",
+            search: "inv",
+          });
+          expect(untotalled.total).toBeUndefined();
+
+          const empty = await find(target, {
+            states: ["waiting"],
+            offset: 50,
+            limit: 10,
+            order: "asc",
+            search: "inv",
+            total: true,
+          });
+          expect(empty).toEqual({ jobs: [], total: 3 });
+        });
+      }
+
+      for (const [label, getMany] of [
+        ["driver", getJobsByIds],
+        ["loop fallback", getJobsByLoop],
+      ] as const) {
+        it(`${label}: gets several jobs in the order asked, null for a missing id`, async () => {
+          const target: QueueRef = {
+            ns,
+            queue: `get-many-${label.replace(/\W/g, "")}`,
+          };
+          const elsewhere: QueueRef = { ns, queue: `${target.queue}-other` };
+          await driver.addJobs(target, [
+            makeJob({ id: "a", data: { n: 1 } }),
+            makeJob({ id: "b%_'", data: { n: 2 } }),
+          ]);
+          await driver.addJob(elsewhere, makeJob({ id: "c" }));
+
+          const found = await getMany(driver, target, [
+            "b%_'",
+            "missing",
+            "a",
+            "b%_'",
+            "c",
+          ]);
+
+          expect(found.map((job) => job?.id ?? null)).toEqual([
+            "b%_'",
+            null,
+            "a",
+            "b%_'",
+            null,
+          ]);
+          expect(found[2]?.data).toEqual({ n: 1 });
+          // A repeated id is its own answer, not the same object twice.
+          expect(found[0]).not.toBe(found[3]);
+          expect(found[0]).toEqual(found[3]!);
+
+          expect(await getMany(driver, target, [])).toEqual([]);
+          expect(await getMany(driver, target, ["x", "y"])).toEqual([
+            null,
+            null,
+          ]);
+        });
+      }
+
+      /** A worker record, live for 30 seconds from `now`. */
+      function workerRecord(
+        target: QueueRef,
+        id: string,
+        now: number,
+        overrides: Partial<WorkerInfo> = {},
+      ): WorkerInfo {
+        return {
+          id,
+          queue: target.queue,
+          host: "host-a",
+          pid: 4242,
+          concurrency: 4,
+          active: 0,
+          paused: false,
+          startedAt: now,
+          heartbeatAt: now,
+          expiresAt: now + 30_000,
+          ...overrides,
+        };
+      }
+
+      for (const label of ["driver", "queue-state fallback"] as const) {
+        const target = (): JobsDriver =>
+          label === "driver"
+            ? driver
+            : without(["registerWorker", "removeWorker", "listWorkers"]);
+
+        it(`${label}: registers, updates, lists and removes workers`, async () => {
+          const d = target();
+          const wq: QueueRef = {
+            ns,
+            queue: `workers-${label.replace(/\W/g, "")}`,
+          };
+          const now = Date.now();
+
+          if (label === "driver") {
+            expect(typeof driver.registerWorker).toBe("function");
+          }
+
+          await registerWorkerRecord(d, wq, workerRecord(wq, "w-late", now));
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "w:early/1", now, { startedAt: now - 5_000 }),
+          );
+
+          expect(await listWorkerRecords(d, wq, now)).toEqual([
+            workerRecord(wq, "w:early/1", now, { startedAt: now - 5_000 }),
+            workerRecord(wq, "w-late", now),
+          ]);
+
+          // A later report replaces the record rather than adding a second.
+          const busy = workerRecord(wq, "w-late", now, {
+            active: 3,
+            paused: true,
+            concurrency: 8,
+            heartbeatAt: now + 10,
+            expiresAt: now + 40_000,
+          });
+          await registerWorkerRecord(d, wq, busy);
+          const listed = await listWorkerRecords(d, wq, now);
+          expect(listed).toHaveLength(2);
+          expect(listed[1]).toEqual(busy);
+
+          expect(await removeWorkerRecord(d, wq, "w:early/1")).toBe(true);
+          expect(await removeWorkerRecord(d, wq, "w:early/1")).toBe(false);
+          expect(
+            (await listWorkerRecords(d, wq, now)).map((w) => w.id),
+          ).toEqual(["w-late"]);
+
+          // Kept apart by queue and by namespace.
+          expect(
+            await listWorkerRecords(d, { ns, queue: `${wq.queue}-x` }, now),
+          ).toEqual([]);
+          expect(
+            await listWorkerRecords(d, { ns: other, queue: wq.queue }, now),
+          ).toEqual([]);
+        });
+
+        it(`${label}: removes lapsed records when another worker reports, not only when listed`, async () => {
+          const d = target();
+          const wq: QueueRef = {
+            ns,
+            queue: `prune-${label.replace(/\W/g, "")}`,
+          };
+          const now = Date.now();
+
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "dead-one", now, { expiresAt: now + 1_000 }),
+          );
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "live-one", now + 5_000, { startedAt: now + 1 }),
+          );
+
+          // Listed as of a moment the dead record was still live: gone anyway,
+          // because the live worker's report removed it.
+          expect(
+            (await listWorkerRecords(d, wq, now + 10)).map((w) => w.id),
+          ).toEqual(["live-one"]);
+        });
+
+        it(`${label}: stops listing a worker once its record lapses`, async () => {
+          const d = target();
+          const wq: QueueRef = {
+            ns,
+            queue: `lapse-${label.replace(/\W/g, "")}`,
+          };
+          const now = Date.now();
+
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "dying", now, { expiresAt: now + 1_000 }),
+          );
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "alive", now, { startedAt: now + 1 }),
+          );
+
+          expect(
+            (await listWorkerRecords(d, wq, now + 999)).map((w) => w.id),
+          ).toEqual(["dying", "alive"]);
+          expect(
+            (await listWorkerRecords(d, wq, now + 1_000)).map((w) => w.id),
+          ).toEqual(["alive"]);
+          expect(
+            (await listWorkerRecords(d, wq, now + 5_000)).map((w) => w.id),
+          ).toEqual(["alive"]);
+
+          // A worker that reports again after lapsing is listed again.
+          await registerWorkerRecord(
+            d,
+            wq,
+            workerRecord(wq, "dying", now + 5_000, { startedAt: now }),
+          );
+          expect(
+            (await listWorkerRecords(d, wq, now + 5_000)).map((w) => w.id),
+          ).toEqual(["dying", "alive"]);
+        });
+      }
+
+      it("counts throughput per minute in completions and failures that took effect", async () => {
+        expect(typeof driver.getThroughput).toBe("function");
+
+        const tq: QueueRef = { ns, queue: "throughput" };
+        const minute = throughputBucket(Date.now()) - 10 * THROUGHPUT_BUCKET_MS;
+        const token = newToken();
+
+        /** Adds a job and claims it at `at`, answering its id. */
+        const claimOne = async (id: string, at: number): Promise<string> => {
+          await driver.addJob(
+            tq,
+            makeJob({ id, createdAt: at - 1, runAt: at - 1 }),
+          );
+          const claimed = await driver.claimJob(tq, {
+            workerId: "w",
+            token,
+            lockMs: 60_000,
+            now: at,
+          });
+          expect(claimed?.id).toBe(id);
+          return id;
+        };
+
+        const error = serializeError(new Error("boom"));
+
+        await claimOne("c1", minute + 1_000);
+        expect(
+          await driver.completeJob(tq, "c1", token, 1, false, minute + 1_000),
+        ).toBe(true);
+        await claimOne("c2", minute + 2_000);
+        expect(
+          await driver.completeJob(tq, "c2", token, 2, true, minute + 2_000),
+        ).toBe(true);
+        await claimOne("f1", minute + 3_000);
+        expect(
+          await driver.failJob(
+            tq,
+            "f1",
+            token,
+            error,
+            // Far enough out that no later claim here promotes it.
+            { retry: true, runAt: minute + 3_600_000 },
+            minute + 3_000,
+            5,
+          ),
+        ).toBe(true);
+        await claimOne("f2", minute + 4_000);
+        expect(
+          await driver.failJob(
+            tq,
+            "f2",
+            token,
+            error,
+            { retry: false, retention: false },
+            minute + 4_000,
+            5,
+          ),
+        ).toBe(true);
+
+        // Writes that lost the lock are not counted.
+        await claimOne("lost", minute + 5_000);
+        expect(
+          await driver.completeJob(
+            tq,
+            "lost",
+            newToken(),
+            1,
+            false,
+            minute + 5_000,
+          ),
+        ).toBe(false);
+        expect(
+          await driver.failJob(
+            tq,
+            "lost",
+            newToken(),
+            error,
+            { retry: false, retention: false },
+            minute + 5_000,
+            5,
+          ),
+        ).toBe(false);
+        expect(
+          await driver.completeJob(tq, "c1", token, 1, false, minute + 5_000),
+        ).toBe(false);
+
+        // The next minute starts a new bucket.
+        await claimOne("next", minute + THROUGHPUT_BUCKET_MS + 10);
+        expect(
+          await driver.completeJob(
+            tq,
+            "next",
+            token,
+            null,
+            { ttl: 60_000 },
+            minute + THROUGHPUT_BUCKET_MS + 10,
+          ),
+        ).toBe(true);
+
+        // A batch completion counts each job it settled — two per statement
+        // here, kept and removed alike, so a count of one per statement shows.
+        const third = minute + 2 * THROUGHPUT_BUCKET_MS;
+        const batch = [
+          { id: "b1", result: 1, retention: false },
+          { id: "b2", result: 2, retention: false },
+          { id: "b3", result: 3, retention: true },
+          { id: "b4", result: 4, retention: true },
+        ] as const;
+        for (const [index, one] of batch.entries()) {
+          await claimOne(one.id, third + 1 + index);
+        }
+        const settled: string[] = [];
+        if (driver.completeJobs) {
+          settled.push(
+            ...(await driver.completeJobs(
+              tq,
+              token,
+              [...batch, { id: "not-mine", result: 5, retention: false }],
+              third + 10,
+            )),
+          );
+        } else {
+          for (const one of batch) {
+            if (
+              await driver.completeJob(
+                tq,
+                one.id,
+                token,
+                one.result,
+                one.retention,
+                third + 10,
+              )
+            ) {
+              settled.push(one.id);
+            }
+          }
+        }
+        expect(settled.sort()).toEqual(["b1", "b2", "b3", "b4"]);
+
+        expect(
+          await driver.getThroughput!(tq, { from: minute, to: third }),
+        ).toEqual([
+          { at: minute, completed: 2, failed: 2 },
+          { at: minute + THROUGHPUT_BUCKET_MS, completed: 1, failed: 0 },
+          { at: third, completed: 4, failed: 0 },
+        ]);
+
+        // `from` and `to` bound minutes by their start.
+        expect(
+          await driver.getThroughput!(tq, {
+            from: minute + 1,
+            to: third - 1,
+          }),
+        ).toEqual([
+          { at: minute + THROUGHPUT_BUCKET_MS, completed: 1, failed: 0 },
+        ]);
+        expect(
+          await driver.getThroughput!(
+            { ns: other, queue: tq.queue },
+            { from: minute, to: third },
+          ),
+        ).toEqual([]);
+      });
+
+      it("drops throughput minutes past the retention", async () => {
+        const tq: QueueRef = { ns, queue: "throughput-retention" };
+        const latest = throughputBucket(Date.now());
+        const expired =
+          latest - THROUGHPUT_RETENTION_MS - 5 * THROUGHPUT_BUCKET_MS;
+        const kept =
+          latest - THROUGHPUT_RETENTION_MS + 2 * THROUGHPUT_BUCKET_MS;
+        const token = newToken();
+
+        for (const [id, at] of [
+          ["expired", expired],
+          ["kept", kept],
+          ["latest", latest],
+        ] as const) {
+          await driver.addJob(tq, makeJob({ id, createdAt: at, runAt: at }));
+          await driver.claimJob(tq, {
+            workerId: "w",
+            token,
+            lockMs: 60_000,
+            now: at,
+          });
+          expect(await driver.completeJob(tq, id, token, null, false, at)).toBe(
+            true,
+          );
+        }
+
+        expect(
+          await driver.getThroughput!(tq, { from: expired, to: latest }),
+        ).toEqual([
+          { at: kept, completed: 1, failed: 0 },
+          { at: latest, completed: 1, failed: 0 },
+        ]);
+      });
+
+      it("counts every queue in a namespace in one call, and the fallback agrees", async () => {
+        const scope = testNamespace("counts");
+        const now = Date.now();
+
+        await driver.addJobs({ ns: scope, queue: "alpha" }, [
+          makeJob({ id: "a1" }),
+          makeJob({ id: "a2" }),
+          makeJob({ id: "a3", state: "completed", finishedOn: now }),
+        ]);
+        await driver.addJob(
+          { ns: scope, queue: "beta" },
+          makeJob({ id: "b1", state: "dead", finishedOn: now }),
+        );
+        await driver.addJob(
+          { ns: other, queue: "alpha" },
+          makeJob({ id: "o1" }),
+        );
+
+        const want = new Map([
+          ["alpha", { ...emptyCounts(), waiting: 2, completed: 1 }],
+          ["beta", { ...emptyCounts(), dead: 1 }],
+        ]);
+
+        expect(await countQueues(driver, scope)).toEqual(want);
+        expect(await countQueues(without(["countJobsByQueue"]), scope)).toEqual(
+          want,
+        );
+
+        if (driver.countJobsByQueue) {
+          expect(await driver.countJobsByQueue(scope)).toEqual({
+            alpha: want.get("alpha")!,
+            beta: want.get("beta")!,
+          });
+        }
+
+        await driver.purge(scope);
+      });
+
+      it("counts jobs the stalled sweep buries, and parents a child's failure buries, as failed", async () => {
+        const bq: QueueRef = { ns, queue: "throughput-burials" };
+        const minute = throughputBucket(Date.now()) - 5 * THROUGHPUT_BUCKET_MS;
+        const token = newToken();
+        const error = serializeError(new Error("child failed"));
+
+        // Two stalled jobs: the first sweep requeues one, which is no failure;
+        // the second buries the other, which is.
+        await driver.addJobs(bq, [
+          makeJob({ id: "s1", createdAt: minute, runAt: minute }),
+          makeJob({ id: "s2", createdAt: minute + 1, runAt: minute + 1 }),
+        ]);
+        for (let claimed = 0; claimed < 2; claimed++) {
+          await driver.claimJob(bq, {
+            workerId: "w",
+            token,
+            lockMs: 1_000,
+            now: minute + 10,
+          });
+        }
+        expect(
+          (await driver.recoverStalled(bq, minute + 5_000, 5, 1)).requeued,
+        ).toHaveLength(1);
+        expect(
+          (await driver.recoverStalled(bq, minute + 5_000, 0, 10)).dead,
+        ).toHaveLength(1);
+
+        // A parent buried by a failed child, the next minute. The same failure
+        // recorded again changes nothing, and counts nothing.
+        const next = minute + THROUGHPUT_BUCKET_MS;
+        const parent = makeJob({ id: "parent", createdAt: next, runAt: next });
+        parent.state = "waiting-children";
+        parent.flow = {
+          parent: null,
+          children: [{ queue: bq.queue, id: "kid" }],
+          pending: 1,
+          values: {},
+          failures: {},
+          recorded: false,
+        };
+        await driver.addJob(bq, parent);
+        const kid = { queue: bq.queue, id: "kid" };
+        const outcome = { completed: false, error, ignored: false } as const;
+        expect(
+          await driver.recordChild!(bq, "parent", kid, outcome, next + 10),
+        ).toBe("buried");
+        expect(
+          await driver.recordChild!(bq, "parent", kid, outcome, next + 20),
+        ).not.toBe("buried");
+
+        expect(
+          await driver.getThroughput!(bq, { from: minute, to: next }),
+        ).toEqual([
+          { at: minute, completed: 0, failed: 1 },
+          { at: next, completed: 0, failed: 1 },
+        ]);
+      });
+
+      it("waits out a throughput write in flight before purging the namespace", async () => {
+        const scope = testNamespace("purge-inflight");
+        const now = Date.now();
+        const token = newToken();
+        const queues = Array.from(
+          { length: 40 },
+          (_, index): QueueRef => ({ ns: scope, queue: `q${index}` }),
+        );
+
+        for (const target of queues) {
+          await driver.addJob(
+            target,
+            makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+          );
+          await driver.claimJob(target, {
+            workerId: "w",
+            token,
+            lockMs: 60_000,
+            now,
+          });
+          expect(
+            await driver.completeJob(target, "j", token, null, false, now),
+          ).toBe(true);
+        }
+
+        // A write of every queue's count starts and is not awaited. The purge
+        // has to wait for it, or rows it lands after the deletes bring the
+        // namespace back.
+        const flushing = driver.flushThroughput?.().catch(() => undefined);
+        await driver.purge(scope);
+        await flushing;
+
+        const range = {
+          from: throughputBucket(now),
+          to: throughputBucket(now),
+        };
+        for (const target of queues) {
+          expect(await driver.getThroughput!(target, range)).toEqual([]);
+        }
+        await driver.purge(scope);
+      });
+
+      it("purges worker records and throughput with the namespace", async () => {
+        const scope = testNamespace("read-purge");
+        const pq: QueueRef = { ns: scope, queue: "q" };
+        const now = Date.now();
+        const token = newToken();
+
+        await registerWorkerRecord(driver, pq, workerRecord(pq, "w", now));
+        await driver.addJob(
+          pq,
+          makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+        );
+        await driver.claimJob(pq, {
+          workerId: "w",
+          token,
+          lockMs: 60_000,
+          now,
+        });
+        expect(await driver.completeJob(pq, "j", token, null, false, now)).toBe(
+          true,
+        );
+
+        const range = {
+          from: throughputBucket(now),
+          to: throughputBucket(now),
+        };
+        expect(await driver.getThroughput!(pq, range)).toHaveLength(1);
+
+        await driver.purge(scope);
+
+        expect(await listWorkerRecords(driver, pq, now)).toEqual([]);
+        expect(await driver.getThroughput!(pq, range)).toEqual([]);
+      });
+
+      it("forgets throughput not yet written when the namespace is purged", async () => {
+        const scope = testNamespace("purge-pending");
+        const pq: QueueRef = { ns: scope, queue: "q" };
+        const now = Date.now();
+        const token = newToken();
+
+        await driver.addJob(
+          pq,
+          makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+        );
+        await driver.claimJob(pq, {
+          workerId: "w",
+          token,
+          lockMs: 60_000,
+          now,
+        });
+        expect(await driver.completeJob(pq, "j", token, null, false, now)).toBe(
+          true,
+        );
+
+        // No read in between, so a driver that gathers counts in memory still
+        // holds this one. Purging must drop it, or the next write brings the
+        // purged queue's counts back.
+        await driver.purge(scope);
+
+        const range = {
+          from: throughputBucket(now),
+          to: throughputBucket(now),
+        };
+        expect(await driver.getThroughput!(pq, range)).toEqual([]);
+        await driver.purge(scope);
+      });
+    });
 
     describe("discovery and purge", () => {
       it("lists a runner that has written state but never taken a lock", async () => {

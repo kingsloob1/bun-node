@@ -9,7 +9,9 @@ import type {
   EventOfKind,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -21,10 +23,21 @@ import type {
   RepeatRecord,
   Retention,
   RunRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "./driver";
 import { jsonClone } from "@kingsleyweb/bun-common";
 import { compareCodePoints } from "../shared/strings";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
+import {
+  jobFilter,
+  matchesFilter,
+  orderByIds,
+  sortWorkers,
+  sumBuckets,
+  THROUGHPUT_RETENTION_MS,
+  throughputBucket,
+} from "./readApis";
 
 /**
  * The in-process driver: `Map`s, no I/O, no dependencies.
@@ -104,6 +117,14 @@ interface QueueState {
   logs: Map<string, string[]>;
   /** Named values stored on the queue, for compare-and-set. */
   state: Map<string, QueueStateEntry>;
+  /** Worker heartbeat records, by worker id; lapsed ones are dropped when listed. */
+  workers: Map<string, WorkerInfo>;
+  /**
+   * Completions and failed attempts per minute, by the minute's start. Counted
+   * in `completeJob` and `failJob`; minutes older than the retention before
+   * the latest are dropped when a new minute starts.
+   */
+  throughput: Map<number, ThroughputBucket>;
   /** Whether claiming is paused for every worker. */
   paused: boolean;
   /** Next insertion sequence number. */
@@ -480,6 +501,7 @@ export class MemoryDriver implements JobsDriver {
     job.lockExpiresAt = null;
     job.workerId = null;
 
+    this.#count(queue, now, "completed");
     this.#applyRetention(queue, job, retention, now);
     return true;
   }
@@ -507,6 +529,7 @@ export class MemoryDriver implements JobsDriver {
     job.lockToken = null;
     job.lockExpiresAt = null;
     job.workerId = null;
+    this.#count(queue, now, "failed");
 
     if (outcome.retry) {
       this.#setState(queue, job, "failed");
@@ -677,6 +700,7 @@ export class MemoryDriver implements JobsDriver {
       job.failedReason = jsonClone(outcome.error);
       job.finishedOn = now;
       this.#setState(queue, job, "dead");
+      this.#count(queue, now, "failed");
       return "buried";
     }
 
@@ -801,6 +825,122 @@ export class MemoryDriver implements JobsDriver {
     return counts;
   }
 
+  async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
+    const queue = this.#queue(q);
+    const filter = jobFilter(query);
+    const wanted = new Set(query.states);
+    const single = query.states.length === 1 ? query.states[0] : undefined;
+
+    const matching = [...queue.jobs.values()]
+      .filter(
+        (job) =>
+          wanted.has(job.state) &&
+          (!filter || matchesFilter(filter, job.id, job.name)),
+      )
+      .sort((a, b) =>
+        single === "waiting"
+          ? this.#compareWaiting(queue, a, b)
+          : this.#sortKey(a, single) - this.#sortKey(b, single),
+      );
+
+    if (query.order === "desc") {
+      matching.reverse();
+    }
+
+    const offset = Math.max(0, Math.floor(query.offset));
+    const jobs = matching
+      .slice(offset, offset + Math.max(0, Math.floor(query.limit)))
+      .map((job) => ({ ...job }));
+
+    return query.total ? { jobs, total: matching.length } : { jobs };
+  }
+
+  async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
+    const queue = this.#queue(q);
+    const found = new Map<string, JobRecord | null>();
+
+    for (const id of ids) {
+      const job = queue.jobs.get(id);
+      found.set(id, job ? { ...job } : null);
+    }
+
+    return orderByIds(ids, found);
+  }
+
+  async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
+    const queue = this.#queue(q);
+
+    // Records lapsed as of this report go now, not only when somebody lists.
+    for (const [id, other] of queue.workers) {
+      if (other.expiresAt <= worker.heartbeatAt) {
+        queue.workers.delete(id);
+      }
+    }
+
+    queue.workers.set(worker.id, { ...worker });
+  }
+
+  async removeWorker(q: QueueRef, id: string): Promise<boolean> {
+    return this.#queue(q).workers.delete(id);
+  }
+
+  async listWorkers(q: QueueRef, now: number): Promise<WorkerInfo[]> {
+    const queue = this.#queue(q);
+    const live: WorkerInfo[] = [];
+
+    for (const [id, worker] of queue.workers) {
+      if (worker.expiresAt > now) {
+        live.push({ ...worker });
+      } else {
+        queue.workers.delete(id);
+      }
+    }
+
+    return sortWorkers(live);
+  }
+
+  async countJobsByQueue(
+    ns: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    const result: Record<string, Record<JobState, number>> = {};
+
+    for (const name of this.#namespaces.get(ns)?.queues.keys() ?? []) {
+      result[name] = await this.countJobs({ ns, queue: name });
+    }
+
+    return result;
+  }
+
+  async getThroughput(
+    q: QueueRef,
+    range: { from: number; to: number },
+  ): Promise<ThroughputBucket[]> {
+    return sumBuckets(this.#queue(q).throughput.values(), range);
+  }
+
+  /**
+   * Counts a completion or a failed attempt in the minute of `now`, and drops
+   * minutes past the retention once a new minute starts — so the sweep runs
+   * once a minute at most, never per job.
+   */
+  #count(queue: QueueState, now: number, kind: "completed" | "failed"): void {
+    const at = throughputBucket(now);
+    let bucket = queue.throughput.get(at);
+
+    if (!bucket) {
+      bucket = { at, completed: 0, failed: 0 };
+      queue.throughput.set(at, bucket);
+
+      for (const minute of queue.throughput.keys()) {
+        if (minute < at - THROUGHPUT_RETENTION_MS) {
+          queue.throughput.delete(minute);
+        }
+      }
+    }
+
+    bucket[kind] += 1;
+  }
+
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     const queue = this.#queue(q);
     const job = queue.jobs.get(id);
@@ -899,6 +1039,7 @@ export class MemoryDriver implements JobsDriver {
       if (job.stalledCount > maxStalledCount) {
         this.#setState(queue, job, "dead");
         job.finishedOn = now;
+        this.#count(queue, now, "failed");
         dead.push(job.id);
       } else {
         this.#setState(queue, job, "waiting");
@@ -1210,6 +1351,8 @@ export class MemoryDriver implements JobsDriver {
         repeats: new Map(),
         logs: new Map(),
         state: new Map(),
+        workers: new Map(),
+        throughput: new Map(),
         paused: false,
         seq: 0,
         waiters: new Set(),

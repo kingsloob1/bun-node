@@ -22,7 +22,9 @@ import type {
   EventOfKind,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -35,7 +37,10 @@ import type {
   ResolvedJobOptions,
   Retention,
   RunRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "../driver";
+import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import {
@@ -45,9 +50,21 @@ import {
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
+import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
 import { EventGaps } from "../eventGaps";
 import { flowKey, unsettledChildren } from "../flow";
+import {
+  emptyCounts,
+  escapeRegExp,
+  jobFilter,
+  orderByIds,
+  sortWorkers,
+  sumBuckets,
+  sumStates,
+  THROUGHPUT_RETENTION_MS,
+  ThroughputBuffer,
+} from "../readApis";
 import { resolveSyncOptions } from "../schemaSync";
 
 /**
@@ -402,8 +419,36 @@ interface KvDocument {
    * filter. Present on queue state documents only, so it also tells them apart.
    */
   version?: number;
+  /**
+   * When a worker record (`w:<queue>:<id>`) lapses, in epoch milliseconds.
+   * Top-level and numeric so a listing can delete lapsed records conditionally.
+   */
+  expiresAt?: number;
+  /** The queue a throughput bucket (`m:<queue>:<minute>:<shard>`) counts. */
+  queue?: string;
+  /** A throughput bucket's minute, in epoch milliseconds. */
+  at?: number;
+  /** Jobs a throughput bucket's shard counted completing in its minute. */
+  completed?: number;
+  /** Failed attempts a throughput bucket's shard counted in its minute. */
+  failed?: number;
   /** When it last changed. */
   updatedAt: number;
+}
+
+/**
+ * Width a throughput key's minute is zero-padded to, so keys sort by minute and
+ * a range over `key` reads a span of minutes. Fifteen digits hold every epoch
+ * millisecond until the year 33658.
+ */
+const THROUGHPUT_KEY_DIGITS = 15;
+
+/** A minute as it appears in a throughput key: zero-padded, never negative. */
+function throughputKeyMinute(at: number): string {
+  return String(Math.max(0, Math.floor(at))).padStart(
+    THROUGHPUT_KEY_DIGITS,
+    "0",
+  );
 }
 
 /** One line of a job's log, as it is stored. */
@@ -517,6 +562,20 @@ export class MongoDriver implements JobsDriver {
    */
   readonly #excludeCursors = new Map<string, ClaimPosition>();
 
+  /**
+   * This instance's throughput shard: part of every bucket key it writes, so
+   * processes never contend on one document and a reader sums the shards.
+   */
+  readonly #throughputShard = newId();
+  /**
+   * Completions and failures counted in memory and written once a second.
+   * The bucket lives in another collection than the job, so it cannot ride
+   * the job's update; this keeps it off the per-job path entirely.
+   */
+  readonly #throughput = new ThroughputBuffer(
+    async (batch) => await this.#writeThroughput(batch),
+  );
+
   /** The last log sequence number this instance handed out. */
   #lastLogSeq = 0;
 
@@ -573,11 +632,19 @@ export class MongoDriver implements JobsDriver {
     }
     this.#subscriptions.clear();
 
+    // Write the last throughput counts while the client is still open.
+    await this.#throughput.close();
+
     if (this.#ownsClient && this.#client) {
       await this.#client.close();
       this.#client = undefined;
       this.#ready = undefined;
     }
+  }
+
+  /** Writes the counts gathered in memory and not yet written. */
+  async flushThroughput(): Promise<void> {
+    await this.#throughput.flush();
   }
 
   async ping(): Promise<boolean> {
@@ -591,6 +658,10 @@ export class MongoDriver implements JobsDriver {
   }
 
   async purge(ns: string): Promise<void> {
+    // Counts not yet written would otherwise recreate the purged buckets.
+    this.#throughput.forget(ns);
+    // A write already in flight would otherwise land after the deletes.
+    await this.#throughput.flush().catch(() => undefined);
     const db = await this.#db();
 
     for (const name of Object.values(this.collections)) {
@@ -1325,6 +1396,7 @@ export class MongoDriver implements JobsDriver {
       return false;
     }
 
+    this.#throughput.add(q, now, 1, 0);
     await this.#applyRetention(q, id, "completed", retention);
     return true;
   }
@@ -1383,6 +1455,9 @@ export class MongoDriver implements JobsDriver {
     if (updated.matchedCount === 0) {
       return false;
     }
+
+    // A failed attempt counts whether it is retried or dead.
+    this.#throughput.add(q, now, 0, 1);
 
     if (!outcome.retry) {
       await this.#applyRetention(q, id, "dead", outcome.retention);
@@ -1639,6 +1714,8 @@ export class MongoDriver implements JobsDriver {
           },
         });
         if (buried.matchedCount > 0) {
+          // A parent buried by a failed child is a failure too.
+          this.#throughput.add(q, now, 0, 1);
           return "buried";
         }
       } else {
@@ -1885,31 +1962,36 @@ export class MongoDriver implements JobsDriver {
     opts: { offset: number; limit: number; order: "asc" | "desc" },
   ): Promise<JobRecord[]> {
     const jobs = await this.#jobs();
-    const direction = opts.order === "asc" ? 1 : -1;
-
-    // A single state is listed in its own natural order — the one every driver
-    // shares, see `JobsDriver.listJobs` — and several states share only
-    // creation time. Delayed and failed ride the promotion index.
-    const single = states.length === 1 ? states[0] : undefined;
-    const sort: Record<string, 1 | -1> =
-      single === "waiting"
-        ? { priority: direction, createdAt: direction, _id: direction }
-        : single === "delayed" || single === "failed"
-          ? { runAt: direction, _id: direction }
-          : single === "active"
-            ? { lockExpiresAt: direction, _id: direction }
-            : single === "completed" || single === "dead"
-              ? { finishedOn: direction, _id: direction }
-              : { createdAt: direction, _id: direction };
 
     const documents = await jobs
       .find({ ns: q.ns, queue: q.queue, state: { $in: states } })
-      .sort(sort)
+      .sort(this.#listSort(states, opts.order))
       .skip(opts.offset)
       .limit(opts.limit)
       .toArray();
 
     return documents.map((document) => this.#toRecord(document));
+  }
+
+  /**
+   * The sort a listing of `states` uses. A single state is listed in its own
+   * natural order — the one every driver shares, see `JobsDriver.listJobs` —
+   * and several states share only creation time. Delayed and failed ride the
+   * promotion index.
+   */
+  #listSort(states: JobState[], order: "asc" | "desc"): Record<string, 1 | -1> {
+    const direction = order === "asc" ? 1 : -1;
+    const single = states.length === 1 ? states[0] : undefined;
+
+    return single === "waiting"
+      ? { priority: direction, createdAt: direction, _id: direction }
+      : single === "delayed" || single === "failed"
+        ? { runAt: direction, _id: direction }
+        : single === "active"
+          ? { lockExpiresAt: direction, _id: direction }
+          : single === "completed" || single === "dead"
+            ? { finishedOn: direction, _id: direction }
+            : { createdAt: direction, _id: direction };
   }
 
   async countJobs(q: QueueRef): Promise<Record<JobState, number>> {
@@ -1942,6 +2024,317 @@ export class MongoDriver implements JobsDriver {
     }
 
     return counts;
+  }
+
+  /* --- read APIs ------------------------------------------------------ */
+
+  /**
+   * A filtered page as one `find` over the claim-order index's prefix, sorted
+   * the way `listJobs` sorts. A search is a case-insensitive regex over `id`
+   * and `name` with the input escaped, so every character matches itself; the
+   * payload is never matched. A total with a filter is a `countDocuments` with
+   * the same filter, sent alongside the page; without one it is the states'
+   * counts summed.
+   */
+  async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
+    const jobs = await this.#jobs();
+    const filter = jobFilter(query);
+    const offset = Math.max(0, Math.floor(query.offset));
+    const limit = Math.max(0, Math.floor(query.limit));
+
+    const where: Filter<JobDocument> = {
+      ns: q.ns,
+      queue: q.queue,
+      state: { $in: query.states },
+    };
+
+    if (filter?.names) {
+      where.name = { $in: [...filter.names] };
+    }
+
+    if (filter?.search !== undefined) {
+      const pattern = { $regex: escapeRegExp(filter.search), $options: "i" };
+      where.$or = [{ id: pattern }, { name: pattern }];
+    }
+
+    // `limit(0)` means "no limit" to MongoDB, so an empty page is not asked for.
+    const page =
+      limit === 0
+        ? Promise.resolve([])
+        : jobs
+            .find(where)
+            .sort(this.#listSort(query.states, query.order))
+            .skip(offset)
+            .limit(limit)
+            .toArray();
+
+    const total = !query.total
+      ? undefined
+      : filter
+        ? jobs.countDocuments(where)
+        : this.countJobs(q).then((counts) => sumStates(counts, query.states));
+
+    const [documents, counted] = await Promise.all([page, total]);
+    const records = documents.map((document) => this.#toRecord(document));
+
+    return counted === undefined
+      ? { jobs: records }
+      : { jobs: records, total: counted };
+  }
+
+  /** Several jobs by id in one `find` on `_id`, answered in the order asked. */
+  async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const jobs = await this.#jobs();
+    const distinct = [...new Set(ids)];
+    const documents = await jobs
+      .find({ _id: { $in: distinct.map((id) => this.#jobId(q, id)) } })
+      .toArray();
+
+    const found = new Map<string, JobRecord | null>();
+    for (const document of documents) {
+      found.set(document.id, this.#toRecord(document));
+    }
+
+    return orderByIds(ids, found);
+  }
+
+  /**
+   * Replaces the worker's record in the key/value collection, under
+   * `w:<queue>:<id>`, with `expiresAt` top-level so lapsed records can be
+   * deleted by a filter.
+   */
+  async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
+    const kv = await this.#kv();
+    const key = `${this.#workerPrefix(q)}${worker.id}`;
+    const _id = `${q.ns}:${key}`;
+
+    await kv.replaceOne(
+      { _id },
+      {
+        ns: q.ns,
+        key,
+        value: JSON.stringify(worker),
+        expiresAt: worker.expiresAt,
+        updatedAt: Date.now(),
+      },
+      { upsert: true },
+    );
+
+    // Records lapsed as of this report go now, not only when somebody lists.
+    const prefix = this.#workerPrefix(q);
+    await kv.deleteMany({
+      ns: q.ns,
+      key: { $gte: prefix, $lt: prefixUpperBound(prefix) },
+      expiresAt: { $lte: worker.heartbeatAt },
+    });
+  }
+
+  /** Deletes a worker's record, answering whether there was one. */
+  async removeWorker(q: QueueRef, id: string): Promise<boolean> {
+    const kv = await this.#kv();
+    const deleted = await kv.deleteOne({
+      _id: `${q.ns}:${this.#workerPrefix(q)}${id}`,
+    });
+    return deleted.deletedCount > 0;
+  }
+
+  /**
+   * The queue's live workers: a range read over `{ns, key}` for the queue's
+   * worker prefix. Lapsed records are deleted on the way, conditionally on
+   * still being lapsed, so a worker that reported again in between keeps its
+   * record.
+   */
+  async listWorkers(q: QueueRef, now: number): Promise<WorkerInfo[]> {
+    const kv = await this.#kv();
+    const prefix = this.#workerPrefix(q);
+    const documents = await kv
+      .find({ ns: q.ns, key: { $gte: prefix, $lt: prefixUpperBound(prefix) } })
+      .toArray();
+
+    const live: WorkerInfo[] = [];
+    const lapsed: string[] = [];
+
+    for (const document of documents) {
+      if (document.value === undefined) {
+        continue;
+      }
+
+      if ((document.expiresAt ?? 0) > now) {
+        live.push(JSON.parse(document.value) as WorkerInfo);
+      } else {
+        lapsed.push(document._id);
+      }
+    }
+
+    if (lapsed.length > 0) {
+      await kv.deleteMany({ _id: { $in: lapsed }, expiresAt: { $lte: now } });
+    }
+
+    return sortWorkers(live);
+  }
+
+  /** Every queue's state counts in the namespace, as one aggregation. */
+  async countJobsByQueue(
+    ns: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    const jobs = await this.#jobs();
+
+    const grouped = await jobs
+      .aggregate<{
+        _id: { queue: string; state: JobState };
+        total: number;
+      }>([
+        { $match: { ns } },
+        {
+          $group: {
+            _id: { queue: "$queue", state: "$state" },
+            total: { $sum: 1 },
+          },
+        },
+      ])
+      .toArray();
+
+    const result: Record<string, Record<JobState, number>> = {};
+
+    for (const row of grouped) {
+      const counts = (result[row._id.queue] ??= emptyCounts());
+      if (row._id.state in counts) {
+        counts[row._id.state] = row.total;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Completions and failed attempts per minute. Writes what this instance has
+   * counted first, then reads the queue's bucket keys across the range — every
+   * shard's — and sums them by minute.
+   */
+  async getThroughput(
+    q: QueueRef,
+    range: { from: number; to: number },
+  ): Promise<ThroughputBucket[]> {
+    if (range.to < range.from) {
+      return [];
+    }
+
+    await this.#throughput.flush();
+
+    const kv = await this.#kv();
+    const prefix = this.#throughputPrefix(q);
+    const documents = await kv
+      .find({
+        ns: q.ns,
+        key: {
+          $gte: `${prefix}${throughputKeyMinute(range.from)}`,
+          $lt: `${prefix}${throughputKeyMinute(range.to + 1)}`,
+        },
+      })
+      .toArray();
+
+    return sumBuckets(
+      documents.map((document) => ({
+        at: document.at ?? 0,
+        completed: document.completed ?? 0,
+        failed: document.failed ?? 0,
+      })),
+      range,
+    );
+  }
+
+  /** The key prefix of a queue's worker records: `w:<queue>:`. */
+  #workerPrefix(q: QueueRef): string {
+    return `w:${q.queue}:`;
+  }
+
+  /** The key prefix of a queue's throughput buckets: `m:<queue>:`. */
+  #throughputPrefix(q: QueueRef): string {
+    return `m:${q.queue}:`;
+  }
+
+  /**
+   * Writes one batch of throughput counts: a single `bulkWrite` of `$inc`
+   * upserts on this instance's shard of each bucket, then, per queue written,
+   * one delete of the minutes past the retention before the latest one in the
+   * batch.
+   */
+  async #writeThroughput(
+    batch: PendingThroughput[],
+  ): Promise<ThroughputWriteResult> {
+    if (batch.length === 0) {
+      return { unwritten: [] };
+    }
+
+    const kv = await this.#kv();
+    const updatedAt = Date.now();
+    const latest = new Map<string, { q: QueueRef; at: number }>();
+    let unwritten: PendingThroughput[] = [];
+    let failure: unknown;
+
+    try {
+      await kv.bulkWrite(
+        batch.map((entry) => {
+          const key = `${this.#throughputPrefix(entry.q)}${throughputKeyMinute(entry.at)}:${this.#throughputShard}`;
+          const queueKey = `${entry.q.ns}\n${entry.q.queue}`;
+          const seen = latest.get(queueKey);
+          if (!seen || entry.at > seen.at) {
+            latest.set(queueKey, { q: entry.q, at: entry.at });
+          }
+
+          return {
+            updateOne: {
+              filter: { _id: `${entry.q.ns}:${key}` },
+              update: {
+                $inc: { completed: entry.completed, failed: entry.failed },
+                $set: { updatedAt },
+                $setOnInsert: {
+                  ns: entry.q.ns,
+                  key,
+                  at: entry.at,
+                  queue: entry.q.queue,
+                },
+              },
+              upsert: true,
+            },
+          };
+        }),
+        { ordered: false },
+      );
+    } catch (error) {
+      // Unordered, so every operation was attempted, and the error names the
+      // refused ones by position. An error naming none says nothing about what
+      // landed, so it is thrown and the whole batch goes back.
+      const refused = bulkWriteFailures(error);
+      if (refused === null) {
+        throw error;
+      }
+      unwritten = batch.filter((_, index) => refused.has(index));
+      failure = error;
+    }
+
+    for (const { q, at } of latest.values()) {
+      const prefix = this.#throughputPrefix(q);
+      // Best-effort: counts that landed stay landed, and the next write
+      // for this queue deletes again.
+      await kv
+        .deleteMany({
+          ns: q.ns,
+          key: {
+            $gte: prefix,
+            $lt: `${prefix}${throughputKeyMinute(at - THROUGHPUT_RETENTION_MS)}`,
+          },
+        })
+        .catch(() => undefined);
+    }
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
@@ -2103,6 +2496,11 @@ export class MongoDriver implements JobsDriver {
       if (result.matchedCount > 0) {
         (buried ? dead : requeued).push(document.id);
       }
+    }
+
+    // A burial is a failure, counted as a failed attempt is.
+    if (dead.length > 0) {
+      this.#throughput.add(q, now, 0, dead.length);
     }
 
     return { requeued, dead };
@@ -3363,4 +3761,29 @@ function parseOrDefault<T>(value: string | undefined, fallback: T): T {
 /** Escapes a value for use inside a regular expression. */
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The positions of the operations an unordered bulk write refused, read from
+ * the error it threw, or `null` when the error names none — which says nothing
+ * about what landed. `writeErrors` is one error or several, depending on how
+ * many there were.
+ */
+function bulkWriteFailures(error: unknown): Set<number> | null {
+  const reported = (error as { writeErrors?: unknown } | null)?.writeErrors;
+  const list = Array.isArray(reported) ? reported : reported ? [reported] : [];
+
+  if (list.length === 0) {
+    return null;
+  }
+
+  const positions = new Set<number>();
+  for (const writeError of list as { index?: unknown }[]) {
+    if (typeof writeError?.index !== "number") {
+      return null;
+    }
+    positions.add(writeError.index);
+  }
+
+  return positions;
 }

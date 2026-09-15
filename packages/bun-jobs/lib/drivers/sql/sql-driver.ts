@@ -15,7 +15,9 @@ import type {
   EventOfKind,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -28,7 +30,10 @@ import type {
   ResolvedJobOptions,
   Retention,
   RunRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "../driver";
+import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type { ClaimCursor, SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
@@ -50,6 +55,16 @@ import {
   listsChild,
   unsettledChildren,
 } from "../flow";
+import {
+  emptyCounts,
+  escapeLike,
+  orderByIds,
+  sortWorkers,
+  sumBuckets,
+  THROUGHPUT_RETENTION_MS,
+  throughputBucket,
+  ThroughputBuffer,
+} from "../readApis";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
@@ -336,8 +351,27 @@ function isMissingColumn(error: unknown, column: string): boolean {
  */
 const FLOW_COLUMN_RECHECK_MS = 60_000;
 
+/**
+ * How many counter rows a Postgres driver spreads its counted statements over.
+ *
+ * Statements a driver has in flight at once — one worker's completions and its
+ * failures run side by side — each take the next row in turn, so they share a
+ * row only when more than this many are in flight, and then wait only for the
+ * other's commit. The cost is up to this many rows per process, per queue, per
+ * minute.
+ */
+const METRICS_SHARDS = 8;
+
 /** The tables this driver uses. */
-export const SQL_TABLES = ["jobs", "locks", "kv", "events", "logs"] as const;
+export const SQL_TABLES = [
+  "jobs",
+  "locks",
+  "kv",
+  "events",
+  "logs",
+  "workers",
+  "metrics",
+] as const;
 
 /** One of the tables this driver uses. */
 export type SqlTable = (typeof SQL_TABLES)[number];
@@ -507,6 +541,44 @@ export class SqlDriver implements JobsDriver {
   #claimCursorsSweptAt = 0;
 
   /**
+   * Throughput counted in memory and written once a second: completions and
+   * failures on every engine but Postgres, which counts those inside the
+   * statement, and burials by the stalled sweep or by a failed child on every
+   * engine, since those run in maintenance rather than per job. Made on first
+   * use, so a driver that never counts anything never has one.
+   */
+  #throughputBuffer: ThroughputBuffer | undefined;
+
+  /**
+   * Who this driver's throughput rows belong to, so two processes writing the
+   * same minute never contend for one row.
+   */
+  readonly #metricsShard = newId();
+
+  /**
+   * The counter rows Postgres statements take in turn: {@link METRICS_SHARDS}
+   * of them, this driver's shard with an index each. See
+   * {@link SqlDriver.#countedStatement} for why a set rather than one row.
+   */
+  readonly #metricsShards = Array.from(
+    { length: METRICS_SHARDS },
+    (_, index) => `${this.#metricsShard}:${index}`,
+  );
+
+  /** Which of {@link SqlDriver.#metricsShards} the next counted statement takes. */
+  #nextMetricsShard = 0;
+
+  /**
+   * The latest minute each queue's old throughput was pruned for, keyed by
+   * `ns` and `queue`, so the retention delete runs once a minute per queue
+   * rather than once per job.
+   */
+  readonly #metricsPrunedFor = new Map<string, number>();
+
+  /** Retention deletes still in flight, awaited by reads and by `close()`. */
+  readonly #metricsPrunes = new Set<Promise<void>>();
+
+  /**
    * Whether the `jobs` table was last seen without its `log_key` column — an
    * install from before job logs that has not been synced.
    *
@@ -614,6 +686,9 @@ export class SqlDriver implements JobsDriver {
     // Letting it finish keeps it off a closing connection; it cannot fail the
     // close, because a failed refresh is already tolerated.
     await this.#analyzing?.catch(() => undefined);
+    // Counts gathered since the last write, before the connection goes.
+    await this.#throughputBuffer?.close();
+    await Promise.allSettled([...this.#metricsPrunes]);
     await this.#arrivals.close();
 
     for (const stop of this.#subscriptions) {
@@ -689,6 +764,13 @@ export class SqlDriver implements JobsDriver {
 
   async purge(ns: string): Promise<void> {
     await this.connect();
+
+    // Counts not yet written would otherwise bring the namespace back, and so
+    // would a write already in flight landing after the deletes: forget what
+    // is pending, then wait that write out.
+    this.#throughputBuffer?.forget(ns);
+    await this.#throughputBuffer?.flush().catch(() => undefined);
+    await Promise.allSettled([...this.#metricsPrunes]);
 
     for (const table of Object.values(this.#tables)) {
       const { bind, values } = this.#binder();
@@ -1758,10 +1840,14 @@ export class SqlDriver implements JobsDriver {
     // ever read.
     if (retention === true) {
       const { bind, values } = this.#binder();
-      const removed = await this.#run(
+      const removed = await this.#settle(
+        q,
+        now,
+        "completed",
         `DELETE FROM ${this.#tables.jobs}
           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
             AND state = 'active' AND lock_token = ${bind(token)}`,
+        bind,
         values,
       );
 
@@ -1769,7 +1855,10 @@ export class SqlDriver implements JobsDriver {
     }
 
     const { bind, values } = this.#binder();
-    const completed = await this.#run(
+    const completed = await this.#settle(
+      q,
+      now,
+      "completed",
       `UPDATE ${this.#tables.jobs}
           SET state = 'completed', finished_on = ${bind(now)},
               return_value = ${bind(this.dialect.jsonIn(result ?? null))},
@@ -1777,6 +1866,7 @@ export class SqlDriver implements JobsDriver {
               lock_token = NULL, lock_expires_at = NULL, worker_id = NULL
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state = 'active' AND lock_token = ${bind(token)}`,
+      bind,
       values,
     );
 
@@ -1841,15 +1931,24 @@ export class SqlDriver implements JobsDriver {
     if (removing.length > 0) {
       const { bind, values } = this.#binder();
       const ids = removing.map((one) => one.id);
+      // Postgres only, here: the counter rides in the same statement.
       const rows = await this.#all<{ id: string }>(
-        `DELETE FROM ${this.#tables.jobs}
+        this.#countedStatement(
+          q,
+          now,
+          "completed",
+          this.#takeMetricsShard(),
+          `DELETE FROM ${this.#tables.jobs}
           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
             AND state = 'active' AND lock_token = ${bind(token)}
             AND id IN (${ids.map((id) => bind(id)).join(", ")})
         RETURNING id`,
+          bind,
+        ),
         values,
       );
       settled.push(...rows.map((row) => String(row.id)));
+      this.#afterCounted(q, now);
     }
 
     // Anything with a count-based retention still needs the per-state sweep the
@@ -1876,7 +1975,12 @@ export class SqlDriver implements JobsDriver {
       );
 
       const rows = await this.#all<{ id: string }>(
-        `UPDATE ${this.#tables.jobs} AS jobs
+        this.#countedStatement(
+          q,
+          now,
+          "completed",
+          this.#takeMetricsShard(),
+          `UPDATE ${this.#tables.jobs} AS jobs
             SET state = 'completed', finished_on = ${bind(now)},
                 return_value = document.return_value,
                 expires_at = document.expires_at,
@@ -1887,9 +1991,12 @@ export class SqlDriver implements JobsDriver {
             AND jobs.id = document.id
             AND jobs.state = 'active' AND jobs.lock_token = ${bind(token)}
         RETURNING jobs.id`,
+          bind,
+        ),
         values,
       );
       settled.push(...rows.map((row) => String(row.id)));
+      this.#afterCounted(q, now);
     }
 
     for (const one of individual) {
@@ -1955,7 +2062,10 @@ export class SqlDriver implements JobsDriver {
         : null;
 
     const { bind, values } = this.#binder();
-    const updated = await this.#run(
+    const updated = await this.#settle(
+      q,
+      now,
+      "failed",
       `UPDATE ${this.#tables.jobs}
           SET state = ${bind(outcome.retry ? "failed" : "dead")},
               run_at = ${bind(outcome.retry ? outcome.runAt : existing.runAt)},
@@ -1966,6 +2076,7 @@ export class SqlDriver implements JobsDriver {
               lock_token = NULL, lock_expires_at = NULL, worker_id = NULL
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state = 'active' AND lock_token = ${bind(token)}`,
+      bind,
       values,
     );
 
@@ -2329,6 +2440,12 @@ export class SqlDriver implements JobsDriver {
       },
     );
 
+    // A parent buried by a failed child is a failure. Counted after the commit,
+    // so a transaction that rolled back counts nothing.
+    if (result === "buried") {
+      this.#throughput().add(q, now, 0, 1);
+    }
+
     // After the commit, so a woken worker's claim can see the row.
     if (released === "waiting") {
       await this.#announce(q);
@@ -2462,21 +2579,7 @@ export class SqlDriver implements JobsDriver {
     // A single state is listed in its own natural order — the one every driver
     // shares, see `JobsDriver.listJobs` — and several states share only
     // creation time. The id breaks ties, so a page boundary is stable.
-    const direction = opts.order === "desc" ? "DESC" : "ASC";
-    const single = states.length === 1 ? states[0] : undefined;
-    const columns =
-      single === "waiting"
-        ? ["priority", "created_at"]
-        : single === "delayed" || single === "failed"
-          ? ["run_at"]
-          : single === "active"
-            ? ["lock_expires_at"]
-            : single === "completed" || single === "dead"
-              ? ["finished_on"]
-              : ["created_at"];
-    const order = [...columns, "id"]
-      .map((column) => `${column} ${direction}`)
-      .join(", ");
+    const order = this.#listOrder(states, opts.order);
 
     const rows = await this.#all<Record<string, unknown>>(
       `SELECT * FROM ${this.#tables.jobs}
@@ -2518,6 +2621,507 @@ export class SqlDriver implements JobsDriver {
     }
 
     return counts;
+  }
+
+  /**
+   * The `ORDER BY` a listing uses: a single state in its own natural order,
+   * several by creation, the id breaking ties so a page boundary is stable.
+   * Shared by `listJobs` and `findJobs`, which must agree.
+   */
+  #listOrder(states: JobState[], order: "asc" | "desc"): string {
+    const direction = order === "desc" ? "DESC" : "ASC";
+    const single = states.length === 1 ? states[0] : undefined;
+    const columns =
+      single === "waiting"
+        ? ["priority", "created_at"]
+        : single === "delayed" || single === "failed"
+          ? ["run_at"]
+          : single === "active"
+            ? ["lock_expires_at"]
+            : single === "completed" || single === "dead"
+              ? ["finished_on"]
+              : ["created_at"];
+
+    return [...columns, "id"]
+      .map((column) => `${column} ${direction}`)
+      .join(", ");
+  }
+
+  /**
+   * A filtered page and its total, as two statements at most: the page, and
+   * a `COUNT(*)` with the same conditions when a total is asked for.
+   *
+   * No index serves a name or a substring, so both are conditions applied
+   * within the `(ns, queue, state)` range the claim index already reads — rows
+   * of those states in that queue are looked at, and nothing else. A search is
+   * `LOWER(id) LIKE … OR LOWER(name) LIKE …` with `%`, `_` and the escape
+   * character escaped, and never touches `data`.
+   */
+  async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
+    await this.connect();
+
+    const offset = Math.max(0, Math.floor(query.offset));
+    const limit = Math.max(0, Math.floor(query.limit));
+
+    if (query.states.length === 0 || query.names?.length === 0) {
+      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+    }
+
+    const search =
+      query.search === undefined || query.search === ""
+        ? undefined
+        : `%${escapeLike(query.search.toLowerCase())}%`;
+    const names =
+      query.names === undefined ? undefined : [...new Set(query.names)];
+
+    const where = (bind: (value: unknown) => string): string =>
+      [
+        `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}`,
+        `state IN (${query.states.map((state) => bind(state)).join(", ")})`,
+        ...(names
+          ? [`name IN (${names.map((name) => bind(name)).join(", ")})`]
+          : []),
+        ...(search
+          ? [
+              `(LOWER(id) LIKE ${bind(search)} ESCAPE '!' OR LOWER(name) LIKE ${bind(search)} ESCAPE '!')`,
+            ]
+          : []),
+      ].join(" AND ");
+
+    const page = async (): Promise<JobRecord[]> => {
+      if (limit === 0) {
+        return [];
+      }
+
+      const { bind, values } = this.#binder();
+      const rows = await this.#all<Record<string, unknown>>(
+        `SELECT * FROM ${this.#tables.jobs}
+          WHERE ${where(bind)}
+          ORDER BY ${this.#listOrder(query.states, query.order)}
+          LIMIT ${bind(limit)} OFFSET ${bind(offset)}`,
+        values,
+      );
+
+      return rows.map((row) => this.#toRecord(row));
+    };
+
+    const count = async (): Promise<number> => {
+      const { bind, values } = this.#binder();
+      const row = await this.#one<{ total: number | string }>(
+        `SELECT COUNT(*) AS total FROM ${this.#tables.jobs} WHERE ${where(bind)}`,
+        values,
+      );
+      return Number(row?.total ?? 0);
+    };
+
+    const [jobs, total] = await Promise.all([
+      page(),
+      query.total ? count() : Promise.resolve(undefined),
+    ]);
+
+    return total === undefined ? { jobs } : { jobs, total };
+  }
+
+  /** Several jobs by id: one `IN (…)` per 500 distinct ids. */
+  async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
+    await this.connect();
+
+    const distinct = [...new Set(ids)];
+    const found = new Map<string, JobRecord | null>();
+
+    for (let at = 0; at < distinct.length; at += 500) {
+      const chunk = distinct.slice(at, at + 500);
+      const { bind, values } = this.#binder();
+      const rows = await this.#all<Record<string, unknown>>(
+        `SELECT * FROM ${this.#tables.jobs}
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+            AND id IN (${chunk.map((id) => bind(id)).join(", ")})`,
+        values,
+      );
+
+      for (const row of rows) {
+        const record = this.#toRecord(row);
+        found.set(record.id, record);
+      }
+    }
+
+    return orderByIds(ids, found);
+  }
+
+  /** One upsert on the worker's primary key, then a delete of the queue's lapsed records. */
+  async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
+    await this.connect();
+
+    await this.#run(
+      this.dialect.upsert(
+        this.#tables.workers,
+        ["ns", "queue", "id", "info", "expires_at"],
+        ["ns", "queue", "id"],
+        ["info", "expires_at"],
+      ),
+      [q.ns, q.queue, worker.id, this.dialect.jsonIn(worker), worker.expiresAt],
+    );
+
+    // Records lapsed as of this report, so a dead worker's row goes when any
+    // live one reports rather than only when somebody lists. A range of the
+    // primary key, once per report — never per job.
+    const lapsed = this.#binder();
+    await this.#run(
+      `DELETE FROM ${this.#tables.workers}
+        WHERE ns = ${lapsed.bind(q.ns)} AND queue = ${lapsed.bind(q.queue)}
+          AND expires_at <= ${lapsed.bind(worker.heartbeatAt)}`,
+      lapsed.values,
+    );
+  }
+
+  async removeWorker(q: QueueRef, id: string): Promise<boolean> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    return (
+      (await this.#run(
+        `DELETE FROM ${this.#tables.workers}
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
+        values,
+      )) > 0
+    );
+  }
+
+  /**
+   * The live records, after deleting the queue's lapsed ones. Both statements
+   * are ranges of the primary key.
+   */
+  async listWorkers(q: QueueRef, now: number): Promise<WorkerInfo[]> {
+    await this.connect();
+
+    const lapsed = this.#binder();
+    await this.#run(
+      `DELETE FROM ${this.#tables.workers}
+        WHERE ns = ${lapsed.bind(q.ns)} AND queue = ${lapsed.bind(q.queue)}
+          AND expires_at <= ${lapsed.bind(now)}`,
+      lapsed.values,
+    );
+
+    const { bind, values } = this.#binder();
+    const rows = await this.#all<{ info: unknown }>(
+      `SELECT info FROM ${this.#tables.workers}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND expires_at > ${bind(now)}`,
+      values,
+    );
+
+    return sortWorkers(
+      rows
+        .map((row) => this.dialect.jsonOut<WorkerInfo | null>(row.info, null))
+        .filter((worker): worker is WorkerInfo => worker !== null),
+    );
+  }
+
+  /** One `GROUP BY queue, state` over the namespace's rows. */
+  async countJobsByQueue(
+    ns: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    const rows = await this.#all<{
+      queue: string;
+      state: JobState;
+      total: number | string;
+    }>(
+      `SELECT queue, state, COUNT(*) AS total FROM ${this.#tables.jobs}
+        WHERE ns = ${bind(ns)}
+        GROUP BY queue, state`,
+      values,
+    );
+
+    const result: Record<string, Record<JobState, number>> = {};
+
+    for (const row of rows) {
+      const counts = (result[String(row.queue)] ??= emptyCounts());
+      if (STATES.includes(row.state)) {
+        counts[row.state] = Number(row.total);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * A queue's minutes in range, summed across the rows each minute has — one
+   * per counting worker on Postgres, one per process elsewhere. Writes this
+   * driver's own pending counts first, so a caller sees its own completions.
+   */
+  async getThroughput(
+    q: QueueRef,
+    range: { from: number; to: number },
+  ): Promise<ThroughputBucket[]> {
+    await this.connect();
+    await this.#throughputBuffer?.flush();
+    await Promise.allSettled([...this.#metricsPrunes]);
+
+    const { bind, values } = this.#binder();
+    const rows = await this.#all<{
+      bucket: number | string;
+      completed: number | string;
+      failed: number | string;
+    }>(
+      `SELECT bucket, SUM(completed) AS completed, SUM(failed) AS failed
+         FROM ${this.#tables.metrics}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND bucket >= ${bind(range.from)} AND bucket <= ${bind(range.to)}
+        GROUP BY bucket`,
+      values,
+    );
+
+    return sumBuckets(
+      rows.map((row) => ({
+        at: Number(row.bucket),
+        completed: Number(row.completed),
+        failed: Number(row.failed),
+      })),
+      range,
+    );
+  }
+
+  /**
+   * Runs a completion or failure statement and counts it in the queue's
+   * throughput, answering how many jobs it settled.
+   *
+   * On Postgres the count is part of the statement — see
+   * {@link SqlDriver.#countedStatement} — so a job pays one extra row write
+   * inside the round trip it was already making, and nothing more. Elsewhere
+   * no single statement can both change a job and bump a counter in another
+   * table, so the count goes to the in-memory buffer, which writes once a
+   * second: a `Map` update per job and no I/O.
+   *
+   * `statement` must bind with `bind`, whose values are `values`.
+   */
+  async #settle(
+    q: QueueRef,
+    now: number,
+    kind: "completed" | "failed",
+    statement: string,
+    bind: (value: unknown) => string,
+    values: unknown[],
+  ): Promise<number> {
+    if (this.adapter === "postgres") {
+      const rows = await this.#all(
+        this.#countedStatement(
+          q,
+          now,
+          kind,
+          this.#takeMetricsShard(),
+          `${statement} RETURNING id`,
+          bind,
+        ),
+        values,
+      );
+
+      if (rows.length > 0) {
+        this.#afterCounted(q, now);
+      }
+
+      return rows.length;
+    }
+
+    const settled = await this.#run(statement, values);
+
+    if (settled > 0) {
+      this.#throughput().add(
+        q,
+        now,
+        kind === "completed" ? settled : 0,
+        kind === "failed" ? settled : 0,
+      );
+    }
+
+    return settled;
+  }
+
+  /**
+   * Wraps a Postgres statement ending in `RETURNING id` so the same statement
+   * adds the rows it changed to the minute's counter, and answers with those
+   * ids.
+   *
+   * A data-modifying CTE runs exactly once whether the outer query reads it or
+   * not, and `HAVING COUNT(*) > 0` means a statement that changed nothing —
+   * a lost lock — writes no counter row at all. The counter columns are not
+   * indexed, so the update is a HOT update.
+   *
+   * `shard` is one of this driver's {@link METRICS_SHARDS} counter rows, taken
+   * in turn per statement. It used to be the lock token, on the reasoning that
+   * a worker's completion batcher serialises its writes — but only completions
+   * are batched. A worker's failures run beside them and beside each other,
+   * and under one token they all queued on one row lock, each behind the whole
+   * of the statement ahead of it: measured, a failure waited 1,421ms behind a
+   * held counter row, against 2ms with the row free. Taking rows in turn,
+   * statements in flight together land on different rows unless more than
+   * {@link METRICS_SHARDS} are.
+   */
+  #countedStatement(
+    q: QueueRef,
+    now: number,
+    kind: "completed" | "failed",
+    shard: string,
+    inner: string,
+    bind: (value: unknown) => string,
+  ): string {
+    if (this.adapter !== "postgres") {
+      throw new DriverError(
+        "sql",
+        "countedStatement",
+        new Error("counting inside a statement is Postgres-only"),
+        { adapter: this.adapter },
+      );
+    }
+
+    const counted = "COUNT(*)";
+
+    return `WITH done AS (${inner}),
+      counted AS (
+        INSERT INTO ${this.#tables.metrics} AS metrics
+          (ns, queue, bucket, shard, completed, failed)
+        SELECT ${bind(q.ns)}::text, ${bind(q.queue)}::text,
+               ${bind(throughputBucket(now))}::bigint, ${bind(shard)}::text,
+               ${kind === "completed" ? counted : "0"},
+               ${kind === "failed" ? counted : "0"}
+          FROM done
+        HAVING COUNT(*) > 0
+        ON CONFLICT (ns, queue, bucket, shard) DO UPDATE
+          SET completed = metrics.completed + EXCLUDED.completed,
+              failed = metrics.failed + EXCLUDED.failed
+      )
+      SELECT id FROM done`;
+  }
+
+  /** The counter row the next counted statement takes, in turn. */
+  #takeMetricsShard(): string {
+    const shard = this.#metricsShards[this.#nextMetricsShard]!;
+    this.#nextMetricsShard = (this.#nextMetricsShard + 1) % METRICS_SHARDS;
+    return shard;
+  }
+
+  /**
+   * After a Postgres statement counted, removes the queue's minutes past the
+   * retention — once per queue per minute in this process, and unawaited, so
+   * the completion that triggered it does not wait for it.
+   */
+  #afterCounted(q: QueueRef, now: number): void {
+    const bucket = throughputBucket(now);
+    const key = `${q.ns}\n${q.queue}`;
+
+    if (
+      (this.#metricsPrunedFor.get(key) ?? Number.NEGATIVE_INFINITY) >= bucket
+    ) {
+      return;
+    }
+
+    this.#metricsPrunedFor.set(key, bucket);
+
+    const prune: Promise<void> = this.#pruneMetrics(q, bucket)
+      .catch(() => undefined)
+      .finally(() => this.#metricsPrunes.delete(prune));
+    this.#metricsPrunes.add(prune);
+  }
+
+  /** Deletes a queue's minutes older than the retention before `latest`. */
+  async #pruneMetrics(q: QueueRef, latest: number): Promise<void> {
+    const { bind, values } = this.#binder();
+    await this.#run(
+      `DELETE FROM ${this.#tables.metrics}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND bucket < ${bind(latest - THROUGHPUT_RETENTION_MS)}`,
+      values,
+    );
+  }
+
+  /** The throughput buffer, made on first use. */
+  #throughput(): ThroughputBuffer {
+    this.#throughputBuffer ??= new ThroughputBuffer(
+      async (batch) => await this.#writeThroughput(batch),
+    );
+    return this.#throughputBuffer;
+  }
+
+  /**
+   * Writes one second's gathered counts, and answers with the ones that did
+   * not land: an additive upsert per queue and minute, under this driver's own
+   * shard so no other process contends for the row, then the retention delete
+   * for each queue whose latest minute moved on.
+   *
+   * Each upsert stands alone, so one that fails is reported on its own and the
+   * rest are never written twice by a retry. The retention delete is
+   * best-effort: counts that landed stay landed whatever it does, and a delete
+   * that failed is tried again on the next write.
+   */
+  async #writeThroughput(
+    batch: PendingThroughput[],
+  ): Promise<ThroughputWriteResult> {
+    const table = this.#tables.metrics;
+    // Postgres needs the existing row's columns qualified — unqualified they
+    // are ambiguous beside `EXCLUDED` — and takes an alias for it; SQLite reads
+    // them unqualified, and MySQL and MariaDB have a clause of their own.
+    const into = this.adapter === "postgres" ? `${table} AS metrics` : table;
+    const onConflict =
+      this.adapter === "mysql" || this.adapter === "mariadb"
+        ? "ON DUPLICATE KEY UPDATE completed = completed + VALUES(completed), failed = failed + VALUES(failed)"
+        : this.adapter === "postgres"
+          ? "ON CONFLICT (ns, queue, bucket, shard) DO UPDATE SET completed = metrics.completed + EXCLUDED.completed, failed = metrics.failed + EXCLUDED.failed"
+          : "ON CONFLICT (ns, queue, bucket, shard) DO UPDATE SET completed = completed + excluded.completed, failed = failed + excluded.failed";
+    const latest = new Map<string, { q: QueueRef; at: number }>();
+    const unwritten: PendingThroughput[] = [];
+    let failure: unknown;
+
+    for (const entry of batch) {
+      const { bind, values } = this.#binder();
+
+      try {
+        await this.#run(
+          `INSERT INTO ${into} (ns, queue, bucket, shard, completed, failed)
+           VALUES (${bind(entry.q.ns)}, ${bind(entry.q.queue)}, ${bind(entry.at)},
+                   ${bind(this.#metricsShard)}, ${bind(entry.completed)}, ${bind(entry.failed)})
+           ${onConflict}`,
+          values,
+        );
+      } catch (error) {
+        unwritten.push(entry);
+        failure ??= error;
+        continue;
+      }
+
+      const key = `${entry.q.ns}\n${entry.q.queue}`;
+      const seen = latest.get(key);
+      if (!seen || seen.at < entry.at) {
+        latest.set(key, { q: entry.q, at: entry.at });
+      }
+    }
+
+    for (const [key, { q, at }] of latest) {
+      if ((this.#metricsPrunedFor.get(key) ?? Number.NEGATIVE_INFINITY) >= at) {
+        continue;
+      }
+
+      try {
+        await this.#pruneMetrics(q, at);
+        this.#metricsPrunedFor.set(key, at);
+      } catch {
+        // Left unmarked, so the next write for this queue tries again.
+      }
+    }
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
+  }
+
+  /**
+   * Writes the counts gathered in memory and not yet written, and waits out
+   * any retention delete still running. See the contract for who calls it.
+   */
+  async flushThroughput(): Promise<void> {
+    await this.#throughputBuffer?.flush();
+    await Promise.allSettled([...this.#metricsPrunes]);
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
@@ -2663,6 +3267,12 @@ export class SqlDriver implements JobsDriver {
       if (moved > 0) {
         (buried ? dead : requeued).push(row.id);
       }
+    }
+
+    // A burial is a failure. It happens in maintenance rather than per job, so
+    // it goes to the once-a-second write on every engine, Postgres included.
+    if (dead.length > 0) {
+      this.#throughput().add(q, now, 0, dead.length);
     }
 
     return { requeued, dead };

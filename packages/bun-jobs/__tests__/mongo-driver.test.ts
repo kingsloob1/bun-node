@@ -1,6 +1,7 @@
 import type { JobsDriver } from "../lib/index";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
+import { throughputBucket } from "../lib/drivers/readApis";
 import { ConfigError, MongoDriver, toConnectionUrl } from "../lib/index";
 import { makeJob, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
@@ -565,5 +566,138 @@ describe("MongoDB driver: connection options", () => {
   it("refuses a driver with neither a URL nor fields", () => {
     expect(() => new MongoDriver({})).toThrow(ConfigError);
     expect(() => new MongoDriver({})).toThrow(/url or a connection object/);
+  });
+});
+
+describe.skipIf(!URL)("MongoDB driver: throughput writes", () => {
+  /** A collection method, loosely typed so a test can wrap it. */
+  type Method = (this: unknown, ...args: unknown[]) => Promise<unknown>;
+
+  /** The prototype every collection's `bulkWrite` and `deleteMany` come from. */
+  async function collectionPrototype(): Promise<{
+    bulkWrite: Method;
+    deleteMany: Method;
+  }> {
+    const { Collection } = await import("mongodb");
+    return Collection.prototype as unknown as {
+      bulkWrite: Method;
+      deleteMany: Method;
+    };
+  }
+
+  /** Adds, claims and completes one job at `now`. */
+  async function completeOne(
+    driver: MongoDriver,
+    q: { ns: string; queue: string },
+    now: number,
+  ): Promise<void> {
+    await driver.addJob(
+      q,
+      makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+    );
+    await driver.claimJob(q, {
+      workerId: "w",
+      token: "t",
+      lockMs: 60_000,
+      now,
+    });
+    expect(await driver.completeJob(q, "j", "t", null, false, now)).toBe(true);
+  }
+
+  it("writes again only the counts a bulk write refused", async () => {
+    const driver = makeDriver();
+    const proto = await collectionPrototype();
+    const ns = testNamespace("tp-bulk");
+    const refused = { ns, queue: "refused" };
+    const landed = { ns, queue: "landed" };
+    const now = Date.now();
+
+    await completeOne(driver, refused, now);
+    await completeOne(driver, landed, now);
+
+    const original = proto.bulkWrite;
+    proto.bulkWrite = async function (this: unknown, ...args: unknown[]) {
+      proto.bulkWrite = original;
+      // Everything but the first operation lands; the error names the first.
+      const [operations, options] = args as [unknown[], unknown];
+      await original.call(this, operations.slice(1), options);
+      throw Object.assign(new Error("partly refused"), {
+        writeErrors: [{ index: 0, code: 11000 }],
+      });
+    };
+
+    try {
+      // The failure reaches the caller; only the refused count is kept.
+      await expect(driver.flushThroughput()).rejects.toThrow("partly refused");
+    } finally {
+      proto.bulkWrite = original;
+    }
+    await driver.flushThroughput();
+
+    const minute = throughputBucket(now);
+    const range = { from: minute, to: minute };
+    expect(await driver.getThroughput(landed, range)).toEqual([
+      { at: minute, completed: 1, failed: 0 },
+    ]);
+    expect(await driver.getThroughput(refused, range)).toEqual([
+      { at: minute, completed: 1, failed: 0 },
+    ]);
+    await driver.purge(ns);
+  });
+
+  it("keeps counts that landed when the retention delete fails", async () => {
+    const driver = makeDriver();
+    const proto = await collectionPrototype();
+    const q = { ns: testNamespace("tp-delete"), queue: "q" };
+    const now = Date.now();
+
+    await completeOne(driver, q, now);
+
+    const original = proto.deleteMany;
+    proto.deleteMany = async function () {
+      proto.deleteMany = original;
+      throw new Error("transient");
+    };
+
+    try {
+      await driver.flushThroughput();
+    } finally {
+      proto.deleteMany = original;
+    }
+    await driver.flushThroughput();
+
+    const minute = throughputBucket(now);
+    expect(await driver.getThroughput(q, { from: minute, to: minute })).toEqual(
+      [{ at: minute, completed: 1, failed: 0 }],
+    );
+    await driver.purge(q.ns);
+  });
+
+  it("waits out a write in flight before purging", async () => {
+    const driver = makeDriver();
+    const proto = await collectionPrototype();
+    const q = { ns: testNamespace("tp-purge"), queue: "q" };
+    const now = Date.now();
+
+    await completeOne(driver, q, now);
+
+    const original = proto.bulkWrite;
+    proto.bulkWrite = async function (this: unknown, ...args: unknown[]) {
+      await Bun.sleep(300);
+      return await original.apply(this, args);
+    };
+
+    try {
+      const flushing = driver.flushThroughput();
+      await driver.purge(q.ns);
+      await flushing;
+    } finally {
+      proto.bulkWrite = original;
+    }
+
+    const minute = throughputBucket(now);
+    expect(await driver.getThroughput(q, { from: minute, to: minute })).toEqual(
+      [],
+    );
   });
 });

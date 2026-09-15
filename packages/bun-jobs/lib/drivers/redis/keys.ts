@@ -83,6 +83,9 @@ export class RedisKeys {
     logPrefix: string;
     statePrefix: string;
     stateNames: string;
+    workers: string;
+    workersExpiry: string;
+    throughputPrefix: string;
   } {
     const base = `${this.namespace(q.ns)}:q:${this.#tag(q.queue)}`;
 
@@ -124,6 +127,20 @@ export class RedisKeys {
       // before this key existed are not in it; queue state has not shipped in
       // a release, so there is nothing to migrate.
       stateNames: `${base}:state-names`,
+      // Worker heartbeat records: field = worker id, value = the record as
+      // JSON. Kept in step with `workersExpiry` by the worker scripts, and both
+      // expire at the latest record's `expiresAt`, so an abandoned queue's
+      // registry disappears on its own.
+      workers: `${base}:workers`,
+      // Each worker's `expiresAt`, member = worker id, so lapsed records are a
+      // `ZRANGEBYSCORE` away rather than a decode of every record.
+      workersExpiry: `${base}:workers-exp`,
+      // One hash per minute, `<prefix><minute start>`, fields `completed` and
+      // `failed`. A sibling of `job:`, not passed to scripts as a key: COMPLETE
+      // and FAIL derive it from `jobPrefix` — see `THROUGHPUT_COUNT` in
+      // `scripts.ts` — so the two must keep this shape. Each minute expires
+      // `THROUGHPUT_RETENTION_MS` after it ends.
+      throughputPrefix: `${base}:tp:`,
     };
   }
 

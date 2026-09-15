@@ -9,7 +9,9 @@ import type {
   EventOfKind,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -21,7 +23,10 @@ import type {
   RepeatRecord,
   Retention,
   RunRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "./driver";
+import type { PendingThroughput, ThroughputWriteResult } from "./readApis";
 import { Buffer } from "node:buffer";
 import {
   link,
@@ -51,6 +56,15 @@ import {
   encodeSegment,
 } from "./file-names";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
+import {
+  jobFilter,
+  matchesFilter,
+  orderByIds,
+  sortWorkers,
+  sumBuckets,
+  THROUGHPUT_RETENTION_MS,
+  ThroughputBuffer,
+} from "./readApis";
 
 /**
  * A driver backed by a directory, for processes that share a filesystem.
@@ -119,6 +133,15 @@ const PRIORITY_OFFSET = 1_048_576;
 /** How many waiting markers' job names a driver remembers for exclusion. */
 const NAME_CACHE_SIZE = 10_000;
 
+/** How many files a read API reads at once: job records, worker records. */
+const READ_CONCURRENCY = 16;
+
+/**
+ * A throughput bucket file's name: the minute's start, in epoch milliseconds,
+ * then `.jsonl`. Nothing else in `throughput/` matches, `.tmp` files included.
+ */
+const THROUGHPUT_FILE = /^(\d+)\.jsonl$/;
+
 /** Options for {@link FileDriver}. */
 export interface FileDriverOptions {
   /** Directory the driver owns. Created on demand. */
@@ -171,6 +194,14 @@ export class FileDriver implements JobsDriver {
    * so the oldest entry goes first past {@link NAME_CACHE_SIZE}.
    */
   readonly #names = new Map<string, string>();
+  /**
+   * Completions and failed attempts counted in memory and appended to
+   * `throughput/<minute>.jsonl` once a second, so counting a job costs a `Map`
+   * update rather than a file write. Flushed by `getThroughput` and `close`.
+   */
+  readonly #throughput = new ThroughputBuffer(
+    async (batch) => await this.#writeThroughput(batch),
+  );
 
   constructor(options: FileDriverOptions) {
     this.root = options.root;
@@ -189,6 +220,12 @@ export class FileDriver implements JobsDriver {
       stop();
     }
     this.#subscriptions.clear();
+    await this.#throughput.close();
+  }
+
+  /** Writes the counts gathered in memory and not yet written. */
+  async flushThroughput(): Promise<void> {
+    await this.#throughput.flush();
   }
 
   async ping(): Promise<boolean> {
@@ -201,6 +238,10 @@ export class FileDriver implements JobsDriver {
   }
 
   async purge(ns: string): Promise<void> {
+    // Forgotten first, then any write already in flight waited out: its
+    // `mkdir` would otherwise put the queue's directory back after the `rm`.
+    this.#throughput.forget(ns);
+    await this.#throughput.flush().catch(() => undefined);
     await rm(join(this.root, encodeSegment(ns)), {
       recursive: true,
       force: true,
@@ -673,6 +714,8 @@ export class FileDriver implements JobsDriver {
           this.#jobPath(q, id),
           JSON.stringify(completed),
         );
+        // Counted once the transition has landed, and in memory: no I/O here.
+        this.#throughput.add(q, now, 1, 0);
         await this.#applyRetention(q, completed, retention);
         return true;
       }
@@ -725,6 +768,8 @@ export class FileDriver implements JobsDriver {
 
       if (await this.#move(q, marker, "active", updated)) {
         await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
+        // A failed attempt, retried or dead alike; in memory, no I/O here.
+        this.#throughput.add(q, now, 0, 1);
 
         if (!outcome.retry) {
           await this.#applyRetention(q, updated, outcome.retention);
@@ -1042,6 +1087,11 @@ export class FileDriver implements JobsDriver {
 
     await this.#release(q, hold, current, updated);
 
+    // A parent buried by a failed child is a failure too.
+    if (result === "buried") {
+      this.#throughput.add(q, now, 0, 1);
+    }
+
     if (updated.state === "waiting") {
       await this.#touchWake(q);
     }
@@ -1204,6 +1254,251 @@ export class FileDriver implements JobsDriver {
     }
 
     return counts;
+  }
+
+  /* --- queue: read APIs ------------------------------------------------ */
+
+  /**
+   * A page narrowed by name or search. There is no index on names, so a
+   * filtered read opens the records of the states asked for — a single state
+   * a bounded batch at a time, stopping once the page is full unless a total
+   * is wanted. Unfiltered, it is `listJobs` (a single state reads only the
+   * page) and a total is the markers counted. The payload is never matched.
+   */
+  async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
+    const filter = jobFilter(query);
+    const offset = Math.max(0, Math.floor(query.offset));
+    const limit = Math.max(0, Math.floor(query.limit));
+    // Each state once: a job is in one state, so it is one match.
+    const states = [...new Set(query.states)];
+    const index = join(this.#queueDir(q), "index");
+
+    if (!filter) {
+      const jobs =
+        limit === 0
+          ? []
+          : await this.listJobs(q, states, {
+              offset,
+              limit,
+              order: query.order,
+            });
+
+      if (!query.total) {
+        return { jobs };
+      }
+
+      let total = 0;
+      for (const state of states) {
+        total += (await this.#list(join(index, state))).length;
+      }
+      return { jobs, total };
+    }
+
+    const jobs: JobRecord[] = [];
+
+    // One state is already in order by its markers' names, as in `listJobs`.
+    if (states.length === 1) {
+      const state = states[0]!;
+      const markers = (await this.#list(join(index, state))).sort();
+      if (query.order === "desc") {
+        markers.reverse();
+      }
+
+      let skip = offset;
+      let total = 0;
+
+      for (let at = 0; at < markers.length; at += READ_CONCURRENCY) {
+        if (!query.total && jobs.length >= limit) {
+          break;
+        }
+
+        for (const record of await this.#readMarked(
+          q,
+          markers.slice(at, at + READ_CONCURRENCY),
+        )) {
+          // A marker whose record has moved on is not a match, as in `listJobs`.
+          if (
+            !record ||
+            record.state !== state ||
+            !matchesFilter(filter, record.id, record.name)
+          ) {
+            continue;
+          }
+
+          total++;
+          if (skip > 0) {
+            skip--;
+          } else if (jobs.length < limit) {
+            jobs.push(record);
+          }
+        }
+      }
+
+      return query.total ? { jobs, total } : { jobs };
+    }
+
+    // Several states share no order but creation time, which needs them all.
+    const matching: JobRecord[] = [];
+    for (const state of states) {
+      const markers = (await this.#list(join(index, state))).sort();
+
+      for (let at = 0; at < markers.length; at += READ_CONCURRENCY) {
+        for (const record of await this.#readMarked(
+          q,
+          markers.slice(at, at + READ_CONCURRENCY),
+        )) {
+          if (
+            record &&
+            record.state === state &&
+            matchesFilter(filter, record.id, record.name)
+          ) {
+            matching.push(record);
+          }
+        }
+      }
+    }
+
+    // Filtering before a stable sort leaves the order `listJobs` would give.
+    matching.sort((a, b) => a.createdAt - b.createdAt);
+    if (query.order === "desc") {
+      matching.reverse();
+    }
+
+    jobs.push(...matching.slice(offset, offset + limit));
+    return query.total ? { jobs, total: matching.length } : { jobs };
+  }
+
+  /** Several jobs by id: each distinct id read once, a bounded batch at a time. */
+  async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
+    const distinct = [...new Set(ids)];
+    const found = new Map<string, JobRecord | null>();
+
+    for (let at = 0; at < distinct.length; at += READ_CONCURRENCY) {
+      const chunk = distinct.slice(at, at + READ_CONCURRENCY);
+      const records = await Promise.all(
+        chunk.map(async (id) => await this.#readJob(this.#jobPath(q, id))),
+      );
+      chunk.forEach((id, index) => found.set(id, records[index] ?? null));
+    }
+
+    return orderByIds(ids, found);
+  }
+
+  /** Writes a worker's record over its last one, by rename, so a read sees one whole. */
+  async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
+    await this.#writeAtomic(
+      this.#workerPath(q, worker.id),
+      JSON.stringify(worker),
+    );
+
+    // Records lapsed as of this report go now, not only when somebody lists:
+    // one directory read per report, never per job.
+    await this.listWorkers(q, worker.heartbeatAt);
+  }
+
+  /** Removes a worker's record; of two removals at once, one unlink wins. */
+  async removeWorker(q: QueueRef, id: string): Promise<boolean> {
+    try {
+      await unlink(this.#workerPath(q, id));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false;
+      }
+      throw new DriverError("file", "removeWorker", error, { id });
+    }
+  }
+
+  /** The workers whose records outlast `now`, deleting lapsed ones on the way. */
+  async listWorkers(q: QueueRef, now: number): Promise<WorkerInfo[]> {
+    const dir = join(this.#queueDir(q), "workers");
+    // Only a finished `<encoded id>.json`: not a `.tmp` from an interrupted
+    // write, nor a lapsed record set aside mid-delete. An encoded name never
+    // contains a dot, so the first dot ends it.
+    const files = (await this.#list(dir)).filter((file) => {
+      const dot = file.indexOf(".");
+      return (
+        dot > 0 &&
+        file.slice(dot) === ".json" &&
+        decodeName(file.slice(0, dot)) !== null
+      );
+    });
+    const live: WorkerInfo[] = [];
+
+    for (let at = 0; at < files.length; at += READ_CONCURRENCY) {
+      const chunk = files.slice(at, at + READ_CONCURRENCY);
+      const records = await Promise.all(
+        chunk.map(
+          async (file) => await this.#readJson<WorkerInfo>(join(dir, file)),
+        ),
+      );
+
+      for (const [index, worker] of records.entries()) {
+        if (!worker) {
+          continue;
+        }
+
+        if (worker.expiresAt > now) {
+          live.push(worker);
+        } else {
+          await this.#dropLapsedWorker(join(dir, chunk[index]!), now);
+        }
+      }
+    }
+
+    return sortWorkers(live);
+  }
+
+  /** Counts per state for every queue directory in the namespace. */
+  async countJobsByQueue(
+    ns: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    const result: Record<string, Record<JobState, number>> = {};
+
+    for (const queue of await this.listQueues(ns)) {
+      result[queue] = await this.countJobs({ ns, queue });
+    }
+
+    return result;
+  }
+
+  /**
+   * Completions and failed attempts per minute in `[from, to]`: this driver's
+   * own pending counts written first, then every line of every bucket file in
+   * range summed — one line per process per flush, so writers never share one.
+   */
+  async getThroughput(
+    q: QueueRef,
+    range: { from: number; to: number },
+  ): Promise<ThroughputBucket[]> {
+    await this.#throughput.flush();
+
+    const dir = this.#throughputDir(q);
+    const rows: ThroughputBucket[] = [];
+
+    for (const file of await this.#list(dir)) {
+      const match = THROUGHPUT_FILE.exec(file);
+      const at = Number(match?.[1]);
+      if (!match || at < range.from || at > range.to) {
+        continue;
+      }
+
+      // Newline-terminated lines only: a partial last line is an append in
+      // flight, or one a crash cut short.
+      const lines = (await this.#readText(join(dir, file))).split("\n");
+      for (const line of lines.slice(0, -1)) {
+        const row = safeJsonParse<Partial<ThroughputBucket> | null>(line, null);
+        if (row) {
+          rows.push({
+            at,
+            completed: Number(row.completed) || 0,
+            failed: Number(row.failed) || 0,
+          });
+        }
+      }
+    }
+
+    return sumBuckets(rows, range);
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
@@ -1411,6 +1706,11 @@ export class FileDriver implements JobsDriver {
 
     if (requeued.length > 0) {
       await this.#touchWake(q);
+    }
+
+    // A burial is a failure, counted as a failed attempt is.
+    if (dead.length > 0) {
+      this.#throughput.add(q, now, 0, dead.length);
     }
 
     return { requeued, dead };
@@ -1974,6 +2274,22 @@ export class FileDriver implements JobsDriver {
     return join(this.#queueDir(q), "held");
   }
 
+  /**
+   * Path of a worker's heartbeat record. Its own directory in the queue's, so
+   * `purge` takes it with the queue and `listQueues` never sees it.
+   */
+  #workerPath(q: QueueRef, id: string): string {
+    return join(this.#queueDir(q), "workers", `${encodeName(id)}.json`);
+  }
+
+  /**
+   * Directory of a queue's throughput bucket files, one `<minute>.jsonl` per
+   * minute. Its own directory, so no bucket name meets any other file's.
+   */
+  #throughputDir(q: QueueRef): string {
+    return join(this.#queueDir(q), "throughput");
+  }
+
   /** Path of a repeat definition. */
   #repeatPath(q: QueueRef, key: string): string {
     return join(this.#queueDir(q), "repeats", `${encodeName(key)}.json`);
@@ -2471,6 +2787,100 @@ export class FileDriver implements JobsDriver {
         await this.#deleteJob(q, stale.id, sweepable, stale);
       }
     }
+  }
+
+  /* --- read API helpers ---------------------------------------------------- */
+
+  /** The records behind some index markers, read at once; `null` where missing. */
+  async #readMarked(
+    q: QueueRef,
+    markers: string[],
+  ): Promise<(JobRecord | null)[]> {
+    return await Promise.all(
+      markers.map(
+        async (marker) =>
+          await this.#readJob(this.#jobPath(q, markerId(marker))),
+      ),
+    );
+  }
+
+  /**
+   * Deletes a worker record found lapsed at `now` — unless the worker reported
+   * again since it was read. The record is renamed aside first, which exactly
+   * one caller wins, and the copy it moved is read again: still lapsed, it is
+   * dropped; live, it goes back, unless a newer report has taken the path.
+   */
+  async #dropLapsedWorker(path: string, now: number): Promise<void> {
+    const aside = `${path}.${newId()}.lapsed`;
+
+    try {
+      await rename(path, aside);
+    } catch {
+      return;
+    }
+
+    const moved = await this.#readJson<WorkerInfo>(aside);
+    if (moved && moved.expiresAt > now) {
+      await link(aside, path).catch(() => undefined);
+    }
+    await rm(aside, { force: true });
+  }
+
+  /**
+   * Writes one batch of throughput counts: a JSON line per entry, appended to
+   * its queue's `throughput/<minute>.jsonl`.
+   *
+   * No lock. Each append is one small `O_APPEND` write, which POSIX makes
+   * atomic, so processes appending to the same minute cannot interleave within
+   * a line — and each line is this process's count, summed on read. An entry
+   * whose append fails is counted again for the next flush rather than failing
+   * the batch, which would re-add the entries that did land and count them
+   * twice. Then, per queue written, minute files older than the retention
+   * before the latest minute in the batch are deleted: one listing per queue
+   * per flush, never per job.
+   */
+  async #writeThroughput(
+    batch: PendingThroughput[],
+  ): Promise<ThroughputWriteResult> {
+    const latest = new Map<string, number>();
+    const unwritten: PendingThroughput[] = [];
+    let failure: unknown;
+
+    for (const entry of batch) {
+      const dir = this.#throughputDir(entry.q);
+      const line = `${JSON.stringify({
+        at: entry.at,
+        completed: entry.completed,
+        failed: entry.failed,
+      })}\n`;
+
+      try {
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, `${entry.at}.jsonl`), line, { flag: "a" });
+      } catch (error) {
+        // Reported, so only this line is written again.
+        unwritten.push(entry);
+        failure ??= error;
+        continue;
+      }
+
+      latest.set(dir, Math.max(latest.get(dir) ?? entry.at, entry.at));
+    }
+
+    for (const [dir, at] of latest) {
+      const cutoff = at - THROUGHPUT_RETENTION_MS;
+
+      for (const file of await this.#list(dir)) {
+        const match = THROUGHPUT_FILE.exec(file);
+        if (match && Number(match[1]) < cutoff) {
+          await unlink(join(dir, file)).catch(() => undefined);
+        }
+      }
+    }
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
   }
 
   /* --- primitives --------------------------------------------------------- */

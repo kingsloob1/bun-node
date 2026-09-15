@@ -1,10 +1,13 @@
 import type {
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
   JobState,
   QueueRef,
   RepeatRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "../drivers/index";
 import type {
   QueueDriverEvent,
@@ -20,12 +23,29 @@ import type {
   FlowNode,
   FlowResult,
   JobOptions,
+  JobsPage,
+  ListJobsOptions,
+  QueueThroughput,
   RetryAllOptions,
 } from "./types";
 import { deserializeError } from "@kingsleyweb/bun-common";
-import { resolveDriver } from "../drivers/index";
+import {
+  findJobPage,
+  findJobsByScan,
+  getJobsByIds,
+  listWorkerRecords,
+  resolveDriver,
+  supportsWorkers,
+  THROUGHPUT_BUCKET_MS,
+  THROUGHPUT_RETENTION_MS,
+  throughputBucket,
+} from "../drivers/index";
 import { TypedEmitterBase } from "../shared/emitter";
-import { ConfigError, QueueClosedError } from "../shared/errors";
+import {
+  ConfigError,
+  NotSupportedError,
+  QueueClosedError,
+} from "../shared/errors";
 import { queueEvent } from "../shared/events";
 import { assertDateParser, parseDuration } from "../shared/humanTime";
 import { newId, newToken } from "../shared/ids";
@@ -270,26 +290,204 @@ export class BunQueue<
       : null;
   }
 
-  /** Jobs in the given state(s). */
+  /**
+   * Jobs in the given state(s), optionally narrowed to a name or a search.
+   *
+   * ```ts
+   * await queue.list("dead", { name: "sendEmail", limit: 20 });
+   * await queue.list(["waiting", "delayed"], { search: "invoice-42" });
+   * ```
+   *
+   * Without `name` or `search` this is exactly the read it always was. With
+   * them, `offset` and `limit` count matching jobs. See {@link ListJobsOptions}
+   * for what a search costs.
+   */
   async list(
     state: JobState | JobState[],
-    options?: { offset?: number; limit?: number; order?: "asc" | "desc" },
+    options?: ListJobsOptions,
   ): Promise<Job<TData, TResult>[]> {
     await this.connect();
 
-    const records = await this.driver.listJobs(
-      this.ref,
-      Array.isArray(state) ? state : [state],
-      {
-        offset: options?.offset ?? 0,
-        limit: options?.limit ?? 100,
-        order: options?.order ?? "asc",
-      },
-    );
+    const states = Array.isArray(state) ? state : [state];
+    const records =
+      options?.name === undefined && options?.search === undefined
+        ? await this.driver.listJobs(this.ref, states, {
+            offset: options?.offset ?? 0,
+            limit: options?.limit ?? 100,
+            order: options?.order ?? "asc",
+          })
+        : (
+            await findJobPage(
+              this.driver,
+              this.ref,
+              this.#query(states, options),
+            )
+          ).jobs;
 
     return records.map(
       (record) => new Job<TData, TResult>(this.driver, this.ref, record),
     );
+  }
+
+  /**
+   * A page of jobs and how many matched in all — what a paginated table
+   * needs, in one call.
+   *
+   * ```ts
+   * const { jobs, total } = await queue.page("completed", { offset: 40, limit: 20 });
+   * ```
+   *
+   * The total costs one count on top of the page: with no filter it is the
+   * states' counts, and with one every job in those states is looked at.
+   */
+  async page(
+    state: JobState | JobState[],
+    options?: ListJobsOptions,
+  ): Promise<JobsPage<TData, TResult>> {
+    await this.connect();
+
+    const states = Array.isArray(state) ? state : [state];
+    const query: JobQuery = { ...this.#query(states, options), total: true };
+    const page = await findJobPage(this.driver, this.ref, query);
+
+    // A driver's own `findJobs` may answer without the total it was asked
+    // for. The page's length is not the total, so the scan counts it instead.
+    const total =
+      page.total ??
+      (
+        await findJobsByScan(this.driver, this.ref, {
+          ...query,
+          offset: 0,
+          limit: 0,
+        })
+      ).total ??
+      0;
+
+    return {
+      jobs: page.jobs.map(
+        (record) => new Job<TData, TResult>(this.driver, this.ref, record),
+      ),
+      total,
+    };
+  }
+
+  /** A driver query from a caller's list options. */
+  #query(states: JobState[], options: ListJobsOptions | undefined): JobQuery {
+    const name = options?.name;
+
+    return {
+      states,
+      offset: options?.offset ?? 0,
+      limit: options?.limit ?? 100,
+      order: options?.order ?? "asc",
+      ...(name === undefined
+        ? {}
+        : { names: Array.isArray(name) ? name : [name] }),
+      ...(options?.search === undefined ? {} : { search: options.search }),
+    };
+  }
+
+  /**
+   * Several jobs by id, in one round trip where the backend allows: one entry
+   * per id, in the order given, `null` for an id with no job.
+   */
+  async getJobs(ids: string[]): Promise<(Job<TData, TResult> | null)[]> {
+    await this.connect();
+    const records = await getJobsByIds(this.driver, this.ref, ids);
+
+    return records.map((record) =>
+      record ? new Job<TData, TResult>(this.driver, this.ref, record) : null,
+    );
+  }
+
+  /**
+   * The workers consuming this queue right now, in any process: each one's
+   * id, host, pid, concurrency, jobs in flight, whether it is paused, when it
+   * started and when it last reported.
+   *
+   * As fresh as each worker's last report — `reportInterval`, ten seconds by
+   * default. A worker that died is listed until its record lapses, three
+   * intervals after its last report.
+   *
+   * On a driver with no worker registry the records live in queue state; on
+   * one with neither this throws {@link NotSupportedError}, as
+   * `jobs.listWorkers()` does.
+   */
+  async listWorkers(): Promise<WorkerInfo[]> {
+    await this.connect();
+
+    if (!supportsWorkers(this.driver)) {
+      throw new NotSupportedError(this.driver.name, "listWorkers", {
+        needs: "worker records or queue state",
+      });
+    }
+
+    return await listWorkerRecords(this.driver, this.ref, Date.now());
+  }
+
+  /**
+   * Completed jobs and failed attempts per minute, for the last `minutes`
+   * minutes including the current one.
+   *
+   * ```ts
+   * const { buckets, completed, failed } = await queue.getThroughput({ minutes: 15 });
+   * ```
+   *
+   * Counted by the driver as jobs finish, so it covers every worker in every
+   * process and survives retention removing the jobs themselves. Kept for a
+   * day. On a backend that cannot count inside its completion write, a count
+   * can arrive up to a second late — see the README.
+   */
+  async getThroughput(options?: {
+    /** How many minutes, the current one included. Defaults to `60`; at most `1440`. */
+    minutes?: number;
+  }): Promise<QueueThroughput> {
+    await this.connect();
+    const driver = this.#requireDriver("getThroughput()", "getThroughput");
+
+    const minutes = options?.minutes ?? 60;
+    const most = THROUGHPUT_RETENTION_MS / THROUGHPUT_BUCKET_MS;
+
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > most) {
+      throw new ConfigError(
+        `minutes must be a whole number from 1 to ${most}`,
+        { minutes },
+      );
+    }
+
+    const to = throughputBucket(Date.now());
+    const from = to - (minutes - 1) * THROUGHPUT_BUCKET_MS;
+    const stored = new Map(
+      (await driver.getThroughput!(this.ref, { from, to })).map((bucket) => [
+        bucket.at,
+        bucket,
+      ]),
+    );
+
+    const buckets: ThroughputBucket[] = [];
+    let completed = 0;
+    let failed = 0;
+
+    for (let at = from; at <= to; at += THROUGHPUT_BUCKET_MS) {
+      const bucket = stored.get(at);
+      const entry = {
+        at,
+        completed: bucket?.completed ?? 0,
+        failed: bucket?.failed ?? 0,
+      };
+      completed += entry.completed;
+      failed += entry.failed;
+      buckets.push(entry);
+    }
+
+    return {
+      interval: THROUGHPUT_BUCKET_MS,
+      from,
+      to,
+      buckets,
+      completed,
+      failed,
+    };
   }
 
   /** How many jobs are in each state, or in one state. */
@@ -895,6 +1093,14 @@ export class BunQueue<
 
     await this.#unsubscribe?.();
     this.#unsubscribe = undefined;
+
+    // Counts the driver gathered in memory, whether or not this queue owns it:
+    // a process sharing one driver may exit without ever closing it.
+    try {
+      await this.driver.flushThroughput?.();
+    } catch (error) {
+      this.#logger.warn("Could not write throughput counts", { error });
+    }
 
     if (this.#ownsDriver) {
       await this.driver.close();

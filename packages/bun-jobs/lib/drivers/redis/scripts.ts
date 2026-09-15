@@ -12,6 +12,8 @@
  * either. The driver assembles them in `keys.ts`, and the two must agree.
  */
 
+import { THROUGHPUT_BUCKET_MS, THROUGHPUT_RETENTION_MS } from "../readApis";
+
 /** The keys every queue script receives, in order. */
 export const QUEUE_KEYS = [
   "wait",
@@ -762,17 +764,41 @@ return 1
 `;
 
 /**
- * Completes a job, for its lock holder only.
+ * Shared by {@link COMPLETE} and {@link FAIL}: counts one completion or failed
+ * attempt in the minute of `now`, in the same script as the write it counts.
+ *
+ * The minute's hash is a sibling of `job:`, derived from the prefix exactly as
+ * `logs(id)` is — see `throughputPrefix` in keys.ts — so it takes no extra
+ * KEYS entry and keeps the queue's hash tag. The cost per job is one `HINCRBY`;
+ * a minute's first count also sets its expiry, once per minute per field.
+ * An expiry already in the past deletes the hash at once, which is exactly
+ * what retention asks of a minute that old.
+ */
+const THROUGHPUT_COUNT = `
+local function countThroughput(kind, at)
+  local bucket = at - (at % ${THROUGHPUT_BUCKET_MS})
+  local key = string.sub(PREFIX, 1, -5) .. 'tp:' .. string.format('%.0f', bucket)
+  if redis.call('HINCRBY', key, kind, 1) == 1 then
+    redis.call('PEXPIREAT', key, string.format('%.0f', bucket + ${THROUGHPUT_RETENTION_MS + THROUGHPUT_BUCKET_MS}))
+  end
+end
+`;
+
+/**
+ * Completes a job, for its lock holder only, and counts it in the minute's
+ * throughput — only once the lock check has passed.
  *
  * ARGV: prefix, id, token, now, returnValue, retention mode, count, ttl.
  */
-export const COMPLETE = `${QUEUE_PRELUDE}
+export const COMPLETE = `${QUEUE_PRELUDE}${THROUGHPUT_COUNT}
 local id, token, now = ARGV[2], ARGV[3], tonumber(ARGV[4])
 local result, mode, count, ttl = ARGV[5], ARGV[6], ARGV[7], ARGV[8]
 
 if state(id) ~= 'active' or redis.call('HGET', job(id), 'lockToken') ~= token then
   return 0
 end
+
+countThroughput('completed', now)
 
 redis.call('ZREM', ACTIVE, id)
 redis.call('ZADD', COMPLETED, now, id)
@@ -790,11 +816,12 @@ return 1
 
 /**
  * Fails an attempt, for its lock holder only: either back to `failed` with a
- * retry time, or to `dead` for good.
+ * retry time, or to `dead` for good. Either way the attempt counts as failed
+ * in the minute's throughput, once the lock check has passed.
  *
  * ARGV: prefix, id, token, now, error, stacktrace, retry, runAt, mode, count, ttl.
  */
-export const FAIL = `${QUEUE_PRELUDE}
+export const FAIL = `${QUEUE_PRELUDE}${THROUGHPUT_COUNT}
 local id, token, now = ARGV[2], ARGV[3], tonumber(ARGV[4])
 local err, stacktrace, retry = ARGV[5], ARGV[6], ARGV[7]
 local runAt, mode, count, ttl = tonumber(ARGV[8]), ARGV[9], ARGV[10], ARGV[11]
@@ -802,6 +829,9 @@ local runAt, mode, count, ttl = tonumber(ARGV[8]), ARGV[9], ARGV[10], ARGV[11]
 if state(id) ~= 'active' or redis.call('HGET', job(id), 'lockToken') ~= token then
   return 0
 end
+
+-- Before the branch, so the retry and the dead path both count.
+countThroughput('failed', now)
 
 redis.call('ZREM', ACTIVE, id)
 redis.call('HSET', job(id),
@@ -855,7 +885,7 @@ return moved
  *
  * ARGV: prefix, now, maxStalled, limit. Returns { requeued… , '|', dead… }.
  */
-export const RECOVER_STALLED = `${QUEUE_PRELUDE}
+export const RECOVER_STALLED = `${QUEUE_PRELUDE}${THROUGHPUT_COUNT}
 local now, maxStalled, limit = tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4])
 local stalled = redis.call('ZRANGEBYSCORE', ACTIVE, '-inf', now, 'LIMIT', 0, limit)
 
@@ -869,6 +899,8 @@ for _, id in ipairs(stalled) do
   if count > maxStalled then
     redis.call('ZADD', DEAD, now, id)
     redis.call('HSET', job(id), 'state', 'dead', 'finishedOn', tostring(now))
+    -- A burial is a failure, counted as FAIL counts one.
+    countThroughput('failed', now)
     dead[#dead + 1] = id
   else
     redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
@@ -1152,6 +1184,189 @@ return {
 `;
 
 /**
+ * One chunk of a state's set, as each job's id and its name — never the
+ * payload. What `findJobs` filters on when a query names jobs or searches.
+ *
+ * Ranged exactly as {@link LIST_JOBS} ranges one set (`ZRANGE` for `asc`,
+ * `ZREVRANGE` for `desc`, the wait set's ordering prefix stripped), so paging
+ * through the chunks visits jobs in the order `listJobs` returns them.
+ *
+ * The name is cut out of `blob` rather than decoded from it: `#toValues`
+ * writes `name` as the blob's first key, so it is the JSON string literal
+ * right after `{"name":`, ending at the first quote not escaped by an odd run
+ * of backslashes. The literal is sent as it is stored, quotes included, and
+ * the driver parses it — so a large payload is neither decoded here nor sent.
+ *
+ * Reply: a flat list of pairs, id then name, where the name is tagged by its
+ * first byte: `j` for a JSON literal, `r` for a plain string (a record from
+ * before `blob`, or a blob the cut could not read), `-` for a job whose hash
+ * has gone.
+ *
+ * ARGV: prefix, state, start rank, count, order.
+ */
+export const FIND_NAMES = `${QUEUE_PRELUDE}
+local which, start, count, order = ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4]), ARGV[5]
+local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, active = ACTIVE, completed = COMPLETED, dead = DEAD, ['waiting-children'] = CHILDREN }
+local set = sets[which]
+local reply = {}
+
+if not set or count <= 0 then
+  return reply
+end
+
+local entries
+if order == 'desc' then
+  entries = redis.call('ZREVRANGE', set, start, start + count - 1)
+else
+  entries = redis.call('ZRANGE', set, start, start + count - 1)
+end
+
+-- The JSON literal of a blob's leading name, or nil when it has none there.
+local function nameLiteral(blob)
+  if string.sub(blob, 1, 9) ~= '{"name":"' then
+    return nil
+  end
+  local from = 10
+  while true do
+    local quote = string.find(blob, '"', from, true)
+    if not quote then
+      return nil
+    end
+    -- A quote preceded by an odd run of backslashes (byte 92) is escaped.
+    local slashes = 0
+    while string.byte(blob, quote - 1 - slashes) == 92 do
+      slashes = slashes + 1
+    end
+    if slashes % 2 == 0 then
+      return string.sub(blob, 9, quote)
+    end
+    from = quote + 1
+  end
+end
+
+for _, entry in ipairs(entries) do
+  local id = (which == 'waiting') and string.sub(entry, 18) or entry
+  local stored = redis.call('HMGET', job(id), 'blob', 'name')
+  local name
+  if stored[1] then
+    local literal = nameLiteral(stored[1])
+    if literal then
+      name = 'j' .. literal
+    else
+      local ok, decoded = pcall(cjson.decode, stored[1])
+      if ok and type(decoded) == 'table' and type(decoded.name) == 'string' then
+        name = 'r' .. decoded.name
+      elseif stored[2] then
+        name = 'r' .. stored[2]
+      else
+        name = 'r'
+      end
+    end
+  elseif stored[2] then
+    name = 'r' .. stored[2]
+  else
+    name = '-'
+  end
+  reply[#reply + 1] = id
+  reply[#reply + 1] = name
+end
+
+return reply
+`;
+
+/**
+ * The throughput counts of every minute from `from` to `to`, both minute
+ * starts, read from the per-minute hashes {@link COMPLETE} and {@link FAIL}
+ * write. The caller bounds the range, so this is at most a day of `HMGET`s.
+ *
+ * ARGV: prefix, from, to. Reply: a flat list of triples — minute, completed,
+ * failed — for the minutes that have a hash.
+ */
+export const GET_THROUGHPUT = `${QUEUE_PRELUDE}
+local from, to = tonumber(ARGV[2]), tonumber(ARGV[3])
+local base = string.sub(PREFIX, 1, -5) .. 'tp:'
+local reply = {}
+
+local at = from
+while at <= to do
+  local minute = string.format('%.0f', at)
+  local counts = redis.call('HMGET', base .. minute, 'completed', 'failed')
+  if counts[1] or counts[2] then
+    reply[#reply + 1] = minute
+    reply[#reply + 1] = counts[1] or '0'
+    reply[#reply + 1] = counts[2] or '0'
+  end
+  at = at + ${THROUGHPUT_BUCKET_MS}
+end
+
+return reply
+`;
+
+/**
+ * Writes a worker's heartbeat record and its expiry together, after removing
+ * the records already lapsed at the reporter's `now` — so a dead worker's
+ * record goes while live workers keep reporting, not only when somebody lists.
+ *
+ * The keys' own lifetime is **relative**: `PEXPIRE` by `ttl`, and never
+ * shortened. It used to be `PEXPIREAT` the latest record's `expiresAt`, an
+ * absolute time from the caller's clock, and a caller a few intervals behind
+ * the server set a time already past — which deleted the whole registry on the
+ * spot. A relative lifetime is measured by the server alone, and the registry
+ * of a queue nobody consumes any more still removes itself.
+ *
+ * KEYS: workers hash, expiry sorted set. ARGV: id, record as JSON, expiresAt,
+ * now, ttl in milliseconds.
+ */
+export const REGISTER_WORKER = `
+local lapsed = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[4])
+for _, id in ipairs(lapsed) do
+  if id ~= ARGV[1] then
+    redis.call('HDEL', KEYS[1], id)
+    redis.call('ZREM', KEYS[2], id)
+  end
+end
+
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[2], ARGV[3], ARGV[1])
+
+local ttl = tonumber(ARGV[5])
+for _, key in ipairs({ KEYS[1], KEYS[2] }) do
+  if redis.call('PTTL', key) < ttl then
+    redis.call('PEXPIRE', key, ttl)
+  end
+end
+return 1
+`;
+
+/**
+ * Removes a worker's record and its expiry together.
+ *
+ * KEYS: workers hash, expiry sorted set. ARGV: id. Returns 1 when there was a
+ * record.
+ */
+export const REMOVE_WORKER = `
+local removed = redis.call('HDEL', KEYS[1], ARGV[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return removed
+`;
+
+/**
+ * Drops every record lapsed at `now` — `expiresAt` at or before it — and
+ * returns the rest.
+ *
+ * KEYS: workers hash, expiry sorted set. ARGV: now. Reply: the live records,
+ * as JSON, in no particular order.
+ */
+export const LIST_WORKERS = `
+local lapsed = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', ARGV[1])
+for _, id in ipairs(lapsed) do
+  redis.call('HDEL', KEYS[1], id)
+  redis.call('ZREM', KEYS[2], id)
+end
+return redis.call('HVALS', KEYS[1])
+`;
+
+/**
  * Records how a child ended on its parent, and moves the parent on.
  *
  * Runs on the **parent's** queue keys, so it is one script and atomic by
@@ -1179,7 +1394,7 @@ return {
  * reference as JSON (`{"queue":…,"id":…}`). Returns one of the
  * `ChildRecordResult` strings.
  */
-export const RECORD_CHILD = `${QUEUE_PRELUDE}
+export const RECORD_CHILD = `${QUEUE_PRELUDE}${THROUGHPUT_COUNT}
 local id, key, kind = ARGV[2], ARGV[3], ARGV[4]
 local payload, now, ref = ARGV[5], tonumber(ARGV[6]), ARGV[7]
 
@@ -1231,6 +1446,7 @@ if kind == 'failed' then
     'state', 'dead',
     'failedReason', payload,
     'finishedOn', tostring(now))
+  countThroughput('failed', now)
   return 'buried'
 end
 
