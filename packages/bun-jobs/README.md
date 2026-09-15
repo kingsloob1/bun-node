@@ -1,71 +1,765 @@
 # @kingsleyweb/bun-jobs
 
-Background work for Bun, built on [`@kingsleyweb/bun-common`](../bun-common):
+Background work for Bun, built on
+[`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md).
+Two subsystems share one storage contract and one required namespace:
 
-- **Runner** — run a JS/TS file on a schedule (cron with optional seconds,
-  interval, one-shot) or on demand, in a child process, a `Worker` or
-  in-process. Single-run mode holds a cluster-wide lock, queues extra
-  triggers, and kills a stuck run with a close → `SIGTERM` → `SIGKILL`
-  escalation.
-- **Queue** — queue and process jobs across processes and services with
-  priorities, delays, retries with backoff, per-attempt timeouts, stalled-job
-  recovery, repeatable jobs, retention and events.
-- **Drivers** — memory, file, SQL (`Bun.sql`: sqlite, postgres, mysql,
-  mariadb), MongoDB and Redis behind one contract, so producers, consumers
-  and runners in different processes share a backend.
+- **Queue** (`BunQueue` / `BunQueueWorker`). Queue and process many small jobs
+  across processes and services. It supports priorities, delays, retries with
+  backoff, per-attempt timeouts, stalled-job recovery, repeatable jobs,
+  debounce and throttle, cluster-wide rate and concurrency limits, dead
+  letters, flows (parents waiting on children), job logs, retention and events.
+- **Runner** (`BunRunner`). Run one JS/TS file on a schedule (cron with
+  optional seconds, an interval, or a one-shot) or on demand. It runs in a
+  child process, a `Worker` or in-process. Single-run mode holds a
+  cluster-wide lock and queues extra triggers. A stuck run is killed with a
+  close, then `SIGTERM`, then `SIGKILL`.
+- **Drivers**: memory, file, SQL (`Bun.sql`: SQLite, Postgres, MySQL, MariaDB),
+  MongoDB and Redis, all behind one contract. Producers, consumers and runners
+  in different processes can share a backend.
 
-| Driver | Cross-process | Cross-host | Waiting | How exclusivity is won |
-|---|---|---|---|---|
-| memory | no | no | local | one process; tests and single-process apps |
-| file | yes | no | poll | `open(…, "wx")` and atomic `rename` |
-| sql (sqlite) | yes | yes | poll | `BEGIN IMMEDIATE`, WAL, busy timeout |
-| sql (postgres/mysql/mariadb) | yes | yes | poll | `FOR UPDATE SKIP LOCKED` |
-| mongodb | yes | yes | poll | one conditional `findOneAndUpdate` |
-| redis | yes | yes | **blocking** | a Lua script, which runs uninterrupted |
+`BunJobs` ties them together for one service. It sets a namespace and a
+backend once, and every queue, worker and runner is derived from it. It also
+adds a registry of named jobs with a fluent builder that reads schedules
+written in words (`"every 2 weeks starting next monday"`).
 
-Redis is the only one that waits rather than polls: a worker blocks on the
-queue's wake list and hears about a job in about a millisecond. It is also
-the only one whose events are pushed rather than polled.
+**Requires Bun ≥ 1.4.2.** The Redis and SQL drivers use `RedisClient` and
+`Bun.sql` APIs that 1.4.2 is the first release to declare.
 
-Every driver takes its connection **either way** — a URL, or the fields a
-config file gives you — and lets you name its tables or collections:
+## Status
 
-```ts
-import type { DriverConfig } from "@kingsleyweb/bun-jobs";
+The package is being assembled in phases. What has landed on this branch, and
+is documented below:
 
-export const drivers: DriverConfig[] = [
-  // A URL, with a prefix applied to every table name.
-  { type: "sql", url: "postgres://user:pass@db/jobs", tablePrefix: "jobs_" },
+- the runner, with `BunRunnerManager`
+- the queue and worker, including repeatable jobs, debounce and throttle,
+  limits, dead letters, flows, isolated processors and job logs
+- the `BunJobs` context, the job registry and the builder with dates in words
+- `JobsNotifier`, one event stream per namespace
+- the memory, file, SQL, MongoDB and Redis drivers, with schema sync for SQL
+  and MongoDB
 
-  // The same connection as fields, naming a table that already exists.
-  {
-    type: "sql",
-    adapter: "postgres",
-    connection: { host: "db", user: "jobs", password: "secret" },
-    tables: { jobs: "legacy_work_items" },
-  },
+The generated API reference lands with the final phase. Until then this README,
+the JSDoc on every export, and the [option tours](#bun-jobs-examples) are the
+reference.
 
-  // MongoDB, naming a collection.
-  {
-    type: "mongodb",
-    connection: { host: "db", database: "work" },
-    collections: { jobs: "work_items" },
-  },
-];
+## Contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+  - [A queue and a worker](#a-queue-and-a-worker)
+  - [The job registry](#the-job-registry)
+  - [A runner](#a-runner)
+- [Concepts](#concepts)
+- [Queues and adding jobs](#queues-and-adding-jobs)
+  - [Job options](#job-options)
+  - [Queue options](#queue-options)
+  - [Queue methods](#queue-methods)
+- [Workers](#workers)
+  - [Worker options](#worker-options)
+  - [Retries and backoff](#retries-and-backoff)
+  - [Rate and concurrency limits](#rate-and-concurrency-limits)
+  - [Dead letters](#dead-letters)
+  - [Pause, resume and shutdown](#pause-resume-and-shutdown)
+  - [Stalled jobs](#stalled-jobs)
+- [The job API](#the-job-api)
+- [The BunJobs registry and builder](#the-bunjobs-registry-and-builder)
+  - [BunJobs options](#bunjobs-options)
+  - [Defining and adding jobs](#defining-and-adding-jobs)
+  - [Builder methods](#builder-methods)
+  - [Dates in words](#dates-in-words)
+- [Scheduling and repeatable jobs](#scheduling-and-repeatable-jobs)
+- [Debounce and throttle](#debounce-and-throttle)
+- [Flows](#flows)
+- [Isolated processors](#isolated-processors)
+- [BunRunner](#bunrunner)
+  - [Runner options](#runner-options)
+  - [Triggers and run modes](#triggers-and-run-modes)
+  - [Handlers, messages and kills](#handlers-messages-and-kills)
+  - [Introspection](#introspection)
+  - [BunRunnerManager](#bunrunnermanager)
+- [Events and JobsNotifier](#events-and-jobsnotifier)
+- [Drivers](#drivers)
+  - [Choosing a driver](#choosing-a-driver)
+  - [Driver configs](#driver-configs)
+  - [Connection fields](#connection-fields)
+- [Schema sync](#schema-sync)
+- [Errors](#errors)
+- [Logging](#logging)
+- [Benchmarks](#benchmarks)
+- [Examples](#examples)
+  - [Example projects](#example-projects)
+  - [bun-jobs examples](#bun-jobs-examples)
+- [Related packages](#related-packages)
+- [Development](#development)
+- [License](#license)
+
+## Installation
+
+```bash
+bun add @kingsleyweb/bun-jobs
 ```
 
-MongoDB's client is an **optional peer dependency**: it is imported only when
-that driver connects, so a project that does not use it never installs it
-(`bun add mongodb`). It needs **MongoDB 4.2 or later**: flows record a
-child's outcome with an update pipeline, which older servers reject.
+The memory, file, SQL and Redis drivers use only Bun's built-in clients. The
+remaining features rely on optional peer dependencies, which you install only
+if you use them:
+
+| Peer | Range | Needed for |
+|---|---|---|
+| `mongodb` | `>=6` | the MongoDB driver. Imported only when that driver connects. Needs **MongoDB 4.2 or later**. |
+| `chrono-node` | `>=2.7.0 <3` | reading **dates** in words (`"tomorrow at 9am"`, `"every 2 weeks starting 1st december"`). Durations (`"5 minutes"`) and cron do not need it. You can also supply your own [`dateParser`](#dates-in-words). |
+| `@types/bun` | `>=1.4.2` | types. The package ships raw `.ts`, so your project compiles it. |
+
+```bash
+bun add mongodb        # MongoDB driver
+bun add chrono-node    # dates in words
+```
+
+## Quick start
+
+### A queue and a worker
+
+```ts
+import { BunQueue, BunQueueWorker, MemoryDriver } from "@kingsleyweb/bun-jobs";
+
+interface Email {
+  to: string;
+}
+
+// The memory driver keeps jobs inside the instance, so producer and worker
+// must share one. On any other backend each side can build its own.
+const driver = new MemoryDriver();
+const namespace = "shop";
+
+const emails = new BunQueue<Email, string>("emails", { namespace, driver });
+
+const worker = new BunQueueWorker<Email, string>(
+  "emails",
+  async (job, ctx) => {
+    await ctx.log(`sending to ${job.data.to}`);
+    return `sent to ${job.data.to}`;
+  },
+  { namespace, driver, concurrency: 5 },
+);
+
+worker.on("completed", (job, result) => {
+  console.log(job.id, result);
+});
+void worker.run(); // resolves once the worker is closed
+
+await emails.add("welcome", { to: "ada@example.com" }, { attempts: 3 });
+```
+
+### The job registry
+
+```ts
+import { BunJobs } from "@kingsleyweb/bun-jobs";
+
+const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: "redis://localhost:6379" },
+});
+
+jobs.define<{ to: string }>(
+  "sendEmail",
+  async (job) => {
+    await deliver(job.data.to);
+  },
+  { attempts: 5 },
+);
+
+await jobs.start({ concurrency: 2 }); // one worker for every defined name
+
+await jobs.now("sendEmail", { to: "ada@example.com" });
+await jobs.run("sendEmail", { to: "grace@example.com" }).in("5 minutes").start();
+await jobs.schedule("sendEmail", { to: "ops@example.com" }).every("1 day").start();
+
+await jobs.close(); // stops workers and runners, closes the driver it built
+```
+
+### A runner
+
+```ts
+// jobs/cleanup.ts
+import { defineHandler } from "@kingsleyweb/bun-jobs";
+
+export default defineHandler<{ days: number }, number>(async (ctx) => {
+  ctx.logger.info("cleaning", { days: ctx.args.days });
+  ctx.progress(50);
+  return 42; // stored in the run's history
+});
+```
+
+```ts
+import { BunRunner } from "@kingsleyweb/bun-jobs";
+
+const runner = new BunRunner({
+  id: "cleanup",
+  namespace: "shop",
+  file: new URL("./jobs/cleanup.ts", import.meta.url),
+  schedule: "0 */10 * * * *", // six fields: every ten minutes, at second 0
+  args: { days: 30 },
+});
+
+runner.on("finished", (run, result) => {
+  console.log(run.runId, result);
+});
+await runner.start();
+
+await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
+```
+
+## Concepts
+
+- **Namespace.** Every queue, worker and runner requires one. The same queue
+  name or runner id in two namespaces refers to two separate things, so
+  services sharing a backend cannot collide.
+  `BunJobs` makes the namespace structural: set it once, and everything
+  derived from the context uses it.
+- **Queue.** A queue is just a name inside a namespace, with no server and no
+  registration step. Producers and workers find each other by naming the same
+  namespace and queue on the same backend.
+- **Driver.** Where state lives. You can pass either an instance, which is
+  shared and never closed by whoever borrowed it, or a
+  [config](#driver-configs), which is built and closed by the object it was
+  given to. A spawned child process can only receive a config.
+- **Job states.** A job moves through these states:
+  - `waiting` or `delayed`, then `active`;
+  - from `active`, to `completed`, to `failed` (an attempt failed and a retry
+    is scheduled), or to `dead` (attempts exhausted, or unrecoverable);
+  - a flow parent sits in `waiting-children` until its children settle.
+- **Maintenance needs no leader.** Every worker promotes delayed jobs,
+  recovers stalled ones, prunes expired results, heals repeat series and flows,
+  and sweeps stale debounce and throttle windows. Each of these is
+  idempotent, so no single process is load-bearing.
+
+## Queues and adding jobs
+
+```ts
+const mail = new BunQueue<Mail, void, "welcome" | "digest">("mail", {
+  namespace: "account",
+  driver: { type: "sql", url: "postgres://user:pass@db/jobs" },
+  defaultJobOptions: { attempts: 3 },
+});
+
+const job = await mail.add("welcome", { userId: 7 }, { priority: -1, delay: 5_000 });
+job.wasAdded; // false when `jobId` already existed
+
+await mail.addBulk([
+  { name: "welcome", data: { userId: 8 } },
+  { name: "digest", data: { userId: 9 }, opts: { runAt: new Date("2026-12-01") } },
+]);
+```
+
+The third type parameter narrows the job names that `add` accepts.
+
+Examples:
+
+- [`02-queues/producer-and-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/producer-and-worker.ts)
+- [`02-queues/job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-options.ts)
+- [`02-queues/bulk-and-management.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/bulk-and-management.ts)
+- [`10-options/job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-options.ts)
+- [`10-options/queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts)
+
+### Job options
+
+Queue `defaultJobOptions` are merged under the options of each `add()`. The
+built-in defaults are exported as `DEFAULT_JOB_OPTIONS`.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `jobId` | `string` | fresh id | The job's id, and also its idempotency key. Adding an existing id returns the stored job untouched (`wasAdded: false`) and emits `duplicate`. |
+| `priority` | `number` | `0` | Lower runs first; ties break FIFO. Clamped to ±1,048,576. |
+| `delay` | `number` | `0` | Milliseconds before the job may run. |
+| `runAt` | `Date \| number` | | An absolute time the job may run. Takes precedence over `delay`. |
+| `attempts` | `number` | `1` | Total attempts, including the first. Must be a whole number ≥ 1. |
+| `backoff` | `number \| JobBackoffOptions` | exponential from 1s, max 5 min, jitter 0.1 | Delay between attempts. See [Retries and backoff](#retries-and-backoff). |
+| `timeout` | `number` | `0` (none) | Per-attempt timeout in ms. The attempt's `ctx.signal` is aborted, and it fails with `JobTimeoutError`. |
+| `removeOnComplete` | `Retention` | `{ ttl: 86_400_000 }` | How long a completed job is kept (see below). |
+| `removeOnFail` | `Retention` | `false` | The same, for a dead job. |
+| `keepStacktraces` | `number` | `5` | How many failure stack traces the record keeps. |
+| `keepLogs` | `number` | `1000` | How many log lines the job keeps, newest last. `0` keeps every line. |
+| `deadLetter` | `string` | | The queue, in the same namespace, that receives a copy of the job when it dies. Takes precedence over the worker's `deadLetterQueue`. |
+| `debounce` | `{ id, ttl }` | | Keep one pending job per id. See [Debounce and throttle](#debounce-and-throttle). |
+| `throttle` | `{ id, ttl }` | | At most one job per id per window. |
+| `repeat` | `RepeatOptions` | | Makes this a repeatable job. See [Scheduling](#scheduling-and-repeatable-jobs). |
+| `ignoreFailure` | `boolean` | `false` | For a flow child: if it fails for good, its parent carries on anyway. |
+
+**Retention** (`Retention = boolean | number | { count?, ttl? }`) takes these
+forms:
+
+- `true` removes the job immediately;
+- `false` keeps it forever;
+- a number keeps that many jobs;
+- `{ count, ttl }` does both.
+
+A flow child is never removed before its parent has recorded its outcome.
+
+### Queue options
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `namespace` | `string` | required | The namespace the queue belongs to. |
+| `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where jobs live. A config is built and closed here; an instance is shared. |
+| `logger` | `LoggerLike` | no-op | See [Logging](#logging). |
+| `defaultJobOptions` | `JobOptions` | | Merged under every `add()`. |
+| `subscribe` | `boolean` | `false` | Re-emit events published by other processes, so a producer can watch jobs a worker elsewhere runs. Costs a subscription. |
+| `publish` | `boolean` | value of `subscribe` | Publish this queue's events for other processes. |
+| `publishGate` | `() => Promise<void>` | | Awaited before each publish. `BunJobs` sets it so events are not lost while its notifiers subscribe. |
+| `dateParser` | `DateParser` | `chrono-node` | Reads dates written in words. See [Dates in words](#dates-in-words). |
+
+### Queue methods
+
+Every method connects the driver on first use. After `close()`, calls throw
+`QueueClosedError`.
+
+| Method | What it does |
+|---|---|
+| `add(name, data, opts?)` | Adds a job, and returns a `Job`. |
+| `addBulk([{ name, data, opts? }])` | Adds several jobs in one call. Entries with `repeat` are added one at a time. |
+| `addFlow(node)` | Adds a job together with the jobs it waits on. See [Flows](#flows). |
+| `getJob(id)` | Returns one job, or `null`. |
+| `list(state \| states, { offset, limit = 100, order = "asc" })` | Returns jobs in the given state or states. |
+| `count()` / `count(state)` | Returns counts for every state, or for one. |
+| `update(id, { data?, priority?, runAt?, onlyIn? })` | Patches a stored job. `runAt` moves only a waiting or delayed job. `onlyIn` makes the change conditional on the job's state. |
+| `remove(id)` | Removes a job. Refused while the job is active. |
+| `retry(id, { resetAttempts = true })` | Returns a finished job to the queue. |
+| `retryJobs(ids, opts?)` | Retries several jobs, and returns the ids that went. |
+| `retryAll(state, { name?, reason?, filter?, limit?, resetAttempts? })` | Re-drives every matching `dead`, `failed` or `completed` job, walking the state one page at a time. |
+| `promote(id)` | Makes a delayed or retry-pending job claimable now. |
+| `getJobLogs(id, { offset, limit, order })` | Returns a page of a job's log. |
+| `pause()` / `resume()` / `isPaused()` | Pauses or resumes claiming for every worker in every process. |
+| `drain({ delayed = false })` | Drops pending jobs and returns the count. It never touches jobs that are running. |
+| `clean(state, { olderThan, limit = 1000 })` | Removes jobs in `state` older than `olderThan` ms. |
+| `setLimits(limits \| null)` / `getLimits()` | Cluster-wide limits. See [Rate and concurrency limits](#rate-and-concurrency-limits). |
+| `cleanWindows({ limit = 1000 })` | Removes stale debounce and throttle pointers. Workers also do this once a minute. |
+| `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, or removes one along with its scheduled occurrence. |
+| `close()` | Closes the subscription, and the driver if the queue built it. |
+
+## Workers
+
+```ts
+const worker = new BunQueueWorker<Mail, void>(
+  "mail",
+  async (job, ctx) => {
+    ctx.signal.throwIfAborted(); // aborted on timeout, shutdown or a lost lock
+    await job.updateProgress(50);
+    await send(job.data);
+  },
+  { namespace: "account", driver, concurrency: 10, deadLetterQueue: "mail-dead" },
+);
+
+await worker.run(); // or `autorun: true`
+```
+
+The processor receives the [`Job`](#the-job-api) and a `ProcessorContext`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `signal` | `AbortSignal` | Aborted when the attempt times out, the worker closes, or the job's lock is lost. |
+| `logger` | `Logger` | A logger bound to the job's ids. |
+| `workerId` | `string` | The worker's id. |
+| `attempt` | `number` | The attempt number, starting at 1. |
+| `heartbeat()` | `() => Promise<void>` | Extends the lock now, for a step longer than `lockDuration`. |
+| `log(line)` | `(line) => Promise<number>` | Appends to the job's persistent log, and returns how many lines it keeps. |
+
+Examples:
+
+- [`10-options/worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts)
+- [`06-failures/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/06-failures)
+
+### Worker options
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `namespace` | `string` | required | Must match the producer's namespace. |
+| `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where jobs live. |
+| `logger` | `LoggerLike` | no-op | Logger. |
+| `id` | `string` | fresh id | Identifies the worker in job records and logs. |
+| `concurrency` | `number` | `1` | Jobs processed at once. Can also be set at runtime via `worker.concurrency`. |
+| `lockDuration` | `number` | `30000` | How long a claim's lock lives. |
+| `heartbeatInterval` | `number` | `lockDuration / 3` (min 250) | How often the lock is renewed. |
+| `stalledInterval` | `number` | `30000` | How often to sweep for jobs whose worker died. |
+| `maxStalledCount` | `number` | `1` | How many stalls a job may have before it is buried. |
+| `pollInterval` | `number` | `1000` | Wait between claim attempts on a polling driver. |
+| `maxBlock` | `number` | `5000` | Longest blocking wait on a blocking driver. |
+| `maintenance` | `boolean` | `true` | Run the maintenance sweeps (see [Concepts](#concepts)). |
+| `autorun` | `boolean` | `false` | Start consuming on construction. |
+| `drainDelay` | `number` | `0` | Milliseconds of quiet before `drained` is emitted. |
+| `isolation` | `"in-process" \| "worker" \| "spawn"` | `"in-process"` | Where a processor file runs. See [Isolated processors](#isolated-processors). |
+| `isolationOptions` | `IsolationOptions` | | Timeouts and executor options for isolated processors. |
+| `backoffStrategies` | `BackoffStrategies \| Record<string, BackoffStrategy>` | | Named custom backoffs. |
+| `deadLetterQueue` | `string` | | The dead-letter queue for jobs that do not name their own. |
+| `limitsRefreshInterval` | `number` | `1000` | How long stored limits are trusted before being re-read. |
+| `waitToExit` | `boolean` | `true` | Keep the process alive while waiting for work. `false` lets a script exit when its own work is done. The Redis, Postgres and MongoDB clients hold the process on their own, so close the driver in that case. |
+| `publish` | `boolean` | `false` | Publish job events (active, progress, completed, failed, stalled, and so on) for other processes. |
+| `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
+
+The worker's events are:
+
+- `ready`
+- `active`
+- `progress`
+- `completed`
+- `failed`, emitted on every failed attempt
+- `retrying`
+- `dead`
+- `deadLettered`
+- `stalled`
+- `lockLost`
+- `drained`
+- `paused`, `resumed`
+- `closing`, `closed`
+- `error`
+
+The job events can also be scoped to a job name, such as
+`worker.on("completed:sendEmail", ...)`.
+
+### Retries and backoff
+
+An attempt that throws is retried while attempts remain. Throwing an
+`UnrecoverableJobError` sends the job straight to `dead`, even if attempts are
+left.
+
+`backoff` accepts either of two forms:
+
+- a number of milliseconds, meaning a fixed delay;
+- an object `{ type, delay, factor, max, jitter }`.
+
+The built-in `type` values are `fixed` (the default when you give an object),
+`exponential`, `linear`, `fibonacci`, `full-jitter` and `decorrelated-jitter`.
+Any other `type` is the name of a custom strategy registered on the worker:
+
+```ts
+jobs.defineBackoff("retryAfter", ({ attempt, error }) =>
+  error.message.includes("quota") ? false : attempt * 30_000, // false: stop retrying
+);
+
+await jobs.now("sync", data, { attempts: 5, backoff: { type: "retryAfter", max: 300_000 } });
+```
+
+The job stores only the strategy's name, and each consuming process resolves
+it. A worker that does not know the name falls back to the default backoff and
+logs a warning. It never loses the job's remaining attempts.
+
+For a worker you construct yourself, pass `backoffStrategies`. Workers created
+by `BunJobs` receive every strategy registered with `defineBackoff`.
+
+Example:
+[`06-failures/retries-and-backoff.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/retries-and-backoff.ts).
+
+### Rate and concurrency limits
+
+Limits are stored on the queue, so every worker in every process enforces the
+same numbers. A change reaches running workers within their
+`limitsRefreshInterval`.
+
+```ts
+await queue.setLimits({
+  rate: { max: 100, duration: "1 minute" }, // queue-wide start rate
+  concurrency: 20, // jobs running at once, across every worker
+  names: { sendEmail: { concurrency: 5, rate: { max: 10, duration: 1_000 } } },
+});
+await queue.setLimits(null); // lift them all
+```
+
+When a name reaches its limit, it is skipped rather than waited behind, so
+other names keep running.
+
+Enforcement is approximate by design. Concurrency is held as leases that
+expire `lockDuration` after a worker stops renewing them. In exchange, no claim
+waits on a global lock.
+
+`define(name, handler, { concurrency })` in the registry stores a per-name
+concurrency the same way. Every built-in driver can store limits.
+
+Examples:
+
+- [`05-flow-control/rate-and-concurrency-limits.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/rate-and-concurrency-limits.ts)
+- [`03-job-registry/per-name-concurrency.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/per-name-concurrency.ts)
+
+### Dead letters
+
+A job that dies can be copied to a dead-letter queue, named by the job's
+`deadLetter` option or by the worker's `deadLetterQueue`. The copy is a
+`DeadLetter` with these fields:
+
+- `queue`
+- `id`
+- `name`
+- `data`
+- `failedReason`
+- `attemptsMade`
+- `diedAt`
+
+It is added under the original job's name, so a worker on the dead-letter
+queue can dispatch on it as the original worker did. Its id is derived from
+the original's, so one death files exactly one letter. The dead job itself is
+kept or removed according to `removeOnFail`.
+
+Once the cause is fixed, re-drive a backlog with, for example,
+`queue.retryAll("dead", { reason: /ECONNREFUSED/ })`.
+
+Example:
+[`06-failures/dead-letter-queue.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/dead-letter-queue.ts).
+
+### Pause, resume and shutdown
+
+- `worker.pause({ waitActive? })`, `worker.resume()` and `worker.isPaused()`
+  affect this worker only.
+- `queue.pause()` and `queue.resume()` affect every worker in every process.
+- `worker.close({ force?, timeout? })` stops claiming and waits for in-flight
+  jobs. A job still running at `timeout` has its signal aborted, and its lock
+  is left to expire, so another worker recovers it as stalled instead of the
+  job being lost. `close()` holds the process open until it finishes, so it is
+  safe to await in a `SIGTERM` handler.
+
+Examples:
+
+- [`09-integrations/graceful-shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/graceful-shutdown.ts)
+- [`06-failures/timeouts-and-cancellation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/timeouts-and-cancellation.ts)
+
+### Stalled jobs
+
+A worker that dies while holding a job stops renewing its lock. Every
+`stalledInterval`, some worker's maintenance returns jobs with expired locks
+to the queue and emits `stalled` with their ids. A job that has stalled more
+than `maxStalledCount` times is buried in `dead` instead.
+
+## The job API
+
+`Job<TData, TResult>` is an immutable view of the stored record. Its mutating
+methods go to the driver and return what the driver decided.
+
+| Member | Meaning |
+|---|---|
+| `id`, `name`, `data`, `opts`, `state`, `priority`, `runAt`, `createdAt` | Identity and placement. |
+| `processedOn`, `finishedOn`, `expiresAt` | Timestamps (epoch ms), or `null`. |
+| `attemptsMade`, `maxAttempts`, `stalledCount` | Attempt bookkeeping. |
+| `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. Errors are rehydrated as `Error`s. |
+| `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. |
+| `updateProgress(value)` | Records a number or an object, and emits `progress`. |
+| `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. |
+| `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
+| `setPriority(n)` | Changes the priority. A waiting job moves in claim order. |
+| `reschedule(when)` | Moves a waiting or delayed job to a `Date`, epoch ms, or words (`"in 10 minutes"`). |
+| `promote()` | Makes a delayed or retry-pending job claimable now. |
+| `retry({ resetAttempts })` | Returns a finished job to the queue. |
+| `remove()` | Removes the job. Refused while it is active. |
+| `extendLock(ms?)` / `touch(ms?)` | Extends the lock. Returns `false` once the lock is no longer yours. |
+| `refresh()` | Re-reads the job, or returns `null` if it is gone. |
+| `getChildrenValues()` / `getChildrenFailures()` | Flow results, keyed `queue:id`. |
+| `toJSON()` | The stored record. |
+
+Example:
+[`02-queues/job-lifecycle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-lifecycle.ts).
+
+## The BunJobs registry and builder
+
+```ts
+const jobs = new BunJobs({ namespace: "account", driver: { type: "redis", url } });
+
+export const mail = jobs.queue("mail"); // the same instance on every call
+export const worker = jobs.worker("mail", processor, { concurrency: 4 });
+export const cleanup = jobs.runner({ id: "cleanup", file: "./jobs/cleanup.ts" });
+```
+
+Examples:
+
+- [`01-quick-start/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/01-quick-start/index.ts)
+- [`03-job-registry/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/03-job-registry)
+- [`10-options/bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts)
+
+### BunJobs options
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `namespace` | `string` | required | One per service. |
+| `driver` | `JobsDriver \| DriverConfig` | a new memory driver | A config is built here and closed with the context. An instance is never closed by it. |
+| `logger` | `LoggerLike` | no-op | Passed to everything created here. |
+| `defaultJobOptions` | `JobOptions` | | Merged under every job added through a queue from here. |
+| `runnerDefaults` | `Partial<BunRunnerOptions>` | | Merged under every runner created here (everything except `id`, `namespace` and `file`). |
+| `registryQueue` | `string` | `"jobs"` | The queue that `define`, `now`, `schedule`, `run`, `process` and `start` use. |
+| `dateParser` | `DateParser` | `chrono-node` | Reads dates in words for every queue created here. |
+| `publishEvents` | `boolean` | `false` | Every queue, worker and runner created here publishes its events. A `publish` option on an individual object still wins. |
+
+The context has these members:
+
+| Member | What it does |
+|---|---|
+| `namespace` | The context's namespace. |
+| `driver` | The backend everything here shares. |
+| `logger` | The context's logger. |
+| `driverConfig` | The config form of the backend, if the context was built from one. |
+| `runners` | The context's [`BunRunnerManager`](#bunrunnermanager). |
+| `queue(name, opts?)` | The queue by that name. |
+| `worker(name, processor, opts?)` | Creates a worker on a queue. |
+| `runner(opts)` | Creates a runner. |
+| `define(name, handler, opts?)` | Defines a job by name. |
+| `defineBackoff(name, fn)` | Registers a named backoff strategy. |
+| `definitions()` | Every defined name, with how to run it. |
+| `schedule(name, data?)` / `run(...)` / `process(...)` | Three names for the same method; each returns a builder. |
+| `now(name, data?, opts?)` | Adds a defined job to run now. |
+| `start(workerOpts?)` | Starts consuming the defined jobs. |
+| `stop({ force?, timeout? })` | Stops consuming, letting in-flight jobs finish. |
+| `drain({ delayed? })` | Drops pending jobs from the registry's queue. |
+| `notifier(opts?)` | Opens a [`JobsNotifier`](#events-and-jobsnotifier). |
+| `listQueues()` / `listRunners()` | Queue names and runner ids the backend knows about in this namespace. |
+| `purge()` | Deletes everything in this namespace, and nothing outside it. |
+| `close({ timeout? })` | Stops runners and workers, closes queues, then the driver if the context built it. |
+
+`jobsFromContext(ctx)` builds a `BunJobs` inside a runner's handler, on the
+runner's namespace and backend. It works in every execution mode:
+
+- in-process, it reuses the runner's driver instance;
+- in a child process or `Worker`, it builds a driver from `ctx.driverConfig`.
+
+### Defining and adding jobs
+
+```ts
+jobs.define("sendEmail", async (job) => send(job.data), { attempts: 5, concurrency: 3 });
+
+await jobs.start(); // one worker; dispatches on job.name
+await jobs.now("sendEmail", { to });
+```
+
+The options given to `define` are defaults for every job of that name, wherever
+it is added from. `concurrency` is stored as the name's limit when you call
+`start()`.
+
+Defining a name again replaces the earlier definition. Adding a name that
+was never defined throws `ConfigError`. A worker that claims a name its process
+does not define fails the job, leaving it for a deployment that does define
+it.
+
+### Builder methods
+
+Nothing is added until `start()`, which returns the `Job`.
+
+```ts
+await jobs.schedule("sendMails").every("2 days").withData(list).start();
+await jobs.run("sendMail", mail).in("5 minutes").attempts(3).start();
+await jobs.process("report").on("2nd december 2026 at 9am").start();
+await jobs.schedule("sync").every("0 */6 * * *").tz("Europe/London").limit(10).start();
+await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, attempts: 5 }).start();
+```
+
+| Method | Meaning |
+|---|---|
+| `withData(data)` | Sets the payload. |
+| `every(interval)` | Repeats the job. Accepts milliseconds, a duration (`"2 days"`, `"every 2 days"`), words (`"daily"`, `"every monday"`), a cron expression, or a phrase with a window (`"every day from 1 dec 2026 until 31 dec"`). |
+| `on(when)` | Runs at a moment: a `Date`, epoch ms, or words. On a repeating job, this is when the series begins. |
+| `in(delay)` | Runs after a delay: `"5 minutes"` or milliseconds. |
+| `startingAt(when)` / `endingAt(when)` | The window of a repeating series. |
+| `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. |
+| `priority(n)`, `attempts(n)`, `timeout(ms \| "30 seconds")`, `backoff(b)` | Job options. |
+| `unique(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
+| `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)`, `keepLogs(n)` | Job options. |
+| `withOptions(obj)` | All of the above as one object. It accepts builder names and raw `JobOptions` names. Giving both `in` and `delay`, `on` and `runAt`, or `unique` and `jobId` throws. |
+| `start()` | Adds the job. |
+
+Example:
+[`03-job-registry/builder-with-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/builder-with-options.ts).
+
+### Dates in words
+
+Durations (`"90s"`, `"1h 30m"`, `"2 weeks"`) and cron expressions are parsed by
+the package itself. **Dates** in words (`"tomorrow at 9am"`, `"next monday"`)
+need `chrono-node` (`CHRONO_VERSION_RANGE` is `>=2.7.0 <3`), which is loaded
+the first time a phrase needs it.
+
+To read dates that chrono does not understand, or to avoid installing it, pass
+a `dateParser` to `BunJobs` or `BunQueue`. A parser is synchronous and
+implements `parse(text, reference, options)`, plus optionally `parseDate`.
+Parsers are checked with `assertDateParser` when the queue is built.
+
+Phrases are read when the job is added, so `"starting tomorrow"` means tomorrow
+relative to that moment.
+
+Examples:
+
+- [`04-scheduling/human-schedules.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/human-schedules.ts)
+- [`04-scheduling/custom-date-parser.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/custom-date-parser.ts)
+
+## Scheduling and repeatable jobs
+
+`repeat` makes a job one occurrence of a series. When an occurrence completes,
+the next one is scheduled.
+
+```ts
+await queue.add("digest", {}, { repeat: { cron: "0 9 * * 1", tz: "Europe/London" } });
+await queue.add("poll", {}, { repeat: { every: 30_000, immediately: true } });
+await queue.add("report", {}, { repeat: { every: "1 hour", startAt: "tomorrow at 9am", limit: 24 } });
+```
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `cron` | `string` | | Five-field cron, or six-field with seconds first. |
+| `tz` | `string` | | The IANA time zone the cron expression is read in. |
+| `every` | `number \| string` | | Milliseconds, a duration, a cron expression, or a phrase that may also name a start and end. Dates in the phrase fill `startAt` and `endAt` only when those are not given. |
+| `startAt` / `endAt` | `Date \| number \| string` | | The window, as a date, epoch ms, or words. |
+| `limit` | `number` | | Stop after this many occurrences. |
+| `key` | `string` | derived from the options | Identifies the series. Set it when re-adding a series must update it rather than create a new one. |
+| `immediately` | `boolean` | | Run once as soon as the series is created. |
+| `catchUp` | `boolean` | `false` | If the series fell behind while nothing was consuming, replay every missed occurrence, one per completion. When off, the series skips to the next real occurrence. |
+
+Occurrence ids are derived from the series key and the due time
+(`repeatJobId`), so several producers adding the same series schedule each
+occurrence only once. A `jobId` on a repeating job is ignored. Use `key`
+instead; `unique()` in the builder maps to it.
+
+Every worker's maintenance heals repeat series.
+
+Cron helpers:
+
+- `validateCron(expr, { tz? })`
+- `parseCron(expr, { tz? })`
+- `nextCronDate(expr, from?, { tz? })`
+
+Schedule helpers, shared with the runner:
+
+- `normalizeSchedule(input)`
+- `nextFireDate(schedule, from?)`
+
+Examples:
+
+- [`04-scheduling/repeatable-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/repeatable-jobs.ts)
+- [`04-scheduling/cron-helpers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/cron-helpers.ts)
+
+## Debounce and throttle
+
+```ts
+// Many edits, one reindex: the latest data, 30 seconds after the last add.
+await queue.add("reindex", { doc }, { debounce: { id: doc.id, ttl: "30 seconds" } });
+
+// At most one digest per user per hour.
+await queue.add("digest", { userId }, { throttle: { id: `digest:${userId}`, ttl: "1 hour" } });
+```
+
+- **Debounce** keeps one pending job per `id`. While that job has not started,
+  another add replaces its data and pushes its run time back to `ttl` from
+  now, then emits `debounced`. The first add's other options stay. Once the
+  job has started, the next add creates a new job.
+- **Throttle** adds at most one job per `id` per `ttl`. An add inside the
+  window adds nothing, returns the job that opened the window, and emits
+  `throttled`.
+- `ttl` is milliseconds or a duration. Neither option combines with `repeat`,
+  `jobId`, or the other option, and neither is allowed in a flow.
+
+Examples:
+
+- [`05-flow-control/debounce.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/debounce.ts)
+- [`05-flow-control/throttle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/throttle.ts)
 
 ## Flows
 
-A flow is a job that runs once the jobs it waits on — its children — have
+A flow is a job that runs once the jobs it waits on (its children) have
 settled. Children may be in any queue of the same namespace, and may have
 children of their own.
 
 ```ts
+const reports = new BunQueue("reports", { namespace, driver });
+
 export const flow = await reports.addFlow({
   name: "monthly-report",
   data: { month: "2026-08" },
@@ -78,107 +772,817 @@ export const flow = await reports.addFlow({
 export const worker = new BunQueueWorker("reports", async (job) => {
   const values = await job.getChildrenValues(); // { "fetch:<id>": result, ... }
   const failures = await job.getChildrenFailures(); // ignored failures, as Errors
-  return build(values, failures);
-}, { namespace });
+  return summarise(values, failures);
+}, { namespace, driver });
 ```
 
-`addFlow` returns the tree it added — `{ job, children: [...] }` — with a
+A `FlowNode` has these fields:
+
+- `name`
+- `data`
+- `opts?`
+- `queue?`, which defaults to the parent's queue, or for the top of the flow to
+  the queue `addFlow` is called on
+- `children?`
+
+`addFlow` returns the tree it added, `{ job, children: [...] }`, with the
 parent in `waiting-children` until its children settle.
 
-- **Adding.** The whole tree is checked first: a `queue:id` that appears twice,
+- **Adding.** The whole tree is checked first. A `queue:id` that appears twice,
   or a child with the id of one of its ancestors, throws a `ConfigError` and
   nothing is written. `repeat`, `debounce` and `throttle` are not allowed in a
-  flow. Jobs are then added children first, each parent after its children,
-  so a parent's `createdAt` follows every child it lists. A child that
-  finishes before its parent exists is delivered as soon as the parent
-  arrives. Running the same `addFlow` again with the same ids adds only what
-  is missing; a job whose `jobId` already exists keeps the children it has.
+  flow.
+
+  Jobs are then added children first, each parent after its children, so a
+  parent's `createdAt` follows every child it lists. A child that finishes
+  before its parent exists is delivered as soon as the parent arrives.
+
+  Running the same `addFlow` again with the same ids adds only what is
+  missing. A job whose `jobId` already exists keeps the children it has.
   `added` is published on each job's own queue.
-- **Results.** `job.getChildrenValues()` gives each completed child's return
-  value, keyed `queue:id`. `job.getChildrenFailures()` gives the failures of
+- **Results.** `job.getChildrenValues()` returns each completed child's return
+  value, keyed `queue:id`. `job.getChildrenFailures()` returns the failures of
   children marked `ignoreFailure`.
-- **Failing by default.** A child that fails for good fails its parent: the
+- **Failing by default.** A child that fails for good fails its parent. The
   parent goes to `dead` with a `ChildFailedError` naming the child, and that
-  failure travels on up the flow. A buried parent gets what any job that dies
-  gets — `failed` and `dead` events, its dead-letter queue, and its
-  `removeOnFail` when it is the top of the flow. With `removeOnFail: true` a
-  buried top-level parent is removed, so it cannot be retried. A nested
-  parent's retention waits until its own parent has recorded it, like any
-  child's. A child marked `ignoreFailure` lets its parent carry on.
-- **Retrying a buried parent** — `queue.retry`, `retryJobs`, `retryAll` or
-  `job.retry()` — returns it to `waiting-children`, waiting on every child it
-  has no outcome for. Retry the failed child too, in either order: a child that
-  completes while its parent is still buried has its result kept there, and a
-  failure that has already buried the parent once does not bury the retried
-  parent again. A failed child that has since been removed counts as
-  unsettled, so maintenance fails the parent again (below).
+  failure travels on up the flow.
+
+  A buried parent gets what any dead job gets: `failed` and `dead` events, its
+  dead-letter queue, and its `removeOnFail` when it is the top of the flow.
+  With `removeOnFail: true`, a buried top-level parent is removed, so it cannot
+  be retried. A nested parent's retention waits until its own parent has
+  recorded it, like any child's.
+
+  A child marked `ignoreFailure` lets its parent carry on.
+- **Retrying a buried parent** (with `queue.retry`, `retryJobs`, `retryAll` or
+  `job.retry()`) returns it to `waiting-children`, waiting on every child it
+  has no outcome for.
+
+  Retry the failed child too, in either order. A child that completes while
+  its parent is still buried has its result kept there. A failure that has
+  already buried the parent once does not bury the retried parent again.
+
+  A failed child that has since been removed counts as unsettled, so
+  maintenance fails the parent again (see below).
 - **Retention waits for delivery.** A child's `removeOnComplete` or
-  `removeOnFail` — including a count or TTL applied by any other job — never
-  removes it before its parent has recorded its outcome.
+  `removeOnFail` never removes it before its parent has recorded its outcome.
+  This includes a count or TTL applied by any other job.
 
 **Healing.** Recording a child on its parent and applying the child's
-retention are two steps, and both are repeat-safe. A delivery that fails is
-retried within a few seconds by the worker that started it, and workers'
+retention are two separate steps, and both are safe to repeat. A delivery that
+fails is retried within a few seconds by the worker that started it. Workers'
 maintenance (every `stalledInterval`) finishes whatever a crash left half done:
 
-- a parent waiting on a child that settled without it knowing is told again;
+- a parent waiting on a child that settled without the parent knowing is told
+  again;
 - a child that finished and was never recorded is delivered again;
-- a parent listing a child that does not exist, once the parent is older than
-  the grace period (one minute), counts that child as failed;
-- a child whose parent does not exist, once it finished more than the grace
-  period ago, is released to its own retention.
+- a parent listing a child that does not exist counts that child as failed,
+  once the parent is older than the grace period (one minute);
+- a child whose parent does not exist is released to its own retention, once
+  it finished more than the grace period ago.
 
 Each pass reads at most a page of parents, a hundred of their children and a
-page of finished jobs, and the next pass resumes where it stopped, so a queue
-of any size is covered over successive passes.
+page of finished jobs. The next pass resumes where it stopped, so a queue of
+any size is covered over successive passes.
 
-**MongoDB** needs 4.2 or later for flows (see above). **SQL** stores a flow
-in one `flow` column: a table created before flows needs `syncSchema()` before
-a flow can be added, and says so. Recording a child rewrites its parent's whole
-flow document, so on SQL a very wide flow costs O(n²) over its n children —
-measured on Postgres at 1.4ms per record on a 100-child parent and 3.1ms on a
-2,000-child one. Keep very wide fan-outs to nested flows, or use Redis or
-MongoDB, which update one entry per record.
+**Backend notes:**
 
-## Running the integration suites
+- **MongoDB** needs 4.2 or later for flows.
+- **SQL** stores a flow in one `flow` column. A table created before flows
+  needs [`syncSchema()`](#schema-sync) before a flow can be added, and the
+  error says so.
 
-The Redis, Postgres, MariaDB and MongoDB suites skip unless their URL is set.
-To provide the servers:
+  Recording a child rewrites its parent's whole flow document, so on SQL a
+  very wide flow costs O(n²) over its n children. Measured on Postgres, that
+  was 1.4ms per record on a 100-child parent and 3.1ms on a 2,000-child one.
+  Keep very wide fan-outs to nested flows, or use Redis or MongoDB, which
+  update one entry per record.
 
-```bash
-bun scripts/setup-databases.ts             # install what is missing
-bun scripts/setup-databases.ts --docker    # containers instead, no root needed
-bun scripts/setup-databases.ts --dry-run   # see the plan first
+## Isolated processors
+
+Give a worker a processor **file** instead of a function, and `isolation`
+decides where each attempt runs:
+
+- `"in-process"` (the default) imports the file once and calls it on the
+  worker's thread.
+- `"worker"` runs each attempt in a fresh `Worker`: a separate JavaScript
+  context in the same process, which can be terminated.
+- `"spawn"` runs each attempt in a child process. This is the only mode where a
+  processor that ignores its signal is certain to be killed.
+
+```ts
+// processors/resize.ts
+import { defineProcessor } from "@kingsleyweb/bun-jobs";
+
+export default defineProcessor<{ path: string }, { width: number }>(async (job, ctx) => {
+  await job.log(`resizing ${job.data.path}`);
+  return await resize(job.data.path, ctx.signal);
+});
 ```
 
-It is safe to run repeatedly: an installed server is never reinstalled, and
-configuration runs only when connecting with the expected credentials fails.
+```ts
+export const worker = new BunQueueWorker("images", new URL("./processors/resize.ts", import.meta.url), {
+  namespace,
+  driver,
+  isolation: "spawn",
+  isolationOptions: { closeTimeout: 2_000, spawn: { env: { SHARP_CONCURRENCY: "1" } } },
+});
+```
+
+`isolationOptions` accepts:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `closeTimeout` | `5000` | After asking the processor to stop, how long it has before being terminated. |
+| `killTimeout` | `2000` | After `SIGTERM`, how long before `SIGKILL` (spawn only). |
+| `spawn` | | `SpawnOptions`, as in the [runner options](#runner-options). |
+| `worker` | | `WorkerOptions`, as in the [runner options](#runner-options). |
+
+Only a file can be isolated: an `isolation` other than `"in-process"` with a
+function processor throws `ConfigError`.
+
+The worker keeps the driver, so a child receives an `IsolatedJob`: a plain
+object with every public member of `Job`.
+
+- **Through the worker**, these work: `job.log`, `job.updateProgress`,
+  `job.extendLock`/`touch`, `job.getChildrenValues`, `job.getChildrenFailures`
+  and `ctx.heartbeat`. Every read-only field is present, including `parent`.
+- **Unavailable**, because they would change the stored job directly, and they
+  reject with an error saying so: `getLogs`, `updateData`, `setPriority`,
+  `reschedule`, `remove`, `retry`, `promote` and `refresh`.
+
+A reply on the job channel that is malformed rejects with a `ProtocolError`.
+Errors thrown in a child are rebuilt by name, so `UnrecoverableJobError` still
+sends the job to `dead`.
+
+Examples:
+
+- [`02-queues/isolated-processors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/isolated-processors.ts)
+- [`10-options/worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts)
+
+## BunRunner
+
+A runner runs one handler file, whose default export is a `RunnerHandler`
+typed with `defineHandler`. Nothing starts in the constructor; call `start()`.
+
+Examples:
+
+- [`07-runner/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner)
+- [`10-options/runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts)
+
+### Runner options
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | `string` | required | Identifies the runner within its namespace. |
+| `namespace` | `string` | required | Namespace. |
+| `name` | `string` | `id` | Display name. |
+| `file` | `string \| URL` | required | The handler file, resolved once, relative to `spawn.cwd` or the cwd. |
+| `schedule` | `ScheduleInput` | none (manual only) | A cron string (five or six fields), interval ms, a `Date`, `{ cron, tz }`, `{ every, anchor }` or `{ at }`. |
+| `executionMode` | `"spawn" \| "worker" \| "in-process"` | `"spawn"` | Where runs execute. |
+| `runMode` | `"single" \| "parallel"` | `"single"` | `single` holds a cluster-wide lock. `parallel` lets runs overlap up to `maxConcurrency`, with no lock. |
+| `queueRuns` | `boolean` | `false` | Queue a trigger that cannot start now, instead of dropping it. |
+| `maxQueuedRuns` | `number` | `100` | Trigger queue cap. |
+| `maxConcurrency` | `number` | unlimited | Concurrency cap in `parallel` mode. |
+| `timeout` | `number` | `0` (none) | Per-run timeout in ms. |
+| `closeTimeout` | `number` | `5000` | Grace after asking a run to stop, before `SIGTERM`. |
+| `killTimeout` | `number` | `2000` | Grace after `SIGTERM`, before `SIGKILL`. |
+| `waitToExit` | `boolean` | `true` | Keep the process alive for the schedule. `false` unrefs timers and children. |
+| `lockTtl` | `number` | `30000` | How long the single-run lock lives. |
+| `heartbeatInterval` | `number` | `lockTtl / 3` (min 1000) | How often the lock is renewed. |
+| `onLockLost` | `"abort" \| "continue"` | `"abort"` | What to do when the lock is lost mid-run. |
+| `keepHistory` | `number` | `50` | Run records kept. |
+| `maxResultBytes` | `number` | `16384` | Cap on a stored run result. |
+| `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where state lives. Memory cannot coordinate across processes. |
+| `childDriver` | `DriverConfig` | `driver`, when that is a config | Handed to handlers as `ctx.driverConfig`. |
+| `logger` | `LoggerLike` | no-op | Logger. |
+| `args` | `TArgs` | | Default arguments for scheduled runs. |
+| `autostart` | `boolean` | `false` | Start on construction. |
+| `startPaused` | `boolean` | `false` | Start paused. |
+| `syncInterval` | `number` | `30000` | How often to re-read the shared paused flag and schedule. |
+| `forwardLogs` | `boolean` | `false` | Forward a child's `ctx.logger` calls to the parent's `log` event. |
+| `publish` | `boolean` | `false` | Publish `started`, `succeeded`, `failed`, `timeout`, `killed`, `queued` and `skipped` for other processes. |
+| `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
+| `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"inherit"` by default, or `"pipe"`/`"ignore"`), and `startTimeout` (`10000`). |
+| `worker` | `WorkerOptions` | | `smol`, `name`, `env`, `argv`. |
+| `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
+
+### Triggers and run modes
+
+`trigger({ args?, force?, source? })` reports what happened instead of
+throwing. It resolves to one of these outcomes:
+
+- `{ outcome: "started", runId }`;
+- `{ outcome: "queued", position }`;
+- `{ outcome: "skipped", reason }`, where `reason` is `paused`, `busy`,
+  `lock-held`, `max-concurrency`, `queue-full` or `stopped`.
+
+`force` runs even while paused. A manual trigger on a stopped runner throws
+`RunnerStoppedError`.
+
+In `single` mode, the lock lives in the driver, so one run happens at a time
+across every process sharing the backend. Queued triggers are also stored in
+the driver, so they survive the lock holder crashing, and whoever holds the
+lock drains them when its run finishes.
+
+`pause()` and `resume({ triggerNow? })` are persisted flags, shared across
+processes. `updateSchedule(schedule)` replaces and persists the schedule.
+
+Examples:
+
+- [`07-runner/manual-trigger.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manual-trigger.ts)
+- [`07-runner/single-run-lock.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/single-run-lock.ts)
+
+### Handlers, messages and kills
+
+A handler receives a `RunContext` with these fields:
+
+- `runId`
+- `runnerId`
+- `runnerName`
+- `namespace`
+- `attempt`
+- `source`: `schedule`, `manual`, `queued` or `resume`
+- `mode`
+- `startedAt`
+- `deadline`
+- `args`
+- `signal`
+- `logger`
+- `progress(value)`
+- `send(message)`
+- `onMessage(listener)`
+- `driverConfig`
+- `driver`, in-process only
+
+Messages cross the process boundary as JSON in `spawn` and `worker` mode:
+
+- `runner.send(message, runId?)` delivers to `ctx.onMessage`;
+- `ctx.send(message)` surfaces as the runner's `message` event.
+
+`kill(runId?, { force?, reason? })` aborts the run's signal, then escalates to
+`SIGTERM` after `closeTimeout` and to `SIGKILL` after `killTimeout`. `force`
+skips to the end of that escalation.
+
+An in-process run can only be stopped through its signal. If it ignores the
+signal, it may be reported `detached`.
+
+`stop({ timeout?, force? })` stops the ticker, waits for runs in flight
+(killing them at `timeout`), releases the lock, and closes an owned driver.
+
+Runner events:
+
+- `scheduled`
+- `started`
+- `progress`
+- `message`
+- `log`
+- `output`, when the child's streams are piped
+- `finished`
+- `failed`
+- `timeout`
+- `killed`
+- `skipped`
+- `queued`, `dequeued`
+- `lockLost`
+- `paused`, `resumed`
+- `stopped`
+- `error`
+
+Examples:
+
+- [`07-runner/messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts)
+- [`07-runner/execution-modes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/execution-modes.ts)
+- [`07-runner/runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts)
+
+### Introspection
+
+- `history(limit?)` returns run records, newest first.
+- `stats()` returns lifetime counters (`success`, `failed`, `timeout`,
+  `killed`, `skipped`, `queued`, `total`). `resetStats()` zeroes them.
+- `info()` returns a snapshot that merges this process's view with the
+  driver's. Its `isRunning` and `runningOn` (`{ host, pid, runId, since }`)
+  describe the whole cluster.
+- `status`, `activeRuns`, `schedule` and `nextRunAt()` describe this instance.
+
+Example:
+[`07-runner/scheduled-runner.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/scheduled-runner.ts).
+
+### BunRunnerManager
+
+A registry of the runners in one namespace. `jobs.runners` is one.
+
+| Member | What it does |
+|---|---|
+| `add(runnerOrOptions)` | Registers a runner, or builds one using the manager's namespace, driver and logger. A duplicate id, or a runner from another namespace, is a `ConfigError`. |
+| `get(id)` | Returns one registered runner. |
+| `list()` | Returns every registered runner. |
+| `size` | How many runners are registered. |
+| `remove(id, { stop = true })` | Unregisters a runner, stopping it first unless told not to. |
+| `startAll()` | Starts every registered runner. |
+| `stopAll({ timeout?, force? })` | Stops every runner. Failures are collected into one `AggregateError`. |
+| `info()` | Returns a snapshot of every registered runner. |
+| `discover()` | Runner ids the backend knows about, including other processes' runners. |
+
+Example:
+[`07-runner/manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts).
+
+## Events and JobsNotifier
+
+Queues, workers and runners are typed emitters.
+
+- Local listeners hear what that instance did.
+- To hear another process, the producing side must **publish**. Set
+  `publish: true` on it, or `publishEvents` on its `BunJobs`.
+- The listening side must **subscribe**. A `BunQueue` can set
+  `subscribe: true`, or you can open a `JobsNotifier`.
+
+`JobsNotifier` is one stream of every queue and runner event in a namespace,
+from whichever process published it:
+
+```ts
+const notifier = await jobs.notifier({ queues: ["mail"], runners: "all" });
+
+notifier.on("event", (event) => {
+  if (event.kind === "runner" && event.type === "failed") alert(event.target, event.payload.error);
+});
+
+for await (const event of notifier) {
+  if (event.kind === "queue" && event.type === "completed") {
+    console.log(event.target, event.payload.id, event.payload.returnValue);
+  }
+}
+```
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `queues` | `"all" \| string[]` | `"all"` | Which queues to follow. |
+| `runners` | `"all" \| string[]` | `"all"` | Which runners to follow. |
+| `discoveryInterval` | `number` | `2000` | How often to look for new queues and runners, with `"all"`. |
+| `bufferSize` | `number` | `10000` | How many events an async iterator buffers for a slow consumer before dropping the oldest. `dropped` counts the losses. |
+
+- **Constructing and lifecycle.** Construct a notifier directly with
+  `new JobsNotifier(driver, namespace, options)`, then call `start()`.
+  `close()` ends it and any iterators.
+- **Members.** `follow(kind, target)` starts following a queue or runner
+  before it exists, so nothing is missed. `following` lists what is followed.
+  The emitted events are `event`, `subscribed` and `error`.
+- **Event shape.** Each event is a `DriverEvent`, with fields `kind`, `type`,
+  `ns`, `target`, `at`, `origin` and `payload`. A `switch` on `kind`, then
+  `type`, narrows the payload.
+- **Discovery has a gap.** Anything a newly used queue published before the
+  next discovery pass is missed. Name the queues and runners, or `follow()`
+  them, to hear every event from the start. Objects created by the same
+  `BunJobs` are followed the moment they are created.
+
+Examples:
+
+- [`02-queues/events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/events.ts)
+- [`09-integrations/live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts)
+- [`10-options/notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts)
+
+## Drivers
+
+Examples:
+
+- [`08-drivers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers)
+- [`10-options/driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts)
+
+### Choosing a driver
+
+| Driver | Cross-process | Cross-host | Waiting | Events | How exclusivity is won |
+|---|---|---|---|---|---|
+| memory | no | no | blocking (local) | local | one process; for tests and single-process apps |
+| file | yes | no | poll | poll | `open(…, "wx")` and atomic `rename` |
+| sql (sqlite) | yes | one file, so in practice one host | poll | poll | `BEGIN IMMEDIATE`, WAL, busy timeout |
+| sql (postgres/mysql/mariadb) | yes | yes | poll (Postgres also `LISTEN`/`NOTIFY`) | poll | `FOR UPDATE SKIP LOCKED` |
+| mongodb | yes | yes | poll | poll | one conditional `findOneAndUpdate` |
+| redis | yes | yes | **blocking** | **push** | a Lua script, which runs uninterrupted |
+
+Redis is the only driver that waits rather than polls: a worker blocks on the
+queue's wake list and hears about a job in about a millisecond. It is also the
+only driver whose events are pushed rather than polled.
+
+Each driver reports these figures as
+`driver.capabilities`: `{ blockingWait, events, multiProcess, multiHost }`.
+
+The file driver's `multiHost` is `false` on purpose: its guarantees rest on
+POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
+
+### Driver configs
+
+A `DriverConfig` is plain JSON. That means a spawned child can receive it, and
+it can come from a config file. `createDriver(config)` builds one, and
+`resolveDriver` decides ownership.
+
+Every networked driver takes its connection **either way**: a URL, or
+[connection fields](#connection-fields). A URL takes precedence when both are
+given.
+
+```ts
+import type { DriverConfig } from "@kingsleyweb/bun-jobs";
+
+export const drivers: DriverConfig[] = [
+  { type: "memory" },
+  { type: "file", root: "/var/lib/myapp/jobs" },
+  { type: "sql", url: "sqlite:///var/lib/myapp/jobs.db" },
+
+  // A URL, with a prefix applied to every table name.
+  { type: "sql", url: "postgres://user:pass@db/jobs", tablePrefix: "jobs_" },
+
+  // The same connection as fields, naming a table that already exists.
+  {
+    type: "sql",
+    adapter: "postgres",
+    connection: { host: "db", user: "jobs", password: "secret" },
+    tables: { jobs: "legacy_work_items" },
+  },
+
+  { type: "redis", url: "redis://localhost:6379/0", keyPrefix: "myapp" },
+  { type: "mongodb", connection: { host: "db", database: "work" }, collections: { jobs: "work_items" } },
+];
+```
+
+| Config `type` | Fields | Defaults and notes |
+|---|---|---|
+| `memory` | | In-process only. Jobs live in the instance, so share one instance. |
+| `file` | `root` | A directory the driver owns, created on demand. |
+| `sql` | `url`, `connection`, `adapter`, `tablePrefix`, `tables`, `notify`, `syncSchema` | See below. |
+| `redis` | `url`, `connection`, `cluster`, `keyPrefix` | See below. |
+| `mongodb` | `url`, `connection`, `database`, `collectionPrefix`, `collections`, `syncSchema` | See below. |
+
+The `sql` fields:
+
+- The engine is detected from the URL scheme: `postgres`/`postgresql`,
+  `mysql`, `mariadb`, or `sqlite`/`file`. A bare path or `:memory:` is also
+  SQLite. With `connection` fields, `adapter` is required.
+- `tablePrefix` defaults to `bun_jobs_`.
+- `tables` gives exact names for `jobs`, `locks`, `kv`, `events` and `logs`;
+  these ignore the prefix.
+- `notify` (Postgres `LISTEN`/`NOTIFY`) is on by default, with polling
+  underneath.
+- `syncSchema` is off by default.
+
+The `redis` fields:
+
+- The host defaults to `127.0.0.1:6379`; `rediss` is used with TLS.
+- `keyPrefix` defaults to `bun-jobs`.
+- `cluster: true` hash-tags keys per queue and per runner.
+
+The `mongodb` fields:
+
+- `database` defaults to the URL's path, then to `bun_jobs`.
+- `collectionPrefix` defaults to `bun_jobs_`.
+- `collections` gives exact names for `jobs`, `locks`, `kv`, `events` and
+  `jobLogs`.
+- `syncSchema` is off by default.
+
+Constructing a driver class directly (`new SqlDriver`, `new RedisDriver`,
+`new MongoDriver`, `new FileDriver`) accepts everything a config does, plus
+options that cannot be JSON or are rarely needed:
+
+| Option | Driver | Default | Meaning |
+|---|---|---|---|
+| `sql` | SQL | | An already-open `Bun.SQL` to share. |
+| `client` | Redis | | An already-connected `RedisClient` for commands. `url` is still required, for the blocking and pub/sub connections. |
+| `client`, `clientOptions` | MongoDB | | A shared `MongoClient`, or options for the client the driver creates. |
+| `maxBlockSeconds` | Redis | `5` | Longest blocking wait. |
+| `pollInterval` | SQL, MongoDB / file | `50` / `25` ms | How often a wait re-checks. |
+| `eventRetentionMs` | SQL, MongoDB, file | one hour | How long stored events are kept. `0` keeps everything. |
+
+### Connection fields
+
+`ConnectionOptions` is used by `connection` on the SQL, Redis and MongoDB
+drivers:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `host` | `string` | Host. Defaults to the driver's default. |
+| `port` | `number` | Port. Defaults to the backend's standard port. |
+| `user` / `password` | `string` | Credentials. |
+| `database` | `string \| number` | The database, or for Redis the numbered database. |
+| `tls` | `boolean` | Connect over TLS. |
+| `params` | `Record<string, string \| number \| boolean>` | Extra query parameters (`authSource`, `replicaSet`, `sslmode`, and so on). |
+| `hosts` | `{ host, port? }[]` | Additional hosts, for a replica set or cluster. |
+| `allowPublicKeyRetrieval` | `boolean` | MySQL and MariaDB only; defaults to `false`. Lets the client fetch the server's RSA key to send a password without TLS. Prefer `tls: true` in production. |
+
+`toConnectionUrl`, `resolveConnectionUrl`, `databaseFromUrl` and `resolveNames`
+are exported for building the same URLs yourself.
+
+## Schema sync
+
+The SQL schema is created with `IF NOT EXISTS`, so a table an earlier version
+created keeps its original shape for good. Without intervention, schema
+improvements that ship with an upgrade reach new installs only. `syncSchema`
+is how a deployment that already has tables gets them.
+
+```ts
+const driver = new SqlDriver({ url, syncSchema: true }); // on connect
+
+await driver.syncSchema(); // or explicitly
+const plan = await driver.syncSchema({ dryRun: true }); // plan, change nothing
+await driver.syncSchema({ alterColumns: true }); // including table rewrites
+
+for (const change of plan) {
+  console.log(change.blocking ? "needs a window" : "safe", change.kind, change.target, change.reason);
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `add` | `true` | Add missing columns and indexes. |
+| `indexes` | `true` | Drop indexes the driver no longer defines, and rebuild any whose predicate changed. Only touches indexes the driver named. |
+| `alterColumns` | `false` | Change column types. This rewrites the table under a lock that blocks every reader and writer. |
+| `dryRun` | `false` | Report every change without applying any. |
+
+It is **safe by default**:
+
+- Adding columns and dropping or rebuilding indexes cannot stall a running
+  queue. On Postgres the index work is `CONCURRENTLY`.
+- A type change is reported with `blocking: true` and `applied: false` unless
+  `alterColumns` asks for it.
+- Every `SchemaChange` comes back either way, with fields `kind`, `table`,
+  `target`, `statement`, `reason`, `blocking` and `applied`.
+
+It also **never drops what it did not create**:
+
+- SQL only drops indexes matching the driver's own `ix_` naming convention.
+- MongoDB has no column types, so `alterColumns` means nothing there. It drops
+  only indexes on an explicit retired list, because an index it no longer
+  defines is indistinguishable from one somebody added by hand.
+- A column whose declared type does not match what the engine reports back
+  is exempt from retyping. For example, `BIGSERIAL` comes back as `bigint`.
+
+The memory, file and Redis drivers have no schema, and do not implement
+`syncSchema`.
+
+Example:
+[`08-drivers/sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts).
+
+## Errors
+
+Everything the package throws extends `JobsError`, which has a stable
+`code` and an optional `context` object that is safe to log. You can branch on
+`code` without matching message text, and it survives crossing a process
+boundary. An error's own context fields are applied after any caller detail,
+so a caller can add to them but never overwrite them.
+
+| Class | `code` | Raised when |
+|---|---|---|
+| `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory, or a feature needs an optional driver method the driver lacks. |
+| `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. It is exported for driver authors; the built-in optional-method checks currently throw a plain `ConfigError` with the same `driver` and `method` context. |
+| `DriverError` | `DRIVER_ERROR` | A driver operation failed. `driver` and `operation` are set, and the backend's error is the `cause`. |
+| `LockUnavailableError` | `LOCK_UNAVAILABLE` | A lock is held elsewhere (`context.key`). |
+| `LockLostError` | `LOCK_LOST` | A lock expired or was taken mid-work. |
+| `JobTimeoutError` | `JOB_TIMEOUT` | A run or attempt outlived its timeout (`ms`). |
+| `UnrecoverableJobError` | `UNRECOVERABLE_JOB` | Thrown by your processor: the job goes to `dead` now. |
+| `ChildFailedError` | `CHILD_FAILED` | A flow child failed for good and buried its parent (`child` as `queue:id`). |
+| `ChildExitError` | `CHILD_EXIT` | A child process exited without reporting a result (`exitCode`, `signalCode`). |
+| `RunKilledError` | `RUN_KILLED` | A run was stopped on request (`reason`). |
+| `InvalidHandlerError` | `INVALID_HANDLER` | A handler or processor file has no usable default export. |
+| `RunnerStoppedError` | `RUNNER_STOPPED` | A runner was triggered manually after `stop()`. |
+| `QueueClosedError` | `QUEUE_CLOSED` | A queue was used after `close()`. |
+| `WorkerClosedError` | `WORKER_CLOSED` | A worker was used after `close()`. |
+| `QueueFullError` | `QUEUE_FULL` | A bounded queue of triggers or jobs is full (`what`, `max`). |
+| `SerializationError` | `SERIALIZATION` | A value (job data, a result) is not JSON-serialisable. |
+| `ProtocolError` | `PROTOCOL` | A message between processes did not have the shape its protocol promises, such as a malformed job-channel reply. It means the two sides disagree (a rolling upgrade, a bug), not that the operation failed. |
+
+`ErrorContext<Reserved>` types the extra detail you can pass to the
+constructors.
+
+Example:
+[`10-options/errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts).
+
+## Logging
+
+Every `logger` option accepts a `LoggerLike`, from
+[bun-common's structured logger](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md). It can
+be any of these:
+
+- a bun-common `Logger`;
+- a bare sink function;
+- a pino, bunyan, winston, consola, log4js, tslog, NestJS or console-like
+  logger, detected and wrapped structurally.
+
+Each queue, worker and runner binds its identity (`namespace`, `queue`,
+`workerId`, `runnerId`). A processor's `ctx.logger` is also bound to the job.
+
+A child's `ctx.logger` is forwarded to the parent's `log` event when
+`forwardLogs` is on (and always for isolated processors). `createJobsLogger`
+and `resolveLogger` are exported.
+
+```ts
+import pino from "pino";
+
+export const jobs = new BunJobs({ namespace: "shop", driver, logger: pino() });
+```
+
+Example:
+[`09-integrations/logging.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/logging.ts).
 
 ## Benchmarks
 
-`bench/` compares both halves of this package against the established
-alternatives, on Bun:
+[`bench/`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/README.md) compares both halves of the package against
+established alternatives, on Bun:
 
-- the **queue** against BullMQ, bee-queue, node-resque (Redis), pg-boss,
-  graphile-worker (Postgres) and Agenda (Mongo, Postgres, Redis);
+- the **queue** against BullMQ, bee-queue, node-resque, pg-boss,
+  graphile-worker and Agenda, on Redis, Postgres, MongoDB, MySQL, MariaDB,
+  SQLite, file and memory;
 - the **runner** against Bree, Agenda, croner, node-cron, node-schedule and
   toad-scheduler.
+
+It is a separate, unpublished package, so none of those libraries reach this
+package's dependency tree.
+
+Results are ranked only **within a backend**: a Redis figure beside a Postgres
+one measures the database, not the library. Each contender runs in its own
+process, and `--verify` checks that each one delivers every job exactly once
+before any timing.
 
 ```bash
 cd bench && bun install
 bun queue.ts --verify     # every contender must deliver each job exactly once
 bun queue.ts              # enqueue, drain, round-trip, payload, contention
 bun runner.ts             # dispatch, cycle, schedule drift, exclusivity
+bun queue.ts --compare    # fail if a figure regressed or a rival overtook us
 ```
 
-Results are ranked only **within a backend** — a Redis figure beside a Postgres
-one measures the database, not the library — and each contender runs in its own
-process. `bench/README.md` explains how the configurations are kept comparable.
+[`bench/baselines/queue.json`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/baselines/queue.json) and
+[`bench/baselines/runner.json`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/baselines/runner.json) record each
+scenario's figure and who led it, along with the platform and Bun version.
+`--save-baseline` re-records them after a deliberate change.
 
-- **Namespaces** — every runner, queue and worker is scoped by a required
-  namespace, so services sharing a backend never collide.
+The [bench README](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/bench/README.md) explains setup, scenarios and how the
+configurations are kept comparable.
 
-Requires **Bun ≥ 1.4.2**.
+## Examples
 
-The package is being assembled in phases; the API reference lands with the
-final phase.
+### Example projects
+
+| Project | What it covers |
+|---|---|
+| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 10 option tours that assert every option. |
+| [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | The HTTP layer: routing, the HTTP adapter, requests and responses, validation, CORS and static files, multipart uploads, WebSockets, logging and utilities, with option tours. |
+| [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, with option tours. |
+
+See [`examples/README.md`](https://github.com/kingsloob1/bun-node/blob/develop/examples/README.md)
+for the conventions they share.
+
+### bun-jobs examples
+
+Each file is a script whose opening comment says what it shows. The examples
+use the workspace packages through the root `node_modules`, so run
+`bun install` at the repo root once.
+
+```bash
+cd examples/bun-jobs
+bun 01-quick-start/index.ts        # start here
+bun run-all.ts                     # every example; prints ok / skip / FAIL
+bun run-all.ts 05 06               # only folders 05-* and 06-*
+```
+
+Examples that are not about one backend read `EXAMPLE_DRIVER`, so the same
+script runs on any backend. An example that needs a server skips itself when
+that server's URL is unset.
+
+| `EXAMPLE_DRIVER` | Needs |
+|---|---|
+| `memory` (default) | nothing |
+| `file`, `sqlite` | nothing; uses a temporary directory, removed on exit |
+| `postgres` | `EXAMPLE_POSTGRES_URL` |
+| `mysql` | `EXAMPLE_MYSQL_URL` |
+| `mariadb` | `EXAMPLE_MARIADB_URL` |
+| `redis` | `EXAMPLE_REDIS_URL` |
+| `mongodb` | `EXAMPLE_MONGODB_URL`, and `bun add mongodb` |
+
+```bash
+EXAMPLE_DRIVER=redis EXAMPLE_REDIS_URL=redis://localhost:6379/13 bun 02-queues/job-options.ts
+EXAMPLE_DRIVER=postgres EXAMPLE_POSTGRES_URL=postgres://user:pass@localhost/jobs bun run-all.ts
+```
+
+Each run uses its own namespace and purges it on exit.
+
+| Folder | File | Shows |
+|---|---|---|
+| [`01-quick-start`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/01-quick-start) | [`index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/01-quick-start/index.ts) | `BunJobs`: define a job, add it now and in words, process it, read its log, shut down |
+| [`02-queues`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/02-queues) | [`producer-and-worker.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/producer-and-worker.ts) | `BunQueue` and `BunQueueWorker` directly, typed payloads and results, progress, shutdown |
+| | [`job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-options.ts) | priority, `delay` / `runAt`, attempts and backoff, `timeout`, `jobId` idempotency, retention |
+| | [`job-lifecycle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-lifecycle.ts) | `updateData`, `setPriority`, `reschedule`, `promote`, progress, job logs, retrying a dead job, `remove` |
+| | [`events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/events.ts) | every queue and worker event, name-scoped events, `subscribe` / `publish` |
+| | [`bulk-and-management.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/bulk-and-management.ts) | `addBulk`, `count`, `list`, `update`, cluster-wide `pause` / `resume`, `drain`, `clean` |
+| | [`isolated-processors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/isolated-processors.ts) | a processor file run in-process, in a `Worker` and in a child process; a runaway stopped by its timeout |
+| | [`processors/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/02-queues/processors) | `thumbnail.ts`, `runaway.ts`: the processor files it runs |
+| [`03-job-registry`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/03-job-registry) | [`define-and-run.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/define-and-run.ts) | `define` with defaults, `now`, `run().in()`, `process().on()`, `schedule().every().limit()` |
+| | [`builder-with-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/builder-with-options.ts) | the full builder chain, `withOptions()`, what is refused and why |
+| | [`per-name-concurrency.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/per-name-concurrency.ts) | `define(..., { concurrency })` enforced across two service instances |
+| [`04-scheduling`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/04-scheduling) | [`repeatable-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/repeatable-jobs.ts) | `repeat`: intervals, six-field cron, `startAt` / `endAt`, `limit`, keys, `listRepeatables`, `removeRepeatable` |
+| | [`human-schedules.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/human-schedules.ts) | "tomorrow at 9am", "every 2 weeks starting next monday", windows in words |
+| | [`custom-date-parser.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/custom-date-parser.ts) | a `DateParser` that understands "payday" and "month end" |
+| | [`cron-helpers.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/cron-helpers.ts) | `validateCron`, `parseCron`, `nextCronDate` across time zones, `normalizeSchedule`, `nextFireDate` |
+| [`05-flow-control`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/05-flow-control) | [`debounce.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/debounce.ts) | many adds become one job with the latest data; `cleanWindows` |
+| | [`throttle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/throttle.ts) | at most one job per id per window |
+| | [`rate-and-concurrency-limits.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/05-flow-control/rate-and-concurrency-limits.ts) | `setLimits`: rate, concurrency and a per-name cap, enforced by two workers, lifted live |
+| [`06-failures`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/06-failures) | [`retries-and-backoff.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/retries-and-backoff.ts) | every built-in backoff, measured; a custom `defineBackoff` |
+| | [`unrecoverable-errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/unrecoverable-errors.ts) | `UnrecoverableJobError`: dead now, attempts left or not |
+| | [`dead-letter-queue.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/dead-letter-queue.ts) | `deadLetterQueue` / `deadLetter`, a `DeadLetter` consumer, re-driving with `retryAll` |
+| | [`timeouts-and-cancellation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/timeouts-and-cancellation.ts) | `ctx.signal`, graceful `close`, a consumer killed with `SIGKILL` and its job recovered as stalled |
+| | [`helpers/crashing-consumer.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/helpers/crashing-consumer.ts) | the consumer process that example kills |
+| [`07-runner`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner) | [`scheduled-runner.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/scheduled-runner.ts) | `BunRunner` on an interval, then cron; events, `history`, `stats`, `info` |
+| | [`manual-trigger.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manual-trigger.ts) | `trigger()` outcomes; `single` vs `parallel`; pause and `force` |
+| | [`execution-modes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/execution-modes.ts) | one handler in `in-process`, `worker` and `spawn` |
+| | [`single-run-lock.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/single-run-lock.ts) | three instances of one runner: one runs, one skips, one queues |
+| | [`messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
+| | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
+| | [`manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
+| | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
+| [`08-drivers`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers) | [`choosing-a-driver.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/choosing-a-driver.ts) | every config shape, capabilities, one workload on each available backend |
+| | [`sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts) | `SqlDriver` on SQLite, `tablePrefix`, `syncSchema` repairing a drifted schema |
+| | [`postgres-and-mysql.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/postgres-and-mysql.ts) | Postgres, MySQL and MariaDB via `Bun.sql`, connection fields, `NOTIFY` wake-ups |
+| | [`redis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/redis.ts) | blocking waits, pushed events, the key layout |
+| | [`mongodb.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/mongodb.ts) | `MongoDriver`, competing workers, index sync |
+| | [`cross-process/main.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/cross-process/main.ts) | two producer and three consumer processes (`producer.ts`, `consumer.ts`); every job exactly once; `SIGTERM` shutdown |
+| [`09-integrations`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/09-integrations) | [`http-api.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/http-api.ts) | a `202 Accepted` plus status-URL API with bun-common's `BunHttpAdapter` |
+| | [`logging.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/logging.ts) | structured logs with bound job fields; a sink; pino, winston or console |
+| | [`graceful-shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/graceful-shutdown.ts) | `SIGTERM` / `SIGINT` handling for a worker service |
+| | [`namespaces.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/namespaces.ts) | two services on one backend with identical queue names and job ids, isolated |
+| | [`live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts) | `JobsNotifier`: one live stream of every event in a namespace, from any process |
+| [`shared`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/shared) | [`backend.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/backend.ts), [`console.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/console.ts), [`check.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/check.ts) | picking a driver from `EXAMPLE_DRIVER`; printing and waiting on conditions; the assertions the tours use |
+| | [`run-all.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/run-all.ts) | runs every example, or the folders named |
+
+The **option tours** in `10-options` assert behaviour rather than just showing
+it. A failed check prints what was expected and what happened, then fails the
+script. That makes `bun run-all.ts` a test of every option on whichever backend
+`EXAMPLE_DRIVER` names.
+
+| Tour | Covers |
+|---|---|
+| [`job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-options.ts) | every `JobOptions`, `RepeatOptions` and `DebounceOptions` field, retention forms, every backoff form |
+| [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
+| [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
+| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job |
+| [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` |
+| [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
+| [`notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published event and payload |
+| [`driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts) | every option of every driver and connection helper |
+| [`errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
+| [`utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/utilities.ts) | every exported helper: cron, schedules, repeats, options, backoff, JSON, ids, keys, connection, constants |
+
+Supporting files for the tours:
+
+- [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/handlers):
+  runner handlers
+- [`processors/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/processors):
+  isolated processors
+- [`helpers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/helpers):
+  child scripts for the error and notifier tours
+
+The full list of files is in the
+[examples README](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/README.md).
+
+## Related packages
+
+- [`@kingsleyweb/bun-common`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md):
+  the HTTP layer and utilities this package builds on (logging, backoff, error
+  serialisation).
+- [`@kingsleyweb/bun-nest`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-nest/README.md):
+  a NestJS adapter built on bun-common.
+
+## Development
+
+From the repo root:
+
+```bash
+bun install
+bun scripts/typecheck.ts                   # every project in the repo; must be clean
+bun scripts/setup-databases.ts             # provide Redis, Postgres, MySQL, MariaDB, MongoDB
+bun scripts/setup-databases.ts --docker    # containers instead, no root needed
+bun scripts/setup-databases.ts --dry-run   # see the plan first
+bun scripts/setup-databases.ts --print-env # just the env vars for the suites
+```
+
+Then, in `packages/bun-jobs`:
+
+```bash
+bunx eslint .    # lint the whole package; 0 errors
+bun test         # tests
+```
+
+The setup script is safe to run repeatedly. It never reinstalls a server, and
+it configures one only when connecting with the expected credentials fails.
+
+The Redis, Postgres, MySQL, MariaDB and MongoDB integration suites skip
+visibly unless their URL is set:
+
+- `BUN_JOBS_TEST_REDIS_URL`
+- `BUN_JOBS_TEST_POSTGRES_URL`
+- `BUN_JOBS_TEST_MYSQL_URL`
+- `BUN_JOBS_TEST_MARIADB_URL`
+- `BUN_JOBS_TEST_MONGODB_URL`
+
+The benchmarks use their own databases (Redis database 14 and
+`bun_jobs_bench`), so they never disturb the test suite. See
+[Benchmarks](#benchmarks).
+
+## License
+
+MIT
