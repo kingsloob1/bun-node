@@ -72,6 +72,8 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`define-and-run.ts`](./03-job-registry/define-and-run.ts) | `define` with defaults, `now`, `run().in()`, `process().on()`, `schedule().every().limit()` |
 | [`builder-with-options.ts`](./03-job-registry/builder-with-options.ts) | the full builder chain, `withOptions()` for schedules stored as data, what is refused and why |
 | [`per-name-concurrency.ts`](./03-job-registry/per-name-concurrency.ts) | `define(..., { concurrency })` enforced across two service instances |
+| [`jobs-create.ts`](./03-job-registry/jobs-create.ts) | `jobs.create()` drafts: setters, `save()`, saving once (a repeat save, racing saves, a setter after a save), `unique` across drafts, repeating and debounced drafts, a failed save corrected |
+| [`process-every.ts`](./03-job-registry/process-every.ts) | `processEvery` as an option and a method: on a running worker, against `start()`'s own options, while paused; a worker's `pollInterval` / `maxBlock` at runtime; what is refused |
 
 ### 04 — Scheduling
 
@@ -150,6 +152,7 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 | [`worker-isolation.ts`](./10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode, what works inside an isolated job and what does not |
 | [`runner-options.ts`](./10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, every runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](./10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
+| [`draft-and-process-every.ts`](./10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, precedence, saving twice, refused combinations; `processEvery` (option and method) and a worker's runtime `pollInterval` / `maxBlock`: limits, precedence, waits in progress per driver, the promotion sweep, pause, a failed `run()`, Redis `maxBlockSeconds` |
 | [`notifier.ts`](./10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published queue and runner event and its payload |
 | [`driver-options.ts`](./10-options/driver-options.ts) | every option of every driver and connection helper; server sections run when their URL is set |
 | [`errors.ts`](./10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |

@@ -6,7 +6,7 @@ to bottom as usage rather than as a test.
 
 | Package | Folder | Status |
 |---|---|---|
-| [`@kingsleyweb/bun-jobs`](../packages/bun-jobs) | [`bun-jobs/`](./bun-jobs) | 40 examples: queues, workers, the job registry, scheduling, flow control, failures, the runner, every driver, integrations — plus 10 option tours that assert every option works as documented |
+| [`@kingsleyweb/bun-jobs`](../packages/bun-jobs) | [`bun-jobs/`](./bun-jobs) | 42 examples: queues, workers, the job registry (with saved drafts and registry polling), scheduling, flow control, failures, the runner, every driver, integrations — plus 11 option tours that assert every option works as documented |
 | [`@kingsleyweb/bun-common`](../packages/bun-common) | [`bun-common/`](./bun-common) | 35 examples: routing, the HTTP adapter, requests and responses (request bodies in gzip, deflate, br and zstd, stacked or dictionary-compressed), validation, CORS, static files (precompressed or compressed on the fly), response compression (gzip, deflate, br, zstd and `dcb`/`dcz` dictionaries), multipart uploads, WebSockets, logging, utilities — plus 12 option tours |
 | [`@kingsleyweb/bun-nest`](../packages/bun-nest) | [`bun-nest/`](./bun-nest) | 10 examples: NestJS on Bun with the HTTP adapter, file upload interceptors and the WebSocket adapter — plus 3 option tours |
 
