@@ -980,6 +980,14 @@ export const queues = await jobs.getQueueSummaries();
 export const everyone = await jobs.listWorkers();
 ```
 
+Runnable on any backend:
+[`searching-and-paging.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/searching-and-paging.ts)
+for the filters, totals and `getJobs`, and
+[`workers-and-throughput.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/workers-and-throughput.ts)
+for workers, throughput and a queue dashboard. The
+[`read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)
+tour asserts every option and edge below, including each driver fallback.
+
 **Search and name filters.** `name` is exact — case and accents count — and an
 empty array matches nothing. `search` is a case-insensitive substring of the
 job's **id or name**, taken literally (`%`, `_`, `*`, quotes and regular
@@ -1687,7 +1695,7 @@ configurations are kept comparable.
 
 | Project | What it covers |
 |---|---|
-| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 11 option tours that assert every option. |
+| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 12 option tours that assert every option. |
 | [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | The HTTP layer: routing, the HTTP adapter, requests and responses, validation, CORS and static files, multipart uploads, WebSockets, logging and utilities, with option tours. |
 | [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, with option tours. |
 
@@ -1736,6 +1744,8 @@ Each run uses its own namespace and purges it on exit.
 | | [`job-lifecycle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-lifecycle.ts) | `updateData`, `setPriority`, `reschedule`, `promote`, progress, job logs, retrying a dead job, `remove` |
 | | [`events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/events.ts) | every queue and worker event, name-scoped events, `subscribe` / `publish` |
 | | [`bulk-and-management.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/bulk-and-management.ts) | `addBulk`, `count`, `list`, `update`, cluster-wide `pause` / `resume`, `drain`, `clean` |
+| | [`searching-and-paging.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/searching-and-paging.ts) | `list` narrowed by `name` and `search`, `page` with the total a paginated table needs, `getJobs` by id |
+| | [`workers-and-throughput.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/workers-and-throughput.ts) | `listWorkers` and `reportInterval`, `getThroughput` a minute at a time, `getQueueSummaries`, printed as a dashboard |
 | | [`isolated-processors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/isolated-processors.ts) | a processor file run in-process, in a `Worker` and in a child process; a runaway stopped by its timeout |
 | | [`processors/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/02-queues/processors) | `thumbnail.ts`, `runaway.ts`: the processor files it runs |
 | [`03-job-registry`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/03-job-registry) | [`define-and-run.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/define-and-run.ts) | `define` with defaults, `now`, `run().in()`, `process().on()`, `schedule().every().limit()` |
@@ -1792,6 +1802,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, saving twice; `processEvery` and a worker's runtime `pollInterval` / `maxBlock`, per driver |
+| [`read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts) | every `ListJobsOptions` field; `search` taken literally and folded for case per engine; `page` totals; `getJobs` order, gaps and repeats; `listWorkers` fields, `reportInterval` and a lapsed record; `getThroughput` bounds, buckets and retried failures; `getQueueSummaries`; each driver fallback |
 | [`notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published event and payload |
 | [`driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts) | every option of every driver and connection helper |
 | [`errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
