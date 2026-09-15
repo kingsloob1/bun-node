@@ -510,6 +510,7 @@ describe("Redis driver: keys", () => {
       "jobs:account:q:mail:seq",
       "jobs:account:q:mail:wake",
       "jobs:account:queues",
+      "jobs:account:q:mail:children",
     ]);
   });
 

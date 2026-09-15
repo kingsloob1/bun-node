@@ -1,13 +1,17 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,
@@ -46,6 +50,7 @@ import {
   encodeName,
   encodeSegment,
 } from "./file-names";
+import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 
 /**
  * A driver backed by a directory, for processes that share a filesystem.
@@ -100,6 +105,9 @@ const STATES: JobState[] = [
   "completed",
   "failed",
   "dead",
+  // Its own directory, which no claim or promotion ever reads: that is the
+  // whole of what keeps a parent waiting on children from running early.
+  "waiting-children",
 ];
 
 /** States holding a job that is due later. */
@@ -457,7 +465,7 @@ export class FileDriver implements JobsDriver {
 
     // The record file *is* the idempotency key: exactly one caller creates it.
     if (!(await this.#createExclusive(path, JSON.stringify(record)))) {
-      const existing = await this.#readJson<JobRecord>(path);
+      const existing = await this.#readJob(path);
       return { job: existing ?? record, added: false };
     }
 
@@ -538,7 +546,7 @@ export class FileDriver implements JobsDriver {
         continue;
       }
 
-      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      const record = await this.#readJob(this.#jobPath(q, id));
 
       if (!record) {
         // The record is gone: the marker is litter from a removed job.
@@ -612,7 +620,7 @@ export class FileDriver implements JobsDriver {
     const deadline = Date.now() + HOLD_PATIENCE_MS;
 
     for (;;) {
-      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      const record = await this.#readJob(this.#jobPath(q, id));
       if (!record || record.state !== "active" || record.lockToken !== token) {
         return false;
       }
@@ -642,7 +650,7 @@ export class FileDriver implements JobsDriver {
     const deadline = Date.now() + HOLD_PATIENCE_MS;
 
     for (;;) {
-      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      const record = await this.#readJob(this.#jobPath(q, id));
       if (!record || record.state !== "active" || record.lockToken !== token) {
         return false;
       }
@@ -687,7 +695,7 @@ export class FileDriver implements JobsDriver {
     const deadline = Date.now() + HOLD_PATIENCE_MS;
 
     for (;;) {
-      const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+      const record = await this.#readJob(this.#jobPath(q, id));
       if (!record || record.state !== "active" || record.lockToken !== token) {
         return false;
       }
@@ -741,7 +749,7 @@ export class FileDriver implements JobsDriver {
     const deadline = Date.now() + HOLD_PATIENCE_MS;
 
     for (;;) {
-      const record = await this.#readJson<JobRecord>(path);
+      const record = await this.#readJob(path);
       if (!record) {
         return false;
       }
@@ -794,7 +802,7 @@ export class FileDriver implements JobsDriver {
         return false;
       }
 
-      const fresh = await this.#readJson<JobRecord>(path);
+      const fresh = await this.#readJob(path);
       if (fresh?.state === "active" && this.#markerFor(fresh) === marker) {
         await this.#healHolds(q);
         await sleep(LOCK_RETRY_MS, { unref: true }).catch(() => {});
@@ -904,7 +912,7 @@ export class FileDriver implements JobsDriver {
     id: string,
     opts: { offset: number; limit: number; order: "asc" | "desc" },
   ): Promise<{ logs: string[]; count: number }> {
-    const record = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+    const record = await this.#readJob(this.#jobPath(q, id));
     if (!record) {
       return { logs: [], count: 0 };
     }
@@ -923,8 +931,199 @@ export class FileDriver implements JobsDriver {
     };
   }
 
+  async recordChild(
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ): Promise<ChildRecordResult> {
+    const key = flowKey(child);
+    const settles = outcome.completed || outcome.ignored;
+
+    /** What recording would answer from `record`, without writing anything. */
+    const answer = (record: JobRecord | null): ChildRecordResult | "write" => {
+      if (!record?.flow || !listsChild(record.flow, child)) {
+        return "missing";
+      }
+      if (
+        Object.hasOwn(record.flow.values, key) ||
+        Object.hasOwn(record.flow.failures, key)
+      ) {
+        return "already";
+      }
+      if (record.state === "dead") {
+        return settles ? "write" : "parent-dead";
+      }
+      return record.state === "waiting-children" ? "write" : "already";
+    };
+
+    // Under the parent's hold, like every other change here: two children
+    // finishing at once each read the parent, and without the hold the second
+    // write would put back the `pending` count the first had just lowered —
+    // a parent that then never runs.
+    const held = await this.#holdJob(
+      q,
+      parentId,
+      (record) => answer(record) === "write",
+    );
+
+    if (!held) {
+      // `#holdJob` answers `null` for three different things, and only two of
+      // them are answers. Guessing for the third — somebody kept the marker
+      // past `HOLD_PATIENCE_MS` — could have the caller mark the child recorded
+      // and let its retention remove it, with the outcome never delivered and
+      // nothing left for healing to find. So that one throws.
+      const current = answer(await this.#readJob(this.#jobPath(q, parentId)));
+      if (current !== "write") {
+        return current;
+      }
+      throw new DriverError(
+        "file",
+        "recordChild",
+        new Error("the parent's marker stayed held"),
+        { id: parentId, child: key },
+      );
+    }
+
+    const { record: current, hold } = held;
+    const flow = current.flow!;
+    // New objects throughout: `current` is also what the hold is put back by
+    // if the write below fails.
+    const stored: JobFlow = {
+      ...flow,
+      values: outcome.completed
+        ? { ...flow.values, [key]: jsonClone(outcome.value ?? null) }
+        : flow.values,
+      failures: outcome.completed
+        ? flow.failures
+        : { ...flow.failures, [key]: jsonClone(outcome.error) },
+    };
+    let updated: JobRecord;
+    let result: ChildRecordResult;
+
+    if (current.state === "dead") {
+      // Kept for a retry of the parent, which then does not wait on it.
+      updated = { ...current, flow: stored };
+      result = "recorded";
+    } else if (!outcome.completed && !outcome.ignored) {
+      // A child that failed buries its parent, which can then never run.
+      updated = {
+        ...current,
+        state: "dead",
+        failedReason: jsonClone(outcome.error),
+        finishedOn: now,
+      };
+      result = "buried";
+    } else {
+      const pending = Math.max(0, flow.pending - 1);
+      updated = {
+        ...current,
+        flow: { ...stored, pending },
+        state:
+          pending > 0
+            ? "waiting-children"
+            : current.runAt > now
+              ? "delayed"
+              : "waiting",
+      };
+      result = pending > 0 ? "recorded" : "released";
+    }
+
+    try {
+      await this.#writeAtomic(
+        this.#jobPath(q, parentId),
+        JSON.stringify(updated),
+      );
+    } catch (error) {
+      await this.#place(q, hold, current);
+      throw error;
+    }
+
+    await this.#release(q, hold, current, updated);
+
+    if (updated.state === "waiting") {
+      await this.#touchWake(q);
+    }
+
+    return result;
+  }
+
+  async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
+    const updated = await this.#mutateJob(q, id, (record) => {
+      if (record.state !== "dead" || !record.flow) {
+        return null;
+      }
+
+      // Counted here, under the hold: an outcome recorded in the meantime
+      // is then never counted as still to come.
+      const remaining = unsettledChildren(record.flow);
+      return {
+        ...record,
+        flow: { ...record.flow, pending: remaining },
+        failedReason: null,
+        finishedOn: null,
+        expiresAt: null,
+        state:
+          remaining > 0
+            ? "waiting-children"
+            : record.runAt > now
+              ? "delayed"
+              : "waiting",
+      };
+    });
+
+    if (!updated) {
+      return false;
+    }
+
+    if (updated.state === "waiting") {
+      await this.#touchWake(q);
+    }
+
+    return true;
+  }
+
+  async markChildRecorded(
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    const updated = await this.#mutateJob(q, id, (record) => {
+      const finished = record.state === "completed" || record.state === "dead";
+
+      return {
+        ...record,
+        flow: {
+          parent: record.flow?.parent ?? null,
+          children: record.flow?.children ?? [],
+          pending: record.flow?.pending ?? 0,
+          values: record.flow?.values ?? {},
+          failures: record.flow?.failures ?? {},
+          recorded: true,
+        },
+        // The TTL goes in with the same write, as completion does it: a
+        // second write afterwards could land over a patch, or under one.
+        expiresAt: finished
+          ? expiryFor(retention, now, record.expiresAt)
+          : record.expiresAt,
+      };
+    });
+
+    if (!updated) {
+      return false;
+    }
+
+    if (updated.state === "completed" || updated.state === "dead") {
+      await this.#applyRetention(q, updated, retention);
+    }
+
+    return true;
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
-    return await this.#readJson<JobRecord>(this.#jobPath(q, id));
+    return await this.#readJob(this.#jobPath(q, id));
   }
 
   async listJobs(
@@ -935,12 +1134,41 @@ export class FileDriver implements JobsDriver {
     const dir = this.#queueDir(q);
     const found: JobRecord[] = [];
 
+    // One state is already in order by its markers' names, so only the page
+    // asked for is read — a maintenance pass paging through a large state
+    // then costs one directory listing and `limit` reads, not every record.
+    if (states.length === 1) {
+      const state = states[0]!;
+      const markers = (await this.#list(join(dir, "index", state))).sort();
+      if (opts.order === "desc") {
+        markers.reverse();
+      }
+
+      // A marker whose record has moved on is skipped without counting, so
+      // the page is exactly what a full read and slice would give.
+      let skip = opts.offset;
+      for (const marker of markers) {
+        if (found.length >= opts.limit) {
+          break;
+        }
+        const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
+        if (!record || record.state !== state) {
+          continue;
+        }
+        if (skip > 0) {
+          skip--;
+          continue;
+        }
+        found.push(record);
+      }
+
+      return found;
+    }
+
     for (const state of states) {
       const markers = (await this.#list(join(dir, "index", state))).sort();
       for (const marker of markers) {
-        const record = await this.#readJson<JobRecord>(
-          this.#jobPath(q, markerId(marker)),
-        );
+        const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
         if (record && record.state === state) {
           found.push(record);
         }
@@ -968,6 +1196,7 @@ export class FileDriver implements JobsDriver {
       completed: 0,
       failed: 0,
       dead: 0,
+      "waiting-children": 0,
     } satisfies Record<JobState, number>;
 
     for (const state of STATES) {
@@ -990,7 +1219,13 @@ export class FileDriver implements JobsDriver {
     // Under a hold, like `updateJob`: a retry that wrote the copy it read
     // before the rename would put back whatever a patch had just replaced.
     const updated = await this.#mutateJob(q, id, (record) => {
-      if (record.state === "active" || record.state === "waiting") {
+      // A parent waiting on children is not finished; moving it would run it
+      // before they settle.
+      if (
+        record.state === "active" ||
+        record.state === "waiting" ||
+        record.state === "waiting-children"
+      ) {
         return null;
       }
 
@@ -1000,6 +1235,8 @@ export class FileDriver implements JobsDriver {
         runAt: now,
         finishedOn: null,
         expiresAt: null,
+        // The outcome it ends with this time has not reached its parent.
+        flow: record.flow ? { ...record.flow, recorded: false } : null,
         ...(resetAttempts ? { attemptsMade: 0, stalledCount: 0 } : {}),
       };
     });
@@ -1060,9 +1297,7 @@ export class FileDriver implements JobsDriver {
           continue;
         }
 
-        const record = await this.#readJson<JobRecord>(
-          this.#jobPath(q, markerId(marker)),
-        );
+        const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
 
         if (!record) {
           await rm(hold, { force: true });
@@ -1131,9 +1366,7 @@ export class FileDriver implements JobsDriver {
         break;
       }
 
-      const record = await this.#readJson<JobRecord>(
-        this.#jobPath(q, markerId(marker)),
-      );
+      const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
 
       if (!record) {
         // Litter: a claim that found no record and died before removing it.
@@ -1185,7 +1418,13 @@ export class FileDriver implements JobsDriver {
 
   async cleanJobs(
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
@@ -1200,9 +1439,7 @@ export class FileDriver implements JobsDriver {
         break;
       }
 
-      const record = await this.#readJson<JobRecord>(
-        this.#jobPath(q, markerId(marker)),
-      );
+      const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
       if (!record) {
         continue;
       }
@@ -1230,13 +1467,13 @@ export class FileDriver implements JobsDriver {
           break;
         }
 
-        const record = await this.#readJson<JobRecord>(
-          this.#jobPath(q, markerId(marker)),
-        );
+        const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
         const due = (candidate: JobRecord) =>
           candidate.state === state &&
           candidate.expiresAt !== null &&
-          candidate.expiresAt <= now;
+          candidate.expiresAt <= now &&
+          // A child whose parent has not taken its outcome yet stays.
+          !awaitsDelivery(candidate);
 
         if (record && (await this.#deleteJob(q, record.id, due, record))) {
           removed++;
@@ -1248,18 +1485,18 @@ export class FileDriver implements JobsDriver {
   }
 
   async drainQueue(q: QueueRef, includeDelayed: boolean): Promise<number> {
+    // A parent waiting on children is queued work that has not run, so it
+    // goes with `waiting` whether or not delayed jobs are drained too.
     const states: JobState[] = includeDelayed
-      ? ["waiting", ...SCHEDULED_STATES]
-      : ["waiting"];
+      ? ["waiting", "waiting-children", ...SCHEDULED_STATES]
+      : ["waiting", "waiting-children"];
     let removed = 0;
 
     for (const state of states) {
       for (const marker of await this.#list(
         join(this.#queueDir(q), "index", state),
       )) {
-        const record = await this.#readJson<JobRecord>(
-          this.#jobPath(q, markerId(marker)),
-        );
+        const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
         if (
           record &&
           (await this.#deleteJob(
@@ -1778,6 +2015,11 @@ export class FileDriver implements JobsDriver {
         return `${pad(record.runAt, 13)}-${encodeName(record.id)}`;
       case "active":
         return activeMarker(record.lockExpiresAt ?? 0, record.id);
+      // By creation, not by the finish time the default uses: a parent
+      // requeued after being buried has had `finishedOn` cleared, and one
+      // that still carried it would sort as if it had finished.
+      case "waiting-children":
+        return `${pad(record.createdAt, 13)}-${encodeName(record.id)}`;
       default:
         return `${pad(record.finishedOn ?? record.createdAt, 13)}-${encodeName(record.id)}`;
     }
@@ -1955,7 +2197,7 @@ export class FileDriver implements JobsDriver {
     let first: JobRecord | undefined = known;
 
     for (;;) {
-      const record = first ?? (await this.#readJson<JobRecord>(path));
+      const record = first ?? (await this.#readJob(path));
       first = undefined;
 
       if (!record || !accept(record)) {
@@ -1974,7 +2216,7 @@ export class FileDriver implements JobsDriver {
         // since, somebody finished a transition: read again and decide afresh.
         // If it has not, somebody is part-way through one — a claim renames
         // before it writes — or holds the marker; wait for them.
-        const fresh = await this.#readJson<JobRecord>(path);
+        const fresh = await this.#readJob(path);
         if (
           fresh &&
           fresh.state === record.state &&
@@ -1986,7 +2228,7 @@ export class FileDriver implements JobsDriver {
         continue;
       }
 
-      const current = await this.#readJson<JobRecord>(path);
+      const current = await this.#readJob(path);
 
       if (!current) {
         await rm(hold, { force: true });
@@ -2104,7 +2346,7 @@ export class FileDriver implements JobsDriver {
       }
 
       const path = join(dir, name);
-      const record = await this.#readJson<JobRecord>(
+      const record = await this.#readJob(
         this.#jobPath(q, markerId(hold.marker)),
       );
 
@@ -2138,7 +2380,7 @@ export class FileDriver implements JobsDriver {
       return false;
     }
 
-    const fresh = await this.#readJson<JobRecord>(this.#jobPath(q, id));
+    const fresh = await this.#readJob(this.#jobPath(q, id));
     if (!fresh || fresh.state !== "active" || fresh.lockToken !== token) {
       return false;
     }
@@ -2165,9 +2407,7 @@ export class FileDriver implements JobsDriver {
     let name = this.#names.get(key);
 
     if (name === undefined) {
-      const record = await this.#readJson<JobRecord>(
-        this.#jobPath(q, markerId(marker)),
-      );
+      const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
       if (!record) {
         return false;
       }
@@ -2217,15 +2457,18 @@ export class FileDriver implements JobsDriver {
     const dir = join(this.#queueDir(q), "index", record.state);
     const markers = (await this.#list(dir)).sort();
 
+    // A child whose parent has not taken its outcome yet stays — checked
+    // again under the hold, since it may be marked recorded in between.
+    const sweepable = (candidate: JobRecord) =>
+      sameState(candidate) && !awaitsDelivery(candidate);
+
     for (const marker of markers.slice(
       0,
       Math.max(0, markers.length - count),
     )) {
-      const stale = await this.#readJson<JobRecord>(
-        this.#jobPath(q, markerId(marker)),
-      );
-      if (stale) {
-        await this.#deleteJob(q, stale.id, sameState, stale);
+      const stale = await this.#readJob(this.#jobPath(q, markerId(marker)));
+      if (stale && !awaitsDelivery(stale)) {
+        await this.#deleteJob(q, stale.id, sweepable, stale);
       }
     }
   }
@@ -2269,6 +2512,22 @@ export class FileDriver implements JobsDriver {
     } catch {
       return "";
     }
+  }
+
+  /**
+   * A job's record, or `null` when it is missing or malformed.
+   *
+   * Every record read goes through here rather than `#readJson`, because a
+   * record written before flows existed has no `flow` key at all, and the
+   * contract says `null`. Filling it in at the one place records are read
+   * means no caller sees `undefined`, and no write carries it forward.
+   */
+  async #readJob(path: string): Promise<JobRecord | null> {
+    const record = await this.#readJson<JobRecord>(path);
+    if (record && record.flow === undefined) {
+      record.flow = null;
+    }
+    return record;
   }
 
   /** Parses a JSON file, or `null` when it is missing or malformed. */

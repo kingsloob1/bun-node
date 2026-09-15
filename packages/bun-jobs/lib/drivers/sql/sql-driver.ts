@@ -6,14 +6,18 @@ import type {
   UrlDefaults,
 } from "../../shared/connection";
 import type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,
@@ -40,11 +44,18 @@ import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
 import { EventGaps } from "../eventGaps";
+import {
+  awaitsDelivery,
+  flowKey,
+  listsChild,
+  unsettledChildren,
+} from "../flow";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import {
   createSchema,
+  FLOWLESS_JOB_COLUMNS,
   FRESH_JOB_COLUMNS,
   JOB_COLUMNS,
   jobColumnTypes,
@@ -137,6 +148,7 @@ const STATES: JobState[] = [
   "completed",
   "failed",
   "dead",
+  "waiting-children",
 ];
 
 /** States holding a job that is due later. */
@@ -282,6 +294,20 @@ function isPublicKeyRetrievalRefusal(error: unknown): boolean {
  * so the whole chain is read.
  */
 function isMissingLogKey(error: unknown): boolean {
+  return isMissingColumn(error, "log_key");
+}
+
+/**
+ * Whether an error is the engine saying `column` does not exist on a table.
+ *
+ * Postgres says "column … does not exist", MySQL and MariaDB "Unknown column",
+ * and SQLite "no such column" on a read but "has no column named" on an
+ * insert. The engine's error sits one or more `cause` links below the
+ * driver's wrapper, so the whole chain is read.
+ */
+function isMissingColumn(error: unknown, column: string): boolean {
+  const named = new RegExp(`\\b${column}\\b`);
+
   for (let at = error, depth = 0; at != null && depth < 5; depth++) {
     if (typeof at !== "object") {
       break;
@@ -290,8 +316,10 @@ function isMissingLogKey(error: unknown): boolean {
     const message = String((at as { message?: unknown }).message ?? "");
 
     if (
-      /log_key/.test(message) &&
-      /does not exist|unknown column|no such column/i.test(message)
+      named.test(message) &&
+      /does not exist|unknown column|no such column|has no column named/i.test(
+        message,
+      )
     ) {
       return true;
     }
@@ -301,6 +329,12 @@ function isMissingLogKey(error: unknown): boolean {
 
   return false;
 }
+
+/**
+ * How long a table seen without the `flow` column is trusted to still lack
+ * it. Another process may sync the schema; after this, a read asks again.
+ */
+const FLOW_COLUMN_RECHECK_MS = 60_000;
 
 /** The tables this driver uses. */
 export const SQL_TABLES = ["jobs", "locks", "kv", "events", "logs"] as const;
@@ -482,6 +516,16 @@ export class SqlDriver implements JobsDriver {
    */
   #logKeyMissing = false;
 
+  /**
+   * When the `jobs` table was last seen without its `flow` column, or
+   * `undefined` when it was not. Retention and retry read `flow` to leave an
+   * unrecorded flow child alone; on a table that predates flows no job can be
+   * in one, so they fall back to statements that do not name the column
+   * rather than failing. Cleared by a sync, and trusted for
+   * {@link FLOW_COLUMN_RECHECK_MS}, since another process may sync.
+   */
+  #flowMissingAt: number | undefined;
+
   constructor(options: SqlDriverOptions) {
     // A URL names its engine; fields do not, so `adapter` is required there.
     if (!options.adapter && !options.url && options.connection) {
@@ -619,8 +663,9 @@ export class SqlDriver implements JobsDriver {
    * wait on the promise it is running inside.
    */
   async #syncSchema(options: SchemaSyncOptions): Promise<SchemaChange[]> {
-    // A sync may be what adds `log_key`, so log housekeeping asks again.
+    // A sync may be what adds `log_key` or `flow`, so both are asked again.
     this.#logKeyMissing = false;
+    this.#flowMissingAt = undefined;
 
     return await syncSqlSchema(
       {
@@ -964,15 +1009,19 @@ export class SqlDriver implements JobsDriver {
 
     // The `NOTIFY` rides inside the insert rather than following it, so a
     // producer pays nothing for a consumer that may not exist.
-    const plain = this.dialect.insertIgnore(this.#tables.jobs, [
-      ...JOB_COLUMNS,
-    ]);
+    // `flow` is named only for a job in one, so everything else still inserts
+    // into a table that predates the column — see `FLOWLESS_JOB_COLUMNS`.
+    const columns = job.flow ? JOB_COLUMNS : FLOWLESS_JOB_COLUMNS;
+    const plain = this.dialect.insertIgnore(this.#tables.jobs, [...columns]);
     const insert = this.#notify
       ? this.dialect.notifyingInsert(plain, this.#arrivals.channel(q))
       : plain;
-    const added = this.#notify
-      ? (await this.#all<{ id: string }>(insert, this.#toRow(q, job))).length
-      : await this.#run(insert, this.#toRow(q, job));
+    const row = this.#toRow(q, job, columns);
+    const write = async () =>
+      this.#notify
+        ? (await this.#all<{ id: string }>(insert, row)).length
+        : await this.#run(insert, row);
+    const added = await this.#requireFlowColumn(job.flow !== null, write);
 
     if (added > 0) {
       return { job: jsonClone(job), added: true };
@@ -1137,7 +1186,10 @@ export class SqlDriver implements JobsDriver {
       job.progress === null &&
       job.returnValue === null &&
       job.failedReason === null &&
-      (job.stacktrace?.length ?? 0) === 0
+      (job.stacktrace?.length ?? 0) === 0 &&
+      // A job in a flow carries its parent or children in `flow`, which the
+      // fresh column list leaves to the table's default of null.
+      (job.flow ?? null) === null
     );
   }
 
@@ -1239,6 +1291,17 @@ export class SqlDriver implements JobsDriver {
     q: QueueRef,
     chunk: JobRecord[],
   ): Promise<{ job: JobRecord; added: boolean }[]> {
+    return await this.#requireFlowColumn(
+      chunk.some((job) => job.flow),
+      async () => await this.#insertChunkRows(q, chunk),
+    );
+  }
+
+  /** {@link SqlDriver.#insertChunk}, without the missing-column translation. */
+  async #insertChunkRows(
+    q: QueueRef,
+    chunk: JobRecord[],
+  ): Promise<{ job: JobRecord; added: boolean }[]> {
     // A batch of brand-new jobs names only the columns such a job carries; the
     // rest are the table's defaults, and not naming them is worth about 20%.
     // One record in an unusual shape sends the whole batch back to the full
@@ -1247,9 +1310,12 @@ export class SqlDriver implements JobsDriver {
     const allFresh = chunk.every((job) => this.#isFreshJob(job));
     // The module constants themselves, not copies: `columnIndices` memoises on
     // the array's identity, and a fresh copy per chunk would defeat it.
+    // Past that, `flow` is named only when some job in the chunk is in one.
     const columns: readonly string[] = allFresh
       ? FRESH_JOB_COLUMNS
-      : JOB_COLUMNS;
+      : chunk.every((job) => !job.flow)
+        ? FLOWLESS_JOB_COLUMNS
+        : JOB_COLUMNS;
     const allTypes = jobColumnTypes(this.dialect);
     const types = columnIndices(columns).map((index) => allTypes[index]!);
 
@@ -2136,6 +2202,254 @@ export class SqlDriver implements JobsDriver {
     return row ? this.#toRecord(row) : null;
   }
 
+  /**
+   * Records a child's outcome on its parent: one transaction that locks the
+   * parent's row, decides from what it holds, and writes the result back.
+   *
+   * Atomic per engine through {@link SqlDriver.#lockFlow} — a row lock on
+   * Postgres, MySQL and MariaDB (READ COMMITTED, retried on a deadlock by the
+   * dialect), the write lock on SQLite. A single conditional `UPDATE` cannot
+   * express it portably: the repeat check is a key lookup inside a JSON
+   * document, and each engine spells that differently.
+   *
+   * The write is still conditional on `state = 'waiting-children'`, which the
+   * lock already guarantees — it keeps a mistake here from moving a job that
+   * has already moved on.
+   */
+  async recordChild(
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ): Promise<ChildRecordResult> {
+    await this.connect();
+
+    const { result, released } = await this.dialect.transaction(
+      this.#sql,
+      async (
+        tx,
+      ): Promise<{ result: ChildRecordResult; released?: JobState }> => {
+        const parent = await this.#lockFlow(tx, q, parentId);
+        const flow = parent?.flow;
+
+        // A job that does not list this child is not its parent.
+        if (!parent || !flow || !listsChild(flow, child)) {
+          return { result: "missing" };
+        }
+
+        // Repeat-safety: a child already counted off is never counted twice,
+        // which is what lets a crash between completing and recording heal by
+        // recording again.
+        const key = flowKey(child);
+        if (
+          Object.hasOwn(flow.values, key) ||
+          Object.hasOwn(flow.failures, key)
+        ) {
+          return { result: "already" };
+        }
+
+        const settles = outcome.completed || outcome.ignored;
+
+        if (parent.state === "dead") {
+          if (!settles) {
+            // That child stays unsettled, for a retry of the parent to wait on.
+            return { result: "parent-dead" };
+          }
+
+          // Kept for a retry of the parent, which then does not wait on it.
+          if (outcome.completed) {
+            flow.values[key] = outcome.value ?? null;
+          } else {
+            flow.failures[key] = outcome.error;
+          }
+
+          const keep = this.#binder();
+          await this.#run(
+            `UPDATE ${this.#tables.jobs}
+                SET flow = ${keep.bind(this.dialect.jsonIn(flow))}
+              WHERE ns = ${keep.bind(q.ns)} AND queue = ${keep.bind(q.queue)}
+                AND id = ${keep.bind(parentId)} AND state = 'dead'`,
+            keep.values,
+            tx,
+          );
+          return { result: "recorded" };
+        }
+
+        if (parent.state !== "waiting-children") {
+          return { result: "already" };
+        }
+
+        if (!settles) {
+          // A child that failed buries its parent, which can then never run.
+          // `flow` is left as it is: a retry of the parent keeps the values of
+          // the children that did complete.
+          const bury = this.#binder();
+          await this.#run(
+            `UPDATE ${this.#tables.jobs}
+                SET state = 'dead', finished_on = ${bury.bind(now)},
+                    failed_reason = ${bury.bind(this.dialect.jsonIn(outcome.error))}
+              WHERE ns = ${bury.bind(q.ns)} AND queue = ${bury.bind(q.queue)}
+                AND id = ${bury.bind(parentId)} AND state = 'waiting-children'`,
+            bury.values,
+            tx,
+          );
+          return { result: "buried" };
+        }
+
+        if (outcome.completed) {
+          flow.values[key] = outcome.value ?? null;
+        } else {
+          flow.failures[key] = outcome.error;
+        }
+
+        flow.pending = Math.max(0, flow.pending - 1);
+        const state: JobState =
+          flow.pending > 0
+            ? "waiting-children"
+            : parent.runAt > now
+              ? "delayed"
+              : "waiting";
+
+        const update = this.#binder();
+        await this.#run(
+          `UPDATE ${this.#tables.jobs}
+              SET state = ${update.bind(state)},
+                  flow = ${update.bind(this.dialect.jsonIn(flow))}
+            WHERE ns = ${update.bind(q.ns)} AND queue = ${update.bind(q.queue)}
+              AND id = ${update.bind(parentId)} AND state = 'waiting-children'`,
+          update.values,
+          tx,
+        );
+
+        return {
+          result: state === "waiting-children" ? "recorded" : "released",
+          released: state,
+        };
+      },
+    );
+
+    // After the commit, so a woken worker's claim can see the row.
+    if (released === "waiting") {
+      await this.#announce(q);
+    }
+
+    return result;
+  }
+
+  /**
+   * Returns a parent buried by a child's failure to `waiting-children`, in
+   * one transaction under the same row lock as {@link SqlDriver.recordChild}.
+   */
+  async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
+    await this.connect();
+
+    const moved = await this.dialect.transaction(
+      this.#sql,
+      async (tx): Promise<JobState | null> => {
+        const job = await this.#lockFlow(tx, q, id);
+
+        if (!job || job.state !== "dead" || !job.flow) {
+          return null;
+        }
+
+        // Counted under the row lock, so an outcome recorded in the meantime
+        // is never counted as still to come.
+        const flow = { ...job.flow, pending: unsettledChildren(job.flow) };
+        const state: JobState =
+          flow.pending > 0
+            ? "waiting-children"
+            : job.runAt > now
+              ? "delayed"
+              : "waiting";
+
+        const { bind, values } = this.#binder();
+        await this.#run(
+          `UPDATE ${this.#tables.jobs}
+              SET state = ${bind(state)},
+                  flow = ${bind(this.dialect.jsonIn(flow))},
+                  failed_reason = NULL, finished_on = NULL, expires_at = NULL
+            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+              AND id = ${bind(id)} AND state = 'dead'`,
+          values,
+          tx,
+        );
+
+        return state;
+      },
+    );
+
+    if (moved === "waiting") {
+      await this.#announce(q);
+    }
+
+    return moved !== null;
+  }
+
+  /**
+   * Marks a child recorded on its parent, then applies the retention its
+   * finishing deferred — the same three effects `completeJob` and `failJob`
+   * have: removal, an expiry for a TTL, and the per-state count sweep.
+   *
+   * The flag and the expiry are one locked read-modify-write; the removal and
+   * the sweep follow it, as they follow the finishing write in those methods.
+   */
+  async markChildRecorded(
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    await this.connect();
+
+    const state = await this.dialect.transaction(
+      this.#sql,
+      async (tx): Promise<JobState | null> => {
+        const job = await this.#lockFlow(tx, q, id);
+
+        if (!job) {
+          return null;
+        }
+
+        const flow: JobFlow = {
+          parent: job.flow?.parent ?? null,
+          children: job.flow?.children ?? [],
+          pending: job.flow?.pending ?? 0,
+          values: job.flow?.values ?? {},
+          failures: job.flow?.failures ?? {},
+          recorded: true,
+        };
+
+        const finished = job.state === "completed" || job.state === "dead";
+        const ttl = this.#ttlOf(retention);
+        const { bind, values } = this.#binder();
+        await this.#run(
+          `UPDATE ${this.#tables.jobs}
+              SET flow = ${bind(this.dialect.jsonIn(flow))}${
+                finished
+                  ? `, expires_at = ${bind(ttl === null ? null : now + ttl)}`
+                  : ""
+              }
+            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
+          values,
+          tx,
+        );
+
+        return job.state;
+      },
+    );
+
+    if (state === null) {
+      return false;
+    }
+
+    if (state === "completed" || state === "dead") {
+      await this.#applyRetention(q, id, state, retention, now);
+    }
+
+    return true;
+  }
+
   async listJobs(
     q: QueueRef,
     states: JobState[],
@@ -2194,6 +2508,7 @@ export class SqlDriver implements JobsDriver {
       completed: 0,
       failed: 0,
       dead: 0,
+      "waiting-children": 0,
     } satisfies Record<JobState, number>;
 
     for (const row of rows) {
@@ -2232,14 +2547,37 @@ export class SqlDriver implements JobsDriver {
   ): Promise<boolean> {
     await this.connect();
 
-    const { bind, values } = this.#binder();
-    const retried = await this.#run(
-      `UPDATE ${this.#tables.jobs}
-          SET state = 'waiting', run_at = ${bind(now)}, finished_on = NULL,
-              expires_at = NULL${resetAttempts ? ", attempts_made = 0, stalled_count = 0" : ""}
-        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
-          AND state NOT IN ('active', 'waiting')`,
-      values,
+    /** The retry itself, with `flow` rewritten only when given one. */
+    const retry = async (flow: JobFlow | null, tx?: SQL) => {
+      const { bind, values } = this.#binder();
+      return await this.#run(
+        `UPDATE ${this.#tables.jobs}
+            SET state = 'waiting', run_at = ${bind(now)}, finished_on = NULL,
+                expires_at = NULL${resetAttempts ? ", attempts_made = 0, stalled_count = 0" : ""}${
+                  flow ? `, flow = ${bind(this.dialect.jsonIn(flow))}` : ""
+                }
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
+            AND state NOT IN ('active', 'waiting', 'waiting-children')`,
+        values,
+        tx,
+      );
+    };
+
+    const retried = await this.#withFlowColumn(
+      // A flow child's next outcome has not reached its parent, so the flag
+      // is cleared with the move — read and written under the row lock.
+      async () =>
+        await this.dialect.transaction(this.#sql, async (tx) => {
+          const job = await this.#lockFlow(tx, q, id);
+          if (!job) {
+            return 0;
+          }
+          return await retry(
+            job.flow?.recorded ? { ...job.flow, recorded: false } : null,
+            tx,
+          );
+        }),
+      async () => await retry(null),
     );
 
     return retried > 0;
@@ -2332,7 +2670,13 @@ export class SqlDriver implements JobsDriver {
 
   async cleanJobs(
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
@@ -2367,13 +2711,10 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const scan = this.#binder();
-    const rows = await this.#all<{ id: string }>(
-      `SELECT id FROM ${this.#tables.jobs}
-        WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
+    const where = `WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
           AND expires_at IS NOT NULL AND expires_at <= ${scan.bind(now)}
-        LIMIT ${Math.max(1, Math.floor(limit))}`,
-      scan.values,
-    );
+        LIMIT ${Math.max(1, Math.floor(limit))}`;
+    const rows = await this.#sweepable(where, scan.values);
 
     // Before the jobs go, while their keys can still be read.
     await this.#forgetLogs(
@@ -2396,7 +2737,11 @@ export class SqlDriver implements JobsDriver {
   async drainQueue(q: QueueRef, includeDelayed: boolean): Promise<number> {
     await this.connect();
 
-    const states = includeDelayed ? ["waiting", ...SCHEDULED] : ["waiting"];
+    // A parent waiting on children is pending work as much as a waiting job
+    // is, so a drain takes it too.
+    const states = includeDelayed
+      ? ["waiting", "waiting-children", ...SCHEDULED]
+      : ["waiting", "waiting-children"];
 
     // The lines of the jobs about to go, found through those jobs' keys rather
     // than by scanning the queue's whole log, so the cost follows what is
@@ -3013,6 +3358,9 @@ export class SqlDriver implements JobsDriver {
       job.lockExpiresAt,
       job.workerId,
       job.repeatKey,
+      // SQL NULL rather than the JSON text `null`, so "in no flow" reads the
+      // same whether the column was named or left to its default.
+      job.flow ? json(job.flow) : null,
     ];
 
     // The caller may have asked for a subset — a batch of brand-new jobs names
@@ -3064,6 +3412,7 @@ export class SqlDriver implements JobsDriver {
       job.lockExpiresAt,
       job.workerId,
       job.repeatKey,
+      job.flow ?? null,
     ];
 
     const indices = columnIndices(columns);
@@ -3113,7 +3462,86 @@ export class SqlDriver implements JobsDriver {
       lockExpiresAt: nullableNumber(row.lock_expires_at),
       workerId: (row.worker_id as string | null) ?? null,
       repeatKey: (row.repeat_key as string | null) ?? null,
+      // Absent on a table not yet synced, which reads as a job in no flow.
+      flow: this.#decodeFlow(row.flow),
     };
+  }
+
+  /**
+   * A stored `flow` document as a {@link JobFlow}, or `null` for none.
+   *
+   * Every part is defaulted, so a document missing a field — hand-written, or
+   * from a later version that dropped one — still gives the flow paths the
+   * plain objects and arrays they index into.
+   */
+  #decodeFlow(value: unknown): JobFlow | null {
+    const stored = this.dialect.jsonOut<Partial<JobFlow> | null>(value, null);
+
+    if (!stored || typeof stored !== "object") {
+      return null;
+    }
+
+    return {
+      parent: stored.parent ?? null,
+      children: stored.children ?? [],
+      pending: Number(stored.pending ?? 0),
+      values: stored.values ?? {},
+      failures: stored.failures ?? {},
+      recorded: stored.recorded === true,
+    };
+  }
+
+  /**
+   * Reads one job's state, due time and flow inside `tx`, holding its row.
+   *
+   * `FOR UPDATE` on every engine that has it, so a concurrent recording on the
+   * same parent waits here and then reads what the first one wrote. SQLite has
+   * no row locks and needs none: {@link SqlDialect.transaction} runs it under
+   * `BEGIN IMMEDIATE`, which already holds the database's only write lock.
+   */
+  async #lockFlow(
+    tx: SQL,
+    q: QueueRef,
+    id: string,
+  ): Promise<{ state: JobState; runAt: number; flow: JobFlow | null } | null> {
+    const lock = this.adapter === "sqlite" ? "" : " FOR UPDATE";
+    const { bind, values } = this.#binder();
+    const row = await this.#one<{
+      state: string;
+      run_at: number | string;
+      flow: unknown;
+    }>(
+      `SELECT state, run_at, flow FROM ${this.#tables.jobs}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}${lock}`,
+      values,
+      tx,
+    );
+
+    return row
+      ? {
+          state: row.state as JobState,
+          runAt: Number(row.run_at),
+          flow: this.#decodeFlow(row.flow),
+        }
+      : null;
+  }
+
+  /**
+   * Tells waiting workers that `q` has a job ready, where the engine can.
+   *
+   * The same `pg_notify` an insert carries, sent on its own because a released
+   * parent arrives by an update rather than an insert. Best-effort, as every
+   * notification is: polling finds the job regardless.
+   */
+  async #announce(q: QueueRef): Promise<void> {
+    if (!this.#notify) {
+      return;
+    }
+
+    await this.#all(
+      `SELECT pg_notify('${this.#arrivals.channel(q)}', '')`,
+      [],
+    ).catch(() => undefined);
   }
 
   /** Removes one job by id, returning how many rows went. */
@@ -3624,9 +4052,8 @@ export class SqlDriver implements JobsDriver {
     }
 
     const scan = this.#binder();
-    const stale = await this.#all<{ id: string }>(
-      `SELECT id FROM ${this.#tables.jobs}
-        WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
+    const stale = await this.#sweepable(
+      `WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
           AND state = ${scan.bind(state)}
         ORDER BY COALESCE(finished_on, created_at) DESC
         LIMIT 1000 OFFSET ${Math.max(0, Math.floor(count))}`,
@@ -3635,6 +4062,102 @@ export class SqlDriver implements JobsDriver {
 
     for (const row of stale) {
       await this.#deleteJob(q, row.id);
+    }
+  }
+
+  /**
+   * The ids a retention sweep selected with `where`, less any flow child whose
+   * parent has not recorded its outcome.
+   *
+   * The check is made on the few rows the sweep already chose, from `flow`
+   * fetched alongside the id, rather than as a JSON predicate in SQL: the
+   * engines spell JSON extraction differently, and Postgres stores a document
+   * bound as text as a JSON *string*, which no path expression reaches into.
+   * A job in no flow has `flow` NULL, so the sweep stays as cheap as it was —
+   * one more column of NULL per selected row. On a table not yet synced there
+   * is no `flow`, no job can be in a flow, and the old statement runs.
+   */
+  async #sweepable(
+    where: string,
+    values: unknown[],
+  ): Promise<{ id: string }[]> {
+    return await this.#withFlowColumn(
+      async () =>
+        (
+          await this.#all<{ id: string; flow: unknown }>(
+            `SELECT id, flow FROM ${this.#tables.jobs} ${where}`,
+            values,
+          )
+        ).filter(
+          (row) => !awaitsDelivery({ flow: this.#decodeFlow(row.flow) }),
+        ),
+      async () =>
+        await this.#all<{ id: string }>(
+          `SELECT id FROM ${this.#tables.jobs} ${where}`,
+          values,
+        ),
+    );
+  }
+
+  /**
+   * Runs `withFlow`, which names the `flow` column, or `without` where the
+   * table does not have it yet — remembered for
+   * {@link FLOW_COLUMN_RECHECK_MS}, so an unsynced install pays for the
+   * failed statement once a minute rather than on every call.
+   */
+  async #withFlowColumn<T>(
+    withFlow: () => Promise<T>,
+    without: () => Promise<T>,
+  ): Promise<T> {
+    if (
+      this.#flowMissingAt !== undefined &&
+      Date.now() - this.#flowMissingAt < FLOW_COLUMN_RECHECK_MS
+    ) {
+      return await without();
+    }
+
+    try {
+      const result = await withFlow();
+      this.#flowMissingAt = undefined;
+      return result;
+    } catch (error) {
+      if (!isMissingColumn(error, "flow")) {
+        throw error;
+      }
+      this.#flowMissingAt = Date.now();
+      return await without();
+    }
+  }
+
+  /**
+   * Runs a write that puts a job in a flow, translating a missing `flow`
+   * column into an error that says what to do about it.
+   *
+   * `CREATE TABLE IF NOT EXISTS` gives a new install the column, but a table
+   * created before flows keeps its old shape until a sync adds it, and the
+   * engine's own "unknown column" names neither the feature nor the fix.
+   * `names` is whether the write names the column at all; one that does not
+   * cannot fail this way, and runs as it is.
+   */
+  async #requireFlowColumn<T>(
+    names: boolean,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    if (!names) {
+      return await work();
+    }
+
+    try {
+      return await work();
+    } catch (error) {
+      if (!isMissingColumn(error, "flow")) {
+        throw error;
+      }
+
+      throw new ConfigError(
+        `Flows need the flow column on ${this.#tables.jobs}, which this database does not have yet. Run driver.syncSchema(), or construct the driver with syncSchema: true, to add it.`,
+        { table: this.#tables.jobs, column: "flow" },
+      );
     }
   }
 }

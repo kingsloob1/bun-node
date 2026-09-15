@@ -400,6 +400,77 @@ describe.skipIf(!POSTGRES)("schema sync: SQL", () => {
     ).toEqual({ logs: ["hello"], count: 1 });
   }, 45_000);
 
+  it("says how to add a flow on a jobs table without flow, keeps everything else working, and sync adds it", async () => {
+    const prefix = makePrefix("flow");
+    const first = makeSqlDriver(prefix);
+    await first.connect();
+
+    // A `jobs` table from before flows.
+    await ddl([`ALTER TABLE ${prefix}jobs DROP COLUMN flow`]);
+
+    const driver = makeSqlDriver(prefix);
+    const q = { ns: testNamespace(), queue: "flow-unsynced" };
+    const parent = makeJob({
+      id: "parent",
+      state: "waiting-children",
+      flow: {
+        parent: null,
+        children: [{ queue: "flow-unsynced", id: "child" }],
+        pending: 1,
+        values: {},
+        failures: {},
+        recorded: false,
+      },
+    });
+
+    // One job and a batch: both name the feature and the fix, not the
+    // engine's "column does not exist".
+    for (const add of [
+      async () => await driver.addJob(q, parent),
+      async () => await driver.addJobs(q, [parent]),
+    ]) {
+      const failure = await add().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ConfigError);
+      expect(String((failure as Error).message)).toMatch(/flow.*syncSchema/s);
+    }
+
+    // A job in no flow still goes in, finishes, is swept by count and by TTL,
+    // and is retried — none of which may fail over a column it never needs.
+    const now = Date.now();
+    await driver.addJobs(q, [
+      makeJob({ id: "old", state: "completed", finishedOn: now - 2000 }),
+      makeJob({ id: "new", state: "completed", finishedOn: now - 1000 }),
+      makeJob({
+        id: "expired",
+        state: "dead",
+        finishedOn: now,
+        expiresAt: now - 1,
+      }),
+    ]);
+    expect(await driver.retryJob(q, "new", true, now)).toBe(true);
+    expect(await driver.pruneExpired(q, now, 10)).toBe(1);
+    await driver.addJob(
+      q,
+      makeJob({ id: "done", state: "active", lockToken: "t" }),
+    );
+    expect(
+      await driver.completeJob(q, "done", "t", "ok", { count: 1 }, now),
+    ).toBe(true);
+    expect(await driver.getJob(q, "old")).toBeNull();
+
+    const planned = await driver.syncSchema({ dryRun: true });
+    expect(planned.map((c) => [c.kind, c.target, c.blocking])).toEqual([
+      ["add-column", "flow", false],
+    ]);
+    expect((await driver.syncSchema())[0]!.applied).toBe(true);
+
+    // A fresh driver, as a deployment gets on its next connect: Postgres will
+    // not reuse a statement this connection prepared against the old columns.
+    const synced = makeSqlDriver(prefix);
+    expect((await synced.addJob(q, parent)).added).toBe(true);
+    expect((await synced.getJob(q, "parent"))?.flow?.pending).toBe(1);
+  }, 45_000);
+
   it("leaves a repaired schema usable as a queue", async () => {
     const prefix = makePrefix("use");
     const driver = makeSqlDriver(prefix);

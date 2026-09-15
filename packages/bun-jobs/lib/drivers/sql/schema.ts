@@ -36,7 +36,21 @@ export const JOB_COLUMNS = [
   "lock_expires_at",
   "worker_id",
   "repeat_key",
+  "flow",
 ] as const;
+
+/**
+ * {@link JOB_COLUMNS} without `flow`: what a job in no flow is inserted with.
+ *
+ * Such a job's `flow` is the column's default, `NULL`, so naming it adds
+ * nothing — and not naming it keeps every job outside a flow insertable into a
+ * table created before the column existed and not yet synced. Only a job that
+ * really is in a flow needs `syncSchema` to have run. Its own array rather than
+ * a copy made per call, because `columnIndices` memoises on identity.
+ */
+export const FLOWLESS_JOB_COLUMNS: readonly string[] = JOB_COLUMNS.filter(
+  (column) => column !== "flow",
+);
 
 /**
  * The columns a brand-new job actually carries.
@@ -109,6 +123,8 @@ export function jobColumnTypes(dialect: SqlDialect): string[] {
     idType,
 
     idType,
+    // flow
+    "json",
   ];
 }
 
@@ -246,6 +262,11 @@ export function schemaDefinition(
           // time the job logs anything, and null until then. Nothing on the
           // insert, claim or completion paths names it.
           { name: "log_key", type: idType },
+          // A job's place in a flow — its parent, its children, what they
+          // returned — as one document, null for a job in no flow. One column
+          // rather than one per detail: it is read and written whole, only by
+          // the flow paths, and a sync adds a nullable column without a lock.
+          { name: "flow", type: jsonType },
         ],
       },
       {

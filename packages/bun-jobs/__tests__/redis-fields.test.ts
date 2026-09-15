@@ -62,6 +62,16 @@ function fullyPopulated(id: string): JobRecord {
     lockExpiresAt: 1_700_000_006_000,
     workerId: "worker-value",
     repeatKey: "repeat-value",
+    flow: {
+      parent: { queue: "parent.queue", id: "parent-id" },
+      children: [{ queue: "child-queue", id: "child-id" }],
+      pending: 4,
+      // Keys with dots and colons, and values a cjson round trip would change:
+      // an empty array, and an integer past double-safe precision as a string.
+      values: { "q.one:a:b": [], "q:$two": { big: "12345678901234567890" } },
+      failures: { "q:failed": { name: "Error", message: "ignored" } },
+      recorded: true,
+    },
   });
 }
 
@@ -69,7 +79,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it("sends a value for every field it names", () => {
     // The Lua table is generated from JOB_FIELDS, so the only way the two can
     // disagree is if the driver stops building values in that order.
-    expect(JOB_FIELDS.length).toBe(19);
+    expect(JOB_FIELDS.length).toBe(22);
     expect(FRESH_JOB_FIELD_COUNT).toBeLessThan(JOB_FIELDS.length);
 
     // The fresh set has to be a *prefix* of the full one — that is what lets

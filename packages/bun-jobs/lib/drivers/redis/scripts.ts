@@ -24,6 +24,7 @@ export const QUEUE_KEYS = [
   "seq",
   "wake",
   "queues",
+  "children",
 ] as const;
 
 /**
@@ -78,10 +79,27 @@ export const JOB_FIELDS = [
   "returnValue",
   "failedReason",
   "stacktrace",
+  // A job's place in a flow, last so a record in none stops before them. Only
+  // the parts that never change after the add live in `flow` (its parent and
+  // children, as JSON); the two a script changes are scalars of their own, so
+  // no script ever re-encodes JSON — see `RECORD_CHILD` for why that matters.
+  "flow",
+  "flowPending",
+  "flowRecorded",
 ] as const;
 
 /** How many leading {@link JOB_FIELDS} a brand-new job carries. */
 export const FRESH_JOB_FIELD_COUNT = 6;
+
+/**
+ * The hash field prefix a completed child's value is stored under, followed
+ * by the child's `queue:id` key. One field per child, holding the JSON the
+ * driver encoded, untouched.
+ */
+export const FLOW_VALUE_PREFIX = "flow:v:";
+
+/** The hash field prefix an ignored child failure is stored under. */
+export const FLOW_FAILURE_PREFIX = "flow:f:";
 
 /** {@link JOB_FIELDS} as a Lua table literal, so the two cannot disagree. */
 const JOB_FIELDS_LUA = `{ ${JOB_FIELDS.map((field) => `'${field}'`).join(", ")} }`;
@@ -116,6 +134,7 @@ const QUEUE_PRELUDE = `
 local WAIT, DELAYED, FAILED = KEYS[1], KEYS[2], KEYS[3]
 local ACTIVE, COMPLETED, DEAD = KEYS[4], KEYS[5], KEYS[6]
 local META, SEQ, WAKE, QUEUES = KEYS[7], KEYS[8], KEYS[9], KEYS[10]
+local CHILDREN = KEYS[11]
 local PREFIX = ARGV[1]
 
 local function job(id) return PREFIX .. id end
@@ -146,6 +165,18 @@ local function wake()
   redis.call('LTRIM', WAKE, 0, 99)
 end
 
+-- Whether a job is a flow child whose outcome its parent has not recorded,
+-- which no retention may remove. Only a job in a flow has 'flowRecorded' at
+-- all, so any other job costs this one field read; the skeleton is read only
+-- for a flow job, and holds '"parent":{' exactly when it has a parent.
+local function awaitsDelivery(id)
+  local fields = redis.call('HMGET', job(id), 'flowRecorded', 'flow')
+  if fields[1] ~= '0' then
+    return false
+  end
+  return fields[2] ~= false and string.find(fields[2], '"parent":{', 1, true) ~= nil
+end
+
 local function retain(id, set, mode, count, ttl, now)
   -- mode: 'remove' deletes now, 'keep' keeps everything, 'cap' keeps a number.
   if mode == 'remove' then
@@ -162,8 +193,11 @@ local function retain(id, set, mode, count, ttl, now)
     local keep = tonumber(count)
     local stale = redis.call('ZREVRANGE', set, keep, -1)
     for _, staleId in ipairs(stale) do
-      redis.call('ZREM', set, staleId)
-      drop(staleId)
+      -- A child whose parent has not taken its outcome yet stays.
+      if not awaitsDelivery(staleId) then
+        redis.call('ZREM', set, staleId)
+        drop(staleId)
+      end
     end
   end
 end
@@ -230,9 +264,15 @@ for _ = 1, count do
     local entry = string.format('%016d', seq) .. ':' .. id
 
     local fields = { 'member', entry }
-    for i = 1, fieldCount do
+    for i = 1, math.min(fieldCount, #FIELDS) do
       fields[#fields + 1] = FIELDS[i]
       fields[#fields + 1] = ARGV[at + i]
+    end
+    -- Past the named fields come name/value pairs: a flow's child outcomes,
+    -- whose field names depend on the child.
+    for i = #FIELDS + 1, fieldCount, 2 do
+      fields[#fields + 1] = ARGV[at + i]
+      fields[#fields + 1] = ARGV[at + i + 1]
     end
     redis.call('HSET', job(id), unpack(fields))
 
@@ -246,6 +286,9 @@ for _ = 1, count do
       redis.call('ZADD', COMPLETED, stamp(${AT.finishedOn}), id)
     elseif state == 'dead' then
       redis.call('ZADD', DEAD, stamp(${AT.finishedOn}), id)
+    elseif state == 'waiting-children' then
+      -- Never in the wait set: a parent runs once RECORD_CHILD releases it.
+      redis.call('ZADD', CHILDREN, createdAt, id)
     else
       redis.call('ZADD', WAIT, priority, entry)
       woke = true
@@ -309,9 +352,15 @@ local seq = redis.call('INCR', SEQ)
 local entry = string.format('%016d', seq) .. ':' .. id
 
 local fields = { 'member', entry }
-for i = 1, fieldCount do
+for i = 1, math.min(fieldCount, #FIELDS) do
   fields[#fields + 1] = FIELDS[i]
   fields[#fields + 1] = ARGV[at + i]
+end
+-- Past the named fields come name/value pairs: a flow's child outcomes, whose
+-- field names depend on the child.
+for i = #FIELDS + 1, fieldCount, 2 do
+  fields[#fields + 1] = ARGV[at + i]
+  fields[#fields + 1] = ARGV[at + i + 1]
 end
 redis.call('HSET', job(id), unpack(fields))
 
@@ -329,6 +378,9 @@ elseif state == 'completed' then
   redis.call('ZADD', COMPLETED, stamp(${AT.finishedOn}), id)
 elseif state == 'dead' then
   redis.call('ZADD', DEAD, stamp(${AT.finishedOn}), id)
+elseif state == 'waiting-children' then
+  -- Never in the wait set: a parent runs once RECORD_CHILD releases it.
+  redis.call('ZADD', CHILDREN, createdAt, id)
 else
   redis.call('ZADD', WAIT, priority, entry)
   wake()
@@ -856,6 +908,7 @@ redis.call('ZREM', DELAYED, id)
 redis.call('ZREM', FAILED, id)
 redis.call('ZREM', COMPLETED, id)
 redis.call('ZREM', DEAD, id)
+redis.call('ZREM', CHILDREN, id)
 drop(id)
 return 1
 `;
@@ -869,7 +922,9 @@ export const RETRY_JOB = `${QUEUE_PRELUDE}
 local id, now, reset = ARGV[2], tonumber(ARGV[3]), ARGV[4]
 local current = state(id)
 
-if current == nil or current == false or current == 'active' or current == 'waiting' then
+-- A parent waiting on children is not finished; moving it would run it
+-- before they settle.
+if current == nil or current == false or current == 'active' or current == 'waiting' or current == 'waiting-children' then
   return 0
 end
 
@@ -877,9 +932,15 @@ redis.call('ZREM', DELAYED, id)
 redis.call('ZREM', FAILED, id)
 redis.call('ZREM', COMPLETED, id)
 redis.call('ZREM', DEAD, id)
+redis.call('ZREM', CHILDREN, id)
 
 redis.call('ZADD', WAIT, tonumber(redis.call('HGET', job(id), 'priority')), member(id))
 redis.call('HSET', job(id), 'state', 'waiting', 'runAt', tostring(now), 'finishedOn', '', 'expiresAt', '')
+
+-- A flow child's next outcome has not reached its parent.
+if redis.call('HGET', job(id), 'flowRecorded') == '1' then
+  redis.call('HSET', job(id), 'flowRecorded', '0')
+end
 
 if reset == '1' then
   redis.call('HSET', job(id), 'attemptsMade', '0', 'stalledCount', '0')
@@ -917,11 +978,15 @@ return 1
  */
 export const CLEAN = `${QUEUE_PRELUDE}
 local which, cutoff, limit = ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4])
-local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, completed = COMPLETED, dead = DEAD }
+local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, completed = COMPLETED, dead = DEAD, ['waiting-children'] = CHILDREN }
 local set = sets[which]
 local removed = {}
 
-if which == 'waiting' or which == 'delayed' or which == 'failed' then
+if not set then
+  return removed
+end
+
+if which == 'waiting' or which == 'delayed' or which == 'failed' or which == 'waiting-children' then
   -- These sets are scored by priority or by when a job is due, neither of
   -- which is its age. Age lives on the hash, as every other driver measures
   -- it: finishedOn when the job has one, else createdAt. The whole set is
@@ -971,7 +1036,8 @@ for _, set in ipairs({ COMPLETED, DEAD }) do
   local ids = redis.call('ZRANGE', set, 0, limit - 1)
   for _, id in ipairs(ids) do
     local expiresAt = redis.call('HGET', job(id), 'expiresAt')
-    if expiresAt and expiresAt ~= '' and tonumber(expiresAt) <= now then
+    if expiresAt and expiresAt ~= '' and tonumber(expiresAt) <= now
+      and not awaitsDelivery(id) then
       redis.call('ZREM', set, id)
       drop(id)
       removed = removed + 1
@@ -999,6 +1065,13 @@ redis.call('DEL', WAIT)
 -- Exclusion cursors point into the wait set just emptied. See excludeCursors.
 redis.call('DEL', string.sub(META, 1, -5) .. 'exclude')
 
+-- A parent waiting on children is pending work too, drained like waiting.
+for _, id in ipairs(redis.call('ZRANGE', CHILDREN, 0, -1)) do
+  drop(id)
+  removed = removed + 1
+end
+redis.call('DEL', CHILDREN)
+
 if includeDelayed == '1' then
   for _, set in ipairs({ DELAYED, FAILED }) do
     for _, id in ipairs(redis.call('ZRANGE', set, 0, -1)) do
@@ -1013,39 +1086,59 @@ return removed
 `;
 
 /**
- * Every job in the given states, as a flat list of ids.
+ * A page of the jobs in the given states, as a flat list of ids: the states'
+ * sets one after another, in the order given — reversed, set and members
+ * alike, for `desc`.
+ *
+ * Paged on the server. Whole sets before the offset are skipped by their
+ * size, and only the page itself is ranged, so a maintenance pass paging
+ * through a large completed set costs what the page costs rather than the
+ * whole set per call.
  *
  * ARGV: prefix, offset, limit, order, then one state per remaining argument.
  */
 export const LIST_JOBS = `${QUEUE_PRELUDE}
 local offset, limit, order = tonumber(ARGV[2]), tonumber(ARGV[3]), ARGV[4]
-local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, active = ACTIVE, completed = COMPLETED, dead = DEAD }
-local ids = {}
+local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, active = ACTIVE, completed = COMPLETED, dead = DEAD, ['waiting-children'] = CHILDREN }
 
-for i = 5, #ARGV do
-  local set = sets[ARGV[i]]
-  if set then
-    local entries = redis.call('ZRANGE', set, 0, -1)
-    for _, entry in ipairs(entries) do
-      ids[#ids + 1] = (ARGV[i] == 'waiting') and string.sub(entry, 18) or entry
+local names = {}
+for i = 5, #ARGV do names[#names + 1] = ARGV[i] end
+if order == 'desc' then
+  local reversed = {}
+  for i = #names, 1, -1 do reversed[#reversed + 1] = names[i] end
+  names = reversed
+end
+
+local page, skip = {}, offset
+for _, name in ipairs(names) do
+  local set = sets[name]
+  if set and #page < limit then
+    local size = redis.call('ZCARD', set)
+    if skip >= size then
+      skip = skip - size
+    else
+      local last = skip + (limit - #page) - 1
+      local entries
+      if order == 'desc' then
+        entries = redis.call('ZREVRANGE', set, skip, last)
+      else
+        entries = redis.call('ZRANGE', set, skip, last)
+      end
+      skip = 0
+      for _, entry in ipairs(entries) do
+        page[#page + 1] = (name == 'waiting') and string.sub(entry, 18) or entry
+      end
     end
   end
 end
 
-if order == 'desc' then
-  local reversed = {}
-  for i = #ids, 1, -1 do reversed[#reversed + 1] = ids[i] end
-  ids = reversed
-end
-
-local page = {}
-for i = offset + 1, math.min(#ids, offset + limit) do
-  page[#page + 1] = ids[i]
-end
 return page
 `;
 
-/** How many jobs are in each state. ARGV: prefix. */
+/**
+ * How many jobs are in each state. ARGV: prefix. Returns waiting, delayed,
+ * active, completed, failed, dead and waiting-children, in that order.
+ */
 export const COUNT_JOBS = `${QUEUE_PRELUDE}
 return {
   redis.call('ZCARD', WAIT),
@@ -1054,7 +1147,206 @@ return {
   redis.call('ZCARD', COMPLETED),
   redis.call('ZCARD', FAILED),
   redis.call('ZCARD', DEAD),
+  redis.call('ZCARD', CHILDREN),
 }
+`;
+
+/**
+ * Records how a child ended on its parent, and moves the parent on.
+ *
+ * Runs on the **parent's** queue keys, so it is one script and atomic by
+ * construction, whatever queue the child lives in.
+ *
+ * **Nothing here decodes or re-encodes JSON.** A child's value is arbitrary
+ * JSON, and a cjson round trip changes it: an empty array comes back as an
+ * object, and a large integer loses precision — see {@link UPDATE_JOB}. So
+ * the outcome is stored exactly as the driver encoded it, in a hash field of
+ * its own named after the child (`FLOW_VALUE_PREFIX` / `FLOW_FAILURE_PREFIX`
+ * plus `queue:id`), and the count left is the scalar `flowPending`. That also
+ * makes the repeat check an `HEXISTS` rather than a decode of every outcome
+ * recorded so far, which would make recording n children O(n²).
+ *
+ * Whether the parent lists the child is a plain substring search of its
+ * `flow` skeleton for the child's reference, encoded exactly as the driver
+ * writes each entry of `children` — no decode, so it stays linear in the
+ * skeleton's length. It searches from the `"children":` key on, which comes
+ * after `"parent":`, so the parent's own reference can never match. Inside a
+ * JSON string every quote is escaped, so neither pattern can match text
+ * inside an id.
+ *
+ * ARGV: prefix, parent id, child key (`queue:id`), kind (`completed`,
+ * `ignored` or `failed`), the value or error as JSON, now, the child's
+ * reference as JSON (`{"queue":…,"id":…}`). Returns one of the
+ * `ChildRecordResult` strings.
+ */
+export const RECORD_CHILD = `${QUEUE_PRELUDE}
+local id, key, kind = ARGV[2], ARGV[3], ARGV[4]
+local payload, now, ref = ARGV[5], tonumber(ARGV[6]), ARGV[7]
+
+local stored = redis.call('HMGET', job(id), 'state', 'flow', 'flowPending', 'runAt', 'priority')
+if not stored[1] then
+  return 'missing'
+end
+
+-- A job that does not list this child is not its parent.
+local skeleton = stored[2]
+if not skeleton or skeleton == '' then
+  return 'missing'
+end
+local listed = string.find(skeleton, '"children":', 1, true)
+if not listed or not string.find(skeleton, ref, listed, true) then
+  return 'missing'
+end
+
+local valueField = '${FLOW_VALUE_PREFIX}' .. key
+local failureField = '${FLOW_FAILURE_PREFIX}' .. key
+
+-- Repeat-safe: an outcome already held changes nothing.
+if redis.call('HEXISTS', job(id), valueField) == 1
+  or redis.call('HEXISTS', job(id), failureField) == 1 then
+  return 'already'
+end
+
+local field = kind == 'completed' and valueField or failureField
+
+if stored[1] == 'dead' then
+  -- A buried parent keeps a settled outcome for its retry, and refuses a
+  -- failure: that child stays unsettled, for the retry to wait on.
+  if kind == 'failed' then
+    return 'parent-dead'
+  end
+  redis.call('HSET', job(id), field, payload)
+  return 'recorded'
+end
+
+if stored[1] ~= 'waiting-children' then
+  return 'already'
+end
+
+if kind == 'failed' then
+  -- A failure not ignored buries the parent, the way FAIL buries a job.
+  redis.call('ZREM', CHILDREN, id)
+  redis.call('ZADD', DEAD, now, id)
+  redis.call('HSET', job(id),
+    'state', 'dead',
+    'failedReason', payload,
+    'finishedOn', tostring(now))
+  return 'buried'
+end
+
+local pending = math.max(0, (tonumber(stored[3]) or 0) - 1)
+redis.call('HSET', job(id), field, payload, 'flowPending', tostring(pending))
+
+if pending > 0 then
+  return 'recorded'
+end
+
+redis.call('ZREM', CHILDREN, id)
+local runAt = tonumber(stored[4]) or 0
+if runAt > now then
+  redis.call('ZADD', DELAYED, runAt, id)
+  redis.call('HSET', job(id), 'state', 'delayed')
+else
+  -- The member it was given on add, so it keeps its place among equals.
+  redis.call('ZADD', WAIT, tonumber(stored[5]) or 0, member(id))
+  redis.call('HSET', job(id), 'state', 'waiting')
+  wake()
+end
+
+return 'released'
+`;
+
+/**
+ * Returns a parent buried by a child's failure to waiting on its children.
+ *
+ * Only a `dead` job with a flow qualifies. Outcomes already recorded are
+ * kept, and the count left is taken here, in the same script: each child in
+ * the skeleton with no value or failure field. The skeleton holds only
+ * references, so decoding it cannot change anything a caller sees. With none
+ * left it goes straight to waiting, or delayed when its `runAt` is later.
+ *
+ * ARGV: prefix, id, now. Returns 1 when it moved.
+ */
+export const REQUEUE_PARENT = `${QUEUE_PRELUDE}
+local id, now = ARGV[2], tonumber(ARGV[3])
+
+local stored = redis.call('HMGET', job(id), 'state', 'flow', 'flowRecorded', 'runAt', 'priority', 'createdAt')
+if stored[1] ~= 'dead' or not stored[2] or stored[2] == '' then
+  return 0
+end
+
+local ok, skeleton = pcall(cjson.decode, stored[2])
+if not ok or type(skeleton) ~= 'table' then
+  return 0
+end
+
+local pending = 0
+if type(skeleton.children) == 'table' then
+  for _, child in ipairs(skeleton.children) do
+    local key = tostring(child.queue) .. ':' .. tostring(child.id)
+    if redis.call('HEXISTS', job(id), '${FLOW_VALUE_PREFIX}' .. key) == 0
+      and redis.call('HEXISTS', job(id), '${FLOW_FAILURE_PREFIX}' .. key) == 0 then
+      pending = pending + 1
+    end
+  end
+end
+
+redis.call('ZREM', DEAD, id)
+redis.call('HSET', job(id),
+  'flowPending', tostring(pending),
+  'failedReason', 'null',
+  'finishedOn', '',
+  'expiresAt', '')
+
+if pending > 0 then
+  redis.call('ZADD', CHILDREN, tonumber(stored[6]) or now, id)
+  redis.call('HSET', job(id), 'state', 'waiting-children')
+else
+  local runAt = tonumber(stored[4]) or 0
+  if runAt > now then
+    redis.call('ZADD', DELAYED, runAt, id)
+    redis.call('HSET', job(id), 'state', 'delayed')
+  else
+    redis.call('ZADD', WAIT, tonumber(stored[5]) or 0, member(id))
+    redis.call('HSET', job(id), 'state', 'waiting')
+    wake()
+  end
+end
+
+return 1
+`;
+
+/**
+ * Marks a child's outcome as recorded on its parent, then applies the
+ * retention its completion or failure deferred.
+ *
+ * A job with no flow gains one: \`flowRecorded\` alone is enough for the
+ * reader to build an empty flow around it. Retention runs through the same
+ * \`retain\` as COMPLETE and FAIL, after clearing any expiry an earlier step
+ * set, so the retention given here is the one that holds.
+ *
+ * ARGV: prefix, id, now, retention mode, count, ttl. Returns 1 when the job
+ * exists.
+ */
+export const MARK_CHILD_RECORDED = `${QUEUE_PRELUDE}
+local id, now = ARGV[2], tonumber(ARGV[3])
+local mode, count, ttl = ARGV[4], ARGV[5], ARGV[6]
+
+local current = state(id)
+if not current then
+  return 0
+end
+
+redis.call('HSET', job(id), 'flowRecorded', '1')
+
+if current == 'completed' or current == 'dead' then
+  if mode ~= 'remove' then
+    redis.call('HSET', job(id), 'expiresAt', '')
+  end
+  retain(id, current == 'completed' and COMPLETED or DEAD, mode, count, ttl, now)
+end
+
+return 1
 `;
 
 /**

@@ -13,14 +13,18 @@ import type {
   ConnectionOptions,
 } from "../../shared/connection";
 import type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,
@@ -43,6 +47,7 @@ import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
 import { PauseCache } from "../../shared/pauseCache";
 import { EventGaps } from "../eventGaps";
+import { flowKey, unsettledChildren } from "../flow";
 import { resolveSyncOptions } from "../schemaSync";
 
 /**
@@ -190,6 +195,24 @@ const PENDING: JobState[] = ["waiting", "delayed"];
 const PATCH_RETRIES = 3;
 
 /**
+ * How many times recording on a parent, or requeueing one, decides afresh
+ * after the parent changed under it. Each round is a complete decision, so
+ * more than a couple means something keeps rewriting the parent.
+ */
+const RECORD_CHILD_ROUNDS = 5;
+
+/**
+ * Leaves out a flow child whose parent has not recorded its outcome yet,
+ * which no retention may remove. A job in no flow has no `flow.parent` and
+ * always passes.
+ */
+const NOT_AWAITING_DELIVERY = {
+  $nor: [
+    { "flow.parent": { $type: "object" }, "flow.recorded": { $ne: true } },
+  ],
+};
+
+/**
  * How many log lines one orphan sweep reads, per job the maintenance batch
  * allows.
  *
@@ -307,6 +330,39 @@ interface JobDocument {
    * field that could be derived, and has to start with an empty log anyway.
    */
   logKey?: string;
+  /**
+   * Its place in a flow. Absent (or `null`) for a job in none, which is also
+   * how every document written before flows existed reads back.
+   */
+  flow?: FlowDocument | null;
+}
+
+/**
+ * A job's flow as it is stored.
+ *
+ * A sub-document rather than one JSON string, so recording a child can be a
+ * single conditional update that touches one entry and the pending count on
+ * the server: a string would have to be read, edited and written back, which
+ * without a replica set is not atomic.
+ */
+interface FlowDocument {
+  /** The job this one is a child of, when it is one. */
+  parent: JobRef | null;
+  /** The jobs this one waits on, when it is a parent. */
+  children: JobRef[];
+  /** How many of `children` have not settled yet. */
+  pending: number;
+  /**
+   * Completed children's results, as JSON, keyed by the `encodeFlowKey` form
+   * of `queue:id`. Both halves are encoded: a key may hold `.` or start with
+   * `$`, and a result may hold keys that do, none of which a field path or a
+   * pipeline update may contain as-is.
+   */
+  values: Record<string, string>;
+  /** Ignored children's failures, as JSON, keyed like `values`. */
+  failures: Record<string, string>;
+  /** Whether this child's outcome has been recorded on its parent. */
+  recorded: boolean;
 }
 
 /** A lock as it is stored. */
@@ -400,6 +456,13 @@ interface EventDocument {
  */
 const EVENT_SEQ_PREFIX = "__events_seq:";
 
+/**
+ * The MongoDB driver.
+ *
+ * Needs **MongoDB 4.2 or later**: flows record a child's outcome and requeue
+ * a parent with update pipelines (`findOneAndUpdate` with an array), which
+ * older servers reject.
+ */
 export class MongoDriver implements JobsDriver {
   /** Identifies the implementation in errors and capability checks. */
   readonly name = "mongodb";
@@ -1521,6 +1584,301 @@ export class MongoDriver implements JobsDriver {
     return document ? this.#toRecord(document) : null;
   }
 
+  /**
+   * Records a child's outcome on its parent as one conditional update.
+   *
+   * Without a replica set MongoDB is atomic per document and no further, so
+   * each write is one statement whose filter carries every check: the parent
+   * lists this child, holds no entry for it yet — what makes a repeat match
+   * nothing — and is in the state the write is for. A settled child on a
+   * waiting parent is a pipeline update, so storing the entry, counting it
+   * off and — only when that reaches zero — releasing the parent all happen
+   * together; two updates would leave a crash between them holding a parent
+   * at zero pending that no repeat could release.
+   *
+   * When no write matches, one read says why. Only a parent that changed
+   * state between the write and the read — buried by a sibling, say — sends
+   * it round again, and each round is a fresh, complete decision.
+   */
+  async recordChild(
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ): Promise<ChildRecordResult> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, parentId);
+    const key = encodeFlowKey(flowKey(child));
+    const settles = outcome.completed || outcome.ignored;
+    const entry = outcome.completed
+      ? {
+          path: `flow.values.${key}`,
+          json: JSON.stringify(outcome.value ?? null),
+        }
+      : { path: `flow.failures.${key}`, json: JSON.stringify(outcome.error) };
+
+    const unrecorded = (state: JobState) =>
+      ({
+        _id,
+        state,
+        flow: { $type: "object" },
+        "flow.children": { $elemMatch: { queue: child.queue, id: child.id } },
+        [`flow.values.${key}`]: { $exists: false },
+        [`flow.failures.${key}`]: { $exists: false },
+      }) as Filter<JobDocument>;
+
+    for (let round = 0; round < RECORD_CHILD_ROUNDS; round++) {
+      if (!settles) {
+        // A child that failed buries its parent, which can then never run.
+        const buried = await jobs.updateOne(unrecorded("waiting-children"), {
+          $set: {
+            state: "dead",
+            failedReason: JSON.stringify(outcome.error),
+            finishedOn: now,
+          },
+        });
+        if (buried.matchedCount > 0) {
+          return "buried";
+        }
+      } else {
+        const counted = await jobs.findOneAndUpdate(
+          unrecorded("waiting-children"),
+          [
+            {
+              $set: {
+                // `$literal`, because a pipeline reads a string starting with
+                // `$` as a field path, and a JSON string can.
+                [entry.path]: { $literal: entry.json },
+                "flow.pending": {
+                  $max: [0, { $subtract: ["$flow.pending", 1] }],
+                },
+              },
+            },
+            {
+              // A later stage sees the earlier one's output: this reads the
+              // decremented count.
+              $set: {
+                state: {
+                  $cond: {
+                    if: { $lte: ["$flow.pending", 0] },
+                    then: {
+                      $cond: {
+                        if: { $gt: ["$runAt", now] },
+                        then: "delayed",
+                        else: "waiting",
+                      },
+                    },
+                    else: "$state",
+                  },
+                },
+              },
+            },
+          ],
+          { returnDocument: "after", projection: { state: 1 } },
+        );
+        // No wake to send: workers find a newly waiting job by polling
+        // `waitForJob`, which this driver has no push channel to shortcut.
+        if (counted) {
+          return counted.state === "waiting-children" ? "recorded" : "released";
+        }
+
+        // A buried parent keeps the outcome for its retry. A plain `$set`,
+        // not a pipeline, so the JSON string is stored as the value it is.
+        const kept = await jobs.updateOne(unrecorded("dead"), {
+          $set: { [entry.path]: entry.json },
+        });
+        if (kept.matchedCount > 0) {
+          return "recorded";
+        }
+      }
+
+      const current = await jobs.findOne(
+        { _id },
+        {
+          projection: {
+            state: 1,
+            "flow.children": 1,
+            [`flow.values.${key}`]: 1,
+            [`flow.failures.${key}`]: 1,
+          },
+        },
+      );
+      const flow = current?.flow;
+
+      if (
+        !current ||
+        !flow ||
+        !(flow.children ?? []).some(
+          (ref) => ref.queue === child.queue && ref.id === child.id,
+        )
+      ) {
+        return "missing";
+      }
+      if (
+        flow.values?.[key] !== undefined ||
+        flow.failures?.[key] !== undefined
+      ) {
+        return "already";
+      }
+      if (current.state === "dead" && !settles) {
+        return "parent-dead";
+      }
+      if (current.state !== "dead" && current.state !== "waiting-children") {
+        return "already";
+      }
+      // Its state moved between the write and the read: decide again.
+    }
+
+    throw new DriverError(
+      "mongodb",
+      "recordChild",
+      new Error("the parent kept changing state while it was recorded on"),
+      { id: parentId, child: flowKey(child) },
+    );
+  }
+
+  /**
+   * Returns a buried parent to waiting on its children, as one conditional
+   * pipeline update — the pipeline is what lets a parent with nothing left to
+   * wait on choose waiting or delayed from its own `runAt`.
+   *
+   * The count left is taken from the outcomes the parent holds, read first;
+   * the update then matches only while they are exactly what was read, so an
+   * outcome recorded in between sends it round to count again rather than
+   * leaving the parent waiting on a child it already has.
+   */
+  async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, id);
+
+    for (let round = 0; round < RECORD_CHILD_ROUNDS; round++) {
+      const current = await jobs.findOne(
+        { _id, state: "dead", flow: { $type: "object" } },
+        { projection: { flow: 1 } },
+      );
+      if (!current?.flow) {
+        return false;
+      }
+
+      const remaining = unsettledChildren(decodeFlow(current.flow));
+      const moved = await this.#requeueAt(
+        {
+          _id,
+          state: "dead",
+          "flow.values": current.flow.values ?? {},
+          "flow.failures": current.flow.failures ?? {},
+        } as Filter<JobDocument>,
+        remaining,
+        now,
+      );
+      if (moved) {
+        return true;
+      }
+    }
+
+    throw new DriverError(
+      "mongodb",
+      "requeueParent",
+      new Error("the parent's outcomes kept changing while it was requeued"),
+      { id },
+    );
+  }
+
+  /** The requeue write itself, for {@link MongoDriver.requeueParent}. */
+  async #requeueAt(
+    filter: Filter<JobDocument>,
+    remaining: number,
+    now: number,
+  ): Promise<boolean> {
+    const jobs = await this.#jobs();
+    const result = await jobs.updateOne(filter, [
+      {
+        $set: {
+          "flow.pending": { $literal: remaining },
+          finishedOn: null,
+          expiresAt: null,
+          state:
+            remaining > 0
+              ? { $literal: "waiting-children" }
+              : {
+                  $cond: {
+                    if: { $gt: ["$runAt", now] },
+                    then: "delayed",
+                    else: "waiting",
+                  },
+                },
+        },
+      },
+      // Absent reads back as no reason, like a job that never failed.
+      { $unset: ["failedReason"] },
+    ]);
+
+    return result.matchedCount > 0;
+  }
+
+  /**
+   * Marks a child recorded, in one pipeline update that also creates the flow
+   * when the job has none, then applies the retention its settling deferred.
+   */
+  async markChildRecorded(
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, id);
+    const empty: FlowDocument = {
+      parent: null,
+      children: [],
+      pending: 0,
+      values: {},
+      failures: {},
+      recorded: false,
+    };
+
+    const marked = await jobs.findOneAndUpdate(
+      { _id },
+      [
+        {
+          $set: {
+            // Later operands win, and a null or absent flow is ignored, so an
+            // existing flow keeps everything but `recorded`.
+            flow: {
+              $mergeObjects: [
+                { $literal: empty },
+                { $ifNull: ["$flow", {}] },
+                { $literal: { recorded: true } },
+              ],
+            },
+          },
+        },
+      ],
+      { returnDocument: "after", projection: { state: 1 } },
+    );
+
+    if (!marked) {
+      return false;
+    }
+
+    if (marked.state !== "completed" && marked.state !== "dead") {
+      return true;
+    }
+
+    // Exactly what completeJob and failJob do with a retention: an expiry for
+    // a TTL, then removal or the count sweep.
+    if (typeof retention === "object" && retention?.ttl && retention.ttl > 0) {
+      await jobs.updateOne(
+        { _id, state: marked.state },
+        { $set: { expiresAt: now + retention.ttl } },
+      );
+    }
+
+    await this.#applyRetention(q, id, marked.state, retention);
+    return true;
+  }
+
   async listJobs(
     q: QueueRef,
     states: JobState[],
@@ -1574,6 +1932,7 @@ export class MongoDriver implements JobsDriver {
       completed: 0,
       failed: 0,
       dead: 0,
+      "waiting-children": 0,
     } satisfies Record<JobState, number>;
 
     for (const row of grouped) {
@@ -1614,17 +1973,33 @@ export class MongoDriver implements JobsDriver {
     const result = await jobs.updateOne(
       {
         _id: this.#jobId(q, id),
-        state: { $nin: ["active", "waiting"] },
+        state: { $nin: ["active", "waiting", "waiting-children"] },
       },
-      {
-        $set: {
-          state: "waiting",
-          runAt: now,
-          finishedOn: null,
-          expiresAt: null,
-          ...(resetAttempts ? { attemptsMade: 0, stalledCount: 0 } : {}),
+      // A pipeline, so a flow child's `recorded` is cleared in the same write
+      // — its next outcome has not reached its parent — while a job in no
+      // flow keeps none: `$$REMOVE` leaves an absent field absent.
+      [
+        {
+          $set: {
+            state: { $literal: "waiting" },
+            runAt: { $literal: now },
+            finishedOn: null,
+            expiresAt: null,
+            ...(resetAttempts
+              ? { attemptsMade: { $literal: 0 }, stalledCount: { $literal: 0 } }
+              : {}),
+            flow: {
+              $cond: {
+                if: { $eq: [{ $type: "$flow" }, "object"] },
+                then: {
+                  $mergeObjects: ["$flow", { $literal: { recorded: false } }],
+                },
+                else: { $ifNull: ["$flow", "$$REMOVE"] },
+              },
+            },
+          },
         },
-      },
+      ],
     );
 
     return result.matchedCount > 0;
@@ -1735,7 +2110,13 @@ export class MongoDriver implements JobsDriver {
 
   async cleanJobs(
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
@@ -1776,6 +2157,7 @@ export class MongoDriver implements JobsDriver {
         ns: q.ns,
         queue: q.queue,
         expiresAt: { $ne: null, $lte: now },
+        ...NOT_AWAITING_DELIVERY,
       })
       .limit(Math.max(1, Math.floor(limit)))
       .project<{ _id: string; logKey?: string }>({ _id: 1, logKey: 1 })
@@ -1801,9 +2183,11 @@ export class MongoDriver implements JobsDriver {
 
   async drainQueue(q: QueueRef, includeDelayed: boolean): Promise<number> {
     const jobs = await this.#jobs();
+    // A parent waiting on children is queued work that has not started, so a
+    // drain takes it along with the waiting jobs.
     const states: JobState[] = includeDelayed
-      ? ["waiting", ...SCHEDULED]
-      : ["waiting"];
+      ? ["waiting", "waiting-children", ...SCHEDULED]
+      : ["waiting", "waiting-children"];
 
     const result = await jobs.deleteMany({
       ns: q.ns,
@@ -2696,6 +3080,12 @@ export class MongoDriver implements JobsDriver {
       opts: JSON.stringify(job.opts),
     };
 
+    // Written whether or not the job is otherwise fresh: a parent is added
+    // brand-new in every other respect, and its flow is what holds it back.
+    if (job.flow) {
+      document.flow = encodeFlow(job.flow);
+    }
+
     // A brand-new job carries nothing else: every remaining field would be a
     // null, a zero, or the string "null". Leaving them out makes the document
     // smaller on the wire and in the collection, and the reader already treats
@@ -2779,6 +3169,7 @@ export class MongoDriver implements JobsDriver {
       lockExpiresAt: document.lockExpiresAt ?? null,
       workerId: document.workerId ?? null,
       repeatKey: document.repeatKey ?? null,
+      flow: document.flow ? decodeFlow(document.flow) : null,
     };
   }
 
@@ -2808,6 +3199,8 @@ export class MongoDriver implements JobsDriver {
 
     const jobs = await this.#jobs();
 
+    // A flow child whose parent has not recorded its outcome is skipped — but
+    // still counted towards the cap, which only ever keeps more, never fewer.
     const stale = await jobs
       .find({ ns: q.ns, queue: q.queue, state })
       .sort({ finishedOn: -1, createdAt: -1 })
@@ -2819,6 +3212,9 @@ export class MongoDriver implements JobsDriver {
     if (stale.length > 0) {
       await jobs.deleteMany({
         _id: { $in: stale.map((document) => document._id) },
+        // Checked on the delete itself, so a child between the read and here
+        // is judged by what it is now.
+        ...NOT_AWAITING_DELIVERY,
       });
     }
   }
@@ -2895,6 +3291,71 @@ function duplicateKeyPositions(error: unknown): number[] | null {
 }
 
 /** A JSON field that a brand-new job does not write, and its default. */
+/**
+ * A flow child key (`queue:id`) made safe as one field-path segment.
+ *
+ * A path splits on `.`, and a segment may not start with `$` or hold a NUL, so
+ * those are percent-encoded — and `%` itself, which keeps the encoding
+ * reversible and distinct keys distinct.
+ */
+function encodeFlowKey(key: string): string {
+  return key.replace(
+    /[%.$\0]/g,
+    (char) =>
+      `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+}
+
+/** The `queue:id` key a stored segment was encoded from. */
+function decodeFlowKey(segment: string): string {
+  const unescape = (_: string, hex: string): string =>
+    String.fromCharCode(Number.parseInt(hex, 16));
+
+  return segment.replace(/%([0-9A-F]{2})/g, unescape);
+}
+
+/** A flow as it is stored: keys encoded, values and failures JSON. */
+function encodeFlow(flow: JobFlow): FlowDocument {
+  const encode = (entries: Record<string, unknown>): Record<string, string> =>
+    Object.fromEntries(
+      Object.entries(entries).map(([key, value]) => [
+        encodeFlowKey(key),
+        JSON.stringify(value ?? null),
+      ]),
+    );
+
+  return {
+    parent: flow.parent
+      ? { queue: flow.parent.queue, id: flow.parent.id }
+      : null,
+    children: flow.children.map((ref) => ({ queue: ref.queue, id: ref.id })),
+    pending: flow.pending,
+    values: encode(flow.values),
+    failures: encode(flow.failures),
+    recorded: flow.recorded,
+  };
+}
+
+/** A stored flow as the record's plain one, keyed `queue:id`. */
+function decodeFlow(stored: FlowDocument): JobFlow {
+  const decode = <T>(entries: Record<string, string> | undefined) =>
+    Object.fromEntries(
+      Object.entries(entries ?? {}).map(([segment, json]) => [
+        decodeFlowKey(segment),
+        JSON.parse(json) as T,
+      ]),
+    );
+
+  return {
+    parent: stored.parent ?? null,
+    children: stored.children ?? [],
+    pending: stored.pending ?? 0,
+    values: decode<unknown>(stored.values),
+    failures: decode<SerializedError>(stored.failures),
+    recorded: stored.recorded ?? false,
+  };
+}
+
 function parseOrDefault<T>(value: string | undefined, fallback: T): T {
   return value === undefined ? fallback : (JSON.parse(value) as T);
 }
