@@ -2,8 +2,10 @@ import type { QueueRef } from "../lib/drivers/driver";
 import type { SqlAdapter } from "../lib/index";
 import { join } from "node:path";
 import process from "node:process";
+import { serializeError } from "@kingsleyweb/bun-common";
 import { SQL } from "bun";
 import { afterAll, describe, expect, it } from "bun:test";
+import { throughputBucket } from "../lib/drivers/readApis";
 import { queueStateListStatement } from "../lib/drivers/sql/sql-driver";
 import {
   BunQueue,
@@ -943,3 +945,107 @@ describe("SQL driver: engine differences", () => {
     expect(dialect.jsonOut("not json", "fallback")).toBe("fallback");
   });
 });
+
+/**
+ * Postgres counts a completion or failure inside its own statement, on a
+ * counter row. Keyed by the lock token, every statement of one worker queued on
+ * that one row — a failure waited out another statement's whole transaction.
+ * Rows are now taken in turn, so statements in flight together use different
+ * rows.
+ */
+const postgres = SERVERS.find((server) => server.adapter === "postgres")?.url;
+
+describe.skipIf(!postgres)(
+  "SQL driver: postgres throughput counter rows",
+  () => {
+    it("gives each counted statement its own row, so a held row stalls nothing", async () => {
+      const driver = new SqlDriver({
+        url: postgres,
+        adapter: "postgres",
+        tablePrefix: "bun_jobs_test_",
+      });
+      await driver.connect();
+
+      const q = { ns: testNamespace("pg-shards"), queue: "q" };
+      const token = "one-worker";
+      const now = Date.now();
+      const error = serializeError(new Error("boom"));
+
+      await driver.addJobs(
+        q,
+        [0, 1, 2].map((index) =>
+          makeJob({
+            id: `j${index}`,
+            createdAt: now - 10 + index,
+            runAt: now - 10,
+          }),
+        ),
+      );
+      for (let index = 0; index < 3; index++) {
+        await driver.claimJob(q, { workerId: "w", token, lockMs: 60_000, now });
+      }
+      expect(await driver.completeJob(q, "j0", token, null, false, now)).toBe(
+        true,
+      );
+
+      // Hold the one counter row that exists, the way an uncommitted statement
+      // of the same worker would.
+      const raw = rawClient(postgres!);
+      let locked = 0;
+      const holding = raw.begin(async (tx) => {
+        locked = (
+          await tx.unsafe(
+            "SELECT 1 FROM bun_jobs_test_metrics WHERE ns = $1 FOR UPDATE",
+            [q.ns],
+          )
+        ).length;
+        await Bun.sleep(1_500);
+      });
+      await Bun.sleep(150);
+
+      const started = performance.now();
+      expect(
+        await driver.failJob(
+          q,
+          "j1",
+          token,
+          error,
+          { retry: false, retention: false },
+          now,
+          1,
+        ),
+      ).toBe(true);
+      const waited = performance.now() - started;
+      await holding;
+
+      expect(
+        await driver.failJob(
+          q,
+          "j2",
+          token,
+          error,
+          { retry: false, retention: false },
+          now,
+          1,
+        ),
+      ).toBe(true);
+
+      expect(locked).toBe(1);
+      expect(waited).toBeLessThan(1_000);
+      const shards = await raw.unsafe(
+        "SELECT DISTINCT shard FROM bun_jobs_test_metrics WHERE ns = $1",
+        [q.ns],
+      );
+      expect(shards).toHaveLength(3);
+      expect(
+        await driver.getThroughput(q, {
+          from: throughputBucket(now),
+          to: throughputBucket(now),
+        }),
+      ).toEqual([{ at: throughputBucket(now), completed: 1, failed: 2 }]);
+
+      await driver.purge(q.ns);
+      await driver.close();
+    }, 30_000);
+  },
+);

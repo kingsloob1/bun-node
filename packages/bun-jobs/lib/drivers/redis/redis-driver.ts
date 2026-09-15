@@ -14,7 +14,9 @@ import type {
   EventOfKind,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -27,6 +29,8 @@ import type {
   ResolvedJobOptions,
   Retention,
   RunRecord,
+  ThroughputBucket,
+  WorkerInfo,
 } from "../driver";
 import { Buffer } from "node:buffer";
 import { jsonClone } from "@kingsleyweb/bun-common";
@@ -35,6 +39,16 @@ import { resolveConnectionUrl } from "../../shared/connection";
 import { DriverError } from "../../shared/errors";
 import { safeJsonParse } from "../../shared/json";
 import { waitForAny } from "../../shared/wait";
+import {
+  jobFilter,
+  matchesFilter,
+  orderByIds,
+  sortWorkers,
+  sumBuckets,
+  sumStates,
+  THROUGHPUT_BUCKET_MS,
+  THROUGHPUT_RETENTION_MS,
+} from "../readApis";
 import { RedisKeys } from "./keys";
 import * as scripts from "./scripts";
 
@@ -107,6 +121,14 @@ const MAX_BLOCK_SECONDS = 5;
  * a page becomes one round trip rather than three.
  */
 const ADD_CHUNK = 500;
+
+/**
+ * How many set members one `FIND_NAMES` call reads while a filtered
+ * `findJobs` walks a state. Each member costs the script one `HMGET` and the
+ * reply an id and a name, so this bounds both how long one call holds Redis's
+ * single thread and how large a reply gets.
+ */
+const FIND_CHUNK = 500;
 
 /**
  * Job fields stored as JSON rather than as scalars.
@@ -1006,6 +1028,231 @@ export class RedisDriver implements JobsDriver {
     };
   }
 
+  /**
+   * A page of jobs narrowed by name or a search.
+   *
+   * Unfiltered, this is `listJobs` plus, when asked, the states' counts.
+   * Filtered, there is no index on names to use, so the states' sets are
+   * walked in `listJobs` order a {@link FIND_CHUNK} at a time through
+   * `FIND_NAMES`, which answers each job's id and name only; the filter runs
+   * here. The walk stops once the page is full unless a total is wanted, and
+   * the page's full records are then read in one batch.
+   */
+  async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
+    // Nothing matches an empty name list, or no states: answered here, as the
+    // SQL and memory drivers do, rather than walking every set to find so.
+    if (query.names?.length === 0 || query.states.length === 0) {
+      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+    }
+
+    await this.connect();
+
+    const filter = jobFilter(query);
+    const offset = Math.max(0, Math.floor(query.offset));
+    const limit = Math.max(0, Math.floor(query.limit));
+
+    if (!filter) {
+      const [jobs, counts] = await Promise.all([
+        limit === 0
+          ? Promise.resolve([])
+          : this.listJobs(q, query.states, {
+              offset,
+              limit,
+              order: query.order,
+            }),
+        query.total ? this.countJobs(q) : Promise.resolve(null),
+      ]);
+
+      return counts
+        ? { jobs, total: sumStates(counts, query.states) }
+        : { jobs };
+    }
+
+    // The order LIST_JOBS concatenates sets in: as given, reversed for desc.
+    const states =
+      query.order === "desc" ? [...query.states].reverse() : query.states;
+    const ids: string[] = [];
+    let skip = offset;
+    let total = 0;
+
+    walk: for (const state of states) {
+      for (let start = 0; ; start += FIND_CHUNK) {
+        if (!query.total && ids.length >= limit) {
+          break walk;
+        }
+
+        const reply = await this.#runQueue(q, scripts.FIND_NAMES, [
+          state,
+          String(start),
+          String(FIND_CHUNK),
+          query.order,
+        ]);
+        const pairs = Array.isArray(reply) ? reply.map(String) : [];
+
+        for (let index = 0; index < pairs.length; index += 2) {
+          const id = pairs[index]!;
+          const name = this.#decodeName(pairs[index + 1]!);
+
+          if (name === null || !matchesFilter(filter, id, name)) {
+            continue;
+          }
+
+          total++;
+
+          if (skip > 0) {
+            skip--;
+          } else if (ids.length < limit) {
+            ids.push(id);
+          }
+        }
+
+        if (pairs.length < FIND_CHUNK * 2) {
+          break;
+        }
+      }
+    }
+
+    // A job removed since its name was read has no record, and is left out.
+    const jobs = (await this.getJobs(q, ids)).filter(
+      (job): job is JobRecord => job !== null,
+    );
+
+    return query.total ? { jobs, total } : { jobs };
+  }
+
+  /**
+   * Several jobs by id, one `HGETALL` per distinct id sent together — the
+   * client pipelines them onto one connection — and answered in the order
+   * asked.
+   */
+  async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    await this.connect();
+
+    const distinct = [...new Set(ids)];
+    const records = await Promise.all(
+      distinct.map(async (id) => await this.getJob(q, id)),
+    );
+
+    return orderByIds(
+      ids,
+      new Map(distinct.map((id, index) => [id, records[index] ?? null])),
+    );
+  }
+
+  /**
+   * Writes a worker's record and its expiry in one script, which also removes lapsed
+   * records and gives both keys a relative lifetime — see `REGISTER_WORKER`.
+   */
+  async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
+    await this.connect();
+    const keys = this.keys.queue(q);
+    // Twice the record's own lifetime, and never under a second: the keys
+    // outlive every live record, measured on the server's clock.
+    const ttl = 2 * Math.max(1_000, worker.expiresAt - worker.heartbeatAt);
+
+    await this.#run(
+      scripts.REGISTER_WORKER,
+      [keys.workers, keys.workersExpiry],
+      [
+        worker.id,
+        JSON.stringify(worker),
+        String(worker.expiresAt),
+        String(worker.heartbeatAt),
+        String(Math.ceil(ttl)),
+      ],
+    );
+  }
+
+  async removeWorker(q: QueueRef, id: string): Promise<boolean> {
+    await this.connect();
+    const keys = this.keys.queue(q);
+
+    const removed = await this.#run(
+      scripts.REMOVE_WORKER,
+      [keys.workers, keys.workersExpiry],
+      [id],
+    );
+
+    return Number(removed) > 0;
+  }
+
+  /** The live workers, removing lapsed records in the same script. */
+  async listWorkers(q: QueueRef, now: number): Promise<WorkerInfo[]> {
+    await this.connect();
+    const keys = this.keys.queue(q);
+
+    const reply = await this.#run(
+      scripts.LIST_WORKERS,
+      [keys.workers, keys.workersExpiry],
+      [String(now)],
+    );
+
+    const workers = (Array.isArray(reply) ? reply : [])
+      .map((entry) => safeJsonParse<WorkerInfo | null>(String(entry), null))
+      .filter((worker): worker is WorkerInfo => worker !== null);
+
+    return sortWorkers(workers);
+  }
+
+  /** Counts for every queue the namespace's queue set names, sent together. */
+  async countJobsByQueue(
+    ns: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    const names = await this.listQueues(ns);
+    const counts = await Promise.all(
+      names.map(async (queue) => await this.countJobs({ ns, queue })),
+    );
+
+    return Object.fromEntries(
+      names.map((queue, index) => [queue, counts[index]!]),
+    );
+  }
+
+  /**
+   * The minutes in `[from, to]` from the hashes COMPLETE and FAIL count into.
+   * The range is cut to the minutes retention can still hold — a day and one
+   * minute back from `to` — so a careless range cannot make the script walk
+   * years of empty minutes.
+   */
+  async getThroughput(
+    q: QueueRef,
+    range: { from: number; to: number },
+  ): Promise<ThroughputBucket[]> {
+    const last =
+      Math.floor(range.to / THROUGHPUT_BUCKET_MS) * THROUGHPUT_BUCKET_MS;
+    const first = Math.max(
+      Math.ceil(range.from / THROUGHPUT_BUCKET_MS) * THROUGHPUT_BUCKET_MS,
+      last - THROUGHPUT_RETENTION_MS,
+    );
+
+    if (!Number.isFinite(first) || !Number.isFinite(last) || first > last) {
+      return [];
+    }
+
+    await this.connect();
+
+    const reply = await this.#runQueue(q, scripts.GET_THROUGHPUT, [
+      String(first),
+      String(last),
+    ]);
+    const flat = Array.isArray(reply) ? reply : [];
+    const rows: { at: number; completed: number; failed: number }[] = [];
+
+    for (let index = 0; index + 2 < flat.length; index += 3) {
+      rows.push({
+        at: Number(flat[index]),
+        completed: Number(flat[index + 1]),
+        failed: Number(flat[index + 2]),
+      });
+    }
+
+    return sumBuckets(rows, range);
+  }
+
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     await this.connect();
     const removed = await this.#runQueue(q, scripts.REMOVE_JOB, [id]);
@@ -1612,6 +1859,27 @@ export class RedisDriver implements JobsDriver {
       job.failedReason === null &&
       (job.stacktrace?.length ?? 0) === 0
     );
+  }
+
+  /**
+   * A name as `FIND_NAMES` tags it: `j` then a JSON string literal, `r` then
+   * the name itself, or `-` (answered `null`) for a job whose hash has gone.
+   * A literal that does not parse — which the script's cut never produces —
+   * reads as `null` too, rather than matching on a mangled name.
+   */
+  #decodeName(tagged: string): string | null {
+    const tag = tagged[0];
+
+    if (tag === "r") {
+      return tagged.slice(1);
+    }
+
+    if (tag === "j") {
+      const name = safeJsonParse<unknown>(tagged.slice(1), null);
+      return typeof name === "string" ? name : null;
+    }
+
+    return null;
   }
 
   /** A flat `HGETALL` reply as an object, or `null` when the job is gone. */

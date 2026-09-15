@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, it } from "bun:test";
+import { throughputBucket } from "../lib/drivers/readApis";
 import { detectAdapter, SqlDriver, toConnectionUrl } from "../lib/index";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
@@ -299,5 +301,126 @@ describe("SQL driver: several connections to one SQLite file", () => {
     expect(new Set(claimed).size).toBe(30);
 
     await Promise.all(drivers.map((driver) => driver.close()));
+  });
+});
+
+describe("SQL driver: a throughput write that fails part-way (sqlite)", () => {
+  /** A connected driver on a fresh file, and the file, for a second connection. */
+  async function fresh(): Promise<{ driver: SqlDriver; path: string }> {
+    const tmp = await makeTmpDir("bun-jobs-sqlite-throughput");
+    cleanups.push(tmp.cleanup);
+    const path = join(tmp.path, "jobs.db");
+    const driver = new SqlDriver({ url: `sqlite://${path}` });
+    cleanups.unshift(async () => await driver.close());
+    await driver.connect();
+    return { driver, path };
+  }
+
+  /** Adds, claims and completes one job at `now`. */
+  async function completeOne(
+    driver: SqlDriver,
+    q: { ns: string; queue: string },
+    now: number,
+  ): Promise<void> {
+    await driver.addJob(
+      q,
+      makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+    );
+    await driver.claimJob(q, {
+      workerId: "w",
+      token: "t",
+      lockMs: 60_000,
+      now,
+    });
+    expect(await driver.completeJob(q, "j", "t", null, false, now)).toBe(true);
+  }
+
+  /** Makes a statement on the metrics table fail once, from another connection. */
+  function failOnce(path: string, trigger: string): void {
+    const db = new Database(path);
+    db.run("CREATE TABLE IF NOT EXISTS fail_once (n INTEGER)");
+    db.run("DELETE FROM fail_once");
+    db.run("INSERT INTO fail_once VALUES (1)");
+    // FAIL rather than ABORT: it keeps the trigger's own update, so the
+    // failure happens exactly once.
+    db.run(trigger);
+    db.close();
+  }
+
+  it("does not count again what landed when the retention delete fails", async () => {
+    const { driver, path } = await fresh();
+    const q = { ns: testNamespace("tp-prune"), queue: "q" };
+    const now = Date.now();
+
+    // A minute long past the retention, for the delete to act on. The trigger
+    // below fires per row: with nothing to delete, nothing fails, and this test
+    // would pass without testing anything.
+    const seed = new Database(path);
+    seed
+      .query(
+        "INSERT INTO bun_jobs_metrics (ns, queue, bucket, shard, completed, failed) VALUES (?, 'q', 0, 'old', 1, 0)",
+      )
+      .run(q.ns);
+    seed.close();
+
+    failOnce(
+      path,
+      `CREATE TRIGGER fail_prune BEFORE DELETE ON bun_jobs_metrics
+         WHEN (SELECT n FROM fail_once) = 1
+       BEGIN UPDATE fail_once SET n = 0; SELECT RAISE(FAIL, 'transient'); END`,
+    );
+
+    await completeOne(driver, q, now);
+    await driver.flushThroughput();
+    await driver.flushThroughput();
+
+    const minute = throughputBucket(now);
+    expect(await driver.getThroughput(q, { from: minute, to: minute })).toEqual(
+      [{ at: minute, completed: 1, failed: 0 }],
+    );
+
+    // The delete really was attempted, and really failed: the trigger fired
+    // once, and the old minute it would have removed is still there.
+    const check = new Database(path);
+    expect(check.query("SELECT n FROM fail_once").get()).toEqual({ n: 0 });
+    expect(
+      check
+        .query(
+          "SELECT COUNT(*) AS rows FROM bun_jobs_metrics WHERE ns = ? AND bucket = 0",
+        )
+        .get(q.ns),
+    ).toEqual({ rows: 1 });
+    check.close();
+  });
+
+  it("writes again only the count whose upsert failed", async () => {
+    const { driver, path } = await fresh();
+    const ns = testNamespace("tp-partial");
+    const landed = { ns, queue: "landed" };
+    const refused = { ns, queue: "refused" };
+    const now = Date.now();
+
+    failOnce(
+      path,
+      `CREATE TRIGGER fail_upsert BEFORE INSERT ON bun_jobs_metrics
+         WHEN NEW.queue = 'refused' AND (SELECT n FROM fail_once) = 1
+       BEGIN UPDATE fail_once SET n = 0; SELECT RAISE(FAIL, 'transient'); END`,
+    );
+
+    await completeOne(driver, landed, now);
+    await completeOne(driver, refused, now);
+    // The first write lands one, keeps the other and rejects with the
+    // driver's error; the second writes what was kept.
+    await expect(driver.flushThroughput()).rejects.toThrow("failed during run");
+    await driver.flushThroughput();
+
+    const minute = throughputBucket(now);
+    const range = { from: minute, to: minute };
+    expect(await driver.getThroughput(landed, range)).toEqual([
+      { at: minute, completed: 1, failed: 0 },
+    ]);
+    expect(await driver.getThroughput(refused, range)).toEqual([
+      { at: minute, completed: 1, failed: 0 },
+    ]);
   });
 });

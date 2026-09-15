@@ -17,6 +17,7 @@ import type {
   JobProcessor,
   ProcessorContext,
 } from "./types";
+import process from "node:process";
 import {
   createDeferred,
   deserializeError,
@@ -29,7 +30,10 @@ import { awaitsDelivery, flowKey } from "../drivers/flow";
 import {
   claimJobBatch,
   CompletionBatcher,
+  registerWorkerRecord,
+  removeWorkerRecord,
   resolveDriver,
+  supportsWorkers,
 } from "../drivers/index";
 import {
   DEFAULT_LOCK_DURATION,
@@ -47,7 +51,7 @@ import {
   UnrecoverableJobError,
 } from "../shared/errors";
 import { queueEvent } from "../shared/events";
-import { newId, newToken } from "../shared/ids";
+import { HOST, newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { waitForAny } from "../shared/wait";
@@ -155,6 +159,12 @@ function assertPositiveMs(value: number, what: string): number {
 
   return value;
 }
+
+/** How often a worker writes its heartbeat record, unless told otherwise. */
+const DEFAULT_REPORT_INTERVAL = 10_000;
+
+/** How many report intervals a heartbeat record outlives its last write by. */
+const REPORT_LIFETIMES = 3;
 
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
@@ -341,6 +351,25 @@ export class BunQueueWorker<
   readonly #timers = new Set<ReturnType<typeof setInterval>>();
   /** Cached queue-paused flag and when it was read. */
   #pauseCache: { paused: boolean; at: number } = { paused: false, at: 0 };
+  /** How often the heartbeat record is written, in milliseconds; `0` for never. */
+  readonly #reportInterval: number;
+  /** When `run()` last started consuming, for the heartbeat record. */
+  #startedAt = 0;
+  /** The timer writing the heartbeat record, while the worker runs. */
+  #reportTimer: ReturnType<typeof setInterval> | undefined;
+  /**
+   * The heartbeat write in flight, so writes never overlap and `close()` can
+   * wait for one before removing the record — otherwise a write landing after
+   * the removal would list a closed worker until its record lapsed.
+   */
+  #reporting: Promise<void> | undefined;
+  /**
+   * Whether a heartbeat write was ever attempted. Closing removes the record
+   * only then: a worker that never ran, or never got as far as connecting,
+   * has nothing to remove, and asking a driver to remove it would connect —
+   * and on an unreachable backend, wait — for nothing.
+   */
+  #reported = false;
 
   constructor(
     queueName: string,
@@ -401,6 +430,15 @@ export class BunQueueWorker<
       drainDelay: options.drainDelay ?? 0,
     };
 
+    const reportInterval = options.reportInterval ?? DEFAULT_REPORT_INTERVAL;
+    if (!Number.isFinite(reportInterval) || reportInterval < 0) {
+      throw new ConfigError(
+        "reportInterval must be a number of milliseconds, or 0 to turn reporting off",
+        { reportInterval },
+      );
+    }
+    this.#reportInterval = reportInterval;
+
     this.#publishes = options.publish ?? false;
     this.#publishGate = options.publishGate;
     this.#waitToExit = options.waitToExit ?? true;
@@ -448,6 +486,7 @@ export class BunQueueWorker<
   set concurrency(value: number) {
     this.#concurrency = Math.max(1, Math.floor(value));
     this.#wake.abort();
+    void this.#report();
   }
 
   /**
@@ -553,6 +592,14 @@ export class BunQueueWorker<
     }
 
     this.#armMaintenance();
+    this.#startedAt = Date.now();
+    // The first heartbeat, deliberately not awaited. Holding `run()` on a
+    // write moves when the claim loop starts relative to whatever the caller
+    // does next, and a job added straight after `run()` is then claimed along
+    // a different path — which changed when a timed-out attempt's abort was
+    // seen. A worker is listed moments after `ready`, not necessarily by it.
+    void this.#report();
+    this.#armReports();
     this.safeEmit("ready");
 
     // Held only once the worker is actually running: a `run()` that failed to
@@ -567,6 +614,7 @@ export class BunQueueWorker<
     this.#paused = true;
     this.#wake.abort();
     this.safeEmit("paused");
+    void this.#report();
 
     if (options?.waitActive) {
       await Promise.allSettled([...this.#active.values()]);
@@ -578,6 +626,7 @@ export class BunQueueWorker<
     this.#paused = false;
     this.#wake.abort();
     this.safeEmit("resumed");
+    void this.#report();
   }
 
   /** Whether this worker is locally paused. */
@@ -623,12 +672,19 @@ export class BunQueueWorker<
     }
     this.#timers.clear();
 
+    if (this.#reportTimer) {
+      clearInterval(this.#reportTimer);
+      this.#reportTimer = undefined;
+    }
+
     if (options?.force) {
       this.#abandonActive();
 
       // Deliberately no wait. A processor that ignores its signal must not
       // hold shutdown hostage; its lock lapses and the stalled sweep returns
       // the job to the queue, so the work is delayed rather than lost.
+      await this.#unregister();
+      await this.#flushThroughput();
       await this.#closeDeadLetters();
       await this.#limiter
         ?.close()
@@ -678,6 +734,8 @@ export class BunQueueWorker<
       await this.#stopped.promise;
     }
 
+    await this.#unregister();
+    await this.#flushThroughput();
     await this.#closeDeadLetters();
     await this.#limiter
       ?.close()
@@ -2103,6 +2161,111 @@ export class BunQueueWorker<
       });
     } catch (error) {
       this.#emitError(error, "scheduleNextRepeat");
+    }
+  }
+
+  /* --- worker inventory ------------------------------------------------------- */
+
+  /** Writes the heartbeat record on the report interval, while the worker runs. */
+  #armReports(): void {
+    if (this.#reportInterval === 0 || this.#reportTimer) {
+      return;
+    }
+
+    this.#reportTimer = setInterval(() => {
+      void this.#report();
+    }, this.#reportInterval);
+    this.#reportTimer.unref?.();
+  }
+
+  /**
+   * Writes this worker's heartbeat record: who it is, how busy, and until when
+   * the record stands. Never throws — a failed write is reported as an error
+   * and the next interval writes again.
+   *
+   * Writes are chained rather than overlapping, and nothing is written once
+   * the worker has begun closing.
+   */
+  async #report(): Promise<void> {
+    if (
+      !this.#running ||
+      this.#closing ||
+      this.#reportInterval === 0 ||
+      !supportsWorkers(this.driver)
+    ) {
+      return;
+    }
+
+    this.#reported = true;
+    const previous = this.#reporting;
+    const write = (async () => {
+      await previous;
+
+      if (this.#closing) {
+        return;
+      }
+
+      const now = Date.now();
+
+      try {
+        await registerWorkerRecord(this.driver, this.ref, {
+          id: this.id,
+          queue: this.queueName,
+          host: HOST,
+          pid: process.pid,
+          concurrency: this.#concurrency,
+          active: this.#active.size,
+          paused: this.#paused,
+          startedAt: this.#startedAt,
+          heartbeatAt: now,
+          expiresAt: now + this.#reportInterval * REPORT_LIFETIMES,
+        });
+      } catch (error) {
+        this.#emitError(error, "report");
+      }
+    })();
+
+    this.#reporting = write;
+    await write;
+
+    if (this.#reporting === write) {
+      this.#reporting = undefined;
+    }
+  }
+
+  /**
+   * Removes the heartbeat record once the worker is closing, after any write
+   * still in flight, so a closed worker stops being listed straight away.
+   */
+  async #unregister(): Promise<void> {
+    if (
+      !this.#reported ||
+      this.#reportInterval === 0 ||
+      !supportsWorkers(this.driver)
+    ) {
+      return;
+    }
+
+    await this.#reporting;
+
+    try {
+      await removeWorkerRecord(this.driver, this.ref, this.id);
+    } catch (error) {
+      this.#emitError(error, "report");
+    }
+  }
+
+  /**
+   * Writes the throughput counts the driver has gathered in memory, when it
+   * gathers any. Awaited on close whether or not this worker owns the driver:
+   * a process sharing one driver across its workers may exit without closing
+   * it, and the last second of counts would go with the process.
+   */
+  async #flushThroughput(): Promise<void> {
+    try {
+      await this.driver.flushThroughput?.();
+    } catch (error) {
+      this.#emitError(error, "throughput");
     }
   }
 

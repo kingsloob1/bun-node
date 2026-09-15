@@ -1055,3 +1055,128 @@ describe("file driver: names on a case-insensitive filesystem", () => {
     }
   });
 });
+
+describe("file driver: read API files", () => {
+  /** Adds a job, claims it and completes it at `now` through `driver`. */
+  async function completeOne(
+    driver: FileDriver,
+    q: { ns: string; queue: string },
+    id: string,
+    now: number,
+  ): Promise<void> {
+    await driver.addJob(q, makeJob({ id, createdAt: now - 1, runAt: now - 1 }));
+    const claimed = await driver.claimJob(q, {
+      workerId: "w",
+      token: `t-${id}`,
+      lockMs: 60_000,
+      now,
+    });
+    expect(claimed?.id).toBe(id);
+    expect(await driver.completeJob(q, id, `t-${id}`, null, false, now)).toBe(
+      true,
+    );
+  }
+
+  it("flushes counts on close, and sums every process's lines for a minute", async () => {
+    const tmp = await makeTmpDir("bun-jobs-throughput-files");
+    cleanups.push(tmp.cleanup);
+    const q = { ns: testNamespace(), queue: "tp" };
+    const now = Date.now();
+    const minute = Math.floor(now / 60_000) * 60_000;
+
+    const first = new FileDriver({ root: tmp.path });
+    const second = new FileDriver({ root: tmp.path });
+    await completeOne(first, q, "a", now);
+    await completeOne(second, q, "b", now);
+    await completeOne(second, q, "c", now);
+
+    // Nothing is written per job: counting is in memory until a flush.
+    const { readdir, readFile, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const dir = join(tmp.path, q.ns, "queues", q.queue, "throughput");
+    expect(await readdir(dir).catch(() => [])).toEqual([]);
+
+    await first.close();
+    await second.close();
+
+    const lines = (await readFile(join(dir, `${minute}.jsonl`), "utf8"))
+      .split("\n")
+      .filter(Boolean);
+    // One line per process, never one per job.
+    expect(lines).toHaveLength(2);
+
+    // Litter next to the buckets is not a bucket.
+    await writeFile(join(dir, `${minute}.jsonl.123.tmp`), '{"completed":99}\n');
+    await writeFile(join(dir, "notes.jsonl"), '{"completed":99}\n');
+
+    const reader = new FileDriver({ root: tmp.path });
+    try {
+      expect(
+        await reader.getThroughput(q, { from: minute, to: minute }),
+      ).toEqual([{ at: minute, completed: 3, failed: 0 }]);
+      // Neither the bucket files nor the worker records are queues.
+      await reader.registerWorker(q, {
+        id: "w1",
+        queue: q.queue,
+        host: "h",
+        pid: 1,
+        concurrency: 1,
+        active: 0,
+        paused: false,
+        startedAt: now,
+        heartbeatAt: now,
+        expiresAt: now + 30_000,
+      });
+      expect(await reader.listQueues(q.ns)).toEqual([q.queue]);
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("deletes a lapsed worker's file and ignores files that are not records", async () => {
+    const tmp = await makeTmpDir("bun-jobs-worker-files");
+    cleanups.push(tmp.cleanup);
+    const driver = new FileDriver({ root: tmp.path });
+    const q = { ns: testNamespace(), queue: "wk" };
+    const now = Date.now();
+    const worker = {
+      queue: q.queue,
+      host: "h",
+      pid: 1,
+      concurrency: 1,
+      active: 0,
+      paused: false,
+      startedAt: now,
+      heartbeatAt: now,
+    };
+
+    try {
+      await driver.registerWorker(q, { ...worker, id: "gone", expiresAt: now });
+      await driver.registerWorker(q, {
+        ...worker,
+        id: "here",
+        expiresAt: now + 30_000,
+      });
+
+      const { readdir, writeFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const dir = join(tmp.path, q.ns, "queues", q.queue, "workers");
+      const live = JSON.stringify({ ...worker, id: "x", expiresAt: now + 1e9 });
+      await writeFile(join(dir, `${encodeName("x")}.json.1.tmp`), live);
+      await writeFile(join(dir, `${encodeName("x")}.json.1.lapsed`), live);
+
+      expect((await driver.listWorkers(q, now)).map((w) => w.id)).toEqual([
+        "here",
+      ]);
+      expect((await readdir(dir)).toSorted()).toEqual(
+        [
+          `${encodeName("here")}.json`,
+          `${encodeName("x")}.json.1.lapsed`,
+          `${encodeName("x")}.json.1.tmp`,
+        ].toSorted(),
+      );
+    } finally {
+      await driver.close();
+    }
+  });
+});

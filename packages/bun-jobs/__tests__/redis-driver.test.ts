@@ -391,6 +391,194 @@ describe.skipIf(!URL)("Redis driver: queue state", () => {
   });
 });
 
+describe.skipIf(!URL)("Redis driver: read APIs", () => {
+  it("finds a job by a name JSON has to escape, reading only the name", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "find-escaped" };
+    const now = Date.now();
+
+    // Names that end the blob's leading literal early, or swallow the quote
+    // after it, if the scanner misreads a backslash.
+    const names = ['say \\"hi\\" there', 'q"uote', "tail\\", "naïve ✓"];
+    await driver.addJobs(
+      q,
+      names.map((name, index) =>
+        makeJob({
+          id: `n${index}`,
+          name,
+          createdAt: now + index,
+          // A payload the name must never be read out of.
+          data: { name: "decoy", note: 'x", "name": "decoy' },
+        }),
+      ),
+    );
+
+    const find = async (query: { search?: string; names?: string[] }) =>
+      (
+        await driver.findJobs(q, {
+          states: ["waiting"],
+          offset: 0,
+          limit: 10,
+          order: "asc",
+          total: true,
+          ...query,
+        })
+      ).jobs.map((job) => job.id);
+
+    expect(await find({ search: '\\"hi\\" THERE' })).toEqual(["n0"]);
+    expect(await find({ names: ['say \\"hi\\" there'] })).toEqual(["n0"]);
+    expect(await find({ search: 'q"u' })).toEqual(["n1"]);
+    expect(await find({ names: ["tail\\"] })).toEqual(["n2"]);
+    expect(await find({ search: "NAÏVE" })).toEqual(["n3"]);
+    expect(await find({ search: "decoy" })).toEqual([]);
+
+    await driver.purge(q.ns);
+  });
+
+  it("finds a record written before the blob by its name field", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "find-legacy" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    const raw = new BunRedis(URL);
+
+    const member = `${"1".padStart(16, "0")}:old`;
+    await raw.send("HSET", [
+      `${keys.jobPrefix}old`,
+      ...[
+        "member",
+        member,
+        "id",
+        "old",
+        "name",
+        "legacyName",
+        "state",
+        "waiting",
+      ],
+      ...["priority", "0", "runAt", String(now), "createdAt", String(now)],
+      ...["data", "null", "opts", "{}", "maxAttempts", "1"],
+    ]);
+    await raw.send("ZADD", [keys.wait, "0", member]);
+    raw.close();
+
+    const page = await driver.findJobs(q, {
+      states: ["waiting"],
+      offset: 0,
+      limit: 10,
+      order: "asc",
+      names: ["legacyName"],
+    });
+    expect(page.jobs.map((job) => job.id)).toEqual(["old"]);
+    await driver.purge(q.ns);
+  });
+
+  it("walks a state in chunks, in listJobs order", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "find-chunks" };
+    const now = Date.now();
+
+    /** Every third job is named `third`. */
+    const seed = (_u: unknown, index: number) =>
+      makeJob({
+        id: `c${index}`,
+        name: index % 3 === 0 ? "third" : "other",
+        createdAt: now + index,
+      });
+    await driver.addJobs(q, Array.from({ length: 1_203 }, seed));
+
+    const listed = (
+      await driver.listJobs(q, ["waiting"], {
+        offset: 0,
+        limit: 5_000,
+        order: "desc",
+      })
+    )
+      .filter((job) => job.name === "third")
+      .map((job) => job.id);
+
+    const page = await driver.findJobs(q, {
+      states: ["waiting"],
+      offset: 395,
+      limit: 10,
+      order: "desc",
+      names: ["third"],
+      total: true,
+    });
+    expect(page.total).toBe(401);
+    expect(page.jobs.map((job) => job.id)).toEqual(listed.slice(395, 405));
+    await driver.purge(q.ns);
+  }, 30_000);
+
+  it("adds no key to the queue scripts, and expires each throughput minute", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "tp-keys" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    const minute = now - (now % 60_000);
+
+    expect(driver.keys.queueScriptKeys(q)).toHaveLength(11);
+
+    await driver.addJob(
+      q,
+      makeJob({ id: "j", createdAt: now - 1, runAt: now - 1 }),
+    );
+    await driver.claimJob(q, {
+      workerId: "w",
+      token: "t",
+      lockMs: 60_000,
+      now,
+    });
+    expect(await driver.completeJob(q, "j", "t", null, false, now)).toBe(true);
+
+    const raw = new BunRedis(URL);
+    const key = `${keys.throughputPrefix}${minute}`;
+    expect(await raw.send("HGETALL", [key])).toEqual({ completed: "1" });
+    const expiresAt = Number(await raw.send("PEXPIRETIME", [key]));
+    expect(expiresAt).toBe(minute + 24 * 60 * 60 * 1000 + 60_000);
+    raw.close();
+
+    await driver.purge(q.ns);
+  });
+
+  it("expires the worker registry with its latest record", async () => {
+    const driver = makeDriver();
+    const q = { ns: testNamespace(), queue: "worker-ttl" };
+    const keys = driver.keys.queue(q);
+    const now = Date.now();
+    const worker = {
+      id: "w1",
+      queue: q.queue,
+      host: "h",
+      pid: 1,
+      concurrency: 1,
+      active: 0,
+      paused: false,
+      startedAt: now,
+      heartbeatAt: now,
+      expiresAt: now + 60_000,
+    };
+
+    await driver.registerWorker(q, worker);
+    await driver.registerWorker(q, {
+      ...worker,
+      id: "w2",
+      expiresAt: now + 30_000,
+    });
+
+    // Relative, on the server's clock: twice the longest record's lifetime,
+    // which the shorter record written after it does not shorten.
+    const raw = new BunRedis(URL);
+    for (const key of [keys.workers, keys.workersExpiry]) {
+      const ttl = Number(await raw.send("PTTL", [key]));
+      expect(ttl).toBeGreaterThan(110_000);
+      expect(ttl).toBeLessThanOrEqual(120_000);
+    }
+    raw.close();
+
+    await driver.purge(q.ns);
+  });
+});
+
 describe.skipIf(!URL)("Redis driver: waiting and events", () => {
   it("wakes on a new job rather than waiting out the timeout", async () => {
     const driver = makeDriver();
@@ -526,3 +714,74 @@ describe("Redis driver: keys", () => {
     expect(driver.keys.prefix).toBe("bun-jobs");
   });
 });
+
+describe.skipIf(!URL)(
+  "Redis driver: worker registry and read shortcuts",
+  () => {
+    it("keeps the registry of a worker whose clock runs behind the server's", async () => {
+      const driver = makeDriver();
+      const q = { ns: testNamespace(), queue: "skew" };
+      // Five seconds behind, with a record that lapses three seconds after its
+      // report: as an absolute expiry, already past on the server.
+      const behind = Date.now() - 5_000;
+
+      await driver.registerWorker(q, {
+        id: "w1",
+        queue: q.queue,
+        host: "h",
+        pid: 1,
+        concurrency: 1,
+        active: 0,
+        paused: false,
+        startedAt: behind,
+        heartbeatAt: behind,
+        expiresAt: behind + 3_000,
+      });
+
+      expect(
+        (await driver.listWorkers(q, behind + 10)).map((worker) => worker.id),
+      ).toEqual(["w1"]);
+      await driver.purge(q.ns);
+    });
+
+    it("answers an empty name filter without asking the server", async () => {
+      const inner = new BunRedis(URL);
+      let calls = 0;
+      const counted = new Proxy(inner, {
+        get(target, property) {
+          const value: unknown = Reflect.get(target, property, target);
+          return typeof value === "function"
+            ? (...args: unknown[]) => {
+                calls++;
+                return (value as (...rest: unknown[]) => unknown).apply(
+                  target,
+                  args,
+                );
+              }
+            : value;
+        },
+      });
+      const driver = new RedisDriver({ url: URL, client: counted });
+      drivers.push(driver);
+      const q = { ns: testNamespace(), queue: "no-names" };
+
+      await driver.addJob(q, makeJob({ id: "a" }));
+      const before = calls;
+
+      expect(
+        await driver.findJobs(q, {
+          states: ["waiting", "completed"],
+          offset: 0,
+          limit: 10,
+          order: "asc",
+          names: [],
+          total: true,
+        }),
+      ).toEqual({ jobs: [], total: 0 });
+      expect(calls).toBe(before);
+
+      await driver.purge(q.ns);
+      inner.close();
+    });
+  },
+);

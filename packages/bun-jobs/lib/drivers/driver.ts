@@ -538,6 +538,99 @@ export interface RepeatRecord {
   updatedAt: number;
 }
 
+/**
+ * Which jobs {@link QueueDriver.findJobs} reads, in what order, and whether to
+ * count them.
+ *
+ * `states`, `offset`, `limit` and `order` mean exactly what they mean to
+ * {@link QueueDriver.listJobs}, and the order is the same one. The two filters
+ * narrow the jobs *before* the page is cut, so `offset` counts matches and a
+ * page is never short because non-matching jobs sat inside it.
+ */
+export interface JobQuery {
+  /** The states to read. Several are ordered by creation, as `listJobs` does. */
+  states: JobState[];
+  /** Matching jobs to skip. */
+  offset: number;
+  /** The most jobs to return. */
+  limit: number;
+  /** `asc` is the states' natural order, `desc` its reverse. */
+  order: "asc" | "desc";
+  /**
+   * Only jobs whose name is exactly one of these — case, accents and all.
+   * Absent means any name; an empty array matches nothing.
+   */
+  names?: string[];
+  /**
+   * Only jobs whose id or name contains this, ignoring case. Taken literally:
+   * `%`, `_`, `*`, quotes and regular-expression characters match themselves.
+   * Absent or empty means no search.
+   *
+   * Case is folded for ASCII on every backend. Beyond ASCII it follows the
+   * engine: SQLite's `LOWER` folds ASCII only, so `É` does not match `é` there.
+   * The payload is never searched.
+   */
+  search?: string;
+  /** Also count every match, ignoring `offset` and `limit`. Defaults to `false`. */
+  total?: boolean;
+}
+
+/** A page of jobs, and how many matched in all when that was asked for. */
+export interface JobPage {
+  /** The page, in the query's order. */
+  jobs: JobRecord[];
+  /** Every match, ignoring `offset` and `limit`; present only when asked for. */
+  total?: number;
+}
+
+/**
+ * A worker's heartbeat record: who is consuming a queue, from where, and how
+ * busy it is — what `listWorkers` reports.
+ *
+ * Written on the worker's report interval, never per job, so `active` and
+ * `paused` are as fresh as the last report rather than exact.
+ */
+export interface WorkerInfo {
+  /** The worker's id. */
+  id: string;
+  /** The queue it consumes. */
+  queue: string;
+  /** The host it runs on. */
+  host: string;
+  /** Its process id. */
+  pid: number;
+  /** How many jobs it runs at once. */
+  concurrency: number;
+  /** How many jobs it was running at its last report. */
+  active: number;
+  /** Whether it was locally paused at its last report. */
+  paused: boolean;
+  /** When it started consuming, in epoch milliseconds. */
+  startedAt: number;
+  /** When it last reported, in epoch milliseconds. */
+  heartbeatAt: number;
+  /**
+   * When the record lapses unless the worker reports again, in epoch
+   * milliseconds. A worker that died stops reporting, and from then it is not
+   * listed.
+   */
+  expiresAt: number;
+}
+
+/** How many jobs a queue finished in one minute. */
+export interface ThroughputBucket {
+  /** The start of the minute, in epoch milliseconds: a multiple of 60,000. */
+  at: number;
+  /** Jobs completed in that minute. */
+  completed: number;
+  /**
+   * Failures in that minute: every attempt that failed, whether it will be
+   * retried or not — a job failing three times counts three — plus each job
+   * the stalled sweep buried and each flow parent a child's failure buried.
+   */
+  failed: number;
+}
+
 /** A cross-process notification. */
 /**
  * What a driver publishes and delivers.
@@ -803,6 +896,103 @@ export interface QueueDriver {
   ) => Promise<JobRecord[]>;
   /** How many jobs are in each state. */
   countJobs: (q: QueueRef) => Promise<Record<JobState, number>>;
+  /**
+   * A page of jobs narrowed by name or a search, and optionally how many
+   * matched in all.
+   *
+   * Optional: `findJobPage` in `readApis.ts` pages through
+   * {@link QueueDriver.listJobs} and filters when a driver lacks it, which is
+   * correct everywhere and linear in the jobs in those states. The option lives
+   * here rather than on `listJobs` because a driver written before it would
+   * ignore an unknown option and hand back an unfiltered page.
+   *
+   * With no filter this is `listJobs`, and `total` is the sum of those states'
+   * counts. A driver must never match against the payload. See
+   * {@link JobQuery} for what each field means.
+   */
+  findJobs?: (q: QueueRef, query: JobQuery) => Promise<JobPage>;
+  /**
+   * Several jobs by id, in one round trip where the backend allows: one entry
+   * per id given, in the same order, `null` for an id with no job. An id given
+   * twice is answered twice.
+   *
+   * Optional: `getJobsByIds` in `readApis.ts` calls {@link QueueDriver.getJob}
+   * a bounded number at a time when a driver lacks it.
+   */
+  getJobs?: (q: QueueRef, ids: string[]) => Promise<(JobRecord | null)[]>;
+  /**
+   * Writes a worker's heartbeat record, replacing the one it wrote before.
+   * The record lapses at `worker.expiresAt`.
+   *
+   * Optional, with {@link QueueDriver.listWorkers} and
+   * {@link QueueDriver.removeWorker}: a driver without the three keeps the
+   * records in queue state instead (see `readApis.ts`), and one without queue
+   * state either has no worker inventory. A worker writes once per report
+   * interval, never per job.
+   *
+   * While writing, a driver removes the queue's records already lapsed at
+   * `worker.heartbeatAt`, so a dead worker's record goes when any live worker
+   * on the queue reports rather than only when somebody lists. Where the
+   * backend expires keys itself, their lifetime must be relative to the
+   * server's clock, never an absolute time taken from the caller's.
+   */
+  registerWorker?: (q: QueueRef, worker: WorkerInfo) => Promise<void>;
+  /** Removes a worker's heartbeat record, answering whether there was one. */
+  removeWorker?: (q: QueueRef, id: string) => Promise<boolean>;
+  /**
+   * The workers whose records have not lapsed at `now` — `expiresAt` later
+   * than it — ordered by `startedAt`, then id. A lapsed record is never
+   * listed, and a driver may remove lapsed records while answering.
+   */
+  listWorkers?: (q: QueueRef, now: number) => Promise<WorkerInfo[]>;
+  /**
+   * How many jobs are in each state, for every queue in the namespace that
+   * holds any, in one query where the backend allows.
+   *
+   * Optional: without it a caller counts each queue `listQueues` names. A
+   * queue with no jobs may be absent; every state of a queue present is.
+   */
+  countJobsByQueue?: (
+    ns: string,
+  ) => Promise<Record<string, Record<JobState, number>>>;
+  /**
+   * How many jobs the queue completed, and how many attempts failed, in each
+   * minute whose start is in `[from, to]`, oldest first. A minute with neither
+   * may be absent.
+   *
+   * A driver that implements this counts in {@link QueueDriver.completeJob},
+   * {@link QueueDriver.completeJobs} and {@link QueueDriver.failJob}, by the
+   * minute of the `now` each is given — only for a write that took effect —
+   * and must not add a round trip per job to do it: the count rides in the
+   * same statement or script where the engine allows, and is otherwise
+   * gathered in memory and written in one statement a second. Minutes are kept
+   * for `THROUGHPUT_RETENTION_MS` (a day): removed once they are that much
+   * older than the latest minute counted, or — on a backend that expires keys
+   * itself, as Redis does — that long after they began, by the server's clock.
+   *
+   * Optional, and with no fallback: counts that were never kept cannot be
+   * reconstructed from jobs retention has removed.
+   *
+   * `failed` also counts each job {@link QueueDriver.recoverStalled} buries and
+   * each parent {@link QueueDriver.recordChild} buries, counted by those writes.
+   * They happen in maintenance rather than per job, so a driver may gather
+   * those in memory even where it counts completions inside the statement.
+   */
+  getThroughput?: (
+    q: QueueRef,
+    range: { from: number; to: number },
+  ) => Promise<ThroughputBucket[]>;
+  /**
+   * Writes the throughput counts this driver instance has gathered in memory
+   * and not yet written, and resolves once they are written — or, for the ones
+   * that failed, kept for the next attempt.
+   *
+   * Optional: only a driver that gathers counts in memory needs it. A worker
+   * or queue awaits it when closing whether or not it owns the driver, because
+   * a process that shares one driver across its workers may exit without ever
+   * closing it, and the last second of counts would go with the process.
+   */
+  flushThroughput?: () => Promise<void>;
   /** Removes a job. Refuses (returns `false`) while it is active. */
   removeJob: (q: QueueRef, id: string) => Promise<boolean>;
   /**

@@ -55,7 +55,15 @@ afterAll(async () => {
 
   if (POSTGRES && prefixes.length > 0) {
     for (const prefix of prefixes) {
-      for (const table of ["jobs", "locks", "kv", "events", "logs"]) {
+      for (const table of [
+        "jobs",
+        "locks",
+        "kv",
+        "events",
+        "logs",
+        "workers",
+        "metrics",
+      ]) {
         await connection()
           .unsafe(`DROP TABLE IF EXISTS ${prefix}${table} CASCADE`)
           .catch(() => undefined);
@@ -501,6 +509,8 @@ function tablesFor(prefix: string) {
     kv: `${prefix}kv`,
     events: `${prefix}events`,
     logs: `${prefix}logs`,
+    workers: `${prefix}workers`,
+    metrics: `${prefix}metrics`,
   };
 }
 
@@ -535,7 +545,15 @@ const familyClients: SQL[] = [];
 
 afterAll(async () => {
   for (const { client, prefix } of familyTables) {
-    for (const table of ["jobs", "locks", "kv", "events", "logs"]) {
+    for (const table of [
+      "jobs",
+      "locks",
+      "kv",
+      "events",
+      "logs",
+      "workers",
+      "metrics",
+    ]) {
       await client
         .unsafe(`DROP TABLE IF EXISTS ${prefix}${table}`)
         .catch(() => undefined);

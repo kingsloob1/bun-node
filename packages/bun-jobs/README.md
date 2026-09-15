@@ -73,6 +73,7 @@ reference.
 - [Scheduling and repeatable jobs](#scheduling-and-repeatable-jobs)
 - [Debounce and throttle](#debounce-and-throttle)
 - [Flows](#flows)
+- [Reading a queue: search, totals, workers and throughput](#reading-a-queue-search-totals-workers-and-throughput)
 - [Isolated processors](#isolated-processors)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
@@ -950,6 +951,119 @@ any size is covered over successive passes.
   was 1.4ms per record on a 100-child parent and 3.1ms on a 2,000-child one.
   Keep very wide fan-outs to nested flows, or use Redis or MongoDB, which
   update one entry per record.
+
+## Reading a queue: search, totals, workers and throughput
+
+What a dashboard needs, on every driver:
+
+```ts
+// Narrow by exact name (one or several) and search id and name, ignoring case.
+export const failed = await mail.list("dead", { name: "sendEmail", search: "acme" });
+
+// A page and how many matched in all.
+export const { jobs: page, total } = await mail.page(["waiting", "delayed"], {
+  offset: 40,
+  limit: 20,
+});
+
+// Several jobs by id: in the order asked, `null` for one that does not exist.
+export const picked = await mail.getJobs(["a1", "b2", "c3"]);
+
+// The workers consuming the queue right now, in any process.
+export const workers = await mail.listWorkers();
+
+// Completed jobs and failed attempts per minute, current minute last.
+export const { buckets, completed } = await mail.getThroughput({ minutes: 15 });
+
+// Every queue in the namespace with its counts and pause flag, and every worker.
+export const queues = await jobs.getQueueSummaries();
+export const everyone = await jobs.listWorkers();
+```
+
+**Search and name filters.** `name` is exact — case and accents count — and an
+empty array matches nothing. `search` is a case-insensitive substring of the
+job's **id or name**, taken literally (`%`, `_`, `*`, quotes and regular
+expression characters match themselves), and never looks at the payload. Case
+is folded for ASCII everywhere; beyond ASCII it follows the engine, and SQLite
+folds ASCII only. Both narrow the jobs before the page is cut, so `offset`
+counts matches. Without either, `list()` is exactly the read it always was.
+
+No index serves a substring, and a name index would cost every insert a
+write, so a filter reads **the jobs in the states asked for** — pair it with a
+small state, or a name, on a large backlog:
+
+| Driver | A filtered page | Its total | `getJobs` |
+|---|---|---|---|
+| memory | one pass over the queue | the same pass | map lookups |
+| file | reads each record in those states, 16 at a time, stopping once the page is full | reads every one | parallel reads |
+| sql | `LOWER(id)`/`LOWER(name) LIKE` within the `(ns, queue, state)` index range | `COUNT(*)`, same conditions | one `IN (…)` per 500 ids |
+| mongodb | escaped case-insensitive regex on `id`/`name`, within the same index range | `countDocuments` | one `find` |
+| redis | walks those sets in chunks of 500; names are cut from each job's hash in Lua, so payloads never leave the server | walks every one | pipelined `HGETALL` |
+
+Unfiltered totals are counts on every driver: `COUNT(*)`, `ZCARD`, a directory
+listing.
+
+**Workers.** Each worker writes a heartbeat record — id, host, pid,
+concurrency, jobs in flight, paused, started, last heartbeat — when it starts,
+every `reportInterval` (10 seconds by default; `0` turns it off), and on pause,
+resume or a concurrency change. **Never per job.** A record lapses three
+intervals after its last write, so a worker that dies drops out of the list
+within 30 seconds; one that closes removes its record at once, and one that
+never ran touches nothing. Lapsed records are removed whenever any worker on
+the queue reports, not only when somebody lists. The record is a row in the
+`workers` table on SQL, a `kv` document on MongoDB, a hash plus an
+expiry-scored sorted set on Redis, and a file on the file driver. On Redis the
+registry's own lifetime is relative (`PEXPIRE`), so a client whose clock runs
+behind the server cannot expire it.
+
+`queue.listWorkers()` and `jobs.listWorkers()` behave alike: on a driver with no
+worker registry both keep records in queue state, and on one with neither both
+throw `NotSupportedError`.
+
+**Aggregates.** `jobs.getQueueSummaries()` lives on `BunJobs` because it is a
+question about the namespace, which the context owns; a `BunQueue` knows only
+itself. Counting is one grouped query on SQL and MongoDB and one count per queue
+elsewhere, plus one pause read per queue.
+
+**Throughput.** Counted by the driver as jobs finish, so it covers every worker
+in every process and outlives retention removing the jobs themselves. `failed`
+counts every failure: each failed attempt, including one that will be
+retried (a job retried twice before dying counts three), each job the stalled
+sweep buries, and each flow parent a child's failure buries. Minutes are kept
+for a day. What a completion costs, per driver:
+
+| Driver | Where the count happens | Added per job |
+|---|---|---|
+| memory | in `completeJob`/`failJob` | a `Map` update |
+| redis | inside the existing `COMPLETE`/`FAIL` script | one `HINCRBY` (and a `PEXPIREAT` once a minute); no new keys in the script's `KEYS` |
+| sql (postgres) | inside the completion or failure statement itself, as a data-modifying CTE | one counter-row upsert in the same round trip, on one of eight counter rows the process takes in turn, so settles running at the same time rarely share a row |
+| sql (mysql, mariadb, sqlite), mongodb, file | gathered in memory, written once a second per process | a `Map` update, no I/O |
+
+The last row is the honest trade for engines that cannot touch two tables in
+one statement: a count reaches the backend up to a second after the job
+finished, and a process that dies hard loses at most that second. A reader in
+the same process always sees its own counts — reading writes them first — and
+a worker or queue writes what is pending when it closes, even on a driver it
+does not own. A write that fails part-way is retried for the counts that did
+not land, never for the ones that did.
+
+Burials by the stalled sweep and by a failed child happen in maintenance rather
+than per job, so they are counted in the same script on Redis, in place on
+memory, and through that once-a-second write everywhere else, Postgres
+included.
+
+SQL gets two tables for this, `workers` and `metrics`, created on connect like
+the rest. Nothing is added to `jobs`, so an existing install needs no
+`syncSchema`.
+
+**Custom drivers.** Every method behind these is optional on the contract. A
+driver without `findJobs` is paged through `listJobs` and filtered; without
+`getJobs`, read one id at a time; without the worker methods, workers are kept
+in queue state; without `countJobsByQueue`, counted queue by queue; and when
+`findJobs` answers without a total, the total is counted by the scan. A driver
+that gathers counts in memory implements `flushThroughput`, which a closing
+worker or queue awaits. Only throughput has no fallback — counts that were
+never kept cannot be rebuilt.
 
 ## Isolated processors
 

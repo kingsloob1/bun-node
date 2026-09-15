@@ -5,6 +5,7 @@ import type {
   JobState,
   RepeatRecord,
   Retention,
+  ThroughputBucket,
 } from "../drivers/index";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
@@ -322,6 +323,19 @@ export interface BunQueueWorkerOptions {
   /** Milliseconds of quiet before `drained` is emitted. Defaults to 0. */
   drainDelay?: number;
   /**
+   * How often the worker writes its heartbeat record — id, host, pid,
+   * concurrency, jobs in flight, paused — which is what `queue.listWorkers()`
+   * reads, in milliseconds. Defaults to `10000`; `0` turns reporting off.
+   *
+   * One write per interval per worker, and one each on start, pause, resume
+   * and a concurrency change, never one per job. A record lapses three
+   * intervals after its last write, so a worker that dies stops being listed
+   * within that; one that closes removes its record straight away. Separate
+   * from `maintenance`, because a worker that leaves maintenance to others is
+   * still a worker.
+   */
+  reportInterval?: number;
+  /**
    * Where a processor *file* runs each attempt:
    *
    * - `"in-process"` (the default) imports it once and calls it on the
@@ -586,3 +600,64 @@ export type BunQueueWorkerEvents<
 
 /** A repeat definition as reported by `listRepeatables()`. */
 export type Repeatable = RepeatRecord;
+
+/** What `queue.list()` and `queue.page()` accept. */
+export interface ListJobsOptions {
+  /** Matching jobs to skip. Defaults to `0`. */
+  offset?: number;
+  /** The most jobs to return. Defaults to `100`. */
+  limit?: number;
+  /** `asc` is the state's natural order, the default; `desc` its reverse. */
+  order?: "asc" | "desc";
+  /**
+   * Only jobs with this name, or one of these names, exactly. An empty array
+   * matches nothing.
+   */
+  name?: string | string[];
+  /**
+   * Only jobs whose id or name contains this, ignoring case. Matched
+   * literally, and never against the payload. Linear in the jobs in the
+   * states asked for on every backend — no index serves a substring — so on a
+   * large backlog pair it with a state that is small, or a name.
+   */
+  search?: string;
+}
+
+/** A page of jobs, and how many matched in all. */
+export interface JobsPage<TData = unknown, TResult = unknown> {
+  /** The page. */
+  jobs: Job<TData, TResult>[];
+  /** Every job that matched, ignoring `offset` and `limit`. */
+  total: number;
+}
+
+/** A queue's recent throughput, a minute per bucket. */
+export interface QueueThroughput {
+  /** How long each bucket is, in milliseconds: `60000`. */
+  interval: number;
+  /** The start of the oldest bucket, in epoch milliseconds. */
+  from: number;
+  /** The start of the newest bucket — the current minute — in epoch milliseconds. */
+  to: number;
+  /**
+   * One bucket per minute from `from` to `to`, oldest first, with zeros where
+   * nothing finished. The newest is still filling.
+   */
+  buckets: ThroughputBucket[];
+  /** Jobs completed across every bucket. */
+  completed: number;
+  /** Attempts failed across every bucket. */
+  failed: number;
+}
+
+/** One queue in a namespace, as `jobs.getQueueSummaries()` reports it. */
+export interface QueueSummary {
+  /** The queue's name. */
+  name: string;
+  /** How many jobs are in each state. */
+  counts: Record<JobState, number>;
+  /** Every job in the queue, whatever its state. */
+  total: number;
+  /** Whether claiming is paused across every process. */
+  paused: boolean;
+}

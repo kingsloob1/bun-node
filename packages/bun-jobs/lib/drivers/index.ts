@@ -17,7 +17,9 @@ export type {
   ExecutionMode,
   FailOutcome,
   JobFlow,
+  JobPage,
   JobPatch,
+  JobQuery,
   JobRecord,
   JobRef,
   JobsDriver,
@@ -35,6 +37,8 @@ export type {
   RunSource,
   RunStatus,
   StoredSchedule,
+  ThroughputBucket,
+  WorkerInfo,
 } from "./driver";
 export { FileDriver, type FileDriverOptions } from "./file-driver";
 export { MemoryDriver } from "./memory-driver";
@@ -44,6 +48,36 @@ export {
   MongoDriver,
   type MongoDriverOptions,
 } from "./mongo/mongo-driver";
+export {
+  countQueues,
+  emptyCounts,
+  escapeLike,
+  escapeRegExp,
+  findJobPage,
+  findJobsByScan,
+  getJobsByIds,
+  getJobsByLoop,
+  JOB_STATES,
+  type JobFilter,
+  jobFilter,
+  listWorkerRecords,
+  matchesFilter,
+  orderByIds,
+  type PendingThroughput,
+  registerWorkerRecord,
+  removeWorkerRecord,
+  sortWorkers,
+  sumBuckets,
+  sumStates,
+  supportsWorkers,
+  THROUGHPUT_BUCKET_MS,
+  THROUGHPUT_FLUSH_MS,
+  THROUGHPUT_RETENTION_MS,
+  throughputBucket,
+  ThroughputBuffer,
+  type ThroughputWriteResult,
+  WORKER_STATE_PREFIX,
+} from "./readApis";
 export { RedisKeys } from "./redis/keys";
 export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
 export type {

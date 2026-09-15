@@ -1,4 +1,4 @@
-import type { DriverConfig, JobsDriver } from "./drivers/index";
+import type { DriverConfig, JobsDriver, WorkerInfo } from "./drivers/index";
 import type { JobsNotifierOptions } from "./notifier";
 import type { BackoffStrategy } from "./queue/backoff";
 import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
@@ -8,11 +8,17 @@ import type {
   Job,
   JobOptions,
   JobProcessor,
+  QueueSummary,
 } from "./queue/index";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
 import type { Logger, LoggerLike } from "./shared/logger";
-import { resolveDriver } from "./drivers/index";
+import {
+  countQueues,
+  listWorkerRecords,
+  resolveDriver,
+  supportsWorkers,
+} from "./drivers/index";
 import { JobsNotifier } from "./notifier";
 import { BackoffStrategies } from "./queue/backoff";
 import { MAX_TIMER_MS } from "./queue/BunQueueWorker";
@@ -21,7 +27,7 @@ import { BunQueue, BunQueueWorker } from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
 import { BunRunnerManager } from "./runner/index";
-import { ConfigError } from "./shared/errors";
+import { ConfigError, NotSupportedError } from "./shared/errors";
 import { assertDateParser, parseDuration } from "./shared/humanTime";
 import { assertNamespace } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
@@ -636,6 +642,64 @@ export class BunJobs {
   async listQueues(): Promise<string[]> {
     await this.driver.connect();
     return await this.driver.listQueues(this.namespace);
+  }
+
+  /**
+   * Every queue in this namespace with its counts per state, its total and
+   * whether it is paused, ordered by name — the overview a dashboard opens on.
+   *
+   * Here rather than on `BunQueue` because it is a question about the
+   * namespace, which this context owns: a queue knows only itself. Counting
+   * is one grouped query on the SQL and MongoDB drivers, and one count per
+   * queue elsewhere; each queue's pause flag is one read.
+   */
+  async getQueueSummaries(): Promise<QueueSummary[]> {
+    await this.driver.connect();
+    const counts = await countQueues(this.driver, this.namespace);
+
+    return await Promise.all(
+      [...counts].map(async ([name, byState]) => ({
+        name,
+        counts: byState,
+        total: Object.values(byState).reduce((sum, count) => sum + count, 0),
+        paused: await this.driver.isQueuePaused({
+          ns: this.namespace,
+          queue: name,
+        }),
+      })),
+    );
+  }
+
+  /**
+   * The workers consuming any queue in this namespace, from any process,
+   * ordered by queue and then as `queue.listWorkers()` orders them. Throws
+   * {@link NotSupportedError} on a driver that keeps neither worker records
+   * nor queue state, as `queue.listWorkers()` does.
+   */
+  async listWorkers(): Promise<WorkerInfo[]> {
+    await this.driver.connect();
+
+    if (!supportsWorkers(this.driver)) {
+      throw new NotSupportedError(this.driver.name, "listWorkers", {
+        needs: "worker records or queue state",
+      });
+    }
+
+    const now = Date.now();
+    const queues = [...(await this.driver.listQueues(this.namespace))].sort();
+    const workers: WorkerInfo[] = [];
+
+    for (const queue of queues) {
+      workers.push(
+        ...(await listWorkerRecords(
+          this.driver,
+          { ns: this.namespace, queue },
+          now,
+        )),
+      );
+    }
+
+    return workers;
   }
 
   /** Deletes everything in this namespace, and nothing outside it. */

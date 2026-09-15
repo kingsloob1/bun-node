@@ -3,9 +3,10 @@ import type { SqlDialect } from "./dialect";
 /**
  * The tables, and the indexes that make the hot paths cheap.
  *
- * Five tables rather than one per concern: `jobs`, `locks`, `kv` (runner
- * state, queue metadata and repeat definitions), `events` and `logs` (each
- * job's log lines). Every table
+ * Seven tables rather than one per concern: `jobs`, `locks`, `kv` (runner
+ * state, queue metadata and repeat definitions), `events`, `logs` (each
+ * job's log lines), `workers` (heartbeat records) and `metrics` (throughput
+ * per minute). Every table
  * carries `ns`, and every index leads with it, so one namespace's queries
  * never scan another's rows.
  */
@@ -197,10 +198,12 @@ export function schemaDefinition(
     kv: string;
     events: string;
     logs: string;
+    workers: string;
+    metrics: string;
   },
   dialect: SqlDialect,
 ): { tables: TableDefinition[]; indexes: IndexDefinition[] } {
-  const { jobs, locks, kv, events, logs } = tables;
+  const { jobs, locks, kv, events, logs, workers, metrics } = tables;
   const {
     idType,
     nameType,
@@ -329,6 +332,41 @@ export function schemaDefinition(
           { name: "message", type: longTextType, suffix: "NOT NULL" },
         ],
       },
+      // Each worker's heartbeat record: one row per worker, replaced on every
+      // report and read by `listWorkers`. Its own table rather than a `kv`
+      // entry because a lapsed record is found and removed by `expires_at`,
+      // which a JSON value cannot be filtered on portably. The primary key is
+      // every index it needs: every read and write names the queue.
+      {
+        name: workers,
+        primaryKey: ["ns", "queue", "id"],
+        columns: [
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "queue", type: idType, suffix: "NOT NULL" },
+          { name: "id", type: idType, suffix: "NOT NULL" },
+          { name: "info", type: jsonType },
+          { name: "expires_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      // Completed jobs and failed attempts per queue per minute. `shard` is
+      // who counted: the lock token on Postgres, which counts inside the
+      // completion statement, and the driver instance elsewhere, which writes
+      // what it gathered once a second. Different writers therefore never
+      // contend for a row, and a read sums a minute's rows. The primary key
+      // leads with the queue and then the minute, so a range read and the
+      // retention delete are both key ranges.
+      {
+        name: metrics,
+        primaryKey: ["ns", "queue", "bucket", "shard"],
+        columns: [
+          { name: "ns", type: idType, suffix: "NOT NULL" },
+          { name: "queue", type: idType, suffix: "NOT NULL" },
+          { name: "bucket", type: timeType, suffix: "NOT NULL" },
+          { name: "shard", type: idType, suffix: "NOT NULL" },
+          { name: "completed", type: "INTEGER", suffix: "NOT NULL DEFAULT 0" },
+          { name: "failed", type: "INTEGER", suffix: "NOT NULL DEFAULT 0" },
+        ],
+      },
     ],
     indexes: [
       // Claim order: the queue's due, waiting jobs, cheapest first.
@@ -452,6 +490,8 @@ export function createSchema(
     kv: string;
     events: string;
     logs: string;
+    workers: string;
+    metrics: string;
   },
   dialect: SqlDialect,
 ): string[] {
