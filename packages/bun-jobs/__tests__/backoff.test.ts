@@ -22,12 +22,15 @@ function jobWith(backoff: JobRecord["opts"]["backoff"]): JobRecord {
   return { ...job, opts: { ...job.opts, backoff } };
 }
 
+/** What a warning reports, exactly as `nextBackoff` declares its sink. */
+type WarningFields = Parameters<Parameters<typeof nextBackoff>[4]>[1];
+
 /** Collects warnings instead of logging them. */
 function warnings() {
-  const seen: { message: string; fields: Record<string, unknown> }[] = [];
+  const seen: { message: string; fields: WarningFields }[] = [];
   return {
     seen,
-    warn: (message: string, fields: Record<string, unknown>) => {
+    warn: (message: string, fields: WarningFields) => {
       seen.push({ message, fields });
     },
   };
@@ -155,6 +158,37 @@ describe("nextBackoff", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]!.fields.strategy).toBe(type);
     }
+  });
+
+  it("reports the fields that match why a strategy could not be used", () => {
+    const thrown = new Error("broken strategy");
+    const strategies = new BackoffStrategies()
+      .define("throws", () => {
+        throw thrown;
+      })
+      .define("negative", () => -1);
+
+    const fieldsFor = (type: string): WarningFields | undefined => {
+      const { warn, seen } = warnings();
+      nextBackoff(1, jobWith({ type }), error, strategies, warn);
+      return seen[0]?.fields;
+    };
+
+    expect(fieldsFor("unknown-name")).toEqual({
+      jobId: "backoff-job",
+      strategy: "unknown-name",
+      known: ["throws", "negative"],
+    });
+    expect(fieldsFor("throws")).toEqual({
+      jobId: "backoff-job",
+      strategy: "throws",
+      error: thrown,
+    });
+    expect(fieldsFor("negative")).toEqual({
+      jobId: "backoff-job",
+      strategy: "negative",
+      result: -1,
+    });
   });
 });
 

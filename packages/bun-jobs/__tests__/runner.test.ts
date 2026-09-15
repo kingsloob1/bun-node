@@ -6,9 +6,11 @@ import {
   BunRunner,
   BunRunnerManager,
   ConfigError,
+  InvalidHandlerError,
   MemoryDriver,
   RunnerStoppedError,
 } from "../lib/index";
+import { toHandler } from "../lib/runner/executors/executor";
 import { testNamespace, waitFor } from "./helpers";
 
 /**
@@ -200,6 +202,60 @@ describe("BunRunner: running a handler", () => {
       { step: 2, of: 2 },
     ]);
     expect(messages).toEqual([{ echo: { ping: true } }]);
+  });
+
+  it("carries declared message types both ways without a cast", async () => {
+    const runner = new BunRunner<
+      { steps: number },
+      number,
+      { ping: boolean },
+      { echo: { ping: boolean } }
+    >({
+      id: "typed-messages",
+      namespace: testNamespace(),
+      file: fixture("progress"),
+      executionMode: "in-process",
+      driver: new MemoryDriver(),
+      waitToExit: false,
+      logger: noopLogger,
+      args: { steps: 2 },
+    });
+    started.push(runner);
+    await runner.start();
+
+    const echoes: { ping: boolean }[] = [];
+    runner.on("message", (_record, data) => echoes.push(data.echo));
+
+    const finished = firstRun(runner);
+    const outcome = await runner.trigger();
+    if (outcome.outcome === "started") {
+      expect(runner.send({ ping: true }, outcome.runId)).toBe(true);
+    }
+
+    expect((await finished).result).toBe(2);
+    expect(echoes).toEqual([{ ping: true }]);
+  });
+
+  it("kills nothing, and resolves, for a run id it does not know", async () => {
+    const runner = makeRunner();
+    await runner.start();
+
+    await runner.kill("no-such-run");
+
+    expect(runner.activeRuns.size).toBe(0);
+    expect(runner.send({ ping: true }, "no-such-run")).toBe(false);
+  });
+
+  it("reads a handler the same way whichever way it will be called", () => {
+    const handler = () => 1;
+
+    // `kind` changes only the declared return type, never the check.
+    expect(toHandler({ default: handler }, "f.ts")).toBe(handler);
+    expect(toHandler({ default: handler }, "f.ts", "run")).toBe(handler);
+    expect(toHandler({ default: handler }, "f.ts", "job")).toBe(handler);
+    expect(toHandler(handler, "f.ts", "job")).toBe(handler);
+    expect(() => toHandler({}, "f.ts", "job")).toThrow(InvalidHandlerError);
+    expect(() => toHandler(42, "f.ts")).toThrow(InvalidHandlerError);
   });
 
   it("aborts an over-running handler and reports the timeout", async () => {

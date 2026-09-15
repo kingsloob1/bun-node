@@ -255,3 +255,28 @@ export {
   type Ticker,
   type TickerOptions,
 } from "./shared/schedule";
+
+// runner/shared types
+//
+// One contiguous block, kept last so a change here never collides with edits
+// to the sections above. Sorting would scatter it among them by path, which is
+// the one thing this block exists to avoid.
+/* eslint-disable perfectionist/sort-exports */
+export type { BackoffWarningFields } from "./queue/backoff";
+export type {
+  IsolatedJob,
+  IsolatedJobProcessor,
+} from "./runner/executors/executor";
+export type {
+  JobChannelErrorReply,
+  JobChannelOperation,
+  JobChannelReplies,
+  JobChannelReply,
+  JobChannelRequest,
+  JobChannelValueReply,
+} from "./runner/protocol";
+export {
+  type ErrorContext,
+  ProtocolError,
+} from "./shared/errors";
+export type { RunProgress } from "./shared/progress";

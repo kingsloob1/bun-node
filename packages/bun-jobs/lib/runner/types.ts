@@ -1,3 +1,4 @@
+import type { LogLevel } from "@kingsleyweb/bun-common";
 import type {
   DriverConfig,
   ExecutionMode,
@@ -6,17 +7,29 @@ import type {
   RunSource,
   RunStatus,
 } from "../drivers/index";
-import type { Logger, LoggerLike } from "../shared/logger";
+import type { LogFields, Logger, LoggerLike } from "../shared/logger";
+import type { RunProgress } from "../shared/progress";
 import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
 
 /**
  * The runner's public types: what a handler receives, what a trigger
  * reports, and what a runner tells you about itself.
+ *
+ * Every type parameter defaults to `unknown`: a runner that declares nothing
+ * accepts and reports anything, exactly as before the parameters existed.
  */
 
+// Defined in `shared`, so a job's progress can name the same type.
+export type { RunProgress };
+
 /** What a runner's file must default-export. */
-export type RunnerHandler<TArgs = unknown, TResult = unknown> = (
-  ctx: RunContext<TArgs>,
+export type RunnerHandler<
+  TArgs = unknown,
+  TResult = unknown,
+  TToHandler = unknown,
+  TFromHandler = unknown,
+> = (
+  ctx: RunContext<TArgs, TToHandler, TFromHandler>,
 ) => TResult | Promise<TResult>;
 
 /**
@@ -30,14 +43,30 @@ export type RunnerHandler<TArgs = unknown, TResult = unknown> = (
  * });
  * ```
  */
-export function defineHandler<TArgs = unknown, TResult = unknown>(
-  handler: RunnerHandler<TArgs, TResult>,
-): RunnerHandler<TArgs, TResult> {
+export function defineHandler<
+  TArgs = unknown,
+  TResult = unknown,
+  TToHandler = unknown,
+  TFromHandler = unknown,
+>(
+  handler: RunnerHandler<TArgs, TResult, TToHandler, TFromHandler>,
+): RunnerHandler<TArgs, TResult, TToHandler, TFromHandler> {
   return handler;
 }
 
-/** What a handler is given when it runs. */
-export interface RunContext<TArgs = unknown> {
+/**
+ * What a handler is given when it runs.
+ *
+ * `TToHandler` is what `runner.send()` delivers to `ctx.onMessage` listeners;
+ * `TFromHandler` is what `ctx.send()` delivers to the runner's `message` event.
+ * Messages cross a process boundary as JSON in `spawn` and `worker` mode, so
+ * declare shapes that survive it.
+ */
+export interface RunContext<
+  TArgs = unknown,
+  TToHandler = unknown,
+  TFromHandler = unknown,
+> {
   /** Identifies this run. */
   runId: string;
   /** The runner that started it. */
@@ -66,11 +95,11 @@ export interface RunContext<TArgs = unknown> {
   /** Logger bound to this run's ids. */
   logger: Logger;
   /** Reports progress; surfaces as the runner's `progress` event. */
-  progress: (value: number | Record<string, unknown>) => void;
+  progress: (value: RunProgress) => void;
   /** Sends a message to the parent; surfaces as the `message` event. */
-  send: (message: unknown) => void;
+  send: (message: TFromHandler) => void;
   /** Listens for messages sent with `runner.send()`. Returns an unsubscribe. */
-  onMessage: (listener: (message: unknown) => void) => () => void;
+  onMessage: (listener: (message: TToHandler) => void) => () => void;
   /**
    * How to build a driver for the runner's backend. Present whenever the
    * runner was given one, and the only form a spawned child can receive.
@@ -170,7 +199,13 @@ export interface RunHandle {
   record: RunRecord;
   /** Aborts the run; `force` skips to the end of the kill escalation. */
   abort: (reason: string, options?: { force?: boolean }) => void;
-  /** Sends a message to the running handler. */
+  /**
+   * Sends a message to the running handler. `unknown` on purpose: this is the
+   * transport-level handle, like `ExecutorHandle`. `BunRunner.send()` is the
+   * typed entry point. A generic parameter here would make every `BunRunner`
+   * invariant in its message type, so typed runners could no longer share a
+   * registry such as `BunRunnerManager`.
+   */
   send: (message: unknown) => boolean;
   /** Resolves when the run settles. */
   done: Promise<RunStatus>;
@@ -366,21 +401,25 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
  * `TypedEmitterBase`'s `Record<string, …>` constraint needs.
  */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunRunnerEvents<TArgs = unknown, TResult = unknown> = {
+export type BunRunnerEvents<
+  TArgs = unknown,
+  TResult = unknown,
+  TFromHandler = unknown,
+> = {
   /** The next fire time changed. */
   scheduled: (next: Date | null) => void;
   /** A run started. */
   started: (run: RunRecord) => void;
   /** A run reported progress. */
-  progress: (run: RunRecord, value: unknown) => void;
-  /** A run sent a message. */
-  message: (run: RunRecord, data: unknown) => void;
+  progress: (run: RunRecord, value: RunProgress) => void;
+  /** A run sent a message with `ctx.send()`. */
+  message: (run: RunRecord, data: TFromHandler) => void;
   /** A run logged something, when `forwardLogs` is on. */
   log: (
     run: RunRecord,
-    level: string,
+    level: LogLevel,
     message: string,
-    fields: unknown,
+    fields: LogFields,
   ) => void;
   /** A child wrote to stdout or stderr, when it is piped. */
   output: (run: RunRecord, stream: "stdout" | "stderr", chunk: string) => void;

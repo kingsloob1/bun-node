@@ -71,7 +71,9 @@ const SETTLED: Promise<void> = Promise.resolve();
 export class BunRunner<
   TArgs = unknown,
   TResult = unknown,
-> extends TypedEmitterBase<BunRunnerEvents<TArgs, TResult>> {
+  TToHandler = unknown,
+  TFromHandler = unknown,
+> extends TypedEmitterBase<BunRunnerEvents<TArgs, TResult, TFromHandler>> {
   /** Identifies the runner within its namespace. */
   readonly id: string;
   /** Display name; defaults to the id. */
@@ -118,7 +120,7 @@ export class BunRunner<
    * exit mid-write — losing the record and, on the file driver, stranding
    * the lock it was holding.
    */
-  readonly #settling = new Set<Promise<unknown>>();
+  readonly #settling = new Set<Promise<RunStatus>>();
   /** Publishes still in flight, which `close()` waits for. */
   readonly #publishing = new Set<Promise<void>>();
 
@@ -403,7 +405,7 @@ export class BunRunner<
     const reason = options?.reason ?? "killed";
     const targets = runId
       ? [this.#active.get(runId)].filter(
-          Boolean as unknown as (v: RunHandle | undefined) => v is RunHandle,
+          (run): run is RunHandle => run !== undefined,
         )
       : [...this.#active.values()];
 
@@ -415,7 +417,7 @@ export class BunRunner<
   }
 
   /** Sends a message to a running handler; `false` when nothing received it. */
-  send(message: unknown, runId?: string): boolean {
+  send(message: TToHandler, runId?: string): boolean {
     if (runId) {
       return this.#active.get(runId)?.send(message) ?? false;
     }
@@ -851,7 +853,11 @@ export class BunRunner<
       forwardLogs: this.options.forwardLogs,
       events: {
         onProgress: (value) => this.safeEmit("progress", record, value),
-        onMessage: (data) => this.safeEmit("message", record, data),
+        // The executor is transport and hands messages over untyped; this is
+        // where they take the type the runner was declared with. Nothing at
+        // runtime checks it — the handler is trusted to send what it declares.
+        onMessage: (data) =>
+          this.safeEmit("message", record, data as TFromHandler),
         onLog: (level, message, fields) =>
           this.safeEmit("log", record, level, message, fields),
         onOutput: (stream, chunk) =>

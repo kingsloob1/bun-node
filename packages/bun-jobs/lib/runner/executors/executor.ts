@@ -1,6 +1,9 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
 import type { ExecutionMode, JobRecord, RunStatus } from "../../drivers/index";
-import type { RunContext, RunnerHandler } from "../types";
+import type { Job } from "../../queue/Job";
+import type { ProcessorContext } from "../../queue/types";
+import type { LogFields } from "../../shared/logger";
+import type { RunContext, RunnerHandler, RunProgress } from "../types";
 import { InvalidHandlerError } from "../../shared/errors";
 
 /**
@@ -33,14 +36,21 @@ export interface RunOutcome {
   detached?: boolean;
 }
 
-/** Callbacks an executor uses to report a run's progress as it happens. */
+/**
+ * Callbacks an executor uses to report a run's progress as it happens.
+ *
+ * Messages stay `unknown` at this layer on purpose: an executor is transport,
+ * carrying both a handler's own messages and the isolated-job channel, and
+ * never knows a handler's declared types. `BunRunner` is where they are
+ * asserted.
+ */
 export interface ExecutorEvents {
   /** The handler reported progress. */
-  onProgress: (value: unknown) => void;
+  onProgress: (value: RunProgress) => void;
   /** The handler sent a message. */
   onMessage: (data: unknown) => void;
   /** The handler logged something (forwarded from a child). */
-  onLog: (level: string, message: string, fields: unknown) => void;
+  onLog: (level: LogLevel, message: string, fields: LogFields) => void;
   /** A child wrote to a piped stream. */
   onOutput: (stream: "stdout" | "stderr", chunk: string) => void;
   /** The run has a process id. */
@@ -100,18 +110,59 @@ export interface Executor {
 }
 
 /**
+ * The job an isolated processor is handed in a child process or `Worker`: a
+ * plain object standing in for a {@link Job}, since the real class needs a
+ * driver the child does not have.
+ *
+ * It is every public member of `Job`, as a structural copy without the class's
+ * private fields, so a member the child forgets to build is a compile error in
+ * `isolatedJob` (`bootstrap/child-runtime.ts`) rather than a missing method at
+ * runtime.
+ */
+export type IsolatedJob = Pick<
+  Job<unknown, unknown>,
+  keyof Job<unknown, unknown>
+>;
+
+/**
+ * A processor file's default export, as the package calls it: with a job and
+ * its context. Its declared data and result types are the file's own and
+ * cannot be known where the file is imported, and the result may cross a
+ * process boundary as JSON, so the return value stays `unknown`.
+ */
+export type IsolatedJobProcessor = (
+  job: IsolatedJob,
+  ctx: ProcessorContext,
+) => unknown;
+
+/**
  * Checks a module's default export and returns it as a handler.
  *
  * The contract is deliberately narrow — a file default-exports one function —
  * so a mistake (exporting an object, forgetting `default`) is reported as
  * exactly that instead of failing later with "not a function".
+ *
+ * `kind` says how the caller will invoke it, and only changes the return type:
+ * a runner handler (the default) or a queue job processor. The module is what
+ * a dynamic `import()` returned, so it is checked rather than trusted.
  */
 export function toHandler(
   module: unknown,
   file: string,
-): RunnerHandler<any, any> {
+  kind?: "run",
+): RunnerHandler;
+export function toHandler(
+  module: unknown,
+  file: string,
+  kind: "job",
+): IsolatedJobProcessor;
+export function toHandler(
+  module: unknown,
+  file: string,
+  _kind: "run" | "job" = "run",
+): RunnerHandler | IsolatedJobProcessor {
   if (typeof module === "function") {
-    return module as RunnerHandler<any, any>;
+    return module as RunnerHandler;
   }
 
   if (typeof module !== "object" || module === null) {

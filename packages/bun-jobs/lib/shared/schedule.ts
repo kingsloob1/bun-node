@@ -99,7 +99,7 @@ export function normalizeSchedule(input: ScheduleInput): RunnerSchedule {
   }
 
   throw new ConfigError("Unrecognised schedule", {
-    schedule: input as unknown,
+    schedule: input,
   });
 }
 
