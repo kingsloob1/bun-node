@@ -17,9 +17,11 @@
  *   416) are applied by `sendFile()`. The byte-range section below builds the
  *   same by hand with `req.range()`, for a body that is not a file on disk.
  * - A missing file is a 404 rather than an error.
- * - `write()` switches the response to a long-lived stream (and to
- *   `text/event-stream` headers). Start the producer without awaiting it, so
- *   the handler returns and the client can read as chunks arrive.
+ * - `write()` switches the response to a long-lived stream and, as Node's
+ *   `write()`, adds no headers: a server-sent events endpoint sets
+ *   `Content-Type: text/event-stream` itself. Start the producer without
+ *   awaiting it, so the handler returns and the client can read as chunks
+ *   arrive.
  * - Once a response has ended (`end()`, or any `send()`), `write()` writes
  *   nothing: it answers `false` and emits `ERR_STREAM_WRITE_AFTER_END`, as
  *   Node's `ServerResponse` does.
@@ -201,7 +203,7 @@ router.get("/stream/write", (_req, res) => {
 });
 
 const written = await router.fetch("/stream/write");
-show("headers write() applied", {
+show("headers after write(): none added", {
   type: written.headers.get("Content-Type"),
   cacheControl: written.headers.get("Cache-Control"),
 });
@@ -236,6 +238,9 @@ const adapter = new BunHttpAdapter(0);
 let serverSawClose = false;
 
 adapter.get("/events", (req, res) => {
+  // write() adds no headers, so an SSE endpoint names its type itself.
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
   let tick = 0;
   const timer = setInterval(() => {
     tick++;

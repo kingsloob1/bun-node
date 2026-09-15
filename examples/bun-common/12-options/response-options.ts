@@ -1000,7 +1000,7 @@ checkEqual("write() answers true", streaming.write("one "), true);
 streaming.write(Buffer.from("two "));
 streaming.write(new TextEncoder().encode("three").buffer);
 checkEqual(
-  "…switches to a long-lived event stream",
+  "…switches to a long-lived stream, adding no headers (as Node)",
   [
     streaming.isLongLived,
     streaming.headersSent,
@@ -1008,8 +1008,17 @@ checkEqual(
     streaming.get("Cache-Control"),
     streaming.get("Connection"),
   ],
-  [true, true, "text/event-stream", "no-cache", "keep-alive"],
+  [true, true, undefined, undefined, undefined],
 );
+const typedStream = await makeRes();
+typedStream.setHeader("Content-Type", "text/event-stream");
+typedStream.write("data: 1\n\n");
+checkEqual(
+  "…and keeps a Content-Type set before the first write",
+  typedStream.get("Content-Type"),
+  "text/event-stream",
+);
+await typedStream.end();
 const streamedBody = streaming.getBody();
 checkEqual(
   "getBody() lists the chunks",
