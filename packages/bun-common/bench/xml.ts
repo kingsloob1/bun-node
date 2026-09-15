@@ -3,18 +3,20 @@ import { Buffer } from "node:buffer";
 /**
  * XML parser micro-benchmark.
  *
- *   bun bench/xml.ts
+ *   cd packages/bun-common/bench
+ *   bun install
+ *   bun xml.ts
  *
  * Compares the shipped `parseXmlToObject` against other XML→object approaches
  * across a range of document sizes. Every contender produces an *equivalent
  * plain object* (root-keyed, "@_"-prefixed attributes, repeated children →
  * arrays, numeric/boolean text coercion) so the comparison is apples-to-apples.
  *
- * The third-party comparators (`fast-xml-parser`, `htmlparser2`) are optional:
- * they're loaded via dynamic import and silently skipped when not installed, so
- * this script runs with zero extra dependencies. To include them:
- *
- *   bun add -d fast-xml-parser htmlparser2
+ * The third-party comparators (`fast-xml-parser`, `htmlparser2`) are declared
+ * in this directory's own `package.json` — a separate, unpublished package, so
+ * they never reach `@kingsleyweb/bun-common`'s dependency tree. They're loaded
+ * via dynamic import and skipped with a note when not installed, so the script
+ * still runs before `bun install` here, measuring the native contenders only.
  *
  * `Bun.HTMLRewriter` is native and always included.
  */

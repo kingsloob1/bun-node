@@ -78,6 +78,14 @@ both cover it.
 It benchmarks against its own databases (`bun_jobs_bench`, Redis database 14),
 never the test suite's, so the two can never disturb each other.
 
+`packages/bun-common/bench/` has the same shape: its own `package.json`,
+`bun.lock` and `node_modules`, and it is not in `workspaces`. It declares the
+XML benchmark's comparators, `fast-xml-parser` and `htmlparser2`. Before this
+package existed nothing declared them, and its typecheck passed only where an
+old install had left them in the root `node_modules`. Run `bun install` in each
+of the three bench directories before `scripts/typecheck.ts`, or their projects
+fail on missing modules.
+
 ## Typechecking
 
 **One base config, extended everywhere.** `tsconfig.base.json` at the repo
