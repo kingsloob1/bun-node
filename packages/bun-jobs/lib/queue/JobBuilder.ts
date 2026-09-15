@@ -87,6 +87,13 @@ export interface JobBuilderOptions<TData = unknown> {
 }
 
 /**
+ * How a series set with `repeatEvery()` runs, beyond how often: every field of
+ * `RepeatOptions` except the schedule itself, with the same meaning and the
+ * same defaults.
+ */
+export type RepeatEveryOptions = Omit<RepeatOptions, "cron" | "every">;
+
+/**
  * Saying what to run, when, and with what — in that order, in words.
  *
  * ```ts
@@ -119,10 +126,21 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
   #options: JobOptions = {};
   /** The repeat being described, if any. */
   #repeat: RepeatOptions | undefined;
-  /** An instant given as words, resolved when `start()` is awaited. */
-  #whenPhrase: string | undefined;
-  /** Whether the phrase sets when it runs, or when the series begins. */
-  #whenIs: "runAt" | "startAt" = "runAt";
+  /**
+   * The last instant given by `on()` or `startingAt()` — a `Date`, epoch
+   * milliseconds or words — resolved when `start()` is awaited. One slot for
+   * both, so whichever was said last stands, in any order and in any form.
+   */
+  #when:
+    | {
+        /** The instant as given. */
+        value: Date | number | string;
+        /** Whether it was given as when the job runs, or when the series begins. */
+        is: "runAt" | "startAt";
+        /** Whether `repeatEvery()` set it, so a later `repeatEvery()` replaces it. */
+        byRepeatEvery: boolean;
+      }
+    | undefined;
 
   constructor(
     /** The queue the job will be added to. */
@@ -207,6 +225,67 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
   }
 
   /**
+   * Repeats the job, replacing everything said about the series before.
+   *
+   * ```ts
+   * .repeatEvery("1 day", { tz: "Europe/London", limit: 30 })
+   * ```
+   *
+   * The interval is read exactly as `every()` reads it. Unlike `every()`,
+   * which changes only the schedule, this is a whole description: a `limit`,
+   * `tz`, `endAt` or any other series option given by an earlier call, or by
+   * `limit()`/`tz()`/`withOptions()`, is dropped unless given again. A start
+   * given by an earlier `repeatEvery()` is dropped the same way; one given by
+   * `on()` or `startingAt()` is a separate statement and stays, unless this
+   * call gives `startAt`, which then stands as the later word.
+   */
+  repeatEvery(
+    interval: number | string,
+    options: RepeatEveryOptions = {},
+  ): this {
+    try {
+      this.every(interval);
+    } catch (error) {
+      // The same reading, reported under the name the caller wrote.
+      if (error instanceof ConfigError) {
+        throw new ConfigError(
+          error.message.replaceAll("every()", "repeatEvery()"),
+          { ...error.context, interval },
+        );
+      }
+      throw error;
+    }
+
+    const { every, cron } = this.#repeat ?? {};
+    this.#repeat = {
+      ...(every !== undefined ? { every } : {}),
+      ...(cron !== undefined ? { cron } : {}),
+      ...(options.endAt !== undefined ? { endAt: options.endAt } : {}),
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      ...(options.tz !== undefined ? { tz: options.tz } : {}),
+      ...(options.catchUp !== undefined ? { catchUp: options.catchUp } : {}),
+      ...(options.immediately !== undefined
+        ? { immediately: options.immediately }
+        : {}),
+      ...(options.key !== undefined ? { key: options.key } : {}),
+    };
+
+    if (this.#when?.byRepeatEvery) {
+      this.#when = undefined;
+    }
+
+    if (options.startAt !== undefined) {
+      this.#when = {
+        value: options.startAt,
+        is: "startAt",
+        byRepeatEvery: true,
+      };
+    }
+
+    return this;
+  }
+
+  /**
    * Runs the job at a given moment — a `Date`, epoch milliseconds, or words.
    *
    * On a repeating job this is when the series *begins* rather than when one
@@ -214,13 +293,10 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
    * the 1st of December" starts then and repeats from there.
    */
   on(when: Date | number | string): this {
-    if (typeof when === "string") {
-      this.#whenPhrase = when;
-      this.#whenIs = "runAt";
-      return this;
-    }
-
-    this.#options.runAt = when;
+    // One slot with `startingAt()`: whatever was said last replaces the rest,
+    // phrase or instant, whichever of the two methods said it.
+    this.#when = { value: when, is: "runAt", byRepeatEvery: false };
+    delete this.#options.runAt;
     return this;
   }
 
@@ -245,13 +321,8 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
 
   /** Starts a repeating series at a given moment rather than at once. */
   startingAt(when: Date | number | string): this {
-    if (typeof when === "string") {
-      this.#whenPhrase = when;
-      this.#whenIs = "startAt";
-      return this;
-    }
-
-    this.#repeat = { ...this.#repeat, startAt: when };
+    // The same slot `on()` writes, so the later of the two stands.
+    this.#when = { value: when, is: "startAt", byRepeatEvery: false };
     return this;
   }
 
@@ -451,19 +522,26 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
       ? { ...this.#repeat }
       : undefined;
 
-    if (this.#whenPhrase !== undefined) {
-      const at = parseWhen(
-        this.#whenPhrase,
-        this.#whenIs,
-        Date.now(),
-        this.#queue.dateParser,
-      );
+    if (this.#when !== undefined) {
+      const { value, is } = this.#when;
+      const at =
+        typeof value === "string"
+          ? parseWhen(value, is, Date.now(), this.#queue.dateParser)
+          : value;
 
-      if (this.#whenIs === "startAt" || repeat) {
+      if (is === "startAt" || repeat) {
         repeat = { ...repeat, startAt: at };
       } else {
         options.runAt = at;
       }
+    }
+
+    // On a series the queue reads only `repeat.startAt`, and silently ignores
+    // `runAt` — so one that still stands here (from the definition's
+    // defaults) says where the series begins, unless a start was given.
+    if (repeat && options.runAt !== undefined) {
+      repeat.startAt ??= options.runAt;
+      delete options.runAt;
     }
 
     if (repeat) {

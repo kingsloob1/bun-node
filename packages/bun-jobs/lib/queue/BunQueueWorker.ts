@@ -443,8 +443,19 @@ export class BunQueueWorker<
     this.#running = true;
     this.#stopped = createDeferred<void>();
 
-    await this.driver.connect();
-    await this.driver.ensureQueue(this.ref);
+    try {
+      await this.driver.connect();
+      await this.driver.ensureQueue(this.ref);
+    } catch (error) {
+      // Never started, so nothing will ever stop: without this, `#running`
+      // stayed true and `#stopped` never resolved, and a later `close()` —
+      // which waits for the loop to stop — hung for good. A `run()` called
+      // again tries to connect again rather than joining a dead start.
+      this.#running = false;
+      this.#stopped.resolve();
+      throw error;
+    }
+
     this.#armMaintenance();
     this.safeEmit("ready");
 
