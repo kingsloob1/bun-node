@@ -571,6 +571,7 @@ Examples:
 - [`01-quick-start/index.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/01-quick-start/index.ts)
 - [`03-job-registry/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/03-job-registry)
 - [`10-options/bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts)
+- [`10-options/draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts)
 
 ### BunJobs options
 
@@ -713,6 +714,11 @@ export const job = await draft.save();
   `unique` takes an id, and `repeatEvery` runs immediately only with
   `immediately: true`.
 
+Examples:
+
+- [`03-job-registry/jobs-create.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/jobs-create.ts)
+- [`10-options/draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts)
+
 ### Registry polling
 
 `jobs.processEvery(interval)` sets how often the registry worker looks for
@@ -742,6 +748,11 @@ What happens to the wait in progress depends on the driver:
 A blocking pop cannot be called off, and a pop abandoned mid-wait would
 swallow the wake a new job sends. On Redis a single block is also capped by the
 driver's `maxBlockSeconds`.
+
+Examples:
+
+- [`03-job-registry/process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/process-every.ts)
+- [`10-options/draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts)
 
 ### Dates in words
 
@@ -1562,7 +1573,7 @@ configurations are kept comparable.
 
 | Project | What it covers |
 |---|---|
-| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 10 option tours that assert every option. |
+| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 11 option tours that assert every option. |
 | [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | The HTTP layer: routing, the HTTP adapter, requests and responses, validation, CORS and static files, multipart uploads, WebSockets, logging and utilities, with option tours. |
 | [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, with option tours. |
 
@@ -1616,6 +1627,8 @@ Each run uses its own namespace and purges it on exit.
 | [`03-job-registry`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/03-job-registry) | [`define-and-run.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/define-and-run.ts) | `define` with defaults, `now`, `run().in()`, `process().on()`, `schedule().every().limit()` |
 | | [`builder-with-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/builder-with-options.ts) | the full builder chain, `withOptions()`, what is refused and why |
 | | [`per-name-concurrency.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/per-name-concurrency.ts) | `define(..., { concurrency })` enforced across two service instances |
+| | [`jobs-create.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/jobs-create.ts) | `jobs.create()` drafts: setters, `save()`, saving once, `unique` across drafts, repeating and debounced drafts, a failed save corrected |
+| | [`process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/process-every.ts) | `processEvery` as an option and a method, against `start()`'s options, while paused; a worker's runtime `pollInterval` / `maxBlock` |
 | [`04-scheduling`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/04-scheduling) | [`repeatable-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/repeatable-jobs.ts) | `repeat`: intervals, six-field cron, `startAt` / `endAt`, `limit`, keys, `listRepeatables`, `removeRepeatable` |
 | | [`human-schedules.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/human-schedules.ts) | "tomorrow at 9am", "every 2 weeks starting next monday", windows in words |
 | | [`custom-date-parser.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/04-scheduling/custom-date-parser.ts) | a `DateParser` that understands "payday" and "month end" |
@@ -1664,6 +1677,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job |
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
+| [`draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, saving twice; `processEvery` and a worker's runtime `pollInterval` / `maxBlock`, per driver |
 | [`notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published event and payload |
 | [`driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts) | every option of every driver and connection helper |
 | [`errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
