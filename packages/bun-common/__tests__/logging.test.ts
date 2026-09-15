@@ -263,6 +263,94 @@ describe("logging: sinks", () => {
     });
   });
 
+  it("routes trace to the console's trace method when it has one", () => {
+    const { calls, method } = recorder();
+    const logger = createLogger({
+      level: "trace",
+      sink: consoleSink({
+        console: {
+          log: method("log"),
+          warn: method("warn"),
+          error: method("error"),
+          debug: method("debug"),
+          trace: method("trace"),
+        },
+      }),
+    });
+
+    logger.trace("a");
+    logger.debug("b");
+
+    expect(calls.map((call) => call.method)).toEqual(["trace", "debug"]);
+  });
+
+  it("falls back from trace to debug, then log", () => {
+    const withDebug = recorder();
+    createLogger({
+      level: "trace",
+      sink: consoleSink({
+        console: {
+          log: withDebug.method("log"),
+          warn: withDebug.method("warn"),
+          error: withDebug.method("error"),
+          debug: withDebug.method("debug"),
+        },
+      }),
+    }).trace("a");
+    expect(withDebug.calls[0]?.method).toBe("debug");
+
+    const bare = recorder();
+    createLogger({
+      level: "trace",
+      sink: consoleSink({
+        console: {
+          log: bare.method("log"),
+          warn: bare.method("warn"),
+          error: bare.method("error"),
+        },
+      }),
+    }).trace("a");
+    expect(bare.calls[0]?.method).toBe("log");
+  });
+
+  it("keeps the JSON record's own keys when fields collide with them", () => {
+    const { calls, method } = recorder();
+    const failure = new Error("real");
+    const logger = createLogger({
+      name: "api",
+      bindings: { level: "from-binding" },
+      time: () => 0,
+      sink: consoleSink({
+        console: {
+          log: method("log"),
+          warn: method("warn"),
+          error: method("error"),
+        },
+        format: "json",
+      }),
+    });
+
+    logger.error("the message", {
+      error: failure,
+      msg: "fake",
+      time: "never",
+      name: "impostor",
+      err: "fake err",
+      kept: true,
+    });
+
+    const record = JSON.parse(String(calls[0]?.args[0])) as Record<
+      string,
+      unknown
+    >;
+    expect(record.level).toBe("error");
+    expect(record.msg).toBe("the message");
+    expect(record.time).toBe(new Date(0).toISOString());
+    expect(record.name).toBe("api");
+    expect(record.err).toMatchObject({ message: "real" });
+    expect(record.kept).toBe(true);
+  });
+
   it("fans out to several sinks", () => {
     const a: LogEvent[] = [];
     const b: LogEvent[] = [];
@@ -555,6 +643,139 @@ describe("logging: resolveLogger", () => {
       error: method("console-error"),
     }).info("console");
     expect(calls.at(-1)?.method).toBe("console-log");
+  });
+
+  it("adapts a real pino instance instead of treating it as a Logger", () => {
+    const { calls, method } = recorder();
+    // A pino instance: six level methods taking `(obj, msg)`, `child`, a
+    // string `level`, `isLevelEnabled`, `levels`, and `bindings()` as a method.
+    const pino = {
+      trace: method("trace"),
+      debug: method("debug"),
+      info: method("info"),
+      warn: method("warn"),
+      error: method("error"),
+      fatal: method("fatal"),
+      silent: () => {},
+      child: () => pino,
+      bindings: () => ({}),
+      setBindings: () => {},
+      level: "info",
+      levelVal: 30,
+      levels: {
+        values: {
+          trace: 10,
+          debug: 20,
+          info: 30,
+          warn: 40,
+          error: 50,
+          fatal: 60,
+        },
+        labels: {
+          10: "trace",
+          20: "debug",
+          30: "info",
+          40: "warn",
+          50: "error",
+          60: "fatal",
+        },
+      },
+      isLevelEnabled: () => true,
+      version: "9.0.0",
+    };
+
+    expect(isLogger(pino)).toBe(false);
+    const failure = new Error("db down");
+    const logger = resolveLogger(pino);
+    expect(logger).not.toBe(pino as unknown);
+    logger.error("query failed", { error: failure, table: "users" });
+
+    expect(calls).toEqual([
+      {
+        method: "error",
+        args: [{ table: "users", err: failure }, "query failed"],
+      },
+    ]);
+  });
+
+  it("still recognises this module's own loggers", () => {
+    const { logger } = createTestLogger();
+    expect(isLogger(logger)).toBe(true);
+    expect(isLogger(noopLogger)).toBe(true);
+    expect(isLogger(logger.child({ a: 1 }))).toBe(true);
+    expect(isLogger(console)).toBe(false);
+  });
+
+  it("detects a tslog v4 logger (which also has log and silly) as tslog", () => {
+    const { calls, method } = recorder();
+    // tslog v4's public surface: seven level methods including `silly`, a
+    // `log(logLevelId, logLevelName, ...args)` method, sub-loggers, transports.
+    const tslog = {
+      silly: method("silly"),
+      trace: method("trace"),
+      debug: method("debug"),
+      info: method("info"),
+      warn: method("warn"),
+      error: method("error"),
+      fatal: method("fatal"),
+      log: method("log"),
+      getSubLogger: () => tslog,
+      attachTransport: () => {},
+      settings: { name: undefined, minLevel: 0 },
+    };
+
+    resolveLogger(tslog).info("hello", { id: 1 });
+
+    expect(calls).toEqual([{ method: "info", args: ["hello", { id: 1 }] }]);
+  });
+
+  it("detects winston with custom trace/fatal levels as winston, not pino", () => {
+    const calls: unknown[][] = [];
+    const noop = () => {};
+    // `winston.createLogger({ levels: { fatal: 0, …, trace: 5 } })` exposes a
+    // method per custom level alongside `log`, `child`, a string `level`,
+    // `isLevelEnabled`, the `levels` map and the `transports` array.
+    const winston = {
+      fatal: noop,
+      error: noop,
+      warn: noop,
+      info: noop,
+      debug: noop,
+      trace: noop,
+      log: (...args: unknown[]) => calls.push(args),
+      child: () => winston,
+      level: "trace",
+      levels: { fatal: 0, error: 1, warn: 2, info: 3, debug: 4, trace: 5 },
+      isLevelEnabled: () => true,
+      transports: [],
+      add: noop,
+      remove: noop,
+    };
+
+    const logger = resolveLogger(winston);
+    logger.info("winston info");
+    logger.trace("winston trace");
+    logger.fatal("winston fatal");
+
+    expect(calls[0]?.slice(0, 2)).toEqual(["info", "winston info"]);
+    // The custom set defines `trace` and `fatal`, so they are used directly.
+    expect(calls[1]?.[0]).toBe("trace");
+    expect(calls[2]?.[0]).toBe("fatal");
+    expect(calls[2]?.[2]).toEqual({});
+  });
+
+  it("still detects winston by log + silly when transports are absent", () => {
+    const calls: unknown[][] = [];
+    const noop = () => {};
+    resolveLogger({
+      log: (...args: unknown[]) => calls.push(args),
+      error: noop,
+      warn: noop,
+      info: noop,
+      silly: noop,
+    }).trace("deep");
+
+    expect(calls[0]?.slice(0, 2)).toEqual(["silly", "deep"]);
   });
 
   it("rejects something that is not a logger at all", () => {

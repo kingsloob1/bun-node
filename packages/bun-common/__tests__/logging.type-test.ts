@@ -18,7 +18,6 @@ import type {
   LoggerLike,
   LogLevel,
   LogSink,
-  resolveLogger,
 } from "../lib/logging";
 import {
   createLogger,
@@ -30,6 +29,7 @@ import {
   fromPino,
   fromTslog,
   fromWinston,
+  resolveLogger,
 } from "../lib/logging";
 
 type Equal<X, Y> =
@@ -207,6 +207,20 @@ declare const tslogLogger: {
 };
 fromTslog(tslogLogger);
 
+// tslog v4 also carries `silly` and a level-id-first `log`.
+declare const tslogV4Logger: typeof tslogLogger & {
+  silly: (...args: unknown[]) => unknown;
+  log: (
+    logLevelId: number,
+    logLevelName: string,
+    ...args: unknown[]
+  ) => unknown;
+};
+fromTslog(tslogV4Logger);
+
+// winston with a custom level set exposing `levels`.
+fromWinston({ ...winstonLogger, levels: { fatal: 0, trace: 5 } });
+
 // NestJS LoggerService, including the optional methods.
 declare const nestLogger: {
   log: (message: any, ...optionalParams: any[]) => void;
@@ -241,6 +255,25 @@ const _rejected: LoggerLike = { nope: true };
 /* --- resolveLogger always yields the contract ---------------------- */
 
 type _resolved = Expect<Equal<ReturnType<typeof resolveLogger>, Logger>>;
+
+// Overloads: a Logger (or subtype) comes back as its own type, and so does
+// the fallback when there is no input; anything else resolves to Logger.
+declare const flushing: Logger & { flush: () => Promise<void> };
+declare const maybeLike: LoggerLike | undefined;
+
+const _same = resolveLogger(flushing);
+type _sameType = Expect<Equal<typeof _same, typeof flushing>>;
+const _fallback = resolveLogger(undefined, flushing);
+type _fallbackType = Expect<Equal<typeof _fallback, typeof flushing>>;
+const _wrapped = resolveLogger(pinoLogger);
+type _wrappedType = Expect<Equal<typeof _wrapped, Logger>>;
+const _maybe = resolveLogger(maybeLike, flushing);
+type _maybeType = Expect<Equal<typeof _maybe, Logger>>;
+const _none = resolveLogger();
+type _noneType = Expect<Equal<typeof _none, Logger>>;
+
+// @ts-expect-error an arbitrary object is not resolvable
+resolveLogger({ nope: true });
 type _test = Expect<
   Equal<
     ReturnType<typeof createTestLogger>,
