@@ -10,6 +10,7 @@
  *
  * Checked by the tests typecheck in CLAUDE.md, not by `bun test`.
  */
+import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import { type } from "arktype";
 import * as v from "valibot";
 import * as yup from "yup";
@@ -80,7 +81,7 @@ adapter.get("/arktype", validate({ query: arkQuery }), (_req) => {
 
 /* --- a wrapped library ------------------------------------------------ */
 
-const wrapped = toStandardSchema<unknown, { page: number }>((input) => {
+const wrapped = toStandardSchema<{ page: number }>((input) => {
   const page = Number((input as { page?: unknown } | null)?.page);
   return Number.isInteger(page)
     ? { value: { page } }
@@ -91,6 +92,39 @@ adapter.get("/wrapped", validate({ query: wrapped }), (_req) => {
   // The helper's output type reaches the handler exactly like a native one.
   type _q = Expect<Equal<typeof _req.query, { page: number }>>;
 });
+
+// One type argument names the output; the input is `unknown`.
+type _wrappedInput = Expect<
+  Equal<StandardSchemaV1.InferInput<typeof wrapped>, unknown>
+>;
+type _wrappedOutput = Expect<
+  Equal<StandardSchemaV1.InferOutput<typeof wrapped>, { page: number }>
+>;
+
+// Two still name both, as they always did.
+const _bothNamed = toStandardSchema<string, { page: number }>(() => ({
+  value: { page: 1 },
+}));
+type _bothInput = Expect<
+  Equal<StandardSchemaV1.InferInput<typeof _bothNamed>, string>
+>;
+type _bothOutput = Expect<
+  Equal<StandardSchemaV1.InferOutput<typeof _bothNamed>, { page: number }>
+>;
+
+// None infers the output from what the function returns, async included.
+const _inferred = toStandardSchema(async (input) => ({
+  value: { token: String(input) },
+}));
+type _inferredOutput = Expect<
+  Equal<StandardSchemaV1.InferOutput<typeof _inferred>, { token: string }>
+>;
+type _inferredInput = Expect<
+  Equal<StandardSchemaV1.InferInput<typeof _inferred>, unknown>
+>;
+
+// @ts-expect-error — a named output is checked against what is returned.
+toStandardSchema<{ page: number }>(() => ({ value: { page: "one" } }));
 
 /* --- validating params overrides what the path inferred --------------- */
 

@@ -264,7 +264,7 @@ describe("toStandardSchema", () => {
   /** superstruct has no `~standard`, so it stands in for "everything else". */
   const Page = s.object({ page: s.number() });
 
-  const wrapped = toStandardSchema<unknown, { page: number }>(
+  const wrapped = toStandardSchema<{ page: number }>(
     (input) => {
       const coerced = {
         page: Number((input as { page?: unknown } | null)?.page),
@@ -314,17 +314,15 @@ describe("toStandardSchema", () => {
   });
 
   it("accepts an async validate function", async () => {
-    const asyncSchema = toStandardSchema<unknown, { token: string }>(
-      async (input) => {
-        await Bun.sleep(1);
-        const token = (input as { token?: unknown } | null)?.token;
-        return typeof token === "string"
-          ? { value: { token } }
-          : {
-              issues: [{ message: "token must be a string", path: ["token"] }],
-            };
-      },
-    );
+    const asyncSchema = toStandardSchema<{ token: string }>(async (input) => {
+      await Bun.sleep(1);
+      const token = (input as { token?: unknown } | null)?.token;
+      return typeof token === "string"
+        ? { value: { token } }
+        : {
+            issues: [{ message: "token must be a string", path: ["token"] }],
+          };
+    });
 
     const ok = await run(validate({ query: asyncSchema }), {
       url: "/check?token=abc",
