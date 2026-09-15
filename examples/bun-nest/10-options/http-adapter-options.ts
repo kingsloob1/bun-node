@@ -877,8 +877,19 @@ step("useStaticAssets(path, options)");
     "<h1>docs</h1>",
   );
   checkEqual(
-    "dotfiles: 'deny' is 403",
+    "dotfiles: 'deny' falls through by default (serve-static), so 404",
     (await adapter.fetch("/static/.env")).status,
+    404,
+  );
+  const strictStatic = new BunHttpAdapter();
+  strictStatic.useStaticAssets(root, {
+    prefix: "/static",
+    dotfiles: "deny",
+    fallthrough: false,
+  });
+  checkEqual(
+    "dotfiles: 'deny' with fallthrough: false forwards a 403",
+    (await strictStatic.fetch("/static/.env")).status,
     403,
   );
   checkEqual(

@@ -27,6 +27,36 @@ afterEach(async () => {
   }
 });
 
+describe("BunWebSocketAdapter: newInstance options reach bun-common", () => {
+  it("forwards `responseTimeout` to the dedicated server", async () => {
+    const router = new BunRouter();
+    router.get("/hang", () => {
+      // Neither responds nor calls next(): only `responseTimeout` ends it.
+    });
+    const adapter = new BunWebSocketAdapter({
+      newInstance: true,
+      listen: { port: 0 },
+      router,
+      responseTimeout: 50,
+    });
+    const server = adapter.getServer();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        fetch(`http://127.0.0.1:${server?.port}/hang`).then((r) => r.status),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(resolve, 2000, "no timeout applied");
+        }),
+      ]);
+      expect(outcome).toBe(500);
+    } finally {
+      clearTimeout(timer);
+      adapter.close(server);
+    }
+  });
+});
+
 describe("BunWebSocketAdapter: server options", () => {
   it("rides on the server `{ newInstance: false, getServer }` returns", async () => {
     const http = new BunHttpAdapter();

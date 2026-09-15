@@ -19,8 +19,12 @@
  *
  * A few things worth knowing before reading it:
  *
- * - A miss is a `404 Not Found` by default. `fallthrough: true` hands it to the
- *   next route instead. `dotfiles: "ignore"` (the default) is a miss too.
+ * - `fallthrough` defaults to `true`, as in `serve-static`: a miss (and a
+ *   denied dotfile, or a method other than GET/HEAD) goes to the next route,
+ *   and with none left the adapter answers 404. `fallthrough: false` forwards
+ *   the client error as `next(err)` instead (a 405 for another method).
+ *   `dotfiles: "ignore"` (the default) is a miss too. These examples run on a
+ *   `BunHttpAdapter`, whose `fetch()` renders a forwarded error as a page.
  * - `ETag` and `Last-Modified` are on by default, and a matching conditional
  *   request gets `304` with no work from you.
  * - Range requests are served by `Bun.serve` itself, so that section binds a
@@ -36,7 +40,10 @@
  *   accepts; `compression` (on by default) compresses everything else on the
  *   fly — only compressible types, only over 1 KiB, never a range.
  */
-import type { ServeStaticOptions } from "@kingsleyweb/bun-common";
+import type {
+  RouterErrorMiddlewareHandler,
+  ServeStaticOptions,
+} from "@kingsleyweb/bun-common";
 import type { Stats } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,12 +60,15 @@ title("Serving static files");
 
 const PUBLIC = join(import.meta.dir, "fixtures", "public");
 
-/** A router serving `root` under `/static` with `options`. */
+/**
+ * An adapter serving `root` under `/static` with `options`. Its `fetch()`
+ * answers a forwarded error as Express's final handler would.
+ */
 function site(
   options: ServeStaticOptions = {},
   root: string = PUBLIC,
 ): BunRouter {
-  const router = new BunRouter();
+  const router = new BunHttpAdapter();
   const { prefix, handler } = createServeStaticHandler(root, {
     prefix: "/static",
     ...options,
@@ -193,21 +203,23 @@ show(
 step("dotfiles: ignore (default), deny, allow");
 
 for (const dotfiles of ["ignore", "deny", "allow"]) {
-  const response = await site({ dotfiles }).fetch("/static/.hidden.txt");
+  // fallthrough: false, so ignore and deny show their own status.
+  const response = await site({ dotfiles, fallthrough: false }).fetch(
+    "/static/.hidden.txt",
+  );
   show(`dotfiles: ${dotfiles}`, {
     status: response.status,
-    body: await response.text(),
+    body: (await response.text()).includes("<pre>")
+      ? "(the adapter's error page)"
+      : "served",
   });
 }
 
 /* ------------------------------------------------------------------ */
-step("fallthrough: hand a miss to the next route");
+step("fallthrough (default true): hand a miss to the next route");
 
 const layered = new BunRouter();
-const assets = createServeStaticHandler(PUBLIC, {
-  prefix: "/static",
-  fallthrough: true,
-});
+const assets = createServeStaticHandler(PUBLIC, { prefix: "/static" });
 layered.get(`${assets.prefix}/*`, assets.handler);
 layered.get("/static/*", (req, res) => {
   res.status(200).send(`generated on the fly for ${req.path}`);
@@ -221,6 +233,26 @@ show(
   "a dotfile falls through too (ignore is a miss)",
   await view(await layered.fetch("/static/.hidden.txt")),
 );
+
+const strict = new BunRouter();
+const strictAssets = createServeStaticHandler(PUBLIC, {
+  prefix: "/static",
+  fallthrough: false,
+});
+strict.all(`${strictAssets.prefix}/*`, strictAssets.handler);
+strict.use(((err, _req, res, _next) => {
+  const status = (err as { status?: number }).status ?? 500;
+  res.status(status).send(`forwarded: ${(err as Error).name}`);
+}) satisfies RouterErrorMiddlewareHandler);
+show(
+  "fallthrough: false — a miss is next(err)",
+  await view(await strict.fetch("/static/report.csv")),
+);
+const post = await strict.fetch("/static/about.html", { method: "POST" });
+show("fallthrough: false — a POST is 405", {
+  status: post.status,
+  allow: post.headers.get("allow"),
+});
 
 /* ------------------------------------------------------------------ */
 step("redirect: a directory without its trailing slash");

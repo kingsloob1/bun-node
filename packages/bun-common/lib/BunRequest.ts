@@ -246,6 +246,57 @@ export interface ParseBodyConfig extends BodyDecodingOptions {
  */
 export type ParseBodyOption = boolean | ParseBodyConfig;
 
+/** The options a {@link BunRequest} is built with (its third constructor argument). */
+type BunRequestInitOptions = NonNullable<
+  ConstructorParameters<typeof BunRequest>[2]
+>;
+
+/**
+ * The request options an adapter applies when its `request` option is not
+ * given: body and cookie parsing on. Frozen; merge over it with
+ * {@link mergeBunRequestOptions}.
+ */
+export const DEFAULT_ADAPTER_REQUEST_OPTIONS: Readonly<BunRequestInitOptions> =
+  Object.freeze({ parseBody: true, parseCookies: true });
+
+/**
+ * Merges request options over `base` (by default
+ * {@link DEFAULT_ADAPTER_REQUEST_OPTIONS}), so a partial object such as
+ * `{ cookieSecret }` keeps body and cookie parsing on. A key set to
+ * `undefined` keeps the base value. `parseBody` merges too when both sides
+ * are objects (a boolean on either side replaces), and so does its
+ * `contentTypes` map. Neither argument is modified.
+ */
+export function mergeBunRequestOptions(
+  overrides: Partial<BunRequestInitOptions> | undefined,
+  base: Readonly<BunRequestInitOptions> = DEFAULT_ADAPTER_REQUEST_OPTIONS,
+): BunRequestInitOptions {
+  const merged: BunRequestInitOptions = { ...base };
+  if (!overrides) {
+    return merged;
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) {
+      Object.assign(merged, { [key]: value });
+    }
+  }
+
+  const baseBody = base.parseBody;
+  const body = overrides.parseBody;
+  if (isObject(baseBody) && isObject(body)) {
+    const baseTypes = baseBody.contentTypes;
+    const types = body.contentTypes;
+    merged.parseBody = {
+      ...baseBody,
+      ...body,
+      ...(isObject(baseTypes) && isObject(types)
+        ? { contentTypes: { ...baseTypes, ...types } }
+        : {}),
+    };
+  }
+  return merged;
+}
+
 /**
  * Default body-size cap (100kb) applied to most kinds when the object form of
  * `parseBody` omits `maxContentLength`. Boolean `parseBody: true` stays
@@ -770,6 +821,13 @@ export class BunRequest<
    */
   private _body: DefaultRequestBody = undefined;
 
+  /**
+   * The cookie secret, as cookie-parser's `req.secret`: the `cookieSecret`
+   * request option's first entry when that is set, otherwise `undefined`
+   * until middleware assigns it or `parseCookies({ secret })` fills it in.
+   * `res.cookie(..., { signed: true })` signs with it (its first entry, when
+   * an array).
+   */
   public secret: string | string[] | undefined = undefined;
   // `cookies`/`signedCookies`/`params`/`query` are lazily allocated — a
   // routing-only request that never reads them pays no allocation.
@@ -869,8 +927,10 @@ export class BunRequest<
   #bodyParsed = false;
 
   /**
-   * Whether a compressed body (`Content-Encoding: gzip`/`deflate`/`br`) is
-   * inflated before parsing. `true` by default, as body-parser. Resolved from
+   * Whether a compressed body is decoded before parsing: `Content-Encoding`
+   * `gzip`/`x-gzip`, `deflate`, `br`, `zstd`, stacked codings (`gzip, br`,
+   * decoded last to first) and `dcb`/`dcz` given
+   * {@link #compressionDictionaries}. `true` by default, as body-parser. Resolved from
    * `parseBody.inflate` (object form) when the request is built or
    * {@link setParseBodyOptions} runs, and overridden by the `inflate` option
    * of {@link handleBodyParsing}; either affects only a body not yet read.
@@ -1030,6 +1090,17 @@ export class BunRequest<
       allowedContentTypes?: ContentParserType[];
       /** Options for the cookie parser, applied when `parseCookies` is on. */
       cookieParseOptions?: CookieParseOptions;
+      /**
+       * The secret(s) signed cookies are verified with, as
+       * `cookieParser(secret)`: a string, or an array for rotation (newest
+       * first — the first signs, every one verifies). When set, `req.secret`
+       * is its first entry from the moment the request is built, so
+       * `res.cookie(name, value, { signed: true })` signs with it, and the
+       * build-time cookie parse fills `req.signedCookies` (a cookie no secret
+       * verifies becomes `false`). Unset (or `""`/`[]`): no secret, and `s:`
+       * cookies stay in `req.cookies` until `parseCookies({ secret })` runs.
+       */
+      cookieSecret?: string | string[];
     } = {
       parseBody: true,
       parseCookies: true,
@@ -1098,16 +1169,31 @@ export class BunRequest<
       );
     }
 
+    // cookie-parser sets `req.secret = secrets[0]` on every request.
+    const cookieSecrets = this.#configuredCookieSecrets();
+    if (cookieSecrets.length) {
+      this.secret = cookieSecrets[0];
+    }
+
     if (this.options?.parseCookies) {
       (this.#initPromises ??= []).push(
         Promise.resolve(
           this.parseCookies({
             forceUpdateRequest: true,
-            secret: this.secret,
+            secret: cookieSecrets.length ? cookieSecrets : undefined,
           }),
         ),
       );
     }
+  }
+
+  /** The `cookieSecret` option as a list of non-empty secrets; `[]` when unset. */
+  #configuredCookieSecrets(): string[] {
+    const configured = this.options?.cookieSecret;
+    const list = isArray(configured) ? configured : [configured];
+    return list.filter(
+      (secret): secret is string => isString(secret) && secret !== "",
+    );
   }
 
   /**
@@ -2629,6 +2715,9 @@ export class BunRequest<
       return empty;
     }
 
+    // With no secret passed, a `req.secret` still holding the `cookieSecret`
+    // option's first entry verifies with the whole rotation, not just it.
+    const configuredSecrets = this.#configuredCookieSecrets();
     const secrets = isArray(sentSecret)
       ? sentSecret
       : isString(sentSecret) && sentSecret
@@ -2636,7 +2725,9 @@ export class BunRequest<
         : isArray(this.secret)
           ? this.secret
           : isString(this.secret) && this.secret
-            ? [this.secret]
+            ? this.secret === configuredSecrets[0]
+              ? configuredSecrets
+              : [this.secret]
             : [];
 
     const cookies = parseCookie(
@@ -2875,8 +2966,12 @@ export class BunRequest<
    *   larger body throws {@link PayloadTooLargeError} (413), including one
    *   already buffered while the request was built. Unset keeps `parseBody`'s
    *   own cap (body-parser would default to 100kb).
-   * - `inflate` — `true` (default) inflates `gzip`/`deflate`/`br`; `false`
-   *   rejects any `Content-Encoding` but `identity` with a 415 error.
+   * - `inflate` — `true` (default) decodes `gzip`/`x-gzip`, `deflate`, `br`,
+   *   `zstd`, stacked codings (`gzip, br`) and, with
+   *   `compressionDictionaries`, `dcb`/`dcz`; `false` rejects any
+   *   `Content-Encoding` but `identity` with a 415 error. The other
+   *   {@link BodyDecodingOptions} (`encodings`, `maxContentCodings`,
+   *   `decompressionFastPathLimit`, `compressionDictionaries`) apply too.
    *
    * With `parseBody: false` on the request this parses nothing.
    *

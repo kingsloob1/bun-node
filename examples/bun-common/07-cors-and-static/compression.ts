@@ -171,6 +171,9 @@ step("Server-sent events — each event is flushed through the compressor");
 const live = new BunHttpAdapter();
 live.use(compression());
 live.get("/ticks", (_req, res) => {
+  // write() adds no headers (as Node): the event-stream type is what tells
+  // compression() to flush every event.
+  res.setHeader("Content-Type", "text/event-stream");
   let tick = 0;
   const timer = setInterval(() => {
     tick++;

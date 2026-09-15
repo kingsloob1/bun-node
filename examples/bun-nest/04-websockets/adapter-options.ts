@@ -17,7 +17,8 @@
  *   middleware runs first and can refuse them.
  * - **Standalone** — `new BunWebSocketAdapter({ newInstance: true, listen: {
  *   port }, router })` binds its own `Bun.serve` server on that port, at
- *   construction. `listen.port` must be a real port, not `0`.
+ *   construction. `listen.port` may be `0`: the OS picks a free port, read
+ *   back from `getServer().port`.
  *
  * The methods NestJS calls, and you can call yourself: `create(port, {
  * namespace })` registers the upgrade route at the namespace path and returns
@@ -450,7 +451,6 @@ await plain.close();
 /* ------------------------------------------------------------------ */
 step("Standalone: `newInstance: true` binds a server of its own");
 
-const ownPort = await getPort();
 const router = new BunRouter();
 router.get("/health", (_req, res) => {
   res.send("ok");
@@ -458,11 +458,12 @@ router.get("/health", (_req, res) => {
 
 const standalone = new BunWebSocketAdapter({
   newInstance: true,
-  listen: { port: ownPort },
+  listen: { port: 0 }, // the OS picks a free port
   router, // HTTP routes on it are served on the same port
   wsOptions: { idleTimeout: 10 },
 });
-show("listening at construction on", standalone.getServer()?.port);
+const ownPort = Number(standalone.getServer()?.port);
+show("listening at construction on", ownPort);
 
 const own = standalone.create(ownPort, { transport: [] }); // namespace "/"
 standalone.bindClientConnect(own, (client) => {

@@ -10,10 +10,12 @@
  *   never responds then fails with a `Request Timedout` error instead of
  *   hanging, which the adapter answers as `500` unless `setErrorHandler`
  *   says otherwise; `0`, the default, waits forever.
- * - `request` **replaces** the default `{ parseBody: true, parseCookies: true }`
- *   — list every flag you want. `parseBody: true` is uncapped; the object form
- *   caps bodies (100kb by default, 10mb for multipart and raw) and answers 413
- *   before any middleware runs.
+ * - `request` is **merged over** the default
+ *   `{ parseBody: true, parseCookies: true }`, so a partial object such as
+ *   `{ cookieSecret }` keeps parsing on; set a flag to `false` to turn it off.
+ *   `parseBody: true` is uncapped; the object form caps bodies (100kb by
+ *   default, 10mb for multipart and raw) and answers 413 before any
+ *   middleware runs.
  * - `server` is merged into `Bun.serve`; `port`, `hostname`, `fetch`,
  *   `websocket` and `development` stay the adapter's.
  * - `router` goes to the underlying `BunRouter`; `logger`, `etag` and

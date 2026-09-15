@@ -12,9 +12,13 @@
  * Worth knowing before reading it:
  *
  * - Cookies are parsed while the request is built, before any middleware
- *   runs, so at that point there is no secret and a signed cookie is still in
- *   `req.cookies` as its raw `s:…` string. Set `req.secret` in a middleware
- *   and call `req.parseCookies({ forceUpdateRequest: true })` to verify them.
+ *   runs. The adapter's `request: { cookieSecret }` option makes that parse
+ *   verify signed cookies — `cookieParser(secret)` on every request — and
+ *   sets `req.secret`, which `res.cookie(..., { signed: true })` signs with.
+ * - Without it there is no secret at that point, and a signed cookie is
+ *   still in `req.cookies` as its raw `s:…` string. Set `req.secret` in a
+ *   middleware and call `req.parseCookies({ forceUpdateRequest: true })` to
+ *   verify them.
  * - Without `forceUpdateRequest: true`, `parseCookies()` writes its result to
  *   `req.cookies` / `req.signedCookies` only when they were not parsed yet.
  * - A `j:`-prefixed value is JSON (what `res.cookie(name, object)` writes) and
@@ -24,6 +28,7 @@
  *   cookie-parser does.
  */
 import {
+  BunHttpAdapter,
   BunRouter,
   cookieParser,
   parseCookie,
@@ -116,6 +121,32 @@ show(
   await (
     await router.fetch("/signed/after", { headers: { Cookie: tampered } })
   ).json(),
+);
+
+/* ------------------------------------------------------------------ */
+step("cookieSecret: verified while the request is built, as cookieParser()");
+
+const app = new BunHttpAdapter(0, {
+  // Newest first: "new secret" signs; SECRET still verifies (rotation).
+  request: { cookieSecret: ["new secret", SECRET] },
+});
+app.get("/profile", (req, res) => {
+  res.cookie("visited", "yes", { signed: true });
+  res.json({
+    reqSecret: req.secret,
+    cookies: req.cookies,
+    signedCookies: req.signedCookies,
+  });
+});
+
+const profile = await app.fetch("/profile", { headers: { Cookie: signedJar } });
+show("no middleware needed: signed with the old secret, verified", {
+  ...((await profile.json()) as object),
+  setCookie: profile.headers.getSetCookie()[0],
+});
+show(
+  "a tampered session is false here too",
+  await (await app.fetch("/profile", { headers: { Cookie: tampered } })).json(),
 );
 
 /* ------------------------------------------------------------------ */

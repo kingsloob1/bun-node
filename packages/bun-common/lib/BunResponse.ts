@@ -1146,15 +1146,20 @@ export class BunResponse<
     return this;
   }
 
+  /**
+   * Opens the long-lived streamed response that {@link write} and
+   * {@link flushHeaders} start; `false` when it is already open.
+   *
+   * As Node's `ServerResponse`, no header is added or changed: the response
+   * goes out with exactly the headers set so far. A server-sent events
+   * endpoint sets `Content-Type: text/event-stream` (and any `Cache-Control`)
+   * itself before the first write, as NestJS's `@Sse()` does.
+   */
   public async initLongLivedConnection() {
     if (this._isLongLived) return false;
     this.req.socket.setKeepAlive(true);
     this.req.socket.setNoDelay(true);
     this.req.socket.setTimeout(0);
-
-    this.setHeader("Content-Type", "text/event-stream");
-    this.setHeader("Cache-Control", "no-cache");
-    this.setHeader("Connection", "keep-alive");
 
     this._isLongLived = true;
     this.options.headers = this.headersObj;
@@ -1179,6 +1184,10 @@ export class BunResponse<
     this.emitFinish();
   }
 
+  /**
+   * Sends the headers set so far and opens the streamed response, as Node's
+   * `flushHeaders()`; it adds no header of its own.
+   */
   flushHeaders(): boolean {
     this.initLongLivedConnection();
     return true;
@@ -1349,7 +1358,10 @@ export class BunResponse<
 
   /**
    * Streams a chunk, opening the long-lived response on the first write, as
-   * Node's `ServerResponse.write`:
+   * Node's `ServerResponse.write`. The first write sends the headers set so
+   * far and adds none: set `Content-Type` (`text/event-stream` for
+   * server-sent events) before it.
+   *
    * - `true` while the response is open (the write buffer is unbounded);
    * - once it has ended (a body was sent, or `end()` called) nothing is
    *   written, it answers `false` and `ERR_STREAM_WRITE_AFTER_END` is emitted

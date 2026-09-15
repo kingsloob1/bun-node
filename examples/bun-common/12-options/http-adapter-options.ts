@@ -8,8 +8,9 @@
  *
  * A few things worth knowing before reading it:
  *
- * - `request` replaces the default `{ parseBody: true, parseCookies: true }`
- *   whole; `setRequestOpts()` swaps it at runtime, for the next request on.
+ * - `request` is merged over the default `{ parseBody: true, parseCookies: true }`;
+ *   `setRequestOpts()` swaps it at runtime, for the next request on, again
+ *   merged over the defaults rather than over the previous options.
  * - `listen()` binds `127.0.0.1` unless given a hostname, rejects on a busy
  *   port rather than moving, and resolves with the running server when asked
  *   for the address it already has (or for port `0`).
@@ -189,11 +190,23 @@ checkEqual(
   (await runtime.fetch("/body", postJson({ text: "x".repeat(500) }))).status,
   413,
 );
+checkEqual(
+  "…merged over the defaults, so cookie parsing stays on",
+  [runtime.requestOpts.parseBody, runtime.requestOpts.parseCookies],
+  [{ maxContentLength: 128 }, true],
+);
 runtime.requestOpts = { parseBody: true };
 checkEqual(
   "the requestOpts setter does the same",
   (await runtime.fetch("/body", postJson({ text: "x".repeat(500) }))).status,
   200,
+);
+const partial = new BunHttpAdapter(0, { request: { cookieSecret: "k" } });
+partial.post("/body", (req, res) => res.json({ body: req.body ?? null }));
+checkEqual(
+  "a partial request option keeps body parsing on",
+  await (await partial.fetch("/body", postJson({ n: 2 }))).json(),
+  { body: { n: 2 } },
 );
 
 /* ------------------------------------------------------------------ */

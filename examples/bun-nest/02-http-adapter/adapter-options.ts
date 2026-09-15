@@ -293,8 +293,9 @@ for (const [label, sent] of [
 step("registerParserMiddleware(prefix, rawBody) on a plain adapter");
 
 const hooks = new BunHttpAdapter();
-// Nest calls this at init with the global prefix and `rawBody`. Only the first
-// call registers anything; later ones (and useBodyParser) are no-ops.
+// Nest calls this at init with the global prefix and `rawBody`. Parsers are
+// registered once per prefix and kind: repeating this call adds nothing, while
+// `useBodyParser("text")`, say, still adds a text parser beside it.
 hooks.registerParserMiddleware("/hooks", true);
 hooks.post("/hooks/github", (req, res) => {
   const raw = (req as RawBodyRequest<BunRequest>).rawBody;

@@ -10,8 +10,12 @@
  *
  * - Files are written to a fresh directory under `os.tmpdir()`, so sizes and
  *   modification times are known; it is removed at the end.
- * - A miss — missing file, ignored dotfile, traversal attempt — is `404 Not
- *   Found`, or `next()` with `fallthrough: true`.
+ * - `fallthrough` defaults to `true`, as in `serve-static`: a client error —
+ *   a missing file or ignored dotfile (404), a denied dotfile or traversal
+ *   (403) — calls `next()`, and so does a method other than GET/HEAD. With
+ *   `fallthrough: false` the error goes to `next(err)` (a `ServeStaticError`),
+ *   and another method is a `405`. The router here has a later route
+ *   answering `299` and an error handler answering the forwarded status.
  * - A directory without its trailing slash is a `301` to the slashed path
  *   (`redirect`, default `true`), or a miss with `redirect: false` — as in
  *   `serve-static`.
@@ -22,7 +26,10 @@
  * - `precompressed` and `compression` are asserted against `.br`/`.gz`/`.zst`
  *   siblings generated in a directory of their own.
  */
-import type { ServeStaticOptions } from "@kingsleyweb/bun-common";
+import type {
+  RouterErrorMiddlewareHandler,
+  ServeStaticOptions,
+} from "@kingsleyweb/bun-common";
 import type { Stats } from "node:fs";
 import { Buffer } from "node:buffer";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -57,17 +64,25 @@ await writeFile(join(root, "guide", "index.html"), "guide");
 await writeFile(join(root, ".env"), "SECRET=1");
 await writeFile(join(root, ".well-known", "security.txt"), "contact");
 
-/** A router serving `root` under `/static` with `options`, and a fallback route. */
+/**
+ * A router serving `root` under `/static` with `options` (on every method,
+ * as `use` would mount serve-static), a fallback route answering `299`, and an
+ * error handler answering a forwarded error's status with its `name`.
+ */
 function site(options: ServeStaticOptions = {}, dir: string = root): BunRouter {
   const router = new BunRouter();
   const { prefix, handler } = createServeStaticHandler(dir, {
     prefix: "/static",
     ...options,
   });
-  router.get(`${prefix}/*`, handler);
-  router.get("/static/*", (_req, res) => {
+  router.all(`${prefix}/*`, handler);
+  router.all("/static/*", (_req, res) => {
     res.status(299).send("next route");
   });
+  router.use(((err, _req, res, _next) => {
+    const status = (err as { status?: number }).status ?? 500;
+    res.status(status).send((err as Error).name);
+  }) satisfies RouterErrorMiddlewareHandler);
   return router;
 }
 
@@ -129,67 +144,77 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("fallthrough");
 
-const missing = await get({}, "/static/missing.txt");
 checkEqual(
-  "false (default): a miss is 404 Not Found",
+  "true (default): a miss goes to the next route",
+  (await get({}, "/static/missing.txt")).status,
+  299,
+);
+const missing = await get({ fallthrough: false }, "/static/missing.txt");
+checkEqual(
+  "false: a miss is next(err) with a 404 NotFoundError",
   [missing.status, missing.text],
-  [404, "Not Found"],
+  [404, "NotFoundError"],
 );
 checkEqual(
-  "true: a miss goes to the next route",
-  (await get({ fallthrough: true }, "/static/missing.txt")).status,
+  "true: an encoded traversal falls through like any other",
+  (await get({}, "/static/..%2fsecret")).status,
   299,
 );
-checkEqual(
-  "an encoded traversal is a miss",
-  (await get({}, "/static/..%2f..%2fetc%2fpasswd")).status,
-  404,
+const traversal = await get(
+  { fallthrough: false },
+  "/static/..%2f..%2fetc%2fpasswd",
 );
 checkEqual(
-  "…which falls through like any other",
-  (await get({ fallthrough: true }, "/static/..%2fsecret")).status,
-  299,
+  "false: an encoded traversal is send's 403 ForbiddenError",
+  [traversal.status, traversal.text],
+  [403, "ForbiddenError"],
+);
+const posted = await site({}).fetch("/static/notes.txt", { method: "POST" });
+checkEqual("true: a POST goes to the next route", posted.status, 299);
+const refused = await site({ fallthrough: false }).fetch("/static/notes.txt", {
+  method: "POST",
+});
+checkEqual(
+  "false: a POST is 405 with Allow: GET, HEAD and no body",
+  [refused.status, refused.headers.get("allow"), await refused.text()],
+  [405, "GET, HEAD", ""],
 );
 // The router refuses a param it cannot decode before the handler runs, as
-// Express 5 does: a `URIError` with `status: 400` enters the pipeline. With no
-// error handler on this bare router, its fetch() rejects with that error.
-let malformed: [string, number | undefined] | number;
-try {
-  malformed = (await get({}, "/static/%E0%A4%A")).status;
-} catch (error) {
-  malformed = [
-    (error as Error).name,
-    (error as Error & { status?: number }).status,
-  ];
-}
-checkEqual("a malformed escape is Express 5's 400 URIError", malformed, [
-  "URIError",
-  400,
-]);
+// Express 5 does: a `URIError` with `status: 400` enters the pipeline, where
+// this router's error handler answers it.
+const malformed = await get({}, "/static/%E0%A4%A");
+checkEqual(
+  "a malformed escape is Express 5's 400 URIError",
+  [malformed.status, malformed.text],
+  [400, "URIError"],
+);
 
 /* ------------------------------------------------------------------ */
 step("dotfiles");
 
 checkEqual(
-  "'ignore' (default): 404",
+  "'ignore' (default): a miss, so next()",
   (await get({}, "/static/.env")).status,
-  404,
-);
-checkEqual(
-  "'ignore' with fallthrough: next()",
-  (await get({ fallthrough: true }, "/static/.env")).status,
   299,
 );
-const denied = await get({ dotfiles: "deny" }, "/static/.env");
 checkEqual(
-  "'deny': 403 Forbidden",
-  [denied.status, denied.text],
-  [403, "Forbidden"],
+  "'ignore' with fallthrough: false — a 404 error",
+  (await get({ fallthrough: false }, "/static/.env")).status,
+  404,
+);
+const denied = await get(
+  { dotfiles: "deny", fallthrough: false },
+  "/static/.env",
 );
 checkEqual(
-  "'deny' does not fall through",
-  (await get({ dotfiles: "deny", fallthrough: true }, "/static/.env")).status,
-  403,
+  "'deny' with fallthrough: false — a 403 ForbiddenError",
+  [denied.status, denied.text],
+  [403, "ForbiddenError"],
+);
+checkEqual(
+  "'deny' falls through by default, as serve-static's 403/next()",
+  (await get({ dotfiles: "deny" }, "/static/.env")).status,
+  299,
 );
 checkEqual(
   "'allow': served",
@@ -199,8 +224,12 @@ checkEqual(
 checkEqual(
   "a dot directory anywhere in the path counts",
   [
-    (await get({ dotfiles: "deny" }, "/static/.well-known/security.txt"))
-      .status,
+    (
+      await get(
+        { dotfiles: "deny", fallthrough: false },
+        "/static/.well-known/security.txt",
+      )
+    ).status,
     (await get({ dotfiles: "allow" }, "/static/.well-known/security.txt"))
       .status,
   ],
@@ -227,7 +256,7 @@ checkEqual(
 );
 checkEqual(
   "false: a directory is a miss",
-  (await get({ index: false }, "/static/")).status,
+  (await get({ index: false, fallthrough: false }, "/static/")).status,
   404,
 );
 checkEqual(
@@ -237,7 +266,8 @@ checkEqual(
 );
 checkEqual(
   "…replaces index.html",
-  (await get({ index: "start.htm" }, "/static/guide/")).status,
+  (await get({ index: "start.htm", fallthrough: false }, "/static/guide/"))
+    .status,
   404,
 );
 checkEqual(
@@ -252,7 +282,11 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("extensions");
 
-checkEqual("none by default", (await get({}, "/static/about")).status, 404);
+checkEqual(
+  "none by default ([]): /static/about is a miss",
+  (await get({ fallthrough: false }, "/static/about")).status,
+  404,
+);
 checkEqual(
   "without a dot",
   (await get({ extensions: ["html"] }, "/static/about")).text,
@@ -457,18 +491,21 @@ checkEqual(
 );
 checkEqual(
   "…and its slashed path is then a miss",
-  (await get({}, "/static/docs/")).status,
+  (await get({ fallthrough: false }, "/static/docs/")).status,
   404,
 );
-const notRedirected = await get({ redirect: false }, "/static/guide");
-checkEqual(
-  "redirect: false — a miss, 404",
-  [notRedirected.status, notRedirected.text],
-  [404, "Not Found"],
+const notRedirected = await get(
+  { redirect: false, fallthrough: false },
+  "/static/guide",
 );
 checkEqual(
-  "…which falls through with fallthrough: true",
-  (await get({ redirect: false, fallthrough: true }, "/static/guide")).status,
+  "redirect: false — a miss, a 404 error without fallthrough",
+  [notRedirected.status, notRedirected.text],
+  [404, "NotFoundError"],
+);
+checkEqual(
+  "…which falls through by default",
+  (await get({ redirect: false }, "/static/guide")).status,
   299,
 );
 checkEqual(
@@ -497,9 +534,9 @@ const noEntries = site(
 
 for (const router of [defaultTtl, noCache, shortTtl, oneEntry, noEntries]) {
   checkEqual(
-    "late.txt does not exist yet",
+    "late.txt does not exist yet: a miss, falling through",
     (await router.fetch("/static/late.txt")).status,
-    404,
+    299,
   );
 }
 await oneEntry.fetch("/static/other.txt"); // the only slot now holds other.txt
@@ -508,7 +545,7 @@ await writeFile(join(cacheRoot, "late.txt"), "late");
 checkEqual(
   "default TTL (1000ms): the miss is remembered",
   (await defaultTtl.fetch("/static/late.txt")).status,
-  404,
+  299,
 );
 checkEqual(
   "metadataCacheTtl: 0 — never cached",
@@ -766,7 +803,13 @@ checkEqual(
 );
 checkEqual(
   "a sibling whose original is missing is never served",
-  (await packed({ precompressed: true }, "/static/orphan.js", "gzip")).status,
+  (
+    await packed(
+      { precompressed: true, fallthrough: false },
+      "/static/orphan.js",
+      "gzip",
+    )
+  ).status,
   404,
 );
 await checkRejects(

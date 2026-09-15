@@ -7,6 +7,7 @@
  */
 import type {
   BunWebSocketServerType,
+  ResolvedBunRequestOptions,
   WebSocketClient,
 } from "@kingsleyweb/bun-common";
 import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
@@ -88,6 +89,16 @@ const _nestHttp: BunHttpAdapter<Session, "/health"> = new BunNestHttpAdapter<
   Session,
   "/health"
 >();
+
+// --- requestOpts: merged over the defaults, so never undefined -------------
+
+// Readable without narrowing, while the setter still takes a partial.
+const _parseBody = http.requestOpts.parseBody;
+type _requestOpts = Expect<
+  Equal<typeof http.requestOpts, ResolvedBunRequestOptions>
+>;
+http.requestOpts = { cookieSecret: "k" };
+http.setRequestOpts({ parseBody: false });
 
 // --- render(): the handler's result, typed ----------------------------------
 

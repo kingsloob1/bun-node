@@ -8,7 +8,11 @@
  * negative control: if the type it guards widened, the directive itself fails.
  */
 import type { Server } from "bun";
-import type { BunHttpAdapter, errorStatusCode } from "../lib/BunHttpAdapter";
+import type {
+  BunHttpAdapter,
+  errorStatusCode,
+  ResolvedBunRequestOptions,
+} from "../lib/BunHttpAdapter";
 import type { FETCH_STUB_SERVER, MatchedLayer } from "../lib/BunRouter";
 import type { ValidatorMiddleware } from "../lib/BunValidate";
 import type { WebSocketClientData } from "../lib/BunWebSocket";
@@ -340,6 +344,15 @@ const registerOnAdapter: RouterVerbMethod<BunHttpAdapter> =
   verbAdapter[dynamicVerb];
 const _returnedAdapter = registerOnAdapter.call(verbAdapter, "/doc", () => {});
 type _returnsAdapter = Expect<Equal<typeof _returnedAdapter, BunHttpAdapter>>;
+
+// requestOpts is always merged over the defaults, so it is never undefined:
+// its fields are readable without narrowing, while the setter takes a partial.
+export const readParseBody = verbAdapter.requestOpts.parseBody;
+type _requestOpts = Expect<
+  Equal<typeof verbAdapter.requestOpts, ResolvedBunRequestOptions>
+>;
+verbAdapter.requestOpts = { cookieSecret: "k" };
+verbAdapter.setRequestOpts({ parseBody: false });
 
 // @ts-expect-error negative control: detached, the method would lose its router
 registerOnRouter("/doc", () => {});

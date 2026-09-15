@@ -1,5 +1,8 @@
 import type { Stats } from "node:fs";
-import type { ServeStaticOptions } from "../lib/types/general";
+import type {
+  RouterErrorMiddlewareHandler,
+  ServeStaticOptions,
+} from "../lib/types/general";
 import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +12,7 @@ import * as zlib from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
-import { createServeStaticHandler } from "../lib/serveStatic";
+import { createServeStaticHandler, ServeStaticError } from "../lib/serveStatic";
 
 /** Root of the fixture tree served by the adapters under test. */
 let root: string;
@@ -131,9 +134,15 @@ describe("useStaticAssets: dotfiles", () => {
     expect((await fetch(`${base}/static/.secret`)).status).toBe(404);
   });
 
-  it("denies dotfiles with 403 when configured", async () => {
-    const base = await serve({ dotfiles: "deny" });
+  it("denies dotfiles with a 403 error when configured without fallthrough", async () => {
+    const base = await serve({ dotfiles: "deny", fallthrough: false });
     expect((await fetch(`${base}/static/.secret`)).status).toBe(403);
+  });
+
+  it("lets a denied dotfile fall through by default, as serve-static", async () => {
+    const base = await serve({ dotfiles: "deny" });
+    // next() with no later route: the adapter's own 404.
+    expect((await fetch(`${base}/static/.secret`)).status).toBe(404);
   });
 
   it("serves dotfiles when allowed", async () => {
@@ -146,6 +155,23 @@ describe("useStaticAssets: dotfiles", () => {
 });
 
 describe("useStaticAssets: redirect", () => {
+  /**
+   * The status of the error `path` forwards with `next(err)`, read by an
+   * error handler registered after every route; `null` when none arrived.
+   */
+  async function forwarded(
+    router: BunRouter,
+    path: string,
+  ): Promise<number | null> {
+    let status = null as number | null;
+    router.use(((err, _req, res, _next) => {
+      status = err instanceof ServeStaticError ? err.status : -1;
+      res.status(status).send(String(err));
+    }) satisfies RouterErrorMiddlewareHandler);
+    await router.fetch(path);
+    return status;
+  }
+
   /** A router serving {@link root} under `/static`, with a fallthrough route. */
   function site(options: Parameters<typeof createServeStaticHandler>[1] = {}) {
     const router = new BunRouter();
@@ -184,7 +210,10 @@ describe("useStaticAssets: redirect", () => {
     const unslashed = await router.fetch("/static/empty-dir");
     expect(unslashed.status).toBe(301);
     expect(unslashed.headers.get("location")).toBe("/static/empty-dir/");
-    expect((await router.fetch("/static/empty-dir/")).status).toBe(404);
+    expect((await router.fetch("/static/empty-dir/")).status).toBe(299);
+    expect(
+      await forwarded(site({ fallthrough: false }), "/static/empty-dir/"),
+    ).toBe(404);
   });
 
   it("does not let a cached slashed lookup hide the redirect", async () => {
@@ -196,14 +225,13 @@ describe("useStaticAssets: redirect", () => {
 
   it("treats a directory as a miss with redirect: false", async () => {
     expect(
-      (await site({ redirect: false }).fetch("/static/nested")).status,
+      await forwarded(
+        site({ redirect: false, fallthrough: false }),
+        "/static/nested",
+      ),
     ).toBe(404);
     expect(
-      (
-        await site({ redirect: false, fallthrough: true }).fetch(
-          "/static/nested",
-        )
-      ).status,
+      (await site({ redirect: false }).fetch("/static/nested")).status,
     ).toBe(299);
   });
 
@@ -213,11 +241,11 @@ describe("useStaticAssets: redirect", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
-  it("ignores dotfiles as a miss: next() with fallthrough, 404 without", async () => {
+  it("ignores dotfiles as a miss: next() with fallthrough, a 404 error without", async () => {
+    expect((await site().fetch("/static/.secret")).status).toBe(299);
     expect(
-      (await site({ fallthrough: true }).fetch("/static/.secret")).status,
-    ).toBe(299);
-    expect((await site().fetch("/static/.secret")).status).toBe(404);
+      await forwarded(site({ fallthrough: false }), "/static/.secret"),
+    ).toBe(404);
   });
 
   it("passes setHeaders the file's fs.Stats", async () => {
@@ -232,6 +260,102 @@ describe("useStaticAssets: redirect", () => {
     expect(seen[0].isFile()).toBe(true);
     expect(seen[0].size).toBe("about-page".length);
     expect(seen[0].mtime).toBeInstanceOf(Date);
+  });
+});
+
+describe("createServeStaticHandler: fallthrough, as serve-static", () => {
+  /**
+   * A router with the handler on every method under `/static` (as `use` would
+   * mount serve-static), a later route answering 299, and an error handler
+   * recording what was forwarded.
+   */
+  function mounted(options: ServeStaticOptions = {}) {
+    const router = new BunRouter();
+    const seen: { error?: unknown } = {};
+    const { handler } = createServeStaticHandler(root, {
+      prefix: "/static",
+      ...options,
+    });
+    router.all("/static/*", handler);
+    router.all("/static/*", (_req, res) => {
+      res.status(299).send("next route");
+    });
+    router.use(((err, _req, res, _next) => {
+      seen.error = err;
+      const status = err instanceof ServeStaticError ? err.status : 500;
+      res.status(status).send("forwarded");
+    }) satisfies RouterErrorMiddlewareHandler);
+    return { router, seen };
+  }
+
+  it("defaults to true: a miss calls next()", async () => {
+    const { router, seen } = mounted();
+    expect((await router.fetch("/static/nope.txt")).status).toBe(299);
+    expect(seen.error).toBeUndefined();
+  });
+
+  it("false forwards a miss as next(err) with an http-errors shaped 404", async () => {
+    const { router, seen } = mounted({ fallthrough: false });
+    expect((await router.fetch("/static/nope.txt")).status).toBe(404);
+    expect(seen.error).toBeInstanceOf(ServeStaticError);
+    expect(seen.error).toMatchObject({
+      status: 404,
+      statusCode: 404,
+      expose: true,
+      message: "Not Found",
+      name: "NotFoundError",
+    });
+  });
+
+  it("false forwards a denied dotfile and a traversal as 403 errors", async () => {
+    const denied = mounted({ fallthrough: false, dotfiles: "deny" });
+    expect((await denied.router.fetch("/static/.secret")).status).toBe(403);
+    expect(denied.seen.error).toMatchObject({
+      status: 403,
+      name: "ForbiddenError",
+    });
+
+    const traversal = mounted({ fallthrough: false });
+    expect((await traversal.router.fetch("/static/..%2fsecret")).status).toBe(
+      403,
+    );
+  });
+
+  it("true lets a denied dotfile and a traversal fall through", async () => {
+    const { router, seen } = mounted({ dotfiles: "deny" });
+    expect((await router.fetch("/static/.secret")).status).toBe(299);
+    expect((await router.fetch("/static/..%2fsecret")).status).toBe(299);
+    expect(seen.error).toBeUndefined();
+  });
+
+  it("false answers a method other than GET/HEAD 405 with Allow: GET, HEAD", async () => {
+    const { router, seen } = mounted({ fallthrough: false });
+    for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+      const response = await router.fetch("/static/about.html", { method });
+      expect([method, response.status]).toEqual([method, 405]);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.headers.get("content-length")).toBe("0");
+      expect(await response.text()).toBe("");
+    }
+    expect(seen.error).toBeUndefined();
+  });
+
+  it("true hands a method other than GET/HEAD to next()", async () => {
+    const { router } = mounted();
+    const response = await router.fetch("/static/about.html", {
+      method: "POST",
+    });
+    expect(response.status).toBe(299);
+  });
+
+  it("serves HEAD either way", async () => {
+    for (const fallthrough of [true, false]) {
+      const { router } = mounted({ fallthrough });
+      const response = await router.fetch("/static/about.html", {
+        method: "HEAD",
+      });
+      expect(response.status).toBe(200);
+    }
   });
 });
 

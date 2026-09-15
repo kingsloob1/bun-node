@@ -26,7 +26,12 @@ import { STATUS_CODES } from "node:http";
 import { isPromise } from "node:util/types";
 import { BunRouter, FETCH_STUB_SERVER, toNativeRequest } from "./BunRouter";
 import { cors } from "./cors";
-import { BunRequest, BunResponse, BunWebSocket } from "./index";
+import {
+  BunRequest,
+  BunResponse,
+  BunWebSocket,
+  mergeBunRequestOptions,
+} from "./index";
 import { resolveLogger } from "./logging";
 import { createServeStaticHandler } from "./serveStatic";
 import {
@@ -43,6 +48,13 @@ import {
 } from "./utils/native";
 
 export type BunRequestOptions = ConstructorParameters<typeof BunRequest>[2];
+
+/**
+ * The request options an adapter actually holds: never `undefined`, because
+ * whatever is assigned is merged over the defaults with
+ * `mergeBunRequestOptions`, which always returns an object.
+ */
+export type ResolvedBunRequestOptions = NonNullable<BunRequestOptions>;
 
 /**
  * The events {@link BunHttpAdapter.eventEmitter} emits, as Node's
@@ -177,7 +189,8 @@ export class BunHttpAdapter<
   customWebsocketDataType = unknown,
   routesType extends string = never,
 > extends BunRouter {
-  #requestOpts!: BunRequestOptions;
+  /** The merged request options; see {@link requestOpts}. */
+  #requestOpts!: ResolvedBunRequestOptions;
   #nodeHttpServer!: NodeServer;
   private _instance!: BunRouter;
   private _websocketAdapter!: BunWebSocket<customWebsocketDataType>;
@@ -224,10 +237,13 @@ export class BunHttpAdapter<
     options?: {
       /**
        * Request-parsing options forwarded to every {@link BunRequest}
-       * (body/cookie/query parsing, size caps, etc.). Defaults to
-       * `{ parseBody: true, parseCookies: true }`.
+       * (body/cookie/query parsing, size caps, `cookieSecret`, etc.), merged
+       * over `{ parseBody: true, parseCookies: true }` with
+       * `mergeBunRequestOptions` — so `{ cookieSecret }` alone keeps body
+       * parsing on. Set a default explicitly to turn it off
+       * (`{ parseBody: false }`).
        */
-      request?: BunRequestOptions;
+      request?: Partial<BunRequestOptions>;
       /**
        * Overrides for the built-in {@link BunWebSocket} adapter (e.g.
        * `wsOptions`, `customDataToWsClientFn`). Merged over the defaults that
@@ -293,10 +309,8 @@ export class BunHttpAdapter<
       logger,
     });
 
-    this.requestOpts = options?.request || {
-      parseBody: true,
-      parseCookies: true,
-    };
+    // Merged over the defaults, not in place of them.
+    this.requestOpts = options?.request ?? {};
 
     this.etagEnabled = options?.etag ?? false;
     this.logger = logger;
@@ -500,10 +514,15 @@ export class BunHttpAdapter<
    * `Bun.serve`'s `error` callback and {@link fetch}, so a served request and
    * a socket-free one cannot be handled differently.
    *
-   * Runs the {@link setErrorHandler} handlers in registration order as
-   * `(err, req, res, next)` against a fresh response, and resolves that
-   * response. A handler that calls `next(err)`, or returns nothing, stops the
-   * chain.
+   * Runs the {@link setErrorHandler} handlers as Express runs error
+   * middleware: in registration order, as `(err, req, res, next)`, against a
+   * fresh response. Only `next` moves on, and a return value is ignored:
+   * `next(err)` hands `err` to the next handler (once none is left, it is
+   * answered as below); `next()`, `next("route")` or `next("router")` leaves
+   * error mode, and with nothing registered after these handlers that is
+   * Express's `404`. A handler that neither responds nor calls `next` (which
+   * it may still do from a callback) is given a second, then answered for the
+   * timeout.
    *
    * With no handler registered, or when the error carries no request (it was
    * thrown before one was built, or by response finalisation such as a
@@ -517,22 +536,61 @@ export class BunHttpAdapter<
       return this.finalErrorResponse(error, req);
     }
 
-    let continueProcessingHandlers = true;
-    const next: NextFunction = (err) => {
-      if (!(isUndefined(err) || isNull(err))) {
-        continueProcessingHandlers = false;
-      }
-    };
-
+    let currentError: unknown = error;
     try {
       const response = new BunResponse(req, { etag: this.etagEnabled });
       for (const handler of this._errorHandlers) {
-        if (!continueProcessingHandlers) {
+        const nextInvoked = Promise.withResolvers<undefined>();
+        let nextCalled = false;
+        let nextArg: Parameters<NextFunction>[0];
+        const next: NextFunction = (arg) => {
+          if (nextCalled) {
+            return;
+          }
+          nextCalled = true;
+          nextArg = arg;
+          nextInvoked.resolve(undefined);
+        };
+
+        await handler(currentError, req, response, next);
+
+        // A handler may still call `next` from a callback: wait for that or
+        // for the response, whichever comes first.
+        if (!nextCalled && !response.headersSent) {
+          const settled = await Promise.race([
+            nextInvoked.promise,
+            response.getNativeResponse(1000),
+          ]);
+          if (settled) {
+            return settled;
+          }
+        }
+
+        if (response.headersSent || !nextCalled) {
           break;
         }
 
-        const resp = await handler(error, req, response, next);
-        continueProcessingHandlers = !!resp;
+        if (
+          isUndefined(nextArg) ||
+          isNull(nextArg) ||
+          nextArg === "route" ||
+          nextArg === "router"
+        ) {
+          // Error mode is over and no middleware follows: finalhandler's 404.
+          return this.finalErrorResponse(
+            Object.assign(new Error(`Cannot ${req.method} ${req.path}`), {
+              status: 404,
+            }),
+            req,
+          );
+        }
+
+        currentError = nextArg;
+      }
+
+      if (!response.headersSent) {
+        // Every handler passed the error on.
+        return this.finalErrorResponse(currentError, req);
       }
 
       return await response.getNativeResponse(1000);
@@ -562,16 +620,28 @@ export class BunHttpAdapter<
     });
   }
 
-  /** The request-parsing options applied to every {@link BunRequest}. */
-  get requestOpts() {
+  /**
+   * The request-parsing options applied to every {@link BunRequest}: what was
+   * last assigned, merged over `{ parseBody: true, parseCookies: true }`.
+   */
+  get requestOpts(): ResolvedBunRequestOptions {
     return this.#requestOpts;
   }
 
-  set requestOpts(opts: BunRequestOptions) {
-    this.#requestOpts = opts;
+  /**
+   * Replaces the request options, merged over the defaults
+   * (`{ parseBody: true, parseCookies: true }`) — not over the options set
+   * before, so an option left out returns to its default.
+   */
+  set requestOpts(opts: Partial<BunRequestOptions>) {
+    this.#requestOpts = mergeBunRequestOptions(opts);
   }
 
-  setRequestOpts(opts: BunRequestOptions) {
+  /**
+   * Replaces the request options for the next request on, merged over the
+   * defaults as the {@link requestOpts} setter. Returns the adapter.
+   */
+  setRequestOpts(opts: Partial<BunRequestOptions>) {
     this.requestOpts = opts;
     return this;
   }
