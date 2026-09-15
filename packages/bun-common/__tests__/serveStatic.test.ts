@@ -1,9 +1,15 @@
+import type { Stats } from "node:fs";
+import type { ServeStaticOptions } from "../lib/types/general";
+import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import * as zlib from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import { BunRouter } from "../lib/BunRouter";
+import { createServeStaticHandler } from "../lib/serveStatic";
 
 /** Root of the fixture tree served by the adapters under test. */
 let root: string;
@@ -32,6 +38,7 @@ beforeAll(() => {
   root = join(tmpdir(), `bun-common-serve-static-${process.pid}`);
   rmSync(root, { recursive: true, force: true });
   mkdirSync(join(root, "nested"), { recursive: true });
+  mkdirSync(join(root, "empty-dir"), { recursive: true });
   writeFileSync(join(root, "index.html"), "<h1>home</h1>");
   writeFileSync(join(root, "MixedCase.TXT"), "mixed-case-body");
   writeFileSync(join(root, "with space.txt"), "spaced");
@@ -135,6 +142,96 @@ describe("useStaticAssets: dotfiles", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("dotfile-body");
+  });
+});
+
+describe("useStaticAssets: redirect", () => {
+  /** A router serving {@link root} under `/static`, with a fallthrough route. */
+  function site(options: Parameters<typeof createServeStaticHandler>[1] = {}) {
+    const router = new BunRouter();
+    const { prefix, handler } = createServeStaticHandler(root, {
+      prefix: "/static",
+      ...options,
+    });
+    router.get(`${prefix}/*`, handler);
+    router.get("/static/*", (_req, res) => {
+      res.status(299).send("next");
+    });
+    return router;
+  }
+
+  it("301s a directory without its trailing slash, keeping the query", async () => {
+    const response = await site().fetch("/static/nested?a=1&b=2");
+
+    expect(response.status).toBe(301);
+    expect(response.headers.get("location")).toBe("/static/nested/?a=1&b=2");
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(await response.text()).toContain("/static/nested/?a=1&amp;b=2");
+  });
+
+  it("redirects through a real server too", async () => {
+    const base = await serve();
+    const response = await fetch(`${base}/static/nested`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(301);
+    expect(response.headers.get("location")).toBe("/static/nested/");
+  });
+
+  it("redirects a directory with no index, whose slashed path is a miss", async () => {
+    const router = site();
+    const unslashed = await router.fetch("/static/empty-dir");
+    expect(unslashed.status).toBe(301);
+    expect(unslashed.headers.get("location")).toBe("/static/empty-dir/");
+    expect((await router.fetch("/static/empty-dir/")).status).toBe(404);
+  });
+
+  it("does not let a cached slashed lookup hide the redirect", async () => {
+    const router = site({ metadataCacheTtl: 60_000 });
+    expect((await router.fetch("/static/nested/")).status).toBe(200);
+    expect((await router.fetch("/static/nested")).status).toBe(301);
+    expect((await router.fetch("/static/nested/")).status).toBe(200);
+  });
+
+  it("treats a directory as a miss with redirect: false", async () => {
+    expect(
+      (await site({ redirect: false }).fetch("/static/nested")).status,
+    ).toBe(404);
+    expect(
+      (
+        await site({ redirect: false, fallthrough: true }).fetch(
+          "/static/nested",
+        )
+      ).status,
+    ).toBe(299);
+  });
+
+  it("never redirects a file", async () => {
+    const response = await site().fetch("/static/about.html");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("ignores dotfiles as a miss: next() with fallthrough, 404 without", async () => {
+    expect(
+      (await site({ fallthrough: true }).fetch("/static/.secret")).status,
+    ).toBe(299);
+    expect((await site().fetch("/static/.secret")).status).toBe(404);
+  });
+
+  it("passes setHeaders the file's fs.Stats", async () => {
+    const seen: Stats[] = [];
+    await site({
+      setHeaders: (_res: unknown, _path: string, stat: Stats) => {
+        seen.push(stat);
+      },
+    }).fetch("/static/about.html");
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].isFile()).toBe(true);
+    expect(seen[0].size).toBe("about-page".length);
+    expect(seen[0].mtime).toBeInstanceOf(Date);
   });
 });
 
@@ -295,5 +392,369 @@ describe("useStaticAssets: metadata cache", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("<h1>home</h1>");
+  });
+});
+
+describe("createServeStaticHandler: precompressed siblings and on-the-fly compression", () => {
+  /** Root of this suite's tree: originals, siblings, an outside file. */
+  let assets: string;
+  /** The JavaScript original, well over the compression threshold. */
+  const script = `export const data = ${JSON.stringify(
+    Array.from({ length: 150 }, (_, i) => ({ id: i, label: `row ${i}` })),
+  )};\n`;
+  /** Each sibling's bytes, by file name. */
+  const siblings: Record<string, Buffer> = {};
+
+  /** Writes a sibling of `name` compressed with `encode`. */
+  function writeSibling(name: string, bytes: Buffer): void {
+    siblings[name] = bytes;
+    writeFileSync(join(assets, name), bytes);
+  }
+
+  beforeAll(() => {
+    const base = join(tmpdir(), `bun-common-precompressed-${process.pid}`);
+    rmSync(base, { recursive: true, force: true });
+    assets = join(base, "public");
+    mkdirSync(assets, { recursive: true });
+
+    writeFileSync(join(assets, "app.js"), script);
+    writeSibling("app.js.br", zlib.brotliCompressSync(script));
+    // Level 1, so a sibling never matches what on-the-fly compression makes.
+    writeSibling("app.js.gz", zlib.gzipSync(script, { level: 1 }));
+    writeSibling(
+      "app.js.zst",
+      zlib.zstdCompressSync(script, {
+        params: { [zlib.constants.ZSTD_c_compressionLevel]: 1 },
+      }),
+    );
+    writeSibling("app.js.gzip", zlib.gzipSync(`${script}// .gzip\n`));
+
+    writeFileSync(join(assets, "only-gz.css"), `body{}${" ".repeat(2000)}`);
+    writeSibling("only-gz.css.gz", zlib.gzipSync(`body{}${" ".repeat(2000)}`));
+
+    writeFileSync(join(assets, "plain.json"), script);
+    writeSibling("orphan.js.gz", zlib.gzipSync(script));
+
+    writeFileSync(join(assets, ".hidden.js"), script);
+    writeSibling(".hidden.js.gz", zlib.gzipSync(script));
+
+    writeFileSync(join(base, "outside.js"), script);
+    writeFileSync(join(base, "outside.js.gz"), zlib.gzipSync(script));
+  });
+
+  afterAll(() => {
+    rmSync(join(assets, ".."), { recursive: true, force: true });
+  });
+
+  /** A router serving `assets` under `/static` with `options`. */
+  function site(options: ServeStaticOptions = {}): BunRouter {
+    const router = new BunRouter();
+    const { prefix, handler } = createServeStaticHandler(assets, {
+      prefix: "/static",
+      ...options,
+    });
+    router.get(`${prefix}/*`, handler);
+    return router;
+  }
+
+  /** GETs `path` with `Accept-Encoding: accept` (none when `null`). */
+  async function get(
+    router: BunRouter,
+    path: string,
+    accept: string | null,
+    headers: Record<string, string> = {},
+  ) {
+    const response = await router.fetch(path, {
+      headers:
+        accept === null ? headers : { "accept-encoding": accept, ...headers },
+    });
+    return {
+      status: response.status,
+      headers: response.headers,
+      encoding: response.headers.get("content-encoding"),
+      bytes: Buffer.from(await response.bytes()),
+    };
+  }
+
+  it("serves the sibling of each accepted coding", async () => {
+    const router = site({ precompressed: true });
+    for (const [accept, name] of [
+      ["br", "app.js.br"],
+      ["gzip", "app.js.gz"],
+      ["zstd", "app.js.zst"],
+    ] as const) {
+      const result = await get(router, "/static/app.js", accept);
+      expect(result.status).toBe(200);
+      expect(result.encoding).toBe(accept);
+      expect(result.bytes.equals(siblings[name])).toBe(true);
+      expect(result.headers.get("content-length")).toBe(
+        String(siblings[name].length),
+      );
+      expect(result.headers.get("content-type")).toStartWith("text/javascript");
+      expect(result.headers.get("vary")).toBe("Accept-Encoding");
+    }
+  });
+
+  it("negotiates q-values, wildcards and the preference order", async () => {
+    const router = site({ precompressed: true });
+    const cases: [string, string | null][] = [
+      ["gzip, br, zstd", "br"],
+      ["gzip, zstd", "zstd"],
+      ["gzip;q=0.5, br;q=0.4", "gzip"],
+      ["br;q=0, gzip", "gzip"],
+      ["*", "br"],
+      ["br;q=0, *", "zstd"],
+      ["br;q=0, zstd;q=0, *", "gzip"],
+      ["identity", null],
+      ["identity, gzip;q=0.5", null],
+      ["*;q=0, identity", null],
+    ];
+    for (const [accept, expected] of cases) {
+      // fallback: "identity", so a miss shows as no Content-Encoding.
+      const result = await get(
+        site({ precompressed: { fallback: "identity" } }),
+        "/static/app.js",
+        accept,
+      );
+      expect([accept, result.encoding]).toEqual([accept, expected]);
+    }
+    expect((await get(router, "/static/app.js", null)).encoding).toBeNull();
+
+    const gzipFirst = site({ precompressed: { encodings: ["gzip", "*"] } });
+    expect(
+      (await get(gzipFirst, "/static/app.js", "br, gzip, zstd")).encoding,
+    ).toBe("gzip");
+  });
+
+  it("tries the next acceptable coding when a sibling is missing", async () => {
+    const result = await get(
+      site({ precompressed: true }),
+      "/static/only-gz.css",
+      "br, zstd, gzip",
+    );
+    expect(result.encoding).toBe("gzip");
+    expect(result.bytes.equals(siblings["only-gz.css.gz"])).toBe(true);
+    expect(result.headers.get("content-type")).toStartWith("text/css");
+  });
+
+  it("gives each encoding its own ETag and Last-Modified, and answers 304 per encoding", async () => {
+    const router = site({ precompressed: true });
+    const br = await get(router, "/static/app.js", "br");
+    const gz = await get(router, "/static/app.js", "gzip");
+    const plain = await get(
+      site({ precompressed: true, compression: false }),
+      "/static/app.js",
+      "identity",
+    );
+    const tags = [br, gz, plain].map((result) => result.headers.get("etag"));
+    expect(new Set(tags).size).toBe(3);
+    expect(tags[0]).toEndWith('-br"');
+    expect(br.headers.get("last-modified")).toBeTruthy();
+
+    const fresh = await get(router, "/static/app.js", "br", {
+      "if-none-match": tags[0] ?? "",
+    });
+    expect(fresh.status).toBe(304);
+
+    const other = await get(router, "/static/app.js", "gzip", {
+      "if-none-match": tags[0] ?? "",
+    });
+    expect(other.status).toBe(200);
+    expect(other.encoding).toBe("gzip");
+  });
+
+  it("serves a byte range of the precompressed file through a real server", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.useStaticAssets(assets, { prefix: "/static", precompressed: true });
+    await adapter.listen(0);
+    started.push(adapter);
+    const response = await fetch(
+      `http://127.0.0.1:${adapter.listeningPort}/static/app.js`,
+      {
+        headers: { "accept-encoding": "br", range: "bytes=0-9" },
+        decompress: false,
+      },
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-encoding")).toBe("br");
+    expect(response.headers.get("content-range")).toBe(
+      `bytes 0-9/${siblings["app.js.br"].length}`,
+    );
+    expect(
+      Buffer.from(await response.bytes()).equals(
+        siblings["app.js.br"].subarray(0, 10),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to on-the-fly compression by default, or to identity", async () => {
+    const compress = await get(
+      site({ precompressed: true }),
+      "/static/plain.json",
+      "gzip",
+    );
+    expect(compress.encoding).toBe("gzip");
+    expect(zlib.gunzipSync(compress.bytes).toString()).toBe(script);
+    expect(compress.headers.get("vary")).toBe("Accept-Encoding");
+
+    const identity = await get(
+      site({ precompressed: { fallback: "identity" } }),
+      "/static/plain.json",
+      "gzip",
+    );
+    expect(identity.encoding).toBeNull();
+    expect(identity.bytes.toString()).toBe(script);
+    expect(identity.headers.get("vary")).toBe("Accept-Encoding");
+  });
+
+  it("compresses on the fly when precompressed is off, ignoring siblings", async () => {
+    for (const precompressed of [undefined, false, { enabled: false }]) {
+      const result = await get(
+        site({ precompressed }),
+        "/static/app.js",
+        "gzip",
+      );
+      expect(result.encoding).toBe("gzip");
+      expect(result.bytes.equals(siblings["app.js.gz"])).toBe(false);
+      expect(zlib.gunzipSync(result.bytes).toString()).toBe(script);
+      expect(result.headers.get("content-length")).toBeNull();
+    }
+  });
+
+  it("applies the compression options on the fly", async () => {
+    const high = await get(
+      site({ compression: { threshold: "1mb" } }),
+      "/static/app.js",
+      "gzip",
+    );
+    expect(high.encoding).toBeNull();
+    const zstdOnly = await get(
+      site({ compression: { encodings: ["zstd"] } }),
+      "/static/app.js",
+      "gzip, zstd",
+    );
+    expect(zstdOnly.encoding).toBe("zstd");
+  });
+
+  it("compression: false sends files as they are", async () => {
+    const off = await get(
+      site({ compression: false }),
+      "/static/app.js",
+      "gzip",
+    );
+    expect(off.encoding).toBeNull();
+    expect(off.bytes.toString()).toBe(script);
+
+    const fallbackOff = await get(
+      site({ compression: false, precompressed: true }),
+      "/static/plain.json",
+      "gzip",
+    );
+    expect(fallbackOff.encoding).toBeNull();
+  });
+
+  it("never compresses a range on the fly", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.useStaticAssets(assets, { prefix: "/static" });
+    await adapter.listen(0);
+    started.push(adapter);
+    const response = await fetch(
+      `http://127.0.0.1:${adapter.listeningPort}/static/plain.json`,
+      {
+        headers: { "accept-encoding": "gzip", range: "bytes=0-9" },
+        decompress: false,
+      },
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(await response.text()).toBe(script.slice(0, 10));
+  });
+
+  it("uses a custom extension map merged over the defaults", async () => {
+    const custom = site({
+      precompressed: {
+        extensions: { gzip: "gzip", zstd: [] },
+        fallback: "identity",
+      },
+    });
+    const gzip = await get(custom, "/static/app.js", "gzip");
+    expect(gzip.bytes.equals(siblings["app.js.gzip"])).toBe(true);
+    expect((await get(custom, "/static/app.js", "zstd")).encoding).toBeNull();
+    expect((await get(custom, "/static/app.js", "br")).encoding).toBe("br");
+  });
+
+  it("validates the precompressed options", () => {
+    expect(() =>
+      createServeStaticHandler(assets, {
+        precompressed: { extensions: { gzip: "a/b" } },
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createServeStaticHandler(assets, {
+        precompressed: { encodings: ["deflate"] },
+      }),
+    ).toThrow(/not available/);
+    expect(() =>
+      createServeStaticHandler(assets, {
+        precompressed: { extensions: { lzma: ".xz" } as never },
+      }),
+    ).toThrow(/unknown encoding "lzma"/);
+  });
+
+  it("keeps dotfile and traversal rules for siblings", async () => {
+    const ignored = await get(
+      site({ precompressed: true }),
+      "/static/.hidden.js",
+      "gzip",
+    );
+    expect(ignored.status).toBe(404);
+
+    const allowed = await get(
+      site({ precompressed: true, dotfiles: "allow" }),
+      "/static/.hidden.js",
+      "gzip",
+    );
+    expect(allowed.encoding).toBe("gzip");
+    expect(allowed.bytes.equals(siblings[".hidden.js.gz"])).toBe(true);
+
+    const escaped = await get(
+      site({ precompressed: true }),
+      "/static/%2e%2e/outside.js",
+      "gzip",
+    );
+    expect(escaped.status).toBe(404);
+  });
+
+  it("serves a sibling requested by its own name as an ordinary file", async () => {
+    const direct = await get(
+      site({ precompressed: true }),
+      "/static/app.js.gz",
+      "gzip",
+    );
+    expect(direct.status).toBe(200);
+    expect(direct.encoding).toBeNull();
+    expect(direct.headers.get("content-type")).toStartWith("application/gzip");
+    expect(direct.bytes.equals(siblings["app.js.gz"])).toBe(true);
+  });
+
+  it("never serves a sibling whose original is missing", async () => {
+    const orphan = await get(
+      site({ precompressed: true }),
+      "/static/orphan.js",
+      "gzip",
+    );
+    expect(orphan.status).toBe(404);
+  });
+
+  it("passes through useStaticAssets", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.useStaticAssets(assets, { prefix: "/assets", precompressed: true });
+    const response = await adapter.fetch("/assets/app.js", {
+      headers: { "accept-encoding": "zstd" },
+    });
+    expect(response.headers.get("content-encoding")).toBe("zstd");
+    expect(
+      Buffer.from(await response.bytes()).equals(siblings["app.js.zst"]),
+    ).toBe(true);
   });
 });
