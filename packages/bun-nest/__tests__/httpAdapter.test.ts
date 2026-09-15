@@ -1,6 +1,7 @@
 import type { App } from "supertest/types";
 import { Buffer } from "node:buffer";
 import { gzipSync } from "node:zlib";
+import { mergeBunRequestOptions, signCookie } from "@kingsleyweb/bun-common";
 import { StreamableFile } from "@nestjs/common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import request from "supertest";
@@ -266,6 +267,96 @@ describe("BunHttpAdapter: responses NestJS sends", () => {
     const response = await adapter.fetch("/boom");
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ handled: "kaboom" });
+  });
+});
+
+/**
+ * `setErrorHandler` handlers are Express error middleware on
+ * `@nestjs/platform-express` (`app.use(handler)`), so only `next` moves the
+ * chain and a return value means nothing.
+ */
+describe("BunHttpAdapter: setErrorHandler() chain, as Express error middleware", () => {
+  /** An adapter whose `/boom` route throws `Error("first")`. */
+  function throwing() {
+    const adapter = new BunHttpAdapter();
+    adapter.get("/boom", () => {
+      throw new Error("first");
+    });
+    return adapter;
+  }
+
+  it("next(err) hands the new error to the next handler, whatever the handler returns", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler((_error, _req, res, next) => {
+      next(new Error("second"));
+      return res;
+    });
+    adapter.setErrorHandler((error, _req, res, _next) => {
+      res.status(502).json({ seen: (error as Error).message });
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ seen: "second" });
+  });
+
+  it("a handler that responds and returns a value (Nest's exception layer) ends the chain", async () => {
+    const adapter = throwing();
+    let laterRan = false;
+    adapter.setErrorHandler((_error, _req, res, _next) => {
+      res.status(503).send("handled");
+      return res;
+    });
+    adapter.setErrorHandler((_error, _req, res, _next) => {
+      laterRan = true;
+      res.status(500).send("overwritten");
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(await response.text()).toBe("handled");
+    expect(response.status).toBe(503);
+    expect(laterRan).toBe(false);
+  });
+
+  it("next(err) past the last handler is answered as finalhandler, for that error", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler((_error, _req, _res, next) => {
+      next(Object.assign(new Error("teapot"), { status: 418 }));
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(418);
+    expect(await response.text()).toContain("<pre>I&#39;m a Teapot</pre>");
+  });
+
+  it("next() leaves error mode: nothing follows, so 404", async () => {
+    const adapter = throwing();
+    let laterRan = false;
+    adapter.setErrorHandler((_error, _req, _res, next) => {
+      next();
+    });
+    adapter.setErrorHandler((_error, _req, res, _next) => {
+      laterRan = true;
+      res.status(500).send("error handler");
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(404);
+    expect(laterRan).toBe(false);
+  });
+
+  it("next(err) called from a callback after the handler returned still moves on", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler((error, _req, _res, next) => {
+      setTimeout(next, 5, error);
+    });
+    adapter.setErrorHandler((error, _req, res, _next) => {
+      res.status(503).json({ late: (error as Error).message });
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ late: "first" });
   });
 });
 
@@ -731,5 +822,132 @@ describe("BunHttpAdapter: routeCacheMax option", () => {
     expect(second).not.toBe(first);
     expect(second).toEqual(first);
     expect(second).toHaveLength(1);
+  });
+});
+
+describe("BunHttpAdapter: request options merge over the defaults", () => {
+  /** A JSON `POST` carrying `body`, with optional extra headers. */
+  function jsonPost(
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): RequestInit {
+    return {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    };
+  }
+
+  it("a partial request option ({ cookieSecret }) keeps body and cookie parsing on", async () => {
+    const adapter = new BunHttpAdapter(0, { request: { cookieSecret: "k" } });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: true,
+      cookieSecret: "k",
+    });
+    adapter.post("/echo", (req, res) => {
+      res.json({
+        body: req.body ?? null,
+        secret: req.secret ?? null,
+        signed: req.signedCookies,
+      });
+    });
+
+    const cookie = `session=${encodeURIComponent(`s:${signCookie("user-42", "k")}`)}`;
+    const response = await adapter.fetch(
+      "/echo",
+      jsonPost({ n: 1 }, { Cookie: cookie }),
+    );
+    expect(await response.json()).toEqual({
+      body: { n: 1 },
+      secret: "k",
+      signed: { session: "user-42" },
+    });
+  });
+
+  it("setRequestOpts() and the setter merge over the defaults, not over the previous options", async () => {
+    const adapter = new BunHttpAdapter(0, { request: { cookieSecret: "k" } });
+
+    expect(adapter.setRequestOpts({ parseQuery: false })).toBe(adapter);
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: true,
+      parseQuery: false,
+    });
+    adapter.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+    const response = await adapter.fetch("/echo", jsonPost({ n: 2 }));
+    expect(await response.json()).toEqual({ body: { n: 2 } });
+
+    adapter.requestOpts = { parseCookies: false };
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: false,
+    });
+    const afterSetter = await adapter.fetch("/echo", jsonPost({ n: 3 }));
+    expect(await afterSetter.json()).toEqual({ body: { n: 3 } });
+  });
+
+  it("an explicit parseBody: false still turns body parsing off", async () => {
+    const adapter = new BunHttpAdapter(0, { request: { parseBody: false } });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: false,
+      parseCookies: true,
+    });
+    adapter.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+    const response = await adapter.fetch("/echo", jsonPost({ n: 4 }));
+    expect(await response.json()).toEqual({ body: null });
+
+    adapter.setRequestOpts({ parseBody: false, parseCookies: false });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: false,
+      parseCookies: false,
+    });
+  });
+
+  it("a nested parseBody object is kept whole beside the other defaults and merges as mergeBunRequestOptions does", async () => {
+    const nested = {
+      parseBody: {
+        maxContentLength: 20,
+        contentTypes: { json: true, text: false },
+      },
+    };
+    const adapter = new BunHttpAdapter(0, { request: nested });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: {
+        maxContentLength: 20,
+        contentTypes: { json: true, text: false },
+      },
+      parseCookies: true,
+    });
+    expect(adapter.requestOpts).toEqual(mergeBunRequestOptions(nested));
+    // The caller's object is not modified.
+    expect(nested).toEqual({
+      parseBody: {
+        maxContentLength: 20,
+        contentTypes: { json: true, text: false },
+      },
+    });
+
+    adapter.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+    const small = await adapter.fetch("/echo", jsonPost({ n: 5 }));
+    expect(await small.json()).toEqual({ body: { n: 5 } });
+    const large = await adapter.fetch("/echo", jsonPost({ x: "y".repeat(50) }));
+    expect(large.status).toBe(413);
+
+    // Nested objects merge field by field over an object base. (The live
+    // `requestOpts` is not used as the base: `BunRequest` fills its parsing
+    // defaults into that object once a request has been built.)
+    expect(
+      mergeBunRequestOptions(
+        { parseBody: { contentTypes: { text: true } } },
+        mergeBunRequestOptions(nested),
+      ),
+    ).toEqual({
+      parseBody: {
+        maxContentLength: 20,
+        contentTypes: { json: true, text: true },
+      },
+      parseCookies: true,
+    });
   });
 });

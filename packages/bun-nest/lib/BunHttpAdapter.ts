@@ -16,6 +16,7 @@ import type {
   matchedRoute,
   MountedHandler,
   NextFunction,
+  ResolvedBunRequestOptions,
   RouterErrorMiddlewareHandler,
   RouterHandler,
   RouterMiddlewareHandler,
@@ -50,6 +51,7 @@ import {
   isObject,
   isString,
   isUndefined,
+  mergeBunRequestOptions,
   omit,
   set,
   toNativeRequest,
@@ -122,7 +124,8 @@ export class BunHttpAdapter<
   declare public instance: BunRouter;
   declare public httpServer: BunWebSocketServerType<customWebsocketDataType>;
 
-  #requestOpts!: BunRequestOptions;
+  /** The merged request options; see {@link requestOpts}. */
+  #requestOpts!: ResolvedBunRequestOptions;
 
   public _logger!: Logger;
   private _websocketAdapter!: BunNestWebsocketAdapter<customWebsocketDataType>;
@@ -161,10 +164,13 @@ export class BunHttpAdapter<
     options?: {
       /**
        * Request-parsing options forwarded to every {@link BunRequest}
-       * (body/cookie/query parsing, size caps, etc.). Defaults to
-       * `{ parseBody: true, parseCookies: true }`.
+       * (body/cookie/query parsing, size caps, `cookieSecret`, etc.), merged
+       * over `{ parseBody: true, parseCookies: true }` with
+       * `mergeBunRequestOptions` — so `{ cookieSecret }` alone keeps body
+       * parsing on. Set a default explicitly to turn it off
+       * (`{ parseBody: false }`).
        */
-      request?: BunRequestOptions;
+      request?: Partial<BunRequestOptions>;
       /**
        * Overrides for the built-in NestJS WebSocket adapter, merged field by
        * field over the defaults that bind it to this HTTP adapter:
@@ -226,10 +232,8 @@ export class BunHttpAdapter<
     const logger = options?.logger || new Logger();
     this.setInstance(router);
 
-    this.requestOpts = options?.request || {
-      parseBody: true,
-      parseCookies: true,
-    };
+    // Merged over the defaults, not in place of them.
+    this.requestOpts = options?.request ?? {};
 
     this.etagEnabled = options?.etag ?? false;
     this.logger = logger;
@@ -337,14 +341,46 @@ export class BunHttpAdapter<
     });
     let routeUsed: matchedRoute | true | undefined;
 
+    const pipeline = this.instance.handle({
+      requestHost: req.host,
+      requestMethod: req.method,
+      response: res,
+      request: req,
+      requestUrl: req.originalUrl,
+    });
+
+    // A handler that opens a long-lived stream and awaits its end — NestJS's
+    // `@Sse()` resolves only once the observable completes or the client
+    // leaves — would otherwise hold the headers back until then. On Node they
+    // go out as soon as `writeHead`/`flushHeaders` runs, so the stream's
+    // response is returned the moment it exists, the pipeline still running.
+    if (Bun.peek.status(pipeline) === "pending") {
+      const streamed = await Promise.race([
+        pipeline.then(
+          () => undefined,
+          () => undefined,
+        ),
+        res
+          .getNativeResponse(0)
+          .then((response) => (res.isLongLived ? response : undefined)),
+      ]);
+      if (streamed) {
+        pipeline.catch((error: unknown) => {
+          // Headers are gone, so nothing but the stream's end can answer it,
+          // as Express's finalhandler does once headers were sent.
+          this.logger.error(
+            "Error after a streaming response started",
+            error instanceof Error ? error.stack : String(error),
+          );
+          // `end()` on a response that has already ended does nothing.
+          void res.end();
+        });
+        return streamed;
+      }
+    }
+
     try {
-      routeUsed = await this.instance.handle({
-        requestHost: req.host,
-        requestMethod: req.method,
-        response: res,
-        request: req,
-        requestUrl: req.originalUrl,
-      });
+      routeUsed = await pipeline;
     } catch (e) {
       const err: object = isObject(e) ? e : new Error(String(e));
 
@@ -469,15 +505,28 @@ export class BunHttpAdapter<
     );
   }
 
-  get requestOpts() {
+  /**
+   * The request-parsing options applied to every {@link BunRequest}: what was
+   * last assigned, merged over `{ parseBody: true, parseCookies: true }`.
+   */
+  get requestOpts(): ResolvedBunRequestOptions {
     return this.#requestOpts;
   }
 
-  set requestOpts(opts: BunRequestOptions) {
-    this.#requestOpts = opts;
+  /**
+   * Replaces the request options, merged over the defaults
+   * (`{ parseBody: true, parseCookies: true }`) — not over the options set
+   * before, so an option left out returns to its default.
+   */
+  set requestOpts(opts: Partial<BunRequestOptions>) {
+    this.#requestOpts = mergeBunRequestOptions(opts);
   }
 
-  setRequestOpts(opts: BunRequestOptions) {
+  /**
+   * Replaces the request options for the next request on, merged over the
+   * defaults as the {@link requestOpts} setter. Returns the adapter.
+   */
+  setRequestOpts(opts: Partial<BunRequestOptions>) {
     this.requestOpts = opts;
     return this;
   }
@@ -808,10 +857,15 @@ export class BunHttpAdapter<
    * `Bun.serve`'s `error` callback and {@link fetch}, so a served request and
    * a socket-free one cannot be handled differently.
    *
-   * Runs the {@link setErrorHandler} handlers in registration order as
-   * `(err, req, res, next)` against a fresh response, and resolves that
-   * response. A handler that calls `next(err)`, or returns nothing, stops the
-   * chain. In a Nest application the handler is Nest's own exception layer,
+   * Runs the {@link setErrorHandler} handlers as Express runs error
+   * middleware: in registration order, as `(err, req, res, next)`, against a
+   * fresh response. Only `next` moves on, and a return value is ignored:
+   * `next(err)` hands `err` to the next handler (once none is left, it is
+   * answered as below); `next()`, `next("route")` or `next("router")` leaves
+   * error mode, and with nothing registered after these handlers that is
+   * Express's `404`. A handler that neither responds nor calls `next` (which
+   * it may still do from a callback) is given a second, then answered for the
+   * timeout. In a Nest application the handler is Nest's own exception layer,
    * registered through `RoutesResolver.registerExceptionHandler`, so errors
    * raised before routing (a refused body, say) reach the exception filters
    * as they do on `@nestjs/platform-express`, where that handler is an Express
@@ -830,22 +884,61 @@ export class BunHttpAdapter<
       return this.finalErrorResponse(error, req);
     }
 
-    let continueProcessingHandlers = true;
-    const next: NextFunction = (err) => {
-      if (!(isUndefined(err) || isNull(err))) {
-        continueProcessingHandlers = false;
-      }
-    };
-
+    let currentError: unknown = error;
     try {
       const response = new BunResponse(req, { etag: this.etagEnabled });
       for (const handler of this._errorHandlers) {
-        if (!continueProcessingHandlers) {
+        const nextInvoked = Promise.withResolvers<undefined>();
+        let nextCalled = false;
+        let nextArg: Parameters<NextFunction>[0];
+        const next: NextFunction = (arg) => {
+          if (nextCalled) {
+            return;
+          }
+          nextCalled = true;
+          nextArg = arg;
+          nextInvoked.resolve(undefined);
+        };
+
+        await handler(currentError, req, response, next);
+
+        // A handler may still call `next` from a callback: wait for that or
+        // for the response, whichever comes first.
+        if (!nextCalled && !response.headersSent) {
+          const settled = await Promise.race([
+            nextInvoked.promise,
+            response.getNativeResponse(1000),
+          ]);
+          if (settled) {
+            return settled;
+          }
+        }
+
+        if (response.headersSent || !nextCalled) {
           break;
         }
 
-        const resp = await handler(error, req, response, next);
-        continueProcessingHandlers = !!resp;
+        if (
+          isUndefined(nextArg) ||
+          isNull(nextArg) ||
+          nextArg === "route" ||
+          nextArg === "router"
+        ) {
+          // Error mode is over and no middleware follows: finalhandler's 404.
+          return this.finalErrorResponse(
+            Object.assign(new Error(`Cannot ${req.method} ${req.path}`), {
+              status: 404,
+            }),
+            req,
+          );
+        }
+
+        currentError = nextArg;
+      }
+
+      if (!response.headersSent) {
+        // Every handler passed the error on.
+        return this.finalErrorResponse(currentError, req);
       }
 
       return await response.getNativeResponse(1000);

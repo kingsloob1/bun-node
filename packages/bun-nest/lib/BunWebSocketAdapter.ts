@@ -1196,6 +1196,9 @@ function resolveAdapterOptions<
     return {
       newInstance: true,
       listen: local.listen,
+      // Every other `BunWebSocketCreateServerOptions` field is forwarded by
+      // name: one left out here is silently ignored.
+      responseTimeout: local.responseTimeout,
       serverOptions: local.serverOptions,
       request: local.request,
       response: local.response,
