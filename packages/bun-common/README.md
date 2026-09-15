@@ -1025,6 +1025,16 @@ never compressed. A compressed response loses `Content-Length`.
 A `text/event-stream` response is flushed after every chunk, and `res.flush()`
 flushes on demand.
 
+Dictionary transport is verified against a real Chrome (153) in
+[`compression.chrome.e2e.test.ts`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/__tests__/compression.chrome.e2e.test.ts):
+Chrome stores a response sent with `Use-As-Dictionary`, offers it back with
+`Available-Dictionary`, and decodes `dcb` and `dcz` from `compression()` and
+from static files compressed on the fly (pass `dictionaries` in the static
+handler's `compression` option). Chrome treats `http://localhost` as a secure
+context, so no TLS is needed to try it locally; elsewhere it requires HTTPS.
+A precompressed sibling (`.br`, `.zst`, `.gz`) is served as it is and never
+dictionary-compressed.
+
 ```ts
 import { BunHttpAdapter, compression } from "@kingsleyweb/bun-common";
 
@@ -1400,6 +1410,17 @@ bun scripts/typecheck.ts        # from the repo root: every project
 cd packages/bun-common
 bunx eslint .                   # lint the whole package
 bun test                        # tests
+```
+
+One suite drives a real browser and is opt-in, so the default `bun test`
+stays fast and machine-independent: it skips (visibly) unless
+`BUN_COMMON_E2E_CHROME=1` is set and Chrome is found. It speaks the Chrome
+DevTools Protocol over Bun's own WebSocket, so it needs no extra dependency.
+Set `BUN_COMMON_E2E_CHROME_BIN` when the browser is not on `PATH` as
+`google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser`.
+
+```bash
+BUN_COMMON_E2E_CHROME=1 bun test __tests__/compression.chrome.e2e.test.ts
 ```
 
 The typed verb overloads in `BunRouter.ts` and both adapters sit between
