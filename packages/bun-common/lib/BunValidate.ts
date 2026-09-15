@@ -382,9 +382,11 @@ function formatPath(issue: StandardSchemaV1.Issue): string {
  * Validates, transforms and normalizes parts of a request against
  * [Standard Schema](https://standardschema.dev) schemas, as middleware.
  *
- * Works with any conforming library — Zod 3.24+, Valibot, ArkType — with no
- * dependency on any of them, because Standard Schema is a spec the schema
- * object itself implements.
+ * Works with any conforming library, with no dependency on any of them,
+ * because Standard Schema is a spec the schema object itself implements.
+ * Verified against zod 4, yup 1.7, valibot 1 and arktype 2, each passed in
+ * directly; a library without `~standard` (superstruct 2) is wrapped with
+ * {@link toStandardSchema}.
  *
  * The produced middleware is an ordinary router handler, so it works on
  * `BunRouter`, `bun-common`'s adapter and `bun-nest`'s adapter alike.

@@ -11,11 +11,16 @@ import {
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import request from "supertest";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
+import {
+  DEFAULT_ADAPTER_REQUEST_OPTIONS,
+  mergeBunRequestOptions,
+} from "../lib/BunRequest";
 import { BunRouter } from "../lib/BunRouter";
 import { noopLogger } from "../lib/logging";
 import {
   compressionDictionaryHash,
   dictionaryCompressedHeader,
+  signCookie,
 } from "../lib/utils/native";
 
 let httpAdapter!: BunHttpAdapter;
@@ -904,6 +909,173 @@ describe("BunHttpAdapter: parseBody decoding options, for the body parsed at bui
     expect((await adapter.fetch("/echo", encodedPost(dcz, "dcz"))).status).toBe(
       415,
     );
+  });
+});
+
+describe("BunHttpAdapter: request options merge over the defaults", () => {
+  /** A signed `Cookie` header for `session=value`. */
+  const signed = (value: string, secret: string) =>
+    `session=${encodeURIComponent(`s:${signCookie(value, secret)}`)}`;
+
+  it("a partial request option keeps body and cookie parsing on", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      request: { cookieSecret: "k" },
+      logger: noopLogger,
+    });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: true,
+      cookieSecret: "k",
+    });
+    adapter.post("/echo", (req, res) => {
+      res.json({ body: req.body ?? null, signed: req.signedCookies });
+    });
+    const response = await adapter.fetch("/echo", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: signed("user-42", "k"),
+      },
+      body: JSON.stringify({ n: 1 }),
+    });
+    expect(await response.json()).toEqual({
+      body: { n: 1 },
+      signed: { session: "user-42" },
+    });
+  });
+
+  it("cookieSecret verifies, rejects tampering, rotates and signs res.cookie through the adapter", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      request: { cookieSecret: ["new", "old"] },
+      logger: noopLogger,
+    });
+    adapter.get("/cookies", (req, res) => {
+      res.cookie("issued", "yes", { signed: true });
+      res.json({ secret: req.secret, signed: req.signedCookies });
+    });
+
+    const rotated = await adapter.fetch("/cookies", {
+      headers: { Cookie: signed("user-42", "old") },
+    });
+    expect(await rotated.json()).toEqual({
+      secret: "new",
+      signed: { session: "user-42" },
+    });
+    expect(rotated.headers.getSetCookie()[0]).toContain(
+      `issued=${encodeURIComponent(`s:${signCookie("yes", "new")}`)}`,
+    );
+
+    const tampered = await adapter.fetch("/cookies", {
+      headers: {
+        Cookie: signed("user-42", "old").replace("user-42", "user-1"),
+      },
+    });
+    const tamperedBody = (await tampered.json()) as { signed: unknown };
+    expect(tamperedBody.signed).toEqual({ session: false });
+  });
+
+  it("setRequestOpts() and the setter merge over the defaults, not over the previous options", async () => {
+    const adapter = new BunHttpAdapter(0, { logger: noopLogger });
+    adapter.setRequestOpts({ parseQuery: false });
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: true,
+      parseQuery: false,
+    });
+    adapter.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+    const response = await adapter.fetch("/echo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ n: 2 }),
+    });
+    expect(await response.json()).toEqual({ body: { n: 2 } });
+
+    adapter.requestOpts = { parseCookies: false };
+    expect(adapter.requestOpts).toEqual({
+      parseBody: true,
+      parseCookies: false,
+    });
+  });
+
+  it("an explicit default still turns it off", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      request: { parseBody: false },
+      logger: noopLogger,
+    });
+    adapter.post("/echo", (req, res) => res.json({ body: req.body ?? null }));
+    const response = await adapter.fetch("/echo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ n: 3 }),
+    });
+    expect(await response.json()).toEqual({ body: null });
+  });
+
+  it("mergeBunRequestOptions merges nested parseBody objects and contentTypes, leaving inputs alone", () => {
+    const base = {
+      parseBody: {
+        maxContentLength: "1kb",
+        contentTypes: { json: true, text: true },
+      },
+      parseCookies: false,
+    } as const;
+    const overrides = {
+      parseBody: { inflate: false, contentTypes: { text: false } },
+      parseQuery: undefined,
+    };
+    const baseCopy = structuredClone(base);
+    const overridesCopy = structuredClone(overrides);
+
+    expect(mergeBunRequestOptions(overrides, base)).toEqual({
+      parseBody: {
+        maxContentLength: "1kb",
+        inflate: false,
+        contentTypes: { json: true, text: false },
+      },
+      parseCookies: false,
+    });
+    expect(base).toEqual(baseCopy);
+    expect(overrides).toEqual(overridesCopy);
+
+    // A boolean on either side replaces rather than merges.
+    expect(mergeBunRequestOptions({ parseBody: true }, base).parseBody).toBe(
+      true,
+    );
+    expect(
+      mergeBunRequestOptions({ parseBody: { inflate: false } }).parseBody,
+    ).toEqual({ inflate: false });
+    expect(mergeBunRequestOptions(undefined)).toEqual({
+      ...DEFAULT_ADAPTER_REQUEST_OPTIONS,
+    });
+    expect(Object.isFrozen(DEFAULT_ADAPTER_REQUEST_OPTIONS)).toBe(true);
+  });
+});
+
+describe("BunHttpAdapter: server-sent events over a socket", () => {
+  it("streams events with the headers the handler set, and nothing forced", async () => {
+    const adapter = new BunHttpAdapter(0, { logger: noopLogger });
+    adapter.get("/events", (_req, res) => {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-store");
+      void (async () => {
+        for (let n = 1; n <= 3; n++) {
+          res.write(`data: ${n}\n\n`);
+          await Bun.sleep(5);
+        }
+        await res.end();
+      })();
+    });
+    await adapter.listen(0);
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${adapter.listeningPort}/events`,
+      );
+      expect(response.headers.get("content-type")).toBe("text/event-stream");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe("data: 1\n\ndata: 2\n\ndata: 3\n\n");
+    } finally {
+      await adapter.close();
+    }
   });
 });
 

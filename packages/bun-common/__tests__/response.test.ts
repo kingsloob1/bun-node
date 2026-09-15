@@ -523,6 +523,90 @@ describe("BunResponse: cookies", () => {
   });
 });
 
+describe("cookieSecret: signed cookies verified while the request is built, as cookieParser(secret)", () => {
+  /** A `Cookie` header value for `name`, signed with `secret`. */
+  function signedCookie(name: string, value: string, secret: string) {
+    return `${name}=${encodeURIComponent(`s:${signCookie(value, secret)}`)}`;
+  }
+
+  it("verifies a valid signed cookie and sets req.secret", async () => {
+    const req = await makeRequest({
+      headers: {
+        Cookie: `${signedCookie("session", "user-42", "k")}; theme=dark`,
+      },
+      options: { parseBody: false, cookieSecret: "k" },
+    });
+    expect(req.secret).toBe("k");
+    expect(req.signedCookies).toEqual({ session: "user-42" });
+    expect(req.cookies).toEqual({ theme: "dark" });
+  });
+
+  it("reports a tampered signed cookie as false and removes it from cookies", async () => {
+    const tampered = signedCookie("session", "user-42", "k").replace(
+      "user-42",
+      "user-1",
+    );
+    const req = await makeRequest({
+      headers: { Cookie: tampered },
+      options: { parseBody: false, cookieSecret: "k" },
+    });
+    expect(req.signedCookies).toEqual({ session: false });
+    expect(req.cookies).toEqual({});
+  });
+
+  it("rotates secrets: the first is req.secret, every one verifies, also on a re-parse", async () => {
+    const req = await makeRequest({
+      headers: {
+        Cookie: `${signedCookie("old", "a", "old secret")}; ${signedCookie("new", "b", "new secret")}`,
+      },
+      options: { parseBody: false, cookieSecret: ["new secret", "old secret"] },
+    });
+    expect(req.secret).toBe("new secret");
+    expect(req.signedCookies).toEqual({ old: "a", new: "b" });
+    expect(
+      req.parseCookies({ forceUpdateRequest: true }).signedCookies,
+    ).toEqual({
+      old: "a",
+      new: "b",
+    });
+  });
+
+  it("signs res.cookie(..., { signed: true }) with the configured secret", async () => {
+    const res = await makeResponse({
+      options: { parseBody: false, cookieSecret: ["new secret", "old secret"] },
+    });
+    res.cookie("token", "value", { signed: true });
+    expect(res.getHeader("Set-Cookie")?.[0]).toContain(
+      `token=${encodeURIComponent(`s:${signCookie("value", "new secret")}`)}`,
+    );
+  });
+
+  it("sets req.secret even with parseCookies: false, and an empty secret is none", async () => {
+    const unparsed = await makeRequest({
+      options: { parseBody: false, parseCookies: false, cookieSecret: "k" },
+    });
+    expect(unparsed.secret).toBe("k");
+    for (const cookieSecret of ["", []]) {
+      const req = await makeRequest({
+        headers: { Cookie: signedCookie("session", "x", "k") },
+        options: { parseBody: false, cookieSecret },
+      });
+      expect(req.secret).toBeUndefined();
+      expect(req.signedCookies).toEqual({});
+    }
+  });
+
+  it("keeps the middleware route: parseCookies({ secret, forceUpdateRequest })", async () => {
+    const req = await makeRequest({
+      headers: { Cookie: signedCookie("session", "user-42", "k") },
+    });
+    expect(req.signedCookies).toEqual({});
+    req.parseCookies({ secret: "k", forceUpdateRequest: true });
+    expect(req.secret).toBe("k");
+    expect(req.signedCookies).toEqual({ session: "user-42" });
+  });
+});
+
 describe("BunResponse: sendFile", () => {
   it("serves a file inline without forcing a download", async () => {
     const res = await makeResponse();
@@ -1078,6 +1162,50 @@ describe("BunResponse: Express parity", () => {
       text += new TextDecoder().decode(value);
     }
     expect(text).toBe("one two");
+  });
+
+  it("a first write() keeps a Content-Type already set and adds no header, as Node", async () => {
+    const res = await makeResponse();
+    res.setHeader("Content-Type", "application/x-ndjson");
+    res.write('{"n":1}\n');
+    expect(res.get("Content-Type")).toBe("application/x-ndjson");
+    expect(res.get("Cache-Control")).toBeUndefined();
+    expect(res.get("Connection")).toBeUndefined();
+    const native = await res.getNativeResponse(0);
+    expect(native.headers.get("content-type")).toBe("application/x-ndjson");
+    expect(native.headers.get("cache-control")).toBeNull();
+    await res.end();
+    expect(await native.text()).toBe('{"n":1}\n');
+  });
+
+  it("a plain write() with no Content-Type sets none", async () => {
+    const res = await makeResponse();
+    res.write("chunk");
+    expect(res.get("Content-Type")).toBeUndefined();
+    const native = await res.getNativeResponse(0);
+    expect(native.headers.get("content-type")).toBeNull();
+    expect(native.headers.get("cache-control")).toBeNull();
+    await res.end();
+    expect(await native.text()).toBe("chunk");
+  });
+
+  it("writeHead() headers survive flushHeaders() and write(), as NestJS's @Sse() sets them", async () => {
+    const res = await makeResponse();
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      Connection: "keep-alive",
+      "Cache-Control":
+        "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+    });
+    expect(res.flushHeaders()).toBe(true);
+    res.write("data: hi\n\n");
+    const native = await res.getNativeResponse(0);
+    expect(native.headers.get("content-type")).toBe("text/event-stream");
+    expect(native.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, must-revalidate, max-age=0, no-transform",
+    );
+    await res.end();
+    expect(await native.text()).toBe("data: hi\n\n");
   });
 
   it("cookie() accepts object values and string maxAge without casts, and leaves opts untouched", async () => {

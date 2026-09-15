@@ -784,6 +784,8 @@ describe("compression: streaming over a socket", () => {
       });
       const base = await serve((adapter) => {
         adapter.get("/events", (_req, res) => {
+          // As on Node, write() adds no Content-Type: an SSE endpoint sets it.
+          res.setHeader("Content-Type", "text/event-stream");
           res.write("data: one\n\n");
           void (async () => {
             await gate;

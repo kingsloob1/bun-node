@@ -288,9 +288,11 @@ export {
   type BunRequestSocketEvents,
   type ContentParserType,
   type ContentTypeParserOptsMap,
+  DEFAULT_ADAPTER_REQUEST_OPTIONS,
   DEFAULT_MAX_CONTENT_LENGTH,
   DEFAULT_MAX_CONTENT_LENGTH_BY_KIND,
   DEFAULT_PARSE_QUERY_OPTS,
+  mergeBunRequestOptions,
   type MultiPartParseResult,
   type ParseBodyConfig,
   type ParseBodyContentTypeConfig,
@@ -330,7 +332,7 @@ export {
   type ValidatorMiddleware,
 } from "./BunValidate";
 export type { StandardSchemaV1 } from "./types/standardSchema";
-export { createServeStaticHandler } from "./serveStatic";
+export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 /* ------------------------------------------------------------------ *
  * Response compression (`lib/compression.ts`) — the `compression`
  * package's middleware with zstd and RFC 9842 dictionaries, the
@@ -399,6 +401,7 @@ export {
   type FinalErrorLogContext,
   finalErrorResponse,
   type FinalErrorResponseOptions,
+  type ResolvedBunRequestOptions,
   type WebsocketOptions,
 } from "./BunHttpAdapter";
 export {

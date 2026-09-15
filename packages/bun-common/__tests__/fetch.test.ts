@@ -10,6 +10,95 @@ import { BunRouter } from "../lib/BunRouter";
  * since a test helper that diverges from production is worse than none.
  */
 
+/**
+ * `setErrorHandler` handlers run as Express error middleware: only `next`
+ * moves the chain, and a return value means nothing.
+ */
+describe("BunHttpAdapter: setErrorHandler() chain, as Express error middleware", () => {
+  /** An adapter whose `/boom` route throws `Error("first")`. */
+  function throwing() {
+    const adapter = new BunHttpAdapter(0);
+    adapter.get("/boom", () => {
+      throw new Error("first");
+    });
+    return adapter;
+  }
+
+  it("next(err) hands the new error to the next handler, whatever the handler returns", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler(((_error, _req, res, next) => {
+      next(new Error("second"));
+      return res;
+    }) satisfies RouterErrorMiddlewareHandler);
+    adapter.setErrorHandler(((error, _req, res, _next) => {
+      res.status(502).json({ seen: (error as Error).message });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ seen: "second" });
+  });
+
+  it("a handler that responds and returns a value ends the chain", async () => {
+    const adapter = throwing();
+    let laterRan = false;
+    adapter.setErrorHandler(((_error, _req, res, _next) => {
+      res.status(503).send("handled");
+      return res;
+    }) satisfies RouterErrorMiddlewareHandler);
+    adapter.setErrorHandler(((_error, _req, res, _next) => {
+      laterRan = true;
+      res.status(500).send("overwritten");
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await adapter.fetch("/boom");
+    expect(await response.text()).toBe("handled");
+    expect(response.status).toBe(503);
+    expect(laterRan).toBe(false);
+  });
+
+  it("next(err) past the last handler is answered as finalhandler, for that error", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler(((_error, _req, _res, next) => {
+      next(Object.assign(new Error("teapot"), { status: 418 }));
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(418);
+    expect(await response.text()).toContain("<pre>I&#39;m a Teapot</pre>");
+  });
+
+  it("next() leaves error mode: nothing follows, so 404", async () => {
+    const adapter = throwing();
+    let laterRan = false;
+    adapter.setErrorHandler(((_error, _req, _res, next) => {
+      next();
+    }) satisfies RouterErrorMiddlewareHandler);
+    adapter.setErrorHandler(((_error, _req, res, _next) => {
+      laterRan = true;
+      res.status(500).send("error handler");
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(404);
+    expect(laterRan).toBe(false);
+  });
+
+  it("next(err) called from a callback after the handler returned still moves on", async () => {
+    const adapter = throwing();
+    adapter.setErrorHandler(((error, _req, _res, next) => {
+      setTimeout(next, 5, error);
+    }) satisfies RouterErrorMiddlewareHandler);
+    adapter.setErrorHandler(((error, _req, res, _next) => {
+      res.status(503).json({ late: (error as Error).message });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ late: "first" });
+  });
+});
+
 describe("BunRouter.fetch: input forms", () => {
   it("treats a bare path as a GET", async () => {
     const router = new BunRouter();

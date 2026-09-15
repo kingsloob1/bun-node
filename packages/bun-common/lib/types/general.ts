@@ -205,8 +205,8 @@ export interface ServeStaticOptions {
    * If root is specified, only the dotfiles above the root are checked (i.e. the root itself can be within a dotfile when when set to "deny").
    * The default value is 'ignore'.
    * 'allow' No special treatment for dotfiles
-   * 'deny' Send a 403 for any request for a dotfile
-   * 'ignore' Pretend like the dotfile does not exist: next() when fallthrough is true, otherwise a 404
+   * 'deny' Deny a request for a dotfile: next() when fallthrough is true, otherwise a 403 error
+   * 'ignore' Pretend like the dotfile does not exist: next() when fallthrough is true, otherwise a 404 error
    */
   dotfiles?: string;
 
@@ -216,15 +216,26 @@ export interface ServeStaticOptions {
   etag?: boolean;
 
   /**
-   * Set file extension fallbacks. When set, if a file is not found, the given extensions will be added to the file name and search for.
-   * The first that exists will be served. Example: ['html', 'htm'].
-   * The default value is false.
+   * File extension fallbacks, as serve-static's `extensions`. When a path
+   * without a trailing slash is not a file or directory, each extension is
+   * appended in order (`/about` tries `/about.html`, then `/about.htm`) and the
+   * first file that exists is served. A leading dot is optional
+   * (`["html", ".htm"]`). Defaults to `[]`, no fallbacks — serve-static's
+   * `false`.
    */
   extensions?: string[];
 
   /**
-   * Let client errors fall-through as unhandled requests, otherwise forward a client error.
-   * The default value is false.
+   * Let client errors fall through as unhandled requests, as serve-static.
+   * Defaults to `true`.
+   *
+   * - `true`: a miss (404), a denied dotfile or traversal (403), a malformed
+   *   path (400), and a method other than `GET`/`HEAD` all call `next()`, so
+   *   later routes and middleware can answer.
+   * - `false`: those client errors call `next(err)` with an `http-errors`
+   *   shaped error (`status`, `statusCode`, `expose: true`), and a method
+   *   other than `GET`/`HEAD` is answered `405` with `Allow: GET, HEAD` and an
+   *   empty body.
    */
   fallthrough?: boolean;
 

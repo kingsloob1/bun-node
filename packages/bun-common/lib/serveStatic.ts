@@ -9,6 +9,7 @@ import type {
   ServeStaticOptions,
 } from "./types/general";
 import { stat } from "node:fs/promises";
+import { STATUS_CODES } from "node:http";
 import { basename, join, resolve, sep } from "node:path";
 import {
   compression,
@@ -163,7 +164,7 @@ async function statPath(filePath: string): Promise<Stats | null> {
  *
  * Returns `null` for a malformed escape or a traversal attempt.
  */
-function safeSegments(pathname: string): string[] | null {
+function safeSegments(pathname: string): string[] | 400 | 403 | 404 {
   const segments: string[] = [];
   for (const raw of pathname.split("/")) {
     if (raw === "" || raw === ".") {
@@ -173,20 +174,50 @@ function safeSegments(pathname: string): string[] | null {
     try {
       decoded = decodeURIComponent(raw);
     } catch {
-      return null; // malformed percent-escape
+      return 400; // malformed percent-escape, as send
     }
-    // Reject traversal and any separator smuggled in through an escape.
-    if (
-      decoded === ".." ||
-      decoded.includes("/") ||
-      decoded.includes("\\") ||
-      decoded.includes("\0")
-    ) {
-      return null;
+    if (decoded.includes("\0")) {
+      return 400; // send refuses a null byte as a bad request
+    }
+    // Traversal is send's 403, also when smuggled in through an escape.
+    if (decoded === ".." || decoded.split(/[\\/]/).includes("..")) {
+      return 403;
+    }
+    // Any other separator smuggled in through an escape names no file here.
+    if (decoded.includes("/") || decoded.includes("\\")) {
+      return 404;
     }
     segments.push(decoded);
   }
   return segments;
+}
+
+/**
+ * An `http-errors`-shaped client error, what `send` hands `serve-static` and
+ * `serve-static` forwards with `next(err)` when `fallthrough` is `false`.
+ */
+export class ServeStaticError extends Error {
+  /** The HTTP status: 400, 403 or 404. */
+  public readonly status: number;
+  /** Alias of {@link status}, as `http-errors` sets both. */
+  public readonly statusCode: number;
+  /** Always `true`: a client error's message is safe to show. */
+  public readonly expose = true;
+
+  constructor(
+    /** The HTTP status the error carries. */
+    status: 400 | 403 | 404,
+  ) {
+    super(STATUS_CODES[status]);
+    this.name =
+      status === 400
+        ? "BadRequestError"
+        : status === 403
+          ? "ForbiddenError"
+          : "NotFoundError";
+    this.status = status;
+    this.statusCode = status;
+  }
 }
 
 /** Normalises the `index` option into the list of filenames to try. */
@@ -292,10 +323,12 @@ const ignoreNext: NextFunction = () => undefined;
  *
  * Semantics that follow `serve-static`:
  *
- * - A miss — a missing file, an ignored dotfile (`dotfiles: "ignore"`), a
- *   traversal attempt — calls `next()` when `fallthrough` is `true` and
- *   answers `404 Not Found` otherwise (this handler's `fallthrough` defaults
- *   to `false`). `dotfiles: "deny"` is always `403`.
+ * - A client error — a missing file or ignored dotfile (404), a denied
+ *   dotfile or traversal attempt (403), a malformed path (400) — calls
+ *   `next()` when `fallthrough` is `true` (the default) and `next(err)` with
+ *   a {@link ServeStaticError} otherwise.
+ * - A method other than `GET`/`HEAD` calls `next()` when `fallthrough` is
+ *   `true`; otherwise it is answered `405` with `Allow: GET, HEAD`.
  * - A directory requested without its trailing slash is a `301` to the slashed
  *   path, query string kept (`redirect`, default `true`); with
  *   `redirect: false` it is a miss.
@@ -329,7 +362,8 @@ export function createServeStaticHandler(
   const etagEnabled = options.etag ?? true;
   const lastModifiedEnabled = options.lastModified ?? true;
   const dotfiles = options.dotfiles ?? "ignore";
-  const fallthrough = options.fallthrough ?? false;
+  // serve-static: `opts.fallthrough !== false`.
+  const fallthrough = options.fallthrough !== false;
   const redirect = options.redirect ?? true;
   const indexNames = resolveIndexNames(options.index);
   const extensions = options.extensions ?? [];
@@ -528,13 +562,24 @@ export function createServeStaticHandler(
     res: BunResponse,
     next: NextFunction,
   ) => {
-    /** Ends a non-match as a 404, or hands back to the pipeline. */
-    const miss = () => {
+    /**
+     * A client error, as serve-static's `error` listener: `next()` when
+     * falling through, `next(err)` otherwise.
+     */
+    const fail = (status: 400 | 403 | 404) =>
+      fallthrough ? next() : next(new ServeStaticError(status));
+    /** A path that resolves to nothing. */
+    const miss = () => fail(404);
+
+    if (req.method !== "GET" && req.method !== "HEAD") {
       if (fallthrough) {
         return next();
       }
-      return res.status(404).send("Not Found");
-    };
+      // Method not allowed, exactly as serve-static answers it.
+      res.setHeader("Allow", "GET, HEAD");
+      res.setHeader("Content-Length", "0");
+      return res.status(405).end();
+    }
 
     let pathname = req.path;
     // Strip the mount prefix. Compared lower-cased because the prefix belongs
@@ -549,16 +594,15 @@ export function createServeStaticHandler(
     const isDirectoryRequest = pathname.endsWith("/");
 
     const segments = safeSegments(pathname);
-    if (segments === null) {
-      return miss();
+    if (!Array.isArray(segments)) {
+      return fail(segments);
     }
 
     if (dotfiles !== "allow") {
       for (const segment of segments) {
         if (segment.startsWith(".")) {
-          return dotfiles === "deny"
-            ? res.status(403).send("Forbidden")
-            : miss();
+          // send: `deny` is a 403 error, `ignore` a 404 — both client errors.
+          return fail(dotfiles === "deny" ? 403 : 404);
         }
       }
     }
