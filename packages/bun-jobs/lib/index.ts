@@ -277,6 +277,7 @@ export type {
 } from "./runner/protocol";
 export {
   type ErrorContext,
+  NotSupportedError,
   ProtocolError,
 } from "./shared/errors";
 export type { RunProgress } from "./shared/progress";

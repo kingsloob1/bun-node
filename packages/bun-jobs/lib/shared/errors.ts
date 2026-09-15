@@ -329,6 +329,37 @@ export class ConfigError extends JobsError {
   }
 }
 
+/**
+ * A driver was asked for something it does not implement, e.g. listing jobs
+ * on a backend with no way to enumerate them.
+ *
+ * A {@link ConfigError}, and it keeps the `"CONFIG"` code, so a caller that
+ * already branches on either keeps working: choosing that driver for that
+ * call is the configuration mistake.
+ */
+export class NotSupportedError extends ConfigError {
+  /** The driver and the method it lacks, plus any detail the throwing site added. */
+  declare readonly context: { driver: string; method: string } & Record<
+    string,
+    unknown
+  >;
+
+  constructor(
+    /** The driver's type, e.g. `"memory"`. */
+    driver: string,
+    /** The method it does not support, without parentheses, e.g. `"getJobs"`. */
+    method: string,
+    /** Extra detail, safe to log. May not set `driver` or `method`. */
+    context?: ErrorContext<"driver" | "method">,
+  ) {
+    super(`The "${driver}" driver does not support ${method}()`, {
+      ...context,
+      driver,
+      method,
+    });
+  }
+}
+
 /** A bounded queue (of triggers, or of jobs) is full. */
 export class QueueFullError extends JobsError {
   /** What is full, and its cap. */

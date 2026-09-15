@@ -16,6 +16,7 @@ import {
   LockUnavailableError,
   newId,
   newToken,
+  NotSupportedError,
   parseToken,
   ProtocolError,
   QueueClosedError,
@@ -139,6 +140,8 @@ describe("errors", () => {
       child: "other:0",
       cause: "other",
       reason: "other",
+      driver: "redis",
+      method: "other",
       operation: "other",
       problem: "other",
       jobId: "j1",
@@ -163,8 +166,31 @@ describe("errors", () => {
     ).toMatchObject({ child: "q:1", cause: "boom" });
     expect(new RunKilledError("stop", untyped).context.reason).toBe("stop");
     expect(
+      new NotSupportedError("memory", "getJobs", untyped).context,
+    ).toMatchObject({ driver: "memory", method: "getJobs" });
+    expect(
       new ProtocolError('job channel "log"', "no value", untyped).context,
     ).toMatchObject({ operation: 'job channel "log"', problem: "no value" });
+  });
+
+  it("reports a driver lacking a method as a ConfigError with a CONFIG code", () => {
+    const error = new NotSupportedError("memory", "getJobs", {
+      queue: "emails",
+    });
+
+    expect(error).toBeInstanceOf(NotSupportedError);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect(error).toBeInstanceOf(JobsError);
+    expect(error.name).toBe("NotSupportedError");
+    expect(error.code).toBe("CONFIG");
+    expect(error.message).toBe(
+      'The "memory" driver does not support getJobs()',
+    );
+    expect(error.context).toEqual({
+      queue: "emails",
+      driver: "memory",
+      method: "getJobs",
+    });
   });
 
   it("names the exchange and the problem in a ProtocolError", () => {

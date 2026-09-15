@@ -16,6 +16,7 @@ import type {
   BunRunnerEvents,
   BunRunnerManager,
   ChildToParent,
+  ConfigError,
   JobChannelErrorReply,
   JobChannelOperation,
   JobChannelValueReply,
@@ -47,6 +48,7 @@ import {
   defineHandler,
   JobTimeoutError,
   LockLostError,
+  NotSupportedError,
   ProtocolError,
   RunKilledError,
 } from "../lib/index";
@@ -255,6 +257,16 @@ void new JobTimeoutError(250, { ms: 1 });
 void new LockLostError("r:1", { key: 42 });
 // @ts-expect-error `reason` likewise
 void new RunKilledError("stop", { reason: "other" });
+
+// A driver lacking a method is still a configuration error, with its code.
+const notSupported = new NotSupportedError("memory", "getJobs");
+const _isConfig: ConfigError = notSupported;
+const _driver: string = notSupported.context.driver;
+const _method: string = notSupported.context.method;
+// @ts-expect-error `method` is the error's own field; a caller cannot replace it
+void new NotSupportedError("memory", "getJobs", { method: "getJob" });
+// @ts-expect-error nor `driver`
+void new NotSupportedError("memory", "getJobs", { driver: "redis" });
 
 const protocolError = new ProtocolError("job channel", "no value");
 const _problem: string = protocolError.context.problem;
