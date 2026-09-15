@@ -1,6 +1,14 @@
 import type { Server } from "bun";
+import type {
+  BunNestWebSocketClient,
+  WsAckFunction,
+  WsEmitFunction,
+  WsResponse,
+  WsResponseTransform,
+} from "../lib";
 import { BunRequest, BunResponse, BunRouter } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { of } from "rxjs";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunNestWebsocketAdapter } from "../lib/BunWebSocketAdapter";
 
@@ -35,6 +43,22 @@ describe("Test Bun Http Adapter For Nest", () => {
 
   test("Can initialize Bun Router", () => {
     expect(new BunRouter()).toBeInstanceOf(BunRouter);
+  });
+
+  test("exports the WebSocket reply, ack and emit types", () => {
+    // Compile-time: these imports fail the tests typecheck if not exported.
+    const response: WsResponse<number> = { event: "n", data: 1 };
+    const ack: WsAckFunction = () => undefined;
+    const emit: WsEmitFunction = () => true;
+    const transform: WsResponseTransform = (value) => of(value);
+    const client = { emit } as unknown as BunNestWebSocketClient;
+
+    expect([response.event, typeof ack, typeof transform]).toEqual([
+      "n",
+      "function",
+      "function",
+    ]);
+    expect(client.emit("x")).toBe(true);
   });
 
   test("Can initialize http adapter", () => {

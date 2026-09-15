@@ -7,13 +7,12 @@ import type {
   BunRouterOptions,
   BunServeNormalOptions,
   BunServeOptions,
-  BunServer,
+  BunWebSocketCreateServerOptions,
   BunWebSocketHandlerType,
   BunWebSocketNormalOptions,
   BunWebSocketServerType,
   EmptyShape,
   FetchInput,
-  CorsOptions as MainCorsOptions,
   matchedRoute,
   MountedHandler,
   NextFunction,
@@ -34,8 +33,6 @@ import type {
   WebSocketClientData,
 } from "./BunWebSocketAdapter";
 import { EventEmitter } from "node:events";
-import { isIPv4, isIPv6 } from "node:net";
-import process from "node:process";
 import { promisify } from "node:util";
 import { isPromise } from "node:util/types";
 import {
@@ -46,8 +43,8 @@ import {
   createServeStaticHandler,
   each,
   FETCH_STUB_SERVER,
+  finalErrorResponse,
   get,
-  getPort,
   isFunction,
   isNull,
   isObject,
@@ -62,6 +59,7 @@ import {
   InternalServerErrorException,
   Logger,
   RequestMethod,
+  StreamableFile,
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
@@ -79,16 +77,39 @@ export type WebsocketOptions<
   routesType extends string = never,
 > = BunWebSocketAdapterOptions<customWebsocketDataType, routesType>;
 
-export type MiddlewareFactoryRespType = (
-  path: string,
-  callback: Function,
-) => unknown;
+/**
+ * `listen()`'s callback: called with the listening server once it is bound
+ * (NestJS passes a no-argument callback, which fits too).
+ */
+export type ListenCallback<customWebsocketDataType = unknown> = (
+  server: BunWebSocketServerType<customWebsocketDataType>,
+) => void;
+
+/**
+ * What {@link BunHttpAdapter.createMiddlewareFactory} returns: registers
+ * `callback` as method-scoped middleware at `path` and returns the adapter.
+ * `callback` stays `Function` because that is what NestJS hands it (and what
+ * `AbstractHttpAdapter` declares); it is called as `(req, res, next)`.
+ * `TAdapter` is the adapter returned; the factory gives it as `this`.
+ */
+export type MiddlewareFactoryRespType<
+  TAdapter extends AbstractHttpAdapter = AbstractHttpAdapter,
+> = (path: string, callback: Function) => TAdapter;
+
+/**
+ * The `options` of {@link BunHttpAdapter.render}: what a `@Render()` handler
+ * returned — view locals, opaque to the adapter — plus an optional `status`.
+ */
+export interface RenderOptions {
+  /** HTTP status to send; `200` when absent or not a positive integer. */
+  status?: number;
+  /** View locals: whatever else the handler returned. */
+  [local: string]: unknown;
+}
 
 type ApplyVersionFilterParameters = Parameters<
   AbstractHttpAdapter["applyVersionFilter"]
 >;
-
-export const man = 1;
 
 export class BunHttpAdapter<
   customWebsocketDataType = unknown,
@@ -121,7 +142,12 @@ export class BunHttpAdapter<
 
   private _notFoundHandlers: RouterMiddlewareHandler[] = [];
   private _errorHandlers: RouterErrorMiddlewareHandler[] = [];
-  private _hasRegisteredBodyParser = false;
+  /**
+   * Body parsers already registered, keyed by path prefix and parser kind
+   * (`"*"` for the untyped `registerParserMiddleware`), so each kind is added
+   * once while different kinds (`json` beside `text`, …) stack.
+   */
+  #registeredBodyParsers = new Set<string>();
   /** When true, every response computes an `ETag`. Opt-in (off by default). */
   protected etagEnabled = false;
   public readonly eventEmitter = new EventEmitter();
@@ -140,10 +166,16 @@ export class BunHttpAdapter<
        */
       request?: BunRequestOptions;
       /**
-       * Overrides for the built-in NestJS WebSocket adapter. Merged over the
-       * defaults that bind the adapter to this HTTP adapter (its router and
-       * shared `Bun.serve` server). A custom adapter can also be supplied later
-       * via `app.useWebSocketAdapter()`.
+       * Overrides for the built-in NestJS WebSocket adapter, merged field by
+       * field over the defaults that bind it to this HTTP adapter:
+       * `{ httpAdapter: this, newInstance: false, router: httpAdapter.instance,
+       * getServer: () => httpAdapter.getBunServer() }`. Every field given wins —
+       * `httpAdapter` (router and server from another HTTP adapter),
+       * `getServer` (the server to ride on), `router`, `wsOptions`,
+       * `customDataToWsClientFn`, and `newInstance: true` with `listen` (a
+       * dedicated server bound at construction; `listen.port` is required).
+       * `{ httpAdapter, localOptions }` is accepted too. A custom adapter can
+       * also be supplied later via `app.useWebSocketAdapter()`.
        */
       websocket?: Partial<
         WebsocketOptions<customWebsocketDataType, routesType>
@@ -203,49 +235,64 @@ export class BunHttpAdapter<
     this.logger = logger;
     this.serverOptions = options?.server || {};
 
-    const websocketOptions = options?.websocket || {};
-    const websocketLocalOptions =
-      "localOptions" in websocketOptions
-        ? websocketOptions.localOptions
-        : "newInstance" in websocketOptions
-          ? omit(websocketOptions, ["httpAdapter"])
-          : undefined;
-    const websocketHttpAdapter = websocketOptions?.httpAdapter ?? this;
-
     this.webSocketAdapter = new BunNestWebsocketAdapter<
       customWebsocketDataType,
       routesType
-    >({
-      httpAdapter: websocketHttpAdapter,
-      localOptions: {
-        router: websocketHttpAdapter.instance,
-        newInstance: false,
-        wsOptions: websocketLocalOptions?.wsOptions,
-        customDataToWsClientFn: websocketLocalOptions?.customDataToWsClientFn,
-        getServer() {
-          const noNewInstanceWsOptions =
-            websocketLocalOptions &&
-            "newInstance" in websocketLocalOptions &&
-            !websocketLocalOptions.newInstance
-              ? (websocketLocalOptions as unknown as BunWebSocketNormalOptions<customWebsocketDataType>)
-              : undefined;
-
-          return noNewInstanceWsOptions
-            ? noNewInstanceWsOptions.getServer()
-            : websocketHttpAdapter.getBunServer();
-        },
-      },
-
-      // httpAd
-      // router: this,
-      // newInstance: false,
-      // getServer: () => {
-      //   return this.getBunServer();
-      // },
-      // ...websocketOptions,
-    });
+    >(this.resolveWebSocketOptions(options?.websocket));
 
     this.defineHttpServer();
+  }
+
+  /**
+   * Merges the constructor's `websocket` option over the defaults that bind
+   * the built-in WebSocket adapter to this HTTP adapter. Every field given
+   * wins; see that option's description.
+   */
+  private resolveWebSocketOptions(
+    websocket:
+      | Partial<WebsocketOptions<customWebsocketDataType, routesType>>
+      | undefined,
+  ): BunWebSocketAdapterOptions<customWebsocketDataType, routesType> {
+    const given = websocket ?? {};
+    const httpAdapter = given.httpAdapter ?? this;
+    // Either shape's fields, all optional: `getServer` from the riding shape,
+    // `listen` and friends from the dedicated-server shape.
+    const local = (("localOptions" in given
+      ? given.localOptions
+      : omit(given, ["httpAdapter"])) ?? {}) as Partial<
+      Omit<BunWebSocketNormalOptions<customWebsocketDataType>, "newInstance">
+    > &
+      Partial<
+        Omit<
+          BunWebSocketCreateServerOptions<customWebsocketDataType, routesType>,
+          "newInstance"
+        >
+      > & {
+        /** Whether to bind a dedicated server (`true`) or ride one (`false`). */
+        newInstance?: boolean;
+      };
+
+    if (local.newInstance === true) {
+      // `listen` is required for a dedicated server; a missing port is
+      // reported by BunWebSocket rather than replaced by a hidden default.
+      return {
+        ...local,
+        newInstance: true,
+        listen: local.listen ?? { port: Number.NaN },
+        router: local.router ?? httpAdapter.instance,
+        httpAdapter,
+      };
+    }
+
+    return {
+      httpAdapter,
+      localOptions: {
+        ...local,
+        newInstance: false,
+        router: local.router ?? httpAdapter.instance,
+        getServer: local.getServer ?? (() => httpAdapter.getBunServer()),
+      },
+    };
   }
 
   /**
@@ -274,6 +321,17 @@ export class BunHttpAdapter<
       return BunRequest.payloadTooLargeResponse(req);
     }
 
+    // A body refused for its `Content-Encoding` while the request was built
+    // (`parseBody.inflate: false`, an unsupported coding, a corrupt stream)
+    // goes to the error handling with the request, as body-parser's
+    // `next(err)` does — answered with its 415/400 rather than routed with no
+    // body.
+    const decodingError = req.bodyDecodingError;
+    if (decodingError) {
+      set(decodingError, "req", req);
+      throw decodingError;
+    }
+
     const res = new BunResponse<customWebsocketDataType>(req, {
       etag: this.etagEnabled,
     });
@@ -288,12 +346,9 @@ export class BunHttpAdapter<
         requestUrl: req.originalUrl,
       });
     } catch (e) {
-      let err = e;
-      if (!isObject(err)) {
-        err = new Error(String(e));
-      }
+      const err: object = isObject(e) ? e : new Error(String(e));
 
-      set(err as unknown as Record<string, unknown>, "req", req);
+      set(err, "req", req);
       throw err;
     }
 
@@ -322,8 +377,11 @@ export class BunHttpAdapter<
 
     if (hasNativeResponse) {
       if (res.upgradeToWsData) {
+        const upgradeData = res.upgradeToWsData;
         const success = server.upgrade(nativeRequest, {
-          data: res.upgradeToWsData,
+          // The accepting server's port, unless the handler recorded one, so
+          // a gateway can tell which server a client arrived on.
+          data: { ...upgradeData, port: upgradeData.port ?? server.port },
         });
 
         if (success) {
@@ -365,8 +423,16 @@ export class BunHttpAdapter<
    * the `Response` the server would have sent.
    *
    * Delegates to {@link handleNativeRequest}, the same method
-   * `Bun.serve`'s `fetch` calls, so not-found handlers, error handlers and
+   * `Bun.serve`'s `fetch` calls, and routes a thrown error through
+   * {@link handleRequestError}, the same method `Bun.serve`'s `error` callback
+   * calls — so not-found handlers, error handlers, the payload guard and
    * response finalisation all apply exactly as they do in production.
+   *
+   * It never rejects for an error in the pipeline. With no error handler (no
+   * Nest application registered one, or none was set), or none that can run,
+   * it resolves the `finalhandler`-style response a served request gets (see
+   * {@link handleRequestError}), such as `415` for a refused
+   * `Content-Encoding` or `500` for a plain throw.
    *
    * @example
    * ```ts
@@ -381,13 +447,21 @@ export class BunHttpAdapter<
       this.isListening ? this.url : undefined,
     );
 
-    const response = await this.handleNativeRequest(
-      nativeRequest,
-      // A live server when one exists, so `requestIP`/`upgrade` behave; a stub
-      // otherwise, which reports no peer and refuses upgrades.
-      (this.getBunServer() ??
-        FETCH_STUB_SERVER) as unknown as BunWebSocketServerType<customWebsocketDataType>,
-    );
+    let response: Response | undefined;
+    try {
+      response = await this.handleNativeRequest(
+        nativeRequest,
+        // A live server when one exists, so `requestIP`/`upgrade` behave; a
+        // stub otherwise, which reports no peer and refuses upgrades.
+        // The stub is not a real server (only `requestIP`/`upgrade` exist),
+        // which is exactly what this method touches.
+        this.getBunServer() ??
+          (FETCH_STUB_SERVER as BunWebSocketServerType<customWebsocketDataType>),
+      );
+    } catch (error) {
+      // The same final error handling `Bun.serve`'s `error` callback runs.
+      return this.handleRequestError(error);
+    }
 
     return (
       response ??
@@ -509,16 +583,17 @@ export class BunHttpAdapter<
     return this.requestTimeout;
   }
 
-  public setTimeout(reqTimeout: number, callback: CallableFunction) {
+  public setTimeout(
+    reqTimeout: number,
+    /** Called once the adapter has a listening server, with that server. */
+    callback: (server: BunWebSocketServerType<customWebsocketDataType>) => void,
+  ): Promise<void> {
     this.requestTimeout = reqTimeout;
     return waitUntil(
       () => this.getBunServer(),
-      (server) => !!server,
-    ).then(
-      callback as unknown as (
-        server: BunWebSocketServerType<customWebsocketDataType> | undefined,
-      ) => unknown,
-    );
+      (server): server is BunWebSocketServerType<customWebsocketDataType> =>
+        !!server,
+    ).then(callback);
   }
 
   public getHeader(response: BunResponse, name: string) {
@@ -530,18 +605,31 @@ export class BunHttpAdapter<
     return this;
   }
 
+  /**
+   * Registers one body-parsing middleware, unless one for the same `prefix`
+   * and `parser` kind is already registered.
+   */
   private registerBodyParser(
-    prefix?: string | undefined,
-    rawBody?: boolean,
-    options?: BodyParserOptions,
+    /** Path prefix the parser runs under; every path when omitted. */
+    prefix: string | undefined,
+    /** Store the raw bytes on `req.rawBody` when this parser parsed a body. */
+    rawBody: boolean | undefined,
+    /** body-parser options: `type`, `limit`, `inflate`, … */
+    options: BodyParserOptions | undefined,
+    /** The parser kind, whose default media type applies without `type`; every type when omitted. */
+    parser?: BodyParserType,
   ) {
-    if (this._hasRegisteredBodyParser) {
-      return;
+    const key = `${prefix ?? ""}\0${parser ?? "*"}`;
+    if (this.#registeredBodyParsers.has(key)) {
+      return this;
     }
 
     const middlewareHandler: RouterMiddlewareHandler = async (req, _, next) => {
-      const buffer = await req.handleBodyParsing(true, options);
-      if (rawBody) {
+      const buffer = await req.handleBodyParsing(true, options, parser);
+      // As body-parser's `verify` hook in Nest's ExpressAdapter: `rawBody` is
+      // set only by a parser that read the body. A request this parser skipped
+      // (another type, or no body) keeps what an earlier parser set.
+      if (rawBody && buffer !== undefined) {
         set(req, "rawBody", buffer);
       }
 
@@ -556,17 +644,32 @@ export class BunHttpAdapter<
       this.use(middlewareHandler);
     }
 
-    // Mark as registered so a second call does not stack a duplicate parser.
-    this._hasRegisteredBodyParser = true;
+    this.#registeredBodyParsers.add(key);
     return this;
   }
 
+  /**
+   * Registers a parser for one kind of body — what `app.useBodyParser(type,
+   * options)` calls, with the application's `rawBody` option.
+   *
+   * - `options.type` picks the requests it parses; without it, the kind's
+   *   body-parser default (`json` → `application/json`, `urlencoded` →
+   *   `application/x-www-form-urlencoded`, `text` → `text/plain`, `raw` →
+   *   `application/octet-stream`). Any other request is left to other parsers.
+   * - `options.limit` over the body rejects with a 413 `PayloadTooLargeError`,
+   *   which Nest's exception layer answers `413`; `options.inflate: false`
+   *   refuses a compressed body with `415`.
+   * - With `rawBody`, the bytes a parser read are kept on `req.rawBody`.
+   *
+   * Each kind is registered once — a second call for the same kind does
+   * nothing — while different kinds stack.
+   */
   public useBodyParser(
-    _: BodyParserType,
+    type: BodyParserType,
     rawBody: boolean,
     options: BodyParserOptions,
   ) {
-    return this.registerBodyParser(undefined, rawBody, options);
+    return this.registerBodyParser(undefined, rawBody, options, type);
   }
 
   public async setListenOptions(
@@ -589,133 +692,194 @@ export class BunHttpAdapter<
     return await this.listen(port, hostname);
   }
 
+  /**
+   * Binds `Bun.serve` on `port` (at 127.0.0.1) and resolves the server, after
+   * calling `callback` with it. NestJS's `app.listen()` uses this form.
+   *
+   * A bind failure (a busy port, say) rejects — unless an `error` listener is
+   * attached to the HTTP server, as `app.listen()` attaches one. Then, as with
+   * `@nestjs/platform-express` (whose `listen` hands off to `node:http`,
+   * which reports the failure only through `error`), the listener receives
+   * the error, the callback is not called, and this resolves `undefined`:
+   * rejecting too would leave a rejection `app.listen()` never observes.
+   */
   public async listen(
     port: string | number,
-    callback?: (...args: unknown[]) => void,
-  ): Promise<BunServer>;
+    callback?: ListenCallback<customWebsocketDataType>,
+  ): Promise<BunWebSocketServerType<customWebsocketDataType> | undefined>;
+  /** As above, bound at `hostname`. */
   public async listen(
     port: string | number,
     hostname: string,
-    callback?: (...args: unknown[]) => void,
-  ): Promise<BunServer>;
+    callback?: ListenCallback<customWebsocketDataType>,
+  ): Promise<BunWebSocketServerType<customWebsocketDataType> | undefined>;
   public async listen(
     port: number | string,
-    hostname?: string | ((...args: unknown[]) => void),
-    callback?: (...args: unknown[]) => void,
-  ) {
+    hostname?: string | ListenCallback<customWebsocketDataType>,
+    callback?: ListenCallback<customWebsocketDataType>,
+  ): Promise<BunWebSocketServerType<customWebsocketDataType> | undefined> {
     // The callback may arrive as the 2nd argument (`listen(port, cb)`, the form
     // NestJS's `app.listen()` uses) or the 3rd (`listen(port, host, cb)`).
     // Resolve it *before* normalising `hostname`, otherwise the 2nd-arg form
     // loses the callback and `app.listen()` never resolves.
-    callback = isFunction(hostname)
+    const done = isFunction(hostname)
       ? hostname
       : isFunction(callback)
         ? callback
         : () => undefined;
 
-    hostname =
-      typeof hostname === "string" && (isIPv4(hostname) || isIPv6(hostname))
-        ? hostname
-        : "127.0.0.1";
+    // Anything `Bun.serve` accepts — an IP literal, `"localhost"`, a name —
+    // is bound as given; only an absent hostname defaults to 127.0.0.1.
+    const host = isString(hostname) && hostname ? hostname : "127.0.0.1";
 
-    port = Number(port);
-    if (!(this.listeningHost === hostname && this.listeningPort === port)) {
-      await this._serverInstance?.stop(true);
+    const portNumber = Number(port);
+    if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) {
+      throw new RangeError(
+        `listen(): port must be an integer from 0 to 65535, got ${port}`,
+      );
+    }
+
+    if (this._serverInstance && this.isServerListening) {
+      // Port `0` asks for "any port", which the running server satisfies.
+      const sameAddress =
+        this._listeningHost === host &&
+        (portNumber === 0 || Number(this._serverInstance.port) === portNumber);
+
+      if (sameAddress) {
+        await done(this._serverInstance);
+        return this._serverInstance;
+      }
+
+      // A different address: move there.
+      await this._serverInstance.stop(true);
       this._serverInstance = undefined;
       this.isServerListening = false;
     }
 
-    if (this.isServerListening || this._serverInstance) {
-      if (callback) {
-        await callback(this._serverInstance);
-      }
-
-      return this._serverInstance;
-    }
-
-    const portsToTest: number[] = [port];
-    while (portsToTest.length < 10) {
-      portsToTest.push(port + portsToTest.length);
-    }
-
-    const availablePort = await getPort({
-      host: hostname,
-      port: portsToTest,
-    });
-
-    this._listeningHost = hostname;
-    this._listeningPort = availablePort;
-
+    let httpServer: BunWebSocketServerType<customWebsocketDataType>;
     try {
-      // eslint-disable-next-line ts/no-this-alias
-      const that = this;
-      const httpServer = Bun.serve<
+      httpServer = Bun.serve<
         WebSocketClientData<customWebsocketDataType>,
         routesType
       >({
         ...(this.serverOptions || {}),
-        port: this._listeningPort,
-        hostname: this._listeningHost,
+        port: portNumber,
+        hostname: host,
         development: Bun.env.NODE_ENV !== "production",
-        async fetch(nativeRequest: Request, server) {
-          return that.handleNativeRequest(nativeRequest, server);
+        fetch: (nativeRequest: Request, server) => {
+          return this.handleNativeRequest(nativeRequest, server);
         },
-        websocket: that.buildServerWebSocketHandler(),
-        async error(err) {
-          const req = get(err, "req", undefined) as BunRequest | undefined;
-          if (!req) {
-            throw err;
-          }
-
-          let continueProcessingHandlers = true;
-          const next: NextFunction = (err) => {
-            if (!(isUndefined(err) || isNull(err))) {
-              continueProcessingHandlers = false;
-            }
-          };
-
-          const response = new BunResponse(req, { etag: that.etagEnabled });
-          for await (const handler of that._errorHandlers) {
-            if (!continueProcessingHandlers) {
-              break;
-            }
-
-            const resp = await handler(err, req, response, next);
-            continueProcessingHandlers = !!resp;
-          }
-
-          if (that._errorHandlers.length) {
-            const nativeResponse = await response.getNativeResponse(1000);
-            return nativeResponse;
-          } else {
-            throw err;
-          }
+        websocket: this.buildServerWebSocketHandler(),
+        error: (err) => {
+          return this.handleRequestError(err);
         },
       });
-
-      this._serverInstance = httpServer;
-      const address = await this.getListenAddress();
-
-      if (!(address && this._serverInstance)) {
-        throw new Error(
-          `Ooops an error occurred while listening on ${this._listeningHost}:${this._listeningPort}`,
-        );
+    } catch (error) {
+      // A busy port (`EADDRINUSE`), a hostname that does not resolve, a port
+      // needing privileges: reported, as `node:http` does, never bound
+      // somewhere else. NestJS's `app.listen()` listens for the HTTP server's
+      // `error` event and rejects with it; a direct caller gets the rejection.
+      this.logger.error(
+        `Error while binding to ${host}:${portNumber}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      if (this.eventEmitter.listenerCount("error") > 0) {
+        this.eventEmitter.emit("error", error);
+        return undefined;
       }
-
-      this.isServerListening = true;
-      this.eventEmitter.emit("listening", this._serverInstance);
-
-      if (callback) {
-        await callback(this._serverInstance);
-      }
-
-      return this._serverInstance;
-    } catch (e) {
-      const errorMessage = "Error while binding to listener...";
-      this.logger.log(errorMessage);
-      this.logger.log(e);
-      process.exit(1);
+      throw error;
     }
+
+    this._serverInstance = httpServer;
+    this._listeningHost = host;
+    this._listeningPort = httpServer.port ?? portNumber;
+    await this.getListenAddress();
+
+    this.isServerListening = true;
+    this.eventEmitter.emit("listening", this._serverInstance);
+
+    await done(this._serverInstance);
+
+    return this._serverInstance;
+  }
+
+  /**
+   * The adapter's final error handling — the one implementation behind both
+   * `Bun.serve`'s `error` callback and {@link fetch}, so a served request and
+   * a socket-free one cannot be handled differently.
+   *
+   * Runs the {@link setErrorHandler} handlers in registration order as
+   * `(err, req, res, next)` against a fresh response, and resolves that
+   * response. A handler that calls `next(err)`, or returns nothing, stops the
+   * chain. In a Nest application the handler is Nest's own exception layer,
+   * registered through `RoutesResolver.registerExceptionHandler`, so errors
+   * raised before routing (a refused body, say) reach the exception filters
+   * as they do on `@nestjs/platform-express`, where that handler is an Express
+   * error middleware.
+   *
+   * With no handler registered, or when the error carries no request (it was
+   * thrown before one was built, or by response finalisation such as a
+   * timeout), it answers as Express's `finalhandler` does — what an Express
+   * app with no error middleware sends; see {@link finalErrorResponse}. A
+   * handler that throws is answered the same way, for the error it threw. It
+   * therefore always resolves. Mirrors bun-common's `handleRequestError`.
+   */
+  protected async handleRequestError(error: unknown): Promise<Response> {
+    const req = get(error, "req", undefined) as BunRequest | undefined;
+    if (!req || !this._errorHandlers.length) {
+      return this.finalErrorResponse(error, req);
+    }
+
+    let continueProcessingHandlers = true;
+    const next: NextFunction = (err) => {
+      if (!(isUndefined(err) || isNull(err))) {
+        continueProcessingHandlers = false;
+      }
+    };
+
+    try {
+      const response = new BunResponse(req, { etag: this.etagEnabled });
+      for (const handler of this._errorHandlers) {
+        if (!continueProcessingHandlers) {
+          break;
+        }
+
+        const resp = await handler(error, req, response, next);
+        continueProcessingHandlers = !!resp;
+      }
+
+      return await response.getNativeResponse(1000);
+    } catch (handlerError) {
+      return this.finalErrorResponse(handlerError, req);
+    }
+  }
+
+  /**
+   * The response for an error nothing handled: bun-common's standalone
+   * `finalErrorResponse` (Express's `finalhandler`), for `req`'s method — so
+   * this adapter and bun-common's answer byte for byte alike.
+   *
+   * The error is logged through Nest's {@link logger} at `error` level as
+   * `(message, stack)`, the message naming the method, path and status,
+   * except under `NODE_ENV=test`, as Express's default error logging does.
+   */
+  protected finalErrorResponse(error: unknown, req?: BunRequest): Response {
+    return finalErrorResponse(error, {
+      method: req?.method,
+      path: req?.path,
+      log:
+        Bun.env.NODE_ENV === "test"
+          ? undefined
+          : (message, err, { status }) => {
+              const where = req
+                ? ` (${req.method} ${req.path}, ${status})`
+                : "";
+              this.logger.error(
+                `${message}${where}`,
+                err instanceof Error ? err.stack : String(err),
+              );
+            },
+    });
   }
 
   public async getListenAddress(): Promise<URL> {
@@ -732,14 +896,39 @@ export class BunHttpAdapter<
     /**
      * The body to send. Anything {@link BunResponse.send} accepts — text,
      * objects (JSON), binary (`Buffer`/typed array/`ArrayBuffer`), `BunFile`,
-     * streams, `FormData`/`URLSearchParams` and async iterables.
+     * streams, `FormData`/`URLSearchParams` and async iterables — plus a
+     * NestJS `StreamableFile`, which is streamed with its headers.
      */
-    body: Parameters<BunResponse["send"]>[0],
+    body: Parameters<BunResponse["send"]>[0] | StreamableFile,
     /** Optional status code applied before sending. */
     statusCode?: number,
   ) {
     if (statusCode) {
       response = response.status(statusCode);
+    }
+
+    if (body instanceof StreamableFile) {
+      // As @nestjs/platform-express: the file's type, disposition and length
+      // fill in whichever of those headers the handler did not set itself.
+      const { type, disposition, length } = body.getHeaders();
+      if (!response.getHeader("Content-Type") && type !== undefined) {
+        response.setHeader("Content-Type", type);
+      }
+      if (
+        !response.getHeader("Content-Disposition") &&
+        disposition !== undefined
+      ) {
+        response.setHeader("Content-Disposition", disposition);
+      }
+      if (!response.getHeader("Content-Length") && length !== undefined) {
+        response.setHeader("Content-Length", String(length));
+      }
+
+      const stream = body.getStream();
+      stream.once("error", (error: Error) => {
+        body.errorLogger(error);
+      });
+      return response.send(stream);
     }
 
     return response.send(body);
@@ -753,15 +942,38 @@ export class BunHttpAdapter<
     return response.headersSent ? undefined : response.send(message);
   }
 
-  public render(response: BunResponse, view: string, options: any) {
+  /**
+   * Sends the file at `view` with its content type. `options` is what Nest
+   * passes for `@Render()`: the handler's return value, which may be
+   * anything — a positive `status` on it sets the status (default `200`).
+   */
+  public render(
+    response: BunResponse,
+    view: string,
+    options?: RenderOptions | null,
+  ) {
     const file = Bun.file(view);
     response.setHeader("Content-Type", file.type);
-    return response.status(options.status || 200).send(file.stream());
+    const status = options?.status;
+    return response
+      .status(
+        typeof status === "number" && Number.isInteger(status) && status > 0
+          ? status
+          : 200,
+      )
+      .send(file.stream());
   }
 
+  /**
+   * Redirects to `url`: sets `Location` and the status (`302` when
+   * `statusCode` is `0`), then sends the response with an empty body. Like
+   * Express's `res.redirect` (what `@Redirect()` calls on
+   * `@nestjs/platform-express`), this finishes the response — nothing needs to
+   * follow it — but it sends no "Redirecting to" body.
+   */
   public redirect(response: BunResponse, statusCode: number, url: string) {
     response.setHeader("Location", url);
-    return response.status(statusCode || 302);
+    return response.status(statusCode || 302).send(undefined);
   }
 
   public isHeadersSent(response: BunResponse) {
@@ -845,12 +1057,14 @@ export class BunHttpAdapter<
           const promisedFn = promisify(options);
           const corsOpts = await promisedFn(req);
 
-          corsHandler = cors(corsOpts as unknown as MainCorsOptions);
+          corsHandler = cors(corsOpts);
         } catch (e) {
-          return res.status(400).end(e);
+          return res
+            .status(400)
+            .end(e instanceof Error ? e.message : String(e));
         }
       } else {
-        corsHandler = cors(options as unknown as MainCorsOptions);
+        corsHandler = cors(options);
       }
 
       if (!corsHandler) {
@@ -889,8 +1103,9 @@ export class BunHttpAdapter<
     this.eventEmitter.emit("close");
     this._serverInstance = undefined;
     this.isServerListening = false;
-    this._errorHandlers = [];
-    this._notFoundHandlers = [];
+    // Error and not-found handlers are configuration, like routes: they stay,
+    // so a closed adapter that listens again (or is driven through `fetch()`)
+    // behaves exactly as before.
   }
 
   public getType(): string {
@@ -933,27 +1148,16 @@ export class BunHttpAdapter<
       ...base,
     } as BunWebSocketHandlerType<customWebsocketDataType>;
 
-    const lifecycleEvents = [
-      "open",
-      "message",
-      "close",
-      "drain",
-      "ping",
-      "pong",
-    ] as const;
-
-    for (const event of lifecycleEvents) {
-      (handler as unknown as Record<string, unknown>)[event] = (
-        ...args: unknown[]
-      ) => {
-        const active = this.resolveWebSocketAdapter()
-          .wsHandler as unknown as Record<
-          string,
-          ((...callArgs: unknown[]) => unknown) | undefined
-        >;
-        return active[event]?.(...args);
-      };
-    }
+    // Each lifecycle callback forwards its arguments, unchanged, to the
+    // adapter active at call time. Spelled out per event: TypeScript cannot
+    // correlate a handler's parameters with its name across a loop.
+    const active = () => this.resolveWebSocketAdapter().wsHandler;
+    handler.open = (ws) => active().open?.(ws);
+    handler.message = (ws, message) => active().message?.(ws, message);
+    handler.close = (ws, code, reason) => active().close?.(ws, code, reason);
+    handler.drain = (ws) => active().drain?.(ws);
+    handler.ping = (ws, data) => active().ping?.(ws, data);
+    handler.pong = (ws, data) => active().pong?.(ws, data);
 
     return handler;
   }
@@ -964,65 +1168,66 @@ export class BunHttpAdapter<
     }
 
     // Bypass event handlers added to httpServer and call of address
-    this.httpServer = new Proxy({} as unknown as BunServer, {
-      get: (_, prop) => {
-        switch (true) {
-          case [
-            "emit",
-            "on",
-            "once",
-            "addListener",
-            "off",
-            "removeListener",
-            "eventNames",
-            "listeners",
-            "listenerCount",
-            "removeAllListeners",
-          ].includes(prop as string): {
-            let method = get(this.eventEmitter, prop as string) as
-              | CallableFunction
-              | undefined;
+    // Only a proxy target: every property read is answered by the handler.
+    this.httpServer = new Proxy(
+      {} as BunWebSocketServerType<customWebsocketDataType>,
+      {
+        get: (_, prop) => {
+          switch (true) {
+            case [
+              "emit",
+              "on",
+              "once",
+              "addListener",
+              "off",
+              "removeListener",
+              "eventNames",
+              "listeners",
+              "listenerCount",
+              "removeAllListeners",
+            ].includes(prop as string): {
+              let method = get(this.eventEmitter, prop as string) as
+                | CallableFunction
+                | undefined;
 
-            if (method) {
-              method = method.bind(this.eventEmitter);
-              return method;
+              if (method) {
+                method = method.bind(this.eventEmitter);
+                return method;
+              }
+
+              return () => null;
             }
 
-            return () => null;
-          }
-
-          case prop === "then": {
-            return new Promise(async (resolve) => {
-              await waitUntil(
-                () => this._serverInstance && this.isServerListening,
-                (isReady) => !!isReady,
-              );
-
-              resolve(this._serverInstance);
-            });
-          }
-
-          default: {
-            if (Reflect.has(this, prop)) {
-              return Reflect.get(this, prop, this);
+            case prop === "then": {
+              // Not thenable. NestJS `await`s `initHttpServer()`, which resolves
+              // this proxy; a `then` here would make that await wait for a
+              // listening server — forever, for an app that is only `init()`ed
+              // and driven through `fetch()` — and keep the process alive.
+              return undefined;
             }
 
-            if (
-              this._serverInstance &&
-              Reflect.has(this._serverInstance, prop)
-            ) {
-              return Reflect.get(
-                this._serverInstance,
-                prop,
-                this._serverInstance,
-              );
-            }
+            default: {
+              if (Reflect.has(this, prop)) {
+                return Reflect.get(this, prop, this);
+              }
 
-            return undefined;
+              if (
+                this._serverInstance &&
+                Reflect.has(this._serverInstance, prop)
+              ) {
+                return Reflect.get(
+                  this._serverInstance,
+                  prop,
+                  this._serverInstance,
+                );
+              }
+
+              return undefined;
+            }
           }
-        }
+        },
       },
-    });
+    );
 
     return this.httpServer;
   }
@@ -1082,7 +1287,7 @@ export class BunHttpAdapter<
   ): this {
     const args: (string | RouterHandler)[] =
       path == null ? callbacks : [path, ...callbacks];
-    (this.instance[verb] as (...a: (string | RouterHandler)[]) => unknown)(
+    (this.instance[verb] as (...a: (string | RouterHandler)[]) => void)(
       ...args,
     );
     return this;
@@ -2702,8 +2907,8 @@ export class BunHttpAdapter<
 
   public createMiddlewareFactory(
     requestMethod: RequestMethod,
-  ): MiddlewareFactoryRespType {
-    return ((path, callback) => {
+  ): MiddlewareFactoryRespType<this> {
+    return (path, callback) => {
       // NestJS middleware must behave like middleware — not a route handler.
       // `useMethod` registers it method-scoped but with `isEndpoint` false,
       // so it keeps registration order and is excluded from route
@@ -2712,10 +2917,11 @@ export class BunHttpAdapter<
       this.instance.useMethod(
         method,
         path,
-        callback as unknown as RouterHandler,
+        // NestJS's `Function` is its `(req, res, next)` middleware.
+        callback as RouterHandler,
       );
       return this;
-    }) as MiddlewareFactoryRespType;
+    };
   }
 
   public applyVersionFilter(
@@ -2730,13 +2936,13 @@ export class BunHttpAdapter<
         );
       }
 
+      // `AbstractHttpAdapter` declares the route returns `Function`; what it
+      // really returns is `next()`'s result, which NestJS ignores.
       return next() as unknown as Function;
     };
 
-    const versionNeutralStr = VERSION_NEUTRAL as unknown as string;
-
     if (
-      version === versionNeutralStr ||
+      version === VERSION_NEUTRAL ||
       // URL Versioning is done via the path, so the filter continues forward
       versioningOptions.type === VersioningType.URI
     ) {
@@ -2807,7 +3013,7 @@ export class BunHttpAdapter<
         // No version was supplied
         if (isUndefined(acceptHeaderVersionParameter)) {
           if (Array.isArray(version)) {
-            if (version.includes(versionNeutralStr)) {
+            if (version.includes(VERSION_NEUTRAL)) {
               return handler(req, res, next);
             }
           }
@@ -2846,7 +3052,7 @@ export class BunHttpAdapter<
         // No version was supplied
         if (isUndefined(customHeaderVersionParameter)) {
           if (Array.isArray(version)) {
-            if (version.includes(versionNeutralStr)) {
+            if (version.includes(VERSION_NEUTRAL)) {
               return handler(req, res, next);
             }
           }
@@ -2874,4 +3080,5 @@ export class BunHttpAdapter<
 
 export class BunNestHttpAdapter<
   customWebsocketDataType = unknown,
-> extends BunHttpAdapter<customWebsocketDataType> {}
+  routesType extends string = never,
+> extends BunHttpAdapter<customWebsocketDataType, routesType> {}

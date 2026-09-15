@@ -1,16 +1,20 @@
 export {
   BunHttpAdapter,
   BunNestHttpAdapter,
+  type ListenCallback,
   type MiddlewareFactoryRespType,
+  type RenderOptions,
   type VersionedRoute,
   type WebsocketOptions,
 } from "./BunHttpAdapter";
 export {
   BunNestWebsocketAdapter,
+  type BunNestWebSocketClient,
   BunWebSocketAdapter,
   type BunWebSocketAdapterNormalOptions,
   type BunWebSocketAdapterOptions,
   type BunWebSocketAdapterOptionsFromHttpAdapter,
+  type BunWebSocketGatewayOptions,
   type BunWebsocketHandlerFor,
   type BunWebsocketHttpAdapter,
   type BunWebSocketOptions,
@@ -24,8 +28,17 @@ export {
   type MessageEventType,
   MessageEventTypes,
   type MessageFormat,
+  type MessagePacket,
+  type MessagePacketMap,
   type WebSocketClient,
   type WebSocketClientData,
+  type WsAckFunction,
+  type WsEmitFunction,
+  type WsEncodedArg,
+  type WsEncodedArgs,
+  type WsEventMap,
+  type WsResponse,
+  type WsResponseTransform,
 } from "./BunWebSocketAdapter";
 export { UploadedFile, UploadedFiles } from "./decorators";
 export {
@@ -35,4 +48,6 @@ export {
   FilesInterceptor,
   getMultipartRequest,
   NoFilesInterceptor,
+  transformUploadException,
+  type UploadExceptionBody,
 } from "./interceptors";
