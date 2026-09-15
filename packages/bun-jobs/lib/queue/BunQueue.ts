@@ -1,5 +1,6 @@
 import type {
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   QueueRef,
@@ -16,6 +17,8 @@ import type { QueueLimits, StoredLimits } from "./limits";
 import type {
   BunQueueEvents,
   BunQueueOptions,
+  FlowNode,
+  FlowResult,
   JobOptions,
   RetryAllOptions,
 } from "./types";
@@ -33,6 +36,7 @@ import { Job } from "./Job";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import { resolveJobOptions, resolveRunAt } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+import { retryJob } from "./retry";
 import { DEBOUNCE_PREFIX, sweepWindows, THROTTLE_PREFIX } from "./windows";
 
 /** How many times a debounce or throttle retries a pointer it lost. */
@@ -43,6 +47,18 @@ const RETRY_PAGE = 200;
 
 /** How many retries `retryJobs` and `retryAll` send the driver at once. */
 const RETRY_CONCURRENCY = 16;
+
+/** One node of a flow once it has been checked, with its queue and id fixed. */
+interface PlannedFlowNode {
+  /** The node as the caller gave it. */
+  node: FlowNode;
+  /** The queue it goes in. */
+  queue: string;
+  /** Its id: the caller's `jobId`, or one generated for it. */
+  id: string;
+  /** Its children, planned the same way, in the order given. */
+  children: PlannedFlowNode[];
+}
 
 /**
  * The producer and management side of a queue.
@@ -306,12 +322,190 @@ export class BunQueue<
     options?: { resetAttempts?: boolean },
   ): Promise<boolean> {
     await this.connect();
-    return await this.driver.retryJob(
-      this.ref,
-      id,
-      options?.resetAttempts ?? true,
-      Date.now(),
+    return await this.#retryOne(id, options?.resetAttempts ?? true, Date.now());
+  }
+
+  /**
+   * Retries one job. A parent that a child's failure buried goes back to
+   * waiting on the children that have not settled, rather than running
+   * without them; retry the failed child as well and the parent runs once it
+   * completes.
+   */
+  async #retryOne(
+    id: string,
+    resetAttempts: boolean,
+    now: number,
+  ): Promise<boolean> {
+    return await retryJob(this.driver, this.ref, id, resetAttempts, now);
+  }
+
+  /**
+   * Adds a flow: a job and the jobs it waits on, to any depth.
+   *
+   * The whole tree is checked before anything is written: every job's queue,
+   * its options, and that no `queue:id` appears twice anywhere in it — a
+   * repeated id, or a child with the id of one of its ancestors, would leave a
+   * parent waiting on an outcome that can never arrive.
+   *
+   * Jobs are then added **children first, each parent after its children**.
+   * A parent's `createdAt` therefore postdates every child it lists, so the
+   * grace period maintenance allows a missing child starts when the add
+   * finished. A child that finishes before its parent exists is delivered as
+   * soon as the parent arrives. An add interrupted part-way leaves children
+   * with no parent, which maintenance releases to their own retention after
+   * the grace period; running the same `addFlow` again, with the same ids,
+   * adds only what is missing.
+   *
+   * Child ids are chosen up front, so the parent lists them. A job whose
+   * `jobId` already exists keeps the children it already has: nothing is
+   * added below it. Jobs in other queues of this namespace take this queue's
+   * default options, and their `added` events are published on their own
+   * queue.
+   */
+  async addFlow(node: FlowNode<TData>): Promise<FlowResult<TData, TResult>> {
+    await this.connect();
+    this.#requireDriver(
+      "addFlow",
+      "recordChild",
+      "requeueParent",
+      "markChildRecorded",
     );
+
+    const plan = this.#planFlow(node, this.name, new Set(), []);
+    return (await this.#addFlowNode(plan, null)) as FlowResult<TData, TResult>;
+  }
+
+  /**
+   * Checks one node of a flow and everything below it, and fixes every id.
+   * Throws a `ConfigError` before the caller has written anything.
+   *
+   * `seen` holds every `queue:id` placed in the tree so far; `ancestors` the
+   * chain above this node, which only sharpens the message.
+   */
+  #planFlow(
+    node: FlowNode,
+    queueName: string,
+    seen: Set<string>,
+    ancestors: string[],
+  ): PlannedFlowNode {
+    const queue = assertSegment(queueName, "flow queue name");
+
+    for (const option of ["repeat", "debounce", "throttle"] as const) {
+      if (node.opts?.[option] !== undefined) {
+        throw new ConfigError(`A job in a flow cannot use ${option}`, {
+          name: node.name,
+          option,
+        });
+      }
+    }
+
+    const id = node.opts?.jobId ?? newId();
+    const key = `${queue}:${id}`;
+
+    if (seen.has(key)) {
+      const ancestor = ancestors.includes(key);
+      throw new ConfigError(
+        ancestor
+          ? `A job in a flow cannot be a child of itself: ${key} appears among its own ancestors`
+          : `A flow cannot hold the same job twice: ${key} appears more than once`,
+        { name: node.name, job: key, ancestors },
+      );
+    }
+    seen.add(key);
+
+    const children = (node.children ?? []).map((child) =>
+      this.#planFlow(child, child.queue ?? queue, seen, [...ancestors, key]),
+    );
+
+    return { node, queue, id, children };
+  }
+
+  /** Adds one planned node of a flow: its children first, then itself. */
+  async #addFlowNode(
+    plan: PlannedFlowNode,
+    parent: JobRef | null,
+  ): Promise<FlowResult> {
+    const { node, queue, id, children } = plan;
+    const ref: QueueRef = { ns: this.namespace, queue };
+
+    // A job that is already there keeps the children it already has, so none
+    // are added below it — they could never be recorded on it.
+    if (node.opts?.jobId !== undefined) {
+      const existing = await this.driver.getJob(ref, id);
+      if (existing) {
+        const view = new Job(this.driver, ref, existing, false);
+        await this.#announceAdded(view, false);
+        return { job: view, children: [] };
+      }
+    }
+
+    const results: FlowResult[] = [];
+    for (const child of children) {
+      results.push(await this.#addFlowNode(child, { queue, id }));
+    }
+
+    // Built after the children are in, so its `createdAt` follows theirs.
+    const base = this.#buildRecord(node.name as TName, node.data as TData, {
+      ...node.opts,
+      jobId: id,
+    });
+    const record: JobRecord = {
+      ...base,
+      state: children.length > 0 ? "waiting-children" : base.state,
+      flow: {
+        parent,
+        children: children.map((child) => ({
+          queue: child.queue,
+          id: child.id,
+        })),
+        pending: children.length,
+        values: {},
+        failures: {},
+        recorded: false,
+      },
+    };
+
+    const { job, added } = await this.driver.addJob(ref, record);
+    const view = new Job(this.driver, ref, job, added);
+    await this.#announceAdded(view, added);
+
+    return { job: view, children: added ? results : [] };
+  }
+
+  /**
+   * Tells listeners about a job a flow added, by state: on this queue's own
+   * emitter when it is in this queue, and published on its own queue either
+   * way, so a listener there hears about it too.
+   */
+  async #announceAdded(view: Job<any, any>, added: boolean): Promise<void> {
+    const queue = view.queue.queue;
+    const local = queue === this.name;
+    const job = view as Job<TData, TResult>;
+
+    if (!added) {
+      if (local) {
+        this.safeEmitScoped("duplicate", view.name, job);
+      }
+      await this.#publish("duplicate", { id: view.id }, queue);
+      return;
+    }
+
+    if (local) {
+      this.safeEmitScoped("added", view.name, job);
+    }
+    await this.#publish("added", { id: view.id }, queue);
+
+    if (view.state === "waiting") {
+      if (local) {
+        this.safeEmitScoped("waiting", view.name, job);
+      }
+      await this.#publish("waiting", { id: view.id }, queue);
+    } else if (view.state === "delayed") {
+      if (local) {
+        this.safeEmitScoped("delayed", view.name, job, view.runAt);
+      }
+      await this.#publish("delayed", { id: view.id, runAt: view.runAt }, queue);
+    }
   }
 
   /**
@@ -639,9 +833,18 @@ export class BunQueue<
     return removed;
   }
 
-  /** Removes finished jobs older than `olderThan` milliseconds. */
+  /**
+   * Removes jobs in `state` older than `olderThan` milliseconds. Cleaning
+   * `waiting-children` removes parents only; their children stay.
+   */
   async clean(
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     options: { olderThan: number; limit?: number },
   ): Promise<string[]> {
     await this.connect();
@@ -886,9 +1089,7 @@ export class BunQueue<
     for (let at = 0; at < ids.length; at += RETRY_CONCURRENCY) {
       const chunk = ids.slice(at, at + RETRY_CONCURRENCY);
       const results = await Promise.all(
-        chunk.map((id) =>
-          this.driver.retryJob(this.ref, id, resetAttempts, now),
-        ),
+        chunk.map((id) => this.#retryOne(id, resetAttempts, now)),
       );
 
       chunk.forEach((id, index) => {
@@ -986,6 +1187,7 @@ export class BunQueue<
       lockExpiresAt: null,
       workerId: null,
       repeatKey: null,
+      flow: null,
       ...overrides,
     };
   }
@@ -1069,10 +1271,12 @@ export class BunQueue<
    *
    * `type` selects the payload's shape, so a mismatched pair is a compile
    * error here rather than a surprise in a subscriber three processes away.
+   * `target` is the queue the event is about; a flow can add jobs to others.
    */
   async #publish<Name extends QueueEventName>(
     type: Name,
     payload: QueueEventPayloads[Name],
+    target: string = this.name,
   ): Promise<void> {
     if (!this.#publishes) {
       return;
@@ -1085,7 +1289,7 @@ export class BunQueue<
         queueEvent(
           {
             ns: this.namespace,
-            target: this.name,
+            target,
             type,
             origin: this.#origin,
           },

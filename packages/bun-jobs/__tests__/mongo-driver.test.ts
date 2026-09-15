@@ -64,6 +64,80 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
     expect((await driver.getJob(q, "awkward"))?.data).toEqual(data);
   });
 
+  it("records flow children whose keys and results no field path could hold", async () => {
+    const driver = makeDriver();
+    const ns = testNamespace();
+    const q = { ns, queue: "flow.parents" };
+    const now = Date.now();
+
+    // Each child's key is a field-path segment on the parent, so "." and a
+    // leading "$" would split or reject it, and "%2E" must not collide with
+    // "." once encoded. Results carry the same hazards as keys.
+    const children = [
+      { queue: "$kids.q", id: "a.b" },
+      { queue: "$kids.q", id: "a%2Eb" },
+      { queue: "$kids.q", id: "$c" },
+    ];
+    const results = [{ "$k.v": "$literal" }, "$flow.pending", null];
+
+    await driver.addJob(
+      q,
+      makeJob({
+        id: "p",
+        state: "waiting-children",
+        flow: {
+          parent: null,
+          children,
+          pending: children.length,
+          values: {},
+          failures: {},
+          recorded: false,
+        },
+      }),
+    );
+
+    // Ten concurrent deliveries of one outcome: exactly one records it.
+    const deliver = async () =>
+      await driver.recordChild(
+        q,
+        "p",
+        children[0]!,
+        {
+          completed: true,
+          value: results[0],
+        },
+        now,
+      );
+    const answers = await Promise.all(Array.from({ length: 10 }, deliver));
+    expect(answers.filter((answer) => answer === "recorded")).toHaveLength(1);
+    expect((await driver.getJob(q, "p"))?.flow?.pending).toBe(2);
+
+    for (const [index, child] of children.entries()) {
+      if (index > 0) {
+        expect(
+          await driver.recordChild(
+            q,
+            "p",
+            child,
+            { completed: true, value: results[index] },
+            now,
+          ),
+          // The last one releases the parent.
+        ).toBe(index === children.length - 1 ? "released" : "recorded");
+      }
+    }
+
+    const released = await driver.getJob(q, "p");
+    expect(released?.state).toBe("waiting");
+    expect(released?.flow?.pending).toBe(0);
+    expect(released?.flow?.children).toEqual(children);
+    expect(released?.flow?.values).toEqual({
+      "$kids.q:a.b": results[0],
+      "$kids.q:a%2Eb": results[1],
+      "$kids.q:$c": results[2],
+    });
+  });
+
   it("gives one job to exactly one claimer, however many ask at once", async () => {
     const driver = makeDriver();
     const ns = testNamespace();

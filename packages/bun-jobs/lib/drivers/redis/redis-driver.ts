@@ -5,14 +5,18 @@ import type {
   ConnectionOptions,
 } from "../../shared/connection";
 import type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverEvent,
   EventKind,
   EventOfKind,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,
@@ -33,6 +37,25 @@ import { safeJsonParse } from "../../shared/json";
 import { waitForAny } from "../../shared/wait";
 import { RedisKeys } from "./keys";
 import * as scripts from "./scripts";
+
+/** Every answer `RECORD_CHILD` may give; anything else is a fault. */
+const CHILD_RECORD_RESULTS = new Set<ChildRecordResult>([
+  "recorded",
+  "released",
+  "buried",
+  "already",
+  "parent-dead",
+  "missing",
+]);
+
+/**
+ * A flow reference as JSON, keys always `queue` then `id`. The skeleton is
+ * written with it and `RECORD_CHILD` searches the skeleton for it, so the two
+ * must produce the same bytes for the same reference.
+ */
+function flowRefJson(ref: JobRef): string {
+  return JSON.stringify({ queue: ref.queue, id: ref.id });
+}
 
 /**
  * A driver backed by Redis.
@@ -99,7 +122,8 @@ type JsonField =
   | "progress"
   | "returnValue"
   | "failedReason"
-  | "stacktrace";
+  | "stacktrace"
+  | "flow";
 
 /** Options for {@link RedisDriver}. */
 export interface RedisDriverOptions extends ConnectionInput {
@@ -855,6 +879,87 @@ export class RedisDriver implements JobsDriver {
       : null;
   }
 
+  /**
+   * Records a child's outcome on its parent in one script on the parent's
+   * queue — see `RECORD_CHILD` for how it stays repeat-safe without decoding
+   * anything.
+   */
+  async recordChild(
+    q: QueueRef,
+    parentId: string,
+    child: JobRef,
+    outcome: ChildOutcome,
+    now: number,
+  ): Promise<ChildRecordResult> {
+    await this.connect();
+
+    let kind: "completed" | "ignored" | "failed" = "failed";
+    let payload: unknown = null;
+
+    if (outcome.completed) {
+      kind = "completed";
+      payload = outcome.value ?? null;
+    } else {
+      kind = outcome.ignored ? "ignored" : "failed";
+      payload = outcome.error;
+    }
+
+    const reply = await this.#runQueue(q, scripts.RECORD_CHILD, [
+      parentId,
+      `${child.queue}:${child.id}`,
+      kind,
+      // Encoded once, here, and stored as sent: the script never decodes it.
+      JSON.stringify(payload) ?? "null",
+      String(now),
+      // Exactly as `#values` writes each entry of `children`.
+      flowRefJson(child),
+    ]);
+
+    if (!CHILD_RECORD_RESULTS.has(reply as ChildRecordResult)) {
+      // Guessing would be worse than failing: an answer that lets the child's
+      // retention run could lose an outcome that was never stored.
+      throw new DriverError(
+        "redis",
+        "recordChild",
+        new Error(`unexpected reply ${String(reply)}`),
+        { id: parentId },
+      );
+    }
+
+    return reply as ChildRecordResult;
+  }
+
+  async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
+    await this.connect();
+
+    const moved = await this.#runQueue(q, scripts.REQUEUE_PARENT, [
+      id,
+      String(now),
+    ]);
+
+    return Number(moved) === 1;
+  }
+
+  async markChildRecorded(
+    q: QueueRef,
+    id: string,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    await this.connect();
+    const { mode, count, ttl } = this.#retention(retention);
+
+    const marked = await this.#runQueue(q, scripts.MARK_CHILD_RECORDED, [
+      id,
+      String(now),
+      mode,
+      count,
+      ttl,
+    ]);
+
+    return Number(marked) === 1;
+  }
+
   async listJobs(
     q: QueueRef,
     states: JobState[],
@@ -887,7 +992,8 @@ export class RedisDriver implements JobsDriver {
       | number[]
       | null;
 
-    const [waiting, delayed, active, completed, failed, dead] = counts ?? [];
+    const [waiting, delayed, active, completed, failed, dead, children] =
+      counts ?? [];
 
     return {
       waiting: Number(waiting ?? 0),
@@ -896,6 +1002,7 @@ export class RedisDriver implements JobsDriver {
       completed: Number(completed ?? 0),
       failed: Number(failed ?? 0),
       dead: Number(dead ?? 0),
+      "waiting-children": Number(children ?? 0),
     };
   }
 
@@ -971,7 +1078,13 @@ export class RedisDriver implements JobsDriver {
 
   async cleanJobs(
     q: QueueRef,
-    state: "completed" | "failed" | "dead" | "waiting" | "delayed",
+    state:
+      | "completed"
+      | "failed"
+      | "dead"
+      | "waiting"
+      | "delayed"
+      | "waiting-children",
     olderThanMs: number,
     limit: number,
     now: number,
@@ -1439,6 +1552,39 @@ export class RedisDriver implements JobsDriver {
       JSON.stringify(job.stacktrace ?? []),
     );
 
+    // A job in no flow stops here, and the script writes none of the flow
+    // fields; the reader takes their absence as `flow: null`.
+    if (!job.flow) {
+      return values;
+    }
+
+    const { parent, children, pending, recorded } = job.flow;
+    values.push(
+      // Each reference rebuilt with its keys in one fixed order, which is
+      // what lets `RECORD_CHILD` find a child by substring — see
+      // `flowRefJson`. Written by hand, so the order is not the caller's.
+      `{"parent":${parent ? flowRefJson(parent) : "null"},"children":[${children
+        .map((ref) => flowRefJson(ref))
+        .join(",")}]}`,
+      String(pending),
+      recorded ? "1" : "0",
+    );
+
+    // Outcomes a record arrives with, as name/value pairs after the named
+    // fields — the same one field per child that `RECORD_CHILD` writes.
+    for (const [key, value] of Object.entries(job.flow.values)) {
+      values.push(
+        `${scripts.FLOW_VALUE_PREFIX}${key}`,
+        JSON.stringify(value ?? null),
+      );
+    }
+    for (const [key, error] of Object.entries(job.flow.failures)) {
+      values.push(
+        `${scripts.FLOW_FAILURE_PREFIX}${key}`,
+        JSON.stringify(error),
+      );
+    }
+
     return values;
   }
 
@@ -1450,6 +1596,8 @@ export class RedisDriver implements JobsDriver {
    */
   #isFreshJob(job: JobRecord): boolean {
     return (
+      // A job in a flow carries it from the start, so it is never "fresh".
+      !job.flow &&
       job.processedOn === null &&
       job.finishedOn === null &&
       job.expiresAt === null &&
@@ -1545,6 +1693,51 @@ export class RedisDriver implements JobsDriver {
       lockExpiresAt: nullable("lockExpiresAt"),
       workerId: text("workerId"),
       repeatKey: text("repeatKey"),
+      flow: this.#toFlow(fields),
+    };
+  }
+
+  /**
+   * A job's flow, assembled from the fields that hold it, or `null` for a job
+   * in none — including every hash written before flows existed.
+   *
+   * `flow` holds the parent and children, `flowPending` and `flowRecorded` the
+   * two parts scripts change, and each child outcome has a field of its own.
+   * A job with only `flowRecorded` was marked by `markChildRecorded` without
+   * ever being in a flow, and reads as an empty one.
+   */
+  #toFlow(fields: Record<string, string>): JobFlow | null {
+    const skeleton = safeJsonParse<Pick<JobFlow, "parent" | "children"> | null>(
+      fields.flow,
+      null,
+    );
+
+    if (!skeleton && fields.flowRecorded !== "1") {
+      return null;
+    }
+
+    const values: Record<string, unknown> = {};
+    const failures: Record<string, SerializedError> = {};
+
+    for (const [field, stored] of Object.entries(fields)) {
+      if (field.startsWith(scripts.FLOW_VALUE_PREFIX)) {
+        values[field.slice(scripts.FLOW_VALUE_PREFIX.length)] =
+          safeJsonParse<unknown>(stored, null);
+      } else if (field.startsWith(scripts.FLOW_FAILURE_PREFIX)) {
+        const error = safeJsonParse<SerializedError | null>(stored, null);
+        if (error) {
+          failures[field.slice(scripts.FLOW_FAILURE_PREFIX.length)] = error;
+        }
+      }
+    }
+
+    return {
+      parent: skeleton?.parent ?? null,
+      children: skeleton?.children ?? [],
+      pending: Number(fields.flowPending ?? 0) || 0,
+      values,
+      failures,
+      recorded: fields.flowRecorded === "1",
     };
   }
 }

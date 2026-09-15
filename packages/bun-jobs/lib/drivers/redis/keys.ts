@@ -73,6 +73,7 @@ export class RedisKeys {
     active: string;
     completed: string;
     dead: string;
+    children: string;
     meta: string;
     excludeCursors: string;
     seq: string;
@@ -92,6 +93,10 @@ export class RedisKeys {
       active: `${base}:active`,
       completed: `${base}:completed`,
       dead: `${base}:dead`,
+      // Parents in a flow still waiting on children, scored by `createdAt`.
+      // A set of its own rather than a flag on the wait set, so no claim, and
+      // no promotion sweep, can ever reach one.
+      children: `${base}:children`,
       meta: `${base}:meta`,
       // Where a claim that excludes names resumes its scan, one hash field per
       // exclusion set. A sibling of `meta`, not passed to scripts as a key:
@@ -145,6 +150,9 @@ export class RedisKeys {
       keys.seq,
       keys.wake,
       this.queues(q.ns),
+      // Appended rather than placed beside `dead`, so every index the
+      // scripts already read stays where it was.
+      keys.children,
     ];
   }
 

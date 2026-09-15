@@ -1,5 +1,6 @@
 import type {
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   QueueRef,
@@ -10,6 +11,7 @@ import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
 import { ConfigError } from "../shared/errors";
 import { parseWhen } from "../shared/humanTime";
 import { assertJsonSafe } from "../shared/json";
+import { retryJob } from "./retry";
 
 /**
  * One job, as a producer or a processor sees it.
@@ -63,6 +65,8 @@ export class Job<TData = unknown, TResult = unknown> {
   readonly repeatKey: string | null;
   /** Whether `add()` created this job rather than finding an existing one. */
   readonly wasAdded: boolean;
+  /** The job this one is a child of, in a flow, or `null`. */
+  readonly parent: JobRef | null;
 
   /** The stored record this view was built from. */
   readonly #record: JobRecord;
@@ -114,6 +118,7 @@ export class Job<TData = unknown, TResult = unknown> {
     this.stacktrace = record.stacktrace.map((entry) => deserializeError(entry));
     this.workerId = record.workerId;
     this.repeatKey = record.repeatKey;
+    this.parent = record.flow?.parent ?? null;
   }
 
   /** The namespace and queue this job belongs to. */
@@ -162,9 +167,14 @@ export class Job<TData = unknown, TResult = unknown> {
     return await this.#driver.removeJob(this.#ref, this.id);
   }
 
-  /** Returns a finished job to the queue, resetting its attempts. */
+  /**
+   * Returns a finished job to the queue, resetting its attempts. A flow parent
+   * that a child's failure buried goes back to waiting on its unsettled
+   * children, exactly as `BunQueue.retry` does.
+   */
   async retry(options?: { resetAttempts?: boolean }): Promise<boolean> {
-    return await this.#driver.retryJob(
+    return await retryJob(
+      this.#driver,
       this.#ref,
       this.id,
       options?.resetAttempts ?? true,
@@ -286,6 +296,29 @@ export class Job<TData = unknown, TResult = unknown> {
     return record
       ? new Job<TData, TResult>(this.#driver, this.#ref, record)
       : null;
+  }
+
+  /**
+   * The results of this job's children that completed, keyed `queue:id`, read
+   * fresh from the driver. Empty for a job with no children.
+   */
+  async getChildrenValues(): Promise<Record<string, unknown>> {
+    const record = await this.#driver.getJob(this.#ref, this.id);
+    return { ...record?.flow?.values };
+  }
+
+  /**
+   * The failures of children marked `ignoreFailure`, keyed `queue:id`, read
+   * fresh from the driver. A child that failed without it failed this job.
+   */
+  async getChildrenFailures(): Promise<Record<string, Error>> {
+    const record = await this.#driver.getJob(this.#ref, this.id);
+    return Object.fromEntries(
+      Object.entries(record?.flow?.failures ?? {}).map(([key, error]) => [
+        key,
+        deserializeError(error),
+      ]),
+    );
   }
 
   /** The stored record, for logging or transport. */

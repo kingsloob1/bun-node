@@ -7,6 +7,8 @@ export { CompletionBatcher } from "./completeBatch";
 export type { PendingCompletion } from "./completeBatch";
 export { createDriver, resolveDriver } from "./create-driver";
 export type {
+  ChildOutcome,
+  ChildRecordResult,
   ClaimOptions,
   DriverCapabilities,
   DriverConfig,
@@ -14,8 +16,10 @@ export type {
   DriverLifecycle,
   ExecutionMode,
   FailOutcome,
+  JobFlow,
   JobPatch,
   JobRecord,
+  JobRef,
   JobsDriver,
   JobState,
   LockInfo,

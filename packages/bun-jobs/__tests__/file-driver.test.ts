@@ -1,3 +1,4 @@
+import type { JobRecord } from "../lib/drivers/driver";
 import { afterAll, describe, expect, it } from "bun:test";
 import {
   decodeName,
@@ -26,6 +27,64 @@ driverContract("file", async () => {
   const tmp = await makeTmpDir("bun-jobs-contract");
   cleanups.push(tmp.cleanup);
   return { driver: new FileDriver({ root: tmp.path }) };
+});
+
+describe("file driver: records written before flows", () => {
+  it("reads a record with no flow key as flow: null, however it is read", async () => {
+    const tmp = await makeTmpDir("bun-jobs-legacy-flow");
+    cleanups.push(tmp.cleanup);
+
+    const driver = new FileDriver({ root: tmp.path });
+    await driver.connect();
+
+    try {
+      const q = { ns: testNamespace(), queue: "legacy" };
+      const now = Date.now();
+      // Stored exactly as an older version wrote it: no `flow` key at all.
+      const { flow: _flow, ...legacy } = makeJob({ id: "old", runAt: now });
+      await driver.addJob(q, legacy as JobRecord);
+
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const onDisk = JSON.parse(
+        await readFile(
+          join(tmp.path, q.ns, "queues", q.queue, "jobs", "old.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      // Without this the test would prove nothing: the key must be absent.
+      expect("flow" in onDisk).toBe(false);
+
+      expect((await driver.getJob(q, "old"))?.flow).toBeNull();
+
+      const listed = await driver.listJobs(q, ["waiting"], {
+        offset: 0,
+        limit: 10,
+        order: "asc",
+      });
+      expect(listed.map((job) => job.flow)).toEqual([null]);
+
+      const again = await driver.addJob(q, legacy as JobRecord);
+      expect(again.added).toBe(false);
+      expect(again.job.flow).toBeNull();
+
+      const claimed = await driver.claimJob(q, {
+        workerId: "w1",
+        token: "t1",
+        lockMs: 1000,
+        now,
+      });
+      expect(claimed?.flow).toBeNull();
+
+      // A write through the driver fills it in, so the next read needs no help.
+      expect(
+        await driver.completeJob(q, "old", "t1", "done", false, Date.now()),
+      ).toBe(true);
+      expect((await driver.getJob(q, "old"))?.flow).toBeNull();
+    } finally {
+      await driver.close();
+    }
+  });
 });
 
 describe("file driver: filesystem specifics", () => {

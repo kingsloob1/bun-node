@@ -1,4 +1,11 @@
-import type { JobRecord, JobsDriver, QueueRef } from "../../lib/index";
+import type {
+  ChildOutcome,
+  JobFlow,
+  JobRecord,
+  JobRef,
+  JobsDriver,
+  QueueRef,
+} from "../../lib/index";
 import { serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { newToken, runnerKey } from "../../lib/index";
@@ -1729,6 +1736,665 @@ export function driverContract(
 
         await driver.resumeQueue(mine);
         await driver.drainQueue(mine, true);
+      });
+    });
+
+    /* --- flows ------------------------------------------------------- */
+
+    describe("flows", () => {
+      const parents: QueueRef = { ns, queue: "flow-parents" };
+      const children: QueueRef = { ns, queue: "flow-children" };
+
+      /** A flow value, with only what a test cares about given. */
+      const flowOf = (overrides: Partial<JobFlow>): JobFlow => ({
+        parent: null,
+        children: [],
+        pending: 0,
+        values: {},
+        failures: {},
+        recorded: false,
+        ...overrides,
+      });
+
+      /** A child reference in the children queue. */
+      const child = (id: string): JobRef => ({ queue: children.queue, id });
+
+      /** A parent waiting on the named children. */
+      const parent = (
+        id: string,
+        childIds: string[],
+        extra: Partial<JobRecord> = {},
+      ) =>
+        makeJob({
+          id,
+          state: "waiting-children",
+          flow: flowOf({
+            children: childIds.map(child),
+            pending: childIds.length,
+          }),
+          ...extra,
+        });
+
+      const completed = (value: unknown): ChildOutcome => ({
+        completed: true,
+        value,
+      });
+
+      const failed = (message: string, ignored = false): ChildOutcome => ({
+        completed: false,
+        error: serializeError(new Error(message)),
+        ignored,
+      });
+
+      const claim = async (queue: QueueRef, now = Date.now()) =>
+        await driver.claimJob(queue, {
+          workerId: "w1",
+          token: newToken(),
+          lockMs: 1000,
+          now,
+        });
+
+      it("keeps a parent waiting on children out of claims, and counts, lists and drains it", async () => {
+        await driver.ensureQueue(parents);
+        await driver.addJob(parents, parent("held", ["a", "b"]));
+
+        expect(await claim(parents)).toBeNull();
+        expect((await driver.countJobs(parents))["waiting-children"]).toBe(1);
+        expect(
+          (
+            await driver.listJobs(parents, ["waiting-children"], {
+              offset: 0,
+              limit: 10,
+              order: "asc",
+            })
+          ).map((job) => job.id),
+        ).toEqual(["held"]);
+
+        expect(await driver.drainQueue(parents, true)).toBe(1);
+        expect((await driver.countJobs(parents))["waiting-children"]).toBe(0);
+      });
+
+      it("records completed children once each, and releases the parent after the last", async () => {
+        await driver.addJob(parents, parent("gather", ["a", "b"]));
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "gather",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("recorded");
+        // Recording the same child again changes nothing.
+        expect(
+          await driver.recordChild!(
+            parents,
+            "gather",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("already");
+
+        const midway = await driver.getJob(parents, "gather");
+        expect(midway?.state).toBe("waiting-children");
+        expect(midway?.flow?.pending).toBe(1);
+        expect(midway?.flow?.values).toEqual({ "flow-children:a": 1 });
+        expect(await claim(parents)).toBeNull();
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "gather",
+            child("b"),
+            completed({ total: 2 }),
+            Date.now(),
+          ),
+        ).toBe("released");
+
+        const released = await driver.getJob(parents, "gather");
+        expect(released?.state).toBe("waiting");
+        expect(released?.flow?.pending).toBe(0);
+        expect(released?.flow?.values).toEqual({
+          "flow-children:a": 1,
+          "flow-children:b": { total: 2 },
+        });
+        expect((await claim(parents))?.id).toBe("gather");
+        await driver.drainQueue(parents, true);
+        await driver.removeJob(parents, "gather");
+      });
+
+      it("releases a parent that is due later as delayed", async () => {
+        const now = Date.now();
+        await driver.addJob(
+          parents,
+          parent("later", ["a"], { runAt: now + 60_000 }),
+        );
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "later",
+            child("a"),
+            completed(null),
+            now,
+          ),
+        ).toBe("released");
+
+        expect((await driver.getJob(parents, "later"))?.state).toBe("delayed");
+        expect(await claim(parents, now)).toBeNull();
+        await driver.removeJob(parents, "later");
+      });
+
+      it("carries on past an ignored failure, and buries the parent on one that is not", async () => {
+        await driver.addJob(parents, parent("fragile", ["a", "b"]));
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fragile",
+            child("a"),
+            failed("tolerated", true),
+            Date.now(),
+          ),
+        ).toBe("recorded");
+        const carried = await driver.getJob(parents, "fragile");
+        expect(carried?.state).toBe("waiting-children");
+        expect(carried?.flow?.pending).toBe(1);
+        expect(carried?.flow?.failures["flow-children:a"]?.message).toBe(
+          "tolerated",
+        );
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fragile",
+            child("b"),
+            failed("fatal"),
+            Date.now(),
+          ),
+        ).toBe("buried");
+        const buried = await driver.getJob(parents, "fragile");
+        expect(buried?.state).toBe("dead");
+        expect(buried?.failedReason?.message).toBe("fatal");
+
+        // An outcome a buried parent already holds is still a repeat.
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fragile",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("already");
+        await driver.removeJob(parents, "fragile");
+      });
+
+      it("answers missing for no parent, or one that does not list the child, and already for one that moved on", async () => {
+        expect(
+          await driver.recordChild!(
+            parents,
+            "ghost",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("missing");
+
+        // A job in no flow is nobody's parent.
+        await driver.addJob(parents, makeJob({ id: "plain" }));
+        expect(
+          await driver.recordChild!(
+            parents,
+            "plain",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("missing");
+        expect((await driver.getJob(parents, "plain"))?.state).toBe("waiting");
+
+        // A parent waiting on other children does not count a stranger off.
+        await driver.addJob(parents, parent("particular", ["a"]));
+        expect(
+          await driver.recordChild!(
+            parents,
+            "particular",
+            child("stranger"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("missing");
+        const untouched = await driver.getJob(parents, "particular");
+        expect(untouched?.state).toBe("waiting-children");
+        expect(untouched?.flow?.pending).toBe(1);
+        expect(untouched?.flow?.values).toEqual({});
+
+        // A parent that lists the child but no longer waits.
+        await driver.addJob(
+          parents,
+          parent("moved-on", ["a"], { state: "waiting" }),
+        );
+        expect(
+          await driver.recordChild!(
+            parents,
+            "moved-on",
+            child("a"),
+            completed(1),
+            Date.now(),
+          ),
+        ).toBe("already");
+        expect(
+          (await driver.getJob(parents, "moved-on"))?.flow?.values,
+        ).toEqual({});
+
+        await driver.drainQueue(parents, true);
+      });
+
+      it("keeps a completed or ignored outcome on a buried parent without moving it, and refuses a failure", async () => {
+        await driver.addJob(parents, parent("fallen", ["a", "b", "c", "d"]));
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fallen",
+            child("c"),
+            failed("fatal"),
+            Date.now(),
+          ),
+        ).toBe("buried");
+        const before = await driver.getJob(parents, "fallen");
+
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fallen",
+            child("a"),
+            completed({ late: true }),
+            Date.now(),
+          ),
+        ).toBe("recorded");
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fallen",
+            child("b"),
+            failed("tolerated", true),
+            Date.now(),
+          ),
+        ).toBe("recorded");
+        // A failure that is not ignored stores nothing on a buried parent.
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fallen",
+            child("d"),
+            failed("also broke"),
+            Date.now(),
+          ),
+        ).toBe("parent-dead");
+        // And repeats are still repeats.
+        expect(
+          await driver.recordChild!(
+            parents,
+            "fallen",
+            child("a"),
+            completed({ late: true }),
+            Date.now(),
+          ),
+        ).toBe("already");
+
+        const after = await driver.getJob(parents, "fallen");
+        expect(after?.state).toBe("dead");
+        expect(after?.failedReason?.message).toBe("fatal");
+        expect(after?.finishedOn).toBe(before!.finishedOn);
+        expect(after?.flow?.pending).toBe(before!.flow!.pending);
+        expect(after?.flow?.values).toEqual({
+          "flow-children:a": { late: true },
+        });
+        expect(Object.keys(after?.flow?.failures ?? {})).toEqual([
+          "flow-children:b",
+        ]);
+
+        // A retry then waits on the refused child alone.
+        expect(await driver.requeueParent!(parents, "fallen", Date.now())).toBe(
+          true,
+        );
+        const requeued = await driver.getJob(parents, "fallen");
+        expect(requeued?.state).toBe("waiting-children");
+        expect(requeued?.flow?.pending).toBe(2);
+
+        await driver.drainQueue(parents, true);
+      });
+
+      it("releases a requeued parent whose children all have stored outcomes", async () => {
+        const now = Date.now();
+        const settled = (id: string, runAt: number) =>
+          makeJob({
+            id,
+            state: "dead",
+            runAt,
+            finishedOn: now,
+            failedReason: serializeError(new Error("broke")),
+            flow: flowOf({
+              children: [child("a"), child("b")],
+              // Stale on purpose: the driver counts, not the record.
+              pending: 2,
+              values: { "flow-children:a": 1 },
+              failures: {
+                "flow-children:b": serializeError(new Error("ignored")),
+              },
+            }),
+          });
+        await driver.addJobs(parents, [
+          settled("ready", now),
+          settled("due-later", now + 60_000),
+        ]);
+
+        expect(await driver.requeueParent!(parents, "ready", now)).toBe(true);
+        const ready = await driver.getJob(parents, "ready");
+        expect(ready?.state).toBe("waiting");
+        expect(ready?.flow?.pending).toBe(0);
+        expect(ready?.failedReason).toBeNull();
+        expect(ready?.flow?.values).toEqual({ "flow-children:a": 1 });
+
+        expect(await driver.requeueParent!(parents, "due-later", now)).toBe(
+          true,
+        );
+        expect((await driver.getJob(parents, "due-later"))?.state).toBe(
+          "delayed",
+        );
+
+        expect((await claim(parents, now))?.id).toBe("ready");
+        await driver.drainQueue(parents, true);
+        await driver.removeJob(parents, "ready");
+      });
+
+      it("returns a buried parent to waiting on its children", async () => {
+        await driver.addJob(parents, parent("again", ["a", "b"]));
+        await driver.recordChild!(
+          parents,
+          "again",
+          child("a"),
+          completed(1),
+          Date.now(),
+        );
+        await driver.recordChild!(
+          parents,
+          "again",
+          child("b"),
+          failed("broke"),
+          Date.now(),
+        );
+        expect((await driver.getJob(parents, "again"))?.state).toBe("dead");
+
+        expect(await driver.requeueParent!(parents, "again", Date.now())).toBe(
+          true,
+        );
+        const requeued = await driver.getJob(parents, "again");
+        expect(requeued?.state).toBe("waiting-children");
+        expect(requeued?.flow?.pending).toBe(1);
+        expect(requeued?.failedReason).toBeNull();
+        // Its completed child's result is kept.
+        expect(requeued?.flow?.values).toEqual({ "flow-children:a": 1 });
+        expect(await claim(parents)).toBeNull();
+
+        // Only a buried parent can be requeued.
+        await driver.addJob(parents, makeJob({ id: "not-buried" }));
+        expect(
+          await driver.requeueParent!(parents, "not-buried", Date.now()),
+        ).toBe(false);
+
+        await driver.drainQueue(parents, true);
+        await driver.removeJob(parents, "again");
+      });
+
+      it("refuses to retry a parent still waiting on its children", async () => {
+        await driver.addJob(parents, parent("unsettled", ["a"]));
+
+        expect(
+          await driver.retryJob(parents, "unsettled", true, Date.now()),
+        ).toBe(false);
+        expect((await driver.getJob(parents, "unsettled"))?.state).toBe(
+          "waiting-children",
+        );
+        expect(await claim(parents)).toBeNull();
+
+        await driver.drainQueue(parents, true);
+      });
+
+      it("cleans parents waiting on children by age, and only them", async () => {
+        const now = Date.now();
+        await driver.addJobs(parents, [
+          parent("stale-parent", ["a"], { createdAt: now - 100_000 }),
+          parent("fresh-parent", ["b"], { createdAt: now }),
+          makeJob({ id: "stale-waiting", createdAt: now - 100_000 }),
+        ]);
+
+        expect(
+          await driver.cleanJobs(parents, "waiting-children", 50_000, 10, now),
+        ).toEqual(["stale-parent"]);
+        expect(await driver.getJob(parents, "stale-parent")).toBeNull();
+        expect((await driver.getJob(parents, "fresh-parent"))?.state).toBe(
+          "waiting-children",
+        );
+        expect((await driver.getJob(parents, "stale-waiting"))?.state).toBe(
+          "waiting",
+        );
+        expect((await driver.countJobs(parents))["waiting-children"]).toBe(1);
+
+        await driver.drainQueue(parents, true);
+      });
+
+      it("marks a child recorded, then applies the retention it deferred", async () => {
+        const now = Date.now();
+        const childFlow = flowOf({ parent: { queue: parents.queue, id: "p" } });
+        await driver.addJobs(children, [
+          makeJob({
+            id: "kept",
+            state: "completed",
+            finishedOn: now,
+            flow: childFlow,
+          }),
+          makeJob({
+            id: "removed",
+            state: "completed",
+            finishedOn: now,
+            flow: childFlow,
+          }),
+        ]);
+
+        expect(
+          await driver.markChildRecorded!(children, "kept", false, now),
+        ).toBe(true);
+        expect((await driver.getJob(children, "kept"))?.flow?.recorded).toBe(
+          true,
+        );
+
+        expect(
+          await driver.markChildRecorded!(children, "removed", true, now),
+        ).toBe(true);
+        expect(await driver.getJob(children, "removed")).toBeNull();
+
+        expect(
+          await driver.markChildRecorded!(children, "absent", true, now),
+        ).toBe(false);
+        await driver.removeJob(children, "kept");
+      });
+
+      for (const state of ["completed", "dead"] as const) {
+        it(`marking a ${state} child recorded applies a TTL retention`, async () => {
+          const retained: QueueRef = { ns, queue: `flow-ttl-${state}` };
+          const now = Date.now();
+          await driver.addJob(
+            retained,
+            makeJob({
+              id: "timed",
+              state,
+              finishedOn: now,
+              flow: flowOf({ parent: { queue: parents.queue, id: "p" } }),
+            }),
+          );
+
+          expect(
+            await driver.markChildRecorded!(
+              retained,
+              "timed",
+              { ttl: 5000 },
+              now,
+            ),
+          ).toBe(true);
+          const marked = await driver.getJob(retained, "timed");
+          expect(marked?.flow?.recorded).toBe(true);
+          expect(marked?.expiresAt).toBe(now + 5000);
+
+          expect(await driver.pruneExpired(retained, now, 10)).toBe(0);
+          expect(await driver.pruneExpired(retained, now + 6000, 10)).toBe(1);
+          expect(await driver.getJob(retained, "timed")).toBeNull();
+        });
+
+        it(`marking a ${state} child recorded applies a count retention`, async () => {
+          const retained: QueueRef = { ns, queue: `flow-count-${state}` };
+          const now = Date.now();
+          await driver.addJobs(retained, [
+            makeJob({ id: "oldest", state, finishedOn: now - 3000 }),
+            makeJob({ id: "older", state, finishedOn: now - 2000 }),
+            makeJob({
+              id: "newest",
+              state,
+              finishedOn: now - 1000,
+              flow: flowOf({ parent: { queue: parents.queue, id: "p" } }),
+            }),
+          ]);
+
+          expect(
+            await driver.markChildRecorded!(
+              retained,
+              "newest",
+              { count: 1 },
+              now,
+            ),
+          ).toBe(true);
+
+          expect(await driver.getJob(retained, "oldest")).toBeNull();
+          expect(await driver.getJob(retained, "older")).toBeNull();
+          expect(
+            (await driver.getJob(retained, "newest"))?.flow?.recorded,
+          ).toBe(true);
+          expect((await driver.countJobs(retained))[state]).toBe(1);
+
+          await driver.removeJob(retained, "newest");
+        });
+
+        it(`never sweeps away a ${state} child whose outcome is not recorded, by count or by TTL`, async () => {
+          const guarded: QueueRef = { ns, queue: `flow-guard-${state}` };
+          const now = Date.now();
+          const unrecorded = flowOf({
+            parent: { queue: parents.queue, id: "p" },
+          });
+
+          await driver.addJobs(guarded, [
+            makeJob({ id: "plain-old", state, finishedOn: now - 4000 }),
+            // A top-level parent is not waiting on delivery: sweepable.
+            makeJob({
+              id: "root-old",
+              state,
+              finishedOn: now - 3500,
+              flow: flowOf({ children: [child("x")] }),
+            }),
+            makeJob({
+              id: "child-old",
+              state,
+              finishedOn: now - 3000,
+              flow: unrecorded,
+            }),
+            makeJob({
+              id: "trigger",
+              state,
+              finishedOn: now - 1000,
+              flow: unrecorded,
+            }),
+          ]);
+
+          // Any count retention in the state sweeps it; this is one.
+          await driver.markChildRecorded!(
+            guarded,
+            "trigger",
+            { count: 1 },
+            now,
+          );
+
+          expect(await driver.getJob(guarded, "plain-old")).toBeNull();
+          expect(await driver.getJob(guarded, "root-old")).toBeNull();
+          expect(
+            (await driver.getJob(guarded, "child-old"))?.flow?.recorded,
+          ).toBe(false);
+
+          await driver.addJobs(guarded, [
+            makeJob({
+              id: "plain-expired",
+              state,
+              finishedOn: now - 5000,
+              expiresAt: now - 1,
+            }),
+            makeJob({
+              id: "child-expired",
+              state,
+              finishedOn: now - 5000,
+              expiresAt: now - 1,
+              flow: unrecorded,
+            }),
+          ]);
+
+          expect(await driver.pruneExpired(guarded, now, 10)).toBe(1);
+          expect(await driver.getJob(guarded, "plain-expired")).toBeNull();
+          expect((await driver.getJob(guarded, "child-expired"))?.state).toBe(
+            state,
+          );
+
+          await driver.removeJob(guarded, "child-old");
+          await driver.removeJob(guarded, "child-expired");
+          await driver.removeJob(guarded, "trigger");
+        });
+      }
+
+      it("clears a retried child's recorded flag, so its next outcome is delivered afresh", async () => {
+        const now = Date.now();
+        await driver.addJob(
+          children,
+          makeJob({
+            id: "again",
+            state: "dead",
+            finishedOn: now,
+            failedReason: serializeError(new Error("broke")),
+            flow: flowOf({
+              parent: { queue: parents.queue, id: "p" },
+              recorded: true,
+            }),
+          }),
+        );
+
+        expect(await driver.retryJob(children, "again", true, now)).toBe(true);
+        const retried = await driver.getJob(children, "again");
+        expect(retried?.state).toBe("waiting");
+        expect(retried?.flow?.recorded).toBe(false);
+        expect(retried?.flow?.parent).toEqual({
+          queue: parents.queue,
+          id: "p",
+        });
+
+        // A job in no flow stays in none.
+        await driver.addJob(
+          children,
+          makeJob({ id: "flowless", state: "dead", finishedOn: now }),
+        );
+        expect(await driver.retryJob(children, "flowless", true, now)).toBe(
+          true,
+        );
+        expect((await driver.getJob(children, "flowless"))?.flow).toBeNull();
+
+        await driver.drainQueue(children, true);
       });
     });
 
