@@ -5,19 +5,33 @@ import { createWriteStream } from "node:fs";
 import { mkdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import process from "node:process";
 import { Readable } from "node:stream";
 import { getUniqueFilename, pathExists } from "../../utils/general";
 import { isObject, isString, values } from "../../utils/native";
 import { pump } from "../stream";
 
-type DiskStorageOptionHandler =
+/** A fixed string, or a function deciding one per file and request. */
+export type DiskStorageOptionHandler =
   | ((file: RawMultipartFile, req: BunRequest) => Promise<string> | string)
   | string;
 
 export interface DiskStorageOptions {
+  /**
+   * Directory the file is written into, created recursively when missing.
+   * Defaults to the OS temp directory.
+   */
   dest?: DiskStorageOptionHandler;
+  /**
+   * Name the file is written under. Defaults to 32 random hex characters plus
+   * the original extension. A fixed string makes every upload overwrite the
+   * last.
+   */
   filename?: DiskStorageOptionHandler;
+  /**
+   * Whether `removeFile(file)` deletes the file without `force`. Defaults to
+   * `false`, so `removeAll()` keeps plain disk uploads; a rejected upload is
+   * always removed with `force`.
+   */
   removeAfter?: boolean;
 }
 
@@ -35,18 +49,19 @@ const executeStorageHandler = (
   return null;
 };
 
-const ENV_TESTS_STORAGE_TMP_PATH = process.env.__TESTS_TMP_PATH__;
-export class DiskStorage
-  implements Storage<DiskStorageFile, DiskStorageOptions>
-{
+export class DiskStorage implements Storage<
+  DiskStorageFile,
+  DiskStorageOptions
+> {
+  /** Options this storage was constructed with. */
   public readonly options?: DiskStorageOptions;
 
+  /**
+   * @param options Where and under what name files are written, and whether
+   *   `removeFile` deletes without `force`; see {@link DiskStorageOptions}.
+   */
   constructor(options?: DiskStorageOptions) {
     this.options = options;
-
-    if (ENV_TESTS_STORAGE_TMP_PATH != null) {
-      this.options = { ...this.options, dest: ENV_TESTS_STORAGE_TMP_PATH };
-    }
   }
 
   public async handleFile(file: MultiPartFileRecord, req: BunRequest) {
@@ -78,7 +93,12 @@ export class DiskStorage
     };
   }
 
-  public async removeFile(file: unknown, force?: boolean) {
+  /**
+   * Deletes a disk file — or every disk file found inside an object — once
+   * every nested removal has finished. A no-op without `force` unless
+   * `removeAfter` is set.
+   */
+  public async removeFile(file: unknown, force?: boolean): Promise<void> {
     if (!this.options?.removeAfter && !force) return;
     if (isObject(file)) {
       if (
@@ -90,9 +110,9 @@ export class DiskStorage
       ) {
         await unlink((file as DiskStorageFile).path);
       } else {
-        values(file).forEach((value) => {
-          this.removeFile(value, force);
-        });
+        await Promise.all(
+          values(file).map((value) => this.removeFile(value, force)),
+        );
       }
     }
   }

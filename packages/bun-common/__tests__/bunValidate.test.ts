@@ -179,8 +179,8 @@ describe("BunValidate: hooks", () => {
             query: {
               // The client sends `page=" 3 "`; the schema only accepts numerics.
               normalize: (value) => ({
-                ...(value as Record<string, unknown>),
-                page: String((value as Record<string, unknown>).page).trim(),
+                ...value,
+                page: String(value.page).trim(),
               }),
             },
           },
@@ -203,8 +203,8 @@ describe("BunValidate: hooks", () => {
           hooks: {
             query: {
               transform: (value) => ({
-                ...(value as { page: number }),
-                offset: (value as { page: number }).page * 10,
+                ...value,
+                offset: value.page * 10,
               }),
             },
           },
@@ -288,6 +288,52 @@ describe("BunValidate: failure handling", () => {
     expect(await (await fetch(`${base}/fmt?page=abc`)).json()).toEqual({
       count: 1,
     });
+  });
+
+  it("sends a formatError answer that is not an object as it is", async () => {
+    const base = await serve((adapter) => {
+      adapter.get(
+        "/list",
+        validate(
+          { query: PageQuery },
+          {
+            onFailure: "respond",
+            formatError: (error) => error.issues.map((issue) => issue.message),
+          },
+        ),
+        (_req, res) => res.send("unreachable"),
+      );
+      adapter.get(
+        "/text",
+        validate(
+          { query: PageQuery },
+          { onFailure: "respond", status: 422, formatError: () => "invalid" },
+        ),
+        (_req, res) => res.send("unreachable"),
+      );
+      adapter.get(
+        "/null",
+        validate(
+          { query: PageQuery },
+          { onFailure: "respond", formatError: () => null },
+        ),
+        (_req, res) => res.send("unreachable"),
+      );
+    });
+
+    const list = await fetch(`${base}/list?page=abc`);
+    expect(list.status).toBe(400);
+    expect(list.headers.get("content-type")).toContain("application/json");
+    expect(await list.json()).toEqual(["page must be numeric"]);
+
+    const text = await fetch(`${base}/text?page=abc`);
+    expect(text.status).toBe(422);
+    expect(text.headers.get("content-type")).toContain("application/json");
+    expect(await text.text()).toBe('"invalid"');
+
+    const nothing = await fetch(`${base}/null?page=abc`);
+    expect(nothing.headers.get("content-type")).toContain("application/json");
+    expect(await nothing.text()).toBe("null");
   });
 
   it("throws for the adapter's error handler when onFailure is throw", async () => {

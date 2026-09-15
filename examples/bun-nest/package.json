@@ -1,0 +1,10 @@
+{
+  "name": "bun-node-examples-bun-nest",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable, commented examples for @kingsleyweb/bun-nest: NestJS on Bun with the HTTP adapter, file upload interceptors and the WebSocket adapter",
+  "scripts": {
+    "all": "bun run-all.ts"
+  }
+}

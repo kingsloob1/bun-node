@@ -1,0 +1,13 @@
+{
+  // The bun-nest examples are an unpublished project of their own, checked by
+  // `bun scripts/typecheck.ts`. They import `@kingsleyweb/bun-nest` and the
+  // NestJS packages by name, resolved through the root `node_modules`. The
+  // legacy decorator options NestJS needs (`experimentalDecorators`,
+  // `emitDecoratorMetadata`) come from `tsconfig.base.json`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["../../node_modules/@types"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

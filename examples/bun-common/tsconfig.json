@@ -1,0 +1,12 @@
+{
+  // The bun-common examples are an unpublished project of their own, checked
+  // by `bun scripts/typecheck.ts`. They import `@kingsleyweb/bun-common` by
+  // package name — as a consumer would — which resolves to the workspace
+  // package through the root `node_modules`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["../../node_modules/@types"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

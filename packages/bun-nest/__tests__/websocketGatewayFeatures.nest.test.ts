@@ -6,9 +6,9 @@
  *
  * Notes on this adapter's behaviour (verified by these tests):
  *  - `@WebSocketGateway(port)` binds a dedicated bun server that LISTENS on that
- *    port; clients can connect on it directly (`ws://host:<port>/`). Because the
- *    gateway also registers its upgrade route on the shared router, it remains
- *    reachable on the HTTP adapter's port too.
+ *    port; clients can connect on it directly (`ws://host:<port>/`). The port is
+ *    a boundary, as with socket.io: the gateway does not handle clients of the
+ *    HTTP adapter's port, even on the same path.
  *  - `@WebSocketGateway({ namespace })` registers an upgrade route at that path;
  *    clients connect to it directly (`ws://host:port/chat`).
  *  - Namespaces are ISOLATED, matching socket.io / NestJS: a gateway's handlers
@@ -69,7 +69,18 @@ class ChatNamespaceGateway {
   }
 }
 
-@Module({ providers: [PortGateway, ChatNamespaceGateway] })
+/** The default namespace on the shared HTTP server: a round-trip to prove against. */
+@WebSocketGateway()
+class SharedDefaultGateway {
+  @SubscribeMessage("where")
+  where() {
+    return { event: "here", data: "shared" };
+  }
+}
+
+@Module({
+  providers: [PortGateway, ChatNamespaceGateway, SharedDefaultGateway],
+})
 class AppModule {}
 
 let app: INestApplication;
@@ -105,14 +116,27 @@ describe("NestJS gateway features: custom port", () => {
     await client.close();
   });
 
-  it("is also reachable on the shared HTTP server port (default namespace)", async () => {
-    // PortGateway declares no namespace → default "/", so it answers clients
-    // connected to "/" on the shared HTTP server too.
+  it("is not reachable on the shared HTTP server port, even on its path", async () => {
+    // PortGateway serves "/" on its own port only. A client of "/" on the
+    // shared HTTP server belongs to SharedDefaultGateway.
     const client = await connectWs(`${base}/`);
     client.send({ type: EVENT, namespace: "/", data: ["ping", "shared"] });
-    const reply = await client.waitFor((m) => m?.data?.[0] === "pong");
+    client.send({ type: EVENT, namespace: "/", data: ["where", null] });
+    const reply = await client.waitFor((m) => m?.data?.[0] === "here");
 
     expect(reply.data[1]).toBe("shared");
+    expect(client.received.some((r) => r.includes("pong"))).toBe(false);
+    await client.close();
+  });
+
+  it("does not run the shared server's gateway for a client of its own port", async () => {
+    const client = await connectWs(`ws://127.0.0.1:${GATEWAY_PORT}/`);
+    client.send({ type: EVENT, namespace: "/", data: ["where", null] });
+    client.send({ type: EVENT, namespace: "/", data: ["ping", "own"] });
+    const reply = await client.waitFor((m) => m?.data?.[0] === "pong");
+
+    expect(reply.data[1]).toBe("own");
+    expect(client.received.some((r) => r.includes("here"))).toBe(false);
     await client.close();
   });
 });
@@ -167,10 +191,10 @@ describe("NestJS gateway features: namespace isolation (socket.io semantics)", (
     const client = await connectWs(`${base}/`);
 
     client.send({ type: EVENT, namespace: "/", data: ["msg", { text: "x" }] });
-    client.send({ type: EVENT, namespace: "/", data: ["ping", 9] });
+    client.send({ type: EVENT, namespace: "/", data: ["where", null] });
 
-    const pong = await client.waitFor((m) => m?.data?.[0] === "pong");
-    expect(pong.data[1]).toBe(9);
+    const here = await client.waitFor((m) => m?.data?.[0] === "here");
+    expect(here.data[1]).toBe("shared");
     expect(client.received.some((r) => r.includes("reply"))).toBe(false);
 
     await client.close();

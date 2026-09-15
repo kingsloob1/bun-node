@@ -1,11 +1,30 @@
+import type { SerializedError } from "../lib/utils/native";
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "bun:test";
+import {
+  brotliCompressSync,
+  deflateRawSync,
+  deflateSync,
+  gzipSync,
+  constants as zlibConstants,
+  zstdCompressSync,
+} from "node:zlib";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
   appendVary,
   cloneDeep,
+  compressionDictionaryHash,
   computeBackoff,
+  ContentCodingLimitError,
   createDeferred,
+  decodeXmlEntities,
+  decompressBody,
+  DecompressionError,
+  DecompressionLimitError,
+  DEFAULT_DECOMPRESS_FAST_PATH_LIMIT,
+  DEFAULT_MAX_CONTENT_CODINGS,
   deserializeError,
+  dictionaryCompressedHeader,
+  dictionaryCompressedHeaderLength,
   each,
   encodeUrl,
   etag,
@@ -24,6 +43,7 @@ import {
   isBinaryBody,
   isBoolean,
   isBuffer,
+  isContentCodingAllowed,
   isDateValid,
   isError,
   isFunction,
@@ -42,10 +62,14 @@ import {
   Mutex,
   omit,
   orderBy,
+  parseAvailableDictionary,
+  parseContentCodings,
   parseCookie,
+  parseDictionaryCompressedHeader,
   parseXmlToObject,
   pick,
   rangeParser,
+  resolveContentEncodingAllowlist,
   retry,
   Semaphore,
   serializeCookie,
@@ -56,6 +80,7 @@ import {
   TimeoutError,
   toHttpDate,
   ucwords,
+  UnknownCompressionDictionaryError,
   unsignCookie,
   values,
   waitUntil,
@@ -308,6 +333,11 @@ describe("native: dates", () => {
   it("isDateValid", () => {
     expect(isDateValid(new Date())).toBe(true);
     expect(isDateValid(new Date("nonsense"))).toBe(false);
+    // Not a Date at all — the guard overload's domain.
+    expect(isDateValid("2020-01-01")).toBe(false);
+    expect(isDateValid(Date.now())).toBe(false);
+    expect(isDateValid(null)).toBe(false);
+    expect(isDateValid({ getTime: () => 0 })).toBe(false);
   });
 
   it("toHttpDate produces an RFC 7231 string", () => {
@@ -648,7 +678,7 @@ describe("native: withTimeout", () => {
 
   it("rejects with a TimeoutError carrying the budget", async () => {
     const work = new Promise<string>((resolve) => {
-      const timer = setTimeout(() => resolve("late"), 1000);
+      const timer = setTimeout(resolve, 1000, "late");
       timer.unref?.();
     });
 
@@ -950,6 +980,39 @@ describe("native: serializeError / deserializeError", () => {
     ).toBe("j1");
   });
 
+  it("never lets data overwrite the rebuilt error's own fields", () => {
+    // Parsed from JSON, as stored or foreign input would be: that is the only
+    // way `__proto__` arrives as an own key rather than setting a prototype.
+    const input = JSON.parse(`{
+      "name": "LockLostError",
+      "message": "real message",
+      "stack": "real stack",
+      "code": "LOCK_LOST",
+      "cause": { "name": "Error", "message": "real cause" },
+      "data": {
+        "name": "FakeName",
+        "message": "fake message",
+        "stack": "fake stack",
+        "code": "FAKE",
+        "cause": "fake cause",
+        "__proto__": { "hijacked": true },
+        "jobId": "j1",
+        "ms": 250
+      }
+    }`) as SerializedError;
+    const restored = deserializeError(input) as Error & Record<string, unknown>;
+
+    expect(restored).toBeInstanceOf(Error);
+    expect(restored.name).toBe("LockLostError");
+    expect(restored.message).toBe("real message");
+    expect(restored.stack).toBe("real stack");
+    expect(restored.code).toBe("LOCK_LOST");
+    expect((restored.cause as Error).message).toBe("real cause");
+    expect(restored.jobId).toBe("j1");
+    expect(restored.ms).toBe(250);
+    expect(restored.hijacked).toBeUndefined();
+  });
+
   it("keeps a non-Error visible rather than dropping it", () => {
     expect(serializeError("just a string")).toEqual({
       name: "NonError",
@@ -980,20 +1043,31 @@ describe("native: jsonClone", () => {
   });
 
   it("documents the losses that cross a boundary", () => {
-    // `jsonClone<T>(value: T): T` keeps the input type for ergonomics, but a
-    // `Date` really does come back as a string — the loss under test — so
-    // these assertions look at the runtime value rather than the static type.
-    const clone = (value: unknown): unknown => jsonClone(value);
+    // The return type is `Jsonify<T>`, so each expectation below is also
+    // what the compiler says comes back (asserted in native.type-test.ts).
+    const dropped = jsonClone({ a: undefined, b: 1, fn: () => 1 });
+    expect(dropped).toEqual({ b: 1 });
+    expect("a" in dropped).toBe(false);
 
-    expect(clone({ a: undefined, b: 1 })).toEqual({ b: 1 });
-    expect(clone({ at: new Date("2020-01-01T00:00:00.000Z") })).toEqual({
-      at: "2020-01-01T00:00:00.000Z",
-    });
-    expect(clone({ m: new Map([["a", 1]]), s: new Set([1]) })).toEqual({
+    const dated = jsonClone({ at: new Date("2020-01-01T00:00:00.000Z") });
+    expect(dated).toEqual({ at: "2020-01-01T00:00:00.000Z" });
+    expect(dated.at.startsWith("2020")).toBe(true);
+
+    expect(jsonClone({ m: new Map([["a", 1]]), s: new Set([1]) })).toEqual({
       m: {},
       s: {},
     });
-    expect(clone(undefined)).toBeUndefined();
+    expect(jsonClone([undefined, () => 1, Symbol("s"), 2])).toEqual([
+      null,
+      null,
+      null,
+      2,
+    ]);
+    expect(jsonClone({ custom: { toJSON: () => "custom" } })).toEqual({
+      custom: "custom",
+    });
+    expect(jsonClone(undefined)).toBeUndefined();
+    expect(jsonClone(() => 1)).toBeUndefined();
   });
 
   it("throws on values JSON cannot represent", () => {
@@ -1116,5 +1190,1416 @@ describe("native: Semaphore", () => {
     expect(order).toEqual(["second"]);
     first();
     expect(semaphore.permits).toBe(2);
+  });
+});
+
+/*
+ * Code/documentation harmonization — each case below failed before its fix.
+ */
+describe("native: behaviour matches the documentation", () => {
+  it("encodeUrl replaces an unmatched surrogate with U+FFFD, as encodeurl does", () => {
+    expect(encodeUrl("/\uD800")).toBe("/%EF%BF%BD");
+    expect(encodeUrl("/\uDC00x")).toBe("/%EF%BF%BDx");
+    expect(encodeUrl("/x\uD800b")).toBe("/x%EF%BF%BDb");
+    expect(encodeUrl("/\uDFFF\uD800")).toBe("/%EF%BF%BD%EF%BF%BD");
+    // A well-formed pair is still encoded as the character it forms.
+    expect(encodeUrl("/😀")).toBe("/%F0%9F%98%80");
+  });
+
+  it("jsonCookies parses in place and returns the same object, as cookie-parser does", () => {
+    const cookies: Record<string, string> = {
+      a: 'j:{"x":1}',
+      b: "plain",
+      c: "j:not json",
+      d: "j:null",
+      e: "j:false",
+      f: "j:[1]",
+    };
+    const result = jsonCookies(cookies);
+
+    expect(result).toBe(cookies);
+    // cookie-parser only replaces a value that parses to something truthy.
+    expect(cookies as Record<string, unknown>).toEqual({
+      a: { x: 1 },
+      b: "plain",
+      c: "j:not json",
+      d: "j:null",
+      e: "j:false",
+      f: [1],
+    });
+  });
+
+  it("serializeCookie omits SameSite for sameSite: false, as the cookie package does", () => {
+    expect(serializeCookie("a", "1", { sameSite: false })).toBe("a=1; Path=/");
+    expect(
+      serializeCookie("a", "1", { sameSite: false, priority: "high" }),
+    ).toBe("a=1; Path=/; Priority=High");
+    // Unset still gets Bun's documented default.
+    expect(serializeCookie("a", "1")).toContain("SameSite=Lax");
+  });
+
+  it("sleep rejects with an AbortError carrying a non-Error reason as its cause", async () => {
+    const controller = new AbortController();
+    controller.abort("because");
+    const early = await sleep(1000, { signal: controller.signal }).catch(
+      (error: unknown) => error,
+    );
+    expect(early).toBeInstanceOf(Error);
+    expect(isAbortError(early)).toBe(true);
+    expect((early as Error).cause).toBe("because");
+
+    const later = new AbortController();
+    const waiting = sleep(1000, { signal: later.signal });
+    later.abort(42);
+    const midWait = await waiting.catch((error: unknown) => error);
+    expect(isAbortError(midWait)).toBe(true);
+    expect((midWait as Error).cause).toBe(42);
+
+    // An Error reason is still rejected as-is.
+    const reason = new Error("shutting down");
+    const withError = new AbortController();
+    withError.abort(reason);
+    expect(
+      await sleep(1000, { signal: withError.signal }).catch((e: unknown) => e),
+    ).toBe(reason);
+  });
+
+  it("retry rejects the same way for a non-Error abort reason", async () => {
+    const controller = new AbortController();
+    controller.abort("stop");
+    const error = await retry(() => 1, { signal: controller.signal }).catch(
+      (e: unknown) => e,
+    );
+    expect(isAbortError(error)).toBe(true);
+    expect((error as Error).cause).toBe("stop");
+  });
+
+  it("withTimeout rejects, never throws, when the work function throws synchronously", async () => {
+    let returned: Promise<unknown> | undefined;
+    expect(() => {
+      returned = withTimeout(() => {
+        throw new Error("sync");
+      }, 100);
+    }).not.toThrow();
+    await expect(returned).rejects.toThrow("sync");
+
+    let noBudget: Promise<unknown> | undefined;
+    expect(() => {
+      noBudget = withTimeout(() => {
+        throw new Error("sync, no budget");
+      }, 0);
+    }).not.toThrow();
+    await expect(noBudget).rejects.toThrow("sync, no budget");
+  });
+
+  it("withTimeout's timeout rejection is named TimeoutError", async () => {
+    const error = await withTimeout(new Promise(() => {}), 5).catch(
+      (e: unknown) => e,
+    );
+    expect((error as Error).name).toBe("TimeoutError");
+    expect(new TimeoutError(1).name).toBe("TimeoutError");
+  });
+
+  it("Semaphore never runs more holders than a lowered limit, nor reports negative availability", async () => {
+    const semaphore = new Semaphore(2);
+    const first = await semaphore.acquire();
+    const second = await semaphore.acquire();
+    let thirdHolding = false;
+    const third = semaphore.acquire().then((release) => {
+      thirdHolding = true;
+      return release;
+    });
+
+    semaphore.setPermits(1);
+    expect(semaphore.available).toBe(0);
+
+    first();
+    await sleep(5);
+    expect(thirdHolding).toBe(false);
+    expect(semaphore.available).toBe(0);
+    expect(semaphore.tryAcquire()).toBeNull();
+
+    second();
+    const releaseThird = await third;
+    expect(thirdHolding).toBe(true);
+    expect(semaphore.available).toBe(0);
+
+    releaseThird();
+    expect(semaphore.available).toBe(1);
+    expect(semaphore.permits).toBe(1);
+  });
+
+  it("Semaphore keeps its peak at the limit through a lowering under load", async () => {
+    const semaphore = new Semaphore(4);
+    let active = 0;
+    let overLimit = false;
+
+    const task = () =>
+      semaphore.runExclusive(async () => {
+        active++;
+        if (active > semaphore.permits) {
+          overLimit = true;
+        }
+        await sleep(2);
+        active--;
+      });
+
+    const all = Promise.all(Array.from({ length: 20 }, task));
+    await sleep(1);
+    semaphore.setPermits(2);
+    // Holders admitted before the change may still be finishing; after they
+    // drain nothing new starts above the lowered limit.
+    await sleep(10);
+    overLimit = false;
+    await all;
+
+    expect(overLimit).toBe(false);
+    expect(semaphore.available).toBe(2);
+  });
+
+  it("decodeXmlEntities leaves a reference past U+10FFFF untouched", () => {
+    expect(decodeXmlEntities("&#1114112;")).toBe("&#1114112;");
+    expect(decodeXmlEntities("&#x110000; &#x10FFFF;")).toBe(
+      "&#x110000; \u{10FFFF}",
+    );
+    expect(decodeXmlEntities("&#99999999999999999999;")).toBe(
+      "&#99999999999999999999;",
+    );
+    expect(parseXmlToObject("<m>&#1114112;</m>")).toEqual({ m: "&#1114112;" });
+  });
+
+  it("serializeError counts maxStackBytes in UTF-8 bytes and cuts on a character boundary", () => {
+    const error = new Error("multibyte");
+    error.stack = "é".repeat(10); // 20 UTF-8 bytes, 10 characters
+
+    // Fits in bytes: untouched.
+    expect(serializeError(error, { maxStackBytes: 20 }).stack).toBe(
+      "é".repeat(10),
+    );
+    // 10 characters but 20 bytes: a 10-byte cap keeps 5 characters.
+    expect(serializeError(error, { maxStackBytes: 10 }).stack).toBe(
+      `${"é".repeat(5)}\n… (stack truncated)`,
+    );
+    // An odd cap cannot split a two-byte character.
+    expect(serializeError(error, { maxStackBytes: 9 }).stack).toBe(
+      `${"é".repeat(4)}\n… (stack truncated)`,
+    );
+
+    const emoji = new Error("astral");
+    emoji.stack = "😀😀"; // 8 bytes
+    expect(serializeError(emoji, { maxStackBytes: 6 }).stack).toBe(
+      "😀\n… (stack truncated)",
+    );
+  });
+
+  it("retry's waits keep the process alive by default, and unref: true lets it exit", () => {
+    const nativePath = new URL("../lib/utils/native.ts", import.meta.url)
+      .pathname;
+    const run = (options: string): string => {
+      const child = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "-e",
+          `import { retry } from ${JSON.stringify(nativePath)};
+           retry(() => { throw new Error("down"); }, { attempts: 2, backoff: 150${options} })
+             .catch(() => console.log("gave up"));`,
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return child.stdout.toString().trim();
+    };
+
+    expect(run("")).toBe("gave up");
+    expect(run(", unref: true")).toBe("");
+  });
+});
+
+describe("native: decompressBody", () => {
+  const text = JSON.stringify(
+    Array.from({ length: 200 }, (_, id) => ({ id, name: `user-${id}` })),
+  );
+  const plain = Buffer.from(text);
+
+  /** Runs `bytes` through a web `CompressionStream`, as a browser client would. */
+  async function webCompress(
+    format: Bun.CompressionFormat,
+    bytes: Uint8Array,
+  ): Promise<Buffer> {
+    const stream = new Blob([bytes])
+      .stream()
+      .pipeThrough(new CompressionStream(format));
+    return Buffer.from(await Bun.readableStreamToArrayBuffer(stream));
+  }
+
+  /** Flips bytes past the header so the compressed stream is damaged. */
+  function corrupt(bytes: Uint8Array): Buffer {
+    const damaged = Buffer.from(bytes);
+    for (let i = 10; i < Math.min(damaged.length - 8, 40); i++) {
+      damaged[i] ^= 0x5a;
+    }
+    return damaged;
+  }
+
+  it("round-trips what node:zlib, Bun and CompressionStream encoders produce", async () => {
+    const bodies: Array<[string, Uint8Array]> = [
+      ["gzip", gzipSync(plain)],
+      ["gzip", Bun.gzipSync(plain)],
+      ["gzip", await webCompress("gzip", plain)],
+      ["x-gzip", gzipSync(plain)],
+      ["deflate", deflateSync(plain)],
+      ["deflate", deflateSync(plain, { windowBits: 9 })],
+      ["deflate", await webCompress("deflate", plain)],
+      ["br", brotliCompressSync(plain)],
+      ["br", await webCompress("brotli", plain)],
+    ];
+
+    for (const [encoding, body] of bodies) {
+      const out = decompressBody(body, encoding);
+      expect(out).toBeInstanceOf(Buffer);
+      expect(out?.toString()).toBe(text);
+    }
+  });
+
+  it("matches the encoding case-insensitively and treats an empty one as identity", () => {
+    expect(decompressBody(gzipSync(plain), "GZip")?.toString()).toBe(text);
+    expect(decompressBody(brotliCompressSync(plain), " BR ")?.toString()).toBe(
+      text,
+    );
+    expect(decompressBody(plain, "")?.toString()).toBe(text);
+  });
+
+  it("returns an identity body as delivered, as a Buffer view of the same bytes", () => {
+    const bytes = new Uint8Array(plain);
+    const out = decompressBody(bytes, "identity");
+    expect(out).toBeInstanceOf(Buffer);
+    expect(out.buffer).toBe(bytes.buffer);
+    expect(out.toString()).toBe(text);
+  });
+
+  it("deflate means zlib-wrapped (RFC 9110); a raw DEFLATE body is rejected like body-parser does", async () => {
+    expect(() => decompressBody(deflateRawSync(plain), "deflate")).toThrow(
+      DecompressionError,
+    );
+    expect(() => decompressBody(Bun.deflateSync(plain), "deflate")).toThrow(
+      DecompressionError,
+    );
+    const webRaw = await webCompress("deflate-raw", plain);
+    expect(() => decompressBody(webRaw, "deflate")).toThrow(DecompressionError);
+  });
+
+  it("decodes every member of a multi-member gzip body, which Bun.gunzipSync alone would drop", () => {
+    const hello = Buffer.from("hello ");
+    const world = Buffer.from("world");
+    expect(
+      decompressBody(
+        Buffer.concat([gzipSync(hello), gzipSync(world)]),
+        "gzip",
+      ).toString(),
+    ).toBe("hello world");
+
+    // The same member twice: its trailer at the end matches the first
+    // member's output, so only the earlier-occurrence check can tell.
+    expect(
+      decompressBody(
+        Buffer.concat([gzipSync(hello), gzipSync(hello)]),
+        "gzip",
+      ).toString(),
+    ).toBe("hello hello ");
+  });
+
+  it("rejects bytes trailing a gzip member, as node:zlib does", () => {
+    const member = gzipSync(Buffer.from("hello"));
+    expect(() =>
+      decompressBody(Buffer.concat([member, Buffer.from("JUNKJUNK")]), "gzip"),
+    ).toThrow(DecompressionError);
+    // Junk crafted to repeat the member's own trailer must not slip through.
+    expect(() =>
+      decompressBody(
+        Buffer.concat([member, member.subarray(member.length - 8)]),
+        "gzip",
+      ),
+    ).toThrow(DecompressionError);
+  });
+
+  it("throws DecompressionError on corrupt, truncated or uncompressed input", () => {
+    const encoded: Array<[string, Buffer]> = [
+      ["gzip", gzipSync(plain)],
+      ["deflate", deflateSync(plain)],
+      ["br", brotliCompressSync(plain)],
+    ];
+
+    for (const [encoding, body] of encoded) {
+      for (const bad of [
+        corrupt(body),
+        body.subarray(0, body.length >> 1),
+        Buffer.from("not compressed at all"),
+        Buffer.alloc(0),
+      ]) {
+        let thrown: unknown;
+        try {
+          decompressBody(bad, encoding);
+        } catch (error) {
+          thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(DecompressionError);
+        const error = thrown as DecompressionError;
+        expect(error.code).toBe("ERR_DECOMPRESSION_FAILED");
+        expect(error.encoding).toBe(encoding);
+        expect(error.cause).toBeInstanceOf(Error);
+      }
+    }
+  });
+
+  it("maxOutputLength: an overflow throws DecompressionLimitError, an exact fit does not", () => {
+    const encoded: Array<[string, Buffer]> = [
+      ["gzip", gzipSync(plain)],
+      ["deflate", deflateSync(plain)],
+      ["br", brotliCompressSync(plain)],
+      ["identity", plain],
+    ];
+
+    for (const [encoding, body] of encoded) {
+      expect(
+        decompressBody(body, encoding, { maxOutputLength: plain.length })
+          ?.length,
+      ).toBe(plain.length);
+
+      let thrown: unknown;
+      try {
+        decompressBody(body, encoding, { maxOutputLength: plain.length - 1 });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(DecompressionLimitError);
+      expect(thrown).not.toBeInstanceOf(DecompressionError);
+      const error = thrown as DecompressionLimitError;
+      expect(error.code).toBe("ERR_DECOMPRESSION_LIMIT");
+      expect(error.limit).toBe(plain.length - 1);
+      expect(error.encoding).toBe(encoding);
+    }
+  });
+
+  it("maxOutputLength: 0 admits only an empty body", () => {
+    expect(
+      decompressBody(gzipSync(Buffer.alloc(0)), "gzip", { maxOutputLength: 0 })
+        .length,
+    ).toBe(0);
+    expect(() =>
+      decompressBody(gzipSync(Buffer.from("a")), "gzip", {
+        maxOutputLength: 0,
+      }),
+    ).toThrow(DecompressionLimitError);
+  });
+
+  it("stops a decompression bomb at the limit instead of inflating it", () => {
+    const zeros = Buffer.alloc(64 * 1024 * 1024);
+    const bombs: Array<[string, Buffer]> = [
+      ["gzip", gzipSync(zeros, { level: 9 })],
+      ["deflate", deflateSync(zeros, { level: 9 })],
+      ["br", brotliCompressSync(zeros)],
+    ];
+
+    for (const [encoding, bomb] of bombs) {
+      let thrown: unknown;
+      try {
+        decompressBody(bomb, encoding, { maxOutputLength: 1024 * 1024 });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(DecompressionLimitError);
+      // node:zlib's own overflow error as the cause means it stopped at the
+      // cap; a fully inflated body would have failed the length check instead.
+      expect(
+        ((thrown as DecompressionLimitError).cause as { code?: string }).code,
+      ).toBe("ERR_BUFFER_TOO_LARGE");
+    }
+  });
+
+  it("round-trips through the fast and the node:zlib paths, capped or not", () => {
+    const large = Buffer.from(text.repeat(400));
+    for (const [encoding, body] of [
+      ["gzip", gzipSync(large)],
+      ["deflate", deflateSync(large)],
+      ["br", brotliCompressSync(large)],
+    ] as const) {
+      for (const fastPathLimit of [0, undefined, Infinity]) {
+        for (const maxOutputLength of [undefined, large.length, Infinity]) {
+          expect(
+            decompressBody(body, encoding, {
+              maxOutputLength,
+              fastPathLimit,
+            }).equals(large),
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("rejects a maxOutputLength that is negative or not a number", () => {
+    for (const maxOutputLength of [-1, Number.NaN]) {
+      expect(() =>
+        decompressBody(gzipSync(plain), "gzip", { maxOutputLength }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  /** The error `run` throws, or `undefined` when it returns. */
+  function thrownBy(run: () => unknown): unknown {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  }
+
+  /** Incompressible bytes, so the compressed body is about `size` long too. */
+  function noise(size: number): Buffer {
+    return Buffer.from(crypto.getRandomValues(new Uint8Array(size)));
+  }
+
+  /**
+   * Which decoder met an overflow. node:zlib stops at the cap and leaves its
+   * own `ERR_BUFFER_TOO_LARGE` as the cause; Bun's decoders cannot stop, so
+   * their output is measured afterwards and the error has no cause.
+   */
+  function overflowPath(
+    body: Uint8Array,
+    encoding: string,
+    options: { maxOutputLength: number; fastPathLimit?: number },
+  ): "bun" | "node:zlib" {
+    const error = thrownBy(() => decompressBody(body, encoding, options));
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    const { cause } = error as DecompressionLimitError;
+    if (cause === undefined) {
+      return "bun";
+    }
+    expect((cause as { code?: string }).code).toBe("ERR_BUFFER_TOO_LARGE");
+    return "node:zlib";
+  }
+
+  it("exports a 32 MiB default fast-path budget", () => {
+    expect(DEFAULT_DECOMPRESS_FAST_PATH_LIMIT).toBe(32 * 1024 * 1024);
+  });
+
+  it("by default sends a body whose worst case fits 32 MiB to Bun, and a larger one to node:zlib", () => {
+    for (const [encoding, compress] of [
+      ["gzip", gzipSync],
+      ["deflate", deflateSync],
+    ] as const) {
+      const smallRaw = noise(30_000);
+      const small = compress(smallRaw);
+      expect(small.length * 1032).toBeLessThanOrEqual(
+        DEFAULT_DECOMPRESS_FAST_PATH_LIMIT,
+      );
+      expect(overflowPath(small, encoding, { maxOutputLength: 1000 })).toBe(
+        "bun",
+      );
+      expect(decompressBody(small, encoding).equals(smallRaw)).toBe(true);
+
+      const largeRaw = noise(40_000);
+      const large = compress(largeRaw);
+      expect(large.length * 1032).toBeGreaterThan(
+        DEFAULT_DECOMPRESS_FAST_PATH_LIMIT,
+      );
+      expect(overflowPath(large, encoding, { maxOutputLength: 1000 })).toBe(
+        "node:zlib",
+      );
+      expect(decompressBody(large, encoding).equals(largeRaw)).toBe(true);
+    }
+  });
+
+  it("the fast path holds its output to maxOutputLength after decoding", () => {
+    const raw = noise(30_000);
+    for (const [encoding, body] of [
+      ["gzip", gzipSync(raw)],
+      ["deflate", deflateSync(raw)],
+    ] as const) {
+      expect(
+        decompressBody(body, encoding, { maxOutputLength: raw.length }).length,
+      ).toBe(raw.length);
+
+      const error = thrownBy(() =>
+        decompressBody(body, encoding, { maxOutputLength: raw.length - 1 }),
+      ) as DecompressionLimitError;
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect(error.code).toBe("ERR_DECOMPRESSION_LIMIT");
+      expect(error.limit).toBe(raw.length - 1);
+      expect(error.encoding).toBe(encoding);
+      expect(error.cause).toBeUndefined();
+    }
+  });
+
+  it("fastPathLimit: 0 disables the fast path, Infinity always takes it, and the boundary is inclusive", () => {
+    const small = gzipSync(noise(30_000));
+    const large = gzipSync(noise(40_000));
+    const maxOutputLength = 1000;
+
+    expect(
+      overflowPath(small, "gzip", { maxOutputLength, fastPathLimit: 0 }),
+    ).toBe("node:zlib");
+    expect(
+      overflowPath(large, "gzip", { maxOutputLength, fastPathLimit: Infinity }),
+    ).toBe("bun");
+
+    const boundary = small.length * 1032;
+    expect(
+      overflowPath(small, "gzip", { maxOutputLength, fastPathLimit: boundary }),
+    ).toBe("bun");
+    expect(
+      overflowPath(small, "gzip", {
+        maxOutputLength,
+        fastPathLimit: boundary - 1,
+      }),
+    ).toBe("node:zlib");
+  });
+
+  it("brotli always decodes through capped node:zlib", () => {
+    const body = brotliCompressSync(noise(5000));
+    expect(
+      overflowPath(body, "br", {
+        maxOutputLength: 10,
+        fastPathLimit: Infinity,
+      }),
+    ).toBe("node:zlib");
+  });
+
+  it("multi-member and trailing-junk gzip bodies behave identically on both paths", () => {
+    const hello = Buffer.from("hello ");
+    const member = gzipSync(hello);
+    const multi = Buffer.concat([member, gzipSync(Buffer.from("world"))]);
+    const twice = Buffer.concat([member, member]);
+    const junk = Buffer.concat([member, member.subarray(member.length - 8)]);
+
+    for (const fastPathLimit of [0, undefined, Infinity]) {
+      expect(decompressBody(multi, "gzip", { fastPathLimit }).toString()).toBe(
+        "hello world",
+      );
+      expect(
+        decompressBody(multi, "gzip", {
+          fastPathLimit,
+          maxOutputLength: 11,
+        }).toString(),
+      ).toBe("hello world");
+      expect(() =>
+        decompressBody(multi, "gzip", { fastPathLimit, maxOutputLength: 10 }),
+      ).toThrow(DecompressionLimitError);
+      expect(decompressBody(twice, "gzip", { fastPathLimit }).toString()).toBe(
+        "hello hello ",
+      );
+      expect(() => decompressBody(junk, "gzip", { fastPathLimit })).toThrow(
+        DecompressionError,
+      );
+    }
+  });
+
+  it("rejects a fastPathLimit that is negative or not a number, for every encoding", () => {
+    for (const fastPathLimit of [-1, Number.NaN]) {
+      for (const [encoding, body] of [
+        ["gzip", gzipSync(plain)],
+        ["deflate", deflateSync(plain)],
+        ["br", brotliCompressSync(plain)],
+        ["identity", plain],
+      ] as const) {
+        expect(() => decompressBody(body, encoding, { fastPathLimit })).toThrow(
+          RangeError,
+        );
+      }
+    }
+  });
+
+  it("returns undefined for a coding it does not decode, in any layer", () => {
+    for (const encoding of [
+      "compress",
+      "x-compress",
+      "aes128gcm",
+      "*",
+      "gzip, compress",
+      "compress, gzip",
+    ]) {
+      expect(decompressBody(gzipSync(plain), encoding)).toBeUndefined();
+    }
+  });
+});
+
+/** Runs `bytes` through a web `CompressionStream`, as a browser client would. */
+async function compressWithStream(
+  format: Bun.CompressionFormat,
+  bytes: Uint8Array,
+): Promise<Buffer> {
+  const stream = new Blob([bytes])
+    .stream()
+    .pipeThrough(new CompressionStream(format));
+  return Buffer.from(await Bun.readableStreamToArrayBuffer(stream));
+}
+
+/** The error `run` throws, or `undefined` when it returns. */
+function errorThrownBy(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+/** Incompressible bytes. */
+function randomBytes(size: number): Buffer {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(size)));
+}
+
+const MiB = 1024 * 1024;
+
+describe("native: decompressBody — zstd (RFC 8878, RFC 9659)", () => {
+  const plain = Buffer.from(
+    JSON.stringify(
+      Array.from({ length: 500 }, (_, id) => ({ id, name: `user-${id}` })),
+    ),
+  );
+
+  /** zstd with no Frame_Content_Size, as a streaming encoder writes it. */
+  const unsized = (bytes: Uint8Array): Buffer =>
+    zstdCompressSync(bytes, {
+      params: { [zlibConstants.ZSTD_c_contentSizeFlag]: 0 },
+    });
+
+  /** zstd with a Content_Checksum. */
+  const checksummed = (bytes: Uint8Array): Buffer =>
+    zstdCompressSync(bytes, {
+      params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 },
+    });
+
+  /** Repetitive but not single-byte, so zstd writes Compressed (not RLE) blocks. */
+  const compressible = (size: number): Buffer =>
+    Buffer.alloc(size, "bun-common zstd ");
+
+  /** A 3-byte Block_Header (RFC 8878 §3.1.1.2.1). */
+  function blockHeader(
+    type: 0 | 1 | 2 | 3,
+    size: number,
+    last: boolean,
+  ): Buffer {
+    const header = Buffer.alloc(3);
+    header.writeUIntLE(size * 8 + type * 2 + (last ? 1 : 0), 0, 3);
+    return header;
+  }
+
+  /** The Magic_Number and a Frame_Header_Descriptor of `descriptor`. */
+  const frameStart = (descriptor: number): Buffer =>
+    Buffer.from([0x28, 0xb5, 0x2f, 0xfd, descriptor]);
+
+  /**
+   * A frame built by hand from Raw and RLE blocks, with no
+   * Frame_Content_Size; `windowExponent` sets Window_Size to 2^(10+it) bytes.
+   */
+  function handFrame(
+    blocks: Array<{ raw: string } | { rle: number; size: number }>,
+    windowExponent = 10,
+  ): Buffer {
+    const parts = [frameStart(0x00), Buffer.from([windowExponent << 3])];
+    blocks.forEach((block, index) => {
+      const last = index === blocks.length - 1;
+      if ("raw" in block) {
+        const bytes = Buffer.from(block.raw);
+        parts.push(blockHeader(0, bytes.length, last), bytes);
+      } else {
+        parts.push(blockHeader(1, block.size, last), Buffer.from([block.rle]));
+      }
+    });
+    return Buffer.concat(parts);
+  }
+
+  /** A skippable frame (RFC 8878 §3.1.2) of `size` bytes of user data. */
+  function skippableFrame(size: number, nibble = 0): Buffer {
+    const header = Buffer.alloc(8);
+    header.writeUInt32LE(0x184d2a50 + nibble, 0);
+    header.writeUInt32LE(size, 4);
+    return Buffer.concat([header, Buffer.alloc(size, 0xaa)]);
+  }
+
+  /** node:zlib (`fastPathLimit: 0`) and Bun (`Infinity`). */
+  const decoders = [{ fastPathLimit: 0 }, { fastPathLimit: Infinity }];
+
+  it("the fixtures carry the frame headers these tests rely on", () => {
+    expect(Bun.zstdCompressSync(plain)[4] & 0xc0).not.toBe(0);
+    expect(unsized(plain)[4] & 0xe0).toBe(0);
+    expect(checksummed(plain)[4] & 0x04).toBe(0x04);
+  });
+
+  it("round-trips what Bun, node:zlib and CompressionStream encode, on both decoders", async () => {
+    const bodies = [
+      Bun.zstdCompressSync(plain),
+      Bun.zstdCompressSync(plain, { level: 19 }),
+      zstdCompressSync(plain),
+      unsized(plain),
+      checksummed(plain),
+      await compressWithStream("zstd", plain),
+    ];
+    for (const body of bodies) {
+      for (const options of [
+        {},
+        ...decoders,
+        { maxOutputLength: plain.length },
+        { fastPathLimit: 0, maxOutputLength: plain.length },
+      ]) {
+        expect(decompressBody(body, "zstd", options).equals(plain)).toBe(true);
+      }
+    }
+  });
+
+  it("decodes concatenated frames and skips skippable frames wherever they are", () => {
+    const body = Buffer.concat([
+      skippableFrame(3),
+      Bun.zstdCompressSync(Buffer.from("hello ")),
+      skippableFrame(0, 0xf),
+      unsized(Buffer.from("zstd ")),
+      handFrame([{ raw: "wor" }, { rle: 0x6c, size: 1 }, { raw: "d" }]),
+      skippableFrame(5, 7),
+    ]);
+    for (const options of [{}, ...decoders, { maxOutputLength: 16 }]) {
+      expect(decompressBody(body, "zstd", options).toString()).toBe(
+        "hello zstd world",
+      );
+    }
+    expect(decompressBody(skippableFrame(4), "zstd").length).toBe(0);
+  });
+
+  it("truncated input throws DecompressionError on both decoders — never empty or partial output", () => {
+    const cases: Buffer[] = [];
+    for (const frame of [
+      Bun.zstdCompressSync(plain),
+      unsized(plain),
+      checksummed(plain),
+    ]) {
+      cases.push(
+        frame.subarray(0, 4),
+        frame.subarray(0, 5),
+        frame.subarray(0, frame.length >> 1),
+        frame.subarray(0, frame.length - 1),
+      );
+    }
+    const multi = Buffer.concat([Bun.zstdCompressSync(plain), unsized(plain)]);
+    cases.push(
+      multi.subarray(0, multi.length - 3),
+      skippableFrame(8).subarray(0, 6),
+      skippableFrame(8).subarray(0, 10),
+    );
+
+    for (const bad of cases) {
+      for (const options of decoders) {
+        const error = errorThrownBy(() => decompressBody(bad, "zstd", options));
+        expect(error).toBeInstanceOf(DecompressionError);
+        expect((error as DecompressionError).encoding).toBe("zstd");
+        expect((error as DecompressionError).cause).toBeInstanceOf(Error);
+      }
+    }
+  });
+
+  it("throws DecompressionError for data that is not valid zstd", () => {
+    const frame = Bun.zstdCompressSync(plain);
+    const reservedBit = Buffer.from(frame);
+    reservedBit[4] |= 0x08;
+    const damagedChecksum = checksummed(plain);
+    damagedChecksum[damagedChecksum.length - 1] ^= 0xff;
+
+    for (const bad of [
+      Buffer.alloc(0),
+      Buffer.from("not compressed at all"),
+      Buffer.concat([frame, Buffer.from("JUNKJUNK")]),
+      reservedBit,
+      // A reserved Block_Type.
+      Buffer.concat([
+        frameStart(0x00),
+        Buffer.from([0x50]),
+        blockHeader(3, 1, true),
+        Buffer.from([0]),
+      ]),
+      // A Block_Size over 128 KiB.
+      Buffer.concat([
+        frameStart(0x00),
+        Buffer.from([0x50]),
+        blockHeader(0, 128 * 1024 + 1, true),
+        Buffer.alloc(128 * 1024 + 1),
+      ]),
+      // A Dictionary_ID: no dictionary can be supplied for one.
+      Buffer.concat([
+        frameStart(0x01),
+        Buffer.from([0x50, 0x07]),
+        blockHeader(0, 2, true),
+        Buffer.from("hi"),
+      ]),
+      // A single-segment frame declaring 200 bytes around a 2-byte block.
+      Buffer.concat([
+        frameStart(0x20),
+        Buffer.from([200]),
+        blockHeader(0, 2, true),
+        Buffer.from("hi"),
+      ]),
+      damagedChecksum,
+    ]) {
+      for (const options of decoders) {
+        expect(() => decompressBody(bad, "zstd", options)).toThrow(
+          DecompressionError,
+        );
+      }
+    }
+  });
+
+  it("refuses a Window_Size over RFC 9659's 8 MiB, and accepts exactly 8 MiB", () => {
+    expect(
+      decompressBody(handFrame([{ raw: "hi" }], 13), "zstd").toString(),
+    ).toBe("hi");
+    const error = errorThrownBy(() =>
+      decompressBody(handFrame([{ raw: "hi" }], 14), "zstd"),
+    );
+    expect(error).toBeInstanceOf(DecompressionError);
+    expect(String((error as DecompressionError).cause)).toContain(
+      "Window_Size",
+    );
+  });
+
+  it("refuses a bomb whose frames declare their size before decoding a byte", () => {
+    const declared = Bun.zstdCompressSync(Buffer.alloc(64 * MiB));
+    // 512 RLE blocks of 128 KiB: 64 MiB from under 4 KB, no size declared.
+    const rle = handFrame(
+      Array.from({ length: 512 }, () => ({ rle: 0, size: 128 * 1024 })),
+      13,
+    );
+    expect(rle.length).toBeLessThan(4096);
+
+    const decode = spyOn(Bun, "zstdDecompressSync");
+    try {
+      for (const bomb of [declared, rle]) {
+        for (const options of [{}, ...decoders]) {
+          const error = errorThrownBy(() =>
+            decompressBody(bomb, "zstd", { ...options, maxOutputLength: MiB }),
+          ) as DecompressionLimitError;
+          expect(error).toBeInstanceOf(DecompressionLimitError);
+          expect(error.limit).toBe(MiB);
+          expect(error.encoding).toBe("zstd");
+          expect(error.cause).toBeUndefined();
+        }
+      }
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it("an unsized bomb whose worst case fits the fast-path budget is decoded by Bun, then refused", () => {
+    const bomb = unsized(compressible(4 * MiB));
+    const decode = spyOn(Bun, "zstdDecompressSync");
+    try {
+      const error = errorThrownBy(() =>
+        decompressBody(bomb, "zstd", { maxOutputLength: MiB }),
+      ) as DecompressionLimitError;
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect(error.cause).toBeUndefined();
+      expect(decode).toHaveBeenCalledTimes(1);
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it("an unsized bomb past the budget, or with fastPathLimit: 0, is stopped by node:zlib at the limit", () => {
+    const small = unsized(compressible(4 * MiB));
+    const large = unsized(compressible(64 * MiB));
+    const decode = spyOn(Bun, "zstdDecompressSync");
+    try {
+      for (const [bomb, options] of [
+        [small, { fastPathLimit: 0 }],
+        [large, {}],
+      ] as const) {
+        const error = errorThrownBy(() =>
+          decompressBody(bomb, "zstd", { ...options, maxOutputLength: MiB }),
+        ) as DecompressionLimitError;
+        expect(error).toBeInstanceOf(DecompressionLimitError);
+        expect(error.limit).toBe(MiB);
+        expect((error.cause as { code?: string }).code).toBe(
+          "ERR_BUFFER_TOO_LARGE",
+        );
+      }
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it("holds the total of several frames to maxOutputLength, naming the whole limit", () => {
+    const part = compressible(600 * 1024);
+    const body = Buffer.concat([unsized(part), unsized(part)]);
+    for (const options of [{}, ...decoders]) {
+      expect(
+        decompressBody(body, "zstd", {
+          ...options,
+          maxOutputLength: 2 * part.length,
+        }).length,
+      ).toBe(2 * part.length);
+      const error = errorThrownBy(() =>
+        decompressBody(body, "zstd", { ...options, maxOutputLength: MiB }),
+      ) as DecompressionLimitError;
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect(error.limit).toBe(MiB);
+    }
+  });
+
+  it("fastPathLimit is compared with the size the frames declare, inclusively", () => {
+    const raw = randomBytes(30_000);
+    const body = Bun.zstdCompressSync(raw);
+    const decode = spyOn(Bun, "zstdDecompressSync");
+    try {
+      expect(
+        decompressBody(body, "zstd", { fastPathLimit: 30_000 }).equals(raw),
+      ).toBe(true);
+      expect(decode).toHaveBeenCalledTimes(1);
+      decode.mockClear();
+      expect(
+        decompressBody(body, "zstd", { fastPathLimit: 29_999 }).equals(raw),
+      ).toBe(true);
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+});
+
+describe("native: decompressBody — stacked codings (RFC 9110 §8.4)", () => {
+  const plain = Buffer.from(JSON.stringify({ stacked: "x".repeat(2000) }));
+
+  it("decodes a list last to first: it names the codings in the order applied", () => {
+    const gzipThenBr = brotliCompressSync(gzipSync(plain));
+    expect(decompressBody(gzipThenBr, "gzip, br")?.equals(plain)).toBe(true);
+    const deflateThenZstd = Bun.zstdCompressSync(deflateSync(plain));
+    expect(
+      decompressBody(deflateThenZstd, "deflate, zstd")?.equals(plain),
+    ).toBe(true);
+    // The same layers named in the wrong order are invalid data.
+    expect(() => decompressBody(gzipThenBr, "br, gzip")).toThrow(
+      DecompressionError,
+    );
+  });
+
+  it("decodes every coding stacked together, x-gzip included", () => {
+    const body = brotliCompressSync(
+      Bun.zstdCompressSync(deflateSync(gzipSync(plain))),
+    );
+    expect(
+      decompressBody(body, "x-gzip, deflate, zstd, br")?.equals(plain),
+    ).toBe(true);
+  });
+
+  it("trims and lower-cases elements, and ignores empty ones and identity", () => {
+    const body = brotliCompressSync(gzipSync(plain));
+    for (const header of [
+      " GZip ,Br",
+      "gzip,,br",
+      ",gzip , , BR,",
+      "identity, gzip, IDENTITY, br",
+    ]) {
+      expect(decompressBody(body, header)?.equals(plain)).toBe(true);
+    }
+    for (const header of ["identity, identity", " , ", ""]) {
+      expect(decompressBody(plain, header)?.equals(plain)).toBe(true);
+    }
+    expect(parseContentCodings(" GZip, ,identity,BR ")).toEqual(["gzip", "br"]);
+    expect(parseContentCodings("")).toEqual([]);
+  });
+
+  it("holds every layer's output to maxOutputLength, not only the last", () => {
+    // The outer br layer decodes to ~1 KB; the gzip layer inside to 1 MiB.
+    const innerBomb = brotliCompressSync(gzipSync(Buffer.alloc(MiB)));
+    const error = errorThrownBy(() =>
+      decompressBody(innerBomb, "gzip, br", { maxOutputLength: 64 * 1024 }),
+    ) as DecompressionLimitError;
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect(error.encoding).toBe("gzip");
+    expect(error.limit).toBe(64 * 1024);
+
+    // The outer layer overflowing is caught there, before the inner one runs.
+    const outer = gzipSync(brotliCompressSync(randomBytes(5000)));
+    const outerError = errorThrownBy(() =>
+      decompressBody(outer, "br, gzip", { maxOutputLength: 100 }),
+    ) as DecompressionLimitError;
+    expect(outerError).toBeInstanceOf(DecompressionLimitError);
+    expect(outerError.encoding).toBe("gzip");
+  });
+
+  it("caps stacked codings at DEFAULT_MAX_CONTENT_CODINGS (5), before decoding anything", () => {
+    expect(DEFAULT_MAX_CONTENT_CODINGS).toBe(5);
+    const layered = (count: number) => {
+      let body: Buffer = plain;
+      for (let i = 0; i < count; i++) {
+        body = gzipSync(body);
+      }
+      return [
+        body,
+        Array.from({ length: count }).fill("gzip").join(", "),
+      ] as const;
+    };
+
+    const [five, fiveHeader] = layered(5);
+    expect(decompressBody(five, fiveHeader)?.equals(plain)).toBe(true);
+    // identity elements are not counted.
+    expect(
+      decompressBody(five, `identity, ${fiveHeader}, identity`)?.equals(plain),
+    ).toBe(true);
+
+    const [six, sixHeader] = layered(6);
+    const gunzip = spyOn(Bun, "gunzipSync");
+    try {
+      const error = errorThrownBy(() =>
+        decompressBody(six, sixHeader),
+      ) as ContentCodingLimitError;
+      expect(error).toBeInstanceOf(ContentCodingLimitError);
+      expect(error.code).toBe("ERR_CONTENT_CODING_LIMIT");
+      expect(error.count).toBe(6);
+      expect(error.limit).toBe(5);
+      expect(gunzip).not.toHaveBeenCalled();
+    } finally {
+      gunzip.mockRestore();
+    }
+    expect(
+      decompressBody(six, sixHeader, { maxCodings: 6 })?.equals(plain),
+    ).toBe(true);
+    expect(
+      decompressBody(six, sixHeader, { maxCodings: Infinity })?.equals(plain),
+    ).toBe(true);
+  });
+
+  it("maxCodings: 1 refuses any stack, 0 refuses any coding, and a bad value is a RangeError", () => {
+    const body = brotliCompressSync(gzipSync(plain));
+    expect(() => decompressBody(body, "gzip, br", { maxCodings: 1 })).toThrow(
+      ContentCodingLimitError,
+    );
+    expect(() =>
+      decompressBody(gzipSync(plain), "gzip", { maxCodings: 0 }),
+    ).toThrow(ContentCodingLimitError);
+    expect(
+      decompressBody(plain, "identity", { maxCodings: 0 }).equals(plain),
+    ).toBe(true);
+    for (const maxCodings of [-1, Number.NaN]) {
+      expect(() => decompressBody(body, "gzip, br", { maxCodings })).toThrow(
+        RangeError,
+      );
+    }
+  });
+
+  it("an unsupported layer answers undefined before any layer is decoded", () => {
+    const gunzip = spyOn(Bun, "gunzipSync");
+    try {
+      expect(
+        decompressBody(gzipSync(Buffer.from("junk")), "compress, gzip"),
+      ).toBeUndefined();
+      expect(gunzip).not.toHaveBeenCalled();
+    } finally {
+      gunzip.mockRestore();
+    }
+  });
+
+  it("a corrupt middle layer throws DecompressionError naming that layer", () => {
+    const zstdLayer = Bun.zstdCompressSync(gzipSync(plain));
+    const body = brotliCompressSync(
+      zstdLayer.subarray(0, zstdLayer.length - 2),
+    );
+    const error = errorThrownBy(() =>
+      decompressBody(body, "gzip, zstd, br"),
+    ) as DecompressionError;
+    expect(error).toBeInstanceOf(DecompressionError);
+    expect(error.encoding).toBe("zstd");
+  });
+});
+
+describe("native: decompressBody — the encodings allowlist", () => {
+  const plain = Buffer.from('{"allowed":true}');
+
+  it('"*" (the default) admits every coding; a list admits only its members', () => {
+    const gzipped = gzipSync(plain);
+    const brotli = brotliCompressSync(plain);
+    expect(
+      decompressBody(gzipped, "gzip", { encodings: "*" }).equals(plain),
+    ).toBe(true);
+    expect(
+      decompressBody(gzipped, "gzip", { encodings: ["gzip"] })?.equals(plain),
+    ).toBe(true);
+    expect(
+      decompressBody(brotli, "br", { encodings: ["gzip"] }),
+    ).toBeUndefined();
+    expect(
+      decompressBody(brotli, "br", { encodings: ["gzip", "*"] })?.equals(plain),
+    ).toBe(true);
+    // gzip and its alias x-gzip are one coding.
+    expect(
+      decompressBody(gzipped, "x-gzip", { encodings: ["gzip"] })?.equals(plain),
+    ).toBe(true);
+    expect(
+      decompressBody(gzipped, "gzip", { encodings: ["x-gzip"] })?.equals(plain),
+    ).toBe(true);
+    // identity is always admitted: [] behaves like inflate: false.
+    expect(
+      decompressBody(plain, "identity", { encodings: [] })?.equals(plain),
+    ).toBe(true);
+    expect(decompressBody(gzipped, "gzip", { encodings: [] })).toBeUndefined();
+  });
+
+  it("refuses a stacked body when any layer is outside the list", () => {
+    const body = brotliCompressSync(gzipSync(plain));
+    expect(
+      decompressBody(body, "gzip, br", { encodings: ["gzip"] }),
+    ).toBeUndefined();
+    expect(
+      decompressBody(body, "gzip, br", { encodings: ["br", "gzip"] })?.equals(
+        plain,
+      ),
+    ).toBe(true);
+  });
+
+  it("a literal * in Content-Encoding is an unknown coding, never a wildcard", () => {
+    for (const header of ["*", "gzip, *"]) {
+      expect(
+        decompressBody(gzipSync(plain), header, { encodings: "*" }),
+      ).toBeUndefined();
+    }
+    expect(isContentCodingAllowed("*", "*")).toBe(false);
+  });
+
+  it("an entry that is not a supported coding, or a value that is not a list, is a RangeError", () => {
+    for (const encodings of [["gzpi"], ["gzip", 7], "gzip", {}]) {
+      expect(() =>
+        decompressBody(gzipSync(plain), "gzip", {
+          encodings: encodings as never,
+        }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  it("resolveContentEncodingAllowlist and isContentCodingAllowed", () => {
+    expect(resolveContentEncodingAllowlist(undefined)).toBeUndefined();
+    expect(resolveContentEncodingAllowlist("*")).toBeUndefined();
+    expect(resolveContentEncodingAllowlist(["br", "*"])).toBeUndefined();
+    expect([
+      ...(resolveContentEncodingAllowlist(["gzip", "x-gzip", "zstd"]) ?? []),
+    ]).toEqual(["gzip", "zstd"]);
+
+    expect(isContentCodingAllowed("identity", [])).toBe(true);
+    expect(isContentCodingAllowed(" GZIP ", ["gzip"])).toBe(true);
+    expect(isContentCodingAllowed("zstd", ["gzip"])).toBe(false);
+    expect(isContentCodingAllowed("zstd", undefined)).toBe(true);
+    expect(isContentCodingAllowed("compress", "*")).toBe(false);
+  });
+});
+
+describe("native: dictionary-compressed bodies (dcb, dcz — RFC 9842)", () => {
+  // The Web Platform Tests' vectors (fetch/compression-dictionary/resources/
+  // compressed-data.py): an independent encoder's output, so these check the
+  // wire format, not node:zlib agreeing with itself.
+  const wptDictionary = Buffer.from("This is a test dictionary.\n");
+  const wptText = "This is compressed test data using a test dictionary";
+  const wptDcb = Buffer.from(
+    "ff44434253969bcf5e960e0edbf0a4bdde6b0b3e9381e156de7f5b91ce8391624270f416a198018062a44c1ddf12848caec2ca6022076e810514c9b7c3448ebc16e0150eecc1ee34333e0d",
+    "hex",
+  );
+  const wptDcz = Buffer.from(
+    "5e2a4d182000000053969bcf5e960e0edbf0a4bdde6b0b3e9381e156de7f5b91ce8391624270f41628b52ffd2434f5000098636f6d70726573736564617461207573696e67030059f97354462726109e99f2bc",
+    "hex",
+  );
+
+  const plain = Buffer.from(
+    JSON.stringify(
+      Array.from({ length: 400 }, (_, id) => ({ id, name: `user-${id}` })),
+    ),
+  );
+  const dictionary = Buffer.from(
+    JSON.stringify(
+      Array.from({ length: 100 }, (_, id) => ({ id, name: `user-${id}` })),
+    ),
+  );
+  const hash = compressionDictionaryHash(dictionary);
+
+  /** node:zlib's compressors; `@types/node` does not declare `dictionary` for either. */
+  type DictionaryCompressor = (
+    bytes: Uint8Array,
+    options: { dictionary: Uint8Array; maxOutputLength?: number },
+  ) => Buffer;
+  const brotliWithDictionary: DictionaryCompressor = brotliCompressSync;
+  const zstdWithDictionary: DictionaryCompressor = zstdCompressSync;
+
+  const dcb = Buffer.concat([
+    dictionaryCompressedHeader("dcb", hash),
+    brotliWithDictionary(plain, { dictionary }),
+  ]);
+  const dcz = Buffer.concat([
+    dictionaryCompressedHeader("dcz", hash),
+    zstdWithDictionary(plain, { dictionary }),
+  ]);
+
+  it("decodes the Web Platform Tests' dcb and dcz vectors", () => {
+    expect(compressionDictionaryHash(wptDictionary).toString("hex")).toBe(
+      "53969bcf5e960e0edbf0a4bdde6b0b3e9381e156de7f5b91ce8391624270f416",
+    );
+    const dictionaries = [wptDictionary];
+    expect(decompressBody(wptDcb, "dcb", { dictionaries })?.toString()).toBe(
+      wptText,
+    );
+    expect(decompressBody(wptDcz, "dcz", { dictionaries })?.toString()).toBe(
+      wptText,
+    );
+  });
+
+  it("round-trips dcb and dcz, finding the dictionary in an array or through a resolver", () => {
+    const other = Buffer.from("another dictionary");
+    const byHash = new Map([[hash.toString("hex"), dictionary]]);
+    const seen: string[] = [];
+    const resolver = (digest: Buffer, encoding: "dcb" | "dcz") => {
+      seen.push(encoding);
+      return byHash.get(digest.toString("hex"));
+    };
+    for (const [encoding, body] of [
+      ["dcb", dcb],
+      ["dcz", dcz],
+    ] as const) {
+      expect(
+        decompressBody(body, encoding, {
+          dictionaries: [other, dictionary],
+        })?.equals(plain),
+      ).toBe(true);
+      expect(
+        decompressBody(body, encoding, { dictionaries: resolver })?.equals(
+          plain,
+        ),
+      ).toBe(true);
+    }
+    expect(seen).toEqual(["dcb", "dcz"]);
+  });
+
+  it("without dictionaries, dcb and dcz are codings it does not decode (undefined)", () => {
+    expect(decompressBody(dcb, "dcb")).toBeUndefined();
+    expect(decompressBody(dcz, "dcz")).toBeUndefined();
+  });
+
+  it("a dictionary it does not have throws UnknownCompressionDictionaryError, a DecompressionError", () => {
+    for (const dictionaries of [
+      [Buffer.from("another dictionary")],
+      () => undefined,
+    ]) {
+      for (const [encoding, body] of [
+        ["dcb", dcb],
+        ["dcz", dcz],
+      ] as const) {
+        const error = errorThrownBy(() =>
+          decompressBody(body, encoding, { dictionaries }),
+        ) as UnknownCompressionDictionaryError;
+        expect(error).toBeInstanceOf(UnknownCompressionDictionaryError);
+        expect(error).toBeInstanceOf(DecompressionError);
+        expect(error.code).toBe("ERR_DECOMPRESSION_FAILED");
+        expect(error.encoding).toBe(encoding);
+        expect(error.dictionaryHash).toBe(hash.toString("hex"));
+      }
+    }
+  });
+
+  it("a resolver answering a dictionary that does not match the hash is a server error, not a DecompressionError", () => {
+    const error = errorThrownBy(() =>
+      decompressBody(dcz, "dcz", { dictionaries: () => Buffer.from("wrong") }),
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(DecompressionError);
+  });
+
+  it("a missing or damaged header, or a truncated stream, is a DecompressionError", () => {
+    const dictionaries = [dictionary];
+    const wrongMagic = Buffer.from(dcz);
+    wrongMagic[0] ^= 0xff;
+    for (const [encoding, body] of [
+      ["dcb", dcb.subarray(0, 20)],
+      ["dcz", dcz.subarray(0, 39)],
+      ["dcz", dcz.subarray(0, 40)],
+      ["dcz", wrongMagic],
+      ["dcb", dcz],
+      ["dcb", dcb.subarray(0, dcb.length - 4)],
+      ["dcz", dcz.subarray(0, dcz.length - 1)],
+    ] as const) {
+      const error = errorThrownBy(() =>
+        decompressBody(body, encoding, { dictionaries }),
+      );
+      expect(error).toBeInstanceOf(DecompressionError);
+      expect(error).not.toBeInstanceOf(UnknownCompressionDictionaryError);
+    }
+  });
+
+  it("holds dcb and dcz output to maxOutputLength", () => {
+    const dictionaries = [dictionary];
+    for (const [encoding, body] of [
+      ["dcb", dcb],
+      ["dcz", dcz],
+    ] as const) {
+      expect(
+        decompressBody(body, encoding, {
+          dictionaries,
+          maxOutputLength: plain.length,
+        })?.length,
+      ).toBe(plain.length);
+      const error = errorThrownBy(() =>
+        decompressBody(body, encoding, {
+          dictionaries,
+          maxOutputLength: plain.length - 1,
+        }),
+      ) as DecompressionLimitError;
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect(error.limit).toBe(plain.length - 1);
+    }
+  });
+
+  it("stacks with other codings and obeys encodings", () => {
+    const dictionaries = [dictionary];
+    expect(
+      decompressBody(gzipSync(dcz), "dcz, gzip", { dictionaries })?.equals(
+        plain,
+      ),
+    ).toBe(true);
+    expect(
+      decompressBody(dcz, "dcz", { dictionaries, encodings: ["gzip"] }),
+    ).toBeUndefined();
+    expect(
+      decompressBody(dcz, "dcz", { dictionaries, encodings: ["dcz"] })?.equals(
+        plain,
+      ),
+    ).toBe(true);
+  });
+
+  it("header helpers: build, parse, measure, and read Available-Dictionary", () => {
+    expect(dictionaryCompressedHeaderLength("dcb")).toBe(36);
+    expect(dictionaryCompressedHeaderLength("dcz")).toBe(40);
+    expect(dictionaryCompressedHeader("dcz", hash).length).toBe(40);
+    expect(() => dictionaryCompressedHeader("dcb", hash.subarray(1))).toThrow(
+      RangeError,
+    );
+
+    expect(parseDictionaryCompressedHeader(dcz, "dcz")?.equals(hash)).toBe(
+      true,
+    );
+    expect(parseDictionaryCompressedHeader(dcb, "dcb")?.equals(hash)).toBe(
+      true,
+    );
+    expect(parseDictionaryCompressedHeader(dcz, "dcb")).toBeUndefined();
+    expect(
+      parseDictionaryCompressedHeader(dcb.subarray(0, 35), "dcb"),
+    ).toBeUndefined();
+
+    const header = `:${hash.toString("base64")}:`;
+    expect(parseAvailableDictionary(header)?.equals(hash)).toBe(true);
+    expect(parseAvailableDictionary(` ${header};id="x"`)?.equals(hash)).toBe(
+      true,
+    );
+    for (const bad of [
+      null,
+      undefined,
+      "",
+      hash.toString("base64"),
+      ":c2hvcnQ=:",
+      `:${hash.toString("hex")}:`,
+    ]) {
+      expect(parseAvailableDictionary(bad)).toBeUndefined();
+    }
   });
 });

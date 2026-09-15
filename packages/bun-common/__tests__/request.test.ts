@@ -1,13 +1,16 @@
+import type { JsonValue } from "../lib";
 import { Buffer } from "node:buffer";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   DEFAULT_PARSE_QUERY_OPTS,
   handleMultipartAnyFiles,
+  signCookie,
   transformUploadOptions,
 } from "../lib";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRequest } from "../lib/BunRequest";
 import { BunResponse } from "../lib/BunResponse";
+import { BunRouter } from "../lib/BunRouter";
 import { makeRequest, testServer } from "./helpers";
 
 let httpAdapter!: BunHttpAdapter;
@@ -35,6 +38,37 @@ describe("BunRequest: construction & basics", () => {
     expect(req.method).toBe("GET");
     expect(req.path).toBe("/path");
     expect(req.hostname).toBe("localhost");
+  });
+
+  it("exposes the server it was built with as req.server", async () => {
+    const req = await makeRequest();
+    expect(req.server).toBe(testServer);
+  });
+
+  it("reports the accepting server on a served request", async () => {
+    const adapter = new BunHttpAdapter(30000);
+    adapter.get("/server", (req, res) => {
+      return res.json({ port: req.server?.port ?? null });
+    });
+    await adapter.listen(0);
+    try {
+      const response = await fetch(buildUrl("/server", adapter));
+      expect(await response.json()).toEqual({ port: adapter.listeningPort });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("carries the port-less fetch stub for a socket-free fetch()", async () => {
+    const router = new BunRouter();
+    router.get("/server", (req, res) => {
+      return res.json({
+        hasServer: req.server !== undefined,
+        port: req.server?.port ?? null,
+      });
+    });
+    const response = await router.fetch("/server");
+    expect(await response.json()).toEqual({ hasServer: true, port: null });
   });
 
   it("parses the query string", async () => {
@@ -416,6 +450,31 @@ describe("BunRequest: headers", () => {
   it("get returns a default when the header is absent", async () => {
     const req = await makeRequest();
     expect(req.get("X-Missing", "fallback")).toBe("fallback");
+  });
+
+  it("get('set-cookie') is an array, as Node's req.headers['set-cookie']", async () => {
+    const headers = new Headers();
+    headers.append("Set-Cookie", "a=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    headers.append("Set-Cookie", "b=2");
+    headers.append("X-Many", "x");
+    headers.append("X-Many", "y");
+    const req = await BunRequest.init(
+      new Request("http://localhost/", { headers }),
+      testServer,
+      { parseBody: false },
+    );
+
+    const lines = ["a=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", "b=2"];
+    expect(req.get("set-cookie")).toEqual(lines);
+    expect(req.get("Set-Cookie", [])).toEqual(lines);
+    expect(req.headers["set-cookie"]).toEqual(lines);
+    // Every other repeated header is still one comma-joined string.
+    expect(req.get("x-many")).toBe("x, y");
+
+    const bare = await makeRequest();
+    expect(bare.get("set-cookie")).toBeNull();
+    expect(bare.get("Set-Cookie", [])).toEqual([]);
+    expect(bare.headers["set-cookie"]).toBeUndefined();
   });
 
   it("getRawHeaderNames title-cases header names", async () => {
@@ -867,5 +926,152 @@ describe("BunRequest: IncomingMessage-style events", () => {
     req.once("end", () => {});
     req.removeAllListeners();
     expect(req.eventNames()).toHaveLength(0);
+  });
+});
+
+describe("BunRequest: Express parity", () => {
+  it("a GET with no body under parseBody leaves body undefined and headers untouched", async () => {
+    const req = await makeRequest({ options: { parseBody: true } });
+    expect(req.body).toBeUndefined();
+    expect(req.getHeader("Content-Type")).toBeNull();
+    expect(req.isBodyParsed).toBe(true);
+  });
+
+  it("parsing never rewrites the request's Content-Type", async () => {
+    const sniffed = await makeRequest({ method: "POST", body: '{"a":1}' });
+    expect(sniffed.body).toEqual({ a: 1 });
+    expect(sniffed.getHeader("Content-Type")).toBeNull();
+
+    const declared = await makeRequest({
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: '{"a":1}',
+    });
+    expect(declared.body).toEqual({ a: 1 });
+    expect(declared.getHeader("Content-Type")).toBe(
+      "application/json; charset=utf-8",
+    );
+  });
+
+  it("fresh is computable as soon as a response is constructed", async () => {
+    const req = await makeRequest({ headers: { "If-None-Match": '"v1"' } });
+    expect(req.fresh).toBe(false);
+    new BunResponse(req).set("ETag", '"v1"');
+    expect(req.fresh).toBe(true);
+  });
+
+  it("ips is [] without X-Forwarded-For", async () => {
+    expect((await makeRequest()).ips).toEqual([]);
+    const proxied = await makeRequest({
+      headers: { "X-Forwarded-For": " 203.0.113.9 , 10.0.0.2," },
+    });
+    expect(proxied.ips).toEqual(["203.0.113.9", "10.0.0.2"]);
+  });
+
+  it("url is the path and query, with originalUrl alongside and baseUrl ''", async () => {
+    const req = await makeRequest({ url: "http://localhost/a/b?x=1" });
+    expect(req.url).toBe("/a/b?x=1");
+    expect(req.originalUrl).toBe("/a/b?x=1");
+    expect(req.baseUrl).toBe("");
+    req.url = "/rewritten";
+    expect(req.url).toBe("/rewritten");
+    expect(req.originalUrl).toBe("/a/b?x=1");
+  });
+
+  it("a tampered signed cookie is false in signedCookies and leaves cookies", async () => {
+    const good = `s:${signCookie("v", "k")}`;
+    const req = await makeRequest({
+      headers: {
+        Cookie: `good=${encodeURIComponent(good)}; bad=${encodeURIComponent("s:v.forged")}; plain=1`,
+      },
+      options: { parseCookies: false },
+    });
+    const parsed = req.parseCookies({ secret: "k" });
+    expect(parsed.signedCookies).toEqual({ good: "v", bad: false });
+    expect(parsed.cookies).toEqual({ plain: "1" });
+  });
+
+  it("parseCookies() updates a request whose cookies were not parsed yet", async () => {
+    const req = await makeRequest({
+      headers: { Cookie: "a=1" },
+      options: { parseCookies: false },
+    });
+    expect(req.parseCookies().cookies).toEqual({ a: "1" });
+    expect(req.cookies).toEqual({ a: "1" });
+
+    // Already parsed: only forceUpdateRequest overwrites.
+    req.cookies = { replaced: "yes" };
+    req.parseCookies();
+    expect(req.cookies).toEqual({ replaced: "yes" });
+    req.parseCookies({ forceUpdateRequest: true });
+    expect(req.cookies).toEqual({ a: "1" });
+  });
+
+  it("parseQueryOpts merge over the defaults; set a default to opt out", async () => {
+    const merged = await makeRequest({
+      url: "http://localhost/?a[b]=1&c=1&c=2",
+      options: { parseQueryOpts: { delimiter: "&" } },
+    });
+    expect(merged.query).toEqual({ a: { b: "1" }, c: ["1", "2"] });
+
+    const flat = await makeRequest({
+      url: "http://localhost/?a[b]=1",
+      options: { parseQueryOpts: { nesting: false } },
+    });
+    expect(flat.query).toEqual({ "a[b]": "1" });
+  });
+
+  it("setHeader invalidates the cached headers view", async () => {
+    const req = await makeRequest({ headers: { a: "1" } });
+    expect(req.headers).toEqual({ a: "1" });
+    req.setHeader("b", "2");
+    expect(req.headers).toEqual({ a: "1", b: "2" });
+  });
+
+  it("socket is an emitter that emits close on disconnect (NestJS @Sse)", async () => {
+    const controller = new AbortController();
+    const req = await BunRequest.init(
+      new Request("http://localhost/", { signal: controller.signal }),
+      testServer,
+      { parseBody: false },
+    );
+    const socket = req.socket;
+    let closes = 0;
+    const removed = () => {
+      throw new Error("a removed listener ran");
+    };
+    expect(socket.once("close", () => closes++)).toBe(socket);
+    socket.on("close", removed).removeListener("close", removed);
+    expect(socket.setTimeout(0).setNoDelay(true).setKeepAlive(false)).toBe(
+      socket,
+    );
+    expect(socket.destroyed).toBe(false);
+
+    controller.abort();
+    expect(closes).toBe(1);
+    expect(socket.destroyed).toBe(true);
+    expect(socket.listenerCount("close")).toBe(0);
+  });
+});
+
+describe("BunRequest: cookie value types", () => {
+  it("a j: cookie is parsed JSON, typed JsonValue through to req.cookies", async () => {
+    const prefs = encodeURIComponent('j:{"lang":"en","beta":true}');
+    const req = await makeRequest({
+      headers: { Cookie: `prefs=${prefs}; theme=dark` },
+    });
+
+    // Compile-time: the public types are JsonValue, not string.
+    const cookies: Record<string, JsonValue> = req.cookies;
+    const signed: Record<string, JsonValue> = req.parseCookies({
+      secret: "k",
+    }).signedCookies;
+    // @ts-expect-error — a JSON cookie is not guaranteed to be a string.
+    const notString: Record<string, string> = req.cookies;
+
+    expect(cookies.prefs).toEqual({ lang: "en", beta: true });
+    expect(cookies.theme).toBe("dark");
+    expect(signed).toEqual({});
+    expect<unknown>(notString).toBe(req.cookies);
   });
 });

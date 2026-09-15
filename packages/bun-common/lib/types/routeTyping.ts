@@ -1,5 +1,77 @@
-import type { DefaultRequestBody, TypedRouteHandler } from "./general";
-import type { ExtractRouteParams } from "./routeParams";
+import type {
+  DefaultRequestBody,
+  RouterHandler,
+  TypedRouteHandler,
+} from "./general";
+import type {
+  ExtractHostParams,
+  ExtractRouteParams,
+  WithHostParams,
+} from "./routeParams";
+
+/**
+ * The name of every HTTP verb method `BunRouter` registers a route with —
+ * `@routejs/router`'s verb set, WebDAV's included. `all`, `any` and `use` are
+ * not verbs and are left out. An adapter may carry fewer (bun-nest's has no
+ * `checkout`, say), so narrow with `Extract<RouterVerb, keyof TAdapter>` there.
+ */
+export type RouterVerb =
+  | "checkout"
+  | "copy"
+  | "delete"
+  | "get"
+  | "head"
+  | "lock"
+  | "merge"
+  | "mkactivity"
+  | "mkcol"
+  | "move"
+  | "notify"
+  | "options"
+  | "patch"
+  | "post"
+  | "propfind"
+  | "proppatch"
+  | "purge"
+  | "put"
+  | "report"
+  | "search"
+  | "subscribe"
+  | "trace"
+  | "unlock"
+  | "unsubscribe"
+  | "view";
+
+/**
+ * A verb method with its generated typed overloads set aside: the untyped
+ * `(path, ...handlers)` signature every verb (and `all`) shares, on
+ * `BunRouter`, bun-common's `BunHttpAdapter` and bun-nest's alike.
+ *
+ * It exists for a verb chosen at runtime. `router[verb]` with `verb` a union
+ * such as `"get" | "post"` is a union of overloaded methods. TypeScript calls
+ * one only while every member's overload list is identical (today the
+ * generator keeps them so); this type does not depend on that. The union is
+ * assignable to it, with no cast, because every verb declares this signature
+ * among its overloads:
+ *
+ * ```ts
+ * for (const verb of ["get", "post"] as const) {
+ *   const register: RouterVerbMethod<typeof router> = router[verb];
+ *   register.call(router, "/doc", (req, res) => res.send(req.method));
+ * }
+ * ```
+ *
+ * The `this` parameter is the point of the `TRouter` argument: the method
+ * reads its router off `this`, so a detached `register("/doc", h)` would throw
+ * at runtime and is a compile error here. Call it with `.call(router, …)`.
+ * Handlers are untyped (`req.params` is not narrowed from the path); use the
+ * verb method directly when the verb is known statically.
+ */
+export type RouterVerbMethod<TRouter> = (
+  this: TRouter,
+  path: string,
+  ...handlers: RouterHandler[]
+) => TRouter;
 
 /**
  * Types backing the verb methods' inference.
@@ -48,6 +120,26 @@ export type ResolveBody<S> = S extends { body: infer B }
 /**
  * The final handler of a chain, with its request narrowed by the path and the
  * accumulated validator shapes.
+ *
+ * A handler declared with this type ahead of the call cannot follow an
+ * inline validator call — `router.get(path, validate({ query }), handler)`
+ * matches no overload. That is a TypeScript inference limit: the inline
+ * `validate(...)` is inferred against the verb's unresolved shape parameter,
+ * which then falls back to empty. (An inline arrow handler is unaffected.) Use
+ * either form instead:
+ *
+ * ```ts
+ * // the validator stored first
+ * const pageQuery = validate({ query: PageQuery });
+ * router.get("/posts/:id", pageQuery, handler);
+ *
+ * // or the verb's type arguments spelled out
+ * router.get<"/posts/:id", { query: { page: number } }>(
+ *   "/posts/:id",
+ *   validate({ query: PageQuery }),
+ *   handler,
+ * );
+ * ```
  */
 export type ResolvedHandler<TPath extends string, S> = TypedRouteHandler<
   ResolveParams<TPath, S>,
@@ -73,20 +165,38 @@ export type MergeShape<TMountShape, TShape> = Omit<
   TShape;
 
 /**
+ * `req.params` for a route on a host-scoped router: whatever a validator
+ * parsed (it replaces `req.params` wholesale, host captures included), else
+ * the path's params merged over the host pattern's. With no host (`""`) this is
+ * exactly {@link ResolveParams}.
+ */
+export type ResolveHostedParams<
+  TPath extends string,
+  S,
+  THost extends string,
+> = S extends { params: infer P }
+  ? P
+  : WithHostParams<ExtractRouteParams<TPath>, ExtractHostParams<THost>>;
+
+/**
  * The handler type for a route registered at `TPath` on a router mounted at
  * `TMountPath`.
  *
  * Params come from both paths concatenated, matching the runtime, which merges
  * the mount's matched params with the route's own. `TMountPath` defaults to the
  * empty string for an unmounted router, so concatenation is the identity there.
+ *
+ * `THost` is the host pattern a `domain()` scoped the router to; its captures
+ * are merged into params too. It defaults to `""` — no host, no host params.
  */
 export type MountedHandler<
   TMountPath extends string,
   TMountShape,
   TPath extends string,
   TShape,
+  THost extends string = "",
 > = TypedRouteHandler<
-  ResolveParams<`${TMountPath}${TPath}`, TShape>,
+  ResolveHostedParams<`${TMountPath}${TPath}`, TShape, THost>,
   ResolveQuery<MergeShape<TMountShape, TShape>>,
   ResolveBody<MergeShape<TMountShape, TShape>>
 >;

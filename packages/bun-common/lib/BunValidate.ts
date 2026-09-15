@@ -1,7 +1,9 @@
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
 import type { NextFunction, RouterHandler } from "./types/general";
+import type { EmptyShape } from "./types/routeTyping";
 import type { StandardSchemaV1 } from "./types/standardSchema";
+import type { JsonValue } from "./utils/native";
 
 /** The request members `BunValidate` can validate. */
 export type ValidationTarget = "params" | "query" | "body" | "headers";
@@ -18,14 +20,98 @@ export interface ValidationSchemas {
   headers?: StandardSchemaV1;
 }
 
-/** The parsed shapes a set of schemas produces, for the typed handler view. */
-export type InferValidatedShape<S extends ValidationSchemas> = {
-  [K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1
-    ? K
-    : never]: S[K] extends StandardSchemaV1
-    ? StandardSchemaV1.InferOutput<S[K]>
+/**
+ * What each target holds on the request **before** validation — the value a
+ * `normalize` hook receives. These are the request's own declared types; a
+ * validator earlier in the chain may already have replaced `query`/`body`
+ * with its output.
+ */
+export interface ValidationTargetValues {
+  /** `req.params`: the values matched out of the path, all strings. */
+  params: BunRequest["params"];
+  /** `req.query`: the parsed query string. */
+  query: BunRequest["query"];
+  /** `req.body`: whatever the body parser produced. */
+  body: BunRequest["body"];
+  /** `req.headers`, as a plain object. */
+  headers: BunRequest["headers"];
+}
+
+/** The output type of a target's schema, or `unknown` when it has none. */
+export type ValidationSchemaOutput<T> = T extends StandardSchemaV1
+  ? StandardSchemaV1.InferOutput<T>
+  : unknown;
+
+/**
+ * The targets `S` gives a schema — the only ones a hook can be attached to.
+ * For the wide `ValidationSchemas` every target may have one, so all four.
+ */
+export type SchemaTargets<S extends ValidationSchemas> = {
+  [K in keyof S & ValidationTarget]: S[K] extends undefined ? never : K;
+}[keyof S & ValidationTarget];
+
+/**
+ * Per-target hooks, typed from the schemas: `normalize` receives the target's
+ * raw value ({@link ValidationTargetValues}) and `transform` the schema's
+ * parsed output. Only targets with a schema ({@link SchemaTargets}) take
+ * hooks: hooks run around validation, so one on a target without a schema
+ * would never run.
+ *
+ * Every target is listed, a schema-less one typed `never`, rather than
+ * leaving it out: `hooks` is an inferred type parameter, which is not checked
+ * for excess properties, so an absent key would be silently accepted.
+ */
+export type ValidationHooks<S extends ValidationSchemas = ValidationSchemas> = {
+  [K in ValidationTarget]?: K extends SchemaTargets<S>
+    ? TargetHooks<ValidationTargetValues[K], ValidationSchemaOutput<S[K]>>
     : never;
 };
+
+/**
+ * The value a target ends up with: a `transform` hook's return type when one
+ * is given, the schema's output otherwise. Headers are never written back, so
+ * their `transform` does not change what a handler reads.
+ */
+type TargetResult<
+  S extends ValidationSchemas,
+  H,
+  K extends ValidationTarget,
+> = K extends "headers"
+  ? ValidationSchemaOutput<S[K]>
+  : H extends {
+        [P in K]: { transform: (...args: never[]) => infer R };
+      }
+    ? R
+    : ValidationSchemaOutput<S[K]>;
+
+/**
+ * The parsed shapes a set of schemas produces, for the typed handler view.
+ *
+ * `H` is the `hooks` option as passed; a target's `transform` hook, when
+ * present, decides that target's type, because its return value is what gets
+ * written onto the request.
+ */
+export type InferValidatedShape<S extends ValidationSchemas, H = unknown> = {
+  [K in keyof S & ValidationTarget as S[K] extends StandardSchemaV1
+    ? K
+    : never]: TargetResult<S, H, K>;
+};
+
+/**
+ * What a validator's middleware tells the following handler, given its
+ * `replace` option `R`.
+ *
+ * Only `replace: true` (the default) writes the validated values onto the
+ * request, so only then does the handler see {@link InferValidatedShape}.
+ * With `replace: false` the request is left exactly as it was, and the shape
+ * is empty — the handler keeps the request's own types. A `replace` that is
+ * only known to be a `boolean` claims nothing, since it may be `false`.
+ */
+export type ValidatedShapeFor<
+  S extends ValidationSchemas,
+  H = unknown,
+  R extends boolean = true,
+> = [R] extends [true] ? InferValidatedShape<S, H> : EmptyShape;
 
 /** What to do when a target fails validation. */
 export type ValidationFailureMode =
@@ -75,24 +161,46 @@ export class ValidationError extends Error {
   }
 }
 
-/** Hooks applied around validation for a single target. */
-export interface TargetHooks<In = unknown, Out = unknown> {
+/**
+ * Hooks applied around validation for a single target.
+ *
+ * @typeParam In      The target's raw value, as `normalize` receives it.
+ * @typeParam Out     The schema's parsed output, as `transform` receives it.
+ * @typeParam TResult What `transform` returns — the value written back.
+ *
+ * All three default to `unknown` so a bare `TargetHooks` stays the widest
+ * hook; inside `hooks` they are filled in from the schemas.
+ */
+export interface TargetHooks<In = unknown, Out = unknown, TResult = unknown> {
   /**
    * Runs **before** validation, to reshape raw input into what the schema
    * expects — trimming strings, splitting a comma-separated query value,
    * dropping empties. Never sees a validated value.
+   *
+   * Returns `unknown` on purpose: whatever it produces is untrusted input that
+   * the schema then validates.
    */
   normalize?: (value: In, req: BunRequest) => unknown;
   /**
    * Runs **after** a successful validation, to derive the final value the
-   * handler sees. Use for enrichment that a schema cannot express.
+   * handler sees. Use for enrichment that a schema cannot express. Its return
+   * type becomes the handler's type for this target.
    */
-  transform?: (value: Out, req: BunRequest) => unknown;
+  transform?: (value: Out, req: BunRequest) => TResult;
 }
 
-/** Configuration for a {@link BunValidate} instance. */
+/**
+ * Configuration for a {@link BunValidate} instance.
+ *
+ * @typeParam S The schemas, keyed by target.
+ * @typeParam H The `hooks` as passed; a `transform` decides its target's type.
+ * @typeParam R The `replace` option as passed: `false` leaves the handler's
+ *   request types unchanged ({@link ValidatedShapeFor}).
+ */
 export interface BunValidateOptions<
   S extends ValidationSchemas = ValidationSchemas,
+  H extends ValidationHooks<S> = ValidationHooks<S>,
+  R extends boolean = true,
 > {
   /** Schemas to apply, keyed by request target. */
   schemas: S;
@@ -116,19 +224,37 @@ export interface BunValidateOptions<
    *
    * `params` is written back as a plain object; a schema that coerces
    * `"42"` to `42` therefore changes what later middleware reads.
+   *
+   * With `false` nothing is written, so the handler that follows keeps the
+   * request's own types rather than the validated ones — read the parsed
+   * values by running the schema yourself if you need them. `transform` hooks
+   * still run (their result is discarded).
    */
-  replace?: boolean;
-  /** Per-target `normalize`/`transform` hooks. */
-  hooks?: { [K in ValidationTarget]?: TargetHooks };
+  replace?: R;
   /**
-   * Builds the body sent by `"respond"`. Defaults to
-   * `{ error: "Validation failed", issues }`.
+   * Per-target `normalize`/`transform` hooks, typed from `schemas`: see
+   * {@link ValidationHooks}. A `transform`'s return type is what the handler's
+   * `req` reports for that target.
+   *
+   * Only a target with a schema takes hooks — naming any other is a compile
+   * error, because hooks run around validation and so would never run there.
    */
-  formatError?: (error: ValidationError, req: BunRequest) => unknown;
+  hooks?: H;
+  /**
+   * Builds the body sent by `"respond"`, as JSON. Defaults to
+   * `{ error: "Validation failed", issues }`.
+   *
+   * Any JSON value is sent as it is — an array, a string or `null` included,
+   * not only an object.
+   */
+  formatError?: (error: ValidationError, req: BunRequest) => JsonValue;
 }
 
 /** Reads a target off the request. */
-function readTarget(req: BunRequest, target: ValidationTarget): unknown {
+function readTarget(
+  req: BunRequest,
+  target: ValidationTarget,
+): ValidationTargetValues[ValidationTarget] {
   switch (target) {
     case "params":
       return req.params;
@@ -141,7 +267,12 @@ function readTarget(req: BunRequest, target: ValidationTarget): unknown {
   }
 }
 
-/** Writes a validated value back onto the request. */
+/**
+ * Writes a validated value back onto the request.
+ *
+ * `value` is `unknown` because the schemas are erased by this point: it is the
+ * output (or transformed output) of whichever schema matched `target`.
+ */
 function writeTarget(
   req: BunRequest,
   target: ValidationTarget,
@@ -166,6 +297,23 @@ function writeTarget(
 }
 
 /**
+ * A plain validate function {@link toStandardSchema} can wrap: given whatever
+ * arrived, it returns (or resolves) a Standard Schema result — `{ value }` on
+ * success, `{ issues }` on failure.
+ */
+export type StandardValidateFunction<TOutput> = (
+  value: unknown,
+) =>
+  | StandardSchemaV1.Result<TOutput>
+  | Promise<StandardSchemaV1.Result<TOutput>>;
+
+/** Options for {@link toStandardSchema}. */
+export interface ToStandardSchemaOptions {
+  /** Name reported as the schema's vendor. Defaults to `"custom"`. */
+  vendor?: string;
+}
+
+/**
  * Wraps a plain validate function as a
  * [Standard Schema](https://standardschema.dev), for a library that does not
  * implement one itself.
@@ -175,7 +323,7 @@ function writeTarget(
  * check) need one line:
  *
  * ```ts
- * const Page = toStandardSchema<unknown, { page: number }>((input) => {
+ * const Page = toStandardSchema<{ page: number }>((input) => {
  *   const page = Number((input as { page?: unknown })?.page);
  *   return Number.isInteger(page)
  *     ? { value: { page } }
@@ -183,19 +331,28 @@ function writeTarget(
  * });
  * ```
  *
+ * The type arguments name what the schema produces:
+ *
+ * - none — the output is inferred from what `validate` returns;
+ * - `<TOutput>` — the output, with an `unknown` input (a validator is handed
+ *   whatever arrived, so that is almost always the honest input);
+ * - `<TInput, TOutput>` — both, when the input type matters to a consumer of
+ *   `StandardSchemaV1.InferInput`.
+ *
  * The returned schema is a real Standard Schema, so it works anywhere one is
  * accepted — not just here.
  */
-export function toStandardSchema<TInput = unknown, TOutput = TInput>(
-  validate: (
-    value: unknown,
-  ) =>
-    | StandardSchemaV1.Result<TOutput>
-    | Promise<StandardSchemaV1.Result<TOutput>>,
-  options?: {
-    /** Name reported as the schema's vendor. Defaults to `"custom"`. */
-    vendor?: string;
-  },
+export function toStandardSchema<TOutput>(
+  validate: StandardValidateFunction<TOutput>,
+  options?: ToStandardSchemaOptions,
+): StandardSchemaV1<unknown, TOutput>;
+export function toStandardSchema<TInput, TOutput>(
+  validate: StandardValidateFunction<TOutput>,
+  options?: ToStandardSchemaOptions,
+): StandardSchemaV1<TInput, TOutput>;
+export function toStandardSchema<TInput, TOutput>(
+  validate: StandardValidateFunction<TOutput>,
+  options?: ToStandardSchemaOptions,
 ): StandardSchemaV1<TInput, TOutput> {
   return {
     "~standard": {
@@ -242,24 +399,33 @@ function formatPath(issue: StandardSchemaV1.Issue): string {
  * });
  * ```
  */
-export class BunValidate<S extends ValidationSchemas = ValidationSchemas> {
+export class BunValidate<
+  S extends ValidationSchemas = ValidationSchemas,
+  H extends ValidationHooks<S> = ValidationHooks<S>,
+  R extends boolean = true,
+> {
   /** Targets that have a schema, in a fixed order for predictable reporting. */
   readonly #targets: ValidationTarget[];
+  /** The options given, with every behavioural default filled in. */
   readonly #options: Required<
-    Pick<
-      BunValidateOptions<S>,
-      "onFailure" | "status" | "abortEarly" | "replace"
-    >
+    Pick<BunValidateOptions<S, H, R>, "onFailure" | "status" | "abortEarly">
   > &
-    BunValidateOptions<S>;
+    Omit<BunValidateOptions<S, H, R>, "replace"> & {
+      /** Whether validated values are written back; defaults to `true`. */
+      replace: boolean;
+    };
 
-  constructor(options: BunValidateOptions<S>) {
+  /**
+   * @param options Schemas, hooks and failure behaviour; see
+   *   {@link BunValidateOptions}.
+   */
+  constructor(options: BunValidateOptions<S, H, R>) {
     this.#options = {
       onFailure: "next",
       status: 400,
       abortEarly: false,
-      replace: true,
       ...options,
+      replace: options.replace ?? true,
     };
 
     const order: ValidationTarget[] = ["headers", "params", "query", "body"];
@@ -276,16 +442,19 @@ export class BunValidate<S extends ValidationSchemas = ValidationSchemas> {
    * as a phantom type, so a verb method registering it can narrow the
    * following handler's `req` without the caller restating anything.
    */
-  public middleware(): ValidatorMiddleware<InferValidatedShape<S>> {
-    const {
-      onFailure,
-      status,
-      abortEarly,
-      replace,
-      schemas,
-      hooks,
-      formatError,
-    } = this.#options;
+  public middleware(): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
+    const { onFailure, status, abortEarly, replace, schemas, formatError } =
+      this.#options;
+    // Erased for the loop, which handles every target through one code path:
+    // each hook only ever receives its own target's raw value and its own
+    // schema's output, which is what `ValidationHooks<S>` promised the caller.
+    const hooks = this.#options.hooks as
+      | {
+          [K in ValidationTarget]?: TargetHooks<
+            ValidationTargetValues[ValidationTarget]
+          >;
+        }
+      | undefined;
     const targets = this.#targets;
 
     const handler: RouterHandler = async (
@@ -342,21 +511,32 @@ export class BunValidate<S extends ValidationSchemas = ValidationSchemas> {
         throw error;
       }
       if (onFailure === "respond") {
-        const body = formatError
-          ? formatError(error, req)
-          : { error: "Validation failed", issues: error.issues };
-        return res.status(status).json(body as Record<string, unknown>);
+        if (!formatError) {
+          return res
+            .status(status)
+            .json({ error: "Validation failed", issues: error.issues });
+        }
+        const body = formatError(error, req);
+        // `res.json` takes objects only; any other JSON value is serialised
+        // the same way and sent with the same Content-Type.
+        return typeof body === "object" && body !== null && !Array.isArray(body)
+          ? res.status(status).json(body)
+          : res.status(status).type("json").send(JSON.stringify(body));
       }
       return next(error);
     };
 
-    return handler as ValidatorMiddleware<InferValidatedShape<S>>;
+    return handler as ValidatorMiddleware<ValidatedShapeFor<S, H, R>>;
   }
 
   /** Shorthand for `new BunValidate(options).middleware()`. */
-  public static middleware<S extends ValidationSchemas>(
-    options: BunValidateOptions<S>,
-  ): ValidatorMiddleware<InferValidatedShape<S>> {
+  public static middleware<
+    S extends ValidationSchemas,
+    H extends ValidationHooks<S> = ValidationHooks<S>,
+    R extends boolean = true,
+  >(
+    options: BunValidateOptions<S, H, R>,
+  ): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
     return new BunValidate(options).middleware();
   }
 }
@@ -369,13 +549,18 @@ export class BunValidate<S extends ValidationSchemas = ValidationSchemas> {
  * verb overloads read to narrow the handlers that follow this middleware.
  */
 export interface ValidatorMiddleware<TShape> extends RouterHandler {
+  /** Phantom carrier of the validated shapes; never present at runtime. */
   readonly __shape?: TShape;
 }
 
 /** Convenience wrapper matching the example in {@link BunValidate}. */
-export function validate<S extends ValidationSchemas>(
+export function validate<
+  S extends ValidationSchemas,
+  H extends ValidationHooks<S> = ValidationHooks<S>,
+  R extends boolean = true,
+>(
   schemas: S,
-  options?: Omit<BunValidateOptions<S>, "schemas">,
-): ValidatorMiddleware<InferValidatedShape<S>> {
+  options?: Omit<BunValidateOptions<S, H, R>, "schemas">,
+): ValidatorMiddleware<ValidatedShapeFor<S, H, R>> {
   return new BunValidate({ ...options, schemas }).middleware();
 }

@@ -1,3 +1,4 @@
+import type { CorsOptions, CorsStaticOrigin } from "../lib/cors";
 import { describe, expect, it } from "bun:test";
 import { cors } from "../lib/cors";
 import { makeRequest, makeResponse } from "./helpers";
@@ -106,5 +107,98 @@ describe("cors middleware", () => {
       origin: (origin, cb) => cb(null, origin === "http://fn.test"),
     })(req, res, () => {});
     expect(res.getHeader("Access-Control-Allow-Origin")).toBe("http://fn.test");
+  });
+
+  /** The Allow-Origin header a function origin answering `answer` produces. */
+  async function answered(answer: CorsStaticOrigin, origin = "http://a.test") {
+    const req = await makeRequest({ headers: { Origin: origin } });
+    const res = await makeResponse();
+    await cors({
+      origin: (_origin, cb) => setTimeout(cb, 1, null, answer),
+    })(req, res, () => {});
+    return res.getHeader("Access-Control-Allow-Origin");
+  }
+
+  it("applies a function origin's string answer as a fixed origin", async () => {
+    expect(await answered("http://fixed.test")).toBe("http://fixed.test");
+  });
+
+  it("applies a function origin's RegExp and array answers", async () => {
+    expect(await answered(/a\.test$/)).toBe("http://a.test");
+    expect(await answered(/b\.test$/)).toBeNull();
+    expect(await answered(["http://x.test", /a\.test$/])).toBe("http://a.test");
+    expect(await answered(["http://x.test"])).toBeNull();
+  });
+
+  it("applies a function origin's boolean answers", async () => {
+    expect(await answered(true)).toBe("http://a.test");
+    expect(await answered(false)).toBeNull();
+  });
+
+  it("forwards a function origin's error to next", async () => {
+    const req = await makeRequest({ headers: { Origin: "http://a.test" } });
+    const res = await makeResponse();
+    const failure = new Error("lookup failed");
+    let received: unknown;
+    await cors({ origin: (_origin, cb) => cb(failure) })(req, res, (err) => {
+      received = err;
+    });
+    expect(received).toBe(failure);
+  });
+});
+
+describe("cors(delegate)", () => {
+  it("applies the options the delegate chooses", async () => {
+    const req = await makeRequest({ headers: { Origin: "http://a.test" } });
+    const res = await makeResponse();
+    let nextCalled = false;
+    const chosen: CorsOptions = {
+      origin: ["http://a.test"],
+      credentials: true,
+    };
+
+    await cors((_req, cb) => setTimeout(cb, 1, null, chosen))(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(res.getHeader("Access-Control-Allow-Origin")).toBe("http://a.test");
+    expect(res.getHeader("Access-Control-Allow-Credentials")).toBe("true");
+  });
+
+  it("uses the defaults when the delegate answers no options", async () => {
+    const req = await makeRequest({ headers: { Origin: "http://a.test" } });
+    const res = await makeResponse();
+    await cors((_req, cb) => cb(null))(req, res, () => {});
+    expect(res.getHeader("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("passes a reported error to next(err) and sets no headers", async () => {
+    const req = await makeRequest({ headers: { Origin: "http://a.test" } });
+    const res = await makeResponse();
+    const failure = new Error("banned");
+    let received: unknown;
+
+    await cors((_req, cb) => cb(failure))(req, res, (err) => {
+      received = err;
+    });
+
+    expect(received).toBe(failure);
+    expect(res.headersSent).toBe(false);
+    expect(res.getHeader("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("passes a thrown error to next(err)", async () => {
+    const req = await makeRequest({ headers: { Origin: "http://a.test" } });
+    const res = await makeResponse();
+    let received: unknown;
+
+    await cors(() => {
+      throw new Error("threw");
+    })(req, res, (err) => {
+      received = err;
+    });
+
+    expect((received as Error).message).toBe("threw");
   });
 });

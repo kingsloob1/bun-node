@@ -348,7 +348,11 @@ export interface ConsoleLike {
   info?: (...args: any[]) => void;
   /** Writes a debug record, when the target has one. */
   debug?: (...args: any[]) => void;
-  /** Writes a trace record, when the target has one. */
+  /**
+   * Writes a trace record, when the target has one; otherwise trace records
+   * fall back to {@link debug}, then {@link log}. Note the global
+   * `console.trace` also prints a stack trace.
+   */
   trace?: (...args: any[]) => void;
 }
 
@@ -364,8 +368,38 @@ export interface ConsoleSinkOptions {
   /**
    * `"pretty"` writes a human line plus the fields/error as objects;
    * `"json"` writes one JSON string per record. Defaults to `"pretty"`.
+   *
+   * In JSON the record's own keys win: a binding or field named `level`,
+   * `time` or `msg` — or `name`/`err` when the record has a name/error — is
+   * dropped rather than allowed to overwrite them.
    */
   format?: "pretty" | "json";
+}
+
+/** Keys a JSON record always owns; same-named fields never replace them. */
+const JSON_RECORD_KEYS = new Set(["level", "time", "msg"]);
+
+/** One record as {@link consoleSink} writes it in `"json"` format. */
+interface JsonLogRecord {
+  /** The record's level. */
+  level: LogLevel;
+  /** When the record was created, as an ISO-8601 string. */
+  time: string;
+  /** The message. */
+  msg: string;
+  /** The logger's name, when it has one. */
+  name?: string;
+  /** The record's error, reduced to what `JSON.stringify` can carry. */
+  err?: {
+    /** The error's `name`. */
+    name: string;
+    /** The error's `message`. */
+    message: string;
+    /** The error's `stack`, when it has one. */
+    stack?: string;
+  };
+  /** Bindings and fields, minus the keys above. Values are arbitrary. */
+  [field: string]: unknown;
 }
 
 /** Picks the console method that best matches a level. */
@@ -375,6 +409,7 @@ function consoleMethodFor(
 ): (...args: any[]) => void {
   switch (level) {
     case "trace":
+      return (target.trace ?? target.debug ?? target.log).bind(target);
     case "debug":
       return (target.debug ?? target.log).bind(target);
     case "info":
@@ -395,12 +430,16 @@ export function consoleSink(options?: ConsoleSinkOptions): LogSink {
     const write = consoleMethodFor(target, event.level);
 
     if (format === "json") {
-      const record: Record<string, unknown> = {
+      const record: JsonLogRecord = {
         level: event.level,
         time: new Date(event.time).toISOString(),
         msg: event.message,
-        ...mergeLogFields(event),
       };
+      for (const [key, value] of Object.entries(mergeLogFields(event))) {
+        if (!JSON_RECORD_KEYS.has(key)) {
+          record[key] = value;
+        }
+      }
       if (event.name !== undefined) {
         record.name = event.name;
       }
@@ -419,16 +458,7 @@ export function consoleSink(options?: ConsoleSinkOptions): LogSink {
     const prefix = event.name ? `[${event.name}] ` : "";
     const line = `${new Date(event.time).toISOString()} ${label} ${prefix}${event.message}`;
 
-    const fields = mergeLogFields(event);
-    const extras: unknown[] = [];
-    if (Object.keys(fields).length > 0) {
-      extras.push(fields);
-    }
-    if (event.error) {
-      extras.push(event.error);
-    }
-
-    write(line, ...extras);
+    write(line, ...extraArgs(event));
   };
 }
 
@@ -501,9 +531,9 @@ function fieldsWithErr(event: LogEvent): LogFields {
 }
 
 /** A record's fields and error as trailing arguments, omitting empty ones. */
-function extraArgs(event: LogEvent): unknown[] {
+function extraArgs(event: LogEvent): (LogFields | Error)[] {
   const fields = mergeLogFields(event);
-  const extras: unknown[] = [];
+  const extras: (LogFields | Error)[] = [];
   if (Object.keys(fields).length > 0) {
     extras.push(fields);
   }
@@ -527,8 +557,11 @@ export interface PinoLike {
   error: AnyLogFn;
   /** Logs at pino's `fatal`. */
   fatal: AnyLogFn;
-  /** Derives a child logger. Present on pino, used here to recognise it. */
-  child: (bindings: Record<string, unknown>, options?: any) => unknown;
+  /**
+   * Derives a child logger. Present on pino, used here to recognise it. Never
+   * called, so its result is `unknown`: any return type is accepted.
+   */
+  child: (bindings: LogFields, options?: any) => unknown;
   /** pino's current level, as a string. */
   level?: string;
   /** pino's own level check, delegated to when present. */
@@ -569,8 +602,8 @@ export interface BunyanLike {
   error: AnyLogFn;
   /** Logs at bunyan's `fatal`. */
   fatal: AnyLogFn;
-  /** Derives a child logger. */
-  child: (fields: Record<string, unknown>, simple?: boolean) => unknown;
+  /** Derives a child logger. Only probed for, so its result is `unknown`. */
+  child: (fields: LogFields, simple?: boolean) => unknown;
   /** bunyan exposes its level as a *function* — how it is told from pino. */
   level: AnyFn;
 }
@@ -614,10 +647,19 @@ export interface WinstonLike {
   verbose?: AnyLogFn;
   /** Logs at winston's `silly`, when the level set includes it. */
   silly?: AnyLogFn;
-  /** The configured transports — present on a winston logger, absent on Nest's. */
+  /**
+   * The configured transports. A real winston logger always has this array,
+   * which is what tells it apart from pino (when custom levels add `trace`
+   * and `fatal`) and from tslog (which also has `log` and `silly`).
+   */
   transports?: unknown[];
   /** winston's current level. */
   level?: string;
+  /**
+   * The level set (`{ name: priority }`). When it contains `trace` or
+   * `fatal`, those are used directly instead of the npm-set fallbacks.
+   */
+  levels?: Record<string, number>;
   /** winston's own level check, delegated to when present. */
   isLevelEnabled?: (level: string) => boolean;
 }
@@ -636,8 +678,27 @@ const WINSTON_LEVELS: Record<LogLevel, string> = {
 };
 
 /**
+ * The winston level a record goes out at: our own name when the logger's
+ * level set defines it, else the npm-set mapping in {@link WINSTON_LEVELS}.
+ */
+function winstonLevelFor(logger: WinstonLike, level: LogLevel): string {
+  const levels = logger.levels;
+  if (
+    (level === "trace" || level === "fatal") &&
+    typeof levels === "object" &&
+    levels !== null &&
+    Object.hasOwn(levels, level)
+  ) {
+    return level;
+  }
+  return WINSTON_LEVELS[level];
+}
+
+/**
  * Adapts a winston logger through its `log(level, message, meta)` entry
- * point, so custom level sets work as long as they contain the mapped names.
+ * point. With the default npm levels `trace` goes out as `silly` and `fatal`
+ * as `error` (flagged `fatal: true` in the meta); a custom level set that
+ * defines `trace`/`fatal` receives them under their own names.
  */
 export function fromWinston(
   logger: WinstonLike,
@@ -649,18 +710,19 @@ export function fromWinston(
     ...adapterBase(options),
     enabled:
       typeof isLevelEnabled === "function"
-        ? (level) => isLevelEnabled.call(logger, WINSTON_LEVELS[level])
+        ? (level) => isLevelEnabled.call(logger, winstonLevelFor(logger, level))
         : undefined,
     sink: (event) => {
       const meta = mergeLogFields(event);
       if (event.error) {
         meta.error = event.error;
       }
-      if (event.level === "fatal") {
-        // winston cannot represent `fatal`; keep the distinction in the meta.
+      const level = winstonLevelFor(logger, event.level);
+      if (event.level === "fatal" && level !== "fatal") {
+        // This level set cannot represent `fatal`; keep the distinction.
         meta.fatal = true;
       }
-      logger.log(WINSTON_LEVELS[event.level], event.message, meta);
+      logger.log(level, event.message, meta);
     },
   });
 }
@@ -759,7 +821,11 @@ export function fromLog4js(
   });
 }
 
-/** A tslog logger, structurally. */
+/**
+ * A tslog logger, structurally. tslog v4 also has `silly` and a
+ * `log(levelId, levelName, ...args)` method; neither is used here, and
+ * `getSubLogger` is what distinguishes it from winston.
+ */
 export interface TslogLike {
   /** Logs at tslog's `trace`. */
   trace: AnyLogFn;
@@ -835,7 +901,8 @@ export function fromNestLogger(
     ...adapterBase(options),
     sink: (event) => {
       const fields = mergeLogFields(event);
-      const params: unknown[] = [];
+      // Nest's optional params: a stack or error, the fields, the context name.
+      const params: (string | Error | LogFields)[] = [];
 
       if (event.level === "error" || event.level === "fatal") {
         if (event.error?.stack) {
@@ -894,19 +961,36 @@ export type LoggerLike =
   | NestLoggerLike
   | ConsoleLike;
 
-/** True when `value` already implements {@link Logger}. */
+/**
+ * True when `value` already implements {@link Logger}.
+ *
+ * Checks the members that set the contract apart from the libraries it
+ * adapts, not just the level methods: a pino instance also has `child`,
+ * `isLevelEnabled` and all six levels, but its `bindings` is a *method*, it
+ * has no `log`, and its methods take `(fields, message)` — so accepting it
+ * here would call it with the arguments reversed.
+ */
 export function isLogger(value: unknown): value is Logger {
   if (typeof value !== "object" || value === null) {
     return false;
   }
 
-  const candidate = value as Partial<Logger>;
+  const candidate = value as Record<string, unknown>;
   return (
-    typeof candidate.child === "function" &&
-    typeof candidate.isLevelEnabled === "function" &&
-    typeof candidate.trace === "function" &&
-    typeof candidate.fatal === "function" &&
-    typeof candidate.info === "function"
+    typeof candidate.bindings === "object" &&
+    candidate.bindings !== null &&
+    typeof candidate.level === "string" &&
+    hasMethods(candidate, [
+      "child",
+      "isLevelEnabled",
+      "trace",
+      "debug",
+      "info",
+      "warn",
+      "error",
+      "fatal",
+      "log",
+    ])
   );
 }
 
@@ -920,12 +1004,35 @@ function hasMethods(value: Record<string, unknown>, names: string[]): boolean {
  *
  * A {@link Logger} is returned untouched. Otherwise the shape is detected in
  * a fixed order — pino, bunyan, winston, consola, log4js, tslog, NestJS,
- * console-like — and wrapped with the matching adapter. Call the adapter
- * directly when you would rather not rely on detection.
+ * console-like — and wrapped with the matching adapter. The markers:
+ *
+ * - winston: `log` plus a `transports` array (or `log` + `silly` with no
+ *   `getSubLogger`). Checked ahead of pino's test, so a winston logger whose
+ *   custom levels include `trace`/`fatal` is not mistaken for pino.
+ * - pino: the six levels, `child`, and a string `level` or `isLevelEnabled`.
+ * - bunyan: the six levels, `child`, and a `level` *function*.
+ * - consola: `withTag`. log4js: `addContext`. tslog: `getSubLogger` (tslog v4
+ *   also has `log` and `silly`, which is why winston's marker excludes it).
+ * - NestJS: `log`/`warn`/`error` plus `verbose`. Console: `log`/`warn`/`error`.
+ *
+ * Call the adapter directly when you would rather not rely on detection.
  *
  * With no input, `fallback` is returned when given, else a default console
  * logger.
+ *
+ * The overloads keep what is known: a {@link Logger} (or a subtype of one)
+ * comes back as its own type, and so does the `fallback` when the input is
+ * absent.
  */
+export function resolveLogger<L extends Logger>(input: L, fallback?: Logger): L;
+export function resolveLogger<F extends Logger>(
+  input: undefined | null,
+  fallback: F,
+): F;
+export function resolveLogger(
+  input?: LoggerLike | null,
+  fallback?: Logger,
+): Logger;
 export function resolveLogger(
   input?: LoggerLike | null,
   fallback?: Logger,
@@ -952,8 +1059,18 @@ export function resolveLogger(
     "fatal",
   ]);
 
+  // Computed first because both pino's and tslog's shapes overlap it: a
+  // winston logger with custom `trace`/`fatal` levels has everything pino's
+  // test looks for, and tslog v4 has `log` and `silly`.
+  const winstonShaped =
+    typeof candidate.log === "function" &&
+    (Array.isArray(candidate.transports) ||
+      (typeof candidate.silly === "function" &&
+        typeof candidate.getSubLogger !== "function"));
+
   if (
     levelled &&
+    !winstonShaped &&
     typeof candidate.child === "function" &&
     (typeof candidate.level === "string" ||
       typeof candidate.isLevelEnabled === "function")
@@ -969,11 +1086,7 @@ export function resolveLogger(
     return fromBunyan(input as BunyanLike);
   }
 
-  if (
-    typeof candidate.log === "function" &&
-    (Array.isArray(candidate.transports) ||
-      typeof candidate.silly === "function")
-  ) {
+  if (winstonShaped) {
     return fromWinston(input as WinstonLike);
   }
 

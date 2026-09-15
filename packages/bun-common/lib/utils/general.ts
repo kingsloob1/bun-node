@@ -70,12 +70,16 @@ export function applyMixins<T extends Constructor>(
   });
 }
 
-export function isNodeReadableStream(value: any): value is Readable {
+/**
+ * True for a Node `Readable`, or anything shaped like one (`pipe` and `read`
+ * methods). Takes `unknown`: inspecting an arbitrary value is its purpose.
+ */
+export function isNodeReadableStream(value: unknown): value is Readable {
   return (
     value instanceof Readable ||
     (value !== null &&
       typeof value === "object" &&
-      typeof value.pipe === "function" &&
-      typeof value.read === "function")
+      typeof (value as { pipe?: unknown }).pipe === "function" &&
+      typeof (value as { read?: unknown }).read === "function")
   );
 }

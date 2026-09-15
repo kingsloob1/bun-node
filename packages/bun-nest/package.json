@@ -29,21 +29,30 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/websockets": "^11.0.0",
     "@types/bun": ">=1.4.2",
-    "typescript": "^5.9.3"
+    "rxjs": "^7.1.0",
+    "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "@nestjs/websockets": {
+      "optional": true
+    },
     "@types/bun": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "^2.2.0",
-    "@nestjs/common": "^11.1.27",
-    "rxjs": "^7.8.1"
+    "@kingsleyweb/bun-common": "^2.2.0"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
+    "@nestjs/common": "^11.1.27",
     "@nestjs/core": "^11.1.27",
     "@nestjs/websockets": "^11.1.21",
     "@routejs/router": "^3.0.3",
@@ -55,6 +64,7 @@
     "eslint-plugin-prettier": "^5.2.2",
     "prettier": "^3.4.2",
     "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
     "supertest": "^7.1.4",
     "typescript": "^6.0.3"
   },

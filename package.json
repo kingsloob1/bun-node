@@ -12,9 +12,9 @@
     "packages/bun-jobs"
   ],
   "devDependencies": {
-    "@nx/eslint": "22.7.2",
-    "lerna": "^9.0.7",
-    "nx": "22.7.2"
+    "@nx/eslint": "23.2.1",
+    "lerna": "^10.0.1",
+    "nx": "23.2.1"
   },
   "packageManager": "bun@1.4.2",
   "engines": {

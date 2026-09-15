@@ -1,5 +1,6 @@
 import type {
   Server as BunServerType,
+  ErrorLike,
   ServerWebSocket,
   WebSocketHandler,
 } from "bun";
@@ -13,14 +14,11 @@ import type {
 import { EventEmitter } from "node:events";
 import { BunRequest } from "./BunRequest";
 import { BunResponse } from "./BunResponse";
-import {
-  get,
-  isArray,
-  isFunction,
-  isNumeric,
-  isObject,
-  set,
-} from "./utils/native";
+// A value import (not just a type): an instance built without a `router`
+// creates a private one on first use. `BunRouter.ts` imports this module only
+// as a type, so there is no runtime cycle.
+import { BunRouter as BunRouterClass } from "./BunRouter";
+import { get, isArray, isFunction, isObject, set } from "./utils/native";
 
 /**
  * Minimal strongly-typed `EventEmitter` surface — replaces the `typed-emitter`
@@ -57,51 +55,141 @@ export interface TypedEmitter<
   setMaxListeners: (maxListeners: number) => this;
 }
 
-export interface WebSocketClientData<CustomData = unknown> {
-  /**
-   * The components of the upgrade request URL, mirroring what
-   * `BunRequest.splitRequestUrl()` exposes: `host` (authority), `path`
-   * (pathname only), `search` (`?…` or `""`), and `hash` (`#…` or `""`).
-   * `originalUrl` is the full `path + search + hash` (`BunRequest.originalUrl`).
-   */
+/**
+ * Per-connection data stored on `ws.data`. The URL fields mirror what
+ * `BunRequest.splitRequestUrl()` exposes for the upgrade request.
+ */
+export interface WebSocketClientData<TCustom = unknown> {
+  /** Authority (`host[:port]`) of the upgrade request. */
   host: string;
+  /** Concrete pathname the client connected to, e.g. `/rooms/42`. */
   path: string;
+  /** Query string of the upgrade request (`?…`), or `""`. */
   search: string;
+  /**
+   * Always `""` for a WebSocket upgrade: clients never send a URL fragment
+   * (RFC 6455 forbids one in a `ws:`/`wss:` URI). Kept so the shape matches
+   * `BunRequest`'s split URL.
+   */
   hash: string;
+  /** `path + search` of the upgrade request (`BunRequest.originalUrl`). */
   originalUrl: string;
+  /** Headers of the upgrade request. */
   headers: Headers;
+  /** `req.user` at upgrade time, when an auth middleware set one. */
   user?: Record<string, unknown>;
-  custom: CustomData;
+  /** Value returned by `customDataToWsClientFn`, or `undefined` without one. */
+  custom: TCustom;
+  /**
+   * The route pattern the upgrade matched, as registered with
+   * {@link BunWebSocket.setRouteHandler} / `router.ws()` (e.g. `/rooms/:id`).
+   * Route handlers are dispatched by this key. Absent when the data was built
+   * some other way (e.g. a bare `res.upgradeToWebsocket()`), in which case
+   * dispatch falls back to {@link path}.
+   */
+  route?: string;
+  /**
+   * Route params of the matched {@link route}, e.g. `{ id: "42" }`. A copy,
+   * so it is safe to mutate. Absent alongside {@link route}.
+   */
+  params?: Record<string, string>;
+  /**
+   * The port of the server that accepted the upgrade — the real bound port,
+   * never `0`, even for a server started on port `0`. Lets a handler tell a
+   * client of the shared HTTP server from one of a dedicated server on
+   * another port, when both route through the same router. Set for every
+   * upgrade routed through {@link BunWebSocket.setRouteHandler} (any server),
+   * for every upgrade a server built by this class performs, and for a bare
+   * `res.upgradeToWebsocket()` whenever the server that accepted the request
+   * has a port. Absent only when there is none — no real server accepted the
+   * request (a socket-free `fetch()`).
+   */
+  port?: number;
 }
 
-export type BunWebSocketServerType<customWebsocketDataType = unknown> =
-  BunServerType<WebSocketClientData<customWebsocketDataType>>;
+/**
+ * The port `req` was accepted on: that of the `Bun.serve` server it was built
+ * with, read from `req.server` (its `socket.localPort` is the *peer's* port).
+ * `undefined` for a server with no port, such as the socket-free `fetch()`
+ * stub.
+ */
+function acceptingPort(req: BunRequest): number | undefined {
+  const port = req.server?.port;
+  return typeof port === "number" && Number.isInteger(port) && port > 0
+    ? port
+    : undefined;
+}
 
-export type BunWebSocketHandlerType<customWebsocketDataType = unknown> =
-  WebSocketHandler<WebSocketClientData<customWebsocketDataType>>;
+/**
+ * The `Bun.serve` server a {@link BunWebSocket} rides on or owns. `TCustom` is
+ * the per-connection `ws.data.custom` type; it defaults to `unknown` because,
+ * undeclared, it is whatever `customDataToWsClientFn` returned.
+ */
+export type BunWebSocketServerType<TCustom = unknown> = BunServerType<
+  WebSocketClientData<TCustom>
+>;
 
+/** A route's WebSocket lifecycle handlers, with `ws.data.custom` as `TCustom`. */
+export type BunWebSocketHandlerType<TCustom = unknown> = WebSocketHandler<
+  WebSocketClientData<TCustom>
+>;
+
+/** One lifecycle method of {@link BunWebSocketHandlerType}, e.g. `"message"`. */
 export type BunWebsocketHandlerFor<
-  MethodName extends keyof WebSocketHandler<unknown>,
-  customWebsocketDataType = unknown,
-> = BunWebSocketHandlerType<customWebsocketDataType>[MethodName];
+  MethodName extends keyof BunWebSocketHandlerType,
+  TCustom = unknown,
+> = BunWebSocketHandlerType<TCustom>[MethodName];
 
-export type WebSocketClient<customWebsocketDataType = unknown> =
-  ServerWebSocket<WebSocketClientData<customWebsocketDataType>>;
+/** A connected client as the server sees it, with `ws.data.custom` as `TCustom`. */
+export type WebSocketClient<TCustom = unknown> = ServerWebSocket<
+  WebSocketClientData<TCustom>
+>;
 
-export interface BunWebSocketGeneralOptions<customWebsocketDataType = unknown> {
+/** The lifecycle events a route's {@link BunWebSocketHandlerType} can handle. */
+export type BunWebSocketRouteEvent =
+  | "open"
+  | "close"
+  | "drain"
+  | "message"
+  | "ping"
+  | "pong";
+
+/**
+ * What a route handler for `E` receives after the client itself: `[message]`
+ * for `message`, `[code, reason]` for `close`, `[data]` for `ping`/`pong`, and
+ * nothing for `open`/`drain`.
+ */
+export type BunWebSocketRouteEventRest<
+  TCustom,
+  E extends BunWebSocketRouteEvent,
+> =
+  Parameters<NonNullable<BunWebSocketHandlerType<TCustom>[E]>> extends [
+    unknown,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never;
+
+export interface BunWebSocketGeneralOptions<TCustom = unknown> {
   /**
    * Bun `WebSocketHandler` config (e.g. `idleTimeout`, `maxPayloadLength`,
-   * `perMessageDeflate`). The lifecycle callbacks (`open`/`message`/`close`/…)
-   * are omitted — this class supplies and dispatches those itself.
+   * `perMessageDeflate`). Defaults: `idleTimeout` 30 (seconds),
+   * `maxPayloadLength` 1 MB, `perMessageDeflate` on. WebSocket-only — none of
+   * it affects HTTP requests. The lifecycle callbacks
+   * (`open`/`message`/`close`/…) are omitted — this class supplies and
+   * dispatches those itself.
    */
   wsOptions?: Omit<
-    BunWebSocketHandlerType<customWebsocketDataType>,
+    BunWebSocketHandlerType<TCustom>,
     "open" | "close" | "message" | "drain" | "ping" | "pong"
   >;
   /**
    * The {@link BunRouter} this adapter registers WebSocket upgrade routes on
    * (via {@link BunWebSocket.setRouteHandler}). Usually the HTTP server's
    * router, so upgrades flow through the same routing pipeline as HTTP.
+   * Optional: without one, a private empty router is created on first use,
+   * so `setRouteHandler` still works and a standalone server answers 404 to
+   * anything that is not a registered WebSocket route.
    */
   router?: BunRouter;
   /**
@@ -116,53 +204,68 @@ export interface BunWebSocketGeneralOptions<customWebsocketDataType = unknown> {
   customDataToWsClientFn?: (
     req: BunRequest,
     res: BunResponse,
-  ) => customWebsocketDataType | Promise<customWebsocketDataType>;
+  ) => TCustom | Promise<TCustom>;
 }
 
 export interface BunWebSocketCreateServerOptions<
-  customWebsocketDataType = unknown,
+  TCustom = unknown,
   routesType extends string = never,
-> extends Omit<BunWebSocketGeneralOptions<customWebsocketDataType>, "server"> {
+> extends Omit<BunWebSocketGeneralOptions<TCustom>, "server"> {
   /** Discriminant: this adapter creates and owns its own server. */
   newInstance: true;
-  /** Address the dedicated server binds to (`host` optional, `port` required). */
+  /** Address the dedicated server binds to. */
   listen: {
+    /** Hostname/interface to bind. Defaults to Bun's default (all interfaces). */
     host?: string;
+    /**
+     * Port to bind, `0`–`65535`. `0` lets the OS pick a free port; read the
+     * bound one from {@link BunWebSocket.port}.
+     */
     port: number;
   };
+  /**
+   * Milliseconds the dedicated server waits for a (non-upgrade) HTTP response
+   * once the route pipeline has returned without one (e.g. a handler that
+   * responds later from a callback), before failing the request. Handlers the
+   * pipeline awaits finish before the timer starts. `0` (the default) means
+   * no timeout, matching `BunHttpAdapter`'s `requestTimeout`. Unrelated to
+   * `wsOptions.idleTimeout`, which only governs open WebSocket connections.
+   */
+  responseTimeout?: number;
   /**
    * Base `Bun.serve` options for the dedicated server (TLS, body limits, etc.);
    * `port`/`hostname`/`fetch`/`websocket` are managed by this class.
    */
   serverOptions?: BunServeNormalOptions<
-    WebSocketClientData<customWebsocketDataType>,
+    WebSocketClientData<TCustom>,
     routesType
   >;
   /** Pre-built {@link BunRequest} to reuse instead of constructing one per fetch. */
   request?: BunRequest;
   /** Pre-built {@link BunResponse} to reuse instead of constructing one per fetch. */
-  response?: BunResponse<customWebsocketDataType>;
+  response?: BunResponse<TCustom>;
   /** Parsing options for requests the dedicated server constructs itself. */
   bunRequestOpts?: BunRequestOptions;
 }
 
-export interface BunWebSocketNormalOptions<customWebsocketDataType = unknown>
-  extends BunWebSocketGeneralOptions<customWebsocketDataType> {
+export interface BunWebSocketNormalOptions<
+  TCustom = unknown,
+> extends BunWebSocketGeneralOptions<TCustom> {
   /** Discriminant: this adapter rides on an existing, externally-owned server. */
   newInstance: false;
   /**
    * Returns the shared server to ride on (e.g. the HTTP adapter's). May return
    * `undefined` before that server has started listening.
    */
-  getServer: () => BunWebSocketServerType<customWebsocketDataType> | undefined;
+  getServer: () => BunWebSocketServerType<TCustom> | undefined;
 }
 
 export type BunWebSocketOptions<
-  customWebsocketDataType = unknown,
+  TCustom = unknown,
   routesType extends string = never,
 > =
-  | BunWebSocketNormalOptions<customWebsocketDataType>
-  | BunWebSocketCreateServerOptions<customWebsocketDataType, routesType>;
+  | BunWebSocketNormalOptions<TCustom>
+  | BunWebSocketCreateServerOptions<TCustom, routesType>;
 
 /**
  * The event map emitted by {@link BunWebSocket}. Declared as a `type` (not an
@@ -170,38 +273,59 @@ export type BunWebSocketOptions<
  * — interfaces are open to augmentation and so lack an implicit index sig.
  */
 // eslint-disable-next-line ts/consistent-type-definitions
-export type BunWebSocketEvents<customWebsocketDataType = unknown> = {
-  connect: NonNullable<
-    BunWebSocketHandlerType<customWebsocketDataType>["open"]
-  >;
-  open: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["open"]>;
-  message: NonNullable<
-    BunWebSocketHandlerType<customWebsocketDataType>["message"]
-  >;
-  disconnect: NonNullable<
-    BunWebSocketHandlerType<customWebsocketDataType>["close"]
-  >;
-  close: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["close"]>;
-  ping: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["ping"]>;
-  pong: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["pong"]>;
-  drain: NonNullable<BunWebSocketHandlerType<customWebsocketDataType>["drain"]>;
+export type BunWebSocketEvents<TCustom = unknown> = {
+  /** A client connected: `(ws)`. Emitted together with, and before, `open`. */
+  connect: NonNullable<BunWebSocketHandlerType<TCustom>["open"]>;
+  /** A client connected: `(ws)`. */
+  open: NonNullable<BunWebSocketHandlerType<TCustom>["open"]>;
+  /** A client sent a frame: `(ws, message)`, a `string` or a `Buffer`. */
+  message: NonNullable<BunWebSocketHandlerType<TCustom>["message"]>;
+  /** A client disconnected: `(ws, code, reason)`. Emitted before `close`. */
+  disconnect: NonNullable<BunWebSocketHandlerType<TCustom>["close"]>;
+  /** A client disconnected: `(ws, code, reason)`. */
+  close: NonNullable<BunWebSocketHandlerType<TCustom>["close"]>;
+  /** A client sent a ping: `(ws, data)`. */
+  ping: NonNullable<BunWebSocketHandlerType<TCustom>["ping"]>;
+  /** A client sent a pong: `(ws, data)`. */
+  pong: NonNullable<BunWebSocketHandlerType<TCustom>["pong"]>;
+  /** A client's send buffer drained and can take more: `(ws)`. */
+  drain: NonNullable<BunWebSocketHandlerType<TCustom>["drain"]>;
 };
 
-export type BunWebSocketEventHandlersType<customWebsocketDataType = unknown> =
-  TypedEmitter<BunWebSocketEvents<customWebsocketDataType>>;
+/** The typed emitter surface {@link BunWebSocket} implements. */
+export type BunWebSocketEventHandlersType<TCustom = unknown> = TypedEmitter<
+  BunWebSocketEvents<TCustom>
+>;
+
+/**
+ * The status the dedicated server answers an error with: the error's own
+ * `status` or `statusCode` when that is a 4xx/5xx code, else `500`.
+ */
+function errorStatus(error: ErrorLike): number {
+  for (const key of ["status", "statusCode"]) {
+    // Arbitrary errors: the property may be anything, or absent.
+    const value: unknown = Reflect.get(error, key);
+    if (
+      Number.isInteger(value) &&
+      Number(value) >= 400 &&
+      Number(value) <= 599
+    ) {
+      return Number(value);
+    }
+  }
+  return 500;
+}
 
 /** A {@link BunWebSocket} event name. */
 type WsEventName<T> = keyof BunWebSocketEvents<T>;
 /** The listener signature for a given {@link BunWebSocket} event. */
 type WsListener<T, E extends WsEventName<T>> = BunWebSocketEvents<T>[E];
 
-export class BunWebSocket<customWebsocketDataType = unknown>
-  implements BunWebSocketEventHandlersType<customWebsocketDataType>
-{
-  private _wsServers = new Map<
-    number,
-    BunWebSocketServerType<customWebsocketDataType>
-  >();
+export class BunWebSocket<
+  TCustom = unknown,
+> implements BunWebSocketEventHandlersType<TCustom> {
+  /** Servers this instance serves on, by port. */
+  private _wsServers = new Map<number, BunWebSocketServerType<TCustom>>();
 
   /**
    * Lazily-created event bus. `BunWebSocket` is not an `EventEmitter`
@@ -211,20 +335,26 @@ export class BunWebSocket<customWebsocketDataType = unknown>
    */
   #emitter: EventEmitter | undefined = undefined;
 
-  private _serverInstance?: BunWebSocketServerType<customWebsocketDataType>;
+  /** The dedicated server, when `newInstance` is `true`. */
+  private _serverInstance?: BunWebSocketServerType<TCustom>;
+  /** Returns the shared server, when `newInstance` is `false`. */
   private _getServerInstance?: () =>
-    | BunWebSocketServerType<customWebsocketDataType>
+    | BunWebSocketServerType<TCustom>
     | undefined;
 
-  private _routerInstance!: BunRouter;
-  private _wsHandler!: BunWebSocketHandlerType<customWebsocketDataType>;
+  /** The router upgrade routes register on; created lazily when none was given. */
+  private _routerInstance: BunRouter | undefined = undefined;
+  /** The aggregate handler Bun calls: emits events, then runs route handlers. */
+  private _wsHandler!: BunWebSocketHandlerType<TCustom>;
 
+  /** Handlers registered with {@link setRouteHandler}, by route pattern. */
   private _routeHandlers = new Map<
     string,
-    BunWebSocketHandlerType<customWebsocketDataType>[]
+    BunWebSocketHandlerType<TCustom>[]
   >();
 
-  private _customDataToWsClientFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"] =
+  /** The instance-wide `customDataToWsClientFn`, used when a route has none. */
+  private _customDataToWsClientFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"] =
     undefined;
 
   constructor(
@@ -235,7 +365,7 @@ export class BunWebSocket<customWebsocketDataType = unknown>
      * server returned by `getServer`. Shared fields are documented on
      * {@link BunWebSocketGeneralOptions}.
      */
-    private options: BunWebSocketOptions<customWebsocketDataType>,
+    private options: BunWebSocketOptions<TCustom>,
   ) {
     this._wsHandler = {
       perMessageDeflate: true,
@@ -268,20 +398,25 @@ export class BunWebSocket<customWebsocketDataType = unknown>
         this.emit("drain", ...args);
         await this.processRegisteredRouteHandlerFor("drain", ...args);
       },
-    } as BunWebSocketHandlerType<customWebsocketDataType>;
+    } as BunWebSocketHandlerType<TCustom>;
 
     if (options.router) {
       this.router = options.router;
     }
 
     if (options.newInstance) {
-      if (!(options?.listen.port && isNumeric(options.listen.port))) {
-        throw new Error("Ooops.. Port is required to start server");
+      const port = Number(options.listen?.port);
+      if (!(Number.isInteger(port) && port >= 0 && port <= 65535)) {
+        throw new Error(
+          "Ooops.. listen.port must be an integer from 0 to 65535 (0 picks a free port)",
+        );
       }
 
-      this._serverInstance = this.getOrCreateWebsocketServer(
-        options.listen.port,
-      );
+      // Bound directly rather than through `getOrCreateWebsocketServer`, where
+      // port `0` means "ride on the shared server" — here it means "any port".
+      const server = this.buildWebsocketServer(port);
+      this._wsServers.set(server.port ?? port, server);
+      this._serverInstance = server;
     } else {
       this._getServerInstance = options?.getServer;
     }
@@ -305,41 +440,41 @@ export class BunWebSocket<customWebsocketDataType = unknown>
     return this.#emitter;
   }
 
-  public addListener<E extends WsEventName<customWebsocketDataType>>(
+  public addListener<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.events.addListener(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public on<E extends WsEventName<customWebsocketDataType>>(
+  public on<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.events.on(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public once<E extends WsEventName<customWebsocketDataType>>(
+  public once<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.events.once(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public prependListener<E extends WsEventName<customWebsocketDataType>>(
+  public prependListener<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.events.prependListener(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public prependOnceListener<E extends WsEventName<customWebsocketDataType>>(
+  public prependOnceListener<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.events.prependOnceListener(
       event,
@@ -348,25 +483,23 @@ export class BunWebSocket<customWebsocketDataType = unknown>
     return this;
   }
 
-  public off<E extends WsEventName<customWebsocketDataType>>(
+  public off<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.#emitter?.off(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public removeListener<E extends WsEventName<customWebsocketDataType>>(
+  public removeListener<E extends WsEventName<TCustom>>(
     event: E,
-    listener: WsListener<customWebsocketDataType, E>,
+    listener: WsListener<TCustom, E>,
   ): this {
     this.#emitter?.removeListener(event, listener as (...args: any[]) => void);
     return this;
   }
 
-  public removeAllListeners<E extends WsEventName<customWebsocketDataType>>(
-    event?: E,
-  ): this {
+  public removeAllListeners<E extends WsEventName<TCustom>>(event?: E): this {
     // `EventEmitter#removeAllListeners` branches on `arguments.length`, not on
     // the argument's value: forwarding `undefined` explicitly makes it look
     // like "remove listeners for the event named `undefined`", which removes
@@ -380,33 +513,24 @@ export class BunWebSocket<customWebsocketDataType = unknown>
   }
 
   /** Emits an event; returns `false` when there is no emitter/listener. */
-  public emit<E extends WsEventName<customWebsocketDataType>>(
+  public emit<E extends WsEventName<TCustom>>(
     event: E,
-    ...args: Parameters<WsListener<customWebsocketDataType, E>>
+    ...args: Parameters<WsListener<TCustom, E>>
   ): boolean {
     return this.#emitter ? this.#emitter.emit(event, ...args) : false;
   }
 
-  public listeners<E extends WsEventName<customWebsocketDataType>>(
+  public listeners<E extends WsEventName<TCustom>>(
     event: E,
-  ): WsListener<customWebsocketDataType, E>[] {
-    return (this.#emitter?.listeners(event) ?? []) as WsListener<
-      customWebsocketDataType,
-      E
-    >[];
+  ): WsListener<TCustom, E>[] {
+    return (this.#emitter?.listeners(event) ?? []) as WsListener<TCustom, E>[];
   }
 
-  public listenerCount<E extends WsEventName<customWebsocketDataType>>(
-    event: E,
-  ): number {
+  public listenerCount<E extends WsEventName<TCustom>>(event: E): number {
     return this.#emitter?.listenerCount(event) ?? 0;
   }
 
-  public eventNames(): (
-    | WsEventName<customWebsocketDataType>
-    | string
-    | symbol
-  )[] {
+  public eventNames(): (WsEventName<TCustom> | string | symbol)[] {
     return this.#emitter?.eventNames() ?? [];
   }
 
@@ -456,7 +580,7 @@ export class BunWebSocket<customWebsocketDataType = unknown>
     const options = this.options;
     const createOpts = options.newInstance ? options : undefined;
 
-    return Bun.serve<WebSocketClientData<customWebsocketDataType>>({
+    return Bun.serve<WebSocketClientData<TCustom>>({
       ...(createOpts?.serverOptions || {}),
       port,
       hostname: createOpts?.listen?.host,
@@ -474,12 +598,11 @@ export class BunWebSocket<customWebsocketDataType = unknown>
             },
           ));
 
-        const res =
-          createOpts?.response || new BunResponse<customWebsocketDataType>(req);
+        const res = createOpts?.response || new BunResponse<TCustom>(req);
         let routeUsed: matchedRoute | true | undefined;
 
         try {
-          routeUsed = await this._routerInstance?.handle({
+          routeUsed = await this.router.handle({
             requestHost: req.host,
             requestMethod: req.method,
             response: res,
@@ -487,12 +610,10 @@ export class BunWebSocket<customWebsocketDataType = unknown>
             requestUrl: req.originalUrl,
           });
         } catch (e) {
-          let err = e;
-          if (!isObject(err)) {
-            err = new Error(String(e));
-          }
-
-          set(err as unknown as Record<string, unknown>, "req", req);
+          // Anything can be thrown; wrap a primitive so the request can ride
+          // along to the `error` callback.
+          const err = isObject(e) ? e : new Error(String(e));
+          set(err, "req", req);
           throw err;
         }
 
@@ -501,7 +622,12 @@ export class BunWebSocket<customWebsocketDataType = unknown>
         if (hasNativeResponse) {
           if (res.upgradeToWsData) {
             const success = server.upgrade(nativeRequest, {
-              data: res.upgradeToWsData,
+              // The server is known here, so record it even when the data
+              // was built elsewhere (a bare `res.upgradeToWebsocket()`).
+              data: {
+                ...res.upgradeToWsData,
+                port: res.upgradeToWsData.port ?? server.port,
+              },
             });
             if (success) {
               return undefined;
@@ -523,7 +649,7 @@ export class BunWebSocket<customWebsocketDataType = unknown>
           }
 
           const nativeResponse = await res.getNativeResponse(
-            (options?.wsOptions?.idleTimeout || 60) * 1000,
+            createOpts?.responseTimeout ?? 0,
           );
           return nativeResponse;
         }
@@ -534,26 +660,74 @@ export class BunWebSocket<customWebsocketDataType = unknown>
         });
       },
       websocket: this._wsHandler,
-      async error(err) {
-        throw err;
-      },
+      // Rethrowing here (as this once did) turns every handler error and
+      // response timeout into an uncaught error; answer it instead, unless
+      // the caller supplied their own.
+      error: createOpts?.serverOptions?.error ?? this.handleServerError,
     });
   }
 
-  public killServer(
-    server: BunWebSocketServerType<customWebsocketDataType> | undefined,
-  ) {
-    if (server && server.port) {
-      try {
-        this.getOrCreateWebsocketServer(server.port)?.stop(false);
-      } catch {
-        //
-      }
+  /**
+   * The dedicated server's default `error` callback: answers with the error's
+   * own `status`/`statusCode` when it is a 4xx/5xx code, else `500`, and logs
+   * the error through the router's logger. `serverOptions.error` replaces it.
+   *
+   * An arrow property so `Bun.serve` can call it unbound.
+   */
+  protected handleServerError = (error: ErrorLike): Response => {
+    const status = errorStatus(error);
+    const req =
+      "req" in error && error.req instanceof BunRequest ? error.req : undefined;
 
-      this._wsServers.delete(server.port);
+    this.router.logger.error("Unhandled error on the WebSocket server", {
+      error,
+      status,
+      method: req?.method,
+      url: req?.originalUrl,
+    });
+
+    // Like Express: a client error's message is safe to show, a server
+    // error's is not.
+    return new Response(
+      status >= 500 ? "Internal Server Error" : error.message,
+      { status },
+    );
+  };
+
+  /**
+   * Force-stops `server` (`stop(true)`, closing keep-alive connections so the
+   * port is really released) and forgets it. Never creates a server: killing
+   * one that is not running is a no-op beyond the `stop` call.
+   */
+  public killServer(server: BunWebSocketServerType<TCustom> | undefined) {
+    if (!server) {
+      return this;
+    }
+
+    try {
+      // A graceful `stop(false)` leaves keep-alive connections open, and with
+      // `SO_REUSEPORT` a new server on the same port can then be answered by
+      // the stale one.
+      server.stop(true);
+    } catch {
+      //
+    }
+
+    const port = server.port;
+    if (port !== undefined && this._wsServers.get(port) === server) {
+      this._wsServers.delete(port);
     }
 
     return this;
+  }
+
+  /**
+   * The port the server this instance serves on is bound to — the
+   * OS-assigned one when `listen.port` was `0`. `undefined` while a shared
+   * server has not started listening.
+   */
+  public get port(): number | undefined {
+    return this.getServer()?.port;
   }
 
   public get wsHandler() {
@@ -572,8 +746,12 @@ export class BunWebSocket<customWebsocketDataType = unknown>
     return undefined;
   }
 
-  public get router() {
-    return this._routerInstance;
+  /** The router upgrade routes register on; a private one if none was given. */
+  public get router(): BunRouter {
+    if (!this._routerInstance) {
+      this.router = new BunRouterClass();
+    }
+    return this._routerInstance as BunRouter;
   }
 
   set router(router: BunRouter) {
@@ -581,174 +759,68 @@ export class BunWebSocket<customWebsocketDataType = unknown>
     this._routerInstance.setBunWebSocket(this);
   }
 
-  private async processRegisteredRouteHandlerFor(
-    event: "open" | "close" | "drain" | "message" | "ping" | "pong",
-    ws: WebSocketClient<customWebsocketDataType>,
-    ...otherArgs: unknown[]
-  ) {
-    const path = ws.data?.path;
-    if (
-      !!path &&
-      ["open", "close", "drain", "message", "ping", "pong"].includes(event)
-    ) {
-      const handlersArr = this._routeHandlers.get(path);
-      if (isArray(handlersArr)) {
-        const bunServer = this.getServer();
-        if (!bunServer) {
-          return undefined;
-        }
-
-        await Promise.allSettled(
-          handlersArr
-            // Never re-invoke this instance's own aggregate handler: the Bun
-            // server's `websocket` is already bound to `_wsHandler` (which both
-            // emits events *and* calls this method), so a route registered with
-            // `router.ws(path, this.wsHandler)` — as the NestJS adapter does —
-            // would recurse infinitely once `path` matches the connection's
-            // path (e.g. a gateway `namespace`). Per-route *user* handlers
-            // (the normal `router.ws` use) are unaffected.
-            .filter((handler) => handler !== this._wsHandler)
-            .map((handler) => {
-              const handlerToExecute = isObject(handler)
-                ? handler[event]
-                : undefined;
-
-              if (handlerToExecute && isFunction(handlerToExecute)) {
-                switch (event) {
-                  case "open": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["open"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  case "close": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["close"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  case "drain": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["drain"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  case "message": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["message"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  case "ping": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["ping"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  case "pong": {
-                    type HandlerFnType = NonNullable<
-                      BunWebSocketHandlerType<customWebsocketDataType>["pong"]
-                    >;
-                    type FnHandlerParameters = Parameters<HandlerFnType>;
-
-                    const [wsClient, ...fnArgs] = [
-                      ws,
-                      ...otherArgs,
-                    ] as unknown as FnHandlerParameters;
-
-                    return (handlerToExecute as HandlerFnType).call(
-                      bunServer,
-                      wsClient,
-                      ...fnArgs,
-                    );
-                  }
-
-                  default: {
-                    return (
-                      handlerToExecute as (
-                        ws: WebSocketClient<customWebsocketDataType>,
-                      ) => unknown
-                    ).call(bunServer, ws);
-                  }
-                }
-              }
-
-              return undefined;
-            })
-            .filter((handler) => !!handler),
-        );
-
-        return handlersArr.length;
-      }
+  /**
+   * Runs the handlers registered for the connection's route for one lifecycle
+   * `event`, with the arguments Bun passed for it. Resolves how many handlers
+   * the route has (`0` when none, `undefined` when there is no server).
+   */
+  private async processRegisteredRouteHandlerFor<
+    E extends BunWebSocketRouteEvent,
+  >(
+    event: E,
+    ws: WebSocketClient<TCustom>,
+    ...rest: BunWebSocketRouteEventRest<TCustom, E>
+  ): Promise<number | undefined> {
+    // Handlers are stored under the registered pattern (`/rooms/:id`), so look
+    // them up by the pattern the upgrade matched, not the concrete path
+    // (`/rooms/42`) — which only coincides for static routes.
+    const routeKey = ws.data?.route ?? ws.data?.path;
+    if (!routeKey) {
+      return 0;
     }
 
-    return 0;
+    const handlersArr = this._routeHandlers.get(routeKey);
+    if (!isArray(handlersArr)) {
+      return 0;
+    }
+
+    const bunServer = this.getServer();
+    if (!bunServer) {
+      return undefined;
+    }
+
+    await Promise.allSettled(
+      handlersArr
+        // Never re-invoke this instance's own aggregate handler: the Bun
+        // server's `websocket` is already bound to `_wsHandler` (which both
+        // emits events *and* calls this method), so a route registered with
+        // `router.ws(path, this.wsHandler)` — as the NestJS adapter does —
+        // would recurse infinitely once `path` matches the connection's
+        // path (e.g. a gateway `namespace`). Per-route *user* handlers
+        // (the normal `router.ws` use) are unaffected.
+        .filter((handler) => handler !== this._wsHandler)
+        .map((handler) => {
+          const handlerToExecute = isObject(handler)
+            ? handler[event]
+            : undefined;
+          if (!isFunction(handlerToExecute)) {
+            return undefined;
+          }
+
+          // `handler[event]` for a generic `E` is a union of every lifecycle
+          // signature, which TypeScript cannot call with `E`'s arguments even
+          // though the signature for `E` is exactly `(ws, ...rest)`.
+          return Reflect.apply(handlerToExecute, bunServer, [ws, ...rest]);
+        }),
+    );
+
+    return handlersArr.length;
   }
 
   public async setRouteHandler(
     path: string,
-    handler: BunWebSocketHandlerType<customWebsocketDataType>,
-    customDataToWsClientFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"],
+    handler: BunWebSocketHandlerType<TCustom>,
+    customDataToWsClientFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"],
   ) {
     if (!isObject(handler)) {
       return false;
@@ -790,7 +862,7 @@ export class BunWebSocket<customWebsocketDataType = unknown>
         upgradeHeader === "websocket" &&
         secWebsocketKey
       ) {
-        let getCustomDataFn: BunWebSocketGeneralOptions<customWebsocketDataType>["customDataToWsClientFn"];
+        let getCustomDataFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"];
         if (customDataToWsClientFn && isFunction(customDataToWsClientFn)) {
           getCustomDataFn = customDataToWsClientFn;
         } else if (
@@ -800,20 +872,42 @@ export class BunWebSocket<customWebsocketDataType = unknown>
           getCustomDataFn = this._customDataToWsClientFn;
         }
 
-        let customData: unknown;
+        let customData: TCustom | undefined;
         if (getCustomDataFn) {
           customData = await Promise.resolve(getCustomDataFn(req, res));
         }
 
-        const data: WebSocketClientData = {
+        // An upgrade route is registered like `use()` middleware (no verb), so
+        // the pipeline never binds `req.params` for it. Read them from this
+        // callback's own matched layer instead — the same match the pipeline
+        // ran, wildcard aliases included.
+        const layer = this.router
+          .getMatchedLayers({
+            requestHost: req.host,
+            requestMethod: req.method,
+            requestUrl: req.originalUrl,
+          })
+          .find((entry) => entry.callback === wsRouteHandler);
+
+        const data: WebSocketClientData<TCustom> = {
           host: req.host,
           path: req.path,
           search: req.search,
           hash: req.hash,
           originalUrl: req.originalUrl,
-          headers: req.headersObj as unknown as Headers,
-          user: get(req, "user", undefined),
-          custom: customData,
+          headers: req.headersObj,
+          user: get<Record<string, unknown> | undefined>(req, "user"),
+          // `undefined` when no mapping function exists. `TCustom` is only
+          // declared by a caller who supplies one, and defaults to `unknown`
+          // (which admits `undefined`) otherwise.
+          custom: customData as TCustom,
+          route: path,
+          // Copied: matched layers are cached and shared across requests.
+          params: {
+            ...((layer?.matched.params ?? {}) as Record<string, string>),
+          },
+          // Whichever server built `req` — shared, standalone or extra-port.
+          port: acceptingPort(req),
         };
 
         return res.upgradeToWebsocket(data);

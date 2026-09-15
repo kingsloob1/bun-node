@@ -1,0 +1,10 @@
+{
+  "name": "bun-node-examples-bun-common",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runnable, commented examples for @kingsleyweb/bun-common: routing, the HTTP adapter, requests and responses, validation, CORS, static files, multipart uploads, WebSockets, logging and utilities",
+  "scripts": {
+    "all": "bun run-all.ts"
+  }
+}

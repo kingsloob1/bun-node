@@ -6,6 +6,7 @@ import type { ValidatorMiddleware } from "./BunValidate";
 import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
 import type { Logger, LoggerLike } from "./logging";
 import type {
+  BunServer,
   NextFunction,
   RouterCallback,
   RouterErrorMiddlewareHandler,
@@ -64,10 +65,72 @@ export type RouteSpecificityOption =
   | boolean
   | ((a: RouteSpecificityEntry, b: RouteSpecificityEntry) => number);
 
+/**
+ * A route paired with its callbacks.
+ *
+ * Not used by the router itself: the matched-pipeline cache stores
+ * {@link MatchedLayer} arrays instead. It remains exported only so existing
+ * imports keep compiling.
+ *
+ * @deprecated Use {@link MatchedLayer} (what {@link BunRouter.getMatchedLayers}
+ *   returns) instead.
+ */
 export interface CachedRouteMatch {
+  /** The registered route. */
   route: Route;
+  /** The route's callbacks, in registration order. */
   callbacks: RouterCallback[];
 }
+
+/**
+ * Thrown inside {@link BunRouter.matchRoute} when a captured path or host value
+ * is not valid percent-encoding. Caught by the matcher and turned into an
+ * error pipeline entry; never escapes the router.
+ */
+class ParamDecodeFailure {
+  constructor(
+    /** The raw, undecodable value. */
+    readonly value: string,
+  ) {}
+}
+
+/**
+ * `decodeURIComponent` for a captured param, as Express 5's router does it: an
+ * empty value is returned as-is, and a malformed escape raises
+ * {@link ParamDecodeFailure} rather than a bare `URIError`.
+ */
+function decodeParam(value: string): string {
+  if (value.length === 0) {
+    return value;
+  }
+
+  try {
+    return decodeURIComponent(value);
+  } catch (error) {
+    if (error instanceof URIError) {
+      throw new ParamDecodeFailure(value);
+    }
+    throw error;
+  }
+}
+
+/**
+ * The error Express 5 passes to `next()` for a param it cannot decode: a
+ * `URIError` whose message names the raw value, with `status: 400`. A fresh
+ * instance per request, since error handlers may mutate what they receive.
+ */
+function createParamDecodeError(value: string): URIError & { status: number } {
+  return Object.assign(new URIError(`Failed to decode param '${value}'`), {
+    status: 400,
+  });
+}
+
+/**
+ * Whether a `host` option is a literal hostname (optionally with a port), as
+ * opposed to a pattern like `:tenant.example.com` or `*.example.com`. Only a
+ * literal can serve as the origin {@link BunRouter.fetch} resolves paths against.
+ */
+const LITERAL_HOST_RE = /^[\w-]+(?:\.[\w-]+)*(?::\d+)?$/;
 
 /**
  * A single executable unit in the request pipeline — one callback of one
@@ -90,6 +153,12 @@ export interface MatchedLayerRecord {
   routerId: number;
   /** The route match result (params/subdomains) for this request. */
   matched: matchedRoute;
+  /**
+   * `req.baseUrl` while this layer runs: the part of the request path its
+   * mount (a `use(path, …)` prefix or a mounted router's path) matched, without
+   * a trailing slash. `""` for a layer outside any mount.
+   */
+  baseUrl: string;
 }
 
 /** A {@link MatchedLayerRecord} resolved against the live callback reference. */
@@ -207,7 +276,48 @@ type RouteWithGroup = Route & {
    * (see {@link extractWildcardNames}).
    */
   wildcardNames?: (string | undefined)[];
+  /**
+   * Prefix regex of the route's mount (its `group`), whose match on a request
+   * path is `req.baseUrl`. `null` for a route outside any mount.
+   */
+  baseUrlRegexp?: RegExp | null;
 };
+
+/**
+ * `regexp` with its case-insensitive flag matching `caseSensitive`: `i` added
+ * when matching ignores case, left as it is otherwise. Returns the same
+ * instance when nothing needs to change.
+ */
+function withCaseSensitivity(regexp: RegExp, caseSensitive: boolean): RegExp {
+  if (caseSensitive || regexp.flags.includes("i")) {
+    return regexp;
+  }
+  return new RegExp(regexp.source, `${regexp.flags}i`);
+}
+
+/** The part of `requestPath` a route's mount matched, as `req.baseUrl`. */
+function matchBaseUrl(route: RouteWithGroup, requestPath: string): string {
+  const regexp = route.baseUrlRegexp;
+  if (!regexp) {
+    return "";
+  }
+  const matched = regexp.exec(requestPath)?.[0] ?? "";
+  // Express strips the trailing slash: a router mounted at `/` has baseUrl "".
+  return matched.endsWith("/") ? matched.replace(/\/+$/, "") : matched;
+}
+
+/**
+ * Whether a route being flattened in from another router is a route handler.
+ *
+ * A BunRouter route carries the answer in `isEndpoint`. A route from a plain
+ * `@routejs/router` `Router` does not, so it is inferred the way that router
+ * builds them: verb/`all`/`any`/`add` routes have a `path`, while `use`
+ * middleware has only a `group` prefix.
+ */
+function isEndpointRoute(route: Route): boolean {
+  const tagged = route as RouteWithGroup;
+  return tagged.isEndpoint ?? (route.path !== null && route.path !== undefined);
+}
 
 /**
  * A router the untyped `use` overloads accept: a plain `@routejs/router`
@@ -228,6 +338,13 @@ export type UnmountedRouter = Router & {
  * - a `string` or `URL` — a `GET` to that path or URL
  * - a `RequestInit` carrying a `url` — any method, headers and body
  */
+/**
+ * The callback form of `group()`/`domain()`, as the implementation receives it.
+ * Its parameter is `never` so that every overload's callback, whatever mount
+ * its router declares, fits; the overloads above it carry the real types.
+ */
+type GroupCallback = (router: never) => void;
+
 export type FetchInput =
   | string
   | URL
@@ -242,10 +359,14 @@ const FETCH_DEFAULT_ORIGIN = "http://localhost";
  * `BunRequest`. There is no socket, so there is no peer address, and an
  * upgrade cannot succeed — reporting that honestly is better than pretending.
  */
-export const FETCH_STUB_SERVER = {
+const fetchStubServer: Pick<BunServer, "requestIP" | "upgrade"> = {
   requestIP: () => null,
   upgrade: () => false,
-} as unknown as Parameters<typeof BunRequestClass.init>[1];
+};
+
+export const FETCH_STUB_SERVER = fetchStubServer as Parameters<
+  typeof BunRequestClass.init
+>[1];
 
 /** Builds a native `Request` from anything {@link FetchInput} allows. */
 export function toNativeRequest(
@@ -285,6 +406,18 @@ export class BunRouter<
    * reach handlers here; see {@link MergeShape}.
    */
   TMountShape = EmptyShape,
+  /**
+   * Host pattern a `domain()` scoped this router to (`":tenant.example.com"`),
+   * whose captures reach `req.params` alongside the path's. Set by the
+   * `domain(host, (router) => …)` callback's router, and carried into a
+   * `group()` inside it. Defaults to `""` — no host, no host params.
+   *
+   * The `host` constructor option is deliberately not inferred into it: a
+   * `domain()` on such a router overrides that host at runtime, while a
+   * `domain()` nested inside another keeps the outer one, and a single type
+   * parameter cannot tell those two apart.
+   */
+  THost extends string = "",
 > extends Router {
   /**
    * Phantom record of the declared mount, so `BunRouter<"/users/:id">` and an
@@ -330,11 +463,43 @@ export class BunRouter<
   /** How competing route handlers are ordered — see {@link RouteSpecificityOption}. */
   #routeSpecificity: RouteSpecificityOption;
 
+  /**
+   * The route the last verb, `all`, `any` or `add` call registered — what
+   * {@link setName} names. `null` after anything else (`use`, `group`,
+   * `domain`, a mount), exactly as `@routejs/router` tracks it, so `setName`
+   * after middleware throws.
+   */
+  #lastRoute: Route | null = null;
+
   constructor(
     private localOptions?: {
+      /**
+       * The {@link BunWebSocket} that {@link BunRouter.ws} registers WebSocket
+       * routes on. {@link BunRouter.setBunWebSocket} takes precedence over it.
+       */
       bunWebsocket?: BunWebSocket;
+      /**
+       * Whether path (and host) matching is case-sensitive: with `true`,
+       * `/Users` does not match `/users`. Defaults to `false`, like Express and
+       * `@routejs/router`. Applies to every route registered on this router,
+       * including routes flattened in by `use(router)`, `group()` and
+       * `domain()` — the mounting router's setting wins over the sub-router's.
+       */
       caseSensitive?: boolean;
+      /**
+       * Default host pattern for every route registered on this router, as in
+       * `@routejs/router`: with `"api.example.com"`, routes answer only
+       * requests for that host. Accepts the same patterns as {@link domain}
+       * (`":tenant.example.com"`, `"*.example.com"`), and a route's own host
+       * (from `domain()`) overrides it. A literal hostname is also the origin
+       * {@link BunRouter.fetch} resolves a bare path against; for a pattern,
+       * `fetch()` falls back to `http://localhost`.
+       */
       host?: string;
+      /**
+       * Logs one `debug` record per pipeline layer run. Defaults to `false`;
+       * the logger's level must also admit `debug`.
+       */
       debug?: boolean;
       /**
        * Logger for router diagnostics. Accepts a {@link Logger} or any
@@ -438,12 +603,45 @@ export class BunRouter<
 
     const routes = this.routes();
     if (option.name) {
-      if (routes.find((route) => route.name === option.name)) {
+      if (routes.some((route) => route.name === option.name)) {
         throw new Error(`Route with name "${option.name}" already exists..`);
       }
     }
 
-    const route = new RouteClass(option) as RouteWithGroup;
+    // `@routejs/router` applies its `caseSensitive` and `host` config in its
+    // own private `#setRoute`, which BunRouter bypasses — so apply them here,
+    // the same way: the router's settings, unless the route brings its own.
+    const caseSensitive =
+      option.caseSensitive ?? this.localOptions?.caseSensitive ?? false;
+    const route = new RouteClass({
+      ...option,
+      host: option.host ?? this.localOptions?.host,
+      caseSensitive,
+    }) as RouteWithGroup;
+    // A route without a `path` is middleware, which routejs compiles as a
+    // *prefix* regex — rebuilt from the exact one's `source` with no flags, so
+    // the `i` it was compiled with is lost and `use("/Admin")` would refuse
+    // `/admin/x` however `caseSensitive` is set. Express 5 applies the setting
+    // to `use()` prefixes and routes alike, so restore it.
+    if (option.path == null) {
+      route.pathRegexp = withCaseSensitivity(route.pathRegexp, caseSensitive);
+    }
+    // `req.baseUrl` comes from the route's mount prefix. Middleware already
+    // compiled `group` as a prefix regex; a route handler compiled its full
+    // path instead, so its prefix gets a regex of its own.
+    route.baseUrlRegexp =
+      option.group == null
+        ? null
+        : option.path == null
+          ? route.pathRegexp
+          : withCaseSensitivity(
+              new RouteClass({
+                group: option.group,
+                callbacks: [],
+                caseSensitive,
+              }).pathRegexp,
+              caseSensitive,
+            );
     // Stamp the active mount's group id (0 = this router's own routes) so
     // `next('router')` can later identify and skip a whole mounted sub-router.
     route.routerGroupId = this.#activeRouterGroupId;
@@ -452,6 +650,8 @@ export class BunRouter<
     route.isEndpoint = isEndpoint;
     route.wildcardNames = wildcardNames;
     routes.push(route);
+    // Only a route handler can be named — see `setName`.
+    this.#lastRoute = isEndpoint ? route : null;
     // The route table changed — drop the matched-pipeline cache so a route
     // registered after the first request is still picked up.
     if (this.routeCacheLayers.size) {
@@ -490,15 +690,16 @@ export class BunRouter<
       option.callbacks.routes().forEach((route) => {
         const opts = this.getFormattedSetRouteOption(option, route);
         // Preserve the source route's verb/`all` endpoint status across the
-        // flatten so specificity ordering still treats it correctly.
-        this.#pendingEndpoint = (route as RouteWithGroup).isEndpoint === true;
+        // flatten so specificity ordering and param binding still treat it
+        // correctly.
+        this.#pendingEndpoint = isEndpointRoute(route);
         this.setRoute(opts);
       });
     } else if (Array.isArray(option.callbacks)) {
       for (const route of option.callbacks) {
         if (route instanceof RouteClass) {
           const opts = this.getFormattedSetRouteOption(option, route);
-          this.#pendingEndpoint = (route as RouteWithGroup).isEndpoint === true;
+          this.#pendingEndpoint = isEndpointRoute(route);
           this.setRoute(opts);
         } else if (Array.isArray(route) || route instanceof Router) {
           this.mergeRoute({
@@ -514,21 +715,64 @@ export class BunRouter<
       this.setRoute(option as RouteConstructorOption);
     }
 
+    // As in `@routejs/router`: a merge registers no nameable route, so a
+    // following `setName()` throws rather than renaming a flattened route.
+    this.#lastRoute = null;
     return this;
   }
 
-  ws(
+  /**
+   * Registers a WebSocket route: a `GET` upgrade request for `path` is upgraded
+   * and its connection dispatched to `handler`.
+   *
+   * The route is added through the attached {@link BunWebSocket} (the
+   * `bunWebsocket` option, or {@link setBunWebSocket}); a {@link BunHttpAdapter}
+   * attaches its own. The upgrade route is in place when this returns.
+   *
+   * `TCustom` is the type of `ws.data.custom` — what `customDataToWsClientFn`
+   * returns. On a `BunHttpAdapter` it defaults to the adapter's WebSocket data
+   * type; on a bare router it is inferred from `customDataToWsClientFn`, or
+   * given explicitly: `router.ws<{ userId: string }>("/chat", handler, fn)`.
+   * With neither it stays `unknown`: nothing says what the data holds.
+   *
+   * @throws Error when no `BunWebSocket` is attached — registering a route
+   *   that could never upgrade would otherwise fail silently.
+   * @throws TypeError when `handler` is not a handler object.
+   */
+  ws<TCustom = unknown>(
     path: string,
-    handler: WebSocketHandler<WebSocketClientData>,
+    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
     customDataToWsClientFn?: (
       req: BunRequest,
       res: BunResponse,
-    ) => unknown | Promise<unknown>,
+    ) => TCustom | Promise<TCustom>,
   ): this {
-    const bunWebSocket = this.getBunWebsocket();
-    if (bunWebSocket) {
-      bunWebSocket.setRouteHandler(path, handler, customDataToWsClientFn);
+    const bunWebSocket = this.getBunWebsocket() as
+      | BunWebSocket<TCustom>
+      | undefined;
+    if (!bunWebSocket) {
+      throw new Error(
+        `ws("${path}"): no BunWebSocket is attached to this router. Pass the ` +
+          "`bunWebsocket` option or call setBunWebSocket() first, or register " +
+          "the route on a BunHttpAdapter.",
+      );
     }
+    if (!isObject(handler)) {
+      throw new TypeError(`ws("${path}"): the handler must be an object.`);
+    }
+
+    // `setRouteHandler` is async but registers the route before its first
+    // await, so the route exists once this returns. Its promise is still
+    // observed, so a failure is logged rather than becoming an unhandled
+    // rejection.
+    bunWebSocket
+      .setRouteHandler(path, handler, customDataToWsClientFn)
+      .catch((error: unknown) => {
+        this.logger.error("ws(): failed to register the WebSocket route", {
+          error,
+          path,
+        });
+      });
 
     return this;
   }
@@ -565,25 +809,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -591,7 +835,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -600,7 +844,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -610,7 +854,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -621,7 +865,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -633,7 +877,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override checkout<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -646,7 +890,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: checkout --- */
   override checkout(path: string, ...callbacks: RouterHandler[]): this;
@@ -677,25 +921,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -703,7 +947,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -712,7 +956,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -722,7 +966,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -733,7 +977,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -745,7 +989,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override copy<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -758,7 +1002,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: copy --- */
   override copy(path: string, ...callbacks: RouterHandler[]): this;
@@ -786,25 +1030,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -812,7 +1056,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -821,7 +1065,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -831,7 +1075,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -842,7 +1086,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -854,7 +1098,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override delete<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -867,7 +1111,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: delete --- */
   override delete(path: string, ...callbacks: RouterHandler[]): this;
@@ -898,25 +1142,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -924,7 +1168,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -933,7 +1177,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -943,7 +1187,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -954,7 +1198,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -966,7 +1210,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override get<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -979,7 +1223,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: get --- */
   override get(path: string, ...callbacks: RouterHandler[]): this;
@@ -1011,25 +1255,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1037,7 +1281,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1046,7 +1290,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1056,7 +1300,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1067,7 +1311,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1079,7 +1323,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override head<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1092,7 +1336,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: head --- */
   override head(path: string, ...callbacks: RouterHandler[]): this;
@@ -1120,25 +1364,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1146,7 +1390,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1155,7 +1399,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1165,7 +1409,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1176,7 +1420,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1188,7 +1432,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override lock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1201,7 +1445,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: lock --- */
   override lock(path: string, ...callbacks: RouterHandler[]): this;
@@ -1229,25 +1473,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1255,7 +1499,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1264,7 +1508,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1274,7 +1518,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1285,7 +1529,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1297,7 +1541,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override merge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1310,7 +1554,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: merge --- */
   override merge(path: string, ...callbacks: RouterHandler[]): this;
@@ -1341,25 +1585,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1367,7 +1611,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1376,7 +1620,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1386,7 +1630,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1397,7 +1641,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1409,7 +1653,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkactivity<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1422,7 +1666,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: mkactivity --- */
   override mkactivity(path: string, ...callbacks: RouterHandler[]): this;
@@ -1454,25 +1698,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1480,7 +1724,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1489,7 +1733,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1499,7 +1743,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1510,7 +1754,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1522,7 +1766,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override mkcol<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1535,7 +1779,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: mkcol --- */
   override mkcol(path: string, ...callbacks: RouterHandler[]): this;
@@ -1566,25 +1810,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1592,7 +1836,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1601,7 +1845,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1611,7 +1855,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1622,7 +1866,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1634,7 +1878,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override move<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1647,7 +1891,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: move --- */
   override move(path: string, ...callbacks: RouterHandler[]): this;
@@ -1675,25 +1919,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1701,7 +1945,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1710,7 +1954,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1720,7 +1964,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1731,7 +1975,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1743,7 +1987,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override notify<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1756,7 +2000,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: notify --- */
   override notify(path: string, ...callbacks: RouterHandler[]): this;
@@ -1787,25 +2031,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1813,7 +2057,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1822,7 +2066,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1832,7 +2076,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1843,7 +2087,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1855,7 +2099,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override options<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1868,7 +2112,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: options --- */
   override options(path: string, ...callbacks: RouterHandler[]): this;
@@ -1900,25 +2144,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1926,7 +2170,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1935,7 +2179,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1945,7 +2189,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1956,7 +2200,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1968,7 +2212,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override patch<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -1981,7 +2225,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: patch --- */
   override patch(path: string, ...callbacks: RouterHandler[]): this;
@@ -2012,25 +2256,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2038,7 +2282,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2047,7 +2291,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2057,7 +2301,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2068,7 +2312,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2080,7 +2324,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override post<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2093,7 +2337,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: post --- */
   override post(path: string, ...callbacks: RouterHandler[]): this;
@@ -2121,25 +2365,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2147,7 +2391,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2156,7 +2400,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2166,7 +2410,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2177,7 +2421,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2189,7 +2433,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override propfind<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2202,7 +2446,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: propfind --- */
   override propfind(path: string, ...callbacks: RouterHandler[]): this;
@@ -2254,25 +2498,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2280,7 +2524,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2289,7 +2533,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2299,7 +2543,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2310,7 +2554,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2322,7 +2566,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override purge<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2335,7 +2579,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: purge --- */
   override purge(path: string, ...callbacks: RouterHandler[]): this;
@@ -2366,25 +2610,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2392,7 +2636,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2401,7 +2645,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2411,7 +2655,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2422,7 +2666,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2434,7 +2678,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override put<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2447,7 +2691,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: put --- */
   override put(path: string, ...callbacks: RouterHandler[]): this;
@@ -2475,25 +2719,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2501,7 +2745,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2510,7 +2754,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2520,7 +2764,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2531,7 +2775,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2543,7 +2787,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override report<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2556,7 +2800,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: report --- */
   override report(path: string, ...callbacks: RouterHandler[]): this;
@@ -2587,25 +2831,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2613,7 +2857,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2622,7 +2866,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2632,7 +2876,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2643,7 +2887,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2655,7 +2899,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override search<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2668,7 +2912,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: search --- */
   override search(path: string, ...callbacks: RouterHandler[]): this;
@@ -2699,25 +2943,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2725,7 +2969,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2734,7 +2978,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2744,7 +2988,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2755,7 +2999,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2767,7 +3011,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override subscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2780,7 +3024,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: subscribe --- */
   override subscribe(path: string, ...callbacks: RouterHandler[]): this;
@@ -2812,25 +3056,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2838,7 +3082,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2847,7 +3091,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2857,7 +3101,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2868,7 +3112,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2880,7 +3124,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override trace<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2893,7 +3137,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: trace --- */
   override trace(path: string, ...callbacks: RouterHandler[]): this;
@@ -2924,25 +3168,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2950,7 +3194,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2959,7 +3203,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2969,7 +3213,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2980,7 +3224,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -2992,7 +3236,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unlock<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3005,7 +3249,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: unlock --- */
   override unlock(path: string, ...callbacks: RouterHandler[]): this;
@@ -3036,25 +3280,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3062,7 +3306,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3071,7 +3315,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3081,7 +3325,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3092,7 +3336,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3104,7 +3348,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override unsubscribe<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3117,7 +3361,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: unsubscribe --- */
   override unsubscribe(path: string, ...callbacks: RouterHandler[]): this;
@@ -3148,25 +3392,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3174,7 +3418,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3183,7 +3427,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3193,7 +3437,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3204,7 +3448,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3216,7 +3460,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override view<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3229,7 +3473,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: view --- */
   override view(path: string, ...callbacks: RouterHandler[]): this;
@@ -3304,25 +3548,25 @@ export class BunRouter<
   // Generated by scripts/generate-verb-overloads.ts — do not edit by hand.
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
     handler1: RouterHandler,
     handler2: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3330,7 +3574,7 @@ export class BunRouter<
     handler2: RouterHandler,
     handler3: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3339,7 +3583,7 @@ export class BunRouter<
     handler3: RouterHandler,
     handler4: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3349,7 +3593,7 @@ export class BunRouter<
     handler4: RouterHandler,
     handler5: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3360,7 +3604,7 @@ export class BunRouter<
     handler5: RouterHandler,
     handler6: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3372,7 +3616,7 @@ export class BunRouter<
     handler6: RouterHandler,
     handler7: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   override all<TPath extends string, TShape = EmptyShape>(
     path: TPath,
@@ -3385,7 +3629,7 @@ export class BunRouter<
     handler7: RouterHandler,
     handler8: RouterHandler,
     validator: ValidatorMiddleware<TShape>,
-    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape>,
+    handler: MountedHandler<TMountPath, TMountShape, TPath, TShape, THost>,
   ): this;
   /* --- END generated typed overloads: all --- */
   override all(path: string, ...callbacks: RouterHandler[]): this;
@@ -3603,60 +3847,157 @@ export class BunRouter<
     return this;
   }
 
-  override group(path: string, ...callbacks: [Router]): this;
+  /**
+   * Registers routes under a path prefix, in one of three forms:
+   *
+   * - `group(path, router)` — flattens `router`'s routes in, each prefixed.
+   * - `group(path, (router) => { ... })` — `@routejs/router`'s callback form:
+   *   the callback fills a fresh `BunRouter`, whose routes are then flattened in
+   *   the same way. Its route handlers bind `req.params` like any other route.
+   * - `group(path, ...callbacks)` — prefix middleware, like `use(path, ...)`.
+   *
+   * The callback and middleware forms are told apart by arity, since both are
+   * functions: a **single** function declaring at most one parameter is the
+   * callback form (every function is, to `@routejs/router`); several functions,
+   * or one declaring `(req, res)` or more, are middleware. A one-parameter
+   * `(req) => ...` handler is therefore read as the callback form — register it
+   * with `use(path, handler)` instead.
+   *
+   * A **lone inline** middleware arrow needs `satisfies RouterHandler` to be
+   * typed: TypeScript tries the `(router) => …` overload first, and once that
+   * fails on arity it cannot contextually type the arrow's parameters again.
+   * Several callbacks, or a declared handler, need nothing.
+   *
+   * In the callback form the router is typed as mounted at this router's mount
+   * path plus `path`, so its routes see the group's params:
+   * `group("/users/:id", (r) => r.get("/posts", (req) => req.params.id))`. A
+   * callback declared ahead with a plain `(router: BunRouter) => …` still
+   * matches, through the untyped overload after it. Inside a `domain()`
+   * callback the host carries over, since a group adds no host of its own.
+   */
+  override group(path: string, router: Router): this;
+  override group<TPath extends string>(
+    path: TPath,
+    callback: (
+      router: BunRouter<`${TMountPath}${TPath}`, TMountShape, THost>,
+    ) => void,
+  ): this;
+  override group(path: string, callback: (router: BunRouter) => void): this;
+  // `RouterHandler` ahead of the `RouterCallback` union, as for the verbs: a
+  // union of arities gives an inline arrow no signature to be typed against.
+  // (Named `handlers`, so the verb-overload generator does not take `group`
+  // for a verb.)
+  override group(path: string, ...handlers: RouterHandler[]): this;
+  override group(
+    path: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
   override group(path: string, ...callbacks: RouterCallback[]): this;
   override group(
     path: string,
-    ...callbacks: [(router: Router) => unknown]
-  ): this;
-  override group(
-    path: string,
-    ...callbacks: RouterCallback[] | [Router] | [(router: Router) => unknown]
+    ...callbacks: RouterCallback[] | [Router] | [GroupCallback]
   ) {
-    const [callback] = callbacks;
-    if (callback instanceof Router) {
-      return this.mergeRoute({ group: path, callbacks: callback });
-    }
-
-    if (isFunction(callback)) {
-      const handler = callback as (router: Router) => unknown;
-      const router = new Router();
-      handler(router);
-      return this.mergeRoute({ group: path, callbacks: router });
-    }
-
-    return this.mergeRoute({
-      group: path,
-      callbacks: callbacks as RouterCallback[],
-    });
+    const source = this.resolveGroupCallbacks(callbacks);
+    return this.mergeRoute({ group: path, callbacks: source });
   }
 
-  override domain(host: string, ...callbacks: [Router]): this;
+  /**
+   * Registers routes for a host pattern (`"api.example.com"`,
+   * `":tenant.example.com"`, `"*.example.com"`), in the same three forms as
+   * {@link group}: a router, a `(router) => { ... }` callback, or host-scoped
+   * middleware `(...callbacks)`, told apart the same way.
+   *
+   * Params captured by the host pattern are merged into `req.params` (a path
+   * param of the same name wins); `req.subdomains` stays the request's own
+   * subdomain list.
+   *
+   * The callback's router is typed with this router's own mount, since a host
+   * adds no path, and with the host pattern, so its handlers see the host's
+   * captures next to the path's:
+   * `domain(":tenant.example.com", (r) => r.get("/users/:id", (req) => req.params))`
+   * gives `{ tenant: string; id: string }`. A `domain()` nested inside another
+   * keeps the outer host, as the runtime does — the outer host is applied last
+   * when the routes are flattened in.
+   */
+  override domain(host: string, router: Router): this;
+  override domain<THostPattern extends string>(
+    host: THostPattern,
+    callback: (
+      router: BunRouter<
+        TMountPath,
+        TMountShape,
+        THost extends "" ? THostPattern : THost
+      >,
+    ) => void,
+  ): this;
+  override domain(host: string, callback: (router: BunRouter) => void): this;
+  override domain(host: string, ...callbacks: RouterHandler[]): this;
+  override domain(
+    host: string,
+    ...callbacks: RouterErrorMiddlewareHandler[]
+  ): this;
   override domain(host: string, ...callbacks: RouterCallback[]): this;
   override domain(
     host: string,
-    ...callbacks: [(router: Router) => unknown]
-  ): this;
-  override domain(
-    host: string,
-    ...callbacks: RouterCallback[] | [Router] | [(router: Router) => unknown]
+    ...callbacks: RouterCallback[] | [Router] | [GroupCallback]
   ) {
-    const [callback] = callbacks;
-    if (callback instanceof Router) {
-      return this.mergeRoute({ host, callbacks: callback });
+    const source = this.resolveGroupCallbacks(callbacks);
+    return this.mergeRoute({ host, callbacks: source });
+  }
+
+  /**
+   * Resolves `group()`/`domain()` arguments to what {@link mergeRoute} takes:
+   * a router as-is, the callback form run against a fresh `BunRouter`, or the
+   * middleware list unchanged. See {@link group} for how the forms are told
+   * apart.
+   */
+  private resolveGroupCallbacks(
+    callbacks: RouterCallback[] | [Router] | [GroupCallback],
+  ): RouterCallback[] | Router {
+    const [first] = callbacks;
+    if (first instanceof Router) {
+      return first;
     }
 
-    if (isFunction(callback)) {
-      const handler = callback as (router: Router) => unknown;
-      const router = new Router();
-      handler(router);
-      return this.mergeRoute({ host, callbacks: router });
+    if (callbacks.length === 1 && isFunction(first) && first.length <= 1) {
+      // A `BunRouter`, not a plain routejs `Router`, so the routes it collects
+      // are tagged as route handlers and bind their params. Its declared mount
+      // is a compile-time view; at runtime every router is the same class.
+      const router = new BunRouter();
+      (first as (router: BunRouter) => void)(router);
+      return router;
     }
 
-    return this.mergeRoute({
-      host,
-      callbacks: callbacks as RouterCallback[],
-    });
+    return callbacks as RouterCallback[];
+  }
+
+  /**
+   * Names the route the previous verb, `all`, `any` or `add` call registered,
+   * as `@routejs/router` does: `router.get("/users/:id", h).setName("user")`.
+   * A named route can be looked up with {@link getRouteByName}, and built into
+   * a path with `route(name, params)`.
+   *
+   * @throws TypeError when the previous registration was not a route handler
+   *   (`use`, `group`, `domain`, a mount) — middleware cannot be named.
+   * @throws Error when another route already has the name.
+   */
+  override setName(name: string): this {
+    const route = this.#lastRoute;
+    if (!route) {
+      throw new TypeError("setName can not set name for middleware");
+    }
+
+    if (
+      name &&
+      this.routes().some(
+        (existing) => existing !== route && existing.name === name,
+      )
+    ) {
+      throw new Error(`Route with name "${name}" already exists..`);
+    }
+
+    route.setName(name);
+    return this;
   }
 
   getRouteByName(name: string): Route | undefined {
@@ -3703,10 +4044,12 @@ export class BunRouter<
    * @param init  Extra `RequestInit` applied when `input` is a path or URL.
    */
   async fetch(input: FetchInput, init?: RequestInit): Promise<Response> {
+    const host = this.localOptions?.host;
     const nativeRequest = toNativeRequest(
       input,
       init,
-      this.localOptions?.host ? `http://${this.localOptions.host}` : undefined,
+      // A host *pattern* is not an origin; only a literal hostname is.
+      host && LITERAL_HOST_RE.test(host) ? `http://${host}` : undefined,
     );
 
     const created = BunRequestClass.init(nativeRequest, FETCH_STUB_SERVER, {
@@ -3763,6 +4106,11 @@ export class BunRouter<
    * The checks run cheapest-first (method, then path, then host) rather than in
    * routejs's order; every rejection path returns the same `false`, so the
    * reordering is observationally identical while skipping work sooner.
+   *
+   * Two deliberate departures from routejs, both following Express 5: a
+   * captured value that is not valid percent-encoding throws
+   * {@link ParamDecodeFailure} (routejs throws a bare `URIError` out of the
+   * whole request), and host-pattern captures are merged into `params`.
    */
   private matchRoute(
     route: Route,
@@ -3796,6 +4144,7 @@ export class BunRouter<
 
     // 3. Host — only routes that declare one pay for this.
     let subdomains: Record<string, string> = {};
+    const params: Record<string, string> = {};
     const hostRegexp = route.hostRegexp;
     if (hostRegexp) {
       const hostMatch = hostRegexp.exec(requestHost);
@@ -3810,13 +4159,16 @@ export class BunRouter<
           const name = subdomainNames[i - 1];
           const value = hostMatch[i];
           if (name !== undefined && value !== undefined) {
-            subdomains[name] = decodeURIComponent(value);
+            const decoded = decodeParam(value);
+            subdomains[name] = decoded;
+            // Host params reach handlers through `req.params`; the path's
+            // params are assigned below and win on a shared name.
+            params[name] = decoded;
           }
         }
       }
     }
 
-    const params: Record<string, string> = {};
     const paramNames = route.params;
     if (pathMatch.length > 1 && paramNames && paramNames.length > 0) {
       // Names of this route's Express 5 named wildcards, positionally.
@@ -3830,7 +4182,7 @@ export class BunRouter<
           continue;
         }
 
-        const decoded = decodeURIComponent(value);
+        const decoded = decodeParam(value);
         params[name] = decoded;
 
         // routejs keys wildcards positionally (`"0"`, `"1"`, …). Express 5
@@ -3863,7 +4215,7 @@ export class BunRouter<
    * specific first; middleware ordering is untouched.
    */
   private routeSpecificityIteratees(options: RouteMatchMethodOptionType): {
-    iteratees: ((entry: { route: Route; matched: matchedRoute }) => unknown)[];
+    iteratees: ((entry: RouteSpecificityEntry) => number)[];
     orders: ("asc" | "desc")[];
   } {
     return {
@@ -3937,12 +4289,33 @@ export class BunRouter<
     // 1. Match every route, preserving registration order.
     const entries = routes
       .map((route, routeIndex) => {
-        const matched = this.matchRoute(
-          route,
-          options.requestHost,
-          options.requestMethod,
-          requestPath,
-        );
+        let matched: matchedRoute | false;
+        // Set when the route matched but a captured value would not decode.
+        let decodeFailure: string | undefined;
+        try {
+          matched = this.matchRoute(
+            route,
+            options.requestHost,
+            options.requestMethod,
+            requestPath,
+          );
+        } catch (error) {
+          if (!(error instanceof ParamDecodeFailure)) {
+            throw error;
+          }
+          // Express 5: the layer whose params cannot be decoded is not run;
+          // a 400 `URIError` enters the pipeline at its position instead, so
+          // earlier layers still run and error handlers after it see it.
+          decodeFailure = error.value;
+          matched = {
+            host: route.host,
+            method: route.method,
+            path: route.path,
+            callbacks: route.callbacks,
+            params: {},
+            subdomains: {},
+          } as matchedRoute;
+        }
 
         if (matched === false) {
           return undefined;
@@ -3953,11 +4326,16 @@ export class BunRouter<
           routeIndex,
           route,
           matched,
+          decodeFailure,
+          baseUrl: matchBaseUrl(tagged, requestPath),
           // Verb routes and `all` are route handlers; `use`/`useMethod`
           // middleware is not. The `isEndpoint` tag is the sole source of
           // truth, so method-scoped middleware (`useMethod`) is never treated
-          // as a route handler even though it carries an HTTP method.
-          isRouteHandler: tagged.isEndpoint === true,
+          // as a route handler even though it carries an HTTP method. A route
+          // that failed to decode is neither: it only raises its error, from
+          // its registration slot.
+          isRouteHandler:
+            tagged.isEndpoint === true && decodeFailure === undefined,
           // 0 = this router's own routes; > 0 = a mounted sub-router.
           routerId: tagged.routerGroupId ?? 0,
         };
@@ -3995,6 +4373,25 @@ export class BunRouter<
     // 4. Flatten each route's callbacks into fully-resolved layers.
     const layers: MatchedLayer[] = [];
     for (const entry of orderedEntries) {
+      const failedValue = entry.decodeFailure;
+      if (failedValue !== undefined) {
+        // One layer standing in for the whole route, raising a fresh error per
+        // request (this array is cached and shared).
+        const raiseDecodeError: RouterHandler = (_req, _res, next) =>
+          next(createParamDecodeError(failedValue));
+        layers.push({
+          routeIndex: entry.routeIndex,
+          callbackIndex: 0,
+          isErrorHandler: false,
+          isRouteHandler: false,
+          routerId: entry.routerId,
+          matched: entry.matched,
+          baseUrl: entry.baseUrl,
+          callback: raiseDecodeError,
+        });
+        continue;
+      }
+
       const callbacks = (entry.route.callbacks || []) as RouterCallback[];
       for (
         let callbackIndex = 0;
@@ -4014,6 +4411,7 @@ export class BunRouter<
           isRouteHandler: entry.isRouteHandler,
           routerId: entry.routerId,
           matched: entry.matched,
+          baseUrl: entry.baseUrl,
           callback,
         });
       }
@@ -4110,14 +4508,17 @@ export class BunRouter<
         // `req.params` wholesale, never mutate it in place.
         if (layer.routeIndex !== paramsBoundToRoute) {
           request.params = layer.matched.params as Record<string, string>;
-          request.subdomains = layer.matched.subdomains as string[];
+          // Express sets `req.route` on entering a route. `req.subdomains` is
+          // left alone: it is the request's subdomain list (a `string[]`),
+          // while a `domain()` pattern's captures are already in `params`.
+          request.route = layer.matched;
           paramsBoundToRoute = layer.routeIndex;
         }
         matchedRoute = layer.matched;
       }
 
       let nextCalled = false;
-      let nextArg: unknown;
+      let nextArg: Parameters<NextFunction>[0];
       const next: NextFunction = (arg) => {
         if (nextCalled) {
           return;
@@ -4126,7 +4527,15 @@ export class BunRouter<
         nextArg = arg;
       };
 
+      // Express sets both on entering each layer: `baseUrl` to the layer's
+      // mount (restored to `""` outside it), and `next` so response helpers
+      // such as `res.format()` can hand an error to the pipeline.
+      request.baseUrl = layer.baseUrl;
+      request.next = next;
+
+      // A handler's return value is ignored, so it stays opaque.
       let returned: unknown;
+      // Anything can be thrown.
       let thrownError: unknown;
       let didThrow = false;
       try {
@@ -4249,7 +4658,8 @@ export class BunRouter<
     return undefined;
   }
 
-  private throwError(errorThrown: Error | unknown | undefined) {
+  /** Re-throws a pipeline error, wrapping a primitive in an `Error`. */
+  private throwError(errorThrown: unknown): never {
     if (errorThrown instanceof Error || isObject(errorThrown)) {
       throw errorThrown;
     } else if (isString(errorThrown) || isNumeric(errorThrown)) {
