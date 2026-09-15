@@ -963,6 +963,7 @@ Examples:
 | `forwardLogs` | `boolean` | `false` | Forward a child's `ctx.logger` calls to the parent's `log` event. |
 | `publish` | `boolean` | `false` | Publish `started`, `succeeded`, `failed`, `timeout`, `killed`, `queued` and `skipped` for other processes. |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
+| `remoteControl` | `boolean` | `false` | Subscribe to `control` events, so a change made through `BunRunnerManager.remote()` applies within the driver's event latency instead of at the next `syncInterval`. Off by default, because a subscription holds a poll, a change stream or a pub/sub connection per runner. |
 | `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"inherit"` by default, or `"pipe"`/`"ignore"`), and `startTimeout` (`10000`). |
 | `worker` | `WorkerOptions` | | `smol`, `name`, `env`, `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
@@ -1083,9 +1084,61 @@ A registry of the runners in one namespace. `jobs.runners` is one.
 | `stopAll({ timeout?, force? })` | Stops every runner. Failures are collected into one `AggregateError`. |
 | `info()` | Returns a snapshot of every registered runner. |
 | `discover()` | Runner ids the backend knows about, including other processes' runners. |
+| `remote(id)` | A `RemoteRunner` that controls a runner registered by any process sharing the driver and namespace. Rejects with `RunnerNotFoundError` for an id that is neither registered here nor known to the backend. |
 
-Example:
-[`07-runner/manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts).
+`get()`, `list()` and `info()` only see this process's runners. `remote(id)`
+reaches the others, through what every runner already keeps in the driver:
+its state, its lock, its history and its trigger queue.
+
+```ts
+const cleanup = await jobs.runners.remote<CleanupArgs, CleanupResult>(
+  "cleanup",
+);
+
+await cleanup.pause();
+await cleanup.updateSchedule({ cron: "0 3 * * *", tz: "UTC" });
+await cleanup.resume();
+await cleanup.trigger({ args: { olderThanDays: 30 } }); // { outcome: "queued", position: 1 }
+
+const info = await cleanup.info(); // isPaused, isRunning, runningOn, queuedTriggers, ...
+const [lastRun] = await cleanup.history(1);
+const stats = await cleanup.stats();
+console.log(info.runningOn?.host, lastRun?.status, stats.failed);
+```
+
+How each call reaches the process that owns the runner:
+
+| Call | What it does | When the owner acts on it |
+|---|---|---|
+| `info()` | Reads the persisted configuration, paused flag and schedule, the lock (`runningOn`: host, pid, run id, since when), the queue depth, the counters and the last run. | Nothing to act on. |
+| `pause()`, `resume()` | Write the shared paused flag. | At its next sync (`syncInterval`, 30s by default). With `remoteControl: true`, within the driver's event latency: about 25ms on the file driver, 50ms on SQL and MongoDB, immediately on Redis and memory. |
+| `updateSchedule(schedule)` | Validates the schedule, then writes it. | Same as `pause()`. The owner re-arms its ticker. |
+| `trigger({ args?, force? })` | Pushes a trigger onto the runner's queue in the driver, whatever `queueRuns` says, up to the owner's `maxQueuedRuns`. Resolves to `queued`, or `skipped` with `paused` or `queue-full`. | An idle owner drains it at its next sync, or at once with `remoteControl`. A busy one drains it when its run finishes. The run has source `queued` and the owner's default `args` when none are given. |
+| `history(limit?)`, `stats()` | Read the shared history and counters. | Nothing to act on. |
+
+The calls publish a `control` runner event, whether or not the runner
+publishes its own. An owner started with `remoteControl` re-reads its state
+when it hears one. Every owner also re-reads at each sync and drains triggers
+queued while it was idle. It does the same on `start()`, so a trigger queued
+while no owner was running waits for one to start.
+
+Limits:
+
+- **There is no remote kill.** Only the process executing a run can stop it,
+  with `BunRunner.kill()`. `RemoteRunner` has no `kill` or `send`.
+- The pause is checked when a trigger is requested. A queued trigger does not
+  record `force`, so the owner runs whatever it drains, paused or not. The
+  lock holder's own drain has always done the same.
+- A remote controller cannot tell whether any owner is alive. `info().isRunning`
+  comes from the lock.
+- For a runner registered in this process, `isLocal` is `true` and every call
+  delegates to it. A local `trigger()` may then start the run at once instead
+  of queuing it, and `info().local` adds the instance's own status.
+
+Examples:
+
+- [`07-runner/manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts)
+- [`07-runner/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts)
 
 ## Events and JobsNotifier
 
@@ -1130,6 +1183,11 @@ for await (const event of notifier) {
 - **Event shape.** Each event is a `DriverEvent`, with fields `kind`, `type`,
   `ns`, `target`, `at`, `origin` and `payload`. A `switch` on `kind`, then
   `type`, narrows the payload.
+- **Control events.** A runner event of type `control` (`payload.action`:
+  `pause`, `resume`, `schedule` or `trigger`) is published by
+  `BunRunnerManager.remote()` whenever it changes a runner. It is addressed
+  to the runner's owners, which follow it with `remoteControl`; a notifier
+  following that runner hears it too.
 - **Discovery has a gap.** Anything a newly used queue published before the
   next discovery pass is missed. Name the queues and runners, or `follow()`
   them, to hear every event from the start. Objects created by the same
@@ -1341,6 +1399,7 @@ so a caller can add to them but never overwrite them.
 | `RunKilledError` | `RUN_KILLED` | A run was stopped on request (`reason`). |
 | `InvalidHandlerError` | `INVALID_HANDLER` | A handler or processor file has no usable default export. |
 | `RunnerStoppedError` | `RUNNER_STOPPED` | A runner was triggered manually after `stop()`. |
+| `RunnerNotFoundError` | `RUNNER_NOT_FOUND` | `BunRunnerManager.remote(id)`, or a `RemoteRunner` call, names a runner that is neither registered in this process nor known to the backend (`context.id`, `context.namespace`). |
 | `QueueClosedError` | `QUEUE_CLOSED` | A queue was used after `close()`. |
 | `WorkerClosedError` | `WORKER_CLOSED` | A worker was used after `close()`. |
 | `QueueFullError` | `QUEUE_FULL` | A bounded queue of triggers or jobs is full (`what`, `max`). |
@@ -1494,6 +1553,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
 | | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | | [`manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
+| | [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts) | `remote(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
 | | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
 | [`08-drivers`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers) | [`choosing-a-driver.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/choosing-a-driver.ts) | every config shape, capabilities, one workload on each available backend |
 | | [`sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts) | `SqlDriver` on SQLite, `tablePrefix`, `syncSchema` repairing a drifted schema |
@@ -1520,7 +1580,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
 | [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job |
-| [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` |
+| [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published event and payload |
 | [`driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts) | every option of every driver and connection helper |

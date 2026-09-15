@@ -489,6 +489,18 @@ const skipped = await runnerEvent(heard, "skipped");
 checkEqual("skipped: payload.reason", skipped.payload.reason, "paused");
 await reports.resume();
 
+// A controller announces every change it makes, whether or not the runner
+// publishes its own events: that is what an owner with remoteControl follows.
+const controlledAt = Date.now();
+await (await jobs.runners.remote("reports")).pause();
+const controlEvent = await runnerEvent(
+  heard,
+  "control",
+  (e) => e.at >= controlledAt,
+);
+checkEqual("control: payload.action", controlEvent.payload.action, "pause");
+await reports.resume();
+
 const slow = jobs.runner<NotifierHandlerArgs, string>({
   id: "slow",
   file: handlerFile,

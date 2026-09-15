@@ -110,6 +110,7 @@ driver for a temporary SQLite file, since memory cannot be shared.
 | [`messages-progress-kill.ts`](./07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
 | [`runner-enqueues-jobs.ts`](./07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | [`manager.ts`](./07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
+| [`remote-control.ts`](./07-runner/remote-control.ts) | `remote(id)` from a process that registered nothing: pause, reschedule, resume and trigger a runner another **process** owns ([`helpers/runner-owner.ts`](./07-runner/helpers/runner-owner.ts)); `info`, `history`, `stats`; no remote kill |
 | [`handlers/`](./07-runner/handlers) | the handler files the runners run, each written with `defineHandler` |
 
 ### 08 — Drivers
@@ -147,7 +148,7 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 | [`queue-options.ts`](./10-options/queue-options.ts) | every `BunQueueOptions` field, every `BunQueue` method and option, every queue event |
 | [`worker-options.ts`](./10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, every worker method and event, the `ProcessorContext` and in-flight `Job` |
 | [`worker-isolation.ts`](./10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode, what works inside an isolated job and what does not |
-| [`runner-options.ts`](./10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, every runner method and event, `BunRunnerManager` |
+| [`runner-options.ts`](./10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, every runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](./10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`notifier.ts`](./10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published queue and runner event and its payload |
 | [`driver-options.ts`](./10-options/driver-options.ts) | every option of every driver and connection helper; server sections run when their URL is set |

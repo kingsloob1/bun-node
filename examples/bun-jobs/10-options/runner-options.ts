@@ -2053,6 +2053,166 @@ step("BunRunnerManager");
 }
 
 /* ------------------------------------------------------------------ */
+step("BunRunnerManager.remote(): a runner another instance owns");
+
+{
+  const { runner: owned, t } = makeRunner({
+    id: "remote-owned",
+    schedule: 3_600_000,
+    maxQueuedRuns: 2,
+    // Hear control events now; the sync timer is off, so nothing else could.
+    remoteControl: true,
+    syncInterval: 0,
+  });
+  const ownerManager = new BunRunnerManager({ namespace, driver: shared });
+  ownerManager.add(owned);
+  await owned.start();
+
+  // Registers nothing: as far as it can tell, the runner lives elsewhere.
+  const admin = new BunRunnerManager({ namespace, driver: shared });
+  const local = await ownerManager.remote<WorkArgs, WorkResult>("remote-owned");
+  const remote = await admin.remote<WorkArgs, WorkResult>("remote-owned");
+  checkEqual(
+    "remote(id): isLocal where it is registered, not elsewhere",
+    [local.isLocal, remote.isLocal],
+    [true, false],
+  );
+
+  const info = await remote.info();
+  checkEqual(
+    "info(): the owner's persisted configuration and state",
+    [
+      info.name,
+      info.executionMode,
+      info.runMode,
+      info.queueRuns,
+      info.maxQueuedRuns,
+      info.schedule,
+      info.isPaused,
+      info.isRunning,
+      info.local,
+    ],
+    [
+      "remote-owned",
+      "in-process",
+      "single",
+      false,
+      2,
+      { every: 3_600_000 },
+      false,
+      false,
+      undefined,
+    ],
+  );
+  checkEqual(
+    "info().local: only on a local controller",
+    (await local.info()).local?.status,
+    "running",
+  );
+
+  await remote.pause();
+  await waitFor(
+    "the owner to adopt a remote pause",
+    () => owned.status === "paused",
+    WAIT,
+  );
+  checkEqual("pause(): the owner emits paused", t.paused, 1);
+  checkEqual("trigger() while paused", await remote.trigger(), {
+    outcome: "skipped",
+    reason: "paused",
+  });
+
+  await remote.updateSchedule({ every: 7_200_000 });
+  await waitFor(
+    "the owner to adopt a remote schedule",
+    () => JSON.stringify(owned.schedule) === '{"every":7200000}',
+    WAIT,
+  );
+  checkEqual("updateSchedule(): the owner re-armed", owned.schedule, {
+    every: 7_200_000,
+  });
+
+  await remote.resume();
+  await waitFor(
+    "the owner to adopt a remote resume",
+    () => owned.status === "running",
+    WAIT,
+  );
+  checkEqual("resume(): the owner emits resumed", t.resumed, 1);
+
+  checkEqual(
+    "trigger(): queued, whatever queueRuns says",
+    await remote.trigger(),
+    { outcome: "queued", position: 1 },
+  );
+  await waitFor("the owner to run it", () => t.finished.length === 1, WAIT);
+  checkEqual(
+    "trigger(): the owner ran it, with source 'queued'",
+    t.finished[0]?.record.source,
+    "queued",
+  );
+
+  await waitFor(
+    "the run to be recorded",
+    async () => (await remote.stats()).success === 1,
+    WAIT,
+  );
+  checkEqual(
+    "history() and stats() read the shared record",
+    [
+      (await remote.history(1))[0]?.runId,
+      await remote.stats(),
+      await local.stats(),
+    ],
+    [
+      t.finished[0]?.record.runId,
+      {
+        success: 1,
+        failed: 0,
+        timeout: 0,
+        killed: 0,
+        skipped: 1,
+        queued: 1,
+        total: 1,
+      },
+      {
+        success: 1,
+        failed: 0,
+        timeout: 0,
+        killed: 0,
+        skipped: 1,
+        queued: 1,
+        total: 1,
+      },
+    ],
+  );
+
+  checkEqual("no remote kill", "kill" in remote, false);
+  await checkRejects(
+    "remote(): an id nobody registered",
+    () => admin.remote("remote-nobody"),
+    { name: "RunnerNotFoundError", code: "RUNNER_NOT_FOUND" },
+  );
+  await checkRejects(
+    "remote(): without a driver, only registered runners",
+    () => new BunRunnerManager({ namespace }).remote("remote-owned"),
+    { name: "RunnerNotFoundError", code: "RUNNER_NOT_FOUND" },
+  );
+  await checkRejects(
+    "remote(): an unusable id",
+    () => admin.remote("not a runner id"),
+    { name: "ConfigError", code: "CONFIG" },
+  );
+  await checkRejects(
+    "updateSchedule(): a malformed schedule, before anything is written",
+    () => remote.updateSchedule("every blue moon"),
+    { name: "ConfigError", code: "CONFIG" },
+  );
+
+  await owned.stop();
+}
+
+/* ------------------------------------------------------------------ */
 step("Clean up");
 
 await Promise.all(
