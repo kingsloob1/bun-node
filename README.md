@@ -139,6 +139,16 @@ published package's dependency tree.
 |---|---|
 | [`benchmarks/`](benchmarks/README.md) | `BunRouter` throughput against Express 5, `Bun.serve` routes, Elysia and Hono |
 | [`packages/bun-jobs/bench/`](packages/bun-jobs/bench/README.md) | `BunQueue` against BullMQ, bee-queue, node-resque, pg-boss, graphile-worker and Agenda; `BunRunner` against Bree, Agenda and cron timers |
+| [`packages/bun-common/bench/`](packages/bun-common/bench/README.md) | `parseXmlToObject` against fast-xml-parser, htmlparser2 and `HTMLRewriter` |
+
+Install a project's comparators inside its own directory before running or
+type-checking it:
+
+```bash
+(cd benchmarks && bun install)
+(cd packages/bun-jobs/bench && bun install)
+(cd packages/bun-common/bench && bun install)
+```
 
 The bun-jobs benchmarks double as a regression guard:
 

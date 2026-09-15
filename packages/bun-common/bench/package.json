@@ -1,0 +1,17 @@
+{
+  "name": "bun-common-bench",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "XML parsing micro-benchmark: @kingsleyweb/bun-common's parseXmlToObject vs fast-xml-parser, htmlparser2 and Bun's HTMLRewriter",
+  "scripts": {
+    "xml": "bun xml.ts"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.1",
+    "htmlparser2": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
+  }
+}
