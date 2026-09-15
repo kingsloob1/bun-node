@@ -120,6 +120,42 @@ const LIMITED_RECHECK_MS = 100;
 /** How long a paused check is cached before the driver is asked again. */
 const PAUSE_CACHE_MS = 1000;
 
+/**
+ * How often the delayed-job promotion sweep runs for a poll interval: as often
+ * as the worker polls, and at least once a second, so a busy worker that is
+ * never idle still promotes retries whose backoff has elapsed.
+ */
+function promotionCadence(pollInterval: number): number {
+  return Math.min(pollInterval, 1000);
+}
+
+/**
+ * The longest a timer can be set for. A longer delay does not wait longer: it
+ * overflows and fires at once, which turns an idle worker's wait into a spin.
+ */
+export const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Checks a runtime-set interval is a positive number of milliseconds a timer
+ * can actually wait.
+ */
+function assertPositiveMs(value: number, what: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new ConfigError(`${what} must be a positive number of milliseconds`, {
+      [what]: value,
+    });
+  }
+
+  if (value > MAX_TIMER_MS) {
+    throw new ConfigError(
+      `${what} cannot be longer than ${MAX_TIMER_MS}ms (about 24.8 days), the longest a timer can be set for`,
+      { [what]: value, max: MAX_TIMER_MS },
+    );
+  }
+
+  return value;
+}
+
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
 
@@ -412,6 +448,66 @@ export class BunQueueWorker<
   set concurrency(value: number) {
     this.#concurrency = Math.max(1, Math.floor(value));
     this.#wake.abort();
+  }
+
+  /**
+   * How long an idle worker waits before looking for work again, on a driver
+   * that polls; also the cadence of the delayed-job promotion sweep, capped at
+   * once a second.
+   */
+  get pollInterval(): number {
+    return this.#options.pollInterval;
+  }
+
+  /**
+   * Changes the poll interval at runtime, and re-arms a running worker's
+   * promotion sweep when its cadence changes. At most 2,147,483,647ms, the
+   * longest a timer can wait.
+   *
+   * On a polling driver the wait in progress is cut short, so the new
+   * interval applies at once. On a blocking one (`capabilities.blockingWait`)
+   * it is left to finish and the new value applies from the next wait: a
+   * blocking read cannot be called off, and one abandoned mid-wait still
+   * consumes the wake a new job sends, which would leave that job waiting out
+   * the whole of the next wait.
+   */
+  set pollInterval(value: number) {
+    const ms = assertPositiveMs(value, "pollInterval");
+    const before = promotionCadence(this.#options.pollInterval);
+
+    this.#options.pollInterval = ms;
+
+    if (promotionCadence(ms) !== before) {
+      this.#armPromotion();
+    }
+
+    this.#wakeForNewInterval();
+  }
+
+  /** Longest an idle worker blocks waiting for work, on a blocking driver. */
+  get maxBlock(): number {
+    return this.#options.maxBlock;
+  }
+
+  /**
+   * Changes `maxBlock` at runtime, at most 2,147,483,647ms. As with
+   * `pollInterval`, a wait in progress is cut short only on a polling driver;
+   * on a blocking one the new value applies from the next wait.
+   */
+  set maxBlock(value: number) {
+    this.#options.maxBlock = assertPositiveMs(value, "maxBlock");
+    this.#wakeForNewInterval();
+  }
+
+  /**
+   * Ends the current wait so a changed interval applies at once — only where
+   * that is safe. See {@link BunQueueWorker.pollInterval}'s setter for why a
+   * blocking driver's wait is left alone.
+   */
+  #wakeForNewInterval(): void {
+    if (!this.driver.capabilities.blockingWait) {
+      this.#wake.abort();
+    }
   }
 
   /** How many jobs are in flight. */
@@ -2018,6 +2114,8 @@ export class BunQueueWorker<
       return;
     }
 
+    this.#maintenanceArmed = true;
+
     this.#every(this.#options.stalledInterval, async () => {
       const { requeued, dead } = await this.driver.recoverStalled(
         this.ref,
@@ -2036,16 +2134,7 @@ export class BunQueueWorker<
       await this.#healFlows();
     });
 
-    this.#every(Math.min(this.#options.pollInterval, 1000), async () => {
-      const promoted = await this.driver.promoteDelayed(
-        this.ref,
-        Date.now(),
-        MAINTENANCE_BATCH,
-      );
-      if (promoted > 0) {
-        this.#wake.abort();
-      }
-    });
+    this.#armPromotion();
 
     this.#every(60_000, async () => {
       await this.driver.pruneExpired(this.ref, Date.now(), MAINTENANCE_BATCH);
@@ -2053,6 +2142,51 @@ export class BunQueueWorker<
       await this.#sweepWindows();
     });
   }
+
+  /**
+   * Arms — or re-arms, replacing the timer it armed before — the sweep that
+   * promotes delayed jobs, at the cadence the poll interval implies.
+   *
+   * Only once `run()` has armed maintenance, and not while closing. `#running`
+   * alone is not enough: it is set before `run()` connects, so a setter called
+   * during a connect that then fails would leave a timer calling the driver
+   * for a worker that never started. And a closing worker must not gain a
+   * timer `close()` has already cleared.
+   */
+  #armPromotion(): void {
+    if (!this.#maintenanceArmed || !this.#running || this.#closing) {
+      return;
+    }
+
+    if (this.#promotionTimer) {
+      clearInterval(this.#promotionTimer);
+      this.#timers.delete(this.#promotionTimer);
+    }
+
+    this.#promotionTimer = this.#every(
+      promotionCadence(this.#options.pollInterval),
+      async () => {
+        const promoted = await this.driver.promoteDelayed(
+          this.ref,
+          Date.now(),
+          MAINTENANCE_BATCH,
+        );
+        if (promoted > 0) {
+          this.#wake.abort();
+        }
+      },
+    );
+  }
+
+  /** The promotion sweep's timer, so a changed poll interval can replace it. */
+  #promotionTimer: ReturnType<typeof setInterval> | undefined;
+
+  /**
+   * Whether `run()` has armed maintenance — set only after it connected — so
+   * a changed poll interval re-arms the promotion sweep only on a worker that
+   * actually got that far.
+   */
+  #maintenanceArmed = false;
 
   /**
    * Removes a page of stale debounce and throttle pointers, resuming where
@@ -2085,7 +2219,10 @@ export class BunQueueWorker<
    * waiting a full interval to look would leave the queue stuck in the
    * meantime.
    */
-  #every(ms: number, work: () => Promise<void>): void {
+  #every(
+    ms: number,
+    work: () => Promise<void>,
+  ): ReturnType<typeof setInterval> {
     const run = () => {
       if (this.#closing) {
         return;
@@ -2101,6 +2238,8 @@ export class BunQueueWorker<
 
     const first = setTimeout(run, 0);
     first.unref?.();
+
+    return timer;
   }
 
   /**

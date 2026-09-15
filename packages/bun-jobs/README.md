@@ -67,6 +67,8 @@ reference.
   - [BunJobs options](#bunjobs-options)
   - [Defining and adding jobs](#defining-and-adding-jobs)
   - [Builder methods](#builder-methods)
+  - [Saved drafts](#saved-drafts)
+  - [Registry polling](#registry-polling)
   - [Dates in words](#dates-in-words)
 - [Scheduling and repeatable jobs](#scheduling-and-repeatable-jobs)
 - [Debounce and throttle](#debounce-and-throttle)
@@ -582,6 +584,7 @@ Examples:
 | `registryQueue` | `string` | `"jobs"` | The queue that `define`, `now`, `schedule`, `run`, `process` and `start` use. |
 | `dateParser` | `DateParser` | `chrono-node` | Reads dates in words for every queue created here. |
 | `publishEvents` | `boolean` | `false` | Every queue, worker and runner created here publishes its events. A `publish` option on an individual object still wins. |
+| `processEvery` | `number \| string` | | How often the registry worker looks for due work. The same as calling `processEvery()` before `start()`. See [Registry polling](#registry-polling). |
 
 The context has these members:
 
@@ -600,6 +603,8 @@ The context has these members:
 | `definitions()` | Every defined name, with how to run it. |
 | `schedule(name, data?)` / `run(...)` / `process(...)` | Three names for the same method; each returns a builder. |
 | `now(name, data?, opts?)` | Adds a defined job to run now. |
+| `create(name, data?)` | Returns a [draft](#saved-drafts), which is added only when saved. |
+| `processEvery(interval)` | Sets how often the registry worker looks for due work. See [Registry polling](#registry-polling). |
 | `start(workerOpts?)` | Starts consuming the defined jobs. |
 | `stop({ force?, timeout? })` | Stops consuming, letting in-flight jobs finish. |
 | `drain({ delayed? })` | Drops pending jobs from the registry's queue. |
@@ -650,7 +655,8 @@ await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, atte
 | `every(interval)` | Repeats the job. Accepts milliseconds, a duration (`"2 days"`, `"every 2 days"`), words (`"daily"`, `"every monday"`), a cron expression, or a phrase with a window (`"every day from 1 dec 2026 until 31 dec"`). |
 | `on(when)` | Runs at a moment: a `Date`, epoch ms, or words. On a repeating job, this is when the series begins. |
 | `in(delay)` | Runs after a delay: `"5 minutes"` or milliseconds. |
-| `startingAt(when)` / `endingAt(when)` | The window of a repeating series. |
+| `startingAt(when)` / `endingAt(when)` | The window of a repeating series. `on()` and `startingAt()` set the same start, so whichever was called last wins. |
+| `repeatEvery(interval, opts?)` | Repeats the job, replacing the whole series description. Options from an earlier call are dropped unless given again. |
 | `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. |
 | `priority(n)`, `attempts(n)`, `timeout(ms \| "30 seconds")`, `backoff(b)` | Job options. |
 | `unique(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
@@ -660,6 +666,82 @@ await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, atte
 
 Example:
 [`03-job-registry/builder-with-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/03-job-registry/builder-with-options.ts).
+
+### Saved drafts
+
+`create()` describes a job in Agenda's shape. The job is added only when you
+call `save()`, which returns the `Job`.
+
+```ts
+const draft = jobs
+  .create("sendEmail", { to: "ops@example.com" })
+  .unique("welcome-7")
+  .priority(1)
+  .schedule("in 10 minutes");
+
+export const job = await draft.save();
+```
+
+| Method | Meaning |
+|---|---|
+| `withData(data)` | Sets the payload. |
+| `unique(id)` / `jobId(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
+| `schedule(when)` | Runs at a moment: a `Date`, epoch ms, or words. On a repeating job, this is when the series begins. It wins over `delay`. |
+| `delay(ms \| "5 minutes")` | Runs after a delay. |
+| `repeatEvery(interval, opts?)` | Repeats the job, as the builder's `repeatEvery` does. |
+| `priority(n)`, `attempts(n)`, `backoff(b)`, `timeout(ms \| "30 seconds")` | Job options. |
+| `removeOnComplete(r)`, `removeOnFail(r)`, `keepStacktraces(n)`, `keepLogs(n)` | Retention. |
+| `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)` | Job options. |
+| `withOptions(obj)` | The builder's `withOptions`. |
+| `save()` | Adds the job. |
+| `isSaved`, `job` | Whether a save has succeeded, and the job it returned. |
+
+- The definition's options sit under whatever the draft sets, with the same
+  precedence as `now()`.
+- A name with no definition throws `ConfigError` at `create()`.
+- A combination the queue refuses throws `ConfigError` at `save()`, and
+  nothing is written. Examples: `repeatEvery` with `debounce` or
+  `throttle`, or `unique` with either.
+- **Saving twice.** A second `save()` with nothing changed returns the job
+  the first one returned and writes nothing, even while the first is still in
+  flight. `save()` throws `ConfigError` if any setter was called since a
+  save began, even one that set the value it already had. To change the
+  stored job, use its own methods, or `create()` another draft.
+- A save that threw was not saved and can be retried. Give `unique(id)` if a
+  retry must never add a second job.
+- It differs from Agenda in three ways: `priority` is lower-runs-first,
+  `unique` takes an id, and `repeatEvery` runs immediately only with
+  `immediately: true`.
+
+### Registry polling
+
+`jobs.processEvery(interval)` sets how often the registry worker looks for
+due work. The interval is milliseconds or a duration such as `"30 seconds"`,
+at most 2,147,483,647ms; a longer one throws `ConfigError`. The
+`processEvery` option to `BunJobs` does the same before `start()`.
+
+- It applies to a running worker and to every later `start()`.
+- Explicit `pollInterval` or `maxBlock` passed to `start()` win over it.
+  A later `processEvery()` call wins over both.
+- It sets the worker's `pollInterval`, and with it the delayed-job promotion
+  sweep, which still runs at least once a second. On a blocking driver it
+  also sets `maxBlock`.
+- The stalled-job sweep and housekeeping keep their own intervals.
+
+A new job still wakes an idle worker at once on every driver. The interval
+bounds only work that nothing announces, such as a delayed job coming due, and
+it controls idle load rather than latency.
+
+What happens to the wait in progress depends on the driver:
+
+| Driver | Current wait | A lower interval takes effect |
+|---|---|---|
+| SQL, MongoDB, file (polling) | cut short | at once |
+| Redis, memory (blocking) | left to finish | from the next wait |
+
+A blocking pop cannot be called off, and a pop abandoned mid-wait would
+swallow the wake a new job sends. On Redis a single block is also capped by the
+driver's `maxBlockSeconds`.
 
 ### Dates in words
 

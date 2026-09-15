@@ -15,12 +15,14 @@ import type { Logger, LoggerLike } from "./shared/logger";
 import { resolveDriver } from "./drivers/index";
 import { JobsNotifier } from "./notifier";
 import { BackoffStrategies } from "./queue/backoff";
+import { MAX_TIMER_MS } from "./queue/BunQueueWorker";
 import { JobDefinitions } from "./queue/definitions";
 import { BunQueue, BunQueueWorker } from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
+import { JobDraft } from "./queue/JobDraft";
 import { BunRunnerManager } from "./runner/index";
 import { ConfigError } from "./shared/errors";
-import { assertDateParser } from "./shared/humanTime";
+import { assertDateParser, parseDuration } from "./shared/humanTime";
 import { assertNamespace } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
 
@@ -64,6 +66,16 @@ export interface BunJobsOptions {
    * still wins.
    */
   publishEvents?: boolean;
+  /**
+   * How often the registry worker looks for due work: milliseconds, or a
+   * duration such as `"5 seconds"`. Exactly `jobs.processEvery()` called
+   * before `start()`, with the same validation — so it is refused here, at
+   * construction, if it is not a positive interval or is longer than a timer
+   * can wait. Explicit `pollInterval`/`maxBlock` given to `start()` still win,
+   * and a later `processEvery()` call wins over both. Unset by default, which
+   * leaves the worker's own defaults.
+   */
+  processEvery?: number | string;
 }
 
 /**
@@ -129,6 +141,11 @@ export class BunJobs {
   readonly #notifiers = new Set<JobsNotifier>();
   /** The worker running defined jobs, once `start()` has been called. */
   #registryWorker: BunQueueWorker<any, any> | undefined;
+  /**
+   * How often the registry looks for due work, in milliseconds, once
+   * `processEvery()` has been called. Unset, the worker keeps its own defaults.
+   */
+  #processEvery: number | undefined;
 
   constructor(options: BunJobsOptions) {
     this.namespace = assertNamespace(options.namespace);
@@ -144,6 +161,10 @@ export class BunJobs {
     this.#defaultJobOptions = options.defaultJobOptions;
     this.#registryQueue = options.registryQueue ?? "jobs";
     this.#publishEvents = options.publishEvents ?? false;
+    this.#processEvery =
+      options.processEvery === undefined
+        ? undefined
+        : readProcessEvery(options.processEvery);
     this.#dateParser =
       options.dateParser === undefined
         ? undefined
@@ -384,6 +405,88 @@ export class BunJobs {
   }
 
   /**
+   * Makes a job to set up and save explicitly, in Agenda's shape.
+   *
+   * ```ts
+   * const job = jobs.create("sendEmail", { to: "ops@example.com" });
+   * job.unique("welcome-7").priority(1).schedule("in 10 minutes");
+   * await job.save();
+   * ```
+   *
+   * Nothing is written until `save()`, which adds it to the registry's queue
+   * with the definition's options under whatever the draft set — the same
+   * precedence as `now()` and `schedule()`. A name with no definition is a
+   * `ConfigError` here, as it is for them. See `JobDraft` for what saving the
+   * same draft twice does.
+   */
+  create<TData = unknown, TResult = unknown>(
+    name: string,
+    data?: TData,
+  ): JobDraft<TData, TResult> {
+    return new JobDraft<TData, TResult>(
+      this.schedule<TData, TResult>(name, data),
+      name,
+    );
+  }
+
+  /**
+   * How often the registry looks for due work: milliseconds, or a duration
+   * such as `"5 seconds"` (a leading "every" is allowed).
+   *
+   * ```ts
+   * jobs.processEvery("30 seconds");
+   * ```
+   *
+   * Agenda's knob, mapped onto what a worker here has. It sets the registry
+   * worker's `pollInterval` — how long an idle worker waits before it looks
+   * again, which also sets the delayed-job promotion sweep to the same
+   * cadence up to its once-a-second cap — and, on a driver whose
+   * `capabilities.blockingWait` is true (Redis, and memory, which wakes its
+   * waiters directly), its `maxBlock`, since that is what bounds an idle
+   * wait there. It applies to the worker `start()` already
+   * started, straight away, and to every later `start()`. Unset, the worker
+   * keeps its defaults.
+   *
+   * What it does not do, and why:
+   *
+   * - It does not delay a *new* job, on any driver. SQL, MongoDB and file
+   *   notice one with a short poll of their own (the driver's `pollInterval`),
+   *   and there the worker's current wait is cut short so the new value
+   *   applies at once. Redis and memory wake the worker directly — a blocking
+   *   pop, a local waiter — and there the current wait is left to finish, the
+   *   new value applying from the next one: a blocking pop cannot be called
+   *   off, and one abandoned mid-wait would swallow the wake a new job sends.
+   *   What the value bounds is how long work that nothing announces waits: a
+   *   delayed job coming due, or one another process's sweep promoted. On
+   *   Redis and memory, lowering it takes effect for that work once the wait
+   *   in progress ends — at most the previous value.
+   * - On Redis, a single block is also capped by the driver's
+   *   `maxBlockSeconds` (5 by default), so a value above that makes the
+   *   worker re-check at that cap, not less often.
+   * - It is at most 2,147,483,647ms (about 24.8 days), the longest a timer
+   *   can wait; a longer one is a `ConfigError`.
+   * - It leaves the stalled-job sweep (`stalledInterval`) and the once-a-minute
+   *   housekeeping alone: those recover and prune rather than find due work,
+   *   and running them at a polling cadence would multiply scans for nothing.
+   *
+   * Explicit `pollInterval` or `maxBlock` passed to `start()` win over an
+   * earlier `processEvery()`; a later call wins over both.
+   */
+  processEvery(interval: number | string): this {
+    const ms = readProcessEvery(interval);
+    this.#processEvery = ms;
+
+    if (this.#registryWorker) {
+      this.#registryWorker.pollInterval = ms;
+      if (this.driver.capabilities.blockingWait) {
+        this.#registryWorker.maxBlock = ms;
+      }
+    }
+
+    return this;
+  }
+
+  /**
    * Starts consuming the defined jobs.
    *
    * One worker for every name, dispatching on `job.name` — which is why the
@@ -426,6 +529,15 @@ export class BunJobs {
         return await definition.handler(job as never, context);
       },
       {
+        // Beneath the call's own options, which were said later.
+        ...(this.#processEvery === undefined
+          ? {}
+          : {
+              pollInterval: this.#processEvery,
+              ...(this.driver.capabilities.blockingWait
+                ? { maxBlock: this.#processEvery }
+                : {}),
+            }),
         ...options,
       },
     );
@@ -691,4 +803,34 @@ export function jobsFromContext(
   }
 
   return new BunJobs({ ...options, namespace: context.namespace, driver });
+}
+
+/**
+ * Reads `processEvery()`'s argument as milliseconds: a positive number, or a
+ * duration, optionally led by "every" as Agenda's examples write it.
+ */
+function readProcessEvery(interval: number | string): number {
+  const ms =
+    typeof interval === "number"
+      ? interval
+      : parseDuration(interval.replace(/^(?:every|each)\s+/i, ""));
+
+  if (ms === null || !Number.isFinite(ms) || ms <= 0) {
+    throw new ConfigError(
+      `processEvery() could not read ${JSON.stringify(interval)} as a positive interval: give milliseconds or a duration such as "5 seconds"`,
+      { interval },
+    );
+  }
+
+  // A timer longer than this fires at once, so the worker would spin rather
+  // than wait. Refused rather than clamped: nobody writing "30 days" means
+  // "about 24.8 days".
+  if (ms > MAX_TIMER_MS) {
+    throw new ConfigError(
+      `processEvery() cannot wait longer than ${MAX_TIMER_MS}ms (about 24.8 days), the longest a timer can be set for; got ${JSON.stringify(interval)}`,
+      { interval, max: MAX_TIMER_MS },
+    );
+  }
+
+  return ms;
 }
