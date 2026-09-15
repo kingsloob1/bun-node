@@ -153,6 +153,7 @@ export {
   type JobProcessor,
   type JobsPage,
   type ListJobsOptions,
+  MAX_TIMER_MS,
   type NameLimits,
   nextOccurrence,
   type ProcessorContext,

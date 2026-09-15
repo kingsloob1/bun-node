@@ -8,7 +8,7 @@ export {
   nextBackoff,
 } from "./backoff";
 export { BunQueue } from "./BunQueue";
-export { BunQueueWorker } from "./BunQueueWorker";
+export { BunQueueWorker, MAX_TIMER_MS } from "./BunQueueWorker";
 /**
  * The queue: producers, consumers and the job they exchange.
  */
