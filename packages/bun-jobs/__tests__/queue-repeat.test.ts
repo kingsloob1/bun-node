@@ -1,15 +1,17 @@
 import type { JobRecord } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
   BunQueue,
   BunQueueWorker,
   ConfigError,
+  createDriver,
   MemoryDriver,
   nextOccurrence,
   repeatJobId,
 } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
+import { crossProcessBackends } from "./helpers/backends";
 
 /**
  * Repeatable jobs.
@@ -417,3 +419,112 @@ describe("catchUp", () => {
     );
   }, 20_000);
 });
+
+/** Temp directories and server namespaces to release once the suite ends. */
+const backendCleanups: (() => Promise<void>)[] = [];
+
+afterAll(async () => {
+  await Promise.allSettled(backendCleanups.map((cleanup) => cleanup()));
+});
+
+/**
+ * Every backend a series can be stored on: memory, plus file, SQLite and each
+ * configured server. A server that is set but unreachable is skipped visibly.
+ */
+const STORAGE_BACKENDS = [
+  {
+    name: "memory",
+    config: { type: "memory" } as const,
+    available: true,
+  },
+  ...(await crossProcessBackends({ cleanups: backendCleanups })),
+];
+
+for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
+  describe.skipIf(!available)(
+    `catchUp on the stored series: ${backendName}`,
+    () => {
+      /**
+       * `listRepeatables()` reports the options a series was created with.
+       * `catchUp: false` used to be dropped when the record was built, so it came
+       * back `undefined` while `limit` and the rest came back as given. The
+       * backends matter because each serialises the record its own way, and a
+       * `false` has to survive every one of them.
+       */
+
+      /** A queue on a fresh driver for this backend, purged when the suite ends. */
+      async function openQueue() {
+        const driver = createDriver(config);
+        const namespace = testNamespace("catchup");
+        const queue = new BunQueue("repeats", {
+          namespace,
+          driver,
+          logger: noopLogger,
+        });
+        backendCleanups.push(async () => {
+          await queue.close();
+          await driver.purge(namespace);
+          await driver.close();
+        });
+        return { driver, queue };
+      }
+
+      it("reports true, false and unset as given", async () => {
+        const { queue } = await openQueue();
+
+        await queue.add("on", {}, { repeat: { every: 60_000, catchUp: true } });
+        await queue.add(
+          "off",
+          {},
+          { repeat: { every: 60_000, catchUp: false } },
+        );
+        await queue.add("unset", {}, { repeat: { every: 60_000 } });
+
+        const byName = new Map(
+          (await queue.listRepeatables()).map((series) => [
+            series.name,
+            series,
+          ]),
+        );
+
+        expect(byName.get("on")?.catchUp).toBe(true);
+        expect(byName.get("off")?.catchUp).toBe(false);
+        expect(byName.get("unset")).toBeDefined();
+        expect(byName.get("unset")?.catchUp).toBeUndefined();
+        // Unset is left out of the record, not stored as an explicit undefined.
+        expect("catchUp" in byName.get("unset")!).toBe(false);
+      });
+
+      it("reads a series stored without the flag, and upgrades it when re-added", async () => {
+        const { driver, queue } = await openQueue();
+
+        const job = await queue.add(
+          "legacy",
+          {},
+          { repeat: { every: 60_000, key: "legacy", catchUp: false } },
+        );
+
+        // A series as an earlier version stored it: `false` was left out.
+        const stored = (await driver.getRepeat(queue.ref, "legacy"))!;
+        const { catchUp: _dropped, ...legacy } = stored;
+        await driver.upsertRepeat(queue.ref, { ...legacy, count: 2 });
+
+        const [before] = await queue.listRepeatables();
+        expect(before.key).toBe("legacy");
+        expect(before.catchUp).toBeUndefined();
+        expect(before.nextJobId).toBe(job.id);
+
+        // Adding the series again rewrites its definition, carrying the count.
+        await queue.add(
+          "legacy",
+          {},
+          { repeat: { every: 60_000, key: "legacy", catchUp: false } },
+        );
+
+        const [after] = await queue.listRepeatables();
+        expect(after.catchUp).toBe(false);
+        expect(after.count).toBe(2);
+      });
+    },
+  );
+}
