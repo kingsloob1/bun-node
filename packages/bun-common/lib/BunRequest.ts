@@ -4,15 +4,26 @@ import type { IncomingMessage } from "node:http";
 import type { BunResponse } from "./BunResponse";
 import type { TypedEmitter } from "./BunWebSocket";
 import type { StorageFile } from "./multipart";
+import type { UploadErrorCode } from "./multipart/errors";
 import type {
+  BodyDecodingOptions,
   BodyParserOptions,
+  BodyParserType,
   BunRequestInterface,
   BunServer,
   DefaultRequestBody,
   MultiPartFileRecord,
   MultiPartOptions,
+  NextFunction,
 } from "./types/general";
-import type { CookieParseOptions, ParseXmlOptions } from "./utils/native";
+import type {
+  CompressionDictionaries,
+  ContentEncodingAllowlist,
+  CookieParseOptions,
+  JsonValue,
+  ParseXmlOptions,
+  RangeParserResult,
+} from "./utils/native";
 import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -22,9 +33,16 @@ import { fileTypeFromBuffer } from "file-type";
 import { parseDomain, ParseResultType, Validation } from "parse-domain";
 import { parse as parseQueryString } from "picoquery";
 import typeIs from "type-is";
+import { UploadError } from "./multipart/errors";
 import { streamToBuffer } from "./utils/general";
 import {
   cloneDeep,
+  ContentCodingLimitError,
+  decompressBody,
+  DecompressionError,
+  DecompressionLimitError,
+  DEFAULT_DECOMPRESS_FAST_PATH_LIMIT,
+  DEFAULT_MAX_CONTENT_CODINGS,
   each,
   extractSignedCookies,
   first,
@@ -33,8 +51,8 @@ import {
   get,
   isArray,
   isBoolean,
+  isContentCodingAllowed,
   isNull,
-  isNumber,
   isObject,
   isString,
   isUndefined,
@@ -43,11 +61,14 @@ import {
   merge,
   omit,
   parseByteSize,
+  parseContentCodings,
   parseCookie,
   parseXmlToObject,
   rangeParser,
+  resolveContentEncodingAllowlist,
   set,
   ucwords,
+  UnknownCompressionDictionaryError,
   values,
 } from "./utils/native";
 
@@ -139,6 +160,8 @@ const VALID_PARSER_KINDS: ReadonlySet<ContentParserType> = new Set([
 export interface ContentTypeParserOptsMap {
   /** `JSON.parse` reviver applied to a JSON body. */
   json: {
+    // `unknown` on purpose: a reviver sees values other revivers already
+    // replaced, and may return anything, exactly as `JSON.parse` allows.
     reviver?: (this: unknown, key: string, value: unknown) => unknown;
   };
   /** `picoquery` options for an `x-www-form-urlencoded` body. */
@@ -184,8 +207,15 @@ export type ParseBodyContentTypesMap = {
 /**
  * Object form of the `parseBody` request option. Enables body parsing with a
  * DDoS-hardening size cap and a per-content-type allowlist/config.
+ *
+ * It also carries the body-decoding options ({@link BodyDecodingOptions}:
+ * `inflate`, `decompressionFastPathLimit`, `encodings`, `maxContentCodings`,
+ * `compressionDictionaries`). A request whose adapter parses the
+ * body while building it reads the body before any middleware runs, so these
+ * are the only place those options can reach that parse; a body-parser
+ * middleware's own options apply only to a body not read yet.
  */
-export interface ParseBodyConfig {
+export interface ParseBodyConfig extends BodyDecodingOptions {
   /**
    * Maximum overall request body size, in bytes or a human string (`"100kb"`,
    * `"5mb"`). A request whose declared `Content-Length` — or whose actual
@@ -243,7 +273,12 @@ export const DEFAULT_MAX_CONTENT_LENGTH_BY_KIND: Partial<
  * error handlers can map it to an HTTP **413 Payload Too Large** response.
  */
 export class PayloadTooLargeError extends Error {
+  /** HTTP status for the error (413), as `http-errors` sets it. */
+  public readonly status = 413 as const;
+  /** Alias of {@link status}, read by adapters and Node-style handlers. */
   public readonly statusCode = 413 as const;
+  /** The message is safe to show the client (`http-errors`' `expose`). */
+  public readonly expose = true as const;
   /** The configured byte cap that was exceeded. */
   public readonly limit: number;
   /** The observed body size in bytes, when known. */
@@ -264,6 +299,12 @@ export class PayloadTooLargeError extends Error {
  * Default `picoquery` parse options. `nestingSyntax: "js"` accepts both dotted
  * (`a.b`) and bracketed (`a[b]`) keys, and `arrayRepeat` collapses repeated
  * keys into arrays — together approximating the previous `qs` behaviour.
+ *
+ * Options given as `parseQueryOpts`, to {@link BunRequest.parseQuery} /
+ * `setQueryParserOptions`, or as `parseBody.contentTypes.urlencoded.opts` are
+ * **merged over** these, so a partial object keeps the rest. To opt out of a
+ * default, set it explicitly — e.g. `{ nesting: false }` or
+ * `{ arrayRepeat: false }`.
  */
 export const DEFAULT_PARSE_QUERY_OPTS: QueryParserOpts = Object.freeze({
   nesting: true,
@@ -271,6 +312,183 @@ export const DEFAULT_PARSE_QUERY_OPTS: QueryParserOpts = Object.freeze({
   arrayRepeat: true,
   arrayRepeatSyntax: "repeat",
 });
+
+/**
+ * The per-content-type overrides resolved from `parseBody.contentTypes`: the
+ * kind's parser options and its byte cap.
+ */
+interface PerTypeParserConfig {
+  /** Parser options for the kind; read back through `getParserOpts(kind)`. */
+  opts?: ContentTypeParserOptsMap[ContentParserType];
+  /** The kind's own byte cap, already parsed to bytes. */
+  maxContentLength?: number;
+}
+
+/**
+ * What {@link BunRequest.getMultiParts} resolves to.
+ *
+ * `TFields` is the shape of `fields`. It is `Record<string, unknown>` by
+ * default because, with `inflate` on, a value is whatever the field inflator
+ * produced — `JSON.parse` output or nested objects for the built-in one, and
+ * anything at all for a custom `fieldInflator`. With `inflate: false` it is
+ * {@link RawMultiPartFields}.
+ */
+export interface MultiPartParseResult<TFields = Record<string, unknown>> {
+  /** Each uploaded file, mapped to the field paths (`docs[passport]`) naming it. */
+  files: Map<MultiPartFileRecord, Set<string>>;
+  /** The non-file fields. */
+  fields: TFields;
+}
+
+/**
+ * The fields of a multipart body parsed with `inflate: false`, as multer
+ * reports them: names exactly as sent, values strings, a repeated name an
+ * array of its values in arrival order.
+ */
+export type RawMultiPartFields = Record<string, string | string[]>;
+
+/** What {@link BunRequest.parseCookies} returns. */
+export interface BunRequestCookies {
+  /** The unsigned cookies: raw strings, or parsed JSON for `j:` values. */
+  cookies: Record<string, JsonValue>;
+  /** Verified values (parsed JSON for `j:`), or `false` when tampered. */
+  signedCookies: Record<string, JsonValue>;
+}
+
+/** Merges query-parser options over {@link DEFAULT_PARSE_QUERY_OPTS}. */
+function withDefaultQueryOpts(opts?: QueryParserOpts): QueryParserOpts {
+  return { ...DEFAULT_PARSE_QUERY_OPTS, ...opts };
+}
+
+/**
+ * The media types a `useBodyParser(kind)` parses when its options give no
+ * `type` — body-parser's defaults for each kind.
+ */
+const DEFAULT_BODY_PARSER_TYPES: Record<BodyParserType, string> = {
+  json: "application/json",
+  urlencoded: "application/x-www-form-urlencoded",
+  text: "text/plain",
+  raw: "application/octet-stream",
+};
+
+/**
+ * `N` when it names the `Set-Cookie` header in any letter case, otherwise
+ * `never` — so an overload taking `N & SetCookieHeaderName<N>` matches only a
+ * literal `"set-cookie"` / `"Set-Cookie"` / … name. Used by `req.get` and
+ * `res.get`, which answer that header as an array.
+ */
+export type SetCookieHeaderName<N extends string> =
+  Lowercase<N> extends "set-cookie" ? N : never;
+
+/**
+ * The busboy / inflation options {@link BunRequest.getMultiParts} compares to
+ * decide whether a per-call options object changes the parse.
+ */
+const MULTIPART_PARSE_KEYS = [
+  "limits",
+  "preservePath",
+  "defParamCharset",
+  "defCharset",
+  "highWaterMark",
+  "fileHwm",
+  "isPartAFile",
+  "inflate",
+  "fieldInflator",
+  "fileInflator",
+] as const;
+
+/**
+ * An HTTP error as `http-errors` builds it: an `Error` carrying its status
+ * twice (`status`, `statusCode`) and `expose`, so the message may be shown.
+ */
+export type BunHttpClientError = Error & {
+  /** The HTTP status to answer with (4xx). */
+  status: number;
+  /** Alias of `status`, read by adapters and Node-style handlers. */
+  statusCode: number;
+  /** The message is safe to show the client. */
+  expose: true;
+};
+
+/**
+ * Validates a `decompressionFastPathLimit` option: a non-negative number
+ * (`Infinity` included), or `undefined` for the default.
+ *
+ * @throws {RangeError} for anything else — a misconfiguration, reported as
+ * one rather than as a 400 for a body that was never at fault.
+ */
+function resolveDecompressionFastPathLimit(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+  }
+  if (!(typeof value === "number" && value >= 0)) {
+    throw new RangeError(
+      `decompressionFastPathLimit must be a non-negative number, got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Validates a `maxContentCodings` option: a non-negative number (`Infinity`
+ * included), or `undefined` for the default.
+ *
+ * @throws {RangeError} for anything else, as a misconfiguration.
+ */
+function resolveMaxContentCodings(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_CONTENT_CODINGS;
+  }
+  if (!(typeof value === "number" && value >= 0)) {
+    throw new RangeError(
+      `maxContentCodings must be a non-negative number, got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Validates an `encodings` option and answers it, `"*"` when unset.
+ *
+ * @throws {RangeError} for an entry that is not a coding the library decodes.
+ */
+function resolveContentEncodings(
+  value: ContentEncodingAllowlist | undefined,
+): ContentEncodingAllowlist {
+  resolveContentEncodingAllowlist(value);
+  return value ?? "*";
+}
+
+/**
+ * Validates a `compressionDictionaries` option: an array of byte arrays, a
+ * resolver function, or `undefined` for none.
+ *
+ * @throws {TypeError} for anything else, as a misconfiguration.
+ */
+function resolveCompressionDictionaries(
+  value: CompressionDictionaries | undefined,
+): CompressionDictionaries | undefined {
+  if (
+    value === undefined ||
+    typeof value === "function" ||
+    (Array.isArray(value) &&
+      value.every((dictionary) => dictionary instanceof Uint8Array))
+  ) {
+    return value;
+  }
+  throw new TypeError(
+    `compressionDictionaries must be an array of Uint8Array dictionaries or a resolver function, got ${String(value)}`,
+  );
+}
+
+/** Builds an HTTP error (`status`/`statusCode`), as `http-errors` does. */
+function httpError(statusCode: number, message: string): BunHttpClientError {
+  return Object.assign(new Error(message), {
+    status: statusCode,
+    statusCode,
+    expose: true as const,
+  });
+}
 
 /** Strips a leading `?` so query strings parse cleanly. */
 function stripQueryPrefix(search: string): string {
@@ -362,9 +580,15 @@ export type BunRequestEvents = {
   data: (chunk: Buffer) => void;
   /** The request body has been fully received. */
   end: () => void;
-  /** An error occurred while receiving/parsing the request body. */
+  /**
+   * An error occurred while receiving/parsing the request body. `unknown`:
+   * it is whatever the parser threw.
+   */
   error: (error: unknown) => void;
-  /** A streaming response bound to this request was cancelled. */
+  /**
+   * A streaming response bound to this request was cancelled. `unknown`: the
+   * reason is whatever the stream's consumer passed to `cancel()`.
+   */
   abort: (reason?: unknown) => void;
 };
 
@@ -384,20 +608,126 @@ interface LegacyBodyOptions {
   parseMultiPartFormDataOpts?: MultiPartOptions;
 }
 
+/**
+ * The events {@link BunRequestSocket} emits with a known payload. Any other
+ * event name is accepted too, with `unknown` arguments.
+ */
+// eslint-disable-next-line ts/consistent-type-definitions
+export type BunRequestSocketEvents = {
+  /**
+   * The client disconnected. `hadError` is always `false`: Bun reports no
+   * transmission error for a dropped connection.
+   */
+  close: (hadError: boolean) => void;
+  /**
+   * Never emitted — Bun owns the idle timeout — but `setTimeout(ms, cb)`
+   * registers `cb` for it, as Node does.
+   */
+  timeout: () => void;
+};
+
+/**
+ * A listener for an event outside {@link BunRequestSocketEvents}. Its
+ * arguments are `unknown` because they are whatever the emitter was given.
+ */
+type SocketListener = (...args: unknown[]) => void;
+
+/** Any listener the socket accepts, typed or not. */
+type AnySocketListener =
+  | BunRequestSocketEvents[keyof BunRequestSocketEvents]
+  | SocketListener;
+
+/** An event name that is not one of {@link BunRequestSocketEvents}. */
+type UntypedSocketEvent<E extends string> =
+  E extends keyof BunRequestSocketEvents ? never : E;
+
+/**
+ * Adds or removes a listener: typed by {@link BunRequestSocketEvents} for a
+ * known event, with `unknown` arguments for any other.
+ */
+interface SocketListenerMethod {
+  <E extends keyof BunRequestSocketEvents>(
+    event: E,
+    listener: BunRequestSocketEvents[E],
+  ): BunRequestSocket;
+  (event: string, listener: SocketListener): BunRequestSocket;
+}
+
+/**
+ * Emits an event: a known event must be given its declared arguments; any
+ * other name takes whatever arguments it is given.
+ */
+interface SocketEmitMethod {
+  <E extends keyof BunRequestSocketEvents>(
+    event: E,
+    ...args: Parameters<BunRequestSocketEvents[E]>
+  ): boolean;
+  <E extends string>(
+    event: E & UntypedSocketEvent<E>,
+    ...args: unknown[]
+  ): boolean;
+}
+
+/**
+ * The Node `net.Socket`-shaped object `req.socket` returns. Bun exposes no
+ * socket per request, so this carries what Express, NestJS and Node-style
+ * middleware reach for: the keep-alive/no-delay/timeout setters, the local
+ * address, and an event emitter that emits `close` when the client
+ * disconnects (NestJS's `@Sse()` waits on `socket.once("close")`).
+ */
+export interface BunRequestSocket {
+  /** Whether `setKeepAlive(true)` has been called. Starts `false`. */
+  keepAlive: boolean;
+  /** Records keep-alive (read by long-lived responses). Returns the socket. */
+  setKeepAlive: (enable?: boolean) => BunRequestSocket;
+  /** Accepted for compatibility; Bun manages Nagle itself. Returns the socket. */
+  setNoDelay: (noDelay?: boolean) => BunRequestSocket;
+  /**
+   * Accepted for compatibility; Bun owns the idle timeout, so no `timeout`
+   * event is ever emitted. A `callback` is registered as a `timeout`
+   * listener, as Node does. Returns the socket.
+   */
+  setTimeout: (timeout: number, callback?: () => void) => BunRequestSocket;
+  /** Adds a listener (`close` fires once, when the client disconnects). */
+  on: SocketListenerMethod;
+  /** Alias of {@link BunRequestSocket.on}. */
+  addListener: SocketListenerMethod;
+  /** Adds a listener that runs at most once. */
+  once: SocketListenerMethod;
+  /** Removes a listener. */
+  off: SocketListenerMethod;
+  /** Alias of {@link BunRequestSocket.off}. */
+  removeListener: SocketListenerMethod;
+  /** Removes every listener, or every listener for `event`. */
+  removeAllListeners: (event?: string) => BunRequestSocket;
+  /** Emits an event; `false` when nothing is listening. */
+  emit: SocketEmitMethod;
+  /** The number of listeners for `event`. */
+  listenerCount: (event: string) => number;
+  /** `true` once the client has disconnected. */
+  readonly destroyed: boolean;
+  /** The peer's port, when the server reports one. */
+  readonly localPort: number | undefined;
+  /** The peer's address (`req.ip`), or `""`. */
+  readonly localAddress: string;
+  /** The peer's address family, when the server reports one. */
+  readonly localFamily: SocketAddress["family"] | undefined;
+}
+
 export class BunRequest<
-    /**
-     * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
-     * a route registered with a path literal narrows it to that path's params.
-     */
-    TParams = Record<string, string>,
-    /**
-     * Shape of `req.query`. Defaults to the parser's untyped output; a validator
-     * narrows it to its parsed result.
-     */
-    TQuery = Record<string, unknown>,
-    /** Shape of `req.body`. Defaults to the union the body parsers produce. */
-    TBody = DefaultRequestBody,
-  >
+  /**
+   * Shape of `req.params`. Defaults to the untyped `Record<string, string>`;
+   * a route registered with a path literal narrows it to that path's params.
+   */
+  TParams = Record<string, string>,
+  /**
+   * Shape of `req.query`. Defaults to the parser's untyped output; a validator
+   * narrows it to its parsed result.
+   */
+  TQuery = Record<string, unknown>,
+  /** Shape of `req.body`. Defaults to the union the body parsers produce. */
+  TBody = DefaultRequestBody,
+>
   implements
     BunRequestInterface<TParams, TQuery, TBody>,
     TypedEmitter<BunRequestEvents>
@@ -419,8 +749,21 @@ export class BunRequest<
 
   public maxHeadersCount = 0;
   public reusedSocket = false;
-  /** Init promises, lazily allocated only when body/cookie/query parsing runs. */
-  #initPromises: Promise<unknown>[] | undefined = undefined;
+  /**
+   * The exact bytes of the request body, as Nest's `rawBody: true` keeps them
+   * (body-parser's `verify` hook). Set by the adapter's parser middleware
+   * (`registerParserMiddleware(prefix, true)` / `useBodyParser(kind, true)`)
+   * when that parser read a body; `undefined` otherwise — including for a
+   * request no such parser handled. See also {@link buffer}.
+   */
+  public rawBody?: Buffer = undefined;
+  /**
+   * Init promises, lazily allocated only when body/cookie/query parsing runs:
+   * the parsed query, the body parse (settled, no value) and the cookies.
+   */
+  #initPromises: Promise<TQuery | BunRequestCookies | void>[] | undefined =
+    undefined;
+
   /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
    * `TBody` view can be cast in and out without narrowing the storage.
@@ -430,10 +773,32 @@ export class BunRequest<
   public secret: string | string[] | undefined = undefined;
   // `cookies`/`signedCookies`/`params`/`query` are lazily allocated — a
   // routing-only request that never reads them pays no allocation.
-  #cookies: BunRequestInterface["cookies"] | undefined = undefined;
-  #signedCookies: BunRequestInterface["signedCookies"] | undefined = undefined;
-  public url: string;
+  /** Backing field for `cookies`; `undefined` until parsed or assigned. */
+  #cookies: Record<string, JsonValue> | undefined = undefined;
+  /** Backing field for `signedCookies`; `undefined` until parsed or assigned. */
+  #signedCookies: Record<string, JsonValue> | undefined = undefined;
+  /** Backing field for `url`; computed from the request on first read. */
+  #url: string | undefined = undefined;
+
+  /**
+   * The path the router handling this request was mounted at, as Express's
+   * `req.baseUrl`. `""` by default: bun-common's router matches a mount by
+   * prefix without rewriting `url`, so nothing sets it unless the router does.
+   */
+  public baseUrl: string = "";
+
+  /**
+   * The current layer's `next`, set by the router; `undefined` outside a
+   * pipeline. `res.format()` sends its 406 through it.
+   */
+  public next?: NextFunction;
+  /** Backing field for `params`, stored untyped; `TParams` is the caller's view. */
   #params: Record<string, string> | undefined = undefined;
+  /**
+   * Backing field for `query`, stored as the parser's untyped output (values
+   * are `unknown` until a validator narrows them); `TQuery` is the caller's
+   * view, cast in and out as `_body` is.
+   */
   #query: Record<string, unknown> | undefined = undefined;
   public _route: BunRequestInterface["route"] | undefined = undefined;
   private _contentType:
@@ -470,9 +835,8 @@ export class BunRequest<
    * from the object form of `parseBody.contentTypes`. Lazily allocated — only
    * present when at least one kind supplies an object config.
    */
-  #perTypeConfig:
-    | Map<ContentParserType, { opts?: unknown; maxContentLength?: number }>
-    | undefined = undefined;
+  #perTypeConfig: Map<ContentParserType, PerTypeParserConfig> | undefined =
+    undefined;
 
   /**
    * Set when {@link parseBody} aborts because the body exceeded its cap. The
@@ -481,12 +845,84 @@ export class BunRequest<
    */
   #payloadTooLarge: { limit: number; length?: number } | undefined = undefined;
 
-  #parsedMultipartResp?:
-    | {
-        files: Map<MultiPartFileRecord, Set<string>>;
-        fields: Record<string, unknown>;
-      }
-    | undefined = undefined;
+  /** The cached multipart parse (see {@link getMultiParts}). */
+  #parsedMultipartResp?: MultiPartParseResult | undefined = undefined;
+
+  /**
+   * The options {@link #parsedMultipartResp} was parsed with, so a later
+   * {@link getMultiParts} call whose options differ re-parses instead of
+   * returning a result that ignores them.
+   */
+  #multipartOptions: MultiPartOptions | undefined = undefined;
+
+  /**
+   * Set when the multipart parse was refused (a busboy limit, or a parser
+   * error), holding what it rejected with. A later {@link getMultiParts} call
+   * that changes no parse-affecting option rejects with the same error, and
+   * one that does re-parses with its options merged over the failed ones — so
+   * a handler cannot slip past the request's own `limits` by calling again.
+   * `unknown`, as a parser may reject with anything.
+   */
+  #multipartFailure: { error: unknown } | undefined = undefined;
+
+  /** `true` once {@link parseBody} has run, even for a body left `undefined`. */
+  #bodyParsed = false;
+
+  /**
+   * Whether a compressed body (`Content-Encoding: gzip`/`deflate`/`br`) is
+   * inflated before parsing. `true` by default, as body-parser. Resolved from
+   * `parseBody.inflate` (object form) when the request is built or
+   * {@link setParseBodyOptions} runs, and overridden by the `inflate` option
+   * of {@link handleBodyParsing}; either affects only a body not yet read.
+   */
+  #inflate = true;
+
+  /**
+   * The most memory, in bytes, one uncapped Bun gunzip/inflate of the body may
+   * use in the worst case before decoding falls back to `node:zlib`, capped at
+   * the body limit (see {@link #decodeContentEncoding}). Default
+   * `DEFAULT_DECOMPRESS_FAST_PATH_LIMIT` (32 MiB); `0` always uses node:zlib.
+   * Resolved, like {@link #inflate}, from `parseBody.decompressionFastPathLimit`
+   * and overridden by the option of the same name on
+   * {@link handleBodyParsing}; either affects only a body not yet read.
+   */
+  #decompressionFastPathLimit = DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+
+  /**
+   * The `Content-Encoding` codings a body may use: `"*"` (the default) for
+   * every coding `decompressBody` decodes, or an allowlist. Resolved, like
+   * {@link #inflate}, from `parseBody.encodings` and overridden by the option
+   * of the same name on {@link handleBodyParsing}.
+   */
+  #contentEncodings: ContentEncodingAllowlist = "*";
+
+  /**
+   * The most codings one `Content-Encoding` may stack. Default
+   * `DEFAULT_MAX_CONTENT_CODINGS` (5). Resolved, like {@link #inflate}, from
+   * `parseBody.maxContentCodings` and overridden by the option of the same
+   * name on {@link handleBodyParsing}; either affects only a body not yet read.
+   */
+  #maxContentCodings = DEFAULT_MAX_CONTENT_CODINGS;
+
+  /**
+   * Dictionaries `dcb`/`dcz` bodies may name; `undefined` (the default)
+   * refuses those codings with 415. Resolved, like {@link #inflate}, from
+   * `parseBody.compressionDictionaries` and overridden by the option of the
+   * same name on {@link handleBodyParsing}; either affects only a body not yet
+   * read.
+   */
+  #compressionDictionaries: CompressionDictionaries | undefined = undefined;
+
+  /**
+   * The 415 or 400 a `Content-Encoding` could not be decoded with (inflation
+   * off, a coding unsupported or not allowed, too many stacked codings, a
+   * corrupt stream, an unknown dictionary), once a body read hit one.
+   * Adapters read it after `init` (see {@link bodyDecodingError}) so a body
+   * refused while the request was built is answered rather than routed with
+   * no body. A decompression bomb is not here: it is a 413, see
+   * {@link isPayloadTooLarge}.
+   */
+  #bodyDecodingError: BunHttpClientError | undefined = undefined;
 
   private _buffer: Buffer | undefined = undefined;
   /** Uploaded files — lazily allocated; only multipart requests populate it. */
@@ -516,23 +952,22 @@ export class BunRequest<
 
   /** Lifecycle of the request body, driving the `data`/`end`/`error` events. */
   #bodyState: "pending" | "ended" | "errored" = "pending";
-  /** The error captured when {@link #bodyState} is `"errored"`. */
+  /**
+   * The error captured when {@link #bodyState} is `"errored"` — `unknown`,
+   * since it is whatever the body parse rejected with.
+   */
   #bodyError: unknown = undefined;
+
+  /**
+   * The `Bun.serve` server this request arrived on (see the `server` getter).
+   * `undefined` only when a caller constructed the request without one.
+   */
+  readonly #server: BunServer | undefined;
   /** True once the `data`/`end`/`error` body events have been emitted. */
   #bodyEventsEmitted = false;
 
   /** Memoized Node-compatible socket shim (see the `socket` getter). */
-  #socket:
-    | {
-        keepAlive: boolean;
-        setKeepAlive: (value: boolean) => boolean;
-        setNoDelay: (value: boolean) => boolean;
-        setTimeout: (value: number) => boolean;
-        readonly localPort: number | undefined;
-        readonly localAddress: string;
-        readonly localFamily: SocketAddress["family"] | undefined;
-      }
-    | undefined = undefined;
+  #socket: BunRequestSocket | undefined = undefined;
 
   constructor(
     /** The native Bun/Web `Request` this instance wraps. */
@@ -541,7 +976,7 @@ export class BunRequest<
      * The owning `Bun.serve` server — used for connection info (`requestIP`,
      * local address/port) and to upgrade the request to a WebSocket.
      */
-    private server: BunServer,
+    server: BunServer,
     private options: {
       /**
        * Controls request-body parsing. `true` parses every body of any size
@@ -562,9 +997,10 @@ export class BunRequest<
        */
       parseQuery?: boolean;
       /**
-       * Options for the query-string parser (`picoquery`). Defaults to
+       * Options for the query-string parser (`picoquery`), **merged over**
        * {@link DEFAULT_PARSE_QUERY_OPTS} (`nestingSyntax: "js"`,
-       * `arrayRepeat: true`).
+       * `arrayRepeat: true`), so a partial object keeps the other defaults.
+       * Set a default explicitly to opt out (`{ nesting: false }`).
        */
       parseQueryOpts?: QueryParserOpts;
       /**
@@ -604,8 +1040,8 @@ export class BunRequest<
       parseMultiPartFormDataOpts: {},
     },
   ) {
+    this.#server = server;
     this.headersObj = request.headers as Headers;
-    this.url = this.request.url;
 
     // Normalize options with direct assignment — `set()`'s path parsing is
     // wasted work for these known, fixed property names. `parseBody` may be a
@@ -629,9 +1065,9 @@ export class BunRequest<
       this.legacyOptions.parseMultiPartFormDataOpts = {};
     }
 
-    if (!this.options.parseQueryOpts) {
-      this.options.parseQueryOpts = { ...DEFAULT_PARSE_QUERY_OPTS };
-    }
+    this.options.parseQueryOpts = withDefaultQueryOpts(
+      this.options.parseQueryOpts,
+    );
 
     // Resolve the `parseBody` config (size caps + per-content-type allowlist),
     // honouring the deprecated `allowedContentTypes` as a fallback.
@@ -652,6 +1088,7 @@ export class BunRequest<
             this.#bodyState = "ended";
             this.#flushBodyEvents();
           },
+          // `unknown`: a rejection reason is whatever the parse threw.
           (error: unknown) => {
             this.#bodyState = "errored";
             this.#bodyError = error;
@@ -698,7 +1135,13 @@ export class BunRequest<
     return req.ready().then(() => req);
   }
 
-  async ready() {
+  /**
+   * Settles every initialisation task the options scheduled (query, body and
+   * cookie parsing) and reports each outcome; `[]` when none was scheduled.
+   */
+  async ready(): Promise<
+    PromiseSettledResult<TQuery | BunRequestCookies | void>[]
+  > {
     // Avoid the `Promise.allSettled` allocation when nothing was scheduled.
     if (!this.#initPromises || this.#initPromises.length === 0) {
       return [];
@@ -907,21 +1350,42 @@ export class BunRequest<
     return this.#emitter?.getMaxListeners() ?? EventEmitter.defaultMaxListeners;
   }
 
-  /** Parsed cookies — lazily allocated on first access. */
-  get cookies(): BunRequestInterface["cookies"] {
+  /**
+   * The request target as Express's `req.url`: path, query and (when the
+   * `Request` carries one) fragment — not the absolute URL. Assignable, as in
+   * Express; it starts equal to {@link originalUrl}. The absolute URL is
+   * `req.request.url` (or `req.parsedUrl.href`).
+   */
+  get url(): string {
+    return (this.#url ??= this.originalUrl);
+  }
+
+  set url(value: string) {
+    this.#url = value;
+  }
+
+  /**
+   * Parsed cookies — lazily allocated on first access. A value is the raw
+   * string, or the parsed JSON of a `j:` cookie (an object, array, number,
+   * boolean or `null`), so it is typed `JsonValue`.
+   */
+  get cookies(): Record<string, JsonValue> {
     return (this.#cookies ??= {});
   }
 
-  set cookies(value: BunRequestInterface["cookies"]) {
+  set cookies(value: Record<string, JsonValue>) {
     this.#cookies = value;
   }
 
-  /** Verified signed cookies — lazily allocated on first access. */
-  get signedCookies(): BunRequestInterface["signedCookies"] {
+  /**
+   * Signed cookies — lazily allocated on first access. A verified cookie's
+   * value (parsed JSON for a `j:` one), or `false` when no secret verifies it.
+   */
+  get signedCookies(): Record<string, JsonValue> {
     return (this.#signedCookies ??= {});
   }
 
-  set signedCookies(value: BunRequestInterface["signedCookies"]) {
+  set signedCookies(value: Record<string, JsonValue>) {
     this.#signedCookies = value;
   }
 
@@ -959,7 +1423,18 @@ export class BunRequest<
   }
 
   get socketAddress(): SocketAddress | null {
-    return this.server?.requestIP(this.request) || null;
+    return this.#server?.requestIP(this.request) || null;
+  }
+
+  /**
+   * The `Bun.serve` server this request came in on — the one it was built
+   * with. Its `port` is the port that accepted the request (`socket.localPort`
+   * is the *peer's*). A socket-free `router.fetch()` request carries the fetch
+   * stub instead, which has no `port`, `url` or real `upgrade`; `undefined`
+   * only when a caller constructed the request without a server.
+   */
+  get server(): BunServer | undefined {
+    return this.#server;
   }
 
   get route() {
@@ -984,7 +1459,12 @@ export class BunRequest<
     return this.#socket?.keepAlive === true;
   }
 
-  get socket() {
+  /**
+   * A Node `net.Socket`-shaped shim — see {@link BunRequestSocket}. Its
+   * emitter is created on the first listener, and only then is the client
+   * disconnect (the request's abort signal) bridged to a `close` event.
+   */
+  get socket(): BunRequestSocket {
     // Memoized: the shim is stateful (`keepAlive`) and read on every
     // `response.headersSent` check, so it must be a single stable instance.
     if (this.#socket) {
@@ -993,15 +1473,74 @@ export class BunRequest<
 
     // eslint-disable-next-line ts/no-this-alias
     const that = this;
+    let emitter: EventEmitter | undefined;
 
-    const obj = {
+    const events = (): EventEmitter => {
+      if (!emitter) {
+        const created = new EventEmitter();
+        created.setMaxListeners(0);
+        emitter = created;
+
+        const signal = that.request.signal;
+        const onDisconnect = () => created.emit("close", false);
+        if (signal.aborted) {
+          queueMicrotask(onDisconnect);
+        } else {
+          signal.addEventListener("abort", onDisconnect, { once: true });
+        }
+      }
+      return emitter;
+    };
+
+    const obj: BunRequestSocket = {
       keepAlive: false,
-      setKeepAlive(value: boolean) {
-        obj.keepAlive = value;
-        return isBoolean(obj.keepAlive);
+      setKeepAlive(enable = false) {
+        obj.keepAlive = enable;
+        return obj;
       },
-      setNoDelay: (value: boolean) => isBoolean(value),
-      setTimeout: (value: number) => isNumber(value),
+      setNoDelay: () => obj,
+      setTimeout(_timeout, callback) {
+        if (callback) {
+          events().once("timeout", callback);
+        }
+        return obj;
+      },
+      // Annotated: an overloaded member gives the implementation no
+      // contextual parameter types.
+      on(event: string, listener: AnySocketListener) {
+        events().on(event, listener);
+        return obj;
+      },
+      addListener(event: string, listener: AnySocketListener) {
+        events().addListener(event, listener);
+        return obj;
+      },
+      once(event: string, listener: AnySocketListener) {
+        events().once(event, listener);
+        return obj;
+      },
+      off(event: string, listener: AnySocketListener) {
+        emitter?.off(event, listener);
+        return obj;
+      },
+      removeListener(event: string, listener: AnySocketListener) {
+        emitter?.removeListener(event, listener);
+        return obj;
+      },
+      removeAllListeners(event) {
+        if (event === undefined) {
+          emitter?.removeAllListeners();
+        } else {
+          emitter?.removeAllListeners(event);
+        }
+        return obj;
+      },
+      emit: (event: string, ...args: unknown[]) =>
+        emitter?.emit(event, ...args) ?? false,
+      listenerCount: (event) => emitter?.listenerCount(event) ?? 0,
+      get destroyed() {
+        return that.request.signal.aborted;
+      },
       get localPort() {
         return that.socketAddress?.port;
       },
@@ -1021,6 +1560,16 @@ export class BunRequest<
     return this._buffer;
   }
 
+  /**
+   * The parsed body. As with Express's body parsers:
+   * - no body at all (no `Content-Length` and no `Transfer-Encoding`, e.g. a
+   *   plain GET, or `fetch()` without a `body`) — `undefined`, never `{}`;
+   * - a declared but empty body (`Content-Length: 0`) — `{}` for JSON and
+   *   urlencoded, `""` for text, an empty `Buffer` for raw, `undefined` with no
+   *   or an unrecognised `Content-Type`;
+   * - `parseBody: false`, or not yet parsed — `undefined`.
+   * Otherwise the parsed value (object, array, string or `Buffer`).
+   */
   get body(): TBody {
     return this._body as TBody;
   }
@@ -1115,12 +1664,97 @@ export class BunRequest<
     return !!this.#parsedMultipartResp;
   }
 
-  public async getMultiParts(options: MultiPartOptions): Promise<{
-    files: Map<MultiPartFileRecord, Set<string>>;
-    fields: Record<string, unknown>;
-  }> {
-    if (this.#parsedMultipartResp) {
-      return this.#parsedMultipartResp;
+  /**
+   * Whether `options` sets any parse-affecting key ({@link MULTIPART_PARSE_KEYS})
+   * to something other than what the cached result was parsed with.
+   * `limits` is compared by its entries; everything else by identity.
+   */
+  #multipartOptionsDiffer(options: MultiPartOptions | undefined): boolean {
+    if (!options) {
+      return false;
+    }
+    const cached: MultiPartOptions = this.#multipartOptions ?? {};
+    const given: MultiPartOptions = options;
+    type Limits = NonNullable<MultiPartOptions["limits"]>;
+
+    return MULTIPART_PARSE_KEYS.some((key) => {
+      const next = given[key];
+      if (next === undefined) {
+        return false;
+      }
+      const previous = cached[key];
+      if (key === "limits" && isObject(next)) {
+        // Unset limits compare equal to `{}`.
+        const a: Limits = next as Limits;
+        const b: Limits = isObject(previous) ? (previous as Limits) : {};
+        const names = new Set([...Object.keys(a), ...Object.keys(b)]);
+        return [...names].some(
+          (name) => a[name as keyof Limits] !== b[name as keyof Limits],
+        );
+      }
+      return next !== previous;
+    });
+  }
+
+  /**
+   * Parses a `multipart/form-data` body with busboy.
+   *
+   * The body is parsed once, normally while the request is built (with
+   * `parseBody.contentTypes.multipart.opts`), and that result is returned to
+   * later calls. When a call's `options` set a parse-affecting key — busboy's
+   * `limits`, `preservePath`, charsets, high-water marks, or `inflate` /
+   * `fieldInflator` / `fileInflator` — to a different value, the buffered body
+   * is **re-parsed** with those options merged over the original ones, so an
+   * upload handler's `limits: { files: 1 }` applies.
+   *
+   * Fields: every value is kept in arrival order; a repeated name becomes an
+   * array. With `inflate` (the default, as documented on `MultiPartOptions`),
+   * bracketed names nest (`address[city]`) and each value is additionally
+   * `JSON.parse`d when it is valid JSON — so `"1"` becomes `1` and `"true"`
+   * becomes `true`, unlike multer, whose fields are always strings. Pass
+   * `inflate: false` for multer's behaviour: names kept as sent, values
+   * strings — typed {@link RawMultiPartFields}. (`inflate: false` always
+   * re-parses a result that was inflated, so that type holds for a cached
+   * result too.)
+   *
+   * busboy `limits` refuse the upload, as multer does, rather than cutting it
+   * short: the parse rejects with an {@link UploadError} (status 413) the
+   * moment a limit is hit, stops reading the body, and never resolves with
+   * truncated data — `LIMIT_PART_COUNT` (`parts`), `LIMIT_FILE_COUNT`
+   * (`files`), `LIMIT_FIELD_COUNT` (`fields`), `LIMIT_FILE_SIZE` (`fileSize`,
+   * `field` naming the file's field), `LIMIT_FIELD_KEY` (`fieldNameSize`) and
+   * `LIMIT_FIELD_VALUE` (`fieldSize`, `field` naming the field). The refusal
+   * is remembered: calling again with the same options rejects the same way.
+   *
+   * @throws {UploadError} when a busboy limit is exceeded.
+   */
+  public async getMultiParts(
+    options: MultiPartOptions & { inflate: false },
+  ): Promise<MultiPartParseResult<RawMultiPartFields>>;
+  public async getMultiParts(
+    options: MultiPartOptions,
+  ): Promise<MultiPartParseResult>;
+  public async getMultiParts(
+    options: MultiPartOptions,
+  ): Promise<MultiPartParseResult> {
+    if (this.#parsedMultipartResp || this.#multipartFailure) {
+      if (!this.#multipartOptionsDiffer(options)) {
+        if (this.#multipartFailure) {
+          throw this.#multipartFailure.error;
+        }
+        if (this.#parsedMultipartResp) {
+          return this.#parsedMultipartResp;
+        }
+      }
+
+      // Merged by key; values are the options' own, of mixed types.
+      const merged: Record<string, unknown> = { ...this.#multipartOptions };
+      for (const [key, value] of Object.entries(options)) {
+        if (value !== undefined) {
+          merged[key] = value;
+        }
+      }
+      options = merged as MultiPartOptions;
     }
 
     const contentTypeHeader = this.getHeader("Content-Type");
@@ -1131,10 +1765,11 @@ export class BunRequest<
       };
     }
 
-    const buffer = await Promise.resolve(this.buffer);
+    const buffer = this.buffer;
+    const parseOptions = options;
     return new Promise((resolve, reject) => {
       const files = new Map<MultiPartFileRecord, Set<string>>();
-      const fieldNameAndValue = new Map<string, Set<string>>();
+      const fieldNameAndValue = new Map<string, string[]>();
 
       let { inflate, fileInflator, fieldInflator } = options;
       const busBoyOpts = omit(options, [
@@ -1147,10 +1782,11 @@ export class BunRequest<
         inflate = true;
       }
 
+      // `obj` is the query parser's untyped tree, walked by shape.
       const recursivelyReplacePlaceholder = (
         obj: Record<string, unknown>,
-        replacement: unknown,
-        valueToReplace: unknown,
+        replacement: Buffer,
+        valueToReplace: string,
       ) => {
         each(obj, (value, key) => {
           if (value === valueToReplace) {
@@ -1195,10 +1831,11 @@ export class BunRequest<
             try {
               let parsedData: Record<string, unknown> | undefined;
 
-              // Attempt to inflate using the query-string parser
+              // Attempt to inflate using the query-string parser. The value is
+              // encoded so a `&`, `=`, `+` or `%` in it survives as data.
               if (!isObject(parsedData)) {
                 parsedData = parseQueryString(
-                  `${fieldname}=${value}`,
+                  `${fieldname}=${encodeURIComponent(value)}`,
                   DEFAULT_PARSE_QUERY_OPTS,
                 ) as Record<string, unknown>;
               }
@@ -1239,105 +1876,187 @@ export class BunRequest<
         }
       }
 
+      /** Set once the parse has resolved or rejected; later events are ignored. */
+      let settled = false;
+
+      /** Rejects the parse once, remembering why (see `#multipartFailure`). */
+      const fail = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        files.clear();
+        fieldNameAndValue.clear();
+        this.#multipartOptions = parseOptions;
+        this.#parsedMultipartResp = undefined;
+        this.#multipartFailure = { error };
+        reject(error);
+      };
+
       try {
         const bb = busboy({ ...busBoyOpts, headers: this.headers });
+        const source = Readable.from(buffer);
         // Track each file handler's promise so the `close` event can await
         // completion deterministically instead of polling state arrays.
         const filePromises: Promise<void>[] = [];
 
+        // multer's `abortWithCode`: refuse the upload, stop feeding busboy and
+        // cancel the body, so nothing truncated is ever resolved.
+        const abort = (code: UploadErrorCode, field?: string) => {
+          if (settled) {
+            return;
+          }
+          fail(new UploadError(code, { field }));
+          source.unpipe(bb);
+          source.destroy();
+        };
+
+        // busboy never truncates a multipart part's name (its `nameTruncated`
+        // is always `false` there), so, as multer does, `fieldNameSize` is
+        // checked by hand — only when it was given.
+        const { limits } = options;
+        const fieldNameSize =
+          limits && Object.hasOwn(limits, "fieldNameSize")
+            ? limits.fieldNameSize
+            : undefined;
+        const nameTooLong = (name: string) =>
+          fieldNameSize !== undefined && name.length > fieldNameSize;
+
+        bb.on("partsLimit", () => abort("LIMIT_PART_COUNT"));
+        bb.on("filesLimit", () => abort("LIMIT_FILE_COUNT"));
+        bb.on("fieldsLimit", () => abort("LIMIT_FIELD_COUNT"));
+
         bb.on("file", (name, file, info) => {
-          filePromises.push(
-            (async () => {
-              const fileBuffer = await streamToBuffer(
-                file as unknown as Readable,
-              );
-              const mimeTypeResp: FileTypeResult | undefined =
-                await fileTypeFromBuffer(fileBuffer as unknown as ArrayBuffer);
+          file.on("limit", () => abort("LIMIT_FILE_SIZE", name));
+          if (nameTooLong(name)) {
+            abort("LIMIT_FIELD_KEY");
+          }
+          if (settled) {
+            file.resume();
+            return;
+          }
 
-              const fileData: MultiPartFileRecord = {
-                ...info,
-                validatedMimeType: mimeTypeResp,
-                fieldname: name,
-                originalFilename: info.filename,
-                file: fileBuffer,
-                type: "file",
-              };
+          const task = (async () => {
+            const fileBuffer = await streamToBuffer(file);
+            const mimeTypeResp: FileTypeResult | undefined =
+              await fileTypeFromBuffer(fileBuffer);
 
-              let pushFile = false;
-              if (inflate && fileInflator) {
-                try {
-                  const parsedData = await fileInflator(name, fileBuffer, info);
-                  const pathListInFileMap =
-                    files.get(fileData) || new Set<string>();
+            const fileData: MultiPartFileRecord = {
+              ...info,
+              validatedMimeType: mimeTypeResp,
+              fieldname: name,
+              originalFilename: info.filename,
+              file: fileBuffer,
+              type: "file",
+            };
 
-                  const processNestedValuePath = (
-                    obj: unknown,
-                    paths: string[],
-                  ) => {
-                    try {
-                      if ((obj as unknown as Buffer) === fileBuffer) {
-                        const pathStr = paths.reduce(
-                          (prev, val) => `${prev}[${val}]`,
-                          ``,
-                        );
-
-                        if (!pathListInFileMap.has(pathStr)) {
-                          pathListInFileMap.add(pathStr);
-                        }
-                      } else {
-                        keys(obj).forEach((key) => {
-                          processNestedValuePath(get(obj, key) as unknown, [
-                            ...paths,
-                            String(key),
-                          ]);
-                        });
-                      }
-                    } catch {
-                      //
-                    }
-                  };
-
-                  processNestedValuePath(parsedData, []);
-                  files.set(fileData, pathListInFileMap);
-                } catch {
-                  pushFile = true;
-                }
-              } else {
-                pushFile = true;
-              }
-
-              if (pushFile) {
+            let pushFile = false;
+            if (inflate && fileInflator) {
+              try {
+                const parsedData = await fileInflator(name, fileBuffer, info);
                 const pathListInFileMap =
                   files.get(fileData) || new Set<string>();
 
-                if (!pathListInFileMap.has(fileData.fieldname)) {
-                  pathListInFileMap.add(fileData.fieldname);
-                }
+                // `obj` is `unknown`: the inflator's output is walked by
+                // shape, and a custom `fileInflator` may return anything.
+                const processNestedValuePath = (
+                  obj: unknown,
+                  paths: string[],
+                ) => {
+                  try {
+                    if (obj === fileBuffer) {
+                      const pathStr = paths.reduce(
+                        (prev, val) => `${prev}[${val}]`,
+                        ``,
+                      );
 
+                      if (!pathListInFileMap.has(pathStr)) {
+                        pathListInFileMap.add(pathStr);
+                      }
+                    } else if (
+                      (isObject(obj) || isArray(obj)) &&
+                      !Buffer.isBuffer(obj)
+                    ) {
+                      // Direct property access: an inflator's key may itself
+                      // contain brackets (`docs[passport]`), which a
+                      // path-aware `get()` would misread as nesting.
+                      const record = obj as Record<string, unknown>;
+                      Object.keys(record).forEach((key) => {
+                        processNestedValuePath(record[key], [...paths, key]);
+                      });
+                    }
+                  } catch {
+                    //
+                  }
+                };
+
+                processNestedValuePath(parsedData, []);
                 files.set(fileData, pathListInFileMap);
+              } catch {
+                pushFile = true;
               }
-            })(),
-          );
+            } else {
+              pushFile = true;
+            }
+
+            if (pushFile) {
+              const pathListInFileMap =
+                files.get(fileData) || new Set<string>();
+
+              if (!pathListInFileMap.has(fileData.fieldname)) {
+                pathListInFileMap.add(fileData.fieldname);
+              }
+
+              files.set(fileData, pathListInFileMap);
+            }
+          })();
+          // `close` awaits every task; this only keeps a task whose stream an
+          // abort cut off from surfacing as an unhandled rejection.
+          task.catch(() => {});
+          filePromises.push(task);
         });
 
-        bb.on("field", (name, val) => {
-          const valueList = fieldNameAndValue.get(name) || new Set<string>();
-          if (!valueList.has(val)) {
-            valueList.add(val);
+        bb.on("field", (name, val, info) => {
+          // multer checks the name before the value.
+          if (info.nameTruncated) {
+            abort("LIMIT_FIELD_KEY");
+            return;
+          }
+          if (info.valueTruncated) {
+            abort("LIMIT_FIELD_VALUE", name);
+            return;
+          }
+          if (nameTooLong(name)) {
+            abort("LIMIT_FIELD_KEY");
+            return;
+          }
+          if (settled) {
+            return;
           }
 
-          fieldNameAndValue.set(name, valueList);
+          // Every value, in arrival order — a repeated identical value is
+          // data, as in busboy and multer.
+          const valueList = fieldNameAndValue.get(name);
+          if (valueList) {
+            valueList.push(val);
+          } else {
+            fieldNameAndValue.set(name, [val]);
+          }
         });
 
         bb.on("close", async () => {
+          if (settled) {
+            return;
+          }
           const fileResults = await Promise.allSettled(filePromises);
+          if (settled) {
+            return;
+          }
           const failedFile = fileResults.find(
             (result) => result.status === "rejected",
           );
           if (failedFile && failedFile.status === "rejected") {
-            files.clear();
-            fieldNameAndValue.clear();
-            reject(failedFile.reason);
+            fail(failedFile.reason);
             return;
           }
 
@@ -1350,79 +2069,36 @@ export class BunRequest<
           }
 
           let fields: Record<string, unknown> = {};
-          await Promise.all(
-            Array.from(fieldNameAndValue.keys()).map(async (fieldName) => {
-              const values = fieldNameAndValue.get(fieldName);
+          for (const [fieldName, values] of fieldNameAndValue) {
+            if (!(inflate && fieldInflator)) {
+              // Names kept exactly as sent; a repeated name is an array.
+              fields[fieldName] = values.length > 1 ? [...values] : values[0];
+              continue;
+            }
 
-              if (values?.size) {
-                switch (true) {
-                  // When the key was repeated in form data
-                  case values.size > 1: {
-                    await Promise.all(
-                      Array.from(values.values()).map(async (value, index) => {
-                        let parsedData!: Record<string, unknown>;
+            // A repeated name is inflated per value, with its index.
+            const entries: [string, string][] =
+              values.length > 1
+                ? values.map((value, index) => [
+                    `${fieldName}[${index}]`,
+                    value,
+                  ])
+                : [[fieldName, values[0]]];
 
-                        if (inflate && fieldInflator) {
-                          const name = `${fieldName}[${index}]`;
-                          parsedData = await fieldInflator(
-                            name,
-                            value,
-                            undefined,
-                          );
-                        } else {
-                          const valueArr: string[] = [];
-                          valueArr[index] = value;
-                          parsedData = {
-                            [fieldName]: valueArr,
-                          };
-                        }
-
-                        keys(parsedData).forEach((key) => {
-                          const value = get(parsedData, key);
-                          fields = merge(fields, {
-                            [key]: value,
-                          });
-                        });
-                      }),
-                    );
-                    break;
-                  }
-
-                  // When the key wasnt repeated in form data
-                  case values.size === 1: {
-                    const value = Array.from(values.values())[0];
-                    let parsedData!: Record<string, unknown>;
-
-                    if (inflate && fieldInflator) {
-                      parsedData = await fieldInflator(
-                        fieldName,
-                        value,
-                        undefined,
-                      );
-                    } else {
-                      parsedData = {
-                        [fieldName]: value,
-                      };
-                    }
-
-                    keys(parsedData).forEach((key) => {
-                      const value = get(parsedData, key);
-                      fields = merge(fields, {
-                        [key]: value,
-                      });
-                    });
-                    break;
-                  }
-
-                  default: {
-                    //
-                  }
-                }
+            for (const [name, value] of entries) {
+              const parsedData = await fieldInflator(name, value, undefined);
+              // Direct property access: a key may contain brackets, which a
+              // path-aware `get()` would read as nesting and find nothing.
+              for (const key of Object.keys(parsedData)) {
+                fields = merge(fields, { [key]: parsedData[key] });
               }
-            }),
-          );
+            }
+          }
 
+          settled = true;
           this._contentType = "multipart";
+          this.#multipartOptions = parseOptions;
+          this.#multipartFailure = undefined;
           this.#parsedMultipartResp = {
             files,
             fields,
@@ -1431,32 +2107,28 @@ export class BunRequest<
           resolve(this.#parsedMultipartResp);
         });
 
-        bb.on("error", (error) => {
-          files.clear();
-          fieldNameAndValue.clear();
-          reject(error);
-        });
-        Readable.from(buffer).pipe(bb);
+        bb.on("error", (error) => fail(error));
+        source.pipe(bb);
       } catch (err) {
-        files.clear();
-        fieldNameAndValue.clear();
-
-        reject(err);
+        fail(err);
       }
     });
   }
+
+  // The body parsers never write request headers: `Content-Type` stays exactly
+  // what the client sent (a sniffed body is reported by `isBodyParsed` and the
+  // body's shape, not by a rewritten header).
 
   private async handleUrlFormEncodingParsing(data: string) {
     try {
       const parsedData = parseSearchString(
         data,
-        this.getParserOpts("urlencoded") ?? DEFAULT_PARSE_QUERY_OPTS,
+        withDefaultQueryOpts(this.getParserOpts("urlencoded")),
       );
 
       if (isObject(parsedData) || isArray(parsedData)) {
         this._body = parsedData;
         this._contentType = "form";
-        this.setHeader("Content-Type", "application/x-www-form-urlencoded");
         return true;
       }
     } catch {
@@ -1470,7 +2142,6 @@ export class BunRequest<
     try {
       this._body = JSON.parse(data, this.getParserOpts("json")?.reviver);
       this._contentType = "json";
-      this.setHeader("Content-Type", "application/json");
       return true;
     } catch {
       // return false;
@@ -1485,7 +2156,6 @@ export class BunRequest<
         this.getParserOpts("xml") ?? this.legacyOptions.parseXmlOpts,
       );
       this._contentType = "xml";
-      this.setHeader("Content-Type", "application/xml");
       return true;
     } catch {
       // return false;
@@ -1514,6 +2184,11 @@ export class BunRequest<
     this.#perTypeConfig = undefined;
     this.#maxContentLength = undefined;
     this.#bodyCapsEnabled = false;
+    this.#inflate = true;
+    this.#decompressionFastPathLimit = DEFAULT_DECOMPRESS_FAST_PATH_LIMIT;
+    this.#contentEncodings = "*";
+    this.#maxContentCodings = DEFAULT_MAX_CONTENT_CODINGS;
+    this.#compressionDictionaries = undefined;
 
     // Deprecated allowlist fallback (overridden below by `contentTypes`).
     // Invalid/empty entries are dropped; an allowlist that filters down to
@@ -1541,6 +2216,19 @@ export class BunRequest<
       config.maxContentLength !== undefined
         ? parseByteSize(config.maxContentLength)
         : undefined;
+    // Body decoding, resolved here with the caps so it reaches the parse the
+    // constructor schedules — which reads the body before any middleware.
+    this.#inflate = config.inflate !== false;
+    this.#decompressionFastPathLimit = resolveDecompressionFastPathLimit(
+      config.decompressionFastPathLimit,
+    );
+    this.#contentEncodings = resolveContentEncodings(config.encodings);
+    this.#maxContentCodings = resolveMaxContentCodings(
+      config.maxContentCodings,
+    );
+    this.#compressionDictionaries = resolveCompressionDictionaries(
+      config.compressionDictionaries,
+    );
 
     const contentTypes = config.contentTypes;
     // `"all"` (or omitted) → no kind restriction beyond any deprecated
@@ -1554,10 +2242,7 @@ export class BunRequest<
     }
 
     const allowed = new Set<ContentParserType>();
-    const perType = new Map<
-      ContentParserType,
-      { opts?: unknown; maxContentLength?: number }
-    >();
+    const perType = new Map<ContentParserType, PerTypeParserConfig>();
 
     for (const key of keys(contentTypes) as ContentParserType[]) {
       // Ignore unrecognized keys entirely.
@@ -1565,7 +2250,7 @@ export class BunRequest<
         continue;
       }
 
-      const value = (contentTypes as Record<string, unknown>)[key];
+      const value = contentTypes[key];
       // `false`/`null`/`undefined` → kind explicitly disallowed.
       if (value === false || isNull(value) || isUndefined(value)) {
         continue;
@@ -1729,18 +2414,97 @@ export class BunRequest<
   }
 
   /**
-   * Leaves the body untouched as a raw `Buffer`. When `rewriteContentType` is
-   * `true` the header is normalized to `application/octet-stream`; otherwise
-   * the original `Content-Type` is preserved (used when a recognized media
-   * type was deliberately excluded via `allowedContentTypes`).
+   * Leaves the body untouched as a raw `Buffer`. The request's `Content-Type`
+   * is never rewritten.
    */
-  private leaveBodyAsRaw(buffer: Buffer, rewriteContentType: boolean) {
+  private leaveBodyAsRaw(buffer: Buffer) {
     this._body = buffer;
     this._buffer = buffer;
     this._contentType = "buffer";
-    if (rewriteContentType) {
-      this.setHeader("Content-Type", "application/octet-stream");
+  }
+
+  /**
+   * Decodes a body per its `Content-Encoding` through `decompressBody`:
+   * `gzip`/`x-gzip`, `deflate` and `br` as body-parser does, plus `zstd`,
+   * `dcb`/`dcz` (with {@link #compressionDictionaries}) and stacked codings
+   * (`gzip, br`, decoded last to first), which body-parser refuses. `identity`
+   * (or no header) is returned as is. An HTTP 415 error answers inflation off,
+   * a coding unsupported or outside {@link #contentEncodings}, or more than
+   * {@link #maxContentCodings} stacked; a 400 answers a corrupt layer or a
+   * dictionary not provided.
+   *
+   * `limit` caps the **decoded** size of every layer, body-parser's `limit`
+   * applied after inflation: a body that would decode past it (a
+   * decompression bomb) is a {@link PayloadTooLargeError} (413). Bun's own
+   * decoders run when a layer's worst case fits
+   * {@link #decompressionFastPathLimit}; otherwise `node:zlib` decodes,
+   * stopping at the limit.
+   */
+  #decodeContentEncoding(buffer: Buffer, limit: number | undefined): Buffer {
+    const header = this.getHeader("Content-Encoding") ?? "";
+    const codings = parseContentCodings(header);
+    // No body at all (no `Content-Length`, no `Transfer-Encoding`, as
+    // `type-is` defines it) is never decoded — body-parser skips such a
+    // request before looking at its encoding.
+    if (
+      codings.length === 0 ||
+      (buffer.length === 0 &&
+        !typeIs.hasBody(this as unknown as IncomingMessage))
+    ) {
+      return buffer;
     }
+
+    if (!this.#inflate) {
+      throw this.#refuseEncoding(415, "content encoding unsupported");
+    }
+
+    let decoded: Buffer | undefined;
+    try {
+      decoded = decompressBody(buffer, header, {
+        maxOutputLength: limit,
+        fastPathLimit: this.#decompressionFastPathLimit,
+        encodings: this.#contentEncodings,
+        maxCodings: this.#maxContentCodings,
+        dictionaries: this.#compressionDictionaries,
+      });
+    } catch (error) {
+      if (error instanceof DecompressionLimitError) {
+        throw new PayloadTooLargeError(error.limit);
+      }
+      if (error instanceof ContentCodingLimitError) {
+        throw this.#refuseEncoding(
+          415,
+          `too many content encodings (${error.count}, at most ${error.limit})`,
+        );
+      }
+      if (error instanceof UnknownCompressionDictionaryError) {
+        throw this.#refuseEncoding(400, "unknown compression dictionary");
+      }
+      if (error instanceof DecompressionError) {
+        throw this.#refuseEncoding(400, "invalid compressed request body");
+      }
+      // A dictionary resolver's own failure is the server's, not a 4xx.
+      throw error;
+    }
+
+    if (!decoded) {
+      const refused =
+        codings.find(
+          (coding) => !isContentCodingAllowed(coding, this.#contentEncodings),
+        ) ?? codings.join(", ");
+      throw this.#refuseEncoding(
+        415,
+        `unsupported content encoding "${refused}"`,
+      );
+    }
+    return decoded;
+  }
+
+  /** Builds, and records as {@link bodyDecodingError}, a refused `Content-Encoding`. */
+  #refuseEncoding(statusCode: 400 | 415, message: string): BunHttpClientError {
+    const error = httpError(statusCode, message);
+    this.#bodyDecodingError = error;
+    return error;
   }
 
   /**
@@ -1802,14 +2566,18 @@ export class BunRequest<
     return this;
   }
 
+  /** Replaces `parseQueryOpts`; merged over the defaults when parsing. */
   public setQueryParserOptions(opts: QueryParserOpts) {
     set(this.options, "parseQueryOpts", opts);
     return this;
   }
 
+  /**
+   * Parses the query string into `req.query` and returns it. `opts` (else
+   * `parseQueryOpts`) are merged over {@link DEFAULT_PARSE_QUERY_OPTS}.
+   */
   public parseQuery(opts?: QueryParserOpts) {
-    const options: QueryParserOpts = opts ||
-      this.options?.parseQueryOpts || { ...DEFAULT_PARSE_QUERY_OPTS };
+    const options = withDefaultQueryOpts(opts || this.options?.parseQueryOpts);
 
     // The parser returns the untyped shape; `TQuery` is the caller's view of it.
     this.query = parseSearchString(
@@ -1819,16 +2587,27 @@ export class BunRequest<
     return this.query;
   }
 
+  /**
+   * Parses the `Cookie` header as cookie-parser does and returns
+   * `{ cookies, signedCookies }`. With a secret (`opts.secret`, else
+   * `req.secret`), every `s:` cookie moves from `cookies` to `signedCookies`:
+   * its unsigned value when a secret verifies it, `false` when none does
+   * (tampered). `j:` values are expanded in both.
+   *
+   * The result is written to `req.cookies`/`req.signedCookies` when they have
+   * not been parsed yet (e.g. `parseCookies: false`), or always with
+   * `forceUpdateRequest: true`.
+   */
   public parseCookies(opts?: {
+    /** Overwrite `req.cookies`/`req.signedCookies` even when already parsed. */
     forceUpdateRequest?: boolean;
+    /** Secret(s) to verify signed cookies with; the first becomes `req.secret` when unset. */
     secret?: BunRequest["secret"];
-  }): {
-    cookies: BunRequest["cookies"];
-    signedCookies: BunRequest["signedCookies"];
-  } {
+  }): BunRequestCookies {
     const forceUpdateRequest = isBoolean(opts?.forceUpdateRequest)
       ? opts?.forceUpdateRequest
       : false;
+    const updateRequest = forceUpdateRequest || this.#cookies === undefined;
 
     const sentSecret = !isUndefined(opts?.secret) ? opts?.secret : "";
 
@@ -1842,10 +2621,12 @@ export class BunRequest<
       this.getHeader("cookie") || this.getHeader("Cookie") || "";
 
     if (!cookieStr) {
-      return {
-        cookies: {},
-        signedCookies: {},
-      };
+      const empty = { cookies: {}, signedCookies: {} };
+      if (updateRequest) {
+        this.cookies = {};
+        this.signedCookies = {};
+      }
+      return empty;
     }
 
     const secrets = isArray(sentSecret)
@@ -1862,19 +2643,28 @@ export class BunRequest<
       cookieStr,
       this.options.cookieParseOptions,
     ) as Record<string, string>;
-    let signedCookiesObj: BunRequest["signedCookies"] = {};
+    let signedCookiesObj: Record<string, JsonValue> = {};
 
     if (secrets.length) {
-      const parsedSignedCookies = extractSignedCookies(cookies, secrets);
-      signedCookiesObj = jsonCookies(parsedSignedCookies);
+      const verified = extractSignedCookies(cookies, secrets);
+      // cookie-parser reports an `s:` cookie no secret verifies as `false`
+      // and removes it from `cookies`, so a tampered value is never trusted.
+      const tampered: Record<string, false> = {};
+      for (const key of Object.keys(cookies)) {
+        if (cookies[key].startsWith("s:")) {
+          tampered[key] = false;
+          delete cookies[key];
+        }
+      }
+      signedCookiesObj = { ...jsonCookies(verified), ...tampered };
     }
 
-    const resp = {
+    const resp: BunRequestCookies = {
       signedCookies: signedCookiesObj,
       cookies: jsonCookies(cookies),
     };
 
-    if (!this.cookies || forceUpdateRequest) {
+    if (updateRequest) {
       this.cookies = resp.cookies;
       this.signedCookies = resp.signedCookies;
     }
@@ -1882,7 +2672,19 @@ export class BunRequest<
     return resp;
   }
 
+  /**
+   * Reads and parses the body (see `parseBody` option docs). A request with no
+   * body — no `Content-Length` and no `Transfer-Encoding`, as `type-is`
+   * defines it — leaves `req.body` `undefined`, as Express's body parsers do;
+   * a declared-but-empty JSON or urlencoded body gives `{}`, and an empty text
+   * body `""`. Request headers are never modified.
+   */
   public async parseBody(fresh = false) {
+    return this.#parseBody(fresh, undefined);
+  }
+
+  /** {@link parseBody}, with an optional byte cap overriding `parseBody`'s. */
+  async #parseBody(fresh: boolean, limitOverride: number | undefined) {
     if (!fresh && this.isBodyParsed) {
       return {
         body: this._body,
@@ -1893,18 +2695,24 @@ export class BunRequest<
     }
 
     const contentTypeHeader = this.getHeader("Content-Type");
+    const declaredKind = contentTypeHeader
+      ? this.detectParserKind(contentTypeHeader)
+      : undefined;
+    const limit = limitOverride ?? this.resolveContentLimit(declaredKind);
 
     let buffer = this._buffer;
     if (!buffer && !this.request.bodyUsed) {
-      // Resolve the size cap from the declared content type up front, then read
-      // the body under that cap — rejecting an oversized payload before (or
-      // while) it is buffered. See {@link readBodyWithLimit}.
-      const declaredKind = contentTypeHeader
-        ? this.detectParserKind(contentTypeHeader)
-        : undefined;
-      const limit = this.resolveContentLimit(declaredKind);
+      // Read the body under the cap resolved from the declared content type —
+      // rejecting an oversized payload before (or while) it is buffered. See
+      // {@link readBodyWithLimit}.
       try {
-        buffer = await this.readBodyWithLimit(limit);
+        buffer = this.#decodeContentEncoding(
+          await this.readBodyWithLimit(limit),
+          limit,
+        );
+        if (limit !== undefined && buffer.length > limit) {
+          throw new PayloadTooLargeError(limit, buffer.length);
+        }
       } catch (error) {
         if (error instanceof PayloadTooLargeError) {
           this.#payloadTooLarge = { limit: error.limit, length: error.length };
@@ -1918,6 +2726,32 @@ export class BunRequest<
     }
 
     this._buffer = buffer;
+    this.#bodyParsed = true;
+
+    if (buffer.length === 0) {
+      this._body = undefined;
+      // `as unknown as IncomingMessage` here and below: `type-is` and
+      // `accepts` are typed for Node's request, and read only the headers
+      // this class exposes under the same names.
+      if (typeIs.hasBody(this as unknown as IncomingMessage) && declaredKind) {
+        if (!this.isParserAllowed(declaredKind)) {
+          this.leaveBodyAsRaw(buffer);
+        } else if (declaredKind === "json" || declaredKind === "urlencoded") {
+          this._body = {};
+        } else if (declaredKind === "text") {
+          this._body = "";
+        } else if (declaredKind === "raw") {
+          this.leaveBodyAsRaw(buffer);
+        }
+      }
+
+      return {
+        body: this._body,
+        buffer: this._buffer,
+        contentType: this._contentType,
+        multipart: this.#parsedMultipartResp,
+      };
+    }
 
     const bufferText = buffer.toString();
 
@@ -1947,16 +2781,15 @@ export class BunRequest<
 
       // Leave it as buffer
       if (!hasParsedData) {
-        this.leaveBodyAsRaw(buffer, true);
+        this.leaveBodyAsRaw(buffer);
       }
     } else {
-      const kind = this.detectParserKind(contentTypeHeader);
+      const kind = declaredKind;
 
       // A recognized media type whose parser was excluded via
-      // `allowedContentTypes`/`parseBody.contentTypes` is left as a raw buffer,
-      // preserving its header.
+      // `allowedContentTypes`/`parseBody.contentTypes` is left as a raw buffer.
       if (kind && !this.isParserAllowed(kind)) {
-        this.leaveBodyAsRaw(buffer, false);
+        this.leaveBodyAsRaw(buffer);
       } else {
         switch (kind) {
           case "text": {
@@ -1967,7 +2800,7 @@ export class BunRequest<
           }
 
           case "raw": {
-            this.leaveBodyAsRaw(buffer, false);
+            this.leaveBodyAsRaw(buffer);
             break;
           }
 
@@ -1996,7 +2829,7 @@ export class BunRequest<
           }
 
           default: {
-            this.leaveBodyAsRaw(buffer, true);
+            this.leaveBodyAsRaw(buffer);
             break;
           }
         }
@@ -2011,33 +2844,140 @@ export class BunRequest<
     };
   }
 
+  /** Whether the request matches a body-parser `type` option (body-parser's `typeChecker`). */
+  #matchesBodyParserType(
+    type: NonNullable<BodyParserOptions["type"]>,
+  ): boolean {
+    if (typeof type === "function") {
+      return Boolean(type(this as unknown as IncomingMessage));
+    }
+    // Matched on the header alone: `type-is`'s request form also requires a
+    // `Content-Length`/`Transfer-Encoding`, which a `Request` built in process
+    // (`fetch()`, tests) does not carry even with a body.
+    const contentType = this.getHeader("Content-Type");
+    return Boolean(
+      contentType && typeIs.is(contentType, isString(type) ? [type] : type),
+    );
+  }
+
+  /**
+   * The body-parser middleware entry point (`useBodyParser` /
+   * `registerParserMiddleware`). Parses the body when `parseBody` is enabled
+   * and resolves the buffered body when `returnBuffer` is `true`.
+   *
+   * `options` follow body-parser:
+   * - `type` — a media type, list, or `(req) => boolean`. A request that does
+   *   not match (or has no body) is skipped: nothing is parsed and
+   *   `undefined` is returned. Without `type`, `parser` picks body-parser's
+   *   default for that kind (`json` → `application/json`, …); with neither,
+   *   every request is parsed.
+   * - `limit` — bytes or a string (`"1mb"`). Overrides `parseBody`'s cap; a
+   *   larger body throws {@link PayloadTooLargeError} (413), including one
+   *   already buffered while the request was built. Unset keeps `parseBody`'s
+   *   own cap (body-parser would default to 100kb).
+   * - `inflate` — `true` (default) inflates `gzip`/`deflate`/`br`; `false`
+   *   rejects any `Content-Encoding` but `identity` with a 415 error.
+   *
+   * With `parseBody: false` on the request this parses nothing.
+   *
+   * `returnBuffer: true` resolves `Buffer | undefined`, never a guaranteed
+   * buffer: it is `undefined` when the request does not match `type`, when
+   * `parseBody` is off and nothing was buffered, or when the body was already
+   * consumed without being buffered.
+   */
   public async handleBodyParsing(): Promise<undefined>;
-  public async handleBodyParsing(returnBuffer: false): Promise<undefined>;
+  public async handleBodyParsing(
+    returnBuffer: false,
+    options?: BodyParserOptions,
+    parser?: BodyParserType,
+  ): Promise<undefined>;
   public async handleBodyParsing(
     returnBuffer: true,
     options?: BodyParserOptions,
-  ): Promise<Buffer>;
+    parser?: BodyParserType,
+  ): Promise<Buffer | undefined>;
   public async handleBodyParsing(
     returnBuffer = false,
-    // options?: BodyParserOptions,
+    options?: BodyParserOptions,
+    parser?: BodyParserType,
   ): Promise<Buffer | undefined> {
-    if (this.request.bodyUsed || !this.options.parseBody) {
+    if (!this.options.parseBody) {
       if (returnBuffer && this._buffer) {
-        return Buffer.from(this._buffer as unknown as ArrayBuffer);
+        return Buffer.from(this._buffer);
       }
-
       return;
     }
 
-    const parsedBodyResp = await this.parseBody();
+    const type =
+      options?.type ?? (parser ? DEFAULT_BODY_PARSER_TYPES[parser] : undefined);
+    if (type !== undefined && !this.#matchesBodyParserType(type)) {
+      return;
+    }
+
+    if (options?.decompressionFastPathLimit !== undefined) {
+      this.#decompressionFastPathLimit = resolveDecompressionFastPathLimit(
+        options.decompressionFastPathLimit,
+      );
+    }
+    if (options?.maxContentCodings !== undefined) {
+      this.#maxContentCodings = resolveMaxContentCodings(
+        options.maxContentCodings,
+      );
+    }
+    if (options?.compressionDictionaries !== undefined) {
+      this.#compressionDictionaries = resolveCompressionDictionaries(
+        options.compressionDictionaries,
+      );
+    }
+    if (options?.encodings !== undefined) {
+      this.#contentEncodings = resolveContentEncodings(options.encodings);
+    }
+
+    // `inflate` and `encodings` refuse a coding even for a body already read,
+    // as body-parser checks `inflate` in every parser it runs.
+    if (options?.inflate !== undefined || options?.encodings !== undefined) {
+      if (options.inflate !== undefined) {
+        this.#inflate = options.inflate !== false;
+      }
+      const codings = parseContentCodings(
+        this.getHeader("Content-Encoding") ?? "",
+      );
+      if (!this.#inflate && codings.length > 0) {
+        throw httpError(415, "content encoding unsupported");
+      }
+      const refused =
+        options.encodings === undefined
+          ? undefined
+          : codings.find(
+              (coding) =>
+                !isContentCodingAllowed(coding, this.#contentEncodings),
+            );
+      if (refused !== undefined) {
+        throw httpError(415, `unsupported content encoding "${refused}"`);
+      }
+    }
+
+    const limit =
+      options?.limit !== undefined ? parseByteSize(options.limit) : undefined;
+    if (limit !== undefined && this._buffer && this._buffer.length > limit) {
+      this.#payloadTooLarge = { limit, length: this._buffer.length };
+      throw new PayloadTooLargeError(limit, this._buffer.length);
+    }
+
+    if (this.request.bodyUsed && !this._buffer) {
+      return;
+    }
+
+    const parsedBodyResp = await this.#parseBody(false, limit);
 
     if (returnBuffer) {
       return parsedBodyResp.buffer;
     }
   }
 
+  /** `true` once the body has been parsed (a body left `undefined` included). */
   get isBodyParsed() {
-    return !!this._contentType;
+    return this.#bodyParsed || !!this._contentType;
   }
 
   /**
@@ -2055,6 +2995,22 @@ export class BunRequest<
    */
   get payloadTooLarge(): { limit: number; length?: number } | undefined {
     return this.#payloadTooLarge;
+  }
+
+  /**
+   * The HTTP error a body read was refused with because its
+   * `Content-Encoding` could not be decoded: `415` with `inflate: false` or
+   * for an unsupported coding, `400` for a corrupt stream. `undefined` while
+   * no read hit one.
+   *
+   * Adapters read it after `init`, next to {@link isPayloadTooLarge}: a body
+   * parsed while the request was built is read before any middleware, so the
+   * adapter passes this error to its error handling (body-parser's
+   * `next(err)`), answering with its status instead of routing a request
+   * whose body is missing.
+   */
+  get bodyDecodingError(): BunHttpClientError | undefined {
+    return this.#bodyDecodingError;
   }
 
   /**
@@ -2215,7 +3171,11 @@ export class BunRequest<
   getHeaders() {
     const arr = Array.from(this.headersObj.keys()).reduce(
       (prev, val) => {
-        const value: string | string[] | null = this.headersObj.get(val);
+        // `Set-Cookie` is always an array, as Node's `req.headers`.
+        const value: string | string[] | null =
+          val === "set-cookie"
+            ? this.headersObj.getSetCookie()
+            : this.headersObj.get(val);
         if (isNull(value)) {
           return prev;
         }
@@ -2259,16 +3219,30 @@ export class BunRequest<
         this.headersObj.append(name, value);
       }
     }
+
+    // Invalidate the cached view, as `removeHeader` does.
+    this.#headers = undefined;
   }
 
   get ip() {
     return this.socketAddress?.address || "";
   }
 
-  get ips() {
-    return (this.headersObj.get("X-Forwarded-For") || "")
+  /**
+   * The addresses in `X-Forwarded-For`, client first (Express's `req.ips` with
+   * proxy trust enabled). `[]` when the header is absent or empty. Unlike
+   * Express there is no `trust proxy` setting: the header is always read, so
+   * only rely on it behind a proxy that sets it.
+   */
+  get ips(): string[] {
+    const header = this.headersObj.get("X-Forwarded-For");
+    if (!header) {
+      return [];
+    }
+    return header
       .split(",")
-      .map((ip) => ip.trimStart());
+      .map((ip) => ip.trim())
+      .filter(Boolean);
   }
 
   get originalUrl() {
@@ -2386,27 +3360,39 @@ export class BunRequest<
       : false;
   }
 
-  public accepts(): string[] | string | false;
-  public accepts(types: string[]): string[] | string | false;
-  public accepts(...types: string[]): string[] | string | false;
-  public accepts(...args: string[] | [string[]]) {
+  /**
+   * Content negotiation on `Accept`, as Express's `req.accepts`. With no
+   * types, every acceptable type in preference order (`string[]`); with types
+   * (a list or spread), the best match or `false`.
+   */
+  public accepts(): string[];
+  public accepts(types: string[]): string | false;
+  public accepts(...types: string[]): string | false;
+  public accepts(...args: string[] | [string[]]): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.types.apply(accept, flattenDeep(args));
   }
 
-  public acceptsTypes(): string[] | string | false;
-  public acceptsTypes(types: string[]): string[] | string | false;
-  public acceptsTypes(...types: string[]): string[] | string | false;
-  public acceptsTypes(...args: string[] | [string[]]) {
+  /** Alias of {@link accepts}. */
+  public acceptsTypes(): string[];
+  public acceptsTypes(types: string[]): string | false;
+  public acceptsTypes(...types: string[]): string | false;
+  public acceptsTypes(
+    ...args: string[] | [string[]]
+  ): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.types.apply(accept, flattenDeep(args));
   }
 
-  public acceptsType(encodings: string[]): string[] | string | false;
-  public acceptsType(...encodings: string[]): string[] | string | false;
-  public acceptsType(...args: string[] | [string[]]) {
+  /** Alias of {@link accepts}. */
+  public acceptsType(): string[];
+  public acceptsType(types: string[]): string | false;
+  public acceptsType(...types: string[]): string | false;
+  public acceptsType(
+    ...args: string[] | [string[]]
+  ): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.types.apply(accept, flattenDeep(args));
@@ -2426,9 +3412,13 @@ export class BunRequest<
     return accept.encodings.apply(accept, flattenDeep(args));
   }
 
-  public acceptsEncoding(encodings: string[]): string[] | string | false;
-  public acceptsEncoding(...encodings: string[]): string[] | string | false;
-  public acceptsEncoding(...args: string[] | [string[]]) {
+  /** Alias of {@link acceptsEncodings}. */
+  public acceptsEncoding(): string[];
+  public acceptsEncoding(encodings: string[]): string | false;
+  public acceptsEncoding(...encodings: string[]): string | false;
+  public acceptsEncoding(
+    ...args: string[] | [string[]]
+  ): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.encodings.apply(accept, flattenDeep(args));
@@ -2448,9 +3438,13 @@ export class BunRequest<
     return accept.charsets.apply(accept, flattenDeep(args));
   }
 
-  public acceptsCharset(charsets: string[]): string[] | string | false;
-  public acceptsCharset(...charsets: string[]): string[] | string | false;
-  public acceptsCharset(...args: string[] | [string[]]) {
+  /** Alias of {@link acceptsCharsets}. */
+  public acceptsCharset(): string[];
+  public acceptsCharset(charsets: string[]): string | false;
+  public acceptsCharset(...charsets: string[]): string | false;
+  public acceptsCharset(
+    ...args: string[] | [string[]]
+  ): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.charsets.apply(accept, flattenDeep(args));
@@ -2470,26 +3464,69 @@ export class BunRequest<
     return accept.languages.apply(accept, flattenDeep(args));
   }
 
+  /** Alias of {@link acceptsLanguages}. */
+  public acceptsLanguage(): string[];
   public acceptsLanguage(languages: string[]): string | false;
   public acceptsLanguage(...languages: string[]): string | false;
-  public acceptsLanguage(...args: string[] | [string[]]) {
+  public acceptsLanguage(
+    ...args: string[] | [string[]]
+  ): string[] | string | false {
     const accept = accepts(this as unknown as IncomingMessage);
     // eslint-disable-next-line prefer-spread
     return accept.languages.apply(accept, flattenDeep(args));
   }
 
+  /**
+   * Parses the `Range` header against a resource of `size` bytes, as
+   * Express's `req.range`: the ranges (with their `type`), `-1` when
+   * unsatisfiable, `-2` when malformed, `undefined` with no `Range` header.
+   * `combine` merges overlapping and adjacent ranges.
+   */
   public range(
-    size: Parameters<typeof rangeParser>[0],
-    opts: Parameters<typeof rangeParser>[2],
-  ) {
+    size: number,
+    opts?: Parameters<typeof rangeParser>[2],
+  ): RangeParserResult | undefined {
     const rangeHeader = this.getHeader("Range");
     if (!rangeHeader) return;
     return rangeParser(size, rangeHeader, opts);
   }
 
-  get(name: string, defaultVal: string | string[] | undefined = undefined) {
-    if (!isUndefined(defaultVal) && !this.hasHeader(name)) {
-      return defaultVal as string | string[];
+  /**
+   * A request header, case-insensitively. Absent, it is `null` — or
+   * `defaultVal` when one is given. Like `Headers.get`, a repeated header
+   * comes back as one comma-joined string — except `Set-Cookie`, which, as
+   * Node's `req.headers["set-cookie"]` (and so Express's `req.get`), is an
+   * array of its lines (`Headers.getSetCookie()`): a cookie's `Expires` date
+   * holds a comma, so joined lines could not be split back apart. The array
+   * type follows a literal name in any letter case; a name typed only as
+   * `string` is typed `string | null` even when it is `set-cookie`.
+   */
+  get<N extends string>(name: N & SetCookieHeaderName<N>): string[] | null;
+  get<N extends string>(
+    name: N & SetCookieHeaderName<N>,
+    defaultVal: string[],
+  ): string[];
+  get<N extends string>(
+    name: N & SetCookieHeaderName<N>,
+    defaultVal: string,
+  ): string[] | string;
+  get(name: string): string | null;
+  get(name: string, defaultVal: string): string;
+  get(name: string, defaultVal: string[]): string | string[];
+  get(
+    name: string,
+    defaultVal: string | string[] | undefined,
+  ): string | string[] | null;
+  get(
+    name: string,
+    defaultVal: string | string[] | undefined = undefined,
+  ): string | string[] | null {
+    if (!this.hasHeader(name)) {
+      return isUndefined(defaultVal) ? null : defaultVal;
+    }
+
+    if (name.toLowerCase() === "set-cookie") {
+      return this.headersObj.getSetCookie();
     }
 
     return this.getHeader(name);
