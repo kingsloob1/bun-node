@@ -94,3 +94,147 @@ type WalkPath<
 export type ExtractRouteParams<P extends string> = string extends P
   ? Record<string, string>
   : Prettify<WalkPath<P>>;
+
+/*
+ * Host patterns — what `domain(":tenant.example.com", …)` captures.
+ *
+ * `@routejs/router` tokenises a host exactly like a path, with `.` as the
+ * delimiter instead of `/`, and `BunRouter` merges the captures into
+ * `req.params`. So, mirroring its `host-regex` tokenizer:
+ *
+ * - `:name`            → `{ name: string }`; a name is `[A-Za-z0-9_]+`, so it
+ *                        may end mid-label (`:tenant-:region.example.com`)
+ * - `:name?`           → `{ name?: string }`
+ * - `:name(regex)`     → `{ name: string }` (and `:name(regex)?` optional)
+ * - `*`                → a positional key (`"0"`, `"1"`, …)
+ * - `(regex)`          → a positional key too, from the same counter as `*`
+ * - `\:`               → an escaped character, not a param
+ *
+ * A non-literal host (a `string` variable) degrades to
+ * `Record<string, string>`; a host with no captures gives no params.
+ */
+
+/**
+ * Every character in `S`, as a union. Accumulates, so the recursion is in tail
+ * position and not bounded by TypeScript's shallow nesting limit.
+ */
+type CharsOf<
+  S extends string,
+  Chars extends string = never,
+> = S extends `${infer C}${infer Rest}` ? CharsOf<Rest, Chars | C> : Chars;
+
+/** The characters routejs accepts in a param name. */
+type NameChar =
+  CharsOf<"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_">;
+
+/** Splits a param name off the front of `S`: `[name, rest]`. */
+type TakeName<
+  S extends string,
+  Name extends string = "",
+> = S extends `${infer C}${infer Rest}`
+  ? C extends NameChar
+    ? TakeName<Rest, `${Name}${C}`>
+    : [Name, S]
+  : [Name, S];
+
+/**
+ * What follows a `(regex)` group, given the text after its opening `(`.
+ * Nested groups and escaped characters are skipped, as the tokenizer does.
+ */
+type SkipGroup<
+  S extends string,
+  Depth extends readonly unknown[] = [],
+> = S extends `\\${string}${infer Rest}`
+  ? SkipGroup<Rest, Depth>
+  : S extends `(${infer Rest}`
+    ? SkipGroup<Rest, [...Depth, unknown]>
+    : S extends `)${infer Rest}`
+      ? Depth extends [unknown, ...infer Outer]
+        ? SkipGroup<Rest, Outer>
+        : Rest
+      : S extends `${string}${infer Rest}`
+        ? SkipGroup<Rest, Depth>
+        : "";
+
+/** `S` with an optional `(regex)` constraint skipped. */
+type AfterConstraint<S extends string> = S extends `(${infer Rest}`
+  ? SkipGroup<Rest>
+  : S;
+
+/**
+ * Walks a host pattern, collecting required and optional keys. Tail-recursive,
+ * so a long host stays within TypeScript's recursion limit.
+ */
+type WalkHost<
+  S extends string,
+  Required extends string = never,
+  Optional extends string = never,
+  Seen extends readonly unknown[] = [],
+> = S extends `\\${string}${infer Rest}`
+  ? WalkHost<Rest, Required, Optional, Seen>
+  : S extends `:${infer Rest}`
+    ? TakeName<Rest> extends [
+        infer Name extends string,
+        infer After extends string,
+      ]
+      ? AfterConstraint<After> extends `?${infer Tail}`
+        ? WalkHost<Tail, Required, Optional | Name, Seen>
+        : WalkHost<AfterConstraint<After>, Required | Name, Optional, Seen>
+      : never
+    : S extends `*${infer Rest}`
+      ? WalkHost<
+          Rest,
+          Required | (WildcardKeys[Seen["length"]] & string),
+          Optional,
+          [...Seen, unknown]
+        >
+      : S extends `(${infer Rest}`
+        ? SkipGroup<Rest> extends `?${infer Tail}`
+          ? WalkHost<
+              Tail,
+              Required,
+              Optional | (WildcardKeys[Seen["length"]] & string),
+              [...Seen, unknown]
+            >
+          : WalkHost<
+              SkipGroup<Rest>,
+              Required | (WildcardKeys[Seen["length"]] & string),
+              Optional,
+              [...Seen, unknown]
+            >
+        : S extends `${string}${infer Rest}`
+          ? WalkHost<Rest, Required, Optional, Seen>
+          : [Required, Optional];
+
+/** Builds the params object from the keys {@link WalkHost} collected. */
+type HostParamsOf<Keys> = Keys extends [
+  infer Required extends string,
+  infer Optional extends string,
+]
+  ? [Required | Optional] extends [never]
+    ? NoParams
+    : Prettify<
+        { [K in Required]: string } & {
+          [K in Exclude<Optional, Required>]?: string;
+        }
+      >
+  : NoParams;
+
+/**
+ * The params a host pattern `H` puts on `req.params`:
+ * `ExtractHostParams<":tenant.example.com">` is `{ tenant: string }`.
+ */
+export type ExtractHostParams<H extends string> = string extends H
+  ? Record<string, string>
+  : HostParamsOf<WalkHost<H>>;
+
+/**
+ * Path params merged over host params, as the matcher merges them: a path
+ * param of the same name wins. With no host params, `TParams` is returned
+ * unchanged.
+ */
+export type WithHostParams<TParams, THostParams> = [keyof THostParams] extends [
+  never,
+]
+  ? TParams
+  : Prettify<Omit<THostParams, keyof TParams> & TParams>;

@@ -7,6 +7,7 @@
  * `bun test` — see the tests typecheck command in CLAUDE.md.
  */
 import type { RouterErrorMiddlewareHandler } from "../lib/types/general";
+import type { ResolvedHandler } from "../lib/types/routeTyping";
 import type { StandardSchemaV1 } from "../lib/types/standardSchema";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunRouter } from "../lib/BunRouter";
@@ -142,6 +143,81 @@ adapter.all("/any/:id", (_req) => {
 });
 adapter.propfind("/pf/:id", (_req) => {
   type _ = Expect<Equal<typeof _req.params, { id: string }>>;
+});
+
+/* --- a handler declared ahead of the call --------------------------- */
+
+// Typed as the route's own handler type. It cannot follow an *inline*
+// `validate(...)` (a TypeScript inference limit, documented on
+// `ResolvedHandler`), so these are the two supported forms.
+interface PageShape {
+  query: { page: number };
+}
+const declaredHandler: ResolvedHandler<"/declared/:id", PageShape> = (
+  req,
+  res,
+) => {
+  res.send(`${req.params.id}:${req.query.page}`);
+};
+
+// 1. The validator stored in a const first.
+const pageQuery = validate({ query: QuerySchema });
+router.get("/declared/:id", pageQuery, declaredHandler);
+adapter.get("/declared/:id", pageQuery, declaredHandler);
+router.get(
+  "/declared/:id",
+  (_req, _res, next) => next(),
+  pageQuery,
+  declaredHandler,
+);
+
+// 2. The verb's type arguments spelled out.
+router.get<"/declared/:id", PageShape>(
+  "/declared/:id",
+  validate({ query: QuerySchema }),
+  declaredHandler,
+);
+
+// The limit itself, pinned so a TypeScript that lifts it is noticed.
+// @ts-expect-error an inline generic validator loses inference to TShape
+router.get("/declared/:id", validate({ query: QuerySchema }), declaredHandler);
+
+// Negative control: a declared handler expecting a shape the validator does
+// not produce is refused.
+const wrongHandler: ResolvedHandler<
+  "/declared/:id",
+  { query: { page: string } }
+> = () => undefined;
+// @ts-expect-error the validator parses `page` as a number, not a string
+router.get("/declared/:id", pageQuery, wrongHandler);
+
+/* --- ws(): `ws.data.custom` is the adapter's WebSocket data type ---- */
+
+const socketAdapter = new BunHttpAdapter<{ userId: string }>(0);
+socketAdapter.ws("/chat", {
+  message(_ws) {
+    type _ = Expect<Equal<typeof _ws.data.custom, { userId: string }>>;
+  },
+});
+
+// On a bare router the type comes from `customDataToWsClientFn`…
+router.ws(
+  "/rooms",
+  {
+    open(_ws) {
+      type _ = Expect<Equal<typeof _ws.data.custom, { room: string }>>;
+    },
+    message: () => undefined,
+  },
+  () => ({ room: "lobby" }),
+);
+
+// …or an explicit type argument.
+router.ws<{ room: string }>("/rooms", {
+  open(_ws) {
+    type _ = Expect<Equal<typeof _ws.data.custom, { room: string }>>;
+  },
+  message: () => undefined,
 });
 
 export {};

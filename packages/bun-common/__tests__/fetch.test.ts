@@ -210,3 +210,163 @@ describe("BunHttpAdapter.fetch: matches a real socket request", () => {
     expect(adapter.isListening).toBe(false);
   });
 });
+
+describe("BunHttpAdapter.fetch: setErrorHandler", () => {
+  function build(adapter: BunHttpAdapter) {
+    adapter.get("/boom", () => {
+      throw new Error("exploded");
+    });
+    adapter.setErrorHandler((error, req, res) => {
+      res.status(502).json({ error: (error as Error).message, path: req.path });
+    });
+  }
+
+  it("runs the error handlers, exactly as a served request does", async () => {
+    const served = new BunHttpAdapter(0);
+    build(served);
+    await served.listen(0);
+
+    const offline = new BunHttpAdapter(0);
+    build(offline);
+
+    try {
+      const overSocket = await fetch(
+        `http://127.0.0.1:${served.listeningPort}/boom`,
+      );
+      const offlineResponse = await offline.fetch("/boom");
+
+      expect(offlineResponse.status).toBe(502);
+      expect(offlineResponse.status).toBe(overSocket.status);
+      expect(await offlineResponse.json()).toEqual(await overSocket.json());
+    } finally {
+      await served.close();
+    }
+  });
+
+  it("answers for the error a throwing error handler raised", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.get("/boom", () => {
+      throw new Error("exploded");
+    });
+    adapter.setErrorHandler(() => {
+      throw Object.assign(new Error("handler failed"), { status: 503 });
+    });
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("<pre>Service Unavailable</pre>");
+  });
+});
+
+describe("BunHttpAdapter.fetch: no error handler (finalhandler fallback)", () => {
+  /** Routes whose errors nothing handles. */
+  function build(adapter: BunHttpAdapter) {
+    adapter.useBodyParser("json", false, { limit: 10 });
+    adapter.all("/boom", () => {
+      throw new Error("secret detail");
+    });
+    adapter.get("/teapot", () => {
+      throw Object.assign(new Error("short and stout"), {
+        status: 418,
+        headers: { "X-Brew": "refused" },
+      });
+    });
+    adapter.get("/status-code", () => {
+      throw Object.assign(new Error("gone"), { statusCode: 410 });
+    });
+    adapter.get("/not-an-error-status", () => {
+      throw Object.assign(new Error("odd"), { status: 302 });
+    });
+    adapter.get("/primitive", () => {
+      // eslint-disable-next-line no-throw-literal
+      throw "a bare string";
+    });
+    adapter.post("/json", (_req, res) => res.send("parsed"));
+    adapter.get("/hang", () => undefined);
+  }
+
+  const cases: { target: string; init?: RequestInit; status: number }[] = [
+    { target: "/boom", status: 500 },
+    { target: "/boom", init: { method: "HEAD" }, status: 500 },
+    { target: "/teapot", status: 418 },
+    { target: "/status-code", status: 410 },
+    { target: "/not-an-error-status", status: 500 },
+    { target: "/primitive", status: 500 },
+    {
+      target: "/json",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "x".repeat(100) }),
+      },
+      status: 413,
+    },
+    // A timeout carries no request, so it takes the fallback too.
+    { target: "/hang", status: 500 },
+  ];
+
+  it("resolves the same response a served request gets", async () => {
+    const served = new BunHttpAdapter(100);
+    build(served);
+    await served.listen(0);
+
+    const offline = new BunHttpAdapter(100);
+    build(offline);
+
+    try {
+      for (const { target, init, status } of cases) {
+        const overSocket = await fetch(
+          `http://127.0.0.1:${served.listeningPort}${target}`,
+          init,
+        );
+        const offlineResponse = await offline.fetch(target, init);
+
+        expect([target, offlineResponse.status]).toEqual([target, status]);
+        expect(offlineResponse.status).toBe(overSocket.status);
+        for (const header of [
+          "content-type",
+          "content-security-policy",
+          "x-content-type-options",
+          "x-brew",
+        ]) {
+          expect(offlineResponse.headers.get(header)).toBe(
+            overSocket.headers.get(header),
+          );
+        }
+        expect(await offlineResponse.text()).toBe(await overSocket.text());
+      }
+    } finally {
+      await served.close();
+    }
+  });
+
+  it("sends the status message as an HTML page, never the error's detail", async () => {
+    const adapter = new BunHttpAdapter(100);
+    build(adapter);
+
+    const response = await adapter.fetch("/boom");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toBe(
+      "text/html; charset=utf-8",
+    );
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'",
+    );
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    const body = await response.text();
+    expect(body).toContain("<pre>Internal Server Error</pre>");
+    expect(body).not.toContain("secret detail");
+    expect(body).not.toContain("at ");
+
+    const tooLarge = await adapter.fetch("/json", cases[6]?.init);
+    expect(tooLarge.status).toBe(413);
+    expect(await tooLarge.text()).toContain("<pre>Payload Too Large</pre>");
+
+    const teapot = await adapter.fetch("/teapot");
+    expect(teapot.headers.get("x-brew")).toBe("refused");
+
+    const head = await adapter.fetch("/boom", { method: "HEAD" });
+    expect(head.status).toBe(500);
+    expect(await head.text()).toBe("");
+  });
+});

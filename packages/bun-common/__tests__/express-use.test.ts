@@ -1,4 +1,8 @@
-import type { NextFunction } from "../lib/types/general";
+import type {
+  NextFunction,
+  RouterErrorMiddlewareHandler,
+  RouterHandler,
+} from "../lib/types/general";
 import { describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
 import { BunResponse } from "../lib/BunResponse";
@@ -329,6 +333,101 @@ describe("Express 5 use: path-prefix matching", () => {
   });
 });
 
+/**
+ * Express 5's `Router({ caseSensitive })` compiles `use()` prefixes and routes
+ * with the same path-to-regexp `sensitive` flag, so the setting covers both.
+ * routejs rebuilds a prefix regex from its exact regex's `source`, which drops
+ * the `i` flag — these tests pin that it is restored.
+ */
+describe("Express 5 use: prefix matching honours caseSensitive", () => {
+  /** A router whose `/Admin` prefix middleware answers with `req.baseUrl`. */
+  function adminRouter(options?: { caseSensitive?: boolean }): BunRouter {
+    const router = new BunRouter(options);
+    router.use("/Admin", (req, res) => res.send(`mw ${req.baseUrl}`));
+    return router;
+  }
+
+  it("ignores case by default, with baseUrl in the request's spelling", async () => {
+    const response = await adminRouter().fetch("/admin/x");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("mw /admin");
+  });
+
+  it("ignores case with caseSensitive: false", async () => {
+    const router = adminRouter({ caseSensitive: false });
+    expect(await (await router.fetch("/ADMIN/x")).text()).toBe("mw /ADMIN");
+    expect(await (await router.fetch("/Admin")).text()).toBe("mw /Admin");
+    // Still a segment-boundary prefix, whatever the case.
+    expect((await router.fetch("/administrators")).status).toBe(404);
+  });
+
+  it("refuses a differently-cased prefix with caseSensitive: true", async () => {
+    const router = adminRouter({ caseSensitive: true });
+    expect((await router.fetch("/admin/x")).status).toBe(404);
+    expect(await (await router.fetch("/Admin/x")).text()).toBe("mw /Admin");
+  });
+
+  it("a mounted sub-router's middleware and baseUrl ignore case", async () => {
+    const seen: string[] = [];
+    const sub = new BunRouter();
+    sub.use((req, _res, next) => {
+      seen.push(`mw ${req.baseUrl}`);
+      next();
+    });
+    sub.get("/Posts", (req, res) => res.send(`route ${req.baseUrl}`));
+    const app = new BunRouter();
+    app.use("/Users/:id", sub);
+
+    const response = await app.fetch("/users/7/posts");
+    expect(await response.text()).toBe("route /users/7");
+    expect(seen).toEqual(["mw /users/7"]);
+  });
+
+  it("a mounted sub-router follows the mounting router's caseSensitive: true", async () => {
+    const sub = new BunRouter();
+    sub.use((_req, res) => res.send("mw"));
+    const app = new BunRouter({ caseSensitive: true });
+    app.use("/Users", sub);
+
+    expect((await app.fetch("/users/x")).status).toBe(404);
+    expect(await (await app.fetch("/Users/x")).text()).toBe("mw");
+  });
+
+  it("group() and useMethod() prefixes ignore case too", async () => {
+    const router = new BunRouter();
+    router.group("/Grp", ((_req, res) => {
+      res.send("group");
+    }) satisfies RouterHandler);
+    router.useMethod("POST", "/Forms", (_req, res) => res.send("forms"));
+    router.group("/Cb/:id", (child) => {
+      child.get("/Item", (req, res) => res.send(`cb ${req.baseUrl}`));
+    });
+
+    expect(await (await router.fetch("/grp/x")).text()).toBe("group");
+    expect(
+      await (await router.fetch("/forms/x", { method: "POST" })).text(),
+    ).toBe("forms");
+    expect(await (await router.fetch("/cb/1/item")).text()).toBe("cb /cb/1");
+  });
+
+  it("requests differing only in case never share a cache entry", async () => {
+    const router = adminRouter({ caseSensitive: true });
+    // Warm the cache with the matching spelling first, then the other.
+    expect((await router.fetch("/Admin/x")).status).toBe(200);
+    expect((await router.fetch("/admin/x")).status).toBe(404);
+    expect((await router.fetch("/Admin/x")).status).toBe(200);
+
+    const insensitive = adminRouter();
+    expect(await (await insensitive.fetch("/ADMIN/x")).text()).toBe(
+      "mw /ADMIN",
+    );
+    // Same route, other spelling: its own entry, its own baseUrl.
+    expect(await (await insensitive.fetch("/admin/x")).text()).toBe(
+      "mw /admin",
+    );
+  });
+});
+
 describe("Express 5 use: BunHttpAdapter integration over HTTP", () => {
   it("an error handler registered via use() catches a thrown route error", async () => {
     const adapter = new BunHttpAdapter(5000);
@@ -381,5 +480,116 @@ describe("Express 5 use: BunHttpAdapter integration over HTTP", () => {
     } finally {
       await adapter.close();
     }
+  });
+});
+
+describe("Express 5: req.baseUrl", () => {
+  it('is the matched mount inside it, and "" again outside', async () => {
+    const seen: Record<string, string> = {};
+
+    const users = new BunRouter();
+    users.use((req, _res, next) => {
+      seen.subMiddleware = req.baseUrl;
+      next();
+    });
+    users.get("/posts", (req, _res, next) => {
+      seen.subRoute = req.baseUrl;
+      next();
+    });
+
+    const app = new BunRouter();
+    app.use((req, _res, next) => {
+      seen.appMiddleware = req.baseUrl;
+      next();
+    });
+    app.use("/api", (req, _res, next) => {
+      seen.prefixMiddleware = req.baseUrl;
+      next();
+    });
+    app.use("/api/users/:id", users);
+    app.get("/api/users/:id/posts", (req, res) => {
+      seen.appRoute = req.baseUrl;
+      res.send("ok");
+    });
+
+    const response = await app.fetch("/api/users/42/posts");
+    expect(response.status).toBe(200);
+    expect(seen).toEqual({
+      appMiddleware: "",
+      prefixMiddleware: "/api",
+      subMiddleware: "/api/users/42",
+      subRoute: "/api/users/42",
+      appRoute: "",
+    });
+  });
+
+  it('joins nested mounts, and is "" for a router mounted at /', async () => {
+    const inner = new BunRouter();
+    inner.get("/x", (req, res) => res.send(req.baseUrl));
+    const outer = new BunRouter();
+    outer.use("/b", inner);
+    const app = new BunRouter();
+    app.use("/a", outer);
+
+    const atRoot = new BunRouter();
+    atRoot.get("/y", (req, res) => res.send(`[${req.baseUrl}]`));
+    app.use("/", atRoot);
+
+    expect(await (await app.fetch("/a/b/x")).text()).toBe("/a/b");
+    expect(await (await app.fetch("/y")).text()).toBe("[]");
+  });
+
+  it("keeps the request's own spelling, not the pattern's", async () => {
+    const sub = new BunRouter();
+    sub.get("/", (req, res) => res.send(req.baseUrl));
+    const app = new BunRouter();
+    app.use("/files/:name", sub);
+
+    expect(await (await app.fetch("/files/a%20b/")).text()).toBe(
+      "/files/a%20b",
+    );
+  });
+});
+
+describe("Express 5: req.next", () => {
+  it("is the current layer's next()", async () => {
+    const router = new BunRouter();
+    router.get("/n", (req, res, next) => {
+      res.json({
+        same: req.next === next,
+      });
+    });
+
+    expect(await (await router.fetch("/n")).json()).toEqual({ same: true });
+  });
+
+  it("lets res.format() hand its 406 to the error handlers", async () => {
+    const router = new BunRouter();
+    router.get("/doc", (_req, res) => {
+      res.format({ json: (_r, formatted) => formatted.json({ ok: true }) });
+    });
+    router.use(((error, _req, res, _next) => {
+      const { status, message } = error as Error & { status: number };
+      res.status(status).json({ caught: message });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await router.fetch("/doc", {
+      headers: { Accept: "image/png" },
+    });
+    expect(response.status).toBe(406);
+    expect(await response.json()).toEqual({ caught: "Not Acceptable" });
+  });
+
+  it("reaches the adapter's fallback when nothing handles the 406", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.get("/doc", (_req, res) => {
+      res.format({ json: (_r, formatted) => formatted.json({ ok: true }) });
+    });
+
+    const response = await adapter.fetch("/doc", {
+      headers: { Accept: "image/png" },
+    });
+    expect(response.status).toBe(406);
+    expect(await response.text()).toContain("<pre>Not Acceptable</pre>");
   });
 });

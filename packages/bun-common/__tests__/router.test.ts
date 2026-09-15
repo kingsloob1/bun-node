@@ -1,10 +1,13 @@
+import type { BunRequest } from "../lib/BunRequest";
 import type {
   RouterErrorMiddlewareHandler,
   RouterHandler,
 } from "../lib/types/general";
+import { Router } from "@routejs/router";
 import { describe, expect, it } from "bun:test";
 import { BunResponse } from "../lib/BunResponse";
 import { BunRouter } from "../lib/BunRouter";
+import { BunWebSocket } from "../lib/BunWebSocket";
 import { createTestLogger, isLogger } from "../lib/logging";
 import { makeRequest } from "./helpers";
 
@@ -1530,5 +1533,408 @@ describe("BunRouter: params are bound per route, not per callback", () => {
     }
 
     expect(seen).toEqual(["replaced", "replaced"]);
+  });
+});
+
+describe("BunRouter: caseSensitive and host options", () => {
+  it("caseSensitive: true refuses a differently-cased path", async () => {
+    const router = new BunRouter({ caseSensitive: true });
+    router.get("/Users", (_req, res) => res.send("hit"));
+
+    expect((await router.fetch("/users")).status).toBe(404);
+    expect((await router.fetch("/Users")).status).toBe(200);
+  });
+
+  it("matching ignores case by default, like Express", async () => {
+    const router = new BunRouter();
+    router.get("/Users", (_req, res) => res.send("hit"));
+
+    expect((await router.fetch("/users")).status).toBe(200);
+  });
+
+  it("caseSensitive covers use() prefixes and mounted routes", async () => {
+    const router = new BunRouter({ caseSensitive: true });
+    const child = new BunRouter();
+    child.get("/Info", (_req, res) => res.send("child"));
+    router.use("/Api", child);
+
+    expect((await router.fetch("/api/info")).status).toBe(404);
+    expect(await (await router.fetch("/Api/Info")).text()).toBe("child");
+  });
+
+  it("a use() prefix ignores case by default, like Express", async () => {
+    const router = new BunRouter();
+    router.use("/Api", (_req, res) => res.send("prefix"));
+
+    expect(await (await router.fetch("/api/info")).text()).toBe("prefix");
+  });
+
+  it("the prefix regex carries the i flag only when case-insensitive", () => {
+    const flags = (options?: { caseSensitive?: boolean }) => {
+      const router = new BunRouter(options);
+      router.use("/Api", () => {});
+      return router.routes()[0]?.pathRegexp.flags;
+    };
+
+    expect(flags()).toContain("i");
+    expect(flags({ caseSensitive: false })).toContain("i");
+    expect(flags({ caseSensitive: true })).not.toContain("i");
+  });
+
+  it("host scopes the router's routes to that host", async () => {
+    const router = new BunRouter({ host: "api.example.test" });
+    router.get("/where", (req, res) => res.send(req.hostname));
+
+    // A literal host is also the origin a bare path resolves against.
+    expect(await (await router.fetch("/where")).text()).toBe(
+      "api.example.test",
+    );
+    const elsewhere = await router.fetch(
+      new Request("http://other.example.test/where"),
+    );
+    expect(elsewhere.status).toBe(404);
+  });
+
+  it("a host pattern scopes routes, and is not used as the origin", async () => {
+    const router = new BunRouter({ host: ":tenant.example.test" });
+    router.get("/who", (req, res) => res.json(req.params));
+
+    expect((await router.fetch("/who")).status).toBe(404);
+    const matched = await router.fetch(
+      new Request("http://acme.example.test/who"),
+    );
+    expect(await matched.json()).toEqual({ tenant: "acme" });
+  });
+});
+
+describe("BunRouter: group() and domain() call forms", () => {
+  it("group(path, ...callbacks) registers prefix middleware", async () => {
+    const router = new BunRouter();
+    // A lone inline middleware arrow needs `satisfies`: TypeScript tries the
+    // `(router) => …` overload first and cannot then type its parameters.
+    router.group("/v3", ((_req, res) => {
+      res.send("v3 middleware");
+    }) satisfies RouterHandler);
+
+    expect(await (await router.fetch("/v3/deep/path")).text()).toBe(
+      "v3 middleware",
+    );
+    expect((await router.fetch("/v4")).status).toBe(404);
+  });
+
+  it("group(path, ...callbacks) runs several callbacks in order", async () => {
+    const router = new BunRouter();
+    const order: string[] = [];
+    router.group(
+      "/chain",
+      (_req, _res, next) => {
+        order.push("first");
+        next();
+      },
+      (_req, res) => {
+        order.push("second");
+        res.send("done");
+      },
+    );
+
+    expect(await (await router.fetch("/chain/x")).text()).toBe("done");
+    expect(order).toEqual(["first", "second"]);
+  });
+
+  it("group(path, callback) routes bind their params", async () => {
+    const router = new BunRouter();
+    router.group("/v2", (child) => {
+      child.get("/items/:id", (req, res) => res.send(`id=${req.params.id}`));
+    });
+
+    expect(await (await router.fetch("/v2/items/5")).text()).toBe("id=5");
+  });
+
+  it("routes from a plain @routejs/router Router bind their params", async () => {
+    const router = new BunRouter();
+    const plain = new Router();
+    plain.use((_req: BunRequest, _res: BunResponse, next: () => void) => {
+      next();
+    });
+    plain.get("/items/:id", (req: BunRequest, res: BunResponse) => {
+      res.send(`id=${req.params.id}`);
+    });
+    router.group("/plain", plain);
+
+    expect(await (await router.fetch("/plain/items/9")).text()).toBe("id=9");
+    const layers = layersFor(router, "GET", "/plain/items/9");
+    expect(layers.map((layer) => layer.isRouteHandler)).toEqual([false, true]);
+  });
+
+  it("domain(host, ...callbacks) registers host-scoped middleware", async () => {
+    const router = new BunRouter();
+    router.domain("mw.example.test", ((_req, res) => {
+      res.send("host middleware");
+    }) satisfies RouterHandler);
+
+    const onHost = await router.fetch(
+      new Request("http://mw.example.test/any/path"),
+    );
+    expect(await onHost.text()).toBe("host middleware");
+    expect((await router.fetch("/any/path")).status).toBe(404);
+  });
+
+  it("domain(pattern, callback) puts host captures in req.params", async () => {
+    const router = new BunRouter();
+    let subdomains: unknown;
+    router.domain(":tenant.example.test", (child) => {
+      child.get("/users/:id", (req, res) => {
+        subdomains = req.subdomains;
+        res.json(req.params);
+      });
+    });
+
+    const response = await router.fetch(
+      new Request("http://acme.example.test/users/7"),
+    );
+    expect(await response.json()).toEqual({ tenant: "acme", id: "7" });
+    // `req.subdomains` stays the request's own list, never the captures.
+    expect(Array.isArray(subdomains)).toBe(true);
+  });
+
+  // The host-param types rest on these two precedence rules; see the domain()
+  // assertions in router-adapter.type-test.ts.
+  it("a domain() nested in another keeps the outer host, and group() inherits it", async () => {
+    const router = new BunRouter();
+    router.domain(":tenant.example.test", (outer) => {
+      outer.domain(":region.inner.test", (inner) => {
+        inner.get("/n", (req, res) => res.json(req.params));
+      });
+      outer.group("/g/:id", (group) => {
+        group.get("/x", (req, res) => res.json(req.params));
+      });
+    });
+
+    const onOuter = await router.fetch(
+      new Request("http://acme.example.test/n"),
+    );
+    expect(await onOuter.json()).toEqual({ tenant: "acme" });
+    expect(
+      (await router.fetch(new Request("http://eu.inner.test/n"))).status,
+    ).toBe(404);
+    const grouped = await router.fetch(
+      new Request("http://acme.example.test/g/5/x"),
+    );
+    expect(await grouped.json()).toEqual({ tenant: "acme", id: "5" });
+  });
+
+  it("domain() overrides the router's host option", async () => {
+    const router = new BunRouter({ host: ":opt.example.test" });
+    router.domain(":dom.other.test", (child) => {
+      child.get("/d", (req, res) => res.json(req.params));
+    });
+
+    const onDomain = await router.fetch(new Request("http://x.other.test/d"));
+    expect(await onDomain.json()).toEqual({ dom: "x" });
+    expect(
+      (await router.fetch(new Request("http://x.example.test/d"))).status,
+    ).toBe(404);
+  });
+
+  it("host captures in every form the host pattern supports", async () => {
+    const router = new BunRouter();
+    router.domain(":tenant-:region.example.test", (child) => {
+      child.get("/two", (req, res) => res.json(req.params));
+    });
+    router.domain("api.:v(\\d+)?.versions.test", (child) => {
+      child.get("/v", (req, res) => res.json(req.params));
+    });
+    router.domain("*.wild.test", (child) => {
+      child.get("/w", (req, res) => res.json(req.params));
+    });
+
+    const two = await router.fetch(
+      new Request("http://acme-eu.example.test/two"),
+    );
+    expect(await two.json()).toEqual({ tenant: "acme", region: "eu" });
+    const versioned = await router.fetch(
+      new Request("http://api.2.versions.test/v"),
+    );
+    expect(await versioned.json()).toEqual({ v: "2" });
+    const unversioned = await router.fetch(
+      new Request("http://api.versions.test/v"),
+    );
+    expect(await unversioned.json()).toEqual({});
+    const wild = await router.fetch(new Request("http://a.b.wild.test/w"));
+    expect(await wild.json()).toEqual({ 0: "a.b" });
+  });
+});
+
+describe("BunRouter: setName", () => {
+  it("names the route the previous verb call registered", () => {
+    const router = new BunRouter();
+    router.get("/profile", () => {}).setName("profile");
+
+    expect(router.getRouteByName("profile")?.path).toBe("/profile");
+  });
+
+  it("names routes registered by all() and any()", () => {
+    const router = new BunRouter();
+    router.all("/everything", () => {}).setName("everything");
+    router.any(["GET", "POST"], "/some", () => {}).setName("some");
+
+    expect(router.getRouteByName("everything")?.path).toBe("/everything");
+    expect(router.getRouteByName("some")?.path).toBe("/some");
+  });
+
+  it("throws after middleware, as @routejs/router does", () => {
+    const router = new BunRouter();
+    router.get("/a", () => {});
+    router.use(() => {});
+
+    expect(() => router.setName("mw")).toThrow(
+      "setName can not set name for middleware",
+    );
+    expect(() => new BunRouter().setName("nothing")).toThrow(TypeError);
+  });
+
+  it("throws after a mount, rather than renaming a flattened route", () => {
+    const router = new BunRouter();
+    const child = new BunRouter();
+    child.get("/x", () => {});
+    router.group("/g", child);
+
+    expect(() => router.setName("x")).toThrow(TypeError);
+  });
+
+  it("refuses a name another route already has", () => {
+    const router = new BunRouter();
+    router.get("/a", () => {}).setName("taken");
+    router.get("/b", () => {});
+
+    expect(() => router.setName("taken")).toThrow("already exists");
+  });
+});
+
+describe("BunRouter: undecodable params (Express 5)", () => {
+  it("passes a 400 URIError to the error handlers instead of rejecting", async () => {
+    const router = new BunRouter();
+    const seen: string[] = [];
+    router.use((_req, _res, next) => {
+      seen.push("middleware before");
+      next();
+    });
+    router.get("/static/*file", (_req, res) => {
+      seen.push("handler");
+      res.send("served");
+    });
+    router.use(((error, _req, res, _next) => {
+      const failure = error as URIError & { status: number };
+      res.status(failure.status).json({
+        name: failure.name,
+        message: failure.message,
+      });
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    const response = await router.fetch("/static/%E0%A4%A");
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      name: "URIError",
+      message: "Failed to decode param '%E0%A4%A'",
+    });
+    expect(seen).toEqual(["middleware before"]);
+  });
+
+  it("re-throws it when no error handler claims it", async () => {
+    const router = new BunRouter();
+    router.get("/users/:id", (_req, res) => res.send("unreachable"));
+
+    let caught: unknown;
+    try {
+      await router.fetch("/users/%zz");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(URIError);
+    expect((caught as { status?: number }).status).toBe(400);
+  });
+
+  it("leaves routes whose params decode untouched, and raises a fresh error each time", async () => {
+    const router = new BunRouter();
+    router.get("/users/:id", (req, res) => res.send(req.params.id));
+    const errors: unknown[] = [];
+    router.use(((error, _req, res, _next) => {
+      errors.push(error);
+      res.status(400).send("bad");
+    }) satisfies RouterErrorMiddlewareHandler);
+
+    expect(await (await router.fetch("/users/a%20b")).text()).toBe("a b");
+    await router.fetch("/users/%zz");
+    await router.fetch("/users/%zz");
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).not.toBe(errors[1]);
+  });
+});
+
+describe("BunRouter: req.route and req.subdomains", () => {
+  it("sets req.route to the matched route on entering a route handler", async () => {
+    const router = new BunRouter();
+    let inMiddleware: unknown = "unset";
+    let inHandler: { path?: string; method?: string } | undefined;
+    router.use((req, _res, next) => {
+      inMiddleware = req.route;
+      next();
+    });
+    router.get("/users/:id", (req, res) => {
+      inHandler = req.route ?? undefined;
+      res.send("ok");
+    });
+
+    await router.fetch("/users/42");
+    expect(inMiddleware).toBeUndefined();
+    expect(inHandler?.path).toBe("/users/:id");
+    expect(inHandler?.method).toBe("GET");
+  });
+
+  it("leaves req.subdomains a string[] after routing", async () => {
+    const router = new BunRouter();
+    let subdomains: unknown;
+    router.get("/users/:id", (req, res) => {
+      subdomains = req.subdomains;
+      res.send("ok");
+    });
+
+    await router.fetch("http://api.example.com/users/42");
+    expect(subdomains).toEqual(["api"]);
+  });
+});
+
+describe("BunRouter: ws()", () => {
+  const handler = { message: () => undefined };
+
+  it("throws when no BunWebSocket is attached", () => {
+    const router = new BunRouter();
+    expect(() => router.ws("/chat", handler)).toThrow(
+      "no BunWebSocket is attached",
+    );
+  });
+
+  it("registers the upgrade route before returning", () => {
+    const socketRoutes = new BunRouter();
+    const socket = new BunWebSocket({
+      newInstance: false,
+      router: socketRoutes,
+      getServer: () => undefined,
+    });
+    const router = new BunRouter({ bunWebsocket: socket });
+
+    expect(router.ws("/chat", handler)).toBe(router);
+    expect(socketRoutes.routes().map((route) => route.path)).toEqual(["/chat"]);
+  });
+
+  it("refuses a handler that is not an object", () => {
+    const socket = new BunWebSocket({
+      newInstance: false,
+      router: new BunRouter(),
+      getServer: () => undefined,
+    });
+    const router = new BunRouter({ bunWebsocket: socket });
+
+    expect(() => router.ws("/chat", null as never)).toThrow(TypeError);
   });
 });
