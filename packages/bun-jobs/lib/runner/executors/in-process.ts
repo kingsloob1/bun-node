@@ -1,5 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { ExecutionMode } from "../../drivers/index";
+import type { RunProgress } from "../types";
 import type {
   Executor,
   ExecutorHandle,
@@ -34,6 +35,8 @@ export class InProcessExecutor implements Executor {
 
   start<TArgs>(options: ExecutorStartOptions<TArgs>): ExecutorHandle {
     const controller = new AbortController();
+    // Messages are `unknown` here: an executor is transport and never knows a
+    // handler's declared message types (see `ExecutorEvents`).
     const listeners = new Set<(message: unknown) => void>();
     // The handler is not listening until its module has been imported and it
     // has called `onMessage`, which is after `start()` returns. Buffering
@@ -46,8 +49,7 @@ export class InProcessExecutor implements Executor {
     const context = {
       ...options.context,
       signal: controller.signal,
-      progress: (value: number | Record<string, unknown>) =>
-        options.events.onProgress(value),
+      progress: (value: RunProgress) => options.events.onProgress(value),
       send: (message: unknown) => options.events.onMessage(message),
       onMessage: (listener: (message: unknown) => void) => {
         listeners.add(listener);

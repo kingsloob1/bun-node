@@ -147,6 +147,52 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
       expect(stored?.attemptsMade).toBe(1);
       expect(stored?.failedReason?.name).toBe("UnrecoverableJobError");
     }, 30_000);
+
+    it("gives a flow's jobs their parent, and the parent its children's values and failures", async () => {
+      // Every job in the flow runs the same file here, so a child reads
+      // `job.parent` and the parent reads its children, all in `mode`. In
+      // `spawn` and `worker` these used to be missing from the job object.
+      const { queue } = setup(mode, "job-children");
+      const flow = await queue.addFlow({
+        name: "parent",
+        data: {},
+        opts: { removeOnComplete: false },
+        children: [
+          { name: "ok", data: {}, queue: "isolated" },
+          {
+            name: "bad",
+            data: {},
+            queue: "isolated",
+            opts: { ignoreFailure: true },
+          },
+        ],
+      });
+
+      await waitFor(
+        async () => (await queue.getJob(flow.job.id))?.state === "completed",
+        { timeout: 20_000, message: `the ${mode} flow never completed` },
+      );
+
+      const ok = flow.children[0]!.job.id;
+      const bad = flow.children[1]!.job.id;
+      const stored = await queue.getJob(flow.job.id);
+
+      expect(stored?.returnValue).toEqual({
+        parent: null,
+        values: {
+          [`isolated:${ok}`]: {
+            parent: { queue: "isolated", id: flow.job.id },
+          },
+        },
+        failures: {
+          [`isolated:${bad}`]: {
+            isError: true,
+            name: "UnrecoverableJobError",
+            message: "optional source down",
+          },
+        },
+      });
+    }, 30_000);
   });
 }
 

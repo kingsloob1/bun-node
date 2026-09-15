@@ -10,7 +10,7 @@ import { runChildProtocol } from "./child-runtime";
  */
 
 declare const self: {
-  postMessage: (message: unknown) => void;
+  postMessage: (message: ChildToParent) => void;
   onmessage: ((event: MessageEvent) => void) | null;
 };
 

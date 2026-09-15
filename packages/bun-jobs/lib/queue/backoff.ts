@@ -120,10 +120,46 @@ export class BackoffStrategies {
   }
 }
 
+/**
+ * The structured fields {@link nextBackoff} reports with a warning, one shape
+ * per reason a strategy could not be used. Type literals rather than
+ * interfaces, so they stay assignable to a logger's `LogFields`.
+ */
+
+export type BackoffWarningFields =
+  | {
+      /** The job whose retry delay was being computed. */
+      jobId: string;
+      /** The strategy name the job asked for. */
+      strategy: string;
+      /** The names this worker was given, none of which matched. */
+      known: string[];
+    }
+  | {
+      /** The job whose retry delay was being computed. */
+      jobId: string;
+      /** The strategy name the job asked for. */
+      strategy: string;
+      /** What the strategy threw, as caught. */
+      error: unknown;
+    }
+  | {
+      /** The job whose retry delay was being computed. */
+      jobId: string;
+      /** The strategy name the job asked for. */
+      strategy: string;
+      /**
+       * What the strategy returned instead of a delay. Its declared type says
+       * `number | false`, but a strategy may be plain JavaScript, and this is
+       * the value that failed that check.
+       */
+      result: unknown;
+    };
+
 /** Where {@link nextBackoff} reports a strategy it could not use. */
 export type BackoffWarning = (
   message: string,
-  fields: Record<string, unknown>,
+  fields: BackoffWarningFields,
 ) => void;
 
 /**

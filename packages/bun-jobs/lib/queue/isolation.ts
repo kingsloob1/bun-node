@@ -1,6 +1,15 @@
 import type { JobRecord } from "../drivers/index";
-import type { Executor, ExecutorHandle } from "../runner/executors/executor";
-import type { JobChannelRequest } from "../runner/protocol";
+import type {
+  Executor,
+  ExecutorHandle,
+  IsolatedJobProcessor,
+} from "../runner/executors/executor";
+import type {
+  JobChannelOperation,
+  JobChannelReplies,
+  JobChannelReply,
+  JobChannelRequest,
+} from "../runner/protocol";
 import type { RunContext, SpawnOptions, WorkerOptions } from "../runner/types";
 import type { Job } from "./Job";
 import type { JobProcessor, ProcessorContext } from "./types";
@@ -91,7 +100,7 @@ export class IsolatedProcessor {
   /** The executor, for `"spawn"` and `"worker"`. */
   #executor: Executor | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
-  #inProcess: Promise<JobProcessor<unknown, unknown>> | undefined;
+  #inProcess: Promise<IsolatedJobProcessor> | undefined;
 
   constructor(
     /** The processor file: a path, relative to the working directory, or a URL. */
@@ -126,12 +135,8 @@ export class IsolatedProcessor {
     runner: Runner,
   ): Promise<unknown> {
     if (this.mode === "in-process") {
-      this.#inProcess ??= import(this.file).then(
-        (module) =>
-          toHandler(module, this.file) as unknown as JobProcessor<
-            unknown,
-            unknown
-          >,
+      this.#inProcess ??= import(this.file).then((module: unknown) =>
+        toHandler(module, this.file, "job"),
       );
       return await (
         await this.#inProcess
@@ -173,25 +178,16 @@ export class IsolatedProcessor {
       job: record,
       events: {
         onProgress: (value) => {
-          void job
-            .updateProgress(value as number | Record<string, unknown>)
-            .catch(() => undefined);
+          void job.updateProgress(value).catch(() => undefined);
         },
         onMessage: (data) => {
           void answer(handle, data, job, context, controller);
         },
         onLog: (level, message, fields) => {
-          const logger = context.logger as unknown as Record<
-            string,
-            | ((message: string, fields?: Record<string, unknown>) => void)
-            | undefined
-          >;
-          const write = logger[level] ?? logger.info;
-          write?.call(
-            context.logger,
-            message,
-            fields as Record<string, unknown>,
-          );
+          // `level` is typed by the protocol but arrives over IPC, so the
+          // fallback to `info` stays for a child that sends something else.
+          const write = context.logger[level] ?? context.logger.info;
+          write.call(context.logger, message, fields);
         },
         onOutput: () => {},
         onPid: () => {},
@@ -239,7 +235,24 @@ export class IsolatedProcessor {
   }
 }
 
-/** Answers one request an isolated job made of its worker. */
+/** Every operation the job channel carries, for checking a request off the wire. */
+const JOB_CHANNEL_OPERATIONS: ReadonlySet<string> =
+  new Set<JobChannelOperation>([
+    "log",
+    "heartbeat",
+    "childrenValues",
+    "childrenFailures",
+  ]);
+
+/** Whether a request's operation is one this worker answers. */
+function isJobChannelOperation(value: unknown): value is JobChannelOperation {
+  return typeof value === "string" && JOB_CHANNEL_OPERATIONS.has(value);
+}
+
+/**
+ * Answers one request an isolated job made of its worker, using the real
+ * `Job` here in the worker, which has the driver the child lacks.
+ */
 async function answer(
   handle: ExecutorHandle | undefined,
   data: unknown,
@@ -254,24 +267,60 @@ async function answer(
   }
 
   const operation = request[JOB_CHANNEL];
-  if (operation !== "log" && operation !== "heartbeat") {
+  if (!isJobChannelOperation(operation)) {
     return;
   }
 
-  let value: unknown;
+  const seq = request.seq ?? -1;
+  let reply: JobChannelReply;
 
   try {
-    if (operation === "log") {
-      value = await job.log(request.line ?? "");
-    } else {
-      await context.heartbeat();
-      value = !controller.signal.aborted;
-    }
-  } catch {
-    value = operation === "log" ? 0 : false;
+    reply = {
+      [JOB_CHANNEL]: "reply",
+      seq,
+      value: await valueFor(operation, request, job, context, controller),
+    };
+  } catch (error) {
+    // `log` and `heartbeat` keep their long-standing fallbacks: a line that
+    // could not be counted, a lock that may not be held. Reading a flow's
+    // children has no honest fallback, so the failure itself goes back.
+    reply =
+      operation === "log" || operation === "heartbeat"
+        ? {
+            [JOB_CHANNEL]: "reply",
+            seq,
+            value: operation === "log" ? 0 : false,
+          }
+        : { [JOB_CHANNEL]: "reply", seq, error: serializeError(error) };
   }
 
-  handle.send({ [JOB_CHANNEL]: "reply", seq: request.seq, value });
+  handle.send(reply);
+}
+
+/** What one job-channel operation answers, from the worker's real `Job`. */
+async function valueFor(
+  operation: JobChannelOperation,
+  request: Partial<JobChannelRequest>,
+  job: Job<unknown, unknown>,
+  context: ProcessorContext,
+  controller: AbortController,
+): Promise<JobChannelReplies[JobChannelOperation]> {
+  switch (operation) {
+    case "log":
+      return await job.log(request.line ?? "");
+    case "heartbeat":
+      await context.heartbeat();
+      return !controller.signal.aborted;
+    case "childrenValues":
+      return await job.getChildrenValues();
+    case "childrenFailures":
+      return Object.fromEntries(
+        Object.entries(await job.getChildrenFailures()).map(([key, error]) => [
+          key,
+          serializeError(error),
+        ]),
+      );
+  }
 }
 
 /** An absolute path for a processor file, or a `ConfigError` saying why not. */

@@ -55,15 +55,20 @@ export class BunRunnerManager {
    * a ready-made runner from another namespace — either would mean two
    * runners quietly sharing (or missing) a lock.
    */
-  add<TArgs = unknown, TResult = unknown>(
+  add<
+    TArgs = unknown,
+    TResult = unknown,
+    TToHandler = unknown,
+    TFromHandler = unknown,
+  >(
     runnerOrOptions:
-      | BunRunner<TArgs, TResult>
+      | BunRunner<TArgs, TResult, TToHandler, TFromHandler>
       | (Omit<BunRunnerOptions<TArgs>, "namespace"> & { namespace?: string }),
-  ): BunRunner<TArgs, TResult> {
+  ): BunRunner<TArgs, TResult, TToHandler, TFromHandler> {
     const runner =
       runnerOrOptions instanceof BunRunner
         ? runnerOrOptions
-        : new BunRunner<TArgs, TResult>({
+        : new BunRunner<TArgs, TResult, TToHandler, TFromHandler>({
             ...(runnerOrOptions as BunRunnerOptions<TArgs>),
             namespace: this.namespace,
             driver:
@@ -95,10 +100,19 @@ export class BunRunnerManager {
   }
 
   /** One runner by id. */
-  get<TArgs = unknown, TResult = unknown>(
+  get<
+    TArgs = unknown,
+    TResult = unknown,
+    TToHandler = unknown,
+    TFromHandler = unknown,
+  >(
     id: string,
-  ): BunRunner<TArgs, TResult> | undefined {
-    return this.#runners.get(id) as BunRunner<TArgs, TResult> | undefined;
+  ): BunRunner<TArgs, TResult, TToHandler, TFromHandler> | undefined {
+    // The registry holds runners of every declared type, so the caller names
+    // the one it registered; nothing at runtime can check it.
+    return this.#runners.get(id) as
+      | BunRunner<TArgs, TResult, TToHandler, TFromHandler>
+      | undefined;
   }
 
   /** Every registered runner. */
