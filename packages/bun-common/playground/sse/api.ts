@@ -3,8 +3,14 @@ import type {
   RouterMiddlewareHandler,
   WebSocketClientData,
 } from "../../lib";
-import { get, isObject, set } from "lodash-es";
-import { BunRequest, BunResponse, BunRouter } from "../../lib";
+import {
+  BunRequest,
+  BunResponse,
+  BunRouter,
+  get,
+  isObject,
+  set,
+} from "../../lib";
 
 // server.js
 const port = 3000;
