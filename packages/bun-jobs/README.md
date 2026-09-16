@@ -1897,6 +1897,14 @@ resolves the serving `BunWebSocket` when a client upgrades, not when it is
 attached, so an adapter installed afterwards still receives its connections —
 attaching early used to leave sockets that connected and then did nothing.
 
+Examples:
+
+- [`11-management-api/mounting-and-auth.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/mounting-and-auth.ts)
+- [`11-management-api/live-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events.ts)
+- [`11-management-api/openapi-and-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/openapi-and-docs.ts)
+- [`10-options/jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts)
+- [`10-options/jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts)
+
 ## Drivers
 
 Examples:
@@ -2268,6 +2276,9 @@ Each run uses its own namespace and purges it on exit.
 | | [`graceful-shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/graceful-shutdown.ts) | `SIGTERM` / `SIGINT` handling for a worker service |
 | | [`namespaces.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/namespaces.ts) | two services on one backend with identical queue names and job ids, isolated |
 | | [`live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts) | `JobsNotifier`: one live stream of every event in a namespace, from any process |
+| [`11-management-api`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/11-management-api) | [`mounting-and-auth.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/mounting-and-auth.ts) | mounting on a `BunHttpAdapter`, an `authorize` hook with roles, a walk through the route groups, `close()` |
+| | [`live-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events.ts) | the socket: several channels at once, `seq` / `epoch`, resuming from the replay ring, two deliberate gaps |
+| | [`openapi-and-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/openapi-and-docs.ts) | `openapi()` / `asyncapi()` and their endpoints; `docs.ui` off and on, pinned and locked down |
 | [`shared`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/shared) | [`backend.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/backend.ts), [`console.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/console.ts), [`check.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/check.ts) | picking a driver from `EXAMPLE_DRIVER`; printing and waiting on conditions; the assertions the tours use |
 | | [`run-all.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/run-all.ts) | runs every example, or the folders named |
 
@@ -2290,6 +2301,8 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`driver-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/driver-options.ts) | every option of every driver and connection helper |
 | [`errors.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
 | [`utilities.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/utilities.ts) | every exported helper: cron, schedules, repeats, options, backoff, JSON, ids, keys, connection, constants |
+| [`jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts) | every `createJobsApi` option: construction `ConfigError`s, `mode` / `readOnly` / `actions` / capability pruning against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked once and untargeted first, `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `docs` |
+| [`jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts) | every `websocket` option, per-channel subscribe refusals, replay and resume, coalesced progress, the client limits and every close code |
 
 Supporting files for the tours:
 
