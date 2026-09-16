@@ -50,7 +50,10 @@
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
+    "@asyncapi/specs": "^6.11.1",
     "@types/bun": "^1.4.2",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "bun-types": "^1.4.2",
     "chrono-node": "^2.7.0",
     "eslint": "^10.5.0",
