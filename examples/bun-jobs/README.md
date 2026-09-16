@@ -160,6 +160,17 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 | [`driver-options.ts`](./10-options/driver-options.ts) | every option of every driver and connection helper; server sections run when their URL is set |
 | [`errors.ts`](./10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
 | [`utilities.ts`](./10-options/utilities.ts) | every exported helper: cron, schedules, repeats, options, backoff, JSON, ids, keys, connection, constants |
+| [`jobs-api-options.ts`](./10-options/jobs-api-options.ts) | every `createJobsApi` option: each `ConfigError` it refuses construction with, `mode` / `readOnly` / `actions` / driver-capability pruning cross-checked against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked exactly once (and untargeted first), `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `addableNames`, `runnerTriggerArgs`, `validateResponses`, `docs` |
+| [`jobs-api-socket-options.ts`](./10-options/jobs-api-socket-options.ts) | every `websocket` option, per-channel subscribe refusals, `seq` / `epoch`, replay and both `gap` reasons, coalesced progress, the client limits and every documented close code |
+
+### 11 — The management API
+
+| File | Shows |
+|---|---|
+| [`mounting-and-auth.ts`](./11-management-api/mounting-and-auth.ts) | mounting on a `BunHttpAdapter`, an `authorize` hook with roles, a walk through the queue, job, repeatable, worker and throughput routes, and `close()` |
+| [`live-events.ts`](./11-management-api/live-events.ts) | the socket: subscribing to several channels, `seq` / `epoch`, resuming from the replay ring, and two deliberate `gap`s |
+| [`openapi-and-docs.ts`](./11-management-api/openapi-and-docs.ts) | `openapi()` / `asyncapi()` and their endpoints, `docs.ui` off and on, and how a pruned API documents less |
+| [`helpers/jobs-socket.ts`](./11-management-api/helpers/jobs-socket.ts) | the typed socket client those examples and the socket tour use |
 
 ## Checking the examples
 
