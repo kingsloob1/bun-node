@@ -63,6 +63,10 @@ Underneath, routing is
   - [Authentication on upgrade](#authentication-on-upgrade)
   - [Standalone and custom adapters](#standalone-and-custom-adapters)
   - [Closing](#closing)
+- [The jobs API module](#the-jobs-api-module)
+  - [Mounting, injection and shutdown](#mounting-injection-and-shutdown)
+  - [Sharing the server with gateways](#sharing-the-server-with-gateways)
+  - [Installing bun-jobs is what makes the subpath compile](#installing-bun-jobs-is-what-makes-the-subpath-compile)
 - [Exported API](#exported-api)
 - [Examples](#examples)
 - [Related packages](#related-packages)
@@ -74,11 +78,18 @@ Underneath, routing is
 ```bash
 bun add @kingsleyweb/bun-nest @nestjs/common @nestjs/core rxjs reflect-metadata
 bun add @nestjs/websockets   # only for WebSocket gateways
+bun add @kingsleyweb/bun-jobs # only for @kingsleyweb/bun-nest/jobs
 bun add -d @types/bun        # optional peer, >= 1.4.2
 ```
 
 `@kingsleyweb/bun-common` is a dependency and is installed with it.
 `@nestjs/platform-express` is not needed.
+
+`@kingsleyweb/bun-jobs` is an **optional** peer: only
+[the jobs API module](#the-jobs-api-module) imports it, and installing it is
+what makes that subpath compile. See
+[the note there](#installing-bun-jobs-is-what-makes-the-subpath-compile) for
+what `tsc` reports without it.
 
 ## Quick start
 
@@ -1024,12 +1035,112 @@ and
   job. Instead the adapter closes the WebSocket connections it holds, with
   code `1001`.
 
+## The jobs API module
+
+[`@kingsleyweb/bun-jobs`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs/README.md)'s
+management API — queues, jobs, runners, the OpenAPI and AsyncAPI documents and
+a live-events socket — mounts on a Nest application as a module. It lives on
+its own entry point, **`@kingsleyweb/bun-nest/jobs`**, never in the barrel:
+
+```ts
+import { BunJobs } from "@kingsleyweb/bun-jobs";
+import { BunJobsApiModule } from "@kingsleyweb/bun-nest/jobs";
+
+@Module({
+  imports: [
+    BunJobsApiModule.forRootAsync({
+      inject: [BunJobs, AuthService],
+      useFactory: (jobs: BunJobs, auth: AuthService) => ({
+        jobs,
+        basePath: "/admin/jobs",
+        authorize: (req, context) => auth.can(req, context),
+      }),
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+`forRoot(options)` takes the same options inline. Both accept every
+`JobsApiConfig` field plus `attachWebSocket` (default `true`), and export
+`BUN_JOBS_API` and `BUN_JOBS_API_OPTIONS`. `@InjectJobsApi()` injects the
+built `JobsApi`, so a service can read `api.routes`, `api.openapi()` or
+`api.websocket?.sessions`.
+
+### Mounting, injection and shutdown
+
+The module does the three things you would otherwise do by hand, each in the
+lifecycle hook where it is safe:
+
+| Hook | What it does | Why there |
+|---|---|---|
+| `onModuleInit` | mounts the router at `basePath` | controllers are registered before init hooks and Nest's not-found and error handling after them, so the prefix lands ahead of the catch-alls |
+| `onApplicationBootstrap` | attaches the live-events socket | runs after `useWebSocketAdapter()`, so the socket is never bound to an adapter about to be replaced |
+| `beforeApplicationShutdown` | closes the API | `dispose()` stops the HTTP server between the two shutdown hooks, so closing here is what lets clients see a `1001` "going away" instead of a `1006` abnormal close |
+
+`close()` releases what the API opened — its sessions, its event notifier and
+a dedicated socket server — and never the `BunJobs`, queues, runners or driver
+you passed in. The application must have this package's `BunHttpAdapter`; with
+any other the module throws a `TypeError` naming what it expected and what it
+got.
+
+### Sharing the server with gateways
+
+The socket rides on the HTTP server by default, next to any
+`@WebSocketGateway`. A gateway whose namespace is `"/*"` matches **every** path
+below it, the socket's included, so the two overlap:
+
+- **Connections this API upgrades are marked**, as
+  `ws.data.custom.bunJobsApi === true`. The API ignores every connection
+  without that mark — for messages *and* for close and drain bookkeeping — so a
+  gateway's clients can neither drive a session nor move the API's counters or
+  connection-cap slots.
+- **A catch-all gateway still sees the API's connections**, and they arrive
+  carrying the mark. That is the overlap's remaining half: filter on
+  `client.data.custom?.bunJobsApi` in the gateway if it should ignore them.
+- **`attach()` throws `ConfigError`** when a WebSocket route already covers the
+  socket's path. Both are middleware on one router and whichever upgrades first
+  ends the request, so a catch-all bound first would leave the socket
+  permanently unreachable; the module reports it at bootstrap instead.
+- **Order against `useWebSocketAdapter()` does not matter.** The serving
+  `BunWebSocket` is resolved when a client upgrades, not when it is attached,
+  so an adapter installed later is still the one that dispatches `open`,
+  `message` and `close`.
+- **Or avoid the overlap entirely** with `websocket: { port }`, which serves
+  the socket on a server of its own.
+
+### Installing bun-jobs is what makes the subpath compile
+
+`@kingsleyweb/bun-jobs` is an *optional* peer, and this package ships raw `.ts`
+(`main`/`types` point at `lib/index.ts`), so **a consumer compiles our source**
+— which `skipLibCheck` cannot suppress, since these are our files, not
+declaration files. Measured on a consumer project with the package installed
+and bun-jobs absent:
+
+| Import | `tsc --noEmit` |
+|---|---|
+| `@kingsleyweb/bun-nest` (the barrel) | **0 errors** |
+| `@kingsleyweb/bun-nest/jobs` | **3 × `TS2307`**, "Cannot find module `@kingsleyweb/bun-jobs`" |
+| `@kingsleyweb/bun-nest/lib/jobs` | the same 3 |
+
+Installing `@kingsleyweb/bun-jobs` takes all three to 0. The import path itself
+resolves either way — both `@kingsleyweb/bun-nest/jobs` and
+`@kingsleyweb/bun-nest/lib/jobs` are exports of this package and resolve to
+`lib/jobs/index.ts` — so the failure is the missing peer, not a bad specifier.
+The barrel's 0 is the point of the split: an application that has no jobs
+never compiles a line of this module, and nothing about the peer is really
+required of it.
+
 ## Exported API
 
-Everything is exported from the package root; see [`lib/index.ts`](./lib/index.ts).
+Everything below is exported from the package root; see
+[`lib/index.ts`](./lib/index.ts). The one exception is
+[the jobs API module](#the-jobs-api-module), which is exported **only** from
+`@kingsleyweb/bun-nest/jobs` (equivalently `@kingsleyweb/bun-nest/lib/jobs`).
 
 | Group | Exports |
 |---|---|
+| Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`; types `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
 | HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`; types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
@@ -1068,6 +1179,7 @@ describes the conventions they share.
 | `04-websockets` | [`message-formats.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/message-formats.ts) | every packet type on the wire, binary frames, malformed and unroutable frames, exceptions |
 | `04-websockets` | [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/adapter-options.ts) | the `websocket` option, auth on upgrade, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | `04-websockets` | [`custom-adapter.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
+| `05-jobs-api` | [`module.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/05-jobs-api/module.ts) | `BunJobsApiModule.forRoot`, `@InjectJobsApi()`, authorized requests against the mounted API, and what `app.close()` closes |
 
 **Option tours** exercise every option of one part of the API and assert the
 result, so a failed check fails the script:
@@ -1077,6 +1189,7 @@ result, so a failed check fails the script:
 | [`10-options/http-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/http-adapter-options.ts) | every `BunHttpAdapter` constructor option and public method, inside and outside a Nest application |
 | [`10-options/interceptor-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/interceptor-options.ts) | every upload interceptor, its arguments, every `UploadOptions` field and `getMultipartRequest` |
 | [`10-options/websocket-adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/websocket-adapter-options.ts) | every WebSocket adapter constructor shape, method, option and packet type |
+| [`10-options/jobs-api-module-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, the `bunJobsApi` marker, registration order and attaching across an adapter swap |
 
 To run them from a clone of the repository:
 
