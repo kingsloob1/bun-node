@@ -15,6 +15,80 @@
  */
 
 /* ------------------------------------------------------------------ *
+ * The management API — an HTTP API and a live-events WebSocket over a
+ * `BunJobs` context, with OpenAPI 3.1 and AsyncAPI 3.0 documents for
+ * exactly what it routes. Mount it with `use(api.basePath, api.router)`.
+ *
+ * The DTOs and the socket's message types are exported because they are the
+ * contract a client is written against, and the types the options reference
+ * (`JobsApiCsrfOptions`, `OpenApiSecurityScheme`, …) because a consumer
+ * compiling our source must be able to name them.
+ * ------------------------------------------------------------------ */
+export {
+  type AsyncApiDocument,
+  DEFAULT_JOBS_API_LIMITS,
+  JOBS_API_ACTIONS,
+  JOBS_API_MUTATIONS,
+  JOBS_API_OPT_IN_ACTIONS,
+  type JobsApi,
+  type JobsApiAction,
+  type JobsApiAuthorize,
+  type JobsApiAuthorizeContext,
+  type JobsApiAuthorizeResult,
+  type JobsApiConfig,
+  type JobsApiCsrfOptions,
+  type JobsApiDocsOptions,
+  type JobsApiLimits,
+  type JobsApiMode,
+  type JobsApiRouteInfo,
+  type JobsApiSerializers,
+  type JobsApiSocketData,
+  type JobsApiWebSocket,
+  type JobsApiWebSocketOptions,
+  type OpenApiDocument,
+  type OpenApiSecurityScheme,
+} from "./api/config";
+export { createJobsApi } from "./api/createJobsApi";
+export { JOBS_API_PROTOCOL_VERSION } from "./api/routes/meta";
+export type {
+  ErrorDto,
+  EventDto,
+  JobDto,
+  JobFlowDto,
+  JobInclude,
+  JobPageDto,
+  MetaDto,
+  PageDto,
+  PageInfoDto,
+  ProblemDto,
+  ProblemIssueDto,
+  QueueSummaryDto,
+  RepeatableDto,
+  RunnerInfoDto,
+  RunRecordDto,
+  WorkerDto,
+} from "./api/serialize";
+export {
+  JOBS_API_WS_CLOSE,
+  JOBS_API_WS_SUBPROTOCOL,
+  type JobsApiAckMessage,
+  type JobsApiAckRejection,
+  type JobsApiClientMessage,
+  type JobsApiErrorMessage,
+  type JobsApiEventMessage,
+  type JobsApiGapMessage,
+  type JobsApiGapReason,
+  type JobsApiHeartbeatMessage,
+  type JobsApiHelloMessage,
+  type JobsApiPingMessage,
+  type JobsApiPongMessage,
+  type JobsApiServerMessage,
+  type JobsApiSubscribeMessage,
+  type JobsApiUnsubscribeMessage,
+  type JobsApiWsErrorCode,
+} from "./api/ws/protocol";
+
+/* ------------------------------------------------------------------ *
  * The per-service context — a namespace and a backend, set once, with
  * every runner, queue and worker derived from it.
  * ------------------------------------------------------------------ */

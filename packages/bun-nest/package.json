@@ -26,6 +26,15 @@
     "file-upload",
     "multipart"
   ],
+  "exports": {
+    ".": "./lib/index.ts",
+    "./jobs": "./lib/jobs/index.ts",
+    "./lib/jobs": "./lib/jobs/index.ts",
+    "./lib/*.ts": "./lib/*.ts",
+    "./lib/*.js": "./lib/*.ts",
+    "./lib/*": "./lib/*.ts",
+    "./package.json": "./package.json"
+  },
   "main": "lib/index.ts",
   "types": "lib/index.ts",
   "publishConfig": {
@@ -48,6 +57,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
+    "@kingsleyweb/bun-jobs": "^2.2.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/websockets": "^11.0.0",
@@ -56,6 +66,9 @@
     "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
+    "@kingsleyweb/bun-jobs": {
+      "optional": true
+    },
     "@nestjs/websockets": {
       "optional": true
     },
@@ -71,6 +84,7 @@
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.0.0",
+    "@kingsleyweb/bun-jobs": "^2.2.0",
     "@nestjs/common": "^11.1.27",
     "@nestjs/core": "^11.1.27",
     "@nestjs/websockets": "^11.1.21",

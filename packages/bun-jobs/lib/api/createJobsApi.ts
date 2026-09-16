@@ -1,0 +1,161 @@
+import type { BunRequest } from "@kingsleyweb/bun-common";
+import type {
+  AsyncApiDocument,
+  JobsApi,
+  JobsApiConfig,
+  JobsApiRouteInfo,
+  OpenApiDocument,
+  ResolvedJobsApiConfig,
+} from "./config";
+import type { AnyRouteDef, RouteServices } from "./routes/define";
+import type { SourceOptions } from "./sources";
+import type { JobsApiWebSocketInternalOptions } from "./ws/attach";
+import { BunRouter, cors } from "@kingsleyweb/bun-common";
+import { resolveConfig } from "./config";
+import { createApiErrorHandler, createNotFoundHandler } from "./errors";
+import { isRouteEnabled, registerRoutes } from "./routes/define";
+import { docsRoutes } from "./routes/docs";
+import { jobRoutes } from "./routes/jobs";
+import { metaRoutes } from "./routes/meta";
+import { queueRoutes } from "./routes/queues";
+import { repeatableRoutes } from "./routes/repeatables";
+import { runnerRoutes } from "./routes/runners";
+import { QueueSource, RunnerSource } from "./sources";
+import {
+  asyncApiForRequest,
+  generateAsyncApi,
+  registerAsyncApiSource,
+} from "./spec/asyncapi";
+import { generateOpenApi } from "./spec/openapi";
+import { createJobsApiWebSocket, upgradePassthrough } from "./ws/attach";
+import { isWebSocketEnabled } from "./ws/channels";
+
+/** Every route the API knows, before pruning. */
+export function builtInRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
+  return [
+    ...metaRoutes(),
+    ...docsRoutes(config),
+    ...queueRoutes(config),
+    ...jobRoutes(config),
+    ...repeatableRoutes(),
+    ...runnerRoutes(config),
+  ];
+}
+
+/**
+ * Assembles an API from a resolved configuration and a route list: prunes the
+ * routes, generates the document (so a spec problem fails here, not on the
+ * first docs request), and builds the router in this order —
+ * CORS, `middleware`, the routes, the JSON 404, the error handler.
+ *
+ * `createJobsApi` is this with the built-in routes; tests use it directly to
+ * exercise the registrar with routes of their own.
+ */
+export function buildJobsApi(
+  config: ResolvedJobsApiConfig,
+  defs: readonly AnyRouteDef[],
+  options?: SourceOptions & JobsApiWebSocketInternalOptions,
+): JobsApi {
+  const enabled = defs.filter((def) => isRouteEnabled(def, config));
+  const document = generateOpenApi(enabled, config);
+
+  // The socket, when the configuration has one. A dedicated port is bound
+  // here, so a failure generating its document must release it.
+  const socket = isWebSocketEnabled(config)
+    ? createJobsApiWebSocket(config, options)
+    : undefined;
+  let asyncDocument: AsyncApiDocument | undefined;
+  if (socket) {
+    const info = {
+      path: socket.websocket.path,
+      get port() {
+        return socket.websocket.port;
+      },
+    };
+    try {
+      asyncDocument = generateAsyncApi(config, info);
+    } catch (error) {
+      void socket.close();
+      throw error;
+    }
+    const built = asyncDocument!;
+    const asyncApiSource = (req: BunRequest): AsyncApiDocument =>
+      asyncApiForRequest(built, req, info);
+    registerAsyncApiSource(config, asyncApiSource);
+    const publishing = (
+      config.jobs as { publishesEvents?: unknown } | undefined
+    )?.publishesEvents;
+    if (config.jobs && publishing !== true) {
+      config.logger.warn(
+        "jobs api live events only carry what producers publish: set publishEvents on BunJobs (or publish on each queue, worker and runner) in every process that produces events",
+        { path: socket.websocket.path },
+      );
+    }
+  }
+
+  let routes: readonly JobsApiRouteInfo[] = [];
+  const openapi = (): OpenApiDocument => structuredClone(document);
+  const services: RouteServices = {
+    config,
+    queues: new QueueSource(config, options),
+    runners: new RunnerSource(config, options),
+    routes: () => routes,
+    openapi,
+  };
+
+  const router = new BunRouter();
+  if (
+    socket &&
+    config.websocket !== false &&
+    config.websocket.port === undefined
+  ) {
+    // Before anything else, so an upgrade for the socket never reaches CORS,
+    // the middleware (the guard runs it) or the JSON 404.
+    router.setRoute({
+      path: config.websocket.path,
+      method: undefined,
+      callbacks: [upgradePassthrough()],
+    });
+  }
+  if (config.cors !== false) {
+    router.use(cors(config.cors));
+  }
+  for (const handler of config.middleware) {
+    router.use(handler);
+  }
+  routes = Object.freeze(registerRoutes(router, enabled, services));
+  router.use(createNotFoundHandler());
+  router.use(createApiErrorHandler({ logger: config.logger }));
+
+  return {
+    router,
+    basePath: config.basePath,
+    mode: config.mode,
+    routes,
+    websocket: socket?.websocket,
+    openapi,
+    asyncapi: () =>
+      asyncDocument === undefined ? undefined : structuredClone(asyncDocument),
+    // What the API opened: its sessions (closed 1001), its notifier and a
+    // dedicated socket server. The `BunJobs`, queues, runners and driver are
+    // never the API's to close.
+    close: async () => {
+      await socket?.close();
+    },
+  };
+}
+
+/**
+ * Creates the management API: validates the configuration (throwing
+ * `ConfigError` for anything unusable), then builds the router and the
+ * OpenAPI document for exactly the routes this configuration enables.
+ *
+ * ```ts
+ * const api = createJobsApi({ jobs, basePath: "/admin/jobs", authorize });
+ * app.use(api.basePath, api.router);
+ * ```
+ */
+export function createJobsApi(config: JobsApiConfig): JobsApi {
+  const resolved = resolveConfig(config);
+  return buildJobsApi(resolved, builtInRoutes(resolved));
+}
