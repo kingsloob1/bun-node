@@ -17,7 +17,8 @@ bun run-all.ts 04 10               # only folders 04-* and 10-*
 ```
 
 No install step: `@nestjs/core`, `@nestjs/common`, `@nestjs/websockets`,
-`reflect-metadata` and `rxjs` resolve from the repo's root `node_modules`
+`reflect-metadata`, `rxjs` and — for the two `@kingsleyweb/bun-nest/jobs`
+examples — `@kingsleyweb/bun-jobs` resolve from the repo's root `node_modules`
 (`@nestjs/platform-express` is not needed, and not installed). The legacy
 decorator options Nest relies on come from the repo's `tsconfig.base.json`.
 Applications listen on port `0`.
@@ -54,6 +55,12 @@ Applications listen on port `0`.
 | [`adapter-options.ts`](./04-websockets/adapter-options.ts) | the `websocket` option, auth on upgrade, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | [`custom-adapter.ts`](./04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 
+### 05 — The jobs API module
+
+| File | Shows |
+|---|---|
+| [`module.ts`](./05-jobs-api/module.ts) | `BunJobsApiModule.forRoot` from `@kingsleyweb/bun-nest/jobs`, `@InjectJobsApi()`, authorized requests against the mounted routes, and what `app.close()` closes |
+
 ### 10 — Option tours
 
 The examples above *show* behaviour. A tour **asserts** it: each exercises
@@ -66,6 +73,7 @@ every option of one part of the API and checks what happens with
 | [`http-adapter-options.ts`](./10-options/http-adapter-options.ts) | every `BunHttpAdapter` method and option inside a Nest application |
 | [`interceptor-options.ts`](./10-options/interceptor-options.ts) | every file interceptor and its options |
 | [`websocket-adapter-options.ts`](./10-options/websocket-adapter-options.ts) | every WebSocket adapter method, option and message type |
+| [`jobs-api-module-options.ts`](./10-options/jobs-api-module-options.ts) | every `BunJobsApiModule` option, and the rules for sharing a server between its live-events socket and a gateway |
 
 ## Checking the examples
 
