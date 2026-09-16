@@ -1204,6 +1204,16 @@ The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
 also available. A bare `BunRouter.ws()` needs a `BunWebSocket` attached
 through the `bunWebsocket` option or `setBunWebSocket()`.
 
+Lifecycle dispatch is resolved per event, not frozen at `listen()`. Attaching
+another `BunWebSocket` to the same router — `setBunWebSocket()`, or simply
+constructing one with `router:`, which calls it — takes over `open`, `message`,
+`close` and the rest even on a server that is already listening, and the
+instance it replaced stops receiving them: last one wins. That is what lets
+bun-nest's `useWebSocketAdapter()` install an adapter after the server has
+started. The `wsOptions` settings are *not* late-bound — Bun reads
+`idleTimeout`, `maxPayloadLength` and `perMessageDeflate` once, when the server
+binds — so a swap changes dispatch, not the socket settings.
+
 Examples:
 [`echo-and-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/echo-and-events.ts),
 [`rooms-and-broadcast.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/rooms-and-broadcast.ts),

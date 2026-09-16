@@ -11,6 +11,7 @@ import type {
   BodyParserType,
   BunServeNormalOptions,
   BunServer,
+  BunWebSocketHandlerType,
   BunWebSocketServerType,
   matchedRoute,
   NextFunction,
@@ -732,6 +733,67 @@ export class BunHttpAdapter<
     this.instance.setBunWebSocket(this.webSocketAdapter);
   }
 
+  /**
+   * The {@link BunWebSocket} that should receive lifecycle dispatch *now*: the
+   * instance currently registered on the router, else this adapter's built-in
+   * one.
+   *
+   * A `BunWebSocket`'s constructor calls `setBunWebSocket(this)` on the router
+   * it is given, so building a second one against this adapter — which is what
+   * bun-nest's `BunWebSocketAdapter`, and therefore NestJS's
+   * `app.useWebSocketAdapter()`, does — replaces the registered instance. The
+   * router is consulted before {@link webSocketAdapter} so that swap is
+   * honoured; `instance` is checked first because a replaced router
+   * ({@link instance}) is the one requests are actually routed through.
+   */
+  private resolveWebSocketAdapter(): BunWebSocket<customWebsocketDataType> {
+    const current = this.instance.getBunWebsocket() ?? this.getBunWebsocket();
+
+    return (
+      (current as BunWebSocket<customWebsocketDataType> | undefined) ??
+      this.webSocketAdapter
+    );
+  }
+
+  /**
+   * Builds the `websocket` object handed to `Bun.serve`.
+   *
+   * `Bun.serve` reads that object **once**, at `listen()`. Passing the built-in
+   * adapter's `wsHandler` straight in therefore froze dispatch onto whichever
+   * instance existed at that moment: a `BunWebSocket` constructed afterwards
+   * took over the router while the server kept calling the old one, so a client
+   * could connect and then never see `open`, `message` or `close`. The object
+   * returned here is stable — Bun still reads it once — but every lifecycle
+   * callback forwards to the adapter active at call time, which is what lets an
+   * adapter installed after `listen()` receive connections. bun-nest's adapter
+   * does the same, so both HTTP adapters bind alike.
+   *
+   * The one-time configuration fields (`idleTimeout`, `maxPayloadLength`,
+   * `perMessageDeflate`, …) are copied from the active adapter at bind time,
+   * matching Bun's one-time read of those properties: a later swap changes
+   * dispatch, not the socket settings the server was bound with.
+   */
+  private buildServerWebSocketHandler(): BunWebSocketHandlerType<customWebsocketDataType> {
+    const handler = {
+      ...this.resolveWebSocketAdapter().wsHandler,
+    } as BunWebSocketHandlerType<customWebsocketDataType>;
+
+    // Each callback forwards its arguments, unchanged, to the adapter active at
+    // call time. Spelled out per event rather than looped: TypeScript cannot
+    // correlate a handler's parameters with its name across a loop. The lookup
+    // is two property reads — no allocation and no extra await, so the
+    // per-frame cost is unmeasurable against the dispatch it wraps.
+    const active = () => this.resolveWebSocketAdapter().wsHandler;
+    handler.open = (ws) => active().open?.(ws);
+    handler.message = (ws, message) => active().message?.(ws, message);
+    handler.close = (ws, code, reason) => active().close?.(ws, code, reason);
+    handler.drain = (ws) => active().drain?.(ws);
+    handler.ping = (ws, data) => active().ping?.(ws, data);
+    handler.pong = (ws, data) => active().pong?.(ws, data);
+
+    return handler;
+  }
+
   public get isListening() {
     return !!this._serverInstance?.url || this.isServerListening;
   }
@@ -982,7 +1044,7 @@ export class BunHttpAdapter<
         async fetch(nativeRequest: Request, server) {
           return that.handleNativeRequest(nativeRequest, server);
         },
-        websocket: that.webSocketAdapter.wsHandler,
+        websocket: this.buildServerWebSocketHandler(),
         error(err) {
           return that.handleRequestError(err);
         },

@@ -639,3 +639,152 @@ describe("BunWebSocket: removeAllListeners argument handling", () => {
     expect(ws.listenerCount("pong")).toBe(1);
   });
 });
+
+describe("BunWebSocket: an instance attached after listen()", () => {
+  it("dispatches to the instance current at call time, not the one bound at listen", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      logger: createTestLogger().logger,
+    });
+    try {
+      const server = await adapter.listen(0);
+
+      // A `BunWebSocket` constructed with a router calls `setBunWebSocket()` on
+      // it — the way bun-nest's adapter, and so NestJS's
+      // `useWebSocketAdapter()`, takes over after the server is already up.
+      const swapped = new BunWebSocket({
+        newInstance: false,
+        router: adapter,
+        getServer: () => adapter.getBunServer(),
+      });
+      expect(adapter.getBunWebsocket()).toBe(swapped);
+      // The built-in instance is untouched; only dispatch moved.
+      expect(adapter.webSocketAdapter).not.toBe(swapped);
+
+      const opened: WebSocketClientData[] = [];
+      const messages: string[] = [];
+      const emitted: string[] = [];
+      swapped.on("open", (socket) => {
+        emitted.push(socket.data.path);
+      });
+      await swapped.setRouteHandler(
+        "/fresh",
+        {
+          open: (socket) => {
+            opened.push(socket.data);
+          },
+          message: (socket, message) => {
+            messages.push(String(message));
+            socket.send(`echo:${String(message)}`);
+          },
+        },
+        undefined,
+      );
+
+      const { client, received } = await openClient(
+        `ws://127.0.0.1:${server.port}/fresh`,
+      );
+      client.send("hello");
+      await until(() => received.length > 0);
+      client.close();
+
+      // The route handler registered on the new instance runs,
+      expect(opened).toHaveLength(1);
+      expect(opened[0]?.route).toBe("/fresh");
+      expect(messages).toEqual(["hello"]);
+      expect(received).toEqual(["echo:hello"]);
+      // its emitter fires,
+      expect(emitted).toEqual(["/fresh"]);
+      // and the accepting server's real port is still recorded.
+      expect(opened[0]?.port).toBe(server.port);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("stops dispatching to the instance it replaced", async () => {
+    const adapter = new BunHttpAdapter(0, {
+      logger: createTestLogger().logger,
+    });
+    const staleRoute: string[] = [];
+    // Registered on the built-in instance, before anything is swapped in.
+    adapter.ws("/stale", {
+      open: (socket) => {
+        staleRoute.push(socket.data.path);
+      },
+      message: () => {},
+    });
+    const original = adapter.webSocketAdapter;
+    const staleEvents: string[] = [];
+    original.on("open", (socket) => {
+      staleEvents.push(socket.data.path);
+    });
+
+    try {
+      const server = await adapter.listen(0);
+      const swapped = new BunWebSocket({
+        newInstance: false,
+        router: adapter,
+        getServer: () => adapter.getBunServer(),
+      });
+
+      const opened: string[] = [];
+      await swapped.setRouteHandler(
+        "/stale",
+        {
+          open: (socket) => {
+            opened.push(socket.data.path);
+          },
+          message: () => {},
+        },
+        undefined,
+      );
+
+      const { client } = await openClient(
+        `ws://127.0.0.1:${server.port}/stale`,
+      );
+      await until(() => opened.length > 0);
+      client.close();
+
+      // Last one wins: the replaced instance sees neither its own route
+      // handler nor its emitter, even on a path it registered itself.
+      expect(opened).toEqual(["/stale"]);
+      expect(staleRoute).toEqual([]);
+      expect(staleEvents).toEqual([]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("keeps the built-in instance dispatching when nothing is swapped in", async () => {
+    // The guard against the fix over-reaching: with no later instance, the
+    // adapter's own `BunWebSocket` must still be the one that dispatches.
+    const adapter = new BunHttpAdapter(0, {
+      logger: createTestLogger().logger,
+    });
+    const opened: WebSocketClientData[] = [];
+    adapter.ws("/plain", {
+      open: (socket) => {
+        opened.push(socket.data);
+      },
+      message: (socket, message) => {
+        socket.send(`echo:${String(message)}`);
+      },
+    });
+
+    try {
+      const server = await adapter.listen(0);
+      const { client, received } = await openClient(
+        `ws://127.0.0.1:${server.port}/plain`,
+      );
+      client.send("ping");
+      await until(() => received.length > 0);
+      client.close();
+
+      expect(adapter.getBunWebsocket()).toBe(adapter.webSocketAdapter);
+      expect(received).toEqual(["echo:ping"]);
+      expect(opened[0]?.port).toBe(server.port);
+    } finally {
+      await adapter.close();
+    }
+  });
+});

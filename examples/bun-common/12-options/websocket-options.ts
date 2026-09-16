@@ -1027,6 +1027,77 @@ step("getOrCreateWebsocketServer and killServer");
 }
 
 /* ------------------------------------------------------------------ */
+step("Attaching a BunWebSocket after listen() — dispatch follows the swap");
+
+{
+  const late = new BunHttpAdapter(0);
+  const replacedRoute: string[] = [];
+  // Registered on the adapter's built-in instance, before anything replaces it.
+  late.ws("/late", {
+    open: (ws) => {
+      replacedRoute.push(ws.data.path);
+    },
+    message: () => {},
+  });
+  const builtIn = late.webSocketAdapter;
+
+  await late.listen(0);
+  closers.push(async () => {
+    await late.close();
+  });
+
+  // Constructing a BunWebSocket with `router:` calls setBunWebSocket() on that
+  // router — which is how bun-nest's useWebSocketAdapter() takes over, and it
+  // may happen after the server is already listening.
+  const swapped = new BunWebSocket({
+    newInstance: false,
+    router: late,
+    getServer: () => late.getBunServer(),
+  });
+  check(
+    "constructing one with `router:` registers it, leaving webSocketAdapter alone",
+    late.getBunWebsocket() === swapped && late.webSocketAdapter === builtIn,
+  );
+
+  await swapped.setRouteHandler(
+    "/late",
+    {
+      open: (ws) => {
+        ws.send(`open ${ws.data.route}`);
+      },
+      message: (ws, message) => {
+        ws.send(`echo ${String(message)}`);
+      },
+    },
+    undefined,
+  );
+
+  const lateClient = await connect(`ws://127.0.0.1:${late.server?.port}/late`);
+  checkEqual(
+    "the instance attached after listen() is the one that dispatches",
+    await lateClient.waitForText("open", (text) => text.startsWith("open")),
+    "open /late",
+  );
+
+  lateClient.socket.send("hi");
+  checkEqual(
+    "its message handler runs too",
+    await lateClient.waitForText("the echo", (text) => text.startsWith("echo")),
+    "echo hi",
+  );
+
+  // Last one wins: Bun.serve reads its `websocket` object once, so dispatch is
+  // resolved per event instead of frozen at listen().
+  check(
+    "the instance it replaced no longer dispatches",
+    replacedRoute.length === 0,
+  );
+
+  lateClient.socket.close();
+  await lateClient.waitClosed();
+}
+
+/* ------------------------------------------------------------------ */
 step("The TypedEmitter surface");
 
 {
