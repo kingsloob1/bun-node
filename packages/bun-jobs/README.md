@@ -1414,6 +1414,489 @@ Examples:
 - [`09-integrations/live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts)
 - [`10-options/notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts)
 
+## Management API
+
+`createJobsApi()` serves an HTTP API and a live-events WebSocket over a
+`BunJobs` context, with OpenAPI 3.1 and AsyncAPI 3.0 documents describing
+exactly what it routes — the backend a dashboard is written against.
+
+Nothing is exposed by accident: every request passes an `authorize` hook you
+supply, the routes are pruned by mode and by what the driver supports, and
+mutating routes can be removed outright. It is an admin surface — mount it
+behind your own authentication, never on the public internet.
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import { BunJobs, createJobsApi } from "@kingsleyweb/bun-jobs";
+
+const jobs = new BunJobs({ namespace: "shop", driver: { type: "redis", url }, publishEvents: true });
+const app = new BunHttpAdapter();
+
+const api = createJobsApi({
+  jobs,
+  basePath: "/admin/jobs",
+  authorize: async (req, { mutation }) => {
+    const session = await sessionFrom(req);
+    if (!session) return { allow: false, status: 401 };
+    return session.roles.includes(mutation ? "jobs:admin" : "jobs:read");
+  },
+});
+
+app.use(api.basePath, api.router);   // HTTP
+api.websocket?.attach(app);          // live events, same port
+await app.listen(3000);
+```
+
+`api.openapi()` and `api.asyncapi()` return the documents as plain objects;
+`api.routes` lists what was actually registered; `api.close()` releases what
+the API opened — its sessions, its event notifier and a dedicated socket
+server — and never the `BunJobs`, queues, runners or driver you passed in.
+
+### Mounting
+
+**A plain `BunRouter` under raw `Bun.serve`.** `upgrade()` answers `null` when
+a request is not for the socket, so the host keeps its own routing:
+
+```ts
+const root = new BunRouter();
+root.use(api.basePath, api.router);
+
+Bun.serve({
+  port: 3000,
+  async fetch(req, server) {
+    const answer = await api.websocket?.upgrade(req, server);
+    if (answer !== null && answer !== undefined) return answer; // refused
+    if (answer === undefined) return;                           // upgraded
+    return root.fetch(req);
+  },
+  websocket: api.websocket!.handler,
+});
+```
+
+**NestJS, without the module** — mount on the adapter, attach after `init()`:
+
+```ts
+const adapter = new BunHttpAdapter();
+const app = await NestFactory.create(AppModule, adapter);
+const api = createJobsApi({ jobs: app.get(BunJobs), basePath: "/admin/jobs", authorize });
+adapter.use(api.basePath, api.router);
+await app.init();
+api.websocket?.attach(adapter.getInstance());
+await app.listen(3000);
+```
+
+Nest's `setGlobalPrefix` does not apply to this mount, and Nest guards, pipes
+and interceptors do not run for these routes — use `authorize` and
+`middleware` instead.
+
+**NestJS, with the module** (`@kingsleyweb/bun-nest/jobs`) does the mounting,
+attaching and shutdown for you:
+
+```ts
+import { BunJobsApiModule } from "@kingsleyweb/bun-nest/jobs";
+
+@Module({
+  imports: [
+    BunJobsApiModule.forRootAsync({
+      inject: [BunJobs, AuthService],
+      useFactory: (jobs: BunJobs, auth: AuthService) => ({
+        jobs,
+        basePath: "/admin/jobs",
+        authorize: (req, context) => auth.can(req, context),
+      }),
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+> **That subpath needs bun-jobs installed.** `@kingsleyweb/bun-nest` declares
+> `@kingsleyweb/bun-jobs` as an *optional* peer, and both packages ship raw
+> `.ts` — so a consumer compiles their sources. Importing
+> `@kingsleyweb/bun-nest/jobs` without bun-jobs installed fails `tsc` with
+> `TS2307` (three of them), which `skipLibCheck` cannot suppress, even though
+> the import path itself resolves. Importing the bun-nest **barrel** without
+> bun-jobs is clean — 0 errors — which is the point of keeping the module on
+> its own subpath.
+
+### Authorization
+
+`authorize` is required — `createJobsApi` throws `ConfigError` without it,
+unless you pass `allowUnauthenticated: true` (local development only, and it
+warns on every start). It is asked once per request, before the handler runs,
+and again per channel on the socket:
+
+```ts
+export type Authorize = (
+  req: BunRequest,
+  context: {
+    action: JobsApiAction;
+    mutation: boolean;
+    transport: "http" | "ws";
+    queue?: string;
+    jobId?: string;
+    jobIds?: readonly string[];
+    runner?: string;
+    channel?: string;
+    route?: { method: string; path: string };
+  },
+) =>
+  | boolean
+  | { allow: true }
+  | { allow: false; status?: 401 | 403; reason?: string }
+  | Promise<boolean | { allow: true } | { allow: false; status?: 401 | 403; reason?: string }>;
+```
+
+Anything unrecognised — a forgotten `return`, a string — is a denial: failing
+open is how an admin API becomes public. `readOnly: true` and an `actions`
+allow-list are *static* limits applied before `authorize`, so no hook can
+re-enable what configuration removed.
+
+| Action | Kind | |
+|---|---|---|
+| `meta.read` | read | |
+| `docs.read` | read | |
+| `queues.list` | read | |
+| `queues.read` | read | |
+| `queues.pause` | mutation | |
+| `queues.resume` | mutation | |
+| `queues.drain` | mutation | |
+| `queues.clean` | mutation | |
+| `queues.limits` | mutation | |
+| `metrics.read` | read | |
+| `workers.list` | read | |
+| `jobs.list` | read | |
+| `jobs.read` | read | |
+| `jobs.logs` | read | |
+| `jobs.add` | mutation | opt-in |
+| `jobs.update` | mutation | opt-in |
+| `jobs.retry` | mutation | |
+| `jobs.retryAll` | mutation | |
+| `jobs.remove` | mutation | |
+| `jobs.promote` | mutation | |
+| `repeatables.list` | read | |
+| `repeatables.remove` | mutation | |
+| `definitions.list` | read | |
+| `runners.list` | read | |
+| `runners.read` | read | |
+| `runners.trigger` | mutation | |
+| `runners.pause` | mutation | |
+| `runners.resume` | mutation | |
+| `runners.kill` | mutation | |
+| `runners.reschedule` | mutation | |
+| `runners.resetStats` | mutation | |
+| `events.connect` | read | |
+| `events.subscribe` | read | |
+
+The two **opt-in** actions write payloads your handlers trust, so they are
+absent unless named in `actions`. `jobs.add` is further restricted to
+`addableNames` (by default, the names in `jobs.definitions()`).
+`GET /meta/permissions` evaluates the whole table for the caller, so a UI can
+hide what it may not do.
+
+### Modes and pruning
+
+`mode` selects which half is exposed — `"jobs"`, `"runner"` or `"both"`
+(the default when both sources exist). One predicate prunes the router, both
+documents and `/meta/permissions` together, so a route that is absent is
+absent everywhere: wrong mode, a mutation under `readOnly`, an action outside
+`actions`, a driver missing the methods the route needs, or a route that
+needs a `jobs` source without one. A pruned route answers the API's JSON 404,
+never a 405.
+
+`/meta` reports what the backend supports (`features.logs`, `update`,
+`limits`, `flows`, `search`, `workers`, `throughput`), so a UI can explain a
+missing button rather than hide it silently.
+
+### Routes
+
+Every route below is registered only when its action is enabled and its
+driver support is present. Paths are relative to `basePath`.
+
+| Method | Path | Action | Mutation |
+|---|---|---|---|
+| GET | `/meta` | `meta.read` | no |
+| GET | `/meta/permissions` | `meta.read` | no |
+| GET | `/openapi.json` | `docs.read` | no |
+| GET | `/asyncapi.json` | `docs.read` | no |
+| GET | `/overview` | `metrics.read` | no |
+| GET | `/queues` | `queues.list` | no |
+| GET | `/queues/:queue` | `queues.read` | no |
+| GET | `/queues/:queue/counts` | `queues.read` | no |
+| POST | `/queues/:queue/pause` | `queues.pause` | yes |
+| POST | `/queues/:queue/resume` | `queues.resume` | yes |
+| POST | `/queues/:queue/drain` | `queues.drain` | yes |
+| POST | `/queues/:queue/clean` | `queues.clean` | yes |
+| GET | `/queues/:queue/limits` | `queues.read` | no |
+| PUT | `/queues/:queue/limits` | `queues.limits` | yes |
+| GET | `/queues/:queue/workers` | `workers.list` | no |
+| GET | `/workers` | `workers.list` | no |
+| GET | `/queues/:queue/throughput` | `metrics.read` | no |
+| GET | `/queues/:queue/jobs` | `jobs.list` | no |
+| POST | `/queues/:queue/jobs/lookup` | `jobs.read` | no |
+| GET | `/queues/:queue/jobs/:id` | `jobs.read` | no |
+| GET | `/queues/:queue/jobs/:id/logs` | `jobs.logs` | no |
+| GET | `/queues/:queue/jobs/:id/children` | `jobs.read` | no |
+| PATCH | `/queues/:queue/jobs/:id` | `jobs.update` | yes |
+| DELETE | `/queues/:queue/jobs/:id` | `jobs.remove` | yes |
+| POST | `/queues/:queue/jobs/:id/retry` | `jobs.retry` | yes |
+| POST | `/queues/:queue/jobs/:id/promote` | `jobs.promote` | yes |
+| POST | `/queues/:queue/jobs/retry` | `jobs.retry` | yes |
+| POST | `/queues/:queue/jobs/remove` | `jobs.remove` | yes |
+| POST | `/queues/:queue/jobs/promote` | `jobs.promote` | yes |
+| POST | `/queues/:queue/jobs/retry-all` | `jobs.retryAll` | yes |
+| POST | `/queues/:queue/jobs` | `jobs.add` | yes |
+| GET | `/queues/:queue/repeatables` | `repeatables.list` | no |
+| DELETE | `/queues/:queue/repeatables/:key` | `repeatables.remove` | yes |
+| GET | `/definitions` | `definitions.list` | no |
+| GET | `/runners` | `runners.list` | no |
+| GET | `/runners/:runner` | `runners.read` | no |
+| GET | `/runners/:runner/history` | `runners.read` | no |
+| GET | `/runners/:runner/stats` | `runners.read` | no |
+| POST | `/runners/:runner/trigger` | `runners.trigger` | yes |
+| POST | `/runners/:runner/pause` | `runners.pause` | yes |
+| POST | `/runners/:runner/resume` | `runners.resume` | yes |
+| PUT | `/runners/:runner/schedule` | `runners.reschedule` | yes |
+| POST | `/runners/:runner/kill` | `runners.kill` | yes |
+| POST | `/runners/:runner/stats/reset` | `runners.resetStats` | yes |
+
+Runner routes reach runners registered in *any* process sharing the driver
+and namespace; `kill` and `stats/reset` are local-only and answer 409
+`RUNNER_NOT_LOCAL` for a runner owned elsewhere.
+
+### Pagination, filtering and `include`
+
+Lists are offset-based: `?offset=0&limit=20`, answering
+`{ items, page: { offset, limit, total?, hasMore } }`. Ask for `total=true`
+only when you need a count — it costs a second query. Jobs can be filtered by
+`state` (repeated or comma-separated), by `name`, and by `search` (a substring
+of id or name, never the payload).
+
+Lists omit the heavy fields; ask for them with `include=data,returnValue,stacktrace,opts`.
+A single read includes `data`, `returnValue` and `opts` by default. Timestamps
+are epoch milliseconds throughout. `serialize.job` (and the `repeatable`,
+`runner`, `run` and `event` hooks) is where you redact before anything leaves
+the process.
+
+### Errors
+
+Every failure is RFC 9457 `application/problem+json`:
+
+```json
+{
+  "type": "urn:bun-jobs:error:JOB_NOT_FOUND",
+  "title": "Job not found",
+  "status": 404,
+  "code": "JOB_NOT_FOUND",
+  "detail": "Job \"a41\" was not found",
+  "instance": "/admin/jobs/queues/mail/jobs/a41"
+}
+```
+
+A 5xx never carries the underlying message — `detail` is the generic title —
+and nothing is matched on message text. Validation failures add `issues`
+(`{ target, path, message }`).
+
+| Code | Status | | Code | Status |
+|---|---|---|---|---|
+| `UNAUTHORIZED` | 401 | | `VALIDATION` | 400 |
+| `FORBIDDEN` | 403 | | `SERIALIZATION` | 400 |
+| `QUEUE_NOT_FOUND` | 404 | | `INVALID_ARGUMENT` | 400 |
+| `JOB_NOT_FOUND` | 404 | | `INVALID_NAME` | 400 |
+| `RUNNER_NOT_FOUND` | 404 | | `INVALID_JSON` | 400 |
+| `RUN_NOT_FOUND` | 404 | | `INVALID_SCHEDULE` | 400 |
+| `REPEATABLE_NOT_FOUND` | 404 | | `BULK_LIMIT` | 400 |
+| `ROUTE_NOT_FOUND` | 404 | | `ARGS_NOT_ALLOWED` | 400 |
+| `JOB_STATE_CONFLICT` | 409 | | `NAME_NOT_ADDABLE` | 403 |
+| `JOB_ACTIVE` | 409 | | `CSRF_REJECTED` | 403 |
+| `RUNNER_NOT_LOCAL` | 409 | | `ORIGIN_REJECTED` | 403 |
+| `OPERATION_IN_PROGRESS` | 409 | | `UNSUPPORTED_MEDIA_TYPE` | 415 |
+| `LIMITS_CONTENDED` | 409 | | `PAYLOAD_TOO_LARGE` | 413 |
+| `RUNNER_STOPPED` | 409 | | `NOT_SUPPORTED` | 501 |
+| `LOCK_UNAVAILABLE` | 409 | | `QUEUE_CLOSED` | 503 |
+| `LOCK_LOST` | 409 | | `WORKER_CLOSED` | 503 |
+| `INTERNAL` | 500 | | `QUEUE_FULL` | 503 |
+| | | | `DRIVER_ERROR` | 503 |
+
+### Live events
+
+The socket is at `<basePath>/ws` (`websocket.path`). Connect, then subscribe
+by channel name — the channels are multiplexed over one connection:
+
+```ts
+const ws = new WebSocket("wss://app.example/admin/jobs/ws");
+ws.onopen = () =>
+  ws.send(
+    JSON.stringify({
+      op: "subscribe",
+      id: "1",
+      channels: ["queues", "queue/mail", "runner/nightly"],
+    }),
+  );
+```
+
+| Channel | Receives |
+|---|---|
+| `all` | every event (mode `both` only) |
+| `queues` | every queue event |
+| `queue/{queue}` | one queue's events |
+| `queue/{queue}/job/{jobId}` | one job's events (the id is `encodeURIComponent`-escaped) |
+| `runners` | every runner event |
+| `runner/{runner}` | one runner's events |
+
+The server sends `hello` on open, `ack` for each `subscribe`/`unsubscribe`
+(with per-channel `rejected` entries, so one refused channel does not close
+the connection), `event`, `gap`, `heartbeat`, `pong` and `error`. Each `event`
+carries a `seq` within an `epoch`, and lists every subscription it matched —
+an event matching several of your channels arrives **once**.
+
+**Resuming.** After a reconnect, `subscribe` with `resume: { epoch, afterSeq }`
+replays what the server still holds (`websocket.replay`, by default 1000
+events or five minutes) and answers `ack { resumed: true }`. Otherwise you get
+`ack { resumed: false }` and a `gap` — refetch over HTTP. A different `epoch`
+means a different server instance, which is normal behind a load balancer
+without sticky sessions.
+
+**Backpressure.** A client that cannot keep up stops receiving events, gets one
+`gap` when its socket drains, and is closed `4008` after
+`slowConsumerTimeoutMs`. Frames over `maxMessageBytes` close `1009`, binary
+frames close `1003`, exceeding `messagesPerSecond` twice within ten seconds
+closes `1008`, and `api.close()` closes sessions `1001`. `progress` events are
+coalesced per job to one per `coalesceProgressMs`.
+
+**Events only carry what producers publish.** The socket hears whatever reaches
+the notifier, which hears only what is published: set `publishEvents: true` on
+the `BunJobs` (or `publish` on individual queues, workers and runners) **in
+every process that produces events**. On a memory driver events are
+process-local, and transports like Redis pub/sub are at-most-once. Treat
+events as invalidation hints and HTTP as the source of truth.
+
+### Documentation endpoints
+
+The JSON documents are always served (behind `docs.read`) and cost nothing:
+`/openapi.json` describes exactly the routes registered, and `/asyncapi.json`
+the socket's channels and messages — both pruned the same way the router is,
+so they never describe a route that does not exist. `api.openapi()` and
+`api.asyncapi()` return the same documents in process.
+
+HTML viewers are **off by default** (`docs.ui: false`) and deliberately so:
+they load third-party script into an origin holding admin cookies, and "try it
+out" is a mutation console. With `docs.ui: true` you get Swagger UI at
+`/docs` and the AsyncAPI viewer at `/docs/asyncapi`, both behind `docs.read`.
+
+Those pages are pinned and locked down: exact CDN versions (never a range)
+with `sha384` Subresource Integrity on every asset, and a Content Security
+Policy of `default-src 'none'` with `script-src` limited to one per-request
+nonce plus the CDN origin, `connect-src 'self'`, and `base-uri`,
+`form-action`, `frame-ancestors` and `object-src` all `'none'`, alongside
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. Point
+`docs.cdn.baseUrl` at a mirror to self-host — supply your own hashes if the
+mirror re-encodes anything — or leave the pages off and use the JSON.
+
+### Security checklist
+
+- **Mount behind your own authentication.** This is an admin surface; nothing
+  here belongs on the public internet.
+- **`authorize` is mandatory** and fails closed. Use `readOnly` and `actions`
+  as static limits that no hook can re-enable.
+- **Leave the opt-in actions off** unless a UI genuinely needs them:
+  `jobs.add` and `jobs.update` write payloads your handlers trust.
+- **CSRF, for cookie sessions.** Mutations require `Content-Type:
+  application/json` by default, and cross-site `Origin`/`Sec-Fetch-Site` are
+  refused; add `csrf.header` to force a preflight. CORS is off by default, and
+  `credentials: true` with a wildcard origin is refused outright.
+- **The socket's `Origin` is checked** on upgrade (same-origin by default),
+  because browsers send cookies on cross-site WebSocket handshakes. Set
+  `trustProxy: true` only behind a proxy you control.
+- **Redact with the `serialize` hooks.** `lockToken`, event `origin` tokens,
+  `driverConfig` and handler functions are never serialised; stacks
+  (`exposeStacks`), runner file paths (`exposeRunnerFiles`) and worker
+  host/pid (`exposeHosts`) are switches.
+- **Keep `docs.ui` off in production** unless the prefix is private.
+
+### Limits
+
+Every cost is bounded, and a request that exceeds a cap is refused rather than
+served slowly. Override any of them through `limits`.
+
+| Limit | Default | Bounds |
+|---|---|---|
+| `maxPageSize` | `100` | largest `limit` on a job list |
+| `defaultPageSize` | `20` | `limit` when none is given |
+| `maxBulkIds` | `1000` | ids in a bulk body |
+| `maxRetryAll` | `10000` | jobs one `retry-all` may move |
+| `maxClean` | `10000` | largest `clean` limit |
+| `maxLogPage` | `500` | largest log page |
+| `maxHistory` | `200` | largest runner history page |
+| `maxQueues` | `500` | queues summarised by `/queues` and `/overview` |
+| `queueCacheMs` | `2000` | how long the known-queue list is cached |
+| `maxJobDataBytes` | `1048576` | body accepted by `jobs.add`/`jobs.update` |
+
+The socket has its own (`websocket`): `maxConnections` `1000`,
+`maxSubscriptions` `50` per connection, `maxMessageBytes` `16384`,
+`messagesPerSecond` `20`, `maxBufferedBytes` `1048576`,
+`slowConsumerTimeoutMs` `30000`, `heartbeatMs` `25000`,
+`coalesceProgressMs` `250`, and `replay` of `1000` events or five minutes.
+
+### Features that need driver support
+
+Some routes exist only where the backend can serve them, and `/meta.features`
+says which:
+
+| Feature | Routes | Needs |
+|---|---|---|
+| `logs` | `/jobs/:id/logs` | `getJobLogs` |
+| `update` | `PATCH /jobs/:id` | `updateJob` |
+| `limits` | `/queues/:queue/limits` | queue state |
+| `flows` | `/jobs/:id/children` | `recordChild` |
+| `search` | `?search=` on job lists | `findJobs` |
+| `workers` | `/workers`, `/queues/:queue/workers` | worker records |
+| `throughput` | `/queues/:queue/throughput`, `/overview` | `getThroughput` |
+
+A route whose support is missing is not registered, not documented, and
+answers the API's JSON 404 — so a UI can ask `/meta` once and explain the
+absence rather than guessing from a failure.
+
+### Live events alongside NestJS gateways
+
+The socket is a per-path route handler, not a Nest gateway, and every
+connection it upgrades is marked `ws.data.custom.bunJobsApi === true`. The API
+ignores any connection without that marker, so another handler's clients can
+never drive it.
+
+The overlap runs the other way too. A gateway declared with a `"/*"` (or
+`"*"`) namespace matches **every** path beneath it, including
+`<basePath>/ws`, so on the shared HTTP server that gateway also receives these
+connections and will try to read their frames as its own. Two ways to avoid
+it:
+
+- **Give the socket its own port** — `websocket: { port: 9230 }`. The
+  recommendation for any app that uses gateways: the isolation is structural,
+  and `api.close()` stops that server. It costs a second listener, its own TLS
+  configuration, and a cross-origin `Origin` allow-list for browsers.
+- **Filter on the marker** in the gateway, ignoring clients whose
+  `ws.data.custom.bunJobsApi` is `true`.
+
+Give every gateway an explicit namespace either way: one declared without a
+namespace binds to `/`, which cannot be told apart from anything else.
+
+**Attach before any catch-all gateway.** Both the socket's route and a
+gateway's are middleware on one router, and whichever upgrades first ends the
+request — so a `"/*"` gateway registered first would leave the socket
+reachable but permanently silent. Rather than mount into a path that can never
+answer, `attach()` refuses with `ConfigError`, naming the pattern that already
+claims it:
+
+```text
+attach(): a WebSocket route for "/*" is already registered on this router and
+covers the socket's path "/admin/jobs/ws".
+```
+
+Order against `app.useWebSocketAdapter()` does **not** matter. The socket
+resolves the serving `BunWebSocket` when a client upgrades, not when it is
+attached, so an adapter installed afterwards still receives its connections —
+attaching early used to leave sockets that connected and then did nothing.
+
 ## Drivers
 
 Examples:
