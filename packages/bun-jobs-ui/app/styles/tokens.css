@@ -1,0 +1,131 @@
+/*
+ * Design tokens. Light is the default; dark applies when the OS prefers it
+ * and no theme is forced (`data-theme` absent = "system"), or when
+ * `data-theme="dark"` forces it. `data-theme="light"` forces light.
+ */
+:root {
+  color-scheme: light;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-pill: 999px;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --border: #d9dde3;
+  --text: #1b1f24;
+  --text-muted: #5b6573;
+  --accent: #2957c7;
+  --accent-contrast: #ffffff;
+  --focus: #2957c7;
+  --danger: #b42318;
+  --danger-contrast: #ffffff;
+  --warning-bg: #fff4d6;
+  --warning-text: #7a4b00;
+  --info-bg: #e3ecff;
+  --info-text: #1f3f8f;
+  --success-bg: #ddf5e6;
+  --success-text: #13603a;
+  --danger-bg: #fde5e3;
+  --danger-text: #92211a;
+  --neutral-bg: #eceff3;
+  --neutral-text: #3b4450;
+
+  /* Job states: a line/dot colour each. */
+  --state-waiting: #2f6fdb;
+  --state-delayed: #8a5cd6;
+  --state-active: #0f8a8a;
+  --state-completed: #238a4a;
+  --state-failed: #d4541a;
+  --state-dead: #b42318;
+  --state-waiting-children: #7a6a1f;
+
+  --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
+  --header-height: 56px;
+  --nav-width: 200px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e232b;
+    --border: #2d343e;
+    --text: #e6e9ee;
+    --text-muted: #9aa4b2;
+    --accent: #7ea2ff;
+    --accent-contrast: #0b1020;
+    --focus: #7ea2ff;
+    --danger: #ff7b70;
+    --danger-contrast: #1a0806;
+    --warning-bg: #3a2c0a;
+    --warning-text: #ffd27a;
+    --info-bg: #182646;
+    --info-text: #b7caff;
+    --success-bg: #11301f;
+    --success-text: #8fe0ad;
+    --danger-bg: #3d1512;
+    --danger-text: #ffb4ad;
+    --neutral-bg: #242a33;
+    --neutral-text: #c9d0da;
+    --state-waiting: #6f9ef0;
+    --state-delayed: #b08cf0;
+    --state-active: #3cc4c4;
+    --state-completed: #52c47f;
+    --state-failed: #f08a52;
+    --state-dead: #ff7b70;
+    --state-waiting-children: #cdb64a;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1216;
+  --surface: #171b21;
+  --surface-2: #1e232b;
+  --border: #2d343e;
+  --text: #e6e9ee;
+  --text-muted: #9aa4b2;
+  --accent: #7ea2ff;
+  --accent-contrast: #0b1020;
+  --focus: #7ea2ff;
+  --danger: #ff7b70;
+  --danger-contrast: #1a0806;
+  --warning-bg: #3a2c0a;
+  --warning-text: #ffd27a;
+  --info-bg: #182646;
+  --info-text: #b7caff;
+  --success-bg: #11301f;
+  --success-text: #8fe0ad;
+  --danger-bg: #3d1512;
+  --danger-text: #ffb4ad;
+  --neutral-bg: #242a33;
+  --neutral-text: #c9d0da;
+  --state-waiting: #6f9ef0;
+  --state-delayed: #b08cf0;
+  --state-active: #3cc4c4;
+  --state-completed: #52c47f;
+  --state-failed: #f08a52;
+  --state-dead: #ff7b70;
+  --state-waiting-children: #cdb64a;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+}
