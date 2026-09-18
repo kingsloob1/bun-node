@@ -91,6 +91,134 @@ through to the host):
   problem, never the shell.
 - `/` and `/*` serve the HTML shell for every client route.
 
+## Screens (M2)
+
+The app's routes sit under the UI's `basePath`. A path the caller has no
+route for shows a not-found screen.
+
+| Route | What it shows |
+|---|---|
+| `/` | The Overview: namespace-wide counts per state (`GET /overview`) and a filterable queue table, with a 60-minute throughput sparkline per row. When the caller has no Overview entry, `/` redirects to the first nav entry, or says there is nothing to show. |
+| `/queues` | Every queue, searchable by name (case-insensitive) and paged. Each row links to its queue. |
+| `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions) and the detail panels: limits, workers, throughput and repeatables. |
+| `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Remove and Edit. |
+
+### URL parameters
+
+Everything a screen filters by lives in the query string, so a link
+reproduces the view. A value that is missing or invalid falls back to the
+default.
+
+| Screen | Parameter | Meaning |
+|---|---|---|
+| `/` | `q` | Filters the queue table by name. |
+| `/queues` | `search` | Filters by name, as you type. Changing it resets `offset`. |
+| `/queues` | `offset` | Rows skipped. Defaults to `0`. |
+| `/queues` | `limit` | Page size, `1` to `limits.maxQueues`. Defaults to the smaller of `limits.defaultPageSize` and `limits.maxQueues`. |
+| `/queues/:queue` | `state` | The state tab: `waiting`, `delayed`, `active`, `completed`, `failed`, `dead` or `waiting-children`. Absent means All. |
+| `/queues/:queue` | `offset` | Jobs skipped. Defaults to `0`. |
+| `/queues/:queue` | `limit` | Page size, `1` to `limits.maxPageSize`. Defaults to `limits.defaultPageSize`. |
+| `/queues/:queue` | `total=1` | Asks the API to count `page.total` ("Count total"). |
+| `/queues/:queue` | `name` | Exact job names as a comma list. The request sends each name as its own `name` key. |
+| `/queues/:queue` | `search` | Id or name contains this text. `name` and `search` apply when you press Apply. |
+| `/queues/:queue` | `order=desc` | Newest first. Absent means oldest first. |
+| `/queues/:queue` | `panel` | The open detail panel: `limits`, `workers`, `throughput` or `repeatables`. Defaults to the first one shown. |
+| `/queues/:queue` | `window` | The throughput window in minutes: `15`, `60`, `360` or `1440`. Defaults to `60`. |
+
+On the queue screen, changing `state`, `name`, `search` or `order` resets
+`offset` and clears the selection.
+
+### What each element needs
+
+The app boots with the untargeted `GET /meta/permissions`. The Queues nav
+entry, and so every `/queues*` route, depends on that map's `queues.list`.
+Screens under `/queues/:queue` also ask `GET /meta/permissions?queue=<queue>`,
+and that per-queue answer refines only the buttons and panels inside that
+queue's screens. Until it arrives, or if it fails, those screens use the
+untargeted map. An action counts only when the map holds it and it is `true`.
+An element that is not allowed is absent, not disabled. "Mutation" below means
+the action and `meta.readOnly` false. The API's own 401/403 stays the
+authority, since the map is never asked about one particular job.
+
+| Element | Needs |
+|---|---|
+| Overview nav entry and `/` | `sections.manage`, `meta.mode` `jobs` or `both`, and `metrics.read` or `queues.list` (untargeted) |
+| Overview counts | `metrics.read` |
+| Overview queue table | `queues.list` |
+| Overview sparklines | `metrics.read` and `features.throughput` |
+| Queues nav entry and every `/queues*` route | `sections.manage`, `meta.mode` `jobs` or `both`, and `queues.list` (untargeted) |
+| Queue header total and paused badge | `queues.read` |
+| Jobs table, and the job links in it | `jobs.list`; without it, "Jobs hidden" |
+| Pause / Resume | mutation `queues.pause` / `queues.resume`, and `queues.read`: Pause shows on a running queue, Resume on a paused one |
+| Drain…, Clean…, Retry all… | mutation `queues.drain`, `queues.clean`, `jobs.retryAll` |
+| Add job | mutation `jobs.add`, and `meta.addableNames` is `null` (any name) or non-empty |
+| Add job's name suggestions | `definitions.list`, when `addableNames` is `null` |
+| Bulk Retry / Promote / Remove selected | `jobs.list`, and mutation `jobs.retry` / `jobs.promote` / `jobs.remove` |
+| Limits panel | `queues.read` and `features.limits`, and the queue's detail carries `limits` |
+| Limits panel, editable | the above, and mutation `queues.limits` |
+| Workers panel | `workers.list` and `features.workers` |
+| Throughput panel | `metrics.read` and `features.throughput` |
+| Repeatables panel | `repeatables.list` |
+| Repeatables panel, Remove | the above, and mutation `repeatables.remove` |
+| Job screen | `jobs.read`; without it, "Job hidden", and the job is never fetched. A 401/403 on the job itself shows the same panel with the API's detail. |
+| Job logs | `jobs.logs` and `features.logs` |
+| Job Retry | mutation `jobs.retry`, and the job is `completed`, `failed` or `dead` |
+| Job Promote | mutation `jobs.promote`, and the job is `delayed` |
+| Job Remove | mutation `jobs.remove` |
+| Job Edit | mutation `jobs.update` and `features.update` |
+
+If the per-queue answer takes away `jobs.read` after the untargeted map
+granted it, the job screen switches to "Job hidden" and stops polling.
+
+### Refreshing
+
+Until the live WebSocket arrives in a later milestone, the screens poll. The
+socket will replace these intervals.
+
+| What | Interval |
+|---|---|
+| Overview counts and queue table | 5 s |
+| Overview sparklines | 30 s, fetched only once a row scrolls into view |
+| Queue list | 5 s |
+| Queue counts and the jobs page on screen | 5 s |
+| Queue detail (paused, limits) | 15 s |
+| Workers panel | 10 s |
+| Throughput and repeatables panels | 30 s |
+| A job, and its flow children | 5 s until it is `completed`, `failed` or `dead`, then not at all |
+| A job's logs | 3 s while it is `active` or `waiting`, then not at all |
+
+Every read also refreshes when the window regains focus. `/meta` and the
+permission maps are not polled.
+
+### Stack traces
+
+A failure's `stack`, in the failure panel and the failure history, is shown
+only when the API sends it. It does that only when you create it with
+`createJobsApi({ ..., serialize: { exposeStacks: true } })`, which defaults to
+`false`.
+
+### Browser tests
+
+These `data-testid` hooks are stable:
+
+- App: `app-ready` (the frame, once `/meta` and the permissions loaded),
+  `bootstrap-loading`, `bootstrap-error`, `live-status`, `not-found`,
+  `placeholder`.
+- Overview: `overview`, `state-counts`, `queue-row-<queue>`,
+  `queues-truncated`.
+- Queues: `queues-list`, `queue-screen`, `queue-total`, `job-row-<id>`,
+  `bulk-count`, `retry-all-in-progress`, `worker-row-<id>`,
+  `repeatable-row-<key>`.
+- Job: `job-screen`, `job-id`, `job-not-found`, `job-hidden`,
+  `job-stacktraces`, `logs-follow`, `flow-child-<queue>:<id>`,
+  `flow-truncated`.
+
+`__tests__/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
+through `Bun.WebView`, against a real `createJobsApi` with CSRF on. It pauses a
+queue, opens a dead job and retries it, reads each step back from the API and
+checks that the page raised no CSP violation. It skips visibly when Chrome is
+not found. Set `BUN_CHROME_PATH` to point it at one.
+
 ## Testing without a socket
 
 ```ts
