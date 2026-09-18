@@ -18,15 +18,17 @@
  * - **Mount each router at its own `basePath`**: `app.use(api.basePath,
  *   api.router)` and `app.use(ui.basePath, ui.router)`. The UI's config and
  *   every asset URL are built from `ui.basePath`, so the two must agree.
- * - **The Overview and Queues screens are real.** Runners, Events and API docs
- *   are still placeholders. For a queue screen with something in every state,
- *   run `05-demo/seeded-demo.ts --serve`.
+ * - **The Overview, Queues, Runners and Events screens are real.** API docs
+ *   is still a placeholder. For screens with something in every state, run
+ *   `05-demo/seeded-demo.ts --serve`.
  * - **Inside this repo there is no `dist/`**, so the first request bundles the
  *   app in memory (a one-time cost, logged once). A published package ships a
  *   prebuilt `dist/` and never builds.
- * - **Pass `--serve` and open the printed URL in a browser.** The Overview
- *   polls the API every 5 s, so the counts move as the workers below finish
- *   jobs. Stop it with Ctrl+C.
+ * - **Pass `--serve` and open the printed URL in a browser.** The jobs
+ *   publish their events and the API's socket is attached, so the header
+ *   badge reads `Live` and the Overview's counts move as the workers below
+ *   finish jobs (without the socket it polls every 5 s instead). Stop it with
+ *   Ctrl+C.
  */
 import process from "node:process";
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
