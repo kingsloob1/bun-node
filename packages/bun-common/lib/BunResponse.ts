@@ -1,7 +1,11 @@
 import type { BunFile } from "bun";
 import type { Readable } from "node:stream";
 import type { BunRequest, SetCookieHeaderName } from "./BunRequest";
-import type { TypedEmitter, WebSocketClientData } from "./BunWebSocket";
+import type {
+  TypedEmitter,
+  WebSocketClientData,
+  WebSocketUpgradeDefaults,
+} from "./BunWebSocket";
 import type {
   NextFunction,
   RouterMiddlewareHandler,
@@ -52,6 +56,7 @@ import {
   signCookie,
   toHttpDate,
 } from "./utils/native";
+import { mergeUpgradeHeaders } from "./utils/wsUpgrade";
 
 type WriteHeadersInput = Record<string, string | string[]> | string[];
 /** Writable view of `ResponseInit`, since its members are `readonly`. */
@@ -115,13 +120,23 @@ export type BunResponseChunk = string | ArrayBufferView | ArrayBufferLike;
 export interface UpgradeToWebsocketOptions {
   /**
    * Extra headers for the `101 Switching Protocols` response, handed to
-   * `server.upgrade` as its `headers`. Default: none. Only these are sent —
-   * headers set on the response through `setHeader`/`set` are not. A
-   * `Sec-WebSocket-Protocol` here replaces Bun's default, which echoes the
-   * first protocol the client offered, so it is how a server picks a
-   * subprotocol.
+   * `server.upgrade` as its `headers`. Default: none. Merged over the
+   * router's `webSocketUpgradeHeaders` and the response's own (unless
+   * {@link inherit} is `false`), a name given here replacing every value of
+   * that name beneath. Headers set on the response through `setHeader`/`set`
+   * are never sent. A `Sec-WebSocket-Protocol` here replaces Bun's default,
+   * which echoes the first protocol the client offered, so it is how a server
+   * picks a subprotocol.
    */
   headers?: Bun.HeadersInit;
+  /**
+   * Whether the router- and response-level upgrade values apply beneath this
+   * call's arguments: `webSocketUpgradeHeaders` under {@link headers}, and —
+   * only when no `data` is passed — `webSocketUpgradeData` over the data
+   * built from the request. Default `true`. With `false` only this call's
+   * arguments count, exactly as before those layers existed.
+   */
+  inherit?: boolean;
 }
 
 /**
@@ -380,7 +395,7 @@ export class BunResponse<
   /**
    * The `custom` data of a WebSocket this response upgrades to. `unknown`
    * until declared, matching `BunWebSocket`: it is whatever the caller's
-   * `customDataToWsClientFn` returns.
+   * `onUpgrade` hook returns as `custom`.
    */
   customWebsocketDataType = unknown,
 > implements TypedEmitter<BunResponseEvents> {
@@ -389,11 +404,30 @@ export class BunResponse<
     | undefined = undefined;
 
   /**
-   * Headers for the `101` of a WebSocket upgrade, from
-   * {@link upgradeToWebsocket}'s `options.headers`; `undefined` when none were
-   * given, so an upgrade without them sends exactly Bun's default.
+   * Headers for the `101` of a WebSocket upgrade, as {@link upgradeToWebsocket}
+   * merged them; `undefined` when no layer had any, so the upgrade sends
+   * exactly Bun's default.
    */
   private _upgradeToWsHeaders: Headers | undefined = undefined;
+
+  /** Per-request `101` headers — see {@link webSocketUpgradeHeaders}. */
+  private _webSocketUpgradeHeaders: Headers | undefined = undefined;
+
+  /** Per-request `ws.data` values — see {@link webSocketUpgradeData}. */
+  private _webSocketUpgradeData:
+    | Partial<WebSocketClientData<customWebsocketDataType>>
+    | undefined = undefined;
+
+  /**
+   * Where router-wide upgrade defaults (`webSocketUpgradeHeaders`,
+   * `webSocketUpgradeData`) are read from by a bare
+   * {@link upgradeToWebsocket}. `BunRouter.handle()` sets it to the router
+   * running the request — the outermost one, when one router's pipeline runs
+   * another's — unless something set it first. `undefined` outside a router
+   * (a response built by hand), meaning no router layer.
+   */
+  public webSocketUpgradeDefaults: WebSocketUpgradeDefaults | undefined =
+    undefined;
 
   #nativeResponse: Response | undefined = undefined;
   /**
@@ -938,50 +972,106 @@ export class BunResponse<
   }
 
   /**
+   * Headers this request's WebSocket upgrade sends on its `101`, set by
+   * middleware that runs before the upgrading route or handler. They sit over
+   * the router's `webSocketUpgradeHeaders` and under the route's `onUpgrade`
+   * headers or {@link upgradeToWebsocket}'s `options.headers`, per header name.
+   * Accepts any `HeadersInit` (copied); reads back as a `Headers`, or
+   * `undefined` when none are set. Assign `undefined` to clear.
+   */
+  public get webSocketUpgradeHeaders(): Headers | undefined {
+    return this._webSocketUpgradeHeaders;
+  }
+
+  public set webSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined) {
+    this._webSocketUpgradeHeaders =
+      headers === undefined ? undefined : new Headers(headers);
+  }
+
+  /**
+   * `ws.data` values for this request's WebSocket upgrade, set by middleware
+   * that runs before the upgrading route or handler. Merged shallowly over the
+   * data built from the request and the router's `webSocketUpgradeData` (this
+   * wins per key), and under an `onUpgrade` hook's `custom`. Ignored when the
+   * data is given outright — `upgradeToWebsocket(data)` or a hook's `data`.
+   * A `ws()` route's `route`/`params`/`port` always come from its match.
+   * Stored as a shallow copy; `undefined` clears it.
+   */
+  public get webSocketUpgradeData():
+    | Partial<WebSocketClientData<customWebsocketDataType>>
+    | undefined {
+    return this._webSocketUpgradeData;
+  }
+
+  public set webSocketUpgradeData(
+    data: Partial<WebSocketClientData<customWebsocketDataType>> | undefined,
+  ) {
+    this._webSocketUpgradeData = data === undefined ? undefined : { ...data };
+  }
+
+  /**
    * Marks the response as a WebSocket upgrade, with `data` as the socket's
-   * `ws.data`. Without `data`, it is built from the request — including
-   * `port`, the port of the server that accepted it, when that server has one.
+   * `ws.data`.
    *
-   * `options.headers` go out on the `101 Switching Protocols` response —
-   * for example `{ "Sec-WebSocket-Protocol": "chat.v1" }` to choose a
+   * **Data.** A `data` argument is used exactly as given — no router- or
+   * response-level `webSocketUpgradeData` is merged into it, at any depth.
+   * Without one, it is built from the request (including `port`, the port of
+   * the server that accepted it, when that server has one), then the router's
+   * `webSocketUpgradeData` and then {@link webSocketUpgradeData} are merged
+   * over it shallowly, later winning per key.
+   *
+   * **Headers.** The `101` carries the router's `webSocketUpgradeHeaders`,
+   * then {@link webSocketUpgradeHeaders}, then `options.headers`, merged per
+   * header name — a name passed here replaces every value of that name
+   * beneath, e.g. `{ "Sec-WebSocket-Protocol": "chat.v1" }` to choose a
    * subprotocol. Headers set on this response any other way are not sent.
-   * Each call replaces the headers of the one before.
+   * Each call recomputes the headers, so an earlier call's `options.headers`
+   * never carry over. With no layer set and no `options.headers`, the `101`
+   * is exactly Bun's default.
+   *
+   * `options.inherit: false` drops the router and response layers, so only
+   * this call's arguments count.
    */
   public upgradeToWebsocket(
     data?: WebSocketClientData<customWebsocketDataType>,
     options?: UpgradeToWebsocketOptions,
   ) {
-    let headers: Headers | undefined;
-    if (options?.headers !== undefined) {
-      headers = new Headers(options.headers);
-      // An empty set is no headers: the upgrade then sends exactly what it
-      // would without the option.
-      if (headers.keys().next().done) {
-        headers = undefined;
-      }
+    const inherit = options?.inherit !== false;
+    const defaults = inherit ? this.webSocketUpgradeDefaults : undefined;
+    this._upgradeToWsHeaders = mergeUpgradeHeaders(
+      defaults?.webSocketUpgradeHeaders,
+      inherit ? this._webSocketUpgradeHeaders : undefined,
+      options?.headers,
+    );
+
+    if (data) {
+      this._upgradeToWsData = data;
+      return this;
     }
-    this._upgradeToWsHeaders = headers;
 
     const port = this.req.server?.port;
-    this._upgradeToWsData =
-      data ||
-      ({
-        ...(typeof port === "number" && Number.isInteger(port) && port > 0
-          ? { port }
-          : {}),
-        host: this.req.host,
-        path: this.req.path,
-        search: this.req.search,
-        hash: this.req.hash,
-        originalUrl: this.req.originalUrl,
-        headers: this.req.headersObj,
-        user: get<Record<string, unknown> | undefined>(
-          this.req,
-          "user",
-          undefined,
-        ),
-        custom: {} as customWebsocketDataType,
-      } satisfies WebSocketClientData<customWebsocketDataType>);
+    this._upgradeToWsData = {
+      ...(typeof port === "number" && Number.isInteger(port) && port > 0
+        ? { port }
+        : {}),
+      host: this.req.host,
+      path: this.req.path,
+      search: this.req.search,
+      hash: this.req.hash,
+      originalUrl: this.req.originalUrl,
+      headers: this.req.headersObj,
+      user: get<Record<string, unknown> | undefined>(
+        this.req,
+        "user",
+        undefined,
+      ),
+      custom: {} as customWebsocketDataType,
+      // The router-wide base carries no custom type of its own.
+      ...(defaults?.webSocketUpgradeData as
+        | Partial<WebSocketClientData<customWebsocketDataType>>
+        | undefined),
+      ...(inherit ? this._webSocketUpgradeData : undefined),
+    } satisfies WebSocketClientData<customWebsocketDataType>;
     return this;
   }
 
@@ -990,9 +1080,10 @@ export class BunResponse<
   }
 
   /**
-   * The headers {@link upgradeToWebsocket} was given for the `101`, or
-   * `undefined` when it was given none (or not called). Every server that
-   * performs the upgrade passes them to `server.upgrade` as `headers`.
+   * The headers the `101` will carry, as {@link upgradeToWebsocket} merged
+   * them from every layer, or `undefined` when no layer had any (or it was not
+   * called). Every server that performs the upgrade passes them to
+   * `server.upgrade` as `headers`.
    */
   public get upgradeToWsHeaders(): Headers | undefined {
     return this._upgradeToWsHeaders;

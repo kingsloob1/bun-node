@@ -178,7 +178,8 @@ export class BunHttpAdapter<
        * getServer: () => httpAdapter.getBunServer() }`. Every field given wins —
        * `httpAdapter` (router and server from another HTTP adapter),
        * `getServer` (the server to ride on), `router`, `wsOptions`,
-       * `customDataToWsClientFn`, and `newInstance: true` with `listen` (a
+       * `onUpgrade` (or the deprecated `customDataToWsClientFn`), and
+       * `newInstance: true` with `listen` (a
        * dedicated server bound at construction; `listen.port` is required).
        * `{ httpAdapter, localOptions }` is accepted too. A custom adapter can
        * also be supplied later via `app.useWebSocketAdapter()`.
@@ -588,6 +589,52 @@ export class BunHttpAdapter<
       this.server?.url?.origin ||
       `http://${this.listeningHost}:${this.listeningPort}`
     );
+  }
+
+  /**
+   * Router-wide headers for the `101` of every WebSocket upgrade on the app's
+   * router ({@link instance}) — gateway upgrades and a bare
+   * `res.upgradeToWebsocket()` alike. The lowest header layer:
+   * `res.webSocketUpgradeHeaders`, then an `onUpgrade` hook's headers or
+   * `upgradeToWebsocket`'s `options.headers`, replace them per header name.
+   * Delegates to `instance.webSocketUpgradeHeaders`; see
+   * `BunRouter.webSocketUpgradeHeaders`. `undefined` by default.
+   */
+  get webSocketUpgradeHeaders(): Headers | undefined {
+    return this.instance.webSocketUpgradeHeaders;
+  }
+
+  set webSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined) {
+    this.instance.webSocketUpgradeHeaders = headers;
+  }
+
+  /** Sets {@link webSocketUpgradeHeaders} and returns the adapter, for chaining. */
+  setWebSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined): this {
+    this.webSocketUpgradeHeaders = headers;
+    return this;
+  }
+
+  /**
+   * Router-wide base for `ws.data` on the app's router ({@link instance}),
+   * merged shallowly over the data built from the upgrade request and under
+   * `res.webSocketUpgradeData` and an `onUpgrade` hook's `custom`. Delegates
+   * to `instance.webSocketUpgradeData`; see `BunRouter.webSocketUpgradeData`.
+   * `undefined` by default.
+   */
+  get webSocketUpgradeData(): Partial<WebSocketClientData> | undefined {
+    return this.instance.webSocketUpgradeData;
+  }
+
+  set webSocketUpgradeData(data: Partial<WebSocketClientData> | undefined) {
+    this.instance.webSocketUpgradeData = data;
+  }
+
+  /** Sets {@link webSocketUpgradeData} and returns the adapter, for chaining. */
+  setWebSocketUpgradeData(
+    data: Partial<WebSocketClientData> | undefined,
+  ): this {
+    this.webSocketUpgradeData = data;
+    return this;
   }
 
   get webSocketAdapter() {

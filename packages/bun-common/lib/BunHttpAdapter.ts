@@ -20,6 +20,8 @@ import type {
   RouterMiddlewareHandler,
   ServeStaticOptions,
   WebSocketClientData,
+  WebSocketCustomDataFn,
+  WebSocketRouteOptions,
 } from "./index";
 import type { LoggerLike } from "./logging";
 import { EventEmitter } from "node:events";
@@ -247,7 +249,7 @@ export class BunHttpAdapter<
       request?: Partial<BunRequestOptions>;
       /**
        * Overrides for the built-in {@link BunWebSocket} adapter (e.g.
-       * `wsOptions`, `customDataToWsClientFn`). Merged over the defaults that
+       * `wsOptions`, `onUpgrade`). Merged over the defaults that
        * bind the adapter to this HTTP server's router and shared server.
        */
       websocket?: Partial<WebsocketOptions<customWebsocketDataType>>;
@@ -721,12 +723,73 @@ export class BunHttpAdapter<
   override ws<TCustom = customWebsocketDataType>(
     path: string,
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
-    customDataToWsClientFn?: (
-      req: BunRequest,
-      res: BunResponse,
-    ) => TCustom | Promise<TCustom>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  /**
+   * Registers a WebSocket route whose third argument maps the upgrade request
+   * to `ws.data.custom` — always `custom`, whatever the result's shape.
+   *
+   * @deprecated Pass `{ onUpgrade }` returning `{ custom }` instead.
+   */
+  override ws<TCustom = customWebsocketDataType>(
+    path: string,
+    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    customDataToWsClientFn: WebSocketCustomDataFn<TCustom>,
+  ): this;
+  override ws<TCustom = customWebsocketDataType>(
+    path: string,
+    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    fnOrOptions?:
+      | WebSocketRouteOptions<TCustom>
+      | WebSocketCustomDataFn<TCustom>,
   ): this {
-    return super.ws(path, handler, customDataToWsClientFn);
+    return super.ws(
+      path,
+      handler,
+      fnOrOptions as WebSocketRouteOptions<TCustom>,
+    );
+  }
+
+  /**
+   * The router-wide `101` headers (see {@link BunRouter.webSocketUpgradeHeaders})
+   * of the router requests run through: the adapter's own, or those of the
+   * router {@link setInstance} put in its place — so the adapter and its
+   * instance never disagree about them.
+   */
+  override get webSocketUpgradeHeaders(): Headers | undefined {
+    return this.instance === this
+      ? super.webSocketUpgradeHeaders
+      : this.instance.webSocketUpgradeHeaders;
+  }
+
+  override set webSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined) {
+    if (this.instance === this) {
+      super.webSocketUpgradeHeaders = headers;
+    } else {
+      this.instance.webSocketUpgradeHeaders = headers;
+    }
+  }
+
+  /**
+   * The router-wide `ws.data` base (see {@link BunRouter.webSocketUpgradeData})
+   * of the router requests run through, like {@link webSocketUpgradeHeaders}.
+   */
+  override get webSocketUpgradeData():
+    | Partial<WebSocketClientData>
+    | undefined {
+    return this.instance === this
+      ? super.webSocketUpgradeData
+      : this.instance.webSocketUpgradeData;
+  }
+
+  override set webSocketUpgradeData(
+    data: Partial<WebSocketClientData> | undefined,
+  ) {
+    if (this.instance === this) {
+      super.webSocketUpgradeData = data;
+    } else {
+      this.instance.webSocketUpgradeData = data;
+    }
   }
 
   get webSocketAdapter() {

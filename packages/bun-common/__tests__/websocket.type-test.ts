@@ -14,7 +14,12 @@ import type {
   BunWebSocketServerType,
   WebSocketClient,
   WebSocketClientData,
+  WebSocketRouteOptions,
+  WebSocketUpgradeHook,
+  WebSocketUpgradeResult,
 } from "../lib/BunWebSocket";
+import type { BunResponse } from "../lib/index";
+import { BunRouter } from "../lib/BunRouter";
 import { BunWebSocket } from "../lib/BunWebSocket";
 
 type Equal<X, Y> =
@@ -152,6 +157,217 @@ function _inferred() {
     type _unknown = Expect<Equal<typeof _socket.data.custom, unknown>>;
   });
 }
+
+/* --- onUpgrade: the hook's `custom` types ws.data.custom ----------- */
+
+type _hookReturn = Expect<
+  Equal<
+    ReturnType<WebSocketUpgradeHook<Session>>,
+    | WebSocketUpgradeResult<Session>
+    | void
+    | Promise<WebSocketUpgradeResult<Session> | void>
+  >
+>;
+type _resultCustom = Expect<
+  Equal<WebSocketUpgradeResult<Session>["custom"], Session | undefined>
+>;
+type _routeOptions = Expect<
+  Equal<
+    WebSocketRouteOptions<Session>["onUpgrade"],
+    WebSocketUpgradeHook<Session> | undefined
+  >
+>;
+type _resultData = Expect<
+  Equal<
+    WebSocketUpgradeResult<Session>["data"],
+    WebSocketClientData<Session> | undefined
+  >
+>;
+
+declare const router: BunRouter;
+
+// Options form: inferred from `onUpgrade`'s `custom`…
+router.ws(
+  "/hook",
+  {
+    open(_socket) {
+      type _custom = Expect<
+        Equal<typeof _socket.data.custom, { userId: string }>
+      >;
+    },
+    message() {},
+  },
+  { onUpgrade: () => ({ custom: { userId: "1" } }) },
+);
+
+// …an async one too, alongside headers.
+router.ws(
+  "/hook",
+  {
+    open(_socket) {
+      type _custom = Expect<Equal<typeof _socket.data.custom, { n: number }>>;
+    },
+    message() {},
+  },
+  { onUpgrade: async () => ({ custom: { n: 1 }, headers: { "X-A": "1" } }) },
+);
+
+// A hook returning nothing leaves it `unknown`, as does an empty options object.
+router.ws(
+  "/hook",
+  {
+    open(_socket) {
+      type _custom = Expect<Equal<typeof _socket.data.custom, unknown>>;
+    },
+    message() {},
+  },
+  { onUpgrade: () => {} },
+);
+router.ws(
+  "/hook",
+  {
+    open(_socket) {
+      type _custom = Expect<Equal<typeof _socket.data.custom, unknown>>;
+    },
+    message() {},
+  },
+  {},
+);
+
+// Deprecated function form: `TCustom` is inferred from the return value,
+// whatever its shape — `{ data, custom }` is custom here, not a hook result.
+router.ws(
+  "/legacy",
+  {
+    open(_socket) {
+      type _custom = Expect<
+        Equal<typeof _socket.data.custom, { data: string; custom: number }>
+      >;
+    },
+    message() {},
+  },
+  () => ({ data: "x", custom: 1 }),
+);
+router.ws(
+  "/legacy",
+  {
+    open(_socket) {
+      type _custom = Expect<
+        Equal<typeof _socket.data.custom, { room: string }>
+      >;
+    },
+    message() {},
+  },
+  async () => ({ room: "lobby" }),
+);
+
+// Negative controls: TypeScript reports a failed overload set on the call.
+const noop = { message() {} };
+router.ws<Session>("/hook", noop, {
+  // @ts-expect-error `custom` must be the declared type
+  onUpgrade: () => ({ custom: { userId: 1 } }),
+});
+// @ts-expect-error `headers` must be a HeadersInit
+router.ws<Session>("/hook", noop, { onUpgrade: () => ({ headers: 42 }) });
+router.ws<Session>("/hook", noop, {
+  // @ts-expect-error `data` must be a whole WebSocketClientData
+  onUpgrade: () => ({ data: { path: "/x" } }),
+});
+// @ts-expect-error an unknown per-route option
+router.ws<Session>("/hook", noop, { onUpgrde: () => ({}) });
+// The deprecated function form still type-checks against TCustom…
+router.ws<Session>("/hook", noop, () => ({ userId: "u", roles: [] }));
+// @ts-expect-error …and still has to produce one
+router.ws<Session>("/hook", noop, () => ({ userId: 1 }));
+// @ts-expect-error …and a hook result from it is custom, so not a Session
+router.ws<Session>("/hook", noop, () => ({
+  custom: { userId: "u", roles: [] },
+}));
+
+void ws.setRouteHandler(
+  "/rooms/:id",
+  { message() {} },
+  {
+    onUpgrade: () => ({
+      custom: { userId: "u", roles: [] },
+      headers: [["X-A", "1"]],
+    }),
+  },
+);
+
+void ws.setRouteHandler(
+  "/rooms/:id",
+  { message() {} },
+  // @ts-expect-error the hook's `custom` must be a Session
+  { onUpgrade: () => ({ custom: { userId: 1 } }) },
+);
+
+void ws.setRouteHandler(
+  "/rooms/:id",
+  { message() {} },
+  // @ts-expect-error a function is the deprecated mapping: its result is custom
+  () => ({ custom: { userId: "u", roles: [] } }),
+);
+
+function _inferredFromOnUpgrade() {
+  const inferred = new BunWebSocket({
+    newInstance: false,
+    getServer: () => undefined,
+    onUpgrade: () => ({ custom: { tenant: "acme" } }),
+  });
+  inferred.on("open", (_socket) => {
+    type _tenant = Expect<
+      Equal<typeof _socket.data.custom, { tenant: string }>
+    >;
+  });
+
+  return new BunWebSocket<Session>({
+    newInstance: false,
+    getServer: () => undefined,
+    // @ts-expect-error the instance-wide hook's `custom` must be a Session
+    onUpgrade: () => ({ custom: { tenant: "acme" } }),
+  });
+}
+
+/* --- router- and response-level upgrade values -------------------- */
+
+declare const res: BunResponse<Session>;
+type _resHeaders = Expect<
+  Equal<typeof res.webSocketUpgradeHeaders, Headers | undefined>
+>;
+type _resData = Expect<
+  Equal<
+    typeof res.webSocketUpgradeData,
+    Partial<WebSocketClientData<Session>> | undefined
+  >
+>;
+type _routerHeaders = Expect<
+  Equal<typeof router.webSocketUpgradeHeaders, Headers | undefined>
+>;
+type _routerData = Expect<
+  Equal<
+    typeof router.webSocketUpgradeData,
+    Partial<WebSocketClientData> | undefined
+  >
+>;
+type _chain = Expect<
+  Equal<ReturnType<typeof router.setWebSocketUpgradeHeaders>, BunRouter>
+>;
+
+// Setters take any HeadersInit.
+res.webSocketUpgradeHeaders = { "X-A": "1" };
+res.webSocketUpgradeHeaders = [["X-A", "1"]];
+router.webSocketUpgradeHeaders = new Headers();
+// @ts-expect-error a number is not a HeadersInit
+router.webSocketUpgradeHeaders = 1;
+// @ts-expect-error the response's data is typed by its custom type
+res.webSocketUpgradeData = { custom: { userId: 1 } };
+res.upgradeToWebsocket(undefined, { headers: { "X-A": "1" }, inherit: false });
+
+new BunRouter()
+  .setWebSocketUpgradeHeaders({ "X-A": "1" })
+  .setWebSocketUpgradeData({ custom: 1 })
+  .setLogger(console);
 
 /* --- serverOptions.error may replace the default error answer ------ */
 

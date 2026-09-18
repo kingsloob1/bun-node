@@ -278,6 +278,11 @@ export {
   type TypedEmitter,
   type WebSocketClient,
   type WebSocketClientData,
+  type WebSocketCustomDataFn,
+  type WebSocketRouteOptions,
+  type WebSocketUpgradeDefaults,
+  type WebSocketUpgradeHook,
+  type WebSocketUpgradeResult,
 } from "./BunWebSocket";
 export {
   type BunHttpClientError,

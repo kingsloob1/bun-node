@@ -3,7 +3,12 @@ import type { WebSocketHandler } from "bun";
 import type { BunRequest } from "./BunRequest";
 import type { BunResponse } from "./BunResponse";
 import type { ValidatorMiddleware } from "./BunValidate";
-import type { BunWebSocket, WebSocketClientData } from "./BunWebSocket";
+import type {
+  BunWebSocket,
+  WebSocketClientData,
+  WebSocketCustomDataFn,
+  WebSocketRouteOptions,
+} from "./BunWebSocket";
 import type { Logger, LoggerLike } from "./logging";
 import type {
   BunServer,
@@ -429,6 +434,12 @@ export class BunRouter<
   public _logger!: Logger;
   private _bunWebSocket?: BunWebSocket;
 
+  /** Router-wide `101` headers — see {@link webSocketUpgradeHeaders}. */
+  #webSocketUpgradeHeaders: Headers | undefined = undefined;
+
+  /** Router-wide `ws.data` base — see {@link webSocketUpgradeData}. */
+  #webSocketUpgradeData: Partial<WebSocketClientData> | undefined = undefined;
+
   /**
    * Upper bound on {@link routeCacheLayers} entries before FIFO eviction.
    * Set via the `routeCacheMax` constructor option; defaults to
@@ -576,6 +587,58 @@ export class BunRouter<
 
   setBunWebSocket(bunWebSocket: BunWebSocket) {
     this._bunWebSocket = bunWebSocket;
+  }
+
+  /**
+   * Router-wide headers for the `101` of every WebSocket upgrade this router
+   * is the source of defaults for: its own `ws()` routes (wherever the route
+   * was registered — see {@link ws}), and a bare `res.upgradeToWebsocket()`
+   * in a request this router's {@link handle} runs. The lowest header layer:
+   * `res.webSocketUpgradeHeaders`, then the route's `onUpgrade` headers or
+   * `upgradeToWebsocket`'s `options.headers`, replace them per header name.
+   * Read at upgrade time, so a change applies to the next upgrade.
+   * Accepts any `HeadersInit` (copied); reads back as a `Headers`, or
+   * `undefined` when none are set (the default). Assign `undefined` to clear.
+   */
+  get webSocketUpgradeHeaders(): Headers | undefined {
+    return this.#webSocketUpgradeHeaders;
+  }
+
+  set webSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined) {
+    this.#webSocketUpgradeHeaders =
+      headers === undefined ? undefined : new Headers(headers);
+  }
+
+  /** Sets {@link webSocketUpgradeHeaders} and returns the router, for chaining. */
+  setWebSocketUpgradeHeaders(headers: Bun.HeadersInit | undefined): this {
+    this.webSocketUpgradeHeaders = headers;
+    return this;
+  }
+
+  /**
+   * Router-wide base for `ws.data`, for the same upgrades as
+   * {@link webSocketUpgradeHeaders}: merged shallowly over the data built from
+   * the request, then `res.webSocketUpgradeData` over it (later wins per key),
+   * then an `onUpgrade` hook's `custom`. Ignored where the data is given
+   * outright — `res.upgradeToWebsocket(data)` or a hook's `data`. A `ws()`
+   * route's `route`/`params`/`port` always come from its match. `custom` is
+   * not type-checked against a route's `TCustom`. Stored as a shallow copy;
+   * `undefined` (the default) clears it.
+   */
+  get webSocketUpgradeData(): Partial<WebSocketClientData> | undefined {
+    return this.#webSocketUpgradeData;
+  }
+
+  set webSocketUpgradeData(data: Partial<WebSocketClientData> | undefined) {
+    this.#webSocketUpgradeData = data === undefined ? undefined : { ...data };
+  }
+
+  /** Sets {@link webSocketUpgradeData} and returns the router, for chaining. */
+  setWebSocketUpgradeData(
+    data: Partial<WebSocketClientData> | undefined,
+  ): this {
+    this.webSocketUpgradeData = data;
+    return this;
   }
 
   getBunWebsocket() {
@@ -726,15 +789,30 @@ export class BunRouter<
    * and its connection dispatched to `handler`.
    *
    * The route is added through the attached {@link BunWebSocket} (the
-   * `bunWebsocket` option, or {@link setBunWebSocket}); a {@link BunHttpAdapter}
-   * attaches its own. The upgrade route is in place when this returns.
+   * `bunWebsocket` option, or {@link setBunWebSocket}) — on *its* router,
+   * which is not necessarily this one; a {@link BunHttpAdapter} attaches its
+   * own. The upgrade route is in place when this returns.
    *
-   * `TCustom` is the type of `ws.data.custom` — what `customDataToWsClientFn`
-   * returns. On a `BunHttpAdapter` it defaults to the adapter's WebSocket data
-   * type; on a bare router it is inferred from `customDataToWsClientFn`, or
-   * given explicitly: `router.ws<{ userId: string }>("/chat", handler, fn)`.
-   * With neither it stays `unknown`: nothing says what the data holds.
+   * `options.onUpgrade` is the route's {@link WebSocketUpgradeHook}: its
+   * `custom` becomes `ws.data.custom`, its `headers` go out on the `101`, and
+   * its `data` replaces `ws.data` (with `route`/`params`/`port` filled in from
+   * the match where it leaves them out). It replaces the `BunWebSocket`'s
+   * instance-wide `onUpgrade` for this route.
    *
+   * The router-wide {@link webSocketUpgradeHeaders} and
+   * {@link webSocketUpgradeData} that apply are **this** router's — the one
+   * `ws()` was called on — even when the route lands on another router, or
+   * this one is mounted in another with `use()`.
+   *
+   * `TCustom` is the type of `ws.data.custom`. On a `BunHttpAdapter` it
+   * defaults to the adapter's WebSocket data type; on a bare router it is
+   * inferred from the hook's `custom`, or given explicitly:
+   * `router.ws<{ userId: string }>("/chat", handler, { onUpgrade })`. With
+   * neither it stays `unknown`: nothing says what the data holds.
+   *
+   * @param path Route pattern, e.g. `/rooms/:id`.
+   * @param handler Bun's `WebSocketHandler` for the route's connections.
+   * @param options Per-route {@link WebSocketRouteOptions}. Default: none.
    * @throws Error when no `BunWebSocket` is attached — registering a route
    *   that could never upgrade would otherwise fail silently.
    * @throws TypeError when `handler` is not a handler object.
@@ -742,10 +820,27 @@ export class BunRouter<
   ws<TCustom = unknown>(
     path: string,
     handler: WebSocketHandler<WebSocketClientData<TCustom>>,
-    customDataToWsClientFn?: (
-      req: BunRequest,
-      res: BunResponse,
-    ) => TCustom | Promise<TCustom>,
+    options?: WebSocketRouteOptions<TCustom>,
+  ): this;
+  /**
+   * Registers a WebSocket route whose third argument maps the upgrade request
+   * to `ws.data.custom`. The function's result is always `custom`, whatever
+   * its shape — `{ data, headers }` included — and `TCustom` is inferred from
+   * it.
+   *
+   * @deprecated Pass `{ onUpgrade }` returning `{ custom }` instead.
+   */
+  ws<TCustom = unknown>(
+    path: string,
+    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    customDataToWsClientFn: WebSocketCustomDataFn<TCustom>,
+  ): this;
+  ws<TCustom = unknown>(
+    path: string,
+    handler: WebSocketHandler<WebSocketClientData<TCustom>>,
+    fnOrOptions?:
+      | WebSocketRouteOptions<TCustom>
+      | WebSocketCustomDataFn<TCustom>,
   ): this {
     const bunWebSocket = this.getBunWebsocket() as
       | BunWebSocket<TCustom>
@@ -765,8 +860,10 @@ export class BunRouter<
     // await, so the route exists once this returns. Its promise is still
     // observed, so a failure is logged rather than becoming an unhandled
     // rejection.
+    // `this` is where the router-wide upgrade defaults come from, not the
+    // socket's router the route is registered on.
     bunWebSocket
-      .setRouteHandler(path, handler, customDataToWsClientFn)
+      .setRouteHandler(path, handler, fnOrOptions, this)
       .catch((error: unknown) => {
         this.logger.error("ws(): failed to register the WebSocket route", {
           error,
@@ -4462,6 +4559,9 @@ export class BunRouter<
   }): Promise<matchedRoute | true | undefined> {
     const { request, response } = options;
     const layers = this.getMatchedLayers(options);
+    // Where a bare `res.upgradeToWebsocket()` reads router-wide upgrade
+    // defaults: the outermost router running the request.
+    response.webSocketUpgradeDefaults ??= this;
 
     let hasError = false;
     let currentError: unknown;
