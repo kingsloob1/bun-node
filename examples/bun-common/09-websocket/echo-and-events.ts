@@ -36,7 +36,7 @@ interface Session {
 /**
  * The session of a connection seen by a `ws()` handler. Those handlers are
  * typed for any connection, so `ws.data.custom` is `unknown` there; the
- * adapter's `customDataToWsClientFn` is what put a `Session` in it.
+ * adapter's `onUpgrade` hook is what put a `Session` in it.
  */
 function sessionOf(ws: WebSocketClient): Session {
   return ws.data.custom as Session;
@@ -49,12 +49,14 @@ step("An adapter whose connections each carry a session");
 
 const adapter = new BunHttpAdapter<Session>(0, {
   websocket: {
-    // Runs once per upgrade, with the request and response; what it returns
-    // becomes `ws.data.custom`. It may be async.
-    customDataToWsClientFn: (req) => {
+    // Runs once per upgrade, with the request and response; the `custom` it
+    // returns becomes `ws.data.custom`. It may be async.
+    onUpgrade: (req) => {
       return {
-        id: crypto.randomUUID().slice(0, 8),
-        name: String(req.query.name ?? "anonymous"),
+        custom: {
+          id: crypto.randomUUID().slice(0, 8),
+          name: String(req.query.name ?? "anonymous"),
+        },
       };
     },
   },
@@ -170,7 +172,7 @@ show("ws.data on the server", {
   originalUrl: adaSide.data.originalUrl, // path + search + hash
   header: adaSide.data.headers.get("x-client"), // the upgrade request's headers
   user: adaSide.data.user, // `req.user`, when middleware set one
-  custom: adaSide.data.custom, // from customDataToWsClientFn
+  custom: adaSide.data.custom, // from onUpgrade
 });
 show("events so far", heard.splice(0));
 

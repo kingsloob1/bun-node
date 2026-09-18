@@ -412,7 +412,7 @@ owns a `Bun.serve` server. Each request goes through one method,
 | `routeCacheMax` | `number` | `50_000` | Forwarded to the router. `0` disables the cache. |
 | `etag` | `boolean` | `false` | Adds an `ETag` to every response (opt-in: hashing every body has a cost). |
 | `logger` | `LoggerLike` | console logger | Shared by the adapter and its router. |
-| `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `customDataToWsClientFn`. |
+| `websocket` | `Partial<WebsocketOptions>` | none | Overrides for the built-in `BunWebSocket`, such as `wsOptions` or `onUpgrade`. |
 | `server` | `Bun.serve` options | `{}` | Base server options (TLS, `maxRequestBodySize`, ...). `port`, `hostname`, `fetch`, `websocket` and `error` are managed by the adapter. `development` is set from `NODE_ENV !== "production"`. |
 
 Example tours:
@@ -1144,13 +1144,25 @@ tour
 
 ### WebSockets
 
-`adapter.ws(path, handler, customDataToWsClientFn?)` registers an upgrade route
-on the adapter's built-in `BunWebSocket`. `handler` is Bun's
-`WebSocketHandler` (`open`, `message`, `close`, `drain`, `ping`, `pong`). The
-upgrade route is an ordinary route, so middleware registered ahead of it runs
-first; authentication belongs there. `customDataToWsClientFn(req, res)` may be
-async, and its result is stored on `ws.data.custom`. The adapter's type
-argument types that field: `new BunHttpAdapter<MyData>()`.
+`adapter.ws(path, handler, options?)` registers an upgrade route on the
+adapter's built-in `BunWebSocket`. `handler` is Bun's `WebSocketHandler`
+(`open`, `message`, `close`, `drain`, `ping`, `pong`). The upgrade route is an
+ordinary route, so middleware registered ahead of it runs first;
+authentication belongs there.
+
+`options` is a `WebSocketRouteOptions`; its one field today is `onUpgrade`.
+`onUpgrade(req, res)` (a `WebSocketUpgradeHook`) runs once per upgrade and may
+be async. It returns a `WebSocketUpgradeResult`, or nothing:
+
+| Field | Effect |
+|---|---|
+| `custom` | becomes `ws.data.custom` |
+| `headers` | any `HeadersInit`, sent on the `101 Switching Protocols` |
+| `data` | replaces `ws.data` entirely; `route`, `params` and `port` it leaves `undefined` are filled in from the match, since dispatch needs them |
+
+A route's hook replaces the instance-wide `onUpgrade` option for that route.
+The adapter's type argument types `custom`, `new BunHttpAdapter<MyData>()`,
+and on a bare router it is inferred from the hook's `custom`.
 
 ```ts
 import { BunHttpAdapter } from "@kingsleyweb/bun-common";
@@ -1167,7 +1179,11 @@ app.ws(
       app.server?.publish(ws.data.custom.room, String(message)); // every subscriber
     },
   },
-  (req) => ({ room: String(req.params.room ?? "lobby") }),
+  {
+    onUpgrade: (req) => ({
+      custom: { room: String(req.params.room ?? "lobby") },
+    }),
+  },
 );
 
 app.webSocketAdapter.on("close", (ws, code) => {
@@ -1186,7 +1202,7 @@ await app.listen(0);
 |---|---|
 | `host`, `path`, `search`, `hash`, `originalUrl`, `headers` | the upgrade request |
 | `user` | `req.user` at upgrade time, when middleware set one |
-| `custom` | what `customDataToWsClientFn` returned |
+| `custom` | the hook's `custom`, else `webSocketUpgradeData.custom` (see below), else `undefined` |
 | `route`, `params` | the matched route pattern and a copy of its params |
 | `port` | the real bound port of the server that accepted the upgrade (never `0`). Absent only without a socket. |
 
@@ -1197,7 +1213,8 @@ await app.listen(0);
 | `wsOptions` | `perMessageDeflate: true`, `idleTimeout: 30`, `maxPayloadLength: 1 MB` | Bun `WebSocketHandler` settings, merged over these defaults. They are **not** Bun's defaults: Bun uses `false`, `120` and 16 MB. |
 | `newInstance` | `false` on the adapter | `false` rides on the server from `getServer()`. `true` binds a dedicated `Bun.serve` on `listen: { host?, port }` that serves the router's HTTP routes as well. |
 | `router` | a private empty router | The router upgrade routes register on. |
-| `customDataToWsClientFn` | none | Instance-wide default for `ws.data.custom`. |
+| `onUpgrade` | none | Instance-wide `WebSocketUpgradeHook`, for routes registered without one. |
+| `customDataToWsClientFn` | none | **Deprecated.** Treated as `onUpgrade: async (req, res) => ({ custom: await fn(req, res) })`. Given beside `onUpgrade`, it is ignored and a warning is logged once. |
 | `responseTimeout`, `serverOptions`, `bunRequestOpts` | `0`, none, none | Dedicated server only: HTTP response timeout, base `Bun.serve` options, request parsing. |
 
 The instance emits `connect`, `open`, `message`, `disconnect`, `close`,
@@ -1238,17 +1255,73 @@ app.get("/live", (req, res) => {
 // client: new WebSocket(url, ["other", "chat.v1"]).protocol === "chat.v1"
 ```
 
-- Only `options.headers` reach the 101. Headers set on `res` with
-  `setHeader`/`set`/`cookie` do not, so an upgrade without the option sends
-  exactly what Bun sends by default.
+A `ws()` route does the same from its hook:
+
+```ts
+app.ws("/live", handler, {
+  onUpgrade: () => ({ headers: { "Sec-WebSocket-Protocol": "chat.v1" } }),
+});
+```
+
+Headers and data can also be set further out, and every upgrade layers them:
+
+| Layer | Headers | Data |
+|---|---|---|
+| router-wide: `router.webSocketUpgradeHeaders` / `webSocketUpgradeData` (or `setWebSocketUpgradeHeaders()` / `setWebSocketUpgradeData()`, chainable) | lowest | merged over the data built from the request |
+| per request: `res.webSocketUpgradeHeaders` / `res.webSocketUpgradeData`, set by middleware before the upgrading route | over the router's | over the router's |
+| the route's `onUpgrade` result, or `upgradeToWebsocket`'s arguments | highest | see below |
+
+```ts
+app.setWebSocketUpgradeHeaders({ "X-Trace": "on" });
+app.use("/live", (req, res, next) => {
+  res.webSocketUpgradeData = { custom: { tenant: req.get("x-tenant") } };
+  next();
+});
+```
+
+- **Headers merge by name.** A later layer replaces every value of a name it
+  gives and keeps the names it does not mention. The setters take any
+  `HeadersInit` and the getters return a `Headers` (or `undefined`).
+- **Data merges shallowly**, later winning per key. On a `ws()` route the
+  hook's `custom` then wins over both layers, and `route`, `params` and `port`
+  always come from the match. A hook's `data` replaces the lot, filled in as
+  described above.
+- **Explicit `data` is used as is.** `res.upgradeToWebsocket(data)` gets
+  exactly `data` — no router or response data is merged into it, at any depth.
+  The layers apply only to data that is *built*: `upgradeToWebsocket()` with
+  no data, and a `ws()` route.
+- **Headers are inherited either way.** `upgradeToWebsocket(data, { headers })`
+  still carries the router's and the response's headers, and a header it
+  passes wins per name. Pass `inherit: false` to send only the call's own
+  arguments, as before these layers existed.
+- **Whose router.** A `ws()` route takes the defaults of the router `ws()` was
+  called on. That route is registered on the attached `BunWebSocket`'s router,
+  at the path `ws()` was given, and not under a `use()` mount — so on a
+  sub-router it is still the sub-router's defaults that apply. A bare
+  `upgradeToWebsocket()` takes those of the router running the request (the
+  outermost one; `res.webSocketUpgradeDefaults` names it). Mounting flattens a
+  sub-router into its parent, so a route mounted from a sub-router runs under
+  the parent's defaults. On an adapter whose `setInstance()` replaced its
+  router, the adapter's getters and setters reach that router.
+- Headers set on `res` with `setHeader`/`set`/`cookie` never reach the 101. With
+  no layer set and no `options.headers`, an upgrade sends exactly what Bun
+  sends by default.
 - Supply a protocol the client offered: a browser fails the connection when the
-  server answers with one it did not.
-- Each call replaces the previous call's headers, and an empty set counts as
-  none. `res.upgradeToWsHeaders` shows what will be sent.
+  server answers with one it did not. That includes a router-wide
+  `Sec-WebSocket-Protocol`, which also reaches clients that offered none.
+- Each call recomputes the headers, so an earlier call's `options.headers`
+  never carry over, and an empty set counts as none. `res.upgradeToWsHeaders`
+  shows what will be sent.
 - Every server that performs an upgrade passes them on: `BunHttpAdapter`,
   a dedicated `BunWebSocket` server (`newInstance: true`), and bun-nest's
-  adapter. `app.ws()` routes have no way to set them yet; upgrade from an
-  ordinary route instead.
+  adapter.
+
+A **function** as the third argument of `ws()` or `setRouteHandler()` is the
+deprecated `customDataToWsClientFn` mapping, and nothing else: whatever it
+returns becomes `ws.data.custom`, whatever its shape — even
+`{ data: "x", custom: 1 }` is stored as `custom` as is. It still works, and
+`TCustom` is still inferred from its return value; move to
+`{ onUpgrade: (req) => ({ custom: … }) }`.
 
 Examples:
 [`echo-and-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/echo-and-events.ts),

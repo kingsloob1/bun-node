@@ -52,7 +52,7 @@ Applications listen on port `0`.
 |---|---|
 | [`gateway-basics.ts`](./04-websockets/gateway-basics.ts) | lifecycle hooks, `@MessageBody`, `@ConnectedSocket`, `WsResponse` vs a plain return, Promise and Observable replies, `@Ack` |
 | [`message-formats.ts`](./04-websockets/message-formats.ts) | every packet type on the wire, binary frames, malformed and unroutable frames, exceptions |
-| [`adapter-options.ts`](./04-websockets/adapter-options.ts) | the `websocket` option, auth on upgrade, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
+| [`adapter-options.ts`](./04-websockets/adapter-options.ts) | the `websocket` option and `onUpgrade`, auth on upgrade, headers and data on the 101, client data, namespaces, gateway ports, broadcasting, a standalone adapter |
 | [`custom-adapter.ts`](./04-websockets/custom-adapter.ts) | subclassing the adapter and wiring it with `app.useWebSocketAdapter` |
 
 ### 05 — The jobs API module

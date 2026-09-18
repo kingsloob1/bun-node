@@ -121,7 +121,7 @@ export type WsEmitFunction<TEvents extends WsEventMap = WsEventMap> = <
  * what delivers a thrown `WsException` to the client as an `exception` event.
  *
  * `customWebsocketDataType` is `client.data.custom` (what
- * `customDataToWsClientFn` returned); `TEvents` optionally types `emit`.
+ * the `onUpgrade` hook returned as `custom`); `TEvents` optionally types `emit`.
  */
 export type BunNestWebSocketClient<
   customWebsocketDataType = unknown,
@@ -1190,6 +1190,9 @@ function resolveAdapterOptions<
   const local = "newInstance" in options ? options : options.localOptions;
   const router = local?.router ?? httpAdapter?.instance;
   const wsOptions = local?.wsOptions;
+  // Both forwarded as given: `BunWebSocket` resolves them (`onUpgrade` wins,
+  // with a warning, when both are set).
+  const onUpgrade = local?.onUpgrade;
   const customDataToWsClientFn = local?.customDataToWsClientFn;
 
   if (local?.newInstance === true) {
@@ -1208,6 +1211,7 @@ function resolveAdapterOptions<
       // a NestJS-driven `newInstance` adapter can still register its upgrade
       // routes (and reach the app's middleware).
       router,
+      onUpgrade,
       customDataToWsClientFn,
     } satisfies BunWebSocketCreateServerOptions<
       customWebsocketDataType,
@@ -1221,6 +1225,7 @@ function resolveAdapterOptions<
       getServer: local.getServer,
       wsOptions,
       router,
+      onUpgrade,
       customDataToWsClientFn,
     } satisfies BunWebSocketNormalOptions<customWebsocketDataType>;
   }
@@ -1231,6 +1236,7 @@ function resolveAdapterOptions<
       getServer: () => httpAdapter.getBunServer(),
       wsOptions,
       router,
+      onUpgrade,
       customDataToWsClientFn,
     } satisfies BunWebSocketNormalOptions<customWebsocketDataType>;
   }

@@ -291,3 +291,80 @@ export async function connect<
   }
   return client;
 }
+
+/** The head of an upgrade response, exactly as the server wrote it. */
+export interface UpgradeHead {
+  /** The status line, e.g. `HTTP/1.1 101 Switching Protocols`. */
+  statusLine: string;
+  /** Every header line in wire order, names lower-cased, duplicates kept. */
+  headers: [name: string, value: string][];
+  /** Every value of the header `name` (lower-case), in wire order. */
+  values: (name: string) => string[];
+}
+
+/**
+ * Sends an upgrade request for `url` (`ws://host:port/path?query`) over a
+ * plain TCP socket and returns the response head. A `WebSocket` exposes only
+ * the negotiated protocol, so this is how an example shows every header of a
+ * `101`. `protocols` become one `Sec-WebSocket-Protocol` offer.
+ */
+export async function upgradeHead(
+  url: string,
+  protocols: string[] = [],
+): Promise<UpgradeHead> {
+  const target = new URL(url);
+  let buffered = "";
+  const head = Promise.withResolvers<string>();
+  const socket = await Bun.connect({
+    hostname: target.hostname,
+    port: Number(target.port),
+    socket: {
+      data(_socket, chunk) {
+        buffered += chunk.toString("latin1");
+        const end = buffered.indexOf("\r\n\r\n");
+        if (end !== -1) {
+          head.resolve(buffered.slice(0, end));
+        }
+      },
+      close() {
+        head.reject(new Error(`closed before a response head: ${url}`));
+      },
+      error(_socket, error) {
+        head.reject(error);
+      },
+    },
+  });
+  socket.write(
+    [
+      `GET ${target.pathname}${target.search} HTTP/1.1`,
+      `Host: ${target.host}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Version: 13",
+      ...(protocols.length > 0
+        ? [`Sec-WebSocket-Protocol: ${protocols.join(", ")}`]
+        : []),
+      "",
+      "",
+    ].join("\r\n"),
+  );
+  try {
+    const [statusLine = "", ...lines] = (await head.promise).split("\r\n");
+    const headers = lines.map((line): [string, string] => {
+      const colon = line.indexOf(":");
+      return [
+        line.slice(0, colon).trim().toLowerCase(),
+        line.slice(colon + 1).trim(),
+      ];
+    });
+    return {
+      statusLine,
+      headers,
+      values: (name) =>
+        headers.filter(([key]) => key === name).map(([, value]) => value),
+    };
+  } finally {
+    socket.end();
+  }
+}

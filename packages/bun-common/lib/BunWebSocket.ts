@@ -19,6 +19,11 @@ import { BunResponse } from "./BunResponse";
 // as a type, so there is no runtime cycle.
 import { BunRouter as BunRouterClass } from "./BunRouter";
 import { get, isArray, isFunction, isObject, set } from "./utils/native";
+import {
+  mergeUpgradeHeaders,
+  routeUpgradeHook,
+  toUpgradeHook,
+} from "./utils/wsUpgrade";
 
 /**
  * Minimal strongly-typed `EventEmitter` surface — replaces the `typed-emitter`
@@ -78,7 +83,12 @@ export interface WebSocketClientData<TCustom = unknown> {
   headers: Headers;
   /** `req.user` at upgrade time, when an auth middleware set one. */
   user?: Record<string, unknown>;
-  /** Value returned by `customDataToWsClientFn`, or `undefined` without one. */
+  /**
+   * The route's `custom` value: what an `onUpgrade` hook returned as `custom`
+   * (or the deprecated `customDataToWsClientFn` returned), else a router- or
+   * response-level `webSocketUpgradeData.custom`, else `undefined` on a
+   * `ws()` route and `{}` on a bare `res.upgradeToWebsocket()`.
+   */
   custom: TCustom;
   /**
    * The route pattern the upgrade matched, as registered with
@@ -108,6 +118,95 @@ export interface WebSocketClientData<TCustom = unknown> {
 }
 
 /**
+ * What an {@link WebSocketUpgradeHook} (`onUpgrade`) may return for one
+ * upgrade. Every field is optional; returning nothing (or `undefined`)
+ * contributes nothing, so the upgrade proceeds with the layers beneath.
+ */
+export interface WebSocketUpgradeResult<TCustom = unknown> {
+  /**
+   * Becomes `ws.data.custom`, over any `custom` from the router- or
+   * response-level `webSocketUpgradeData`, and over `data.custom` when both
+   * are returned. Set whenever the key is present, even to `undefined`.
+   */
+  custom?: TCustom;
+  /**
+   * Headers for the `101 Switching Protocols`, merged over the router's
+   * `webSocketUpgradeHeaders` and then the response's; a name given here
+   * replaces every value of that name beneath. A `Sec-WebSocket-Protocol`
+   * here is how the route picks a subprotocol (Bun otherwise echoes the
+   * client's first offer).
+   */
+  headers?: Bun.HeadersInit;
+  /**
+   * Replaces `ws.data` entirely: the data built from the request and every
+   * `webSocketUpgradeData` layer are discarded. Dispatch still needs `route`,
+   * `params` and `port`, so each one this object leaves `undefined` is filled
+   * in from the matched route (the route pattern, its params, and the
+   * accepting server's port) — a value given here is kept.
+   */
+  data?: WebSocketClientData<TCustom>;
+}
+
+/**
+ * The `onUpgrade` hook: runs once per upgrade request that matched a `ws()`
+ * route, after the middleware registered before it, and decides what the
+ * upgrade carries — see {@link WebSocketUpgradeResult}. May be async. A route's
+ * own hook replaces the instance-wide one for that route.
+ */
+export type WebSocketUpgradeHook<TCustom = unknown> = (
+  req: BunRequest,
+  res: BunResponse,
+) =>
+  | WebSocketUpgradeResult<TCustom>
+  | void
+  | Promise<WebSocketUpgradeResult<TCustom> | void>;
+
+/**
+ * The deprecated `customDataToWsClientFn` shape: maps an upgrade request to
+ * `ws.data.custom`. Accepted as the instance-wide `customDataToWsClientFn`
+ * option and as a function in the third argument of `ws()` /
+ * `setRouteHandler()`, and treated as
+ * `(req, res) => ({ custom: await fn(req, res) })` — its result is `custom`
+ * whatever its shape, `{ data, headers }` included.
+ *
+ * @deprecated Use a {@link WebSocketUpgradeHook} returning `{ custom }`: the
+ * `onUpgrade` option, or `{ onUpgrade }` as a route's third argument.
+ */
+export type WebSocketCustomDataFn<TCustom = unknown> = (
+  req: BunRequest,
+  res: BunResponse,
+) => TCustom | Promise<TCustom>;
+
+/**
+ * Per-route options: the third argument of `BunRouter.ws()`,
+ * `BunHttpAdapter.ws()` and `BunWebSocket.setRouteHandler()`, in place of the
+ * deprecated custom-data function. An object so that more per-route settings
+ * can join it later without another positional argument.
+ */
+export interface WebSocketRouteOptions<TCustom = unknown> {
+  /**
+   * The route's {@link WebSocketUpgradeHook}: its `custom` becomes
+   * `ws.data.custom`, its `headers` go out on the `101`, and its `data`
+   * replaces `ws.data` (with `route`/`params`/`port` filled in from the match
+   * where it leaves them out). Replaces the `BunWebSocket`'s instance-wide
+   * `onUpgrade` for this route. Default: none, so the instance-wide hook (if
+   * any) applies. `TCustom` is inferred from the `custom` it returns.
+   */
+  onUpgrade?: WebSocketUpgradeHook<TCustom>;
+}
+
+/**
+ * Where router-wide upgrade defaults are read from. A {@link BunRouter}
+ * satisfies it; `BunResponse.webSocketUpgradeDefaults` holds one.
+ */
+export interface WebSocketUpgradeDefaults {
+  /** Router-wide headers for every `101` — the lowest header layer. */
+  readonly webSocketUpgradeHeaders: Headers | undefined;
+  /** Router-wide base for built `ws.data` — the lowest data layer. */
+  readonly webSocketUpgradeData: Partial<WebSocketClientData> | undefined;
+}
+
+/**
  * The port `req` was accepted on: that of the `Bun.serve` server it was built
  * with, read from `req.server` (its `socket.localPort` is the *peer's* port).
  * `undefined` for a server with no port, such as the socket-free `fetch()`
@@ -123,7 +222,7 @@ function acceptingPort(req: BunRequest): number | undefined {
 /**
  * The `Bun.serve` server a {@link BunWebSocket} rides on or owns. `TCustom` is
  * the per-connection `ws.data.custom` type; it defaults to `unknown` because,
- * undeclared, it is whatever `customDataToWsClientFn` returned.
+ * undeclared, it is whatever the `onUpgrade` hook returned as `custom`.
  */
 export type BunWebSocketServerType<TCustom = unknown> = BunServerType<
   WebSocketClientData<TCustom>
@@ -198,13 +297,21 @@ export interface BunWebSocketGeneralOptions<TCustom = unknown> {
    */
   newInstance: boolean;
   /**
-   * Maps an upgrade request to the per-connection `custom` payload stored on
-   * `ws.data.custom`. Runs at upgrade time; may be async.
+   * Instance-wide {@link WebSocketUpgradeHook}, run for every upgrade on a
+   * route registered without a hook of its own (a route's hook replaces it):
+   * returns the connection's `custom`, headers for the `101`, or a whole
+   * replacement `ws.data`. May be async. Default: none.
    */
-  customDataToWsClientFn?: (
-    req: BunRequest,
-    res: BunResponse,
-  ) => TCustom | Promise<TCustom>;
+  onUpgrade?: WebSocketUpgradeHook<TCustom>;
+  /**
+   * Maps an upgrade request to the per-connection `custom` payload stored on
+   * `ws.data.custom`. Runs at upgrade time; may be async. Treated as
+   * `onUpgrade: async (req, res) => ({ custom: await fn(req, res) })`; when
+   * both are given, `onUpgrade` wins and a warning is logged once.
+   *
+   * @deprecated Use {@link onUpgrade} returning `{ custom }`.
+   */
+  customDataToWsClientFn?: WebSocketCustomDataFn<TCustom>;
 }
 
 export interface BunWebSocketCreateServerOptions<
@@ -353,9 +460,11 @@ export class BunWebSocket<
     BunWebSocketHandlerType<TCustom>[]
   >();
 
-  /** The instance-wide `customDataToWsClientFn`, used when a route has none. */
-  private _customDataToWsClientFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"] =
-    undefined;
+  /**
+   * The instance-wide upgrade hook — `onUpgrade`, else the deprecated
+   * `customDataToWsClientFn` adapted to one — used when a route has none.
+   */
+  private _onUpgrade: WebSocketUpgradeHook<TCustom> | undefined = undefined;
 
   constructor(
     /**
@@ -421,8 +530,18 @@ export class BunWebSocket<
       this._getServerInstance = options?.getServer;
     }
 
-    if (options.customDataToWsClientFn) {
-      this._customDataToWsClientFn = options.customDataToWsClientFn;
+    this._onUpgrade =
+      toUpgradeHook(options.onUpgrade, "hook") ??
+      toUpgradeHook(options.customDataToWsClientFn, "custom");
+    if (
+      isFunction(options.onUpgrade) &&
+      isFunction(options.customDataToWsClientFn)
+    ) {
+      // A warning, not an error: a deprecated option left beside its
+      // replacement is redundant, not wrong, and `onUpgrade` wins either way.
+      this.router.logger.warn(
+        "BunWebSocket: both `onUpgrade` and the deprecated `customDataToWsClientFn` were given; `onUpgrade` is used and `customDataToWsClientFn` is ignored.",
+      );
     }
   }
 
@@ -822,10 +941,44 @@ export class BunWebSocket<
     return handlersArr.length;
   }
 
+  /**
+   * Registers `handler` for WebSocket connections to `path`, and an upgrade
+   * route for `path` on this instance's {@link router}. Resolves `false`
+   * (registering nothing) when `handler` is not an object.
+   *
+   * An upgrade request that reaches the route is upgraded with:
+   *
+   * - **data** — built from the request (host, path, query, headers, `user`),
+   *   then `defaultsFrom.webSocketUpgradeData` and `res.webSocketUpgradeData`
+   *   merged over it shallowly (later wins per key), then the hook's
+   *   `custom`. A hook's `data` replaces all of that instead. `route`,
+   *   `params` and `port` come from the match either way — over the layers,
+   *   and wherever a hook's `data` leaves them `undefined`.
+   * - **headers** — `defaultsFrom.webSocketUpgradeHeaders`, then
+   *   `res.webSocketUpgradeHeaders`, then the hook's `headers`, merged per
+   *   header name (later wins). None at all sends Bun's default `101`.
+   *
+   * @param path Route pattern, e.g. `/rooms/:id`; also the key connections
+   *   are dispatched by (`ws.data.route`).
+   * @param handler The route's lifecycle handlers.
+   * @param fnOrOptions The route's {@link WebSocketRouteOptions} — its
+   *   `onUpgrade` hook replaces the instance-wide one for this route. A
+   *   function here is the deprecated `customDataToWsClientFn` mapping: its
+   *   result always becomes `custom`, whatever its shape. Omitted, the
+   *   instance-wide hook applies.
+   * @param defaultsFrom Whose router-wide `webSocketUpgradeHeaders` /
+   *   `webSocketUpgradeData` apply, read at upgrade time. Defaults to this
+   *   instance's {@link router}; `router.ws()` passes the router it was called
+   *   on.
+   */
   public async setRouteHandler(
     path: string,
     handler: BunWebSocketHandlerType<TCustom>,
-    customDataToWsClientFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"],
+    fnOrOptions?:
+      | WebSocketRouteOptions<TCustom>
+      | WebSocketCustomDataFn<TCustom>
+      | undefined,
+    defaultsFrom?: WebSocketUpgradeDefaults,
   ) {
     if (!isObject(handler)) {
       return false;
@@ -844,6 +997,8 @@ export class BunWebSocket<
 
       this._routeHandlers.set(path, handlersArr);
     }
+
+    const routeHook = routeUpgradeHook(fnOrOptions);
 
     // Register upgrade endpoint for route
     const wsRouteHandler = async (
@@ -867,20 +1022,12 @@ export class BunWebSocket<
         upgradeHeader === "websocket" &&
         secWebsocketKey
       ) {
-        let getCustomDataFn: BunWebSocketGeneralOptions<TCustom>["customDataToWsClientFn"];
-        if (customDataToWsClientFn && isFunction(customDataToWsClientFn)) {
-          getCustomDataFn = customDataToWsClientFn;
-        } else if (
-          this._customDataToWsClientFn &&
-          isFunction(this._customDataToWsClientFn)
-        ) {
-          getCustomDataFn = this._customDataToWsClientFn;
-        }
-
-        let customData: TCustom | undefined;
-        if (getCustomDataFn) {
-          customData = await Promise.resolve(getCustomDataFn(req, res));
-        }
+        // The route's own hook, else the instance-wide one — read now, so a
+        // hook is never captured before the instance finished configuring.
+        const hook = routeHook ?? this._onUpgrade;
+        const result: WebSocketUpgradeResult<TCustom> | undefined = hook
+          ? ((await hook(req, res)) ?? undefined)
+          : undefined;
 
         // An upgrade route is registered like `use()` middleware (no verb), so
         // the pipeline never binds `req.params` for it. Read them from this
@@ -893,29 +1040,70 @@ export class BunWebSocket<
             requestUrl: req.originalUrl,
           })
           .find((entry) => entry.callback === wsRouteHandler);
-
-        const data: WebSocketClientData<TCustom> = {
-          host: req.host,
-          path: req.path,
-          search: req.search,
-          hash: req.hash,
-          originalUrl: req.originalUrl,
-          headers: req.headersObj,
-          user: get<Record<string, unknown> | undefined>(req, "user"),
-          // `undefined` when no mapping function exists. `TCustom` is only
-          // declared by a caller who supplies one, and defaults to `unknown`
-          // (which admits `undefined`) otherwise.
-          custom: customData as TCustom,
-          route: path,
-          // Copied: matched layers are cached and shared across requests.
-          params: {
-            ...((layer?.matched.params ?? {}) as Record<string, string>),
-          },
-          // Whichever server built `req` — shared, standalone or extra-port.
-          port: acceptingPort(req),
+        // Copied: matched layers are cached and shared across requests.
+        const params = {
+          ...((layer?.matched.params ?? {}) as Record<string, string>),
         };
+        // Whichever server built `req` — shared, standalone or extra-port.
+        const port = acceptingPort(req);
 
-        return res.upgradeToWebsocket(data);
+        const defaults = defaultsFrom ?? this.router;
+        const responseData = res.webSocketUpgradeData as
+          | Partial<WebSocketClientData<TCustom>>
+          | undefined;
+
+        let data: WebSocketClientData<TCustom>;
+        if (result?.data) {
+          // Replaces everything beneath it; only what dispatch needs, and it
+          // left out, is filled in.
+          data = {
+            ...result.data,
+            route: result.data.route ?? path,
+            params: result.data.params ?? params,
+            ...(result.data.port === undefined && port !== undefined
+              ? { port }
+              : {}),
+          };
+        } else {
+          data = {
+            host: req.host,
+            path: req.path,
+            search: req.search,
+            hash: req.hash,
+            originalUrl: req.originalUrl,
+            headers: req.headersObj,
+            user: get<Record<string, unknown> | undefined>(req, "user"),
+            // `undefined` when nothing supplies one. `TCustom` is only
+            // declared by a caller who supplies one, and defaults to `unknown`
+            // (which admits `undefined`) otherwise.
+            custom: undefined as TCustom,
+            // The router-wide base carries no custom type of its own.
+            ...(defaults.webSocketUpgradeData as
+              | Partial<WebSocketClientData<TCustom>>
+              | undefined),
+            ...responseData,
+            // Dispatch keys: always the match's, whatever a layer said.
+            route: path,
+            params,
+            port,
+          };
+        }
+        if (result && Object.hasOwn(result, "custom")) {
+          data.custom = result.custom as TCustom;
+        }
+
+        const headers = mergeUpgradeHeaders(
+          defaults.webSocketUpgradeHeaders,
+          res.webSocketUpgradeHeaders,
+          result?.headers,
+        );
+
+        // Every layer is already applied: `inherit: false` stops the response
+        // from layering the serving router's defaults over them again.
+        return res.upgradeToWebsocket(data as WebSocketClientData, {
+          ...(headers ? { headers } : {}),
+          inherit: false,
+        });
       }
 
       next();
