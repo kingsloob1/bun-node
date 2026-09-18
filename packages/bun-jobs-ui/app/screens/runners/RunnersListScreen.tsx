@@ -30,16 +30,16 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
           to={runnerPath(item.id)}
           className="runner-link"
         >
-          {item.local && item.name && item.name !== item.id
+          {item.isLocal && item.name && item.name !== item.id
             ? item.name
             : item.id}
         </Link>
-        {item.local && item.name && item.name !== item.id && (
+        {item.isLocal && item.name && item.name !== item.id && (
           <code className="runner-id muted">{item.id}</code>
         )}
       </td>
       <td>
-        {item.local ? (
+        {item.isLocal ? (
           <Badge tone="accent">Local</Badge>
         ) : (
           <Badge
@@ -116,7 +116,7 @@ export function RunnersListScreen() {
 
   const all = runners.data ? orderRunners(runners.data.items) : [];
   const shown = filterRunners(all, deferredFilter);
-  const localCount = all.filter((item) => item.local).length;
+  const localCount = all.filter((item) => item.isLocal).length;
 
   return (
     <div

@@ -103,7 +103,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "runner",
       summary: "Every runner in the namespace",
       description:
-        "Runners registered in this process (`local: true`, with name and lifecycle `status`), then runners only other processes registered (`local: false`). Every item carries `isPaused` and `isRunning`, read from the backend with one bounded read per runner.",
+        "Runners registered in this process (`isLocal: true`, with name and lifecycle `status`), then runners only other processes registered (`isLocal: false`). `local` is a deprecated copy of `isLocal`. Every item carries `isPaused` and `isRunning`, read from the backend with one bounded read per runner.",
       tags: ["Runners"],
       responses: { 200: RunnerListSchema },
       handler: async ({ services }) => {
@@ -117,6 +117,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         };
         const items: {
           id: string;
+          isLocal: boolean;
           local: boolean;
           name?: string;
           status?: RunnerStatus;
@@ -125,6 +126,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         }[] = [
           ...(await mapBounded(local, async (runner) => ({
             id: runner.id,
+            isLocal: true,
             local: true,
             name: runner.name,
             status: runner.status,
@@ -132,6 +134,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           }))),
           ...(await mapBounded(remote, async (id) => ({
             id,
+            isLocal: false,
             local: false,
             ...(await flags(id)),
           }))),

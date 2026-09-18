@@ -53,6 +53,7 @@ describe("the runner list screen", () => {
               {
                 id: "billing",
                 local: false,
+                isLocal: false,
                 isPaused: false,
                 isRunning: false,
               },
@@ -60,6 +61,7 @@ describe("the runner list screen", () => {
               {
                 id: AWKWARD_RUNNER,
                 local: false,
+                isLocal: false,
                 isPaused: false,
                 isRunning: false,
               },

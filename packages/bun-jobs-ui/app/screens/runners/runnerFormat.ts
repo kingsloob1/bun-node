@@ -205,8 +205,8 @@ export function orderRunners(
   items: readonly RunnerListItemDto[],
 ): RunnerListItemDto[] {
   return [
-    ...items.filter((item) => item.local),
-    ...items.filter((item) => !item.local),
+    ...items.filter((item) => item.isLocal),
+    ...items.filter((item) => !item.isLocal),
   ];
 }
 

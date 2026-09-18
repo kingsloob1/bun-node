@@ -153,10 +153,17 @@ export const RunnerListSchema = s.object({
   items: s.array(
     s.object({
       id: s.string(),
-      local: s.boolean({
+      isLocal: s.boolean({
         description:
           "Registered in this process. Every runner can be read, triggered, paused, resumed and rescheduled; only a local one can be killed or have its stats reset.",
       }),
+      local: s.documented(
+        s.boolean({
+          description:
+            "Deprecated: the same as `isLocal`, which matches the runner detail's name. Still sent; removed in a future major version.",
+        }),
+        { deprecated: true },
+      ),
       name: s.optional(s.string()),
       status: s.optional(RunnerStatusSchema),
       isPaused: s.boolean({
