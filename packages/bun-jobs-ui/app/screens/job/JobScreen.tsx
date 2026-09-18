@@ -1,4 +1,5 @@
 import type { SyntheticEvent } from "react";
+import type { ApiError } from "../../api/errors";
 import type { JobDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -37,6 +38,15 @@ function isNotFound(error: unknown): boolean {
     isApiError(error) &&
     (error.code === "JOB_NOT_FOUND" || error.code === "QUEUE_NOT_FOUND")
   );
+}
+
+/**
+ * Whether an error means the caller may not read this job (401/403): the
+ * host's `authorize` can decide per job, so the scoped permissions can say
+ * yes while the request itself says no.
+ */
+function isDenied(error: unknown): error is ApiError {
+  return isApiError(error) && error.isAuth;
 }
 
 /** The job's progress: a JSON tree for an object, text otherwise. */
@@ -173,6 +183,36 @@ export function JobNotFound({ queue, id }: { queue: string; id: string }) {
   );
 }
 
+/** Props of {@link JobHidden}. */
+export interface JobHiddenProps {
+  /** The queue the job is in; the panel links back to it. */
+  queue: string;
+  /** The API's own explanation (a 401/403 problem's `detail`), shown instead of the default sentence. */
+  detail?: string;
+}
+
+/** Shown when the caller may not read this queue's jobs (`jobs.read`), or the API refused this one. */
+export function JobHidden({ queue, detail }: JobHiddenProps) {
+  return (
+    <div
+      className="screen"
+      data-testid="job-hidden"
+    >
+      <EmptyState
+        title="Job hidden"
+        description={
+          detail ?? (
+            <>
+              You may not read the jobs of queue <code>{queue}</code>.
+            </>
+          )
+        }
+        action={<Link to={queueScreenPath(queue)}>Back to {queue}</Link>}
+      />
+    </div>
+  );
+}
+
 /** The loaded job: header, actions and every section. */
 function JobDetail({ job }: { job: JobDto }) {
   const canLogs = useCan("jobs.logs");
@@ -266,20 +306,40 @@ function JobDetail({ job }: { job: JobDto }) {
   );
 }
 
-/** `/queues/:queue/jobs/:id`: one job, polled until it finishes. */
+/**
+ * `/queues/:queue/jobs/:id`: one job, polled until it finishes. Needs
+ * `jobs.read` for the queue; without it (or on a 401/403) the job is hidden
+ * and never fetched again.
+ */
 export function JobScreen() {
   const { queue = "", id = "" } = useParams<{ queue: string; id: string }>();
   const api = useApiClient();
+  // Scoped to the queue by the route's <QueuePermissionScope>. While that
+  // loads this is the untargeted answer; a later scoped `false` disables the
+  // query, which also stops its polling.
+  const canRead = useCan("jobs.read");
   const job = useQuery({
     queryKey: jobKeys.job(queue, id),
     queryFn: ({ signal }) =>
       getJob(api, queue, id, DEFAULT_JOB_INCLUDE, signal),
+    enabled: canRead,
     refetchInterval: (query) =>
-      isNotFound(query.state.error)
+      isNotFound(query.state.error) || isDenied(query.state.error)
         ? false
         : jobRefetchInterval(query.state.data?.state),
   });
 
+  if (!canRead) {
+    return <JobHidden queue={queue} />;
+  }
+  if (isDenied(job.error)) {
+    return (
+      <JobHidden
+        queue={queue}
+        detail={job.error.detail}
+      />
+    );
+  }
   if (isNotFound(job.error)) {
     return (
       <JobNotFound

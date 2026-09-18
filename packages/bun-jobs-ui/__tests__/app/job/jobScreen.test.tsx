@@ -4,6 +4,7 @@ import { JOB_STATES } from "../../../app/api/contract";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
 import {
+  allPermissions,
   AWKWARD_ID,
   AWKWARD_ID_ENCODED,
   failureFixture,
@@ -12,7 +13,7 @@ import {
   jobMeta,
   logPage,
 } from "./fixtures";
-import { renderJobScreen } from "./render";
+import { renderJobScreen, settle } from "./render";
 
 // Ahead of setupDom()'s hooks, which need real timers to settle.
 afterEach(() => {
@@ -299,6 +300,136 @@ describe("the job screen", () => {
     );
     await advance(15_000);
     expect(reads()).toBe(3);
+  });
+});
+
+/** `/meta/permissions` without `jobs.read` at all, as when its route is pruned. */
+function withoutJobsRead() {
+  const permissions = allPermissions();
+  delete permissions.actions["jobs.read"];
+  return permissions;
+}
+
+/** A 401/403 problem on `GET` of the job, as a per-job `authorize` answers it. */
+function denied(status: 401 | 403, detail: string) {
+  return {
+    status,
+    body: problem(
+      status,
+      status === 401 ? "UNAUTHORIZED" : "FORBIDDEN",
+      status === 401 ? "Unauthorized" : "Forbidden",
+      { detail, context: { queue: "emails", id: AWKWARD_ID } },
+    ),
+  };
+}
+
+describe("the job screen's access gate", () => {
+  it("hides the job, and never requests it, without jobs.read", async () => {
+    const { calls } = await renderJobScreen(jobFixture("active"), {
+      permissions: withoutJobsRead(),
+      handlers: sideHandlers(),
+      wait: false,
+    });
+    const panel = await page().findByTestId("job-hidden");
+    expect(panel.textContent).toContain("Job hidden");
+    expect(panel.textContent).toContain("may not read the jobs of queue");
+    expect(
+      within(panel)
+        .getByRole("link", { name: "Back to emails" })
+        .getAttribute("href"),
+    ).toBe("/jobs/queues/emails");
+    // The scoped answer has arrived too, and it still made no job request.
+    await waitFor(() => {
+      expect(
+        calls.some(
+          (call) =>
+            call.path === "/meta/permissions" &&
+            call.query.get("queue") === "emails",
+        ),
+      ).toBe(true);
+    });
+    await settle(50);
+    expect(calls.filter((call) => call.path.includes("/jobs/"))).toEqual([]);
+    expect(page().queryByTestId("job-screen")).toBeNull();
+  });
+
+  it("switches to the hidden panel, and stops polling, when the queue's scoped permissions deny jobs.read", async () => {
+    jest.useFakeTimers();
+    let answerScoped: (() => void) | undefined;
+    const scopedArrived = new Promise<void>((resolve) => {
+      answerScoped = resolve;
+    });
+    const { calls } = await renderJobScreen(jobFixture("active"), {
+      handlers: {
+        ...sideHandlers(),
+        // Untargeted: granted. Scoped to `emails`: refused, answered on demand.
+        "GET /meta/permissions": async (call) => {
+          if (call.query.get("queue") !== "emails") {
+            return { body: allPermissions() };
+          }
+          await scopedArrived;
+          return { body: allPermissions({ "jobs.read": false }) };
+        },
+      },
+      wait: false,
+    });
+    await advance(100, 10);
+    // The untargeted grant applies while the scoped answer is pending.
+    expect(page().getByTestId("job-screen")).toBeTruthy();
+    const reads = () =>
+      calls.filter((call) => call.path === jobApiPath()).length;
+    await advance(5_000);
+    expect(reads()).toBe(2);
+
+    answerScoped?.();
+    await advance(100, 10);
+    expect(page().getByTestId("job-hidden").textContent).toContain(
+      "Job hidden",
+    );
+    expect(page().queryByTestId("job-screen")).toBeNull();
+    const after = reads();
+    await advance(15_000);
+    expect(reads()).toBe(after);
+  });
+
+  it("shows the hidden panel with the API's detail when GET job answers 403", async () => {
+    const { calls } = await renderJobScreen(
+      denied(403, "Not allowed to read jobs of this tenant"),
+      { handlers: sideHandlers(), wait: false },
+    );
+    const panel = await page().findByTestId("job-hidden");
+    expect(panel.textContent).toContain("Job hidden");
+    expect(panel.textContent).toContain(
+      "Not allowed to read jobs of this tenant",
+    );
+    expect(
+      within(panel).getByRole("link", { name: "Back to emails" }),
+    ).toBeTruthy();
+    expect(page().queryByText("Could not load the job")).toBeNull();
+    expect(page().queryByRole("button", { name: "Retry" })).toBeNull();
+    // Not polled after the refusal.
+    await settle(50);
+    expect(calls.filter((call) => call.path === jobApiPath())).toHaveLength(1);
+  });
+
+  it("treats a 401 on GET job the same way", async () => {
+    await renderJobScreen(denied(401, "Sign in again"), {
+      handlers: sideHandlers(),
+      wait: false,
+    });
+    const panel = await page().findByTestId("job-hidden");
+    expect(panel.textContent).toContain("Sign in again");
+  });
+
+  it("keeps the not-found panel, not the hidden one, for a 404", async () => {
+    await renderJobScreen({
+      status: 404,
+      body: problem(404, "JOB_NOT_FOUND", "Job not found", {
+        detail: `No job "${AWKWARD_ID}" in queue "emails"`,
+      }),
+    });
+    expect(await page().findByTestId("job-not-found")).toBeTruthy();
+    expect(page().queryByTestId("job-hidden")).toBeNull();
   });
 });
 

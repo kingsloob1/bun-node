@@ -46,9 +46,8 @@ const api = createJobsApi({
   // An allow-list: every action, the opt-ins jobs.add and jobs.update included.
   actions: [...JOBS_API_ACTIONS],
 });
-// The add route answers 404 QUEUE_NOT_FOUND for a queue the backend does not
-// know yet (no job was ever added), so the queue is seeded first.
-await jobs.queue("emails").add("send-welcome", { seed: true });
+// No seeding: adding an addable name creates its queue (the first job of a
+// brand-new queue is the dialog's own).
 const root = new BunRouter();
 root.use(api.basePath, api.router);
 

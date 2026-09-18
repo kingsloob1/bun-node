@@ -211,9 +211,7 @@ function CleanDialog({ queue, onClose }: ActionDialogProps) {
   const [state, setState] = useState<CleanQueueBody["state"]>("completed");
   const [age, setAge] = useState<number | undefined>(1);
   const [unit, setUnit] = useState<DurationUnit>("days");
-  const [limit, setLimit] = useState<number | undefined>(
-    Math.min(1000, limits.maxClean),
-  );
+  const [limit, setLimit] = useState<number | undefined>(limits.defaultClean);
   const clean = useApiMutation({
     mutationFn: (body: CleanQueueBody) => cleanQueue(api, queue, body),
     onSuccess: (result) => {
@@ -319,7 +317,7 @@ function RetryAllDialog({ queue, onClose }: ActionDialogProps) {
         description:
           result.ids.length === 0
             ? undefined
-            : `${listIds(result.ids)}${result.truncated ? " (the list of ids is truncated)" : ""}`,
+            : `${listIds(result.ids)}${result.truncated ? ` (ids of the first ${limits.maxRetryAllIds} only)` : ""}`,
       });
     },
     invalidate: mutationInvalidations(queue),
