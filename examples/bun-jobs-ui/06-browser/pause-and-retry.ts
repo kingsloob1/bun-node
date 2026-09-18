@@ -1,0 +1,333 @@
+/**
+ * The queue and job screens in a real browser: pause a queue by clicking,
+ * then open a dead job and retry it. Every step is read back from the API,
+ * not from the page.
+ *
+ * ```bash
+ * bun 06-browser/pause-and-retry.ts
+ * BUN_CHROME_PATH=/opt/chrome/chrome bun 06-browser/pause-and-retry.ts
+ * EXAMPLE_BROWSER=0 bun 06-browser/pause-and-retry.ts   # skip on purpose
+ * ```
+ *
+ * It drives headless Chrome through `Bun.WebView` (the DevTools protocol, with
+ * `backend: { type: "chrome", url: false }` so it always starts its own Chrome
+ * rather than attaching to one you have open). This is the pattern of the
+ * package's own `__tests__/e2e/m2-flow.e2e.test.ts`. **It skips** (prints
+ * `skipped:` and exits 0, which `bun run-all.ts` reports as `skip`) when this
+ * Bun has no `Bun.WebView`, when no Chrome is found, or when Chrome will not
+ * start.
+ *
+ * Worth knowing:
+ *
+ * - **Hooks to drive the screens by.** They are stable on purpose:
+ *   `data-testid` `queues-list`, `queue-screen`, `queue-total`, `job-screen`,
+ *   `job-id` and `job-not-found`. The queue's buttons are in
+ *   `[role="group"][aria-label="Queue actions"]`, and a confirmation is the
+ *   open `<dialog>` (`dialog[open]`).
+ * - **Wait on conditions, never on time.** Every page-side helper below polls
+ *   the DOM until what it wants is there (or a deadline passes), and every
+ *   API check polls the API. Nothing sleeps for a guessed duration, so the run
+ *   is as fast as the app and fails with the name of what never happened.
+ * - **The page's own state is not the proof.** The API is: a click counts
+ *   when `GET /queues/mail` says `paused: true`.
+ * - **The CSP holds.** The page raises no Content-Security-Policy violation
+ *   along the way, checked with a `ReportingObserver`.
+ */
+import { existsSync } from "node:fs";
+import process from "node:process";
+import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
+import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
+import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { check, checkEqual, summary } from "../shared/check";
+import { show, step, title, waitFor } from "../shared/console";
+
+/** Prints the `skipped:` line `run-all.ts` looks for, and exits cleanly. */
+function skip(reason: string): never {
+  console.log(`skipped: ${reason}`);
+  process.exit(0);
+}
+
+// Decide whether to skip before printing anything: run-all.ts recognises a
+// skip by the output *starting* with `skipped:`.
+if (process.env.EXAMPLE_BROWSER === "0") {
+  skip("EXAMPLE_BROWSER=0");
+}
+if (typeof (Bun as { WebView?: unknown }).WebView !== "function") {
+  skip(`this Bun (${Bun.version}) has no Bun.WebView`);
+}
+
+/** Where Chrome may be, in search order. */
+const chromePath = [
+  process.env.BUN_CHROME_PATH,
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+].find((path) => typeof path === "string" && path !== "" && existsSync(path));
+if (chromePath === undefined) {
+  skip("no Chrome found (set BUN_CHROME_PATH)");
+}
+
+/** The queue the page manages. */
+const QUEUE = "mail";
+/** A dead job, with a `/` in its id so its URL carries `%2F`. */
+const DEAD_ID = "bounce/ada";
+
+/* --- the server: a real API with CSRF on, and the UI --------------- */
+
+const jobs = new BunJobs({
+  namespace: "examples-ui-browser",
+  driver: new MemoryDriver(),
+  logger: noopLogger,
+});
+const api = createJobsApi({
+  jobs,
+  basePath: "/jobs-api",
+  authorize: () => true,
+  // The UI reads the header name from `api.info` and sends it on mutations.
+  csrf: { header: "x-bun-jobs-csrf" },
+  // Read queue state fresh, so `paused` is true the moment the click lands.
+  limits: { queueCacheMs: 0 },
+  logger: noopLogger,
+});
+const ui = jobsUi({ api, logger: noopLogger });
+const app = new BunHttpAdapter();
+app.use(api.basePath, api.router);
+app.use(ui.basePath, ui.router);
+await app.listen(0);
+const origin = app.url!.replace(/\/$/, "");
+
+/** Winds everything down; safe to call more than once. */
+async function shutdown(view?: Bun.WebView): Promise<void> {
+  view?.close();
+  await app.close();
+  await api.close();
+  await jobs.close();
+}
+
+// One dead job (through a real worker), then two waiting ones.
+const queue = jobs.queue(QUEUE);
+await queue.add(
+  "bounce",
+  { to: "ada@old.example" },
+  { jobId: DEAD_ID, attempts: 1 },
+);
+const worker = jobs.worker(QUEUE, async () => {
+  throw new Error("SMTP refused");
+});
+void worker.run();
+await waitFor("the job to die", async () => (await queue.count()).dead === 1);
+await worker.close({ timeout: 1_000 });
+await queue.add("send-email", { to: "alan@example.com" });
+await queue.add("send-email", { to: "grace@example.com" });
+
+// Build the bundle before the browser asks, so the first page load is not
+// the in-memory build.
+await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
+
+/* --- the browser: skip, not fail, if Chrome will not start --------- */
+
+/** What the page printed to its console, for a failure's diagnosis. */
+const pageConsole: string[] = [];
+let view: Bun.WebView;
+try {
+  view = new Bun.WebView({
+    backend: { type: "chrome", url: false, path: chromePath },
+    width: 1280,
+    height: 900,
+    console: (type, ...args) => {
+      pageConsole.push(`${type}: ${args.map(String).join(" ")}`);
+    },
+  });
+  await view.navigate("about:blank");
+} catch (error) {
+  await shutdown();
+  skip(`Chrome at ${chromePath} did not start: ${String(error)}`);
+}
+
+title("Pause a queue and retry a dead job, in Chrome");
+show("Chrome", chromePath);
+show("serving", `${origin}${ui.basePath}`);
+
+/* --- page-side helpers: each resolves once its condition holds ----- */
+
+/** Page-side: resolves `true` once `selector` exists, `false` after `ms`. */
+function waitForSelector(selector: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      if (document.querySelector(${JSON.stringify(selector)})) return resolve(true);
+      if (Date.now() > deadline) return resolve(false);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Page-side: the trimmed text of `selector`, once it exists (or `null`). */
+function textOf(selector: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (element) return resolve(element.textContent.trim());
+      if (Date.now() > deadline) return resolve(null);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/**
+ * Page-side: finds the first enabled button whose text is `text` inside
+ * `scope`, waiting up to `ms`. With `click`, clicks it. Resolves whether it
+ * was found.
+ */
+function button(
+  scope: string,
+  text: string,
+  click: boolean,
+  ms = 10_000,
+): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const attempt = () => {
+      for (const root of document.querySelectorAll(${JSON.stringify(scope)})) {
+        for (const candidate of root.querySelectorAll("button")) {
+          if (candidate.textContent.trim() === ${JSON.stringify(text)} && !candidate.disabled) {
+            if (${click}) candidate.click();
+            return resolve(true);
+          }
+        }
+      }
+      if (Date.now() > deadline) return resolve(false);
+      setTimeout(attempt, 50);
+    };
+    attempt();
+  })`;
+}
+
+/** Page-side: every CSP violation so far, buffered ones included. */
+const COLLECT_VIOLATIONS = `new Promise((resolve) => {
+  const observer = new ReportingObserver(() => {}, { types: ["csp-violation"], buffered: true });
+  observer.observe();
+  setTimeout(() => {
+    const seen = observer.takeRecords().map((report) => String(report.body.effectiveDirective));
+    observer.disconnect();
+    resolve(seen);
+  }, 50);
+})`;
+
+/** The queue's action buttons. */
+const QUEUE_ACTIONS = '[role="group"][aria-label="Queue actions"]';
+
+/** A JSON read from the API, bypassing the page. */
+async function read<T>(path: string): Promise<T> {
+  const response = await fetch(`${origin}${api.basePath}${path}`);
+  return (await response.json()) as T;
+}
+
+try {
+  /* ---------------------------------------------------------------- */
+  step("The queue list links to mail");
+
+  await view.navigate(`${origin}${ui.basePath}/queues`);
+  check(
+    "the queue list renders (data-testid=queues-list)",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="queues-list"]'),
+    ),
+    pageConsole,
+  );
+  check(
+    "with a link to /jobs/queues/mail",
+    await view.evaluate<boolean>(
+      waitForSelector(`a[href="${ui.basePath}/queues/${QUEUE}"]`),
+    ),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("Pause mail from its screen");
+
+  await view.navigate(`${origin}${ui.basePath}/queues/${QUEUE}`);
+  checkEqual(
+    "the queue screen shows the total (data-testid=queue-total)",
+    await view.evaluate<string | null>(textOf('[data-testid="queue-total"]')),
+    "3 jobs",
+  );
+  check(
+    "Pause is offered in the Queue actions group",
+    await view.evaluate<boolean>(button(QUEUE_ACTIONS, "Pause", true)),
+  );
+  await waitFor(
+    "the API to report mail paused",
+    async () => (await read<{ paused: boolean }>(`/queues/${QUEUE}`)).paused,
+  );
+  check("GET /queues/mail → paused: true", true);
+  check(
+    "and the screen now offers Resume",
+    await view.evaluate<boolean>(button(QUEUE_ACTIONS, "Resume", false)),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("Open the dead job and retry it");
+
+  const jobUrl = `${origin}${ui.basePath}/queues/${QUEUE}/jobs/${encodeURIComponent(DEAD_ID)}`;
+  show("job URL", jobUrl);
+  await view.navigate(jobUrl);
+  checkEqual(
+    "the job screen shows its id, decoded (data-testid=job-id)",
+    await view.evaluate<string | null>(textOf('[data-testid="job-id"]')),
+    DEAD_ID,
+  );
+  check(
+    "Retry is offered for a dead job",
+    await view.evaluate<boolean>(
+      button('[data-testid="job-screen"]', "Retry", true),
+    ),
+  );
+  check(
+    "and confirmed in the open dialog",
+    await view.evaluate<boolean>(button("dialog[open]", "Retry", true)),
+  );
+  await waitFor("the API to report the job retried", async () => {
+    const job = await read<{ state: string }>(
+      `/queues/${QUEUE}/jobs/${encodeURIComponent(DEAD_ID)}`,
+    );
+    return job.state !== "dead";
+  });
+  // The queue is paused and nothing consumes it, so the retried job holds
+  // still in `waiting`.
+  checkEqual(
+    "GET the job → waiting, its attempts reset",
+    await read<{ state: string; attemptsMade: number }>(
+      `/queues/${QUEUE}/jobs/${encodeURIComponent(DEAD_ID)}`,
+    ).then((job) => [job.state, job.attemptsMade]),
+    ["waiting", 0],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A job that does not exist");
+
+  await view.navigate(`${origin}${ui.basePath}/queues/${QUEUE}/jobs/missing`);
+  check(
+    "shows data-testid=job-not-found",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="job-not-found"]'),
+    ),
+  );
+
+  checkEqual(
+    "no CSP violation on the way",
+    await view.evaluate<string[]>(COLLECT_VIOLATIONS),
+    [],
+  );
+} catch (error) {
+  console.log(`page console:\n${pageConsole.join("\n")}`);
+  throw error;
+} finally {
+  await shutdown(view);
+}
+
+summary();
