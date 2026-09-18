@@ -312,6 +312,7 @@ export {
   type BunResponseSentBody,
   type CookieValue,
   type SendFileCallOptions,
+  type UpgradeToWebsocketOptions,
 } from "./BunResponse";
 export {
   BunValidate,

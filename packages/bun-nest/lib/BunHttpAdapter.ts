@@ -418,6 +418,11 @@ export class BunHttpAdapter<
           // The accepting server's port, unless the handler recorded one, so
           // a gateway can tell which server a client arrived on.
           data: { ...upgradeData, port: upgradeData.port ?? server.port },
+          // Only headers the upgrade was explicitly given; the key is left out
+          // otherwise so the 101 is exactly Bun's default.
+          ...(res.upgradeToWsHeaders
+            ? { headers: res.upgradeToWsHeaders }
+            : {}),
         });
 
         if (success) {

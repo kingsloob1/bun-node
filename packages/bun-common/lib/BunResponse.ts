@@ -110,6 +110,21 @@ export type SendFileCallOptions = Omit<
 export type BunResponseChunk = string | ArrayBufferView | ArrayBufferLike;
 
 /**
+ * Options for {@link BunResponse.upgradeToWebsocket}.
+ */
+export interface UpgradeToWebsocketOptions {
+  /**
+   * Extra headers for the `101 Switching Protocols` response, handed to
+   * `server.upgrade` as its `headers`. Default: none. Only these are sent —
+   * headers set on the response through `setHeader`/`set` are not. A
+   * `Sec-WebSocket-Protocol` here replaces Bun's default, which echoes the
+   * first protocol the client offered, so it is how a server picks a
+   * subprotocol.
+   */
+  headers?: Bun.HeadersInit;
+}
+
+/**
  * Every body {@link BunResponse.send} (and `end`) accepts — see `send` for how
  * each is written. It includes `object`, since any plain object or array is
  * sent as JSON.
@@ -372,6 +387,13 @@ export class BunResponse<
   private _upgradeToWsData:
     | WebSocketClientData<customWebsocketDataType>
     | undefined = undefined;
+
+  /**
+   * Headers for the `101` of a WebSocket upgrade, from
+   * {@link upgradeToWebsocket}'s `options.headers`; `undefined` when none were
+   * given, so an upgrade without them sends exactly Bun's default.
+   */
+  private _upgradeToWsHeaders: Headers | undefined = undefined;
 
   #nativeResponse: Response | undefined = undefined;
   /**
@@ -919,10 +941,27 @@ export class BunResponse<
    * Marks the response as a WebSocket upgrade, with `data` as the socket's
    * `ws.data`. Without `data`, it is built from the request — including
    * `port`, the port of the server that accepted it, when that server has one.
+   *
+   * `options.headers` go out on the `101 Switching Protocols` response —
+   * for example `{ "Sec-WebSocket-Protocol": "chat.v1" }` to choose a
+   * subprotocol. Headers set on this response any other way are not sent.
+   * Each call replaces the headers of the one before.
    */
   public upgradeToWebsocket(
     data?: WebSocketClientData<customWebsocketDataType>,
+    options?: UpgradeToWebsocketOptions,
   ) {
+    let headers: Headers | undefined;
+    if (options?.headers !== undefined) {
+      headers = new Headers(options.headers);
+      // An empty set is no headers: the upgrade then sends exactly what it
+      // would without the option.
+      if (headers.keys().next().done) {
+        headers = undefined;
+      }
+    }
+    this._upgradeToWsHeaders = headers;
+
     const port = this.req.server?.port;
     this._upgradeToWsData =
       data ||
@@ -948,6 +987,15 @@ export class BunResponse<
 
   public get upgradeToWsData() {
     return this._upgradeToWsData;
+  }
+
+  /**
+   * The headers {@link upgradeToWebsocket} was given for the `101`, or
+   * `undefined` when it was given none (or not called). Every server that
+   * performs the upgrade passes them to `server.upgrade` as `headers`.
+   */
+  public get upgradeToWsHeaders(): Headers | undefined {
+    return this._upgradeToWsHeaders;
   }
 
   /**
