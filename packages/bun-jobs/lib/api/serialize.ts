@@ -134,7 +134,12 @@ export interface JobDto {
   data?: unknown;
   /** The processor's return value; with `include=returnValue`. */
   returnValue?: unknown;
-  /** Recent failures, newest first; with `include=stacktrace`. */
+  /**
+   * Recent failures, newest first; with `include=stacktrace`. Despite the
+   * name, an entry carries `stack` only when `serialize.exposeStacks` is on
+   * (it is off by default); otherwise each entry is the error's `name` and
+   * `message`, plus `code`, `data` and `cause` when it had them.
+   */
   stacktrace?: ErrorDto[];
   /** Options after defaults; with `include=opts`. */
   opts?: ResolvedJobOptions;

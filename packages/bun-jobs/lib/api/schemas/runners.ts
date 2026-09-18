@@ -25,7 +25,15 @@ export const RunnerIdSchema = s.documented(
 const ExecutionModeSchema = s.enum(["spawn", "worker", "in-process"]);
 
 /** What a runner instance is doing. Mirrors `RunnerStatus`. */
-const RunnerStatusSchema = s.enum(["idle", "running", "paused", "stopped"]);
+/**
+ * A runner's lifecycle in its own process: `idle` (not started), `running`
+ * (started, schedule armed — not "a run is in flight", which is `isRunning`),
+ * `paused`, `stopped`.
+ */
+const RunnerStatusSchema = s.enum(["idle", "running", "paused", "stopped"], {
+  description:
+    "The runner's lifecycle in its own process: `idle` = registered, not started; `running` = started with its schedule armed (a run may or may not be in flight: see `isRunning`); `paused`; `stopped`.",
+});
 
 /** One run. Mirrors `RunRecordDto`. */
 export const RunRecordSchema = s.named(
@@ -151,6 +159,14 @@ export const RunnerListSchema = s.object({
       }),
       name: s.optional(s.string()),
       status: s.optional(RunnerStatusSchema),
+      isPaused: s.boolean({
+        description:
+          "Paused, from the backend: the same from every process, local or not.",
+      }),
+      isRunning: s.boolean({
+        description:
+          'A run is in flight anywhere, from the backend\'s lock. `status: "running"` means only that the runner is started with its schedule armed.',
+      }),
     }),
   ),
 });

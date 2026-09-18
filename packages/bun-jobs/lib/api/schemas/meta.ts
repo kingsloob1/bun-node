@@ -1,4 +1,10 @@
-import { MAX_NAME_LENGTH, NAME_SEGMENT_PATTERN } from "../contract/constants";
+import type { JobsApiAction } from "../contract/constants";
+import type { Optional, Schema } from "../schema/builder";
+import {
+  JOBS_API_ACTIONS,
+  MAX_NAME_LENGTH,
+  NAME_SEGMENT_PATTERN,
+} from "../contract/constants";
 import { s } from "../schema/builder";
 
 /**
@@ -226,17 +232,33 @@ export const ChannelPermissionSchema = s.named(
   ),
 );
 
+/**
+ * `PermissionsDto.actions`: one optional boolean per action, and no other
+ * key. Built from `JOBS_API_ACTIONS`, so a new action is documented here
+ * without an edit, and it infers `Partial<Record<JobsApiAction, boolean>>`
+ * exactly — the contract's type.
+ */
+const ActionPermissionsSchema = s.object(
+  Object.fromEntries(
+    JOBS_API_ACTIONS.map((action) => [action, s.optional(s.boolean())]),
+  ) as { [A in JobsApiAction]: Optional<Schema<boolean>> },
+  {
+    description:
+      "Keyed by action. An action whose routes are pruned (by `mode`, `readOnly`, `actions` or the driver) is absent, not `false`.",
+  },
+);
+
 /** `GET /meta/permissions` response. */
 export const PermissionsSchema = s.named(
   "Permissions",
   s.object(
     {
-      actions: s.record(s.boolean()),
+      actions: ActionPermissionsSchema,
       channel: s.optional(ChannelPermissionSchema),
     },
     {
       description:
-        "For every action relevant to this API's mode, whether the caller may perform it. Actions disabled by configuration are false. `channel` is present when the query asked about one.",
+        "For every action the API routes (plus `events.connect` and `events.subscribe` when it has a socket), whether the caller may perform it; a pruned action is absent. `channel` is present when the query asked about one.",
     },
   ),
 );

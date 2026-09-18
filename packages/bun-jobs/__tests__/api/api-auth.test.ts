@@ -171,8 +171,15 @@ describe("route-level authorization", () => {
       });
       // Past authorization: a 404 for data an earlier route removed is fine.
       expect([401, 403, 500]).not.toContain(response.status);
-      // `/meta/permissions` also evaluates every action, without a route.
-      const own = calls.filter((call) => call.route !== undefined);
+      // `/meta/permissions` also evaluates every action, each with the route
+      // it previews (or none, for the socket's): the request's own call is
+      // the one for its own route, and it comes first.
+      const pattern = route.path.slice("/admin/jobs".length);
+      const own = calls.filter(
+        (call) =>
+          call.route?.method === route.method && call.route.path === pattern,
+      );
+      expect(calls[0]).toBe(own[0]!);
       expect({ route: route.operationId, calls: own.length }).toEqual({
         route: route.operationId,
         calls: 1,

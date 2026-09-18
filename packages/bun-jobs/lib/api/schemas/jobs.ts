@@ -135,7 +135,12 @@ export const JobSchema = s.named(
     returnValue: s.optional(
       s.unknown({ description: "With `include=returnValue`." }),
     ),
-    stacktrace: s.optional(s.array(ErrorDtoSchema)),
+    stacktrace: s.optional(
+      s.array(ErrorDtoSchema, {
+        description:
+          "With `include=stacktrace`: recent failures, newest first. An entry carries `stack` only when the API was created with `serialize.exposeStacks` (off by default); otherwise it is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
+      }),
+    ),
     opts: s.optional(JobOptionsSchema),
   }),
 );

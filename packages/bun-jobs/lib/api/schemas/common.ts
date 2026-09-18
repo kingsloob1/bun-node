@@ -71,7 +71,12 @@ export const ErrorDtoSchema = s.named(
     name: s.string(),
     message: s.string(),
     code: s.optional(s.union(s.string(), s.number())),
-    stack: s.optional(s.string()),
+    stack: s.optional(
+      s.string({
+        description:
+          "The stack trace: present only when the API was created with `serialize.exposeStacks` (off by default).",
+      }),
+    ),
     data: s.optional(s.record(s.unknown())),
     cause: s.optional(
       s.unknown({ description: "The cause, shaped as an Error." }),

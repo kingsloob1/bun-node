@@ -474,6 +474,31 @@ type UndefaultedEqual = DeepEqual<
 // @ts-expect-error — a defaulted key compared as optional is caught.
 export type UndefaultedCaught = Expect<UndefaultedEqual>;
 
+/* --- permissions are keyed by action --------------------------------- */
+
+// `actions` is keyed by `JobsApiAction`, on the contract and on what the
+// schema infers alike, and every key is optional (a pruned action is absent).
+export type PermissionActionsOk = Expect<
+  Equal<
+    Contract.PermissionsDto["actions"],
+    Partial<Record<Contract.JobsApiAction, boolean>>
+  >
+>;
+export type PermissionActionsInferredOk = Expect<
+  DeepEqual<
+    Infer<typeof PermissionsSchema>["actions"],
+    Partial<Record<Contract.JobsApiAction, boolean>>
+  >
+>;
+
+declare const permissions: Contract.PermissionsDto;
+export const canRetry: boolean | undefined = permissions.actions["jobs.retry"];
+// @ts-expect-error — a string that is not an action does not index the map.
+export const notAnAction = permissions.actions["jobs.frobnicate"];
+declare const someString: string;
+// @ts-expect-error — nor does an arbitrary string.
+export const anyString = permissions.actions[someString];
+
 /* --- the socket ------------------------------------------------------ */
 
 // The contract restates the socket's frames and events; each must equal the

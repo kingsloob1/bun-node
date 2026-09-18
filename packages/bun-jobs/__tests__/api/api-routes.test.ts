@@ -552,13 +552,23 @@ describe("GET /meta/permissions", () => {
     expect(actions).not.toHaveProperty("jobs.add");
     expect(calls.some((call) => call.action === "jobs.add")).toBe(false);
 
-    const evaluated = calls.filter((call) => call.route === undefined);
+    // The request's own call first, then one per action, each carrying the
+    // route it previews — or, for the socket's two, `transport: "ws"` and
+    // none, as the upgrade and a subscribe frame are asked.
+    expect(calls[0]).toEqual({
+      action: "meta.read",
+      mutation: false,
+      transport: "http",
+      route: { method: "GET", path: "/meta/permissions" },
+    });
+    const evaluated = calls.slice(1);
     expect(evaluated).toHaveLength(expected.size);
     expect(evaluated.find((call) => call.action === "jobs.read")).toEqual({
       action: "jobs.read",
       mutation: false,
       transport: "http",
       queue: "mail",
+      route: { method: "POST", path: "/queues/:queue/jobs/lookup" },
     });
     expect(evaluated.find((call) => call.action === "runners.trigger")).toEqual(
       {
@@ -566,12 +576,21 @@ describe("GET /meta/permissions", () => {
         mutation: true,
         transport: "http",
         runner: "nightly",
+        route: { method: "POST", path: "/runners/:runner/trigger" },
       },
     );
     expect(evaluated.find((call) => call.action === "meta.read")).toEqual({
       action: "meta.read",
       mutation: false,
       transport: "http",
+      route: { method: "GET", path: "/meta" },
+    });
+    expect(
+      evaluated.find((call) => call.action === "events.subscribe"),
+    ).toEqual({
+      action: "events.subscribe",
+      mutation: false,
+      transport: "ws",
     });
   });
 

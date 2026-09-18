@@ -320,6 +320,62 @@ export function permissionActions(
   return [...actions];
 }
 
+/** Whether a route pattern names a path parameter, e.g. `":queue"`. */
+function namesParam(path: string, param: ":queue" | ":runner"): boolean {
+  return path.split("/").includes(param);
+}
+
+/**
+ * The route a real request for `action` would carry as `ctx.route`, for the
+ * `/meta/permissions` preview: the method and the pattern under `basePath`,
+ * exactly as the route's own `authorize` call reports them (`registerRoutes`).
+ * `undefined` for an action no registered route carries — the socket's two
+ * actions, whose real calls carry no route either.
+ *
+ * Where several routes share an action, the choice is deterministic, in
+ * registration order (the order of `api.routes`):
+ *
+ * - asked about a queue (a queue-side action) or a runner (a runner action):
+ *   the first route whose pattern names `:queue` (or `:runner`) —
+ *   `metrics.read` for a queue is `GET /queues/:queue/throughput`;
+ * - asked about neither: the first route whose pattern names neither —
+ *   `metrics.read` is `GET /overview`, `workers.list` is `GET /workers`;
+ * - no route matches that preference: the action's first route, e.g.
+ *   `jobs.read` untargeted is `POST /queues/:queue/jobs/lookup` (a read).
+ */
+export function previewRoute(
+  config: Pick<ResolvedJobsApiConfig, "basePath">,
+  routes: readonly JobsApiRouteInfo[],
+  action: JobsApiAction,
+  target: { queue?: string; runner?: string },
+): JobsApiAuthorizeContext["route"] {
+  const candidates = routes.filter((route) => route.action === action);
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  const mode = actionMode(action);
+  const param =
+    mode === "jobs" && target.queue !== undefined
+      ? ":queue"
+      : mode === "runner" && target.runner !== undefined
+        ? ":runner"
+        : undefined;
+  const preferred = param
+    ? candidates.find((route) => namesParam(route.path, param))
+    : candidates.find(
+        (route) =>
+          !namesParam(route.path, ":queue") &&
+          !namesParam(route.path, ":runner"),
+      );
+  const chosen = preferred ?? candidates[0]!;
+  return {
+    method: chosen.method,
+    // `api.routes` holds full paths; `ctx.route.path` is the pattern under
+    // `basePath`, which `joinPath` prefixed by plain concatenation.
+    path: chosen.path.slice(config.basePath.length),
+  };
+}
+
 /**
  * Evaluates `authorize` once for each of `actions` — by default every action
  * relevant to the API's mode; the `/meta/permissions` route passes
@@ -328,12 +384,25 @@ export function permissionActions(
  * configuration is `false` without asking `authorize`: `decide` applies the
  * static limits first. `queue` is passed to queue-side actions and `runner` to
  * runner actions.
+ *
+ * Each call is shaped like the real request it previews, so an `authorize`
+ * that decides by any field of the context gives the map the answer the
+ * request would get:
+ *
+ * - an HTTP action carries `transport: "http"` and, when `routes` (the
+ *   registered routes, `api.routes`) is given, `route` as
+ *   {@link previewRoute} picks it. Without `routes` there is no `route`;
+ * - `events.connect` and `events.subscribe` carry `transport: "ws"` and no
+ *   `route`, as the upgrade and a `subscribe` frame do.
+ *
+ * What no preview can carry is a job: `jobId` and `jobIds` are never set.
  */
 export async function evaluatePermissions(
   config: ResolvedJobsApiConfig,
   req: BunRequest,
   target: { queue?: string; runner?: string },
   actions?: readonly JobsApiAction[],
+  routes?: readonly JobsApiRouteInfo[],
 ): Promise<Partial<Record<JobsApiAction, boolean>>> {
   const relevant =
     actions ??
@@ -345,18 +414,24 @@ export async function evaluatePermissions(
   const answers = await Promise.all(
     relevant.map(async (action) => {
       const mode = actionMode(action);
+      const socket = action.startsWith("events.");
+      const route =
+        socket || !routes
+          ? undefined
+          : previewRoute(config, routes, action, target);
       const context: Omit<JobsApiAuthorizeContext, "mutation"> = {
         action,
-        transport: "http",
+        transport: socket ? "ws" : "http",
         ...(mode === "jobs" && target.queue ? { queue: target.queue } : {}),
         ...(mode === "runner" && target.runner
           ? { runner: target.runner }
           : {}),
+        ...(route ? { route } : {}),
       };
       return [action, (await decide(config, req, context)).allow] as const;
     }),
   );
-  return Object.fromEntries(answers);
+  return Object.fromEntries(answers) as Partial<Record<JobsApiAction, boolean>>;
 }
 
 /** `/meta` and `/meta/permissions`, routed in every mode. */
@@ -385,18 +460,21 @@ export function metaRoutes(): AnyRouteDef[] {
       mode: "any",
       summary: "Which actions the caller may perform",
       description:
-        "Asks `authorize` once for each distinct action among the routes this API registered (plus `events.connect` and `events.subscribe` when it has a socket), optionally for one queue or runner, so a client can hide what it may not do. The cost is that many `authorize` calls per request. With `channel`, also previews a WebSocket subscription: the channel is parsed and checked as a `subscribe` frame's would be, and `authorize` is asked once more, about `events.subscribe` on that channel.",
+        "Answers, for each distinct action among the routes this API registered (plus `events.connect` and `events.subscribe` when it has a socket), whether the caller may perform it, optionally for one queue or runner, so a client can hide what it may not do. An action whose routes are pruned is absent, not `false`.\n\n" +
+        "**Cost.** `authorize` is called N + 1 times per request, where N is the number of actions in `actions`: once for this request itself (`meta.read` on `GET /meta/permissions`, like any route), then once per action. The request's own call is not reused for the map's `meta.read`: that entry previews `GET /meta`, a different route. With `channel`, add one more call when the channel parses and is available (a refused channel costs none).\n\n" +
+        '**Each call is shaped like the real request.** An HTTP action carries `transport: "http"` and `route`: the method and pattern of one of the action\'s routes, the first registered whose pattern names the queue or runner asked about (or, with neither, names neither; else the action\'s first route). `events.connect` and `events.subscribe` carry `transport: "ws"` and no `route`, as the upgrade and a `subscribe` frame do. No call names a job. With `channel`, the channel is parsed and checked as a `subscribe` frame\'s would be, and `authorize` is asked about `events.subscribe` on it with exactly the context that frame would carry.',
       tags: ["Meta"],
       query: PermissionsQuerySchema,
       responses: { 200: PermissionsSchema },
       handler: async ({ req, query, services }) => ({
         body: {
-          actions: (await evaluatePermissions(
+          actions: await evaluatePermissions(
             services.config,
             req,
             query,
             permissionActions(services.config, services.routes()),
-          )) as Record<string, boolean>,
+            services.routes(),
+          ),
           ...(query.channel === undefined
             ? {}
             : {
