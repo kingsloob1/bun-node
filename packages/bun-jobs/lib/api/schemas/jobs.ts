@@ -313,10 +313,18 @@ export function retryAllBodySchema(maxRetryAll: number) {
   });
 }
 
+/**
+ * The most ids a retry-all answers with; `truncated` is `true` when it moved
+ * more. Reported by `/meta` as `limits.maxRetryAllIds`.
+ */
+export const RETRY_ALL_MAX_IDS = 1000;
+
 /** `POST /queues/:queue/jobs/retry-all` response. */
 export const RetryAllResultSchema = s.object({
   count: s.integer({ minimum: 0 }),
-  ids: s.array(s.string(), { description: "The first 1000 ids retried." }),
+  ids: s.array(s.string(), {
+    description: `The first ${RETRY_ALL_MAX_IDS} ids retried.`,
+  }),
   truncated: s.boolean(),
 });
 

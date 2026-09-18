@@ -12,8 +12,12 @@ import type {
  * carries.
  *
  * **Browser-safe**: imports only its sibling `constants.ts`, type-only.
- * **Cannot drift**: `__tests__/api/api-contract.type-test.ts` asserts each
- * type equals the server's own (`lib/api/ws/protocol.ts`, `ws/events.ts`).
+ * **One definition**: the server defines none of these itself.
+ * `lib/api/ws/protocol.ts` and `ws/events.ts` import and re-export them, so
+ * the root entry's socket types are these very types. What the server
+ * derives (the event payloads from `shared/events.ts`, the frame schemas) is
+ * held equal to them at compile time, in `ws/events.ts`, `ws/protocol.ts` and
+ * `__tests__/api/api-contract.type-test.ts`.
  */
 
 /* ------------------------------------------------------------------ *
@@ -168,21 +172,39 @@ export type JobsApiWsErrorCode =
   | "EVENTS_UNAVAILABLE"
   | "INTERNAL";
 
-/** Subscribes to channels, optionally resuming after a reconnect. The last subscribe to a channel sets its filter. */
+/**
+ * Subscribes to channels, optionally resuming after a reconnect.
+ *
+ * Subscriptions are not reference-counted: subscribing to a channel already
+ * held replaces its `events` filter (the last subscribe wins, it does not
+ * merge), and one `unsubscribe` removes the channel however many times it was
+ * subscribed.
+ *
+ * With `resume`, replayed events are sent before the `ack`; when they cannot
+ * be replayed the `ack` says `resumed: false` and a `gap` follows it.
+ */
 export interface JobsApiSubscribeMessage {
   /** The operation. */
   op: "subscribe";
   /** Echoed in the `ack` or `error` that answers it. */
   id: string;
-  /** Channels, at most `JOBS_API_WS_MAX_CHANNELS_PER_FRAME`. */
+  /**
+   * Channels: `all`, `queues`, `queue/<q>`, `queue/<q>/job/<encoded id>`,
+   * `runners`, `runner/<r>`. At most `JOBS_API_WS_MAX_CHANNELS_PER_FRAME`
+   * (256).
+   */
   channels: string[];
-  /** Only these event types, for these channels. Absent means every type. */
+  /** Only these event types, for these channels. Absent means every type. Replaces the filter of a channel already held. */
   events?: EventName[];
   /** Replay what was missed since `afterSeq`, when the server still holds it. */
   resume?: {
     /** The `epoch` the client last saw. */
     epoch: string;
-    /** The last `seq` the client processed. */
+    /**
+     * The last `seq` the client processed. One beyond anything the server
+     * has stamped in `epoch` is answered as a changed epoch: `resumed: false`
+     * and a `gap` from `0`.
+     */
     afterSeq: number;
   };
 }
@@ -235,7 +257,7 @@ export interface JobsApiHelloMessage {
 
 /** One channel an `ack` refused. */
 export interface JobsApiAckRejection {
-  /** The channel exactly as the client sent it. */
+  /** The channel exactly as the client sent it (not canonicalised). */
   channel: string;
   /** Why. */
   code: JobsApiWsErrorCode;
@@ -257,7 +279,12 @@ export interface JobsApiAckMessage {
   channels: string[];
   /** Channels refused, each with its reason. */
   rejected?: JobsApiAckRejection[];
-  /** For a `subscribe` with `resume`: whether every missed event was replayed. */
+  /**
+   * For a `subscribe` with `resume`: `true` when every missed event was
+   * replayed (before this ack); `false` when some could not be, in which case
+   * a `gap` covers them — right after this ack, or, if the connection was
+   * lagging, when it drains.
+   */
   resumed?: boolean;
   /** The latest `seq` stamped when the ack was sent. */
   seq: number;
@@ -271,7 +298,7 @@ export interface JobsApiEventMessage {
   seq: number;
   /** The server instance's epoch. */
   epoch: string;
-  /** Every subscribed channel it matched. */
+  /** Every subscribed channel it matched: an event is sent once, however many match. */
   subscriptions: string[];
   /** The event. */
   event: EventWire;
@@ -294,7 +321,7 @@ export interface JobsApiGapMessage {
   fromSeq: number;
   /** The last `seq` that may be missing. */
   toSeq: number;
-  /** Why. */
+  /** Why. `coalesced` is reserved: progress coalescing announces no gap. */
   reason: JobsApiGapReason;
   /** The channels affected, when not every one. */
   channels?: string[];
@@ -304,7 +331,11 @@ export interface JobsApiGapMessage {
 export interface JobsApiHeartbeatMessage {
   /** The message type. */
   type: "heartbeat";
-  /** The latest `seq` the server has stamped, across every channel. */
+  /**
+   * The latest `seq` the server has stamped, across every channel — not only
+   * this connection's. `seq` is global, so a jump between heartbeats says
+   * nothing about missed events: rely on `gap` frames for that.
+   */
   seq: number;
   /** Server time, epoch ms. */
   at: number;

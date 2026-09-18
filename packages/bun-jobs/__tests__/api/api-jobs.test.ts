@@ -714,11 +714,12 @@ describe("jobs", () => {
     });
     expect(huge.status).toBe(413);
 
+    // Not yet a queue: the first add creates it (see the test below).
     const unknownQueue = await h.call("POST", "/queues/nowhere/jobs", {
       name: "send",
       data: {},
     });
-    expect(unknownQueue.status).toBe(404);
+    expect(unknownQueue.status).toBe(201);
 
     const anyName = harness({ jobs: h.jobs, addableNames: "any" });
     expect(
@@ -729,6 +730,143 @@ describe("jobs", () => {
         })
       ).status,
     ).toBe(201);
+  });
+});
+
+describe("adding to a queue that does not exist yet", () => {
+  it("creates the queue with its first job, and lists it at once", async () => {
+    // A long cache: the queue must be listed because the add invalidated it,
+    // not because the cache happened to expire.
+    const h = harness({
+      actions: undefined,
+      limits: { queueCacheMs: 60_000 },
+    });
+    const withAdd = harness({
+      jobs: h.jobs,
+      limits: { queueCacheMs: 60_000 },
+    });
+    h.jobs.define("report", async () => {});
+
+    // Warm both caches while the queue does not exist.
+    expect((await withAdd.call("GET", "/queues")).body.items).toEqual([]);
+    expect((await h.call("GET", "/queues/fresh")).status).toBe(404);
+
+    const added = await withAdd.call("POST", "/queues/fresh/jobs", {
+      name: "report",
+      data: { day: 1 },
+    });
+    expect(added.status).toBe(201);
+    expect(added.body).toMatchObject({
+      added: true,
+      job: { queue: "fresh", name: "report", state: "waiting" },
+    });
+    expect(await h.jobs.queue("fresh").count("waiting")).toBe(1);
+
+    const listed = await withAdd.call("GET", "/queues");
+    expect(listed.body.items.map((q: { name: string }) => q.name)).toEqual([
+      "fresh",
+    ]);
+    expect((await withAdd.call("GET", "/queues/fresh")).status).toBe(200);
+  });
+
+  it("still refuses a name that is not addable, and a queue outside a configured list", async () => {
+    const h = harness({ limits: { queueCacheMs: 60_000 } });
+    h.jobs.define("report", async () => {});
+    const built: string[] = [];
+    const queue = h.jobs.queue.bind(h.jobs);
+    h.jobs.queue = ((name: string) => {
+      built.push(name);
+      return queue(name);
+    }) as typeof h.jobs.queue;
+
+    const refused = await h.call("POST", "/queues/fresh/jobs", {
+      name: "wipe-database",
+      data: {},
+    });
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ code: "NAME_NOT_ADDABLE" });
+    // Refused before any queue instance was built for the name.
+    expect(built).toEqual([]);
+    expect(await h.jobs.listQueues()).toEqual([]);
+
+    const listed = harness({ jobs: h.jobs, queues: ["mail"] });
+    const outside = await listed.call("POST", "/queues/fresh/jobs", {
+      name: "report",
+      data: {},
+    });
+    expect(outside.status).toBe(404);
+    expect(outside.body).toMatchObject({ code: "QUEUE_NOT_FOUND" });
+    expect(await h.jobs.listQueues()).toEqual([]);
+
+    // A listed queue with no jobs yet takes its first one.
+    const inside = await listed.call("POST", "/queues/mail/jobs", {
+      name: "report",
+      data: {},
+    });
+    expect(inside.status).toBe(201);
+  });
+});
+
+describe("actions is an allow-list", () => {
+  it("naming only jobs.add and jobs.update disables every other action", async () => {
+    const h = harness({ actions: ["jobs.add", "jobs.update"] });
+    h.jobs.define("send", async () => {});
+    expect(
+      (await h.call("POST", "/queues/mail/jobs", { name: "send", data: {} }))
+        .status,
+    ).toBe(201);
+    for (const [method, path] of [
+      ["GET", "/meta"],
+      ["GET", "/queues"],
+      ["GET", "/queues/mail/jobs"],
+      ["POST", "/queues/mail/pause"],
+      ["GET", "/openapi.json"],
+    ] as const) {
+      const res = await h.call(method, path);
+      expect({ path, status: res.status, code: res.body?.code }).toEqual({
+        path,
+        status: 404,
+        code: "ROUTE_NOT_FOUND",
+      });
+    }
+  });
+});
+
+describe("a queue a stale cache missed", () => {
+  it("is found on every queue route, with one backend re-read per cache window", async () => {
+    const h = harness({ limits: { queueCacheMs: 60_000 } });
+    let lists = 0;
+    const listQueues = h.jobs.listQueues.bind(h.jobs);
+    h.jobs.listQueues = async () => {
+      lists++;
+      return await listQueues();
+    };
+
+    expect((await h.call("GET", "/queues/elsewhere")).status).toBe(404);
+    expect(lists).toBe(1);
+
+    // Another process creates the queue; this API's cache still says no.
+    const other = new BunQueue("elsewhere", {
+      namespace: h.jobs.namespace,
+      driver: h.jobs.driver,
+    });
+    await other.add("send", {}, { jobId: "x1" });
+
+    expect((await h.call("GET", "/queues/elsewhere")).status).toBe(200);
+    expect(lists).toBe(2);
+    // The re-read refreshed the cache: every queue route sees it now.
+    expect((await h.call("GET", "/queues/elsewhere/counts")).status).toBe(200);
+    expect((await h.call("GET", "/queues/elsewhere/jobs/x1")).status).toBe(200);
+    expect((await h.call("POST", "/queues/elsewhere/pause")).status).toBe(200);
+    expect(lists).toBe(2);
+
+    // Unknown names do not become a backend read each: one re-read per window.
+    const misses = await Promise.all(
+      ["n1", "n2", "n3", "n4"].map((name) => h.call("GET", `/queues/${name}`)),
+    );
+    expect(misses.map((res) => res.status)).toEqual([404, 404, 404, 404]);
+    expect((await h.call("GET", "/queues/n5")).status).toBe(404);
+    expect(lists).toBe(2);
   });
 });
 

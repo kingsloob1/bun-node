@@ -1,6 +1,8 @@
 /**
  * The management API's constants: action names, protocol versions, the
- * socket's subprotocol and close codes, job states and event names.
+ * socket's subprotocol and close codes, job states and event names — and the
+ * two pure functions a client needs to name a job channel, `encodeJobId` and
+ * `decodeJobId`.
  *
  * **Browser-safe by construction.** This file imports nothing at all, so a
  * client (a React management UI, a CLI) can bundle it without pulling in a
@@ -80,7 +82,11 @@ export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
     "runners.resetStats",
   ]);
 
-/** Actions excluded when `actions` is not given, because they write caller-supplied payloads. */
+/**
+ * Actions excluded when `actions` is not given, because they write
+ * caller-supplied payloads. Passing `actions` replaces the default entirely:
+ * it is an allow-list, so naming only these disables every other action.
+ */
 export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
   new Set<JobsApiAction>(["jobs.add", "jobs.update"]);
 
@@ -231,3 +237,61 @@ export const MAX_JOB_ID_LENGTH = 191;
  * jobs whose ids predate that cap, and they must stay reachable.
  */
 export const MAX_JOB_REF_LENGTH = 1024;
+
+/* ------------------------------------------------------------------ *
+ * Channel names
+ * ------------------------------------------------------------------ */
+
+/**
+ * Escapes a job id for a channel name: `encodeURIComponent`, except that a
+ * lone UTF-16 surrogate — which `encodeURIComponent` refuses with a `URIError`
+ * — becomes `%uXXXX` (upper-case hex). A well-formed id is therefore escaped
+ * exactly as before, and {@link decodeJobId} reverses either form. The two
+ * cannot be confused: `encodeURIComponent` escapes every `%` as `%25`.
+ *
+ * A client names a job's channel as `queue/<queue>/job/${encodeJobId(id)}`.
+ * Pure, with no imports, so it is safe in a browser.
+ */
+export function encodeJobId(jobId: string): string {
+  if (jobId.isWellFormed()) {
+    return encodeURIComponent(jobId);
+  }
+  let out = "";
+  let run = 0;
+  for (let index = 0; index < jobId.length; index++) {
+    const unit = jobId.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) {
+      continue;
+    }
+    const next = jobId.charCodeAt(index + 1);
+    if (unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      index++;
+      continue;
+    }
+    out += `${encodeURIComponent(jobId.slice(run, index))}%u${unit.toString(16).toUpperCase()}`;
+    run = index + 1;
+  }
+  return out + encodeURIComponent(jobId.slice(run));
+}
+
+/**
+ * Reverses {@link encodeJobId}: the job id a job channel's last segment
+ * names. Throws `URIError` on a malformed escape, and on a `%uXXXX` escape of
+ * anything but a surrogate.
+ */
+export function decodeJobId(encoded: string): string {
+  return encoded
+    .split(/(%u[\dA-Fa-f]{4})/)
+    .map((part, index) => {
+      if (index % 2 === 0) {
+        return decodeURIComponent(part);
+      }
+      const unit = Number.parseInt(part.slice(2), 16);
+      // Only a surrogate needs this form; anything else has a standard one.
+      if (unit < 0xd800 || unit > 0xdfff) {
+        throw new URIError(`"${part}" is not a surrogate escape`);
+      }
+      return String.fromCharCode(unit);
+    })
+    .join("");
+}

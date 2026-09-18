@@ -9,6 +9,7 @@ import { JOBS_API_PROTOCOL_VERSION as META_PROTOCOL } from "../../lib/api/routes
 import { JOB_STATES as COMMON_STATES } from "../../lib/api/schemas/common";
 import { JobIdRefSchema, NewJobIdSchema } from "../../lib/api/schemas/jobs";
 import { JOB_INCLUDES as SERIALIZE_INCLUDES } from "../../lib/api/serialize";
+import * as Channels from "../../lib/api/ws/channels";
 import {
   QUEUE_EVENT_NAMES,
   RUNNER_EVENT_NAMES,
@@ -53,6 +54,34 @@ function specifiersOf(source: string): string[] {
   }
   return [...found];
 }
+
+describe("job-id escaping for channel names", () => {
+  it("is defined once, in the contract: the socket and the root use that very function", () => {
+    expect(Contract.encodeJobId).toBeFunction();
+    expect(Contract.decodeJobId).toBeFunction();
+    expect(Channels.encodeJobId).toBe(Contract.encodeJobId);
+    expect(Channels.decodeJobId).toBe(Contract.decodeJobId);
+    expect(Root.encodeJobId).toBe(Contract.encodeJobId);
+    expect(Root.decodeJobId).toBe(Contract.decodeJobId);
+  });
+
+  it("escapes as encodeURIComponent does, and a lone surrogate as %uXXXX", () => {
+    for (const id of [
+      "plain",
+      "a/b c",
+      "100%",
+      "\u{1F600}",
+      "x\uDC00y",
+      "\uD83D",
+    ]) {
+      expect(Contract.decodeJobId(Contract.encodeJobId(id))).toBe(id);
+    }
+    expect(Contract.encodeJobId("a/b c")).toBe(encodeURIComponent("a/b c"));
+    expect(Contract.encodeJobId("x\uDC00y")).toBe("x%uDC00y");
+    expect(Channels.jobChannel("mail", "\uD83D")).toBe("queue/mail/job/%uD83D");
+    expect(() => Contract.decodeJobId("%u0041")).toThrow(URIError);
+  });
+});
 
 describe("the contract's import graph", () => {
   it("names only its own sibling files, in every file, type imports included", async () => {
@@ -130,6 +159,11 @@ describe("the contract's import graph", () => {
       expect([...loaded.JOBS_API_MUTATIONS]).toEqual([
         ...Contract.JOBS_API_MUTATIONS,
       ]);
+      // A browser client can name the job channel of any id, a lone
+      // surrogate's included, and read one back.
+      const lone = "job-\uD800-x";
+      expect(loaded.encodeJobId(lone)).toBe("job-%uD800-x");
+      expect(loaded.decodeJobId(loaded.encodeJobId(lone))).toBe(lone);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

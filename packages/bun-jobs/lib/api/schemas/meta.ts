@@ -59,9 +59,19 @@ export const MetaLimitsSchema = s.named(
         minimum: 1,
         description: "Largest `limit` of a retry-all.",
       }),
+      maxRetryAllIds: s.integer({
+        minimum: 1,
+        description:
+          "Most ids a retry-all answers with; when it moved more, `ids` holds the first this many and `truncated` is `true`.",
+      }),
       maxClean: s.integer({
         minimum: 1,
         description: "Largest `limit` of a clean.",
+      }),
+      defaultClean: s.integer({
+        minimum: 1,
+        description:
+          "The `limit` a clean uses when none is given: `min(1000, maxClean)`.",
       }),
       maxLogPage: s.integer({
         minimum: 1,
@@ -188,7 +198,7 @@ export const ChannelPermissionSchema = s.named(
       key: s.optional(
         s.string({
           description:
-            "The canonical channel name (the job id re-encoded), when it parsed.",
+            "The canonical channel name (the job id re-encoded), whenever the name parsed — refused afterwards or not. Absent only for INVALID_CHANNEL.",
         }),
       ),
       allowed: s.boolean({

@@ -22,6 +22,7 @@ import {
   logsQuerySchema,
   lookupBodySchema,
   LookupResultSchema,
+  RETRY_ALL_MAX_IDS,
   retryAllBodySchema,
   RetryAllResultSchema,
   RetryBodySchema,
@@ -42,9 +43,6 @@ import {
 
 /** Retry-alls in flight, per API and queue: one at a time per queue in a process. */
 const RETRY_ALL_RUNNING = new WeakMap<RouteServices, Set<string>>();
-
-/** How many retried ids a retry-all answers with. */
-const RETRY_ALL_ID_CAP = 1000;
 
 /** The include set a request asked for, or the default. */
 function includeOf(
@@ -381,7 +379,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       requires: ["updateJob"],
       summary: "Change a stored job's data, priority or run time",
       description:
-        "Opt-in: enabled only when `actions` lists `jobs.update`. `runAt` moves only a waiting or delayed job; `onlyIn` makes the change conditional on the job's state. 409 means the job was in a state the change cannot apply to.",
+        "Off by default: enabled only when the `actions` allow-list names `jobs.update`. `runAt` moves only a waiting or delayed job; `onlyIn` makes the change conditional on the job's state. 409 means the job was in a state the change cannot apply to.",
       tags: ["Jobs"],
       params: JobParams,
       body: UpdateBodySchema,
@@ -640,8 +638,8 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           return {
             body: {
               count: ids.length,
-              ids: ids.slice(0, RETRY_ALL_ID_CAP),
-              truncated: ids.length > RETRY_ALL_ID_CAP,
+              ids: ids.slice(0, RETRY_ALL_MAX_IDS),
+              truncated: ids.length > RETRY_ALL_MAX_IDS,
             },
           };
         } finally {
@@ -657,7 +655,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Add a job",
       description:
-        "Opt-in: enabled only when `actions` lists `jobs.add`, and only for names in `addableNames` (by default, the defined names). Accepts a safe subset of options. A `jobId` that already exists answers 200 with the existing job and `added: false`.",
+        "Off by default: enabled only when the `actions` allow-list names `jobs.add`, and only for names in `addableNames` (by default, the defined names). Accepts a safe subset of options. A `jobId` that already exists answers 200 with the existing job and `added: false`. The queue need not exist yet: adding its first job creates it, as `BunQueue.add` does, and it is listed at once. When the API is limited to a configured list of queues, a queue outside that list is still 404 `QUEUE_NOT_FOUND`.",
       tags: ["Jobs"],
       params: QueueParams,
       body: AddBodySchema,
@@ -675,7 +673,11 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             { context: { name: body.name } },
           );
         }
-        const queue = await services.queues.get(params.queue);
+        // The first job added to a queue is what creates it, so an unknown
+        // queue is not a 404 here: the name was checked above.
+        const { queue, created } = await services.queues.getForAdd(
+          params.queue,
+        );
         const { runAt, ...opts } = body.opts ?? {};
         let job: Job<any, any>;
         try {
@@ -685,6 +687,9 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           });
         } catch (error) {
           throw mapCallSiteError(error, "jobInput");
+        }
+        if (created) {
+          services.queues.invalidate();
         }
         return {
           status: job.wasAdded ? 201 : 200,

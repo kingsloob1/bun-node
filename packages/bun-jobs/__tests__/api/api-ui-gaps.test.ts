@@ -9,6 +9,8 @@ import {
 import addFormats from "ajv-formats";
 import Ajv2020 from "ajv/dist/2020";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { resolveConfig } from "../../lib/api/config";
+import { parseChannel } from "../../lib/api/ws/channels";
 import { BunQueueWorker } from "../../lib/index";
 import { waitFor } from "../helpers";
 import {
@@ -181,7 +183,9 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
       maxPageSize: 100,
       maxBulkIds: 1000,
       maxRetryAll: 10_000,
+      maxRetryAllIds: 1000,
       maxClean: 10_000,
+      defaultClean: 1000,
       maxLogPage: 500,
       maxHistory: 200,
       maxJobDataBytes: 1_048_576,
@@ -195,7 +199,13 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
       addableNames: "any",
     });
     const reported = (await meta(h)).limits;
-    expect(reported).toEqual(limits);
+    // Two are not options: the clean default follows maxClean, and the id cap
+    // of a retry-all's answer is fixed.
+    expect(reported).toEqual({
+      ...limits,
+      defaultClean: Math.min(1000, limits.maxClean),
+      maxRetryAllIds: 1000,
+    });
 
     const queue = h.jobs.queue("mail");
     const job = await queue.add("send", {});
@@ -226,7 +236,17 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
     const ids = (count: number) =>
       Array.from({ length: count }, (_, index) => `id-${index}`);
 
-    const probes: Record<keyof typeof limits, () => Promise<void>> = {
+    /** Adds `count` waiting jobs to a queue of their own. */
+    const waiting = async (queueName: string, count: number) => {
+      await h.jobs.queue(queueName).addBulk(
+        Array.from({ length: count }, (_, index) => ({
+          name: "send",
+          data: { index },
+        })),
+      );
+    };
+
+    const probes: Record<keyof typeof reported, () => Promise<void>> = {
       defaultPageSize: async () => {
         const page = await h.call("GET", "/queues/mail/jobs");
         expect(page.body.page.limit).toBe(reported.defaultPageSize);
@@ -271,6 +291,68 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
           400,
           "VALIDATION",
         ),
+      defaultClean: async () => {
+        // Exactly the default is all cleaned; one more leaves exactly one.
+        const clean = () =>
+          h.call("POST", "/queues/cleaning/clean", {
+            state: "waiting",
+            olderThan: 0,
+          });
+        await waiting("cleaning", reported.defaultClean);
+        await Bun.sleep(5);
+        expect((await clean()).body.count).toBe(reported.defaultClean);
+        await waiting("cleaning", reported.defaultClean + 1);
+        await Bun.sleep(5);
+        expect((await clean()).body.count).toBe(reported.defaultClean);
+        expect(await h.jobs.queue("cleaning").count("waiting")).toBe(1);
+      },
+      maxRetryAllIds: async () => {
+        // maxRetryAll here is below the id cap, so the cap is probed on an
+        // API with the default maxRetryAll, over the same backend.
+        const wide = closing({ jobs: h.jobs, limits: { queueCacheMs: 0 } });
+        const retryAll = async () =>
+          await wide.call("POST", "/queues/redrive/jobs/retry-all", {
+            state: "completed",
+          });
+        const finish = async (count: number) => {
+          await waiting("redrive", count);
+          const ref = { ns: h.jobs.namespace, queue: "redrive" };
+          for (let index = 0; index < count; index++) {
+            const token = `t-${index}`;
+            const record = await h.jobs.driver.claimJob(ref, {
+              workerId: "probe",
+              token,
+              lockMs: 60_000,
+              now: Date.now(),
+            });
+            await h.jobs.driver.completeJob(
+              ref,
+              record!.id,
+              token,
+              "ok",
+              false,
+              Date.now(),
+            );
+          }
+        };
+
+        await finish(reported.maxRetryAllIds);
+        const at = await retryAll();
+        expect(at.body).toMatchObject({
+          count: reported.maxRetryAllIds,
+          truncated: false,
+        });
+        expect(at.body.ids).toHaveLength(reported.maxRetryAllIds);
+        await h.jobs.queue("redrive").drain();
+
+        await finish(reported.maxRetryAllIds + 1);
+        const over = await retryAll();
+        expect(over.body).toMatchObject({
+          count: reported.maxRetryAllIds + 1,
+          truncated: true,
+        });
+        expect(over.body.ids).toHaveLength(reported.maxRetryAllIds);
+      },
       maxClean: () =>
         edge(
           () =>
@@ -821,6 +903,74 @@ describe("G12: queue search, paging and the channel preview", () => {
       (await listed.call("GET", "/meta/permissions?channel=queue/other")).body
         .channel,
     ).toMatchObject({ allowed: false, code: "QUEUE_NOT_FOUND" });
+  });
+});
+
+describe("a channel preview's key", () => {
+  it("is present whenever the channel parsed, refused afterwards or not", async () => {
+    const preview = async (h: ReturnType<typeof harness>, channel: string) => {
+      const res = await h.call(
+        "GET",
+        `/meta/permissions?channel=${encodeURIComponent(channel)}`,
+      );
+      expect(res.status).toBe(200);
+      return res.body.channel;
+    };
+
+    // Parsed, then refused by the mode: the key is the canonical name.
+    const jobsOnly = closing({ mode: "jobs" });
+    expect(await preview(jobsOnly, "runner/nightly")).toMatchObject({
+      channel: "runner/nightly",
+      key: "runner/nightly",
+      code: "CHANNEL_NOT_AVAILABLE",
+    });
+
+    // Parsed, then refused by a configured list: canonical, the job id
+    // re-encoded (a lower-case escape comes back upper-case).
+    const listed = closing({ queues: ["mail"] });
+    expect(await preview(listed, "queue/other")).toMatchObject({
+      key: "queue/other",
+      code: "QUEUE_NOT_FOUND",
+    });
+    expect(await preview(listed, "queue/other/job/a%2fb")).toMatchObject({
+      channel: "queue/other/job/a%2fb",
+      key: "queue/other/job/a%2Fb",
+      code: "QUEUE_NOT_FOUND",
+    });
+    const context = jobsContext();
+    const nightly = context.runner({
+      id: "nightly",
+      file: ECHO_HANDLER,
+      executionMode: "in-process",
+    });
+    const oneRunner = closing({ jobs: context, runners: [nightly] });
+    expect(await preview(oneRunner, "runner/ghost")).toMatchObject({
+      key: "runner/ghost",
+      code: "RUNNER_NOT_FOUND",
+    });
+
+    // Did not parse: no key.
+    for (const bad of ["bogus", "queue/bad name", "queue/mail/job/%E0%A4%A"]) {
+      const refused = await preview(listed, bad);
+      expect(refused).toMatchObject({ code: "INVALID_CHANNEL" });
+      expect(refused).not.toHaveProperty("key");
+    }
+  });
+
+  it("is not added to a subscribe ack's rejections", () => {
+    const config = resolveConfig({
+      jobs: jobsContext(),
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      queues: ["mail"],
+    });
+    const result = parseChannel("queue/other", config);
+    expect(result).toMatchObject({ ok: false, key: "queue/other" });
+    expect(result.ok ? undefined : result.rejection).toEqual({
+      code: "QUEUE_NOT_FOUND",
+      status: 404,
+      detail: 'Queue "other" was not found',
+    });
   });
 });
 

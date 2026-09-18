@@ -1053,8 +1053,12 @@ export interface MetaLimitsDto {
   maxBulkIds: number;
   /** Most jobs one `retry-all` may move (its largest `limit`). */
   maxRetryAll: number;
+  /** Most ids a `retry-all` answers with; when it moved more, `ids` holds the first this many and `truncated` is `true`. Fixed at `1000`. */
+  maxRetryAllIds: number;
   /** Largest `limit` for `clean`. */
   maxClean: number;
+  /** The `limit` a `clean` uses when none is given: `min(1000, maxClean)`. */
+  defaultClean: number;
   /** Largest log page. */
   maxLogPage: number;
   /** Largest runner history page. */
@@ -1163,7 +1167,12 @@ export interface PermissionsQuery {
 export interface ChannelPermissionDto {
   /** The channel as asked; `key` is its canonical form. */
   channel: string;
-  /** The canonical channel name (the job id re-encoded), when it parsed. */
+  /**
+   * The canonical channel name (the job id re-encoded), whenever the name
+   * parsed — including when it was refused afterwards (`CHANNEL_NOT_AVAILABLE`,
+   * `QUEUE_NOT_FOUND`, `RUNNER_NOT_FOUND`, `UNAUTHORIZED`, `FORBIDDEN`).
+   * Absent only for `INVALID_CHANNEL`.
+   */
   key?: string;
   /** Whether a `subscribe` to it would be accepted. */
   allowed: boolean;

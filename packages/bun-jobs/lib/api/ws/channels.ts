@@ -5,6 +5,7 @@ import type { AnyRouteDef, RouteMode } from "../routes/define";
 import type { JobsApiWsErrorCode } from "./protocol";
 import { ConfigError } from "../../shared/errors";
 import { assertSegment } from "../../shared/keys";
+import { decodeJobId, encodeJobId } from "../contract/constants";
 import { isRouteEnabled } from "../routes/define";
 
 /**
@@ -185,52 +186,8 @@ export function jobIdsOf(event: DriverEvent): string[] {
   return event.id === undefined ? [] : [event.id];
 }
 
-/**
- * Escapes a job id for a channel name: `encodeURIComponent`, except that a
- * lone UTF-16 surrogate — which `encodeURIComponent` refuses with a `URIError`
- * — becomes `%uXXXX` (upper-case hex). A well-formed id is therefore escaped
- * exactly as before, and {@link decodeJobId} reverses either form. The two
- * cannot be confused: `encodeURIComponent` escapes every `%` as `%25`.
- */
-export function encodeJobId(jobId: string): string {
-  if (jobId.isWellFormed()) {
-    return encodeURIComponent(jobId);
-  }
-  let out = "";
-  let run = 0;
-  for (let index = 0; index < jobId.length; index++) {
-    const unit = jobId.charCodeAt(index);
-    if (unit < 0xd800 || unit > 0xdfff) {
-      continue;
-    }
-    const next = jobId.charCodeAt(index + 1);
-    if (unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
-      index++;
-      continue;
-    }
-    out += `${encodeURIComponent(jobId.slice(run, index))}%u${unit.toString(16).toUpperCase()}`;
-    run = index + 1;
-  }
-  return out + encodeURIComponent(jobId.slice(run));
-}
-
-/** Reverses {@link encodeJobId}. Throws `URIError` on a malformed escape. */
-export function decodeJobId(encoded: string): string {
-  return encoded
-    .split(/(%u[\dA-Fa-f]{4})/)
-    .map((part, index) => {
-      if (index % 2 === 0) {
-        return decodeURIComponent(part);
-      }
-      const unit = Number.parseInt(part.slice(2), 16);
-      // Only a surrogate needs this form; anything else has a standard one.
-      if (unit < 0xd800 || unit > 0xdfff) {
-        throw new URIError(`"${part}" is not a surrogate escape`);
-      }
-      return String.fromCharCode(unit);
-    })
-    .join("");
-}
+/** Job-id escaping for channel names: defined in the browser-safe contract, which a client needs to name a job channel. */
+export { decodeJobId, encodeJobId } from "../contract/constants";
 
 /** The canonical name of a job channel. Total: any job id has one. */
 export function jobChannel(queue: string, jobId: string): string {
@@ -270,13 +227,22 @@ function segment(value: string, what: string): string | undefined {
  *
  * Otherwise any valid segment is accepted: a subscription does not need the
  * queue or runner to exist yet.
+ *
+ * A refusal of a name that parsed (every code but `INVALID_CHANNEL`) carries
+ * its canonical `key`, beside the rejection rather than in it: a `subscribe`
+ * ack's rejections do not include one.
  */
 export function parseChannel(
   raw: string,
   config: ResolvedJobsApiConfig,
 ):
   | { ok: true; channel: ParsedChannel }
-  | { ok: false; rejection: ChannelRejection } {
+  | {
+      ok: false;
+      rejection: ChannelRejection;
+      /** The canonical name, when the channel parsed and was refused after. */
+      key?: string;
+    } {
   const parts = raw.split("/");
   let kind: ChannelKind;
   let queue: string | undefined;
@@ -315,10 +281,20 @@ export function parseChannel(
     return invalid(`"${raw}" is not a channel`);
   }
 
+  const key =
+    kind === "job"
+      ? jobChannel(queue!, jobId!)
+      : kind === "queue"
+        ? `queue/${queue}`
+        : kind === "runner"
+          ? `runner/${runner}`
+          : kind;
+
   const def = BY_KIND.get(kind)!;
   if (!isChannelEnabled(def, config)) {
     return {
       ok: false,
+      key,
       rejection: {
         code: "CHANNEL_NOT_AVAILABLE",
         status: 404,
@@ -333,6 +309,7 @@ export function parseChannel(
   ) {
     return {
       ok: false,
+      key,
       rejection: {
         code: "QUEUE_NOT_FOUND",
         status: 404,
@@ -347,6 +324,7 @@ export function parseChannel(
   ) {
     return {
       ok: false,
+      key,
       rejection: {
         code: "RUNNER_NOT_FOUND",
         status: 404,
@@ -355,14 +333,6 @@ export function parseChannel(
     };
   }
 
-  const key =
-    kind === "job"
-      ? jobChannel(queue!, jobId!)
-      : kind === "queue"
-        ? `queue/${queue}`
-        : kind === "runner"
-          ? `runner/${runner}`
-          : kind;
   return {
     ok: true,
     channel: {

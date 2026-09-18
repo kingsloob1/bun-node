@@ -136,7 +136,8 @@ describe("QueueSource", () => {
     expect(await source.names()).toEqual(["mail"]);
     expect(lists).toBe(1);
 
-    // Concurrent checks share one read; a stale cache is read again.
+    // Concurrent checks share one read; a stale cache is read again. The miss
+    // for "x" was answered by that fresh read, so it is final: no re-read.
     time.advance(2_000);
     await Promise.all([
       source.has("mail"),
@@ -145,12 +146,73 @@ describe("QueueSource", () => {
     ]);
     expect(lists).toBe(2);
 
-    // A queue created elsewhere appears once the cache expires, or on invalidate.
+    // A queue created elsewhere is missing from the cache, so the miss is
+    // checked against the backend once more before it is believed.
     await jobs.queue("reports").add("build", {});
-    expect(await source.has("reports")).toBe(false);
-    source.invalidate();
     expect(await source.has("reports")).toBe(true);
     expect(lists).toBe(3);
+
+    // At most one such re-read per cache window, however many misses: the
+    // next queue created elsewhere waits for the cache to expire, or for an
+    // invalidate.
+    await jobs.queue("audit").add("log", {});
+    expect(
+      await Promise.all([source.has("audit"), source.has("ghost")]),
+    ).toEqual([false, false]);
+    expect(lists).toBe(3);
+    source.invalidate();
+    expect(await source.has("audit")).toBe(true);
+    expect(lists).toBe(4);
+
+    // Once the window has passed, a miss may re-read again.
+    time.advance(2_000);
+    expect(await source.has("mail")).toBe(true);
+    expect(lists).toBe(5);
+    await jobs.queue("late").add("log", {});
+    expect(await source.has("late")).toBe(true);
+    expect(lists).toBe(6);
+  });
+
+  it("shares one re-read between misses arriving together", async () => {
+    const jobs = jobsContext("api-sources-share");
+    await jobs.queue("mail").add("send", {});
+    let lists = 0;
+    const listQueues = jobs.listQueues.bind(jobs);
+    jobs.listQueues = async () => {
+      lists++;
+      return await listQueues();
+    };
+    const time = clock();
+    const source = new QueueSource(resolve(jobs), { now: time.now });
+    expect(await source.has("mail")).toBe(true);
+    await jobs.queue("new").add("send", {});
+
+    expect(
+      await Promise.all([
+        source.has("new"),
+        source.has("new"),
+        source.has("ghost"),
+      ]),
+    ).toEqual([true, true, false]);
+    expect(lists).toBe(2);
+  });
+
+  it("builds an unknown queue for an add, and still refuses one outside a configured list", async () => {
+    const jobs = jobsContext("api-sources-add");
+    const all = new QueueSource(resolve(jobs));
+    const fresh = await all.getForAdd("fresh");
+    expect(fresh.created).toBe(true);
+    expect(fresh.queue).toBe(jobs.queue("fresh"));
+    await expectApiError(all.getForAdd("bad/name"), "INVALID_NAME", 400);
+
+    await jobs.queue("mail").add("send", {});
+    all.invalidate();
+    const known = await all.getForAdd("mail");
+    expect(known.created).toBe(false);
+
+    const listed = new QueueSource(resolve(jobs, { queues: ["mail"] }));
+    expect((await listed.getForAdd("mail")).created).toBe(false);
+    await expectApiError(listed.getForAdd("fresh"), "QUEUE_NOT_FOUND", 404);
   });
 
   it("reads the backend every time with queueCacheMs 0", async () => {

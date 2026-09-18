@@ -6,6 +6,7 @@ import type {
   RunnerEventName,
   RunnerEventPayloads,
 } from "../../shared/events";
+import type { ErrorWire, EventWire } from "../contract/ws";
 import type { Infer, Schema } from "../schema/builder";
 import { s } from "../schema/builder";
 import { ErrorDtoSchema, JOB_STATES } from "../schemas/common";
@@ -28,15 +29,37 @@ export type Equivalent<A, B> = [A] extends [B]
     : false
   : false;
 
-/** An error as an event carries it once shaped for a client: the `Error` schema's type. */
-export type ErrorWire = Infer<typeof ErrorDtoSchema>;
+/** Whether two types are identical, not merely mutually assignable. */
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+
+/** Flattens intersections all the way down, so {@link Equal} compares plain shapes. */
+type Flatten<T> = T extends (infer U)[]
+  ? Flatten<U>[]
+  : T extends object
+    ? { [K in keyof T]: Flatten<T[K]> }
+    : T;
+
+/** Every distinct event name (`failed` is both a queue and a runner event): defined in the browser-safe contract. */
+export { EVENT_TYPES } from "../contract/constants";
 
 /**
  * A payload as it leaves the process: every `SerializedError` field becomes an
  * {@link ErrorWire} (its `stack` stripped unless `serialize.exposeStacks`).
+ *
+ * A `never` field is left alone: an empty payload (`Record<string, never>`,
+ * `paused`/`resumed`) has one, and `never extends SerializedError` holds, so
+ * without the guard it would become an index signature of errors — which a
+ * client's `Record<string, never>` is not.
  */
 export type WirePayload<T> = {
-  [K in keyof T]: T[K] extends SerializedError ? ErrorWire : T[K];
+  [K in keyof T]: [T[K]] extends [never]
+    ? T[K]
+    : T[K] extends SerializedError
+      ? ErrorWire
+      : T[K];
 };
 
 /** One driver event as a client receives it: `ns` and `origin` dropped, payload errors shaped. */
@@ -48,13 +71,23 @@ type WireEventOf<E> = E extends { payload: infer P }
   : never;
 
 /**
- * Any event exactly as the socket sends it in an `event` frame: the
- * `EventDto` shape, except that a payload's `error` is the `ErrorDto` a
- * client actually receives (`stack` only with `serialize.exposeStacks`), not
- * the in-process `SerializedError`. A union discriminated by `kind` and
- * `type`, like `DriverEvent`.
+ * Any event as the server derives it from `DriverEvent`: `ns` and `origin`
+ * dropped, and a payload's `error` the `ErrorDto` a client actually receives
+ * (`stack` only with `serialize.exposeStacks`), not the in-process
+ * `SerializedError`. Must be exactly the contract's {@link EventWire}.
  */
-export type EventWire = WireEventOf<DriverEvent>;
+type DerivedEventWire = WireEventOf<DriverEvent>;
+
+/**
+ * Compile-time guard that the events the server derives are exactly the
+ * contract's `EventWire`, and its errors the `Error` schema's type: an event
+ * or payload field added in `shared/events.ts` and not in `contract/ws.ts`
+ * (or the reverse) fails here.
+ */
+const _eventWireMatches: [
+  Equal<Flatten<DerivedEventWire>, Flatten<EventWire>>,
+  Equal<Flatten<Infer<typeof ErrorDtoSchema>>, Flatten<ErrorWire>>,
+] = [true, true];
 
 /** A job id. */
 const JobId = s.string({ description: "The job's id." });
@@ -210,8 +243,12 @@ export const RUNNER_EVENT_NAMES = Object.keys(
   RUNNER_EVENT_PAYLOADS,
 ) as RunnerEventName[];
 
-/** Every distinct event name (`failed` is both a queue and a runner event): defined in the browser-safe contract. */
-export { EVENT_TYPES } from "../contract/constants";
+/**
+ * The error and event types an `event` frame carries: defined once, in the
+ * browser-safe contract, and re-exported here so the server builds exactly
+ * what a client imports.
+ */
+export type { ErrorWire, EventWire } from "../contract/ws";
 
 /** `repeatScheduled` → `RepeatScheduled`. */
 function pascal(name: string): string {
