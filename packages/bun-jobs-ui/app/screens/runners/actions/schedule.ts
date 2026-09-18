@@ -1,4 +1,6 @@
 import type { RunnerScheduleDto, ScheduleRunnerBody } from "../../../api/types";
+import { isApiError } from "../../../api/errors";
+import { issuesToFieldErrors } from "../../../hooks/useApiMutation";
 
 /**
  * The schedule editor's pure half: a form value, its prefill from the stored
@@ -253,22 +255,19 @@ export function mainField(mode: ScheduleMode): ScheduleField | null {
 }
 
 /**
- * The field a 400 `INVALID_SCHEDULE` belongs to. Its detail is the server's
- * `ConfigError` message: for a cron schedule one naming a time zone is the
- * zone's (`Bun.cron: unknown time zone 'Mars/Base'`), anything else the
- * expression's; for the other modes it is the mode's value.
+ * A 400 `INVALID_SCHEDULE`'s issues as field errors (path → message, as
+ * `useApiMutation` builds them for `VALIDATION`). The API names the part at
+ * fault in `issues[].path`: `schedule.cron`, `schedule.tz`,
+ * `schedule.every`, `schedule.anchor`, `schedule.at`, or `schedule` itself.
+ * `{}` for any other error, and for an `INVALID_SCHEDULE` without issues
+ * (an older API), which the editor shows as a banner instead.
  */
-export function invalidScheduleField(
-  mode: ScheduleMode,
-  detail: string | undefined,
-): ScheduleField | null {
-  if (mode === "cron" && /time ?zone/i.test(detail ?? "")) {
-    return "tz";
-  }
-  if (mode === "every" && /anchor/i.test(detail ?? "")) {
-    return "anchor";
-  }
-  return mainField(mode);
+export function invalidScheduleErrors(
+  error: unknown,
+): Readonly<Record<string, string>> {
+  return isApiError(error) && error.code === "INVALID_SCHEDULE"
+    ? issuesToFieldErrors(error.issues)
+    : {};
 }
 
 /**

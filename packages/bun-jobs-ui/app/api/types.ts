@@ -9,7 +9,6 @@ import type {
   ThroughputBucketDto,
   WorkerListDto,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import type { JobsApiAction } from "./contract";
 
 /**
  * Request and response shapes of the bun-jobs management API.
@@ -42,11 +41,7 @@ export type DriverCapabilities = DriverCapabilitiesDto;
 export type EventsMode = DriverCapabilitiesDto["events"];
 
 /**
- * `GET /meta/permissions`, narrowed: the contract types `actions` as
- * `Record<string, boolean>`; its keys are actions, and an action whose routes
- * are pruned is **absent**, not `false` (api/routes/meta.ts).
+ * `GET /meta/permissions`. The contract now types `actions` by action, with
+ * pruned actions absent (read it as `actions[action] === true`).
  */
-export type Permissions = Omit<PermissionsDto, "actions"> & {
-  /** Whether the caller may perform each action relevant to this API. */
-  actions: Partial<Record<JobsApiAction, boolean>>;
-};
+export type Permissions = PermissionsDto;

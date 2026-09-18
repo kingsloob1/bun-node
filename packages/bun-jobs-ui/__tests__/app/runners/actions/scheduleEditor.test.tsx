@@ -230,13 +230,16 @@ describe("the schedule editor: validation", () => {
     expect(callTo(calls, "PUT", PATH)).toBeUndefined();
   });
 
-  it("shows INVALID_SCHEDULE on the cron field", async () => {
+  it("shows INVALID_SCHEDULE on the field its issue names", async () => {
     await renderActions({
       handlers: {
         [`PUT ${PATH}`]: {
           status: 400,
           body: problem(400, "INVALID_SCHEDULE", "Invalid schedule", {
             detail: 'Invalid cron expression "61 * * * *": bad minute',
+            issues: [
+              { target: "body", path: "schedule.cron", message: "bad minute" },
+            ],
           }),
         },
       },
@@ -256,7 +259,59 @@ describe("the schedule editor: validation", () => {
     expect(errorToasts().textContent).toBe("");
   });
 
-  it("shows INVALID_SCHEDULE naming a time zone on the tz field", async () => {
+  it("puts a schedule.tz issue on the time zone, whatever the detail says", async () => {
+    await renderActions({
+      handlers: {
+        [`PUT ${PATH}`]: {
+          status: 400,
+          body: problem(400, "INVALID_SCHEDULE", "Invalid schedule", {
+            detail: "Something the UI must not parse",
+            issues: [
+              {
+                target: "body",
+                path: "schedule.tz",
+                message: "unknown time zone 'Etc/Nowhere'",
+              },
+            ],
+          }),
+        },
+      },
+    });
+    const dialog = await openAction("Reschedule…");
+    fireEvent.click(dialogButton(dialog, "Save schedule"));
+    const tz = within(dialog).getByLabelText("Time zone");
+    await waitFor(() => expect(tz.getAttribute("aria-invalid")).toBe("true"));
+    expect(dialog.textContent).toContain("unknown time zone 'Etc/Nowhere'");
+    expect(
+      within(dialog)
+        .getByLabelText(/^Cron expression/)
+        .getAttribute("aria-invalid"),
+    ).not.toBe("true");
+  });
+
+  it("puts a bare schedule issue on the mode's main field", async () => {
+    await renderActions({
+      handlers: {
+        [`PUT ${PATH}`]: {
+          status: 400,
+          body: problem(400, "INVALID_SCHEDULE", "Invalid schedule", {
+            detail: "not a schedule",
+            issues: [
+              { target: "body", path: "schedule", message: "not a schedule" },
+            ],
+          }),
+        },
+      },
+    });
+    const dialog = await openAction("Reschedule…");
+    fireEvent.click(dialogButton(dialog, "Save schedule"));
+    const input = within(dialog).getByLabelText(/^Cron expression/);
+    await waitFor(() =>
+      expect(input.getAttribute("aria-invalid")).toBe("true"),
+    );
+  });
+
+  it("shows an issue-less INVALID_SCHEDULE (an older API) as a banner", async () => {
     await renderActions({
       handlers: {
         [`PUT ${PATH}`]: {
@@ -270,13 +325,17 @@ describe("the schedule editor: validation", () => {
     });
     const dialog = await openAction("Reschedule…");
     fireEvent.click(dialogButton(dialog, "Save schedule"));
-    const tz = within(dialog).getByLabelText("Time zone");
-    await waitFor(() => expect(tz.getAttribute("aria-invalid")).toBe("true"));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("unknown time zone 'Etc/Nowhere'");
+    expect(
+      within(dialog).getByLabelText("Time zone").getAttribute("aria-invalid"),
+    ).not.toBe("true");
     expect(
       within(dialog)
         .getByLabelText(/^Cron expression/)
         .getAttribute("aria-invalid"),
     ).not.toBe("true");
+    expect(openDialog()).toBeTruthy();
   });
 
   it("maps VALIDATION field errors onto the fields", async () => {

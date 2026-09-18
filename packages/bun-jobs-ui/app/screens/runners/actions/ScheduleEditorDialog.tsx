@@ -9,7 +9,6 @@ import type {
 } from "./schedule";
 import type { RunnerDialogProps } from "./TriggerDialog";
 import { useId, useMemo, useState } from "react";
-import { isApiError } from "../../../api/errors";
 import { rescheduleRunner } from "../../../api/runnerActions";
 import { runnerInvalidations } from "../../../api/runners";
 import { Button } from "../../../components/Button";
@@ -30,7 +29,7 @@ import { useNow } from "../../../hooks/useNow";
 import { explained } from "./explain";
 import {
   formFromSchedule,
-  invalidScheduleField,
+  invalidScheduleErrors,
   MAX_CRON_LENGTH,
   MAX_TZ_LENGTH,
   scheduleBody,
@@ -102,20 +101,15 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
   const clientErrors: ScheduleErrors = submitted
     ? validateScheduleForm(form, zones)
     : {};
-  const server = scheduleFieldErrors(save.fieldErrors, form.mode);
-  const apiError = isApiError(save.error) ? save.error : null;
-  const invalidField =
-    apiError?.code === "INVALID_SCHEDULE"
-      ? invalidScheduleField(form.mode, apiError.detail)
-      : null;
+  const server = scheduleFieldErrors(
+    { ...save.fieldErrors, ...invalidScheduleErrors(save.error) },
+    form.mode,
+  );
   const fieldError = (field: ScheduleField): string | undefined =>
-    clientErrors[field] ??
-    server.fields[field] ??
-    (invalidField === field
-      ? (apiError?.detail ?? apiError?.title)
-      : undefined);
-  const hasServerFieldError =
-    Object.keys(server.fields).length > 0 || invalidField !== null;
+    clientErrors[field] ?? server.fields[field];
+  const hasServerFieldError = Object.keys(server.fields).length > 0;
+  // An INVALID_SCHEDULE without issues (an API from before they were sent)
+  // names no field, so it falls through to the banner.
   const bannerError =
     save.error && !hasServerFieldError
       ? (server.other ?? explained(save.error, "reschedule"))
