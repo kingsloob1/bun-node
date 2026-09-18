@@ -53,14 +53,50 @@ describe("listing and reading", () => {
     expect(listed.body.items).toEqual([
       {
         id: "nightly",
+        isLocal: true,
         local: true,
         name: "nightly",
         status: h.nightly.status,
         isPaused: false,
         isRunning: false,
       },
-      { id: "remote", local: false, isPaused: false, isRunning: false },
+      {
+        id: "remote",
+        isLocal: false,
+        local: false,
+        isPaused: false,
+        isRunning: false,
+      },
     ]);
+  });
+
+  it("names locality isLocal in the list, as the detail does, keeping local as a deprecated copy", async () => {
+    const h = await withRunners();
+    const listed = await h.call("GET", "/runners");
+    for (const item of listed.body.items) {
+      expect(item.local, item.id).toBe(item.isLocal);
+      const read = await h.call("GET", `/runners/${item.id}`);
+      expect(item.isLocal, item.id).toBe(read.body.isLocal);
+    }
+
+    const document = h.api.openapi() as any;
+    const schema =
+      document.paths["/runners"].get.responses["200"].content[
+        "application/json"
+      ].schema;
+    const resolve = (node: any): any =>
+      node.$ref
+        ? resolve(
+            node.$ref
+              .replace("#/", "")
+              .split("/")
+              .reduce((at: any, key: string) => at[key], document),
+          )
+        : node;
+    const item = resolve(resolve(schema).properties.items.items);
+    expect(item.required).toContain("isLocal");
+    expect(item.properties.local.deprecated).toBe(true);
+    expect(item.properties.isLocal.deprecated).toBeUndefined();
   });
 
   it("says in the list which runners are paused, remote ones included (UI-G16)", async () => {
