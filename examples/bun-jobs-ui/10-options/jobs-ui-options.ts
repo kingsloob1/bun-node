@@ -469,20 +469,15 @@ checkEqual(
 /* ================================================================== */
 step("csrfHeader — the header the UI's mutations carry");
 
-// The default comes from the API once it reports it (api.info.csrf.header).
-// The API on this branch does not, so the default is null.
-const reports = "info" in api;
-show("this API reports api.info", reports);
+// Unset, the default is what the API reports in `api.info.csrf.header`,
+// lower-cased; for an API with no CSRF header that is null.
 checkEqual(
-  "unset → what the API reports, else null",
+  "unset, API without a header → null",
   ui({ api }).config.csrfHeader,
-  reports
-    ? ((api as { info?: { csrf?: { header?: string } } }).info?.csrf?.header ??
-        null)
-    : null,
+  null,
 );
 
-// So an API with a CSRF header needs it repeated by hand:
+// An API with a CSRF header: the UI picks it up with nothing repeated.
 const guarded = createJobsApi({
   jobs,
   basePath: "/guarded-api",
@@ -491,12 +486,42 @@ const guarded = createJobsApi({
   logger: noopLogger,
 });
 apis.push(guarded);
-const guardedUi = ui({
-  api: guarded,
-  basePath: "/guarded",
-  csrfHeader: "X-Jobs-CSRF",
+checkEqual(
+  "api.info reports it, lower-cased",
+  guarded.info.csrf.header,
+  "x-jobs-csrf",
+);
+const guardedUi = ui({ api: guarded, basePath: "/guarded" });
+checkEqual(
+  "unset → api.info.csrf.header",
+  guardedUi.config.csrfHeader,
+  "x-jobs-csrf",
+);
+
+// The websocket and docs locations come from api.info too.
+checkEqual("config.websocket from api.info", guardedUi.config.websocket, {
+  path: "/guarded-api/ws",
+  port: null,
 });
-checkEqual("set by hand", guardedUi.config.csrfHeader, "X-Jobs-CSRF");
+checkEqual("config.docs from api.info", guardedUi.config.docs, {
+  openapi: "/guarded-api/openapi.json",
+  asyncapi: "/guarded-api/asyncapi.json",
+});
+
+// An explicit name wins over the API's; `false` forces none even when the
+// API has one.
+checkEqual(
+  "set by hand → wins over api.info",
+  ui({ api: guarded, basePath: "/guarded-2", csrfHeader: "X-Other" }).config
+    .csrfHeader,
+  "X-Other",
+);
+checkEqual(
+  "false → null even though the API has a header",
+  ui({ api: guarded, basePath: "/guarded-3", csrfHeader: false }).config
+    .csrfHeader,
+  null,
+);
 
 // What the app does with it: every mutation sends that header. Without it the
 // API refuses the mutation, which is why it must match.
