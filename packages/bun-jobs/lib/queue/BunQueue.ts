@@ -18,15 +18,33 @@ import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
 import type { QueueLimits, StoredLimits } from "./limits";
 import type {
+  AdHocJobName,
+  BulkEntriesOf,
+  BulkJobsOf,
   BunQueueEvents,
   BunQueueOptions,
   FlowNode,
+  FlowNodeOf,
   FlowResult,
+  JobAddArgs,
+  JobDataOf,
+  JobMap,
+  JobMapData,
+  JobMapOf,
+  JobMapResult,
+  JobName,
   JobOptions,
   JobsPage,
   ListJobsOptions,
+  QueueEventsOf,
+  QueueJobOf,
   QueueThroughput,
   RetryAllOptions,
+  RetryAllOptionsOf,
+  TypedJob,
+  TypedJobName,
+  UntypedJobName,
+  UpdateDataOf,
 } from "./types";
 import type { DebouncePointer } from "./windows";
 import { deserializeError, sleep } from "@kingsleyweb/bun-common";
@@ -76,6 +94,25 @@ import {
   THROTTLE_PREFIX,
 } from "./windows";
 
+/**
+ * The queue a typed {@link BunJobs} context hands back for its registry queue:
+ * `add` takes a declared name and exactly that name's payload.
+ *
+ * Reads — `getJob`, `getJobs`, `list`, `page` — and the events answer with a
+ * `TypedJob`, discriminated by name: checking `job.name` narrows `job.data`
+ * and `job.returnValue` to that name's types. Its `TData`/`TResult` are the
+ * unions* of every declared job's, which is what remains for the methods
+ * that take or give a payload with no name beside it.
+ *
+ * @typeParam TJobs The declared job map.
+ */
+export type RegistryQueue<TJobs extends JobMapOf<TJobs>> = BunQueue<
+  JobMapData<TJobs>,
+  JobMapResult<TJobs>,
+  JobName<TJobs>,
+  TJobs
+>;
+
 /** How many times a debounce or throttle retries a pointer it lost. */
 const WINDOW_ATTEMPTS = 12;
 
@@ -118,12 +155,24 @@ interface PlannedFlowNode {
  * const mail = new BunQueue("mail", { namespace: "account", driver });
  * await mail.add("welcome", { userId: 7 }, { attempts: 3 });
  * ```
+ *
+ * @typeParam TData What its jobs carry.
+ * @typeParam TResult What running one answers with.
+ * @typeParam TName The job names it takes, `string` by default.
+ * @typeParam TJobs A declared job map, for the registry queue a typed
+ * `BunJobs` hands back (see `RegistryQueue`): `add` then checks the name and
+ * its payload, and reads and events answer with a `TypedJob`. The default,
+ * `JobMap`, means none, and every signature is as it was.
  */
 export class BunQueue<
   TData = unknown,
   TResult = unknown,
   TName extends string = string,
-> extends TypedEmitterBase<BunQueueEvents<TData, TResult>> {
+  TJobs extends JobMapOf<TJobs> = JobMap,
+> extends TypedEmitterBase<
+  QueueEventsOf<TData, TResult, TJobs>,
+  BunQueueEvents<TData, TResult>
+> {
   /** The queue's name within its namespace. */
   readonly name: string;
   /** The namespace it belongs to. */
@@ -235,9 +284,72 @@ export class BunQueue<
    * returns the stored job untouched with `wasAdded: false` and emits
    * `duplicate`, so a producer that retries cannot double-enqueue.
    */
-  async add(
-    name: TName,
+  add<TAddName extends TypedJobName<TJobs>>(
+    name: TAddName,
+    ...args: JobAddArgs<JobDataOf<TJobs, TAddName>>
+  ): Promise<TypedJob<TJobs, TAddName>>;
+  /**
+   * Adds a job under a name the registry does *not* declare — the escape
+   * hatch a registry-bound queue keeps for work another deployment defines.
+   *
+   * Both type arguments are required: the name, then its payload. The name is
+   * spelled twice because TypeScript cannot infer one type argument while
+   * being told another, and it has to be a type argument for this overload to
+   * refuse a declared name — without that, `add<Wrong>("send-report", wrong)`
+   * would compile past the checked overload above. So a declared name, or a
+   * plain `string` that could be one, makes this overload uncallable; and with
+   * no type arguments the payload stays at its `never` default, so a typo'd
+   * name cannot land here either.
+   *
+   * Only a deployment that defines the name can run such a job: this
+   * service's own registry worker claims every job on its queue, and fails one
+   * whose name it has no definition for. For ad-hoc work this service runs
+   * itself, use a queue of its own — `jobs.queue<Payload>("scratch")` with a
+   * `jobs.worker` on it.
+   *
+   * ```ts
+   * await queue.add<"audit", { note: string }>("audit", { note: "one off" });
+   * ```
+   */
+  add<
+    TAdHocName extends string = never,
+    TAdHoc = never,
+    TAdHocResult = unknown,
+  >(
+    name: AdHocJobName<TJobs, TAdHocName>,
+    ...args: JobAddArgs<NoInfer<TAdHoc>>
+  ): Promise<Job<TAdHoc, TAdHocResult>>;
+  /**
+   * Adds a job to a queue with no declared registry — the signature this
+   * method has always had. `UntypedJobName` collapses to `never` once a map is
+   * declared, so a registry-bound queue cannot reach it.
+   */
+  add(
+    name: UntypedJobName<TJobs> & TName,
     data: TData,
+    options?: JobOptions,
+  ): Promise<Job<TData, TResult>>;
+  // The overloads above are the public surface; `any` here is the usual
+  // implementation-signature widening, invisible to callers. The arguments
+  // after the name are a plain rest because the checked overloads' are a
+  // tuple TypeScript cannot relate to fixed parameters while it is generic.
+  async add(name: string, ...args: unknown[]): Promise<Job<any, any>> {
+    const [data, options] = args as [unknown, JobOptions | undefined];
+
+    // Inside, the queue's own names for these two. Which overload was taken
+    // has already decided that they agree.
+    return await this.#add(name as TName, data as TData, options);
+  }
+
+  /**
+   * The body of {@link add}, in the queue's own types. The class's internal
+   * callers — `addBulk`, the debounce and throttle windows — come through here
+   * rather than through the overloads, whose name parameters cannot be
+   * resolved while `TJobs` is still a type parameter.
+   */
+  async #add(
+    jobName: TName,
+    payload: TData,
     options?: JobOptions,
   ): Promise<Job<TData, TResult>> {
     await this.connect();
@@ -255,14 +367,14 @@ export class BunQueue<
     }
 
     if (options?.debounce || options?.throttle) {
-      return await this.#addWindowed(name, data, options);
+      return await this.#addWindowed(jobName, payload, options);
     }
 
     if (options?.repeat) {
-      return await this.#addRepeatable(name, data, options);
+      return await this.#addRepeatable(jobName, payload, options);
     }
 
-    return await this.#addSimple(name, data, options);
+    return await this.#addSimple(jobName, payload, options);
   }
 
   /**
@@ -304,7 +416,24 @@ export class BunQueue<
   }
 
   /** Adds several jobs, each with the same per-id idempotency as `add()`. */
-  async addBulk(
+  async addBulk<TNames extends JobName<TJobs>[] | []>(
+    entries: BulkEntriesOf<TData, TName, TJobs, TNames>,
+  ): Promise<BulkJobsOf<TData, TResult, TJobs, TNames>> {
+    const added = await this.#addBulk(
+      entries as { name: TName; data: TData; opts?: JobOptions }[],
+    );
+
+    // The same objects in the same order; only the declared map can say what
+    // each entry's name implies, and the signature is where it says it.
+    return added as BulkJobsOf<TData, TResult, TJobs, TNames>;
+  }
+
+  /**
+   * The body of {@link addBulk}, in the queue's own types. On a
+   * registry-bound queue the entries were checked name by name at the call;
+   * that check is a conditional type this generic body cannot resolve.
+   */
+  async #addBulk(
     entries: { name: TName; data: TData; opts?: JobOptions }[],
   ): Promise<Job<TData, TResult>[]> {
     await this.connect();
@@ -326,7 +455,7 @@ export class BunQueue<
     if (entries.some((entry) => entry.opts?.repeat)) {
       const added: Job<TData, TResult>[] = [];
       for (const entry of entries) {
-        added.push(await this.add(entry.name, entry.data, entry.opts));
+        added.push(await this.#add(entry.name, entry.data, entry.opts));
       }
       return added;
     }
@@ -345,13 +474,31 @@ export class BunQueue<
 
   /* --- reading -------------------------------------------------------- */
 
-  /** One job by id, or `null`. */
-  async getJob(id: string): Promise<Job<TData, TResult> | null> {
+  /**
+   * One job by id, or `null`. On a registry-bound queue, a `TypedJob`:
+   * checking its `name` narrows its data and result.
+   */
+  async getJob(id: string): Promise<QueueJobOf<TData, TResult, TJobs> | null> {
+    const job = await this.#getJob(id);
+    return job ? this.#typed(job) : null;
+  }
+
+  /** {@link getJob} as this class itself reads it, untyped by any map. */
+  async #getJob(id: string): Promise<Job<TData, TResult> | null> {
     await this.connect();
     const record = await this.driver.getJob(this.ref, id);
     return record
       ? new Job<TData, TResult>(this.driver, this.ref, record)
       : null;
+  }
+
+  /**
+   * A job as this queue's callers see it: unchanged without a declared map,
+   * and described as a `TypedJob` with one. The object is the same either way
+   * — only a map can say what its name implies, and this is where it does.
+   */
+  #typed(job: Job<TData, TResult>): QueueJobOf<TData, TResult, TJobs> {
+    return job as QueueJobOf<TData, TResult, TJobs>;
   }
 
   /**
@@ -369,7 +516,7 @@ export class BunQueue<
   async list(
     state: JobState | JobState[],
     options?: ListJobsOptions,
-  ): Promise<Job<TData, TResult>[]> {
+  ): Promise<QueueJobOf<TData, TResult, TJobs>[]> {
     await this.connect();
 
     const states = Array.isArray(state) ? state : [state];
@@ -388,8 +535,8 @@ export class BunQueue<
             )
           ).jobs;
 
-    return records.map(
-      (record) => new Job<TData, TResult>(this.driver, this.ref, record),
+    return records.map((record) =>
+      this.#typed(new Job<TData, TResult>(this.driver, this.ref, record)),
     );
   }
 
@@ -407,7 +554,7 @@ export class BunQueue<
   async page(
     state: JobState | JobState[],
     options?: ListJobsOptions,
-  ): Promise<JobsPage<TData, TResult>> {
+  ): Promise<JobsPage<TData, TResult, QueueJobOf<TData, TResult, TJobs>>> {
     await this.connect();
 
     const states = Array.isArray(state) ? state : [state];
@@ -428,8 +575,8 @@ export class BunQueue<
       0;
 
     return {
-      jobs: page.jobs.map(
-        (record) => new Job<TData, TResult>(this.driver, this.ref, record),
+      jobs: page.jobs.map((record) =>
+        this.#typed(new Job<TData, TResult>(this.driver, this.ref, record)),
       ),
       total,
     };
@@ -455,12 +602,16 @@ export class BunQueue<
    * Several jobs by id, in one round trip where the backend allows: one entry
    * per id, in the order given, `null` for an id with no job.
    */
-  async getJobs(ids: string[]): Promise<(Job<TData, TResult> | null)[]> {
+  async getJobs(
+    ids: string[],
+  ): Promise<(QueueJobOf<TData, TResult, TJobs> | null)[]> {
     await this.connect();
     const records = await getJobsByIds(this.driver, this.ref, ids);
 
     return records.map((record) =>
-      record ? new Job<TData, TResult>(this.driver, this.ref, record) : null,
+      record
+        ? this.#typed(new Job<TData, TResult>(this.driver, this.ref, record))
+        : null,
     );
   }
 
@@ -624,7 +775,11 @@ export class BunQueue<
    * default options, and their `added` events are published on their own
    * queue.
    */
-  async addFlow(node: FlowNode<TData>): Promise<FlowResult<TData, TResult>> {
+  async addFlow<TTop extends JobName<TJobs>>(
+    node: FlowNodeOf<TData, TJobs, TTop>,
+  ): Promise<
+    FlowResult<TData, TResult, QueueJobOf<TData, TResult, TJobs, TTop>>
+  > {
     await this.connect();
     this.#requireDriver(
       "addFlow()",
@@ -633,8 +788,14 @@ export class BunQueue<
       "markChildRecorded",
     );
 
-    const plan = this.#planFlow(node, this.name, new Set(), []);
-    return (await this.#addFlowNode(plan, null)) as FlowResult<TData, TResult>;
+    // On a registry-bound queue the node was checked name by name at the call;
+    // the plan below reads it as the plain shape it is at runtime.
+    const plan = this.#planFlow(node as FlowNode, this.name, new Set(), []);
+    return (await this.#addFlowNode(plan, null)) as FlowResult<
+      TData,
+      TResult,
+      QueueJobOf<TData, TResult, TJobs, TTop>
+    >;
   }
 
   /**
@@ -799,14 +960,19 @@ export class BunQueue<
    * Walks the state a page at a time rather than loading it whole, so a
    * backlog of a million is as safe to re-drive as ten.
    */
-  async retryAll(
+  async retryAll<TRetryName extends string = JobName<TJobs>>(
     state: "dead" | "failed" | "completed",
-    options: RetryAllOptions<TData, TResult> = {},
+    options?: RetryAllOptionsOf<TData, TResult, TJobs, TRetryName>,
   ): Promise<string[]> {
     await this.connect();
 
-    const limit = options.limit ?? Number.POSITIVE_INFINITY;
-    const reset = options.resetAttempts ?? true;
+    // On a registry-bound queue `name` and `filter` were checked against each
+    // other at the call; that check is a conditional type this generic body
+    // cannot resolve, and at runtime the options are the plain shape.
+    const selection = (options ?? {}) as RetryAllOptions<TData, TResult>;
+
+    const limit = selection.limit ?? Number.POSITIVE_INFINITY;
+    const reset = selection.resetAttempts ?? true;
     const retried: string[] = [];
     // Jobs that did not match stay in the state, so the next page starts after
     // them; jobs that were retried left it, so they are not counted.
@@ -831,7 +997,7 @@ export class BunQueue<
           break;
         }
 
-        if (this.#matchesRetry(record, options)) {
+        if (this.#matchesRetry(record, selection)) {
           chosen.push(record.id);
         } else {
           skipped++;
@@ -866,8 +1032,12 @@ export class BunQueue<
   async update(
     id: string,
     patch: {
-      /** The new payload. */
-      data?: TData;
+      /**
+       * The new payload. On a registry-bound queue, one valid for every
+       * declared name (see `UpdateDataOf`): the id does not say which job
+       * this is.
+       */
+      data?: UpdateDataOf<TData, TJobs>;
       /** The new priority. */
       priority?: number;
       /** When it may run: a `Date`, or epoch milliseconds. */
@@ -875,7 +1045,7 @@ export class BunQueue<
       /** Change it only while it is in one of these states. */
       onlyIn?: JobState[];
     },
-  ): Promise<Job<TData, TResult> | null> {
+  ): Promise<QueueJobOf<TData, TResult, TJobs> | null> {
     await this.connect();
     const driver = this.#requireDriver("update()", "updateJob");
 
@@ -909,7 +1079,9 @@ export class BunQueue<
     );
 
     return record
-      ? new Job<TData, TResult>(this.driver, this.ref, record, false)
+      ? this.#typed(
+          new Job<TData, TResult>(this.driver, this.ref, record, false),
+        )
       : null;
   }
 
@@ -1763,7 +1935,7 @@ export class BunQueue<
     }
 
     // Everything left is about one job, and hands the listener the job itself.
-    const job = await this.getJob(event.payload.id);
+    const job = await this.#getJob(event.payload.id);
 
     if (!job) {
       return;

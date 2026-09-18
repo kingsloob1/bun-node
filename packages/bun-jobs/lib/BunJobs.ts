@@ -6,9 +6,23 @@ import type {
   BunQueueOptions,
   BunQueueWorkerOptions,
   Job,
+  JobAddArgs,
+  JobDataOf,
+  JobMap,
+  JobMapData,
+  JobMapOf,
+  JobMapResult,
+  JobName,
   JobOptions,
   JobProcessor,
+  JobResultOf,
   QueueSummary,
+  RegistryQueue,
+  TypedJob,
+  TypedJobName,
+  TypedJobProcessor,
+  UntypedJobName,
+  WhenDeclared,
 } from "./queue/index";
 import type { BunRunner, BunRunnerOptions } from "./runner/index";
 import type { DateParser } from "./shared/humanTime";
@@ -85,6 +99,96 @@ export interface BunJobsOptions {
 }
 
 /**
+ * The `registryQueue` option, tied to the queue name a typed context
+ * declared as its second type argument.
+ *
+ * - No map declared: any string, as it has always been.
+ * - A map declared, with the default name: optional, and only `"jobs"`.
+ * - A map declared with another name — `BunJobs<Jobs, "work">` — required,
+ *   and exactly that name. The type says which queue carries the registry,
+ *   and a runtime default of `"jobs"` under a type claiming `"work"` would
+ *   make every `jobs.queue("work")` a lie.
+ *
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TRegistryQueue The registry queue's name, as declared.
+ */
+export type RegistryQueueOption<
+  TJobs,
+  TRegistryQueue extends string,
+> = string extends keyof TJobs
+  ? {
+      /** See {@link BunJobsOptions.registryQueue}. */
+      registryQueue?: string;
+    }
+  : [TRegistryQueue] extends ["jobs"]
+    ? {
+        /**
+         * See {@link BunJobsOptions.registryQueue}. Only `"jobs"`, the
+         * default: to name another, declare it — `BunJobs<Jobs, "work">`.
+         */
+        registryQueue?: "jobs";
+      }
+    : {
+        /**
+         * See {@link BunJobsOptions.registryQueue}. Required, and exactly the
+         * name the context declared as its second type argument.
+         */
+        registryQueue: TRegistryQueue;
+      };
+
+/**
+ * What a {@link BunJobs} constructor takes: {@link BunJobsOptions}, with
+ * `registryQueue` tied to the declared name (see {@link RegistryQueueOption}).
+ *
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TRegistryQueue The registry queue's name, as declared.
+ */
+export type BunJobsConfig<TJobs, TRegistryQueue extends string> = Omit<
+  BunJobsOptions,
+  "registryQueue"
+> &
+  RegistryQueueOption<TJobs, TRegistryQueue>;
+
+/**
+ * A job definition as a typed context reports it: discriminated by name, with
+ * the handler typed for that name.
+ *
+ * @typeParam TJobs The declared job map.
+ */
+export type TypedJobDefinition<TJobs> = {
+  [TName in JobName<TJobs>]: {
+    /** The declared name jobs of this kind are added under. */
+    name: TName;
+    /** What runs when one of them is claimed. */
+    handler: TypedJobProcessor<TJobs, TName>;
+    /** Merged under every job added by this name. */
+    options: JobDefinitionOptions;
+  };
+}[JobName<TJobs>];
+
+/**
+ * What `definitions()` answers with: `JobDefinition<never, never>` with no
+ * declared map, exactly as before, and a {@link TypedJobDefinition} with one.
+ *
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ */
+export type JobDefinitionOf<TJobs> = string extends keyof TJobs
+  ? JobDefinition<never, never>
+  : TypedJobDefinition<TJobs>;
+
+/**
+ * The worker `start()` returns: typed over the declared map — its listeners
+ * hear `TypedJob`s — or `BunQueueWorker<unknown, unknown>` with no map.
+ *
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ */
+export type RegistryWorker<TJobs extends JobMapOf<TJobs>> = BunQueueWorker<
+  JobMapData<TJobs>,
+  JobMapResult<TJobs>,
+  TJobs
+>;
+
+/**
  * One service's jobs: a namespace and a backend, set once.
  *
  * Every runner, queue and worker needs both, and repeating them at each
@@ -103,8 +207,38 @@ export interface BunJobsOptions {
  * const mail = jobs.queue("mail");
  * const cleanup = jobs.runner({ id: "cleanup", file: "./jobs/cleanup.ts" });
  * ```
+ *
+ * **Typed jobs.** Declare the service's job names and payloads as a
+ * {@link JobMap} and the registry verbs check them at compile time:
+ *
+ * ```ts
+ * interface Jobs {
+ *   "send-report": { data: { month: string }; result: string };
+ *   "reindex": { data: void };
+ * }
+ *
+ * const jobs = new BunJobs<Jobs>({ namespace: "reports", driver });
+ *
+ * jobs.define("send-report", async (job) => render(job.data.month)); // job.data is typed
+ * await jobs.now("send-report", { month: "2026-08" });               // and so is this
+ * ```
+ *
+ * Without the type argument nothing changes: every name is accepted, and
+ * `TData` still comes from an explicit type argument or from the payload
+ * passed in. Runtime behaviour is identical either way — an undefined name is
+ * a `ConfigError` whether or not the map would also have caught it.
+ *
+ * @typeParam TJobs The service's job map; the default, `JobMap`, declares
+ * none and leaves every signature as it was.
+ * @typeParam TRegistryQueue The name of the queue the defined jobs go on,
+ * `"jobs"` by default. Only a queue by this name is typed by the map, and the
+ * `registryQueue` option must say the same name — declare it here and pass it
+ * there: `new BunJobs<Jobs, "work">({ registryQueue: "work", ... })`.
  */
-export class BunJobs {
+export class BunJobs<
+  TJobs extends JobMapOf<TJobs> = JobMap,
+  TRegistryQueue extends string = "jobs",
+> {
   /** The namespace everything here belongs to. */
   readonly namespace: string;
   /** The backend everything here shares. */
@@ -146,14 +280,18 @@ export class BunJobs {
   /** Notifiers opened here, closed with the context. */
   readonly #notifiers = new Set<JobsNotifier>();
   /** The worker running defined jobs, once `start()` has been called. */
-  #registryWorker: BunQueueWorker<any, any> | undefined;
+  #registryWorker: RegistryWorker<TJobs> | undefined;
   /**
    * How often the registry looks for due work, in milliseconds, once
    * `processEvery()` has been called. Unset, the worker keeps its own defaults.
    */
   #processEvery: number | undefined;
 
-  constructor(options: BunJobsOptions) {
+  // `NoInfer`: the type arguments are what the caller declared, never guessed
+  // from the options — or an untyped context's type would change with the
+  // queue name it was given, and a typed one could have its name inferred
+  // past the check below.
+  constructor(options: BunJobsConfig<NoInfer<TJobs>, NoInfer<TRegistryQueue>>) {
     this.namespace = assertNamespace(options.namespace);
 
     const { driver, owned } = resolveDriver(options.driver);
@@ -254,17 +392,48 @@ export class BunJobs {
   /**
    * The queue by that name in this namespace. Calling it twice returns the
    * same instance, so listeners attached to it are not silently orphaned.
+   *
+   * On a context that declared a {@link JobMap}, the registry queue — the
+   * one named by `TRegistryQueue`, `"jobs"` unless declared otherwise —
+   * answers with the registry's queue type: `add` takes a declared name and
+   * that name's payload, and reads are discriminated by name. That is the
+   * queue every defined job is added to, so that vocabulary is what it
+   * carries.
+   *
+   * Every other name answers with a plain queue, as on a context with no map:
+   * `jobs.queue<Payload>("mail")` names its types. A name only known at
+   * runtime, a plain `string`, is not the registry's either — it could be
+   * anything.
+   */
+  queue(
+    name: WhenDeclared<TJobs, TRegistryQueue>,
+    options?: Omit<BunQueueOptions, "namespace" | "driver">,
+  ): RegistryQueue<TJobs>;
+  /**
+   * A queue whose contents this context's registry does not describe, or any
+   * queue at all when no {@link JobMap} was declared.
+   *
+   * Given explicit type arguments this is also the signature the registry
+   * queue's own name reaches — `jobs.queue<unknown>("jobs")` is the untyped
+   * view of the same instance, for code that reads what the map does not
+   * describe.
    */
   queue<TData = unknown, TResult = unknown, TName extends string = string>(
     name: string,
     options?: Omit<BunQueueOptions, "namespace" | "driver">,
-  ): BunQueue<TData, TResult, TName> {
+  ): BunQueue<TData, TResult, TName>;
+  // `any` is the implementation-signature widening the two overloads above
+  // hide; `#queues` has held queues of mixed types all along.
+  queue(
+    name: string,
+    options?: Omit<BunQueueOptions, "namespace" | "driver">,
+  ): BunQueue<any, any, any, any> {
     const existing = this.#queues.get(name);
     if (existing) {
-      return existing as BunQueue<TData, TResult, TName>;
+      return existing;
     }
 
-    const queue = new BunQueue<TData, TResult, TName>(name, {
+    const queue = new BunQueue(name, {
       ...(this.#publishEvents ? { publish: true } : {}),
       publishGate: this.#publishGate,
       ...options,
@@ -320,9 +489,25 @@ export class BunJobs {
    * Defining a name twice replaces the first — what a caller reloading a
    * module expects, and not silent, because they called `define` again.
    */
+  define<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    handler: TypedJobProcessor<TJobs, TName>,
+    options?: JobDefinitionOptions,
+  ): this;
+  /**
+   * Defines a job on a context with no declared {@link JobMap} — the signature
+   * this method has always had, with `TData`/`TResult` from explicit type
+   * arguments or inferred from the handler.
+   */
   define<TData = unknown, TResult = unknown>(
-    name: string,
+    name: UntypedJobName<TJobs>,
     handler: JobProcessor<TData, TResult>,
+    options?: JobDefinitionOptions,
+  ): this;
+  // Implementation-signature widening; callers only ever see the two above.
+  define(
+    name: string,
+    handler: JobProcessor<any, any>,
     options: JobDefinitionOptions = {},
   ): this {
     if (typeof name !== "string" || name.length === 0) {
@@ -339,7 +524,7 @@ export class BunJobs {
       );
     }
 
-    this.#definitions.set<TData, TResult>({ name, handler, options });
+    this.#definitions.set({ name, handler, options });
     return this;
   }
 
@@ -361,9 +546,14 @@ export class BunJobs {
     return this;
   }
 
-  /** Every job name defined here, with how to run it. */
-  definitions(): JobDefinition<never, never>[] {
-    return this.#definitions.all();
+  /**
+   * Every job name defined here, with how to run it. On a typed context each
+   * one is discriminated by name, so checking `name` types its handler.
+   */
+  definitions(): JobDefinitionOf<TJobs>[] {
+    // The same objects `define` stored; only the declared map can say which
+    // handler type goes with which name, and it is the map that is asked.
+    return this.#definitions.all() as JobDefinitionOf<TJobs>[];
   }
 
   /**
@@ -383,10 +573,36 @@ export class BunJobs {
    * that put the least interesting argument first and gave every variation of
    * "when" its own method with the same four parameters in a different order.
    */
+  schedule<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    data?: JobDataOf<TJobs, TName>,
+  ): JobBuilder<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+  /**
+   * Describes a job on a context with no declared {@link JobMap} — the
+   * signature this method has always had.
+   */
   schedule<TData = unknown, TResult = unknown>(
-    name: string,
+    name: UntypedJobName<TJobs>,
     data?: TData,
-  ): JobBuilder<TData, TResult> {
+  ): JobBuilder<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  schedule(name: string, data?: unknown): JobBuilder<any, any> {
+    return this.#schedule(name, data);
+  }
+
+  /**
+   * The body behind `schedule`, `run` and `process`.
+   *
+   * Separate because those three are overloaded, and an overloaded method
+   * cannot be called from inside the class with a plain `string`: neither
+   * overload's name parameter is resolved while `TJobs` is still a type
+   * parameter. Every internal caller goes through here instead.
+   */
+  #schedule(name: string, data?: unknown): JobBuilder<unknown, unknown> {
     const definition = this.#definitions.get(name);
 
     if (!definition) {
@@ -400,8 +616,8 @@ export class BunJobs {
     // caller changing one thing does not lose the rest.
     const { concurrency: _concurrency, ...defaults } = definition.options;
 
-    return new JobBuilder<TData, TResult>(
-      this.queue<TData, TResult>(this.#registryQueue),
+    return new JobBuilder<unknown, unknown>(
+      this.queue<unknown, unknown>(this.#registryQueue),
       name,
       data,
       defaults,
@@ -409,19 +625,41 @@ export class BunJobs {
   }
 
   /** {@link BunJobs.schedule}, for a sentence that reads better as "run". */
+  run<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    data?: JobDataOf<TJobs, TName>,
+  ): JobBuilder<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+  /** {@link BunJobs.schedule}, on a context with no declared {@link JobMap}. */
   run<TData = unknown, TResult = unknown>(
-    name: string,
+    name: UntypedJobName<TJobs>,
     data?: TData,
-  ): JobBuilder<TData, TResult> {
-    return this.schedule<TData, TResult>(name, data);
+  ): JobBuilder<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  run(name: string, data?: unknown): JobBuilder<any, any> {
+    return this.#schedule(name, data);
   }
 
   /** {@link BunJobs.schedule}, for a sentence that reads better as "process". */
+  process<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    data?: JobDataOf<TJobs, TName>,
+  ): JobBuilder<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+  /** {@link BunJobs.schedule}, on a context with no declared {@link JobMap}. */
   process<TData = unknown, TResult = unknown>(
-    name: string,
+    name: UntypedJobName<TJobs>,
     data?: TData,
-  ): JobBuilder<TData, TResult> {
-    return this.schedule<TData, TResult>(name, data);
+  ): JobBuilder<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  process(name: string, data?: unknown): JobBuilder<any, any> {
+    return this.#schedule(name, data);
   }
 
   /**
@@ -430,12 +668,25 @@ export class BunJobs {
    * The one case short enough not to need a sentence:
    * `jobs.run(name, data).start()` says the same thing in more words.
    */
-  async now<TData = unknown>(
-    name: string,
+  now<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    ...args: JobAddArgs<JobDataOf<TJobs, TName>>
+  ): Promise<TypedJob<TJobs, TName>>;
+  /**
+   * Adds a job on a context with no declared {@link JobMap} — the signature
+   * this method has always had.
+   */
+  now<TData = unknown>(
+    name: UntypedJobName<TJobs>,
     data?: TData,
     options?: JobOptions,
-  ): Promise<Job<TData>> {
-    const builder = this.schedule<TData>(name, data);
+  ): Promise<Job<TData>>;
+  // Implementation-signature widening; callers only ever see the two above.
+  // A plain rest, because the checked overload's arguments are a tuple
+  // TypeScript cannot relate to fixed parameters while it is generic.
+  async now(name: string, ...args: unknown[]): Promise<Job<any, any>> {
+    const [data, options] = args as [unknown, JobOptions | undefined];
+    const builder = this.#schedule(name, data);
     return await (options ? builder.withOptions(options) : builder).start();
   }
 
@@ -454,14 +705,25 @@ export class BunJobs {
    * `ConfigError` here, as it is for them. See `JobDraft` for what saving the
    * same draft twice does.
    */
+  create<TName extends TypedJobName<TJobs>>(
+    name: TName,
+    data?: JobDataOf<TJobs, TName>,
+  ): JobDraft<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+  /**
+   * Makes a draft on a context with no declared {@link JobMap} — the signature
+   * this method has always had.
+   */
   create<TData = unknown, TResult = unknown>(
-    name: string,
+    name: UntypedJobName<TJobs>,
     data?: TData,
-  ): JobDraft<TData, TResult> {
-    return new JobDraft<TData, TResult>(
-      this.schedule<TData, TResult>(name, data),
-      name,
-    );
+  ): JobDraft<TData, TResult>;
+  // Implementation-signature widening; callers only ever see the two above.
+  create(name: string, data?: unknown): JobDraft<any, any> {
+    return new JobDraft(this.#schedule(name, data), name);
   }
 
   /**
@@ -533,7 +795,7 @@ export class BunJobs {
       BunQueueWorkerOptions,
       "namespace" | "driver" | "concurrency"
     > & { concurrency?: number },
-  ): Promise<BunQueueWorker<unknown, unknown>> {
+  ): Promise<RegistryWorker<TJobs>> {
     if (this.#registryWorker) {
       return this.#registryWorker;
     }
@@ -577,9 +839,12 @@ export class BunJobs {
       },
     );
 
-    this.#registryWorker = worker;
+    // The worker's listeners hear the map's types; the processor above, which
+    // dispatches every name, is the untyped side of the same object.
+    const registryWorker = worker as unknown as RegistryWorker<TJobs>;
+    this.#registryWorker = registryWorker;
     void worker.run();
-    return worker;
+    return registryWorker;
   }
 
   /**
@@ -601,7 +866,7 @@ export class BunJobs {
       return;
     }
 
-    const queue = this.queue(this.#registryQueue);
+    const queue = this.queue<unknown, unknown>(this.#registryQueue);
     const current = await queue.getLimits();
     const names = { ...current?.names };
     let changed = false;
@@ -628,7 +893,9 @@ export class BunJobs {
 
   /** Removes every pending job from the registry's queue. */
   async drain(options?: { delayed?: boolean }): Promise<number> {
-    return await this.queue(this.#registryQueue).drain(options);
+    return await this.queue<unknown, unknown>(this.#registryQueue).drain(
+      options,
+    );
   }
 
   /** Adds a job under a defined name, with that definition's defaults. */
@@ -875,7 +1142,10 @@ export class BunJobs {
  * hand its handler a backend, and that is a {@link ConfigError} rather than a
  * silent, private memory driver.
  */
-export function jobsFromContext(
+export function jobsFromContext<
+  TJobs extends JobMapOf<TJobs> = JobMap,
+  TRegistryQueue extends string = "jobs",
+>(
   context: {
     /** The namespace the run belongs to. */
     namespace: string;
@@ -884,8 +1154,9 @@ export function jobsFromContext(
     /** The runner's own driver, in `in-process` mode. */
     driver?: JobsDriver;
   },
-  options?: Omit<BunJobsOptions, "namespace" | "driver">,
-): BunJobs {
+  ...args: ContextOptionsArgs<TJobs, TRegistryQueue>
+): BunJobs<TJobs, TRegistryQueue> {
+  const [options] = args;
   const driver = context.driver ?? context.driverConfig;
 
   if (!driver) {
@@ -895,8 +1166,46 @@ export function jobsFromContext(
     );
   }
 
-  return new BunJobs({ ...options, namespace: context.namespace, driver });
+  // The options were checked against the declared name at the call; the
+  // conditional that did it cannot be resolved here, while it is generic.
+  return new BunJobs<TJobs, TRegistryQueue>({
+    ...options,
+    namespace: context.namespace,
+    driver,
+  } as BunJobsConfig<TJobs, TRegistryQueue>);
 }
+
+/**
+ * The options argument of {@link jobsFromContext}: optional, unless the
+ * context declared a registry queue other than `"jobs"`, whose name the
+ * options then have to carry — see {@link RegistryQueueOption}.
+ *
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TRegistryQueue The registry queue's name, as declared.
+ */
+type ContextOptionsArgs<
+  TJobs,
+  TRegistryQueue extends string,
+> = string extends keyof TJobs
+  ? [
+      options?: Omit<
+        BunJobsConfig<TJobs, TRegistryQueue>,
+        "namespace" | "driver"
+      >,
+    ]
+  : [TRegistryQueue] extends ["jobs"]
+    ? [
+        options?: Omit<
+          BunJobsConfig<TJobs, TRegistryQueue>,
+          "namespace" | "driver"
+        >,
+      ]
+    : [
+        options: Omit<
+          BunJobsConfig<TJobs, TRegistryQueue>,
+          "namespace" | "driver"
+        >,
+      ];
 
 /**
  * Reads `processEvery()`'s argument as milliseconds: a positive number, or a
