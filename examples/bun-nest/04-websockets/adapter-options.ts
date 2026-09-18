@@ -13,8 +13,11 @@
  * - **From an HTTP adapter** — `BunHttpAdapter` builds one for you
  *   (`httpAdapter.webSocketAdapter`), tuned with its `websocket` option:
  *   `wsOptions` (Bun's `idleTimeout`, `maxPayloadLength`, `perMessageDeflate`,
- *   …) and `customDataToWsClientFn`. Upgrades go through the app's router, so
- *   middleware runs first and can refuse them.
+ *   …) and `onUpgrade` (per-connection `custom`, headers for the `101`, or a
+ *   whole replacement `client.data`). Upgrades go through the app's router, so
+ *   middleware runs first and can refuse them — and can add to the upgrade
+ *   with `res.webSocketUpgradeHeaders`/`res.webSocketUpgradeData`, over the
+ *   adapter-wide `webSocketUpgradeHeaders`/`webSocketUpgradeData`.
  * - **Standalone** — `new BunWebSocketAdapter({ newInstance: true, listen: {
  *   port }, router })` binds its own `Bun.serve` server on that port, at
  *   construction. `listen.port` may be `0`: the OS picks a free port, read
@@ -69,15 +72,36 @@ import {
 } from "@nestjs/websockets";
 import { check } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
-import { connect, tryConnect } from "./fixtures/ws-client";
+import {
+  connect,
+  eventPayload,
+  tryConnect,
+  upgradeHead,
+} from "./fixtures/ws-client";
 import "reflect-metadata";
 
-/** What `customDataToWsClientFn` stores on every connection, as `client.data.custom`. */
+/** What `onUpgrade` stores on every connection, as `client.data.custom`. */
 interface Session {
   /** When the upgrade was accepted, in epoch milliseconds. */
   connectedAt: number;
   /** The `?room=` the client asked for; `"lobby"` when it did not. */
   room: string;
+}
+
+/** What LobbyGateway's `profile` answers: the parts of `client.data` it shows. */
+type Profile = Pick<
+  WebSocketClientData<Session>,
+  "user" | "custom" | "path" | "search" | "hash" | "originalUrl" | "host"
+>;
+
+/** Whether `value` is a {@link Profile}, as far as the checks here read it. */
+function isProfile(value: unknown): value is Profile {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "custom" in value &&
+    "hash" in value
+  );
 }
 
 /** The user the auth middleware attaches to the upgrade request. */
@@ -143,14 +167,7 @@ class LobbyGateway
 
   /** Everything the upgrade put on `client.data`. */
   @SubscribeMessage("profile")
-  profile(
-    @ConnectedSocket() client: Client,
-  ): WsResponse<
-    Pick<
-      WebSocketClientData<Session>,
-      "user" | "custom" | "path" | "search" | "hash" | "originalUrl" | "host"
-    >
-  > {
+  profile(@ConnectedSocket() client: Client): WsResponse<Profile> {
     return {
       event: "profile",
       data: {
@@ -211,13 +228,22 @@ const httpAdapter = new BunHttpAdapter<Session>(0, {
     newInstance: false,
     // Bun's WebSocketHandler settings. Defaults: 30s, 1 MiB, deflate on.
     wsOptions: { idleTimeout: 120, maxPayloadLength: 64 * 1024 },
-    // Runs on every upgrade; the result is `client.data.custom`.
-    customDataToWsClientFn: (req: BunRequest): Session => {
+    // Runs on every upgrade: `custom` is `client.data.custom`, `headers` go
+    // out on the 101 (over the adapter's and the response's, per name).
+    onUpgrade: (req: BunRequest) => {
       const room = new URLSearchParams(req.search).get("room") ?? "lobby";
-      return { connectedAt: Date.now(), room };
+      return {
+        custom: { connectedAt: Date.now(), room },
+        headers: { "X-Room": room, "X-Layer": "onUpgrade" },
+      };
     },
   },
 });
+// Adapter-wide upgrade values: the lowest layer, under the response's and
+// the hook's. They live on the app's router, `httpAdapter.instance`.
+httpAdapter
+  .setWebSocketUpgradeHeaders({ "X-App": "adapter-options", "X-Layer": "app" })
+  .setWebSocketUpgradeData({ hash: "#from-the-app" });
 const adapter = httpAdapter.webSocketAdapter;
 show("wsHandler settings", {
   idleTimeout: adapter.wsHandler.idleTimeout,
@@ -252,6 +278,8 @@ const authenticateUpgrade: RouterMiddlewareHandler = (
 
   // `client.data.user` is taken from `req.user`.
   Object.assign(req, { user });
+  // Per request, between the adapter's values and the hook's.
+  res.webSocketUpgradeHeaders = { "X-User": user.id, "X-Layer": "middleware" };
   next();
 };
 app.use(authenticateUpgrade);
@@ -270,7 +298,26 @@ show(
 
 const alice = await connect(`${base}/?token=t-alice&room=kitchen`);
 alice.emit("profile");
-show("alice's client.data", await alice.nextEvent("profile"));
+const aliceProfile: unknown = eventPayload(await alice.nextEvent("profile"));
+show("alice's client.data", aliceProfile);
+check(
+  "onUpgrade's custom is client.data.custom, and the app's data is merged in",
+  isProfile(aliceProfile) &&
+    aliceProfile.custom.room === "kitchen" &&
+    aliceProfile.hash === "#from-the-app",
+  aliceProfile,
+);
+
+const head = await upgradeHead(`${base}/?token=t-alice&room=kitchen`);
+show("the 101's own headers", head.headers);
+check(
+  "the 101 layers the app's, the middleware's and onUpgrade's headers",
+  head.values("x-app").join() === "adapter-options" &&
+    head.values("x-user").join() === "u1" &&
+    head.values("x-room").join() === "kitchen" &&
+    head.values("x-layer").join() === "onUpgrade",
+  head.headers,
+);
 
 /* ------------------------------------------------------------------ */
 step("A namespace is a URL path; each gateway hears only its own");
@@ -456,17 +503,25 @@ router.get("/health", (_req, res) => {
   res.send("ok");
 });
 
-const standalone = new BunWebSocketAdapter({
+const standalone = new BunWebSocketAdapter<{ kind: string }>({
   newInstance: true,
   listen: { port: 0 }, // the OS picks a free port
   router, // HTTP routes on it are served on the same port
   wsOptions: { idleTimeout: 10 },
+  // The same hook as the HTTP adapter's `websocket.onUpgrade`.
+  onUpgrade: () => ({
+    custom: { kind: "standalone" },
+    headers: { "X-Standalone": "1" },
+  }),
 });
 const ownPort = Number(standalone.getServer()?.port);
 show("listening at construction on", ownPort);
 
 const own = standalone.create(ownPort, { transport: [] }); // namespace "/"
+/** `client.data.custom` of each connection to the standalone server. */
+const standaloneKinds: string[] = [];
 standalone.bindClientConnect(own, (client) => {
+  standaloneKinds.push(client.data.custom.kind);
   standalone.bindMessageHandlers(client, [
     {
       message: "time",
@@ -485,8 +540,49 @@ show(
 const standaloneClient = await connect(`ws://127.0.0.1:${ownPort}/`);
 standaloneClient.emit("time");
 show("time", await standaloneClient.nextEvent("time"));
+check(
+  "BunWebSocketAdapter's onUpgrade sets custom…",
+  standaloneKinds[0] === "standalone",
+  standaloneKinds,
+);
+check(
+  "…and its headers reach the 101",
+  (await upgradeHead(`ws://127.0.0.1:${ownPort}/`))
+    .values("x-standalone")
+    .join() === "1",
+);
 
 await standaloneClient.close();
 standalone.close(own);
 standalone.dispose();
 show("closed");
+
+/* ------------------------------------------------------------------ */
+step("customDataToWsClientFn: the deprecated name still works");
+
+const legacy = new BunWebSocketAdapter<{ legacy: boolean }>({
+  newInstance: true,
+  listen: { port: 0 },
+  // Treated as `onUpgrade: async (req, res) => ({ custom: await fn(req, res) })`.
+  customDataToWsClientFn: () => ({ legacy: true }),
+});
+const legacyServer = legacy.create(Number(legacy.getServer()?.port), {
+  transport: [],
+});
+/** `client.data.custom` of each connection to the legacy server. */
+const legacyCustoms: { legacy: boolean }[] = [];
+legacy.bindClientConnect(legacyServer, (client) => {
+  legacyCustoms.push(client.data.custom);
+});
+const legacyClient = await connect(
+  `ws://127.0.0.1:${legacy.getServer()?.port}/`,
+);
+await waitFor("the legacy connection", () => legacyCustoms.length === 1);
+check(
+  "customDataToWsClientFn's result is client.data.custom",
+  legacyCustoms[0]?.legacy === true,
+  legacyCustoms,
+);
+await legacyClient.close();
+legacy.close(legacyServer);
+legacy.dispose();

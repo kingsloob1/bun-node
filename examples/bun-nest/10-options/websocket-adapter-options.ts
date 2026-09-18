@@ -11,7 +11,7 @@
  *
  * - **Construction** — the adapter `BunHttpAdapter` builds
  *   (`httpAdapter.webSocketAdapter`, `BunNestWebsocketAdapter`) and its
- *   `websocket` option (`wsOptions`, `customDataToWsClientFn`, `httpAdapter`,
+ *   `websocket` option (`wsOptions`, `onUpgrade`, `httpAdapter`,
  *   `getServer`, `newInstance`/`listen`); `{ httpAdapter, localOptions }`; any
  *   `BunWebsocketHttpAdapter` shape; `{ newInstance: true, listen, router }`
  *   and `{ newInstance: true, listen, httpAdapter }`; `{ newInstance: false,
@@ -88,7 +88,7 @@ type Transform = NonNullable<
   Parameters<BunWebSocketAdapter["bindMessageHandlers"]>[2]
 >;
 
-/** What `customDataToWsClientFn` stores on each connection of the NestJS app. */
+/** What `onUpgrade` stores on each connection of the NestJS app. */
 interface Session {
   /** When the upgrade was accepted, in epoch milliseconds. */
   connectedAt: number;
@@ -1237,17 +1237,19 @@ class MetricsGateway implements OnGatewayInit {
 })
 class AppModule {}
 
-/** Each upgrade request `customDataToWsClientFn` saw. */
+/** Each upgrade request `onUpgrade` saw. */
 const upgrades: { path: string; hasResponse: boolean }[] = [];
 
 const http = new BunHttpAdapter<Session>(0, {
   websocket: {
     newInstance: false,
-    customDataToWsClientFn: (req: BunRequest, res: BunResponse): Session => {
+    onUpgrade: (req: BunRequest, res: BunResponse) => {
       upgrades.push({ path: req.path, hasResponse: res !== undefined });
       return {
-        connectedAt: Date.now(),
-        room: new URLSearchParams(req.search).get("room") ?? "lobby",
+        custom: {
+          connectedAt: Date.now(),
+          room: new URLSearchParams(req.search).get("room") ?? "lobby",
+        },
       };
     },
   },
@@ -1315,11 +1317,10 @@ check(
   "handleConnection(client, server) gets the live server",
   lobby.connected[0]!.server === http.getBunServer(),
 );
-checkEqual(
-  "customDataToWsClientFn gets the request and response",
-  upgrades.at(-1),
-  { path: "/", hasResponse: true },
-);
+checkEqual("onUpgrade gets the request and response", upgrades.at(-1), {
+  path: "/",
+  hasResponse: true,
+});
 
 dana.emit("profile");
 checkEqual(

@@ -95,7 +95,7 @@ with no socket at all.
 |---|---|
 | [`echo-and-events.ts`](./09-websocket/echo-and-events.ts) | upgrading through the adapter, every event handler, client data, text and binary, ping/pong, backpressure, close codes |
 | [`rooms-and-broadcast.ts`](./09-websocket/rooms-and-broadcast.ts) | auth on upgrade, rooms as pub/sub topics, `ws.publish` vs `server.publish`, broadcasting, server stats |
-| [`options.ts`](./09-websocket/options.ts) | every WebSocket option, `customDataToWsClientFn`, a standalone server, an extra port |
+| [`options.ts`](./09-websocket/options.ts) | every WebSocket option, `onUpgrade`, a standalone server, an extra port |
 
 ### 10 — Logging
 
@@ -133,7 +133,7 @@ every option.
 | [`static-options.ts`](./12-options/static-options.ts) | every static-file option, caching, 304s, traversal, ranges, `precompressed` and `compression` |
 | [`compression-options.ts`](./12-options/compression-options.ts) | every `compression()` option, negotiation with q-values and wildcards, `dcb`/`dcz` dictionaries, `res.flush()` |
 | [`multipart-options.ts`](./12-options/multipart-options.ts) | every upload option, handler errors as `UploadError` codes and statuses, filters, storage options, busboy limits |
-| [`websocket-options.ts`](./12-options/websocket-options.ts) | every WebSocket option, event and emitter method |
+| [`websocket-options.ts`](./12-options/websocket-options.ts) | every WebSocket option, event and emitter method; `onUpgrade` and the router- and response-level upgrade values |
 | [`logging-options.ts`](./12-options/logging-options.ts) | every logger option, sink and adapter mapping |
 | [`native-utilities.ts`](./12-options/native-utilities.ts) | every exported helper, with its options and edge cases |
 

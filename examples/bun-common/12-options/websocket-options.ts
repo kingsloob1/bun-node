@@ -17,6 +17,11 @@
  *   OS-assigned port, which `.port` then reports.
  * - `ws()` handlers are dispatched by the route pattern the upgrade matched,
  *   so param routes (`/rooms/:id`) work and see `ws.data.route`/`params`.
+ * - What an upgrade carries is layered: the router's
+ *   `webSocketUpgradeHeaders`/`webSocketUpgradeData`, then the response's (set
+ *   by middleware), then the route's `onUpgrade` result — or a bare
+ *   `upgradeToWebsocket()`'s own arguments. `customDataToWsClientFn` is the
+ *   deprecated name of a hook that returns only `custom`.
  * - The idle-timeout section waits for Bun's idle timer, so the tour takes
  *   several seconds longer than the rest would.
  */
@@ -38,7 +43,7 @@ import {
   FETCH_STUB_SERVER,
   getPort,
 } from "@kingsleyweb/bun-common";
-import { connect } from "../09-websocket/helpers/client";
+import { connect, upgradeHead } from "../09-websocket/helpers/client";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { step, title, waitFor } from "../shared/console";
 
@@ -72,9 +77,15 @@ interface ReportedData {
   user: WebSocketClientData["user"] | null;
   /**
    * `ws.data.custom`, or `null`. `unknown`: the one `reportData` handler serves
-   * routes whose `customDataToWsClientFn`s return different things.
+   * routes whose `onUpgrade` hooks return different things.
    */
   custom: unknown;
+  /** `ws.data.route`, or `null`. */
+  route: string | null;
+  /** `ws.data.params`, or `null`. */
+  params: Record<string, string> | null;
+  /** `ws.data.port`, or `null`. */
+  port: number | null;
 }
 
 /** What a standalone server's `/inspect` route answers, as JSON. */
@@ -209,22 +220,39 @@ const reportData: BunWebSocketHandlerType = {
       header: ws.data.headers.get("x-demo"),
       user: ws.data.user ?? null,
       custom: ws.data.custom ?? null,
+      route: ws.data.route ?? null,
+      params: ws.data.params ?? null,
+      port: ws.data.port ?? null,
     };
     ws.sendText(JSON.stringify(report));
   },
   message() {},
 };
 
-/** Opens `url` and answers the `ReportedData` its route sends. */
-async function reportFor(
+/**
+ * What a bare `res.upgradeToWebsocket()` route in the layers step reports:
+ * only the two fields that step compares.
+ */
+interface BareReport {
+  /** `ws.data.custom`. */
+  custom: unknown;
+  /** `ws.data.hash`. */
+  hash: string;
+}
+
+/**
+ * Opens `url` and answers the report its route sends — a `ReportedData`
+ * unless `T` names another shape.
+ */
+async function reportFor<T = ReportedData>(
   url: string,
   options?: ConnectOptions,
-): Promise<ReportedData> {
+): Promise<T> {
   const client = await openClient(url, options);
   const text = await client.waitForText("the data report", (message) => {
     return message.startsWith("{");
   });
-  return JSON.parse(text) as ReportedData;
+  return JSON.parse(text) as T;
 }
 
 title("Option tour: WebSocket options");
@@ -342,10 +370,10 @@ check(
 }
 
 /* ------------------------------------------------------------------ */
-step("customDataToWsClientFn and WebSocketClientData");
+step("onUpgrade and WebSocketClientData");
 
 {
-  /** What the tour's `customDataToWsClientFn`s produce. */
+  /** What the tour's `onUpgrade` hooks produce as `custom`. */
   interface Custom {
     /** Which function produced it. */
     source: "adapter" | "route";
@@ -357,12 +385,12 @@ step("customDataToWsClientFn and WebSocketClientData");
 
   const served = await serve<Custom>(
     {
-      customDataToWsClientFn: (req, res) => {
+      onUpgrade: (req, res) => {
         adapterFnArgs = {
           request: req instanceof BunRequest,
           response: res instanceof BunResponse,
         };
-        return { source: "adapter" };
+        return { custom: { source: "adapter" } };
       },
     },
     (adapter) => {
@@ -373,9 +401,11 @@ step("customDataToWsClientFn and WebSocketClientData");
       adapter.use("/with-user", identify);
       adapter.ws("/with-user", reportData);
       adapter.ws("/adapter-data", reportData);
-      adapter.ws("/route-data", reportData, async (req) => {
-        await Promise.resolve();
-        return { source: "route", q: String(req.query.q) } satisfies Custom;
+      adapter.ws("/route-data", reportData, {
+        onUpgrade: async (req) => {
+          await Promise.resolve();
+          return { custom: { source: "route", q: String(req.query.q) } };
+        },
       });
     },
   );
@@ -398,19 +428,17 @@ step("customDataToWsClientFn and WebSocketClientData");
   );
   checkEqual("headers are the upgrade request's", report.header, "yes");
   checkEqual("user is absent when nothing set req.user", report.user, null);
+  checkEqual("custom comes from the adapter-wide onUpgrade", report.custom, {
+    source: "adapter",
+  });
   checkEqual(
-    "custom comes from the adapter-wide customDataToWsClientFn",
-    report.custom,
-    { source: "adapter" },
-  );
-  checkEqual(
-    "customDataToWsClientFn receives the BunRequest and BunResponse",
+    "onUpgrade receives the BunRequest and BunResponse",
     adapterFnArgs,
     { request: true, response: true },
   );
 
   checkEqual(
-    "a route's own (async) customDataToWsClientFn takes precedence",
+    "a route's own (async) onUpgrade takes precedence",
     (await reportFor(`${served.origin}/route-data?q=hello`)).custom,
     { source: "route", q: "hello" },
   );
@@ -423,6 +451,235 @@ step("customDataToWsClientFn and WebSocketClientData");
     "a plain GET to a ws() path is not upgraded and falls through to 404",
     (await served.adapter.fetch("/adapter-data")).status,
     404,
+  );
+}
+
+/* ------------------------------------------------------------------ */
+step("onUpgrade — headers on the 101, and a replacement ws.data");
+
+{
+  const served = await serve({}, (adapter) => {
+    // The hook's headers go out on the 101. Bun otherwise echoes the first
+    // protocol offered; naming one here is how a route picks a subprotocol.
+    adapter.ws("/chat", reportData, {
+      onUpgrade: () => ({
+        headers: { "Sec-WebSocket-Protocol": "chat.v1", "X-Hook": "1" },
+      }),
+    });
+    // `data` replaces ws.data outright; what dispatch needs and it leaves out
+    // (route, params, port) is filled in from the match.
+    adapter.ws("/rooms/:id", reportData, {
+      onUpgrade: () => ({
+        data: {
+          host: "replaced.example",
+          path: "/replaced",
+          search: "",
+          hash: "",
+          originalUrl: "/replaced",
+          headers: new Headers({ "x-demo": "from data" }),
+          custom: { replaced: true },
+        },
+      }),
+    });
+  });
+
+  const chat = await openClient(`${served.origin}/chat`, {
+    protocols: ["other", "chat.v1"],
+  });
+  checkEqual(
+    "headers: a Sec-WebSocket-Protocol chooses the subprotocol",
+    chat.socket.protocol,
+    "chat.v1",
+  );
+  const head = await upgradeHead(`${served.origin}/chat`, ["other", "chat.v1"]);
+  checkEqual(
+    "headers: every header the hook returned is on the 101, once",
+    [head.values("sec-websocket-protocol"), head.values("x-hook")],
+    [["chat.v1"], ["1"]],
+  );
+
+  const replaced = await reportFor(`${served.origin}/rooms/42`);
+  checkEqual(
+    "data: replaces ws.data, and the match fills in route, params and port",
+    replaced,
+    {
+      host: "replaced.example",
+      path: "/replaced",
+      search: "",
+      hash: "",
+      originalUrl: "/replaced",
+      header: "from data",
+      user: null,
+      custom: { replaced: true },
+      route: "/rooms/:id",
+      params: { id: "42" },
+      port: served.adapter.server?.port ?? null,
+    },
+  );
+}
+
+/* ------------------------------------------------------------------ */
+step("Upgrade layers — router defaults, then res values, then the upgrade");
+
+{
+  const served = await serve({}, (adapter) => {
+    // Router-wide defaults: chainable setters, or the matching properties.
+    adapter
+      .setWebSocketUpgradeHeaders({ "X-Layer": "router", "X-Trace": "t-1" })
+      .setWebSocketUpgradeData({ custom: { from: "router" }, hash: "#router" });
+
+    // Per request: middleware ahead of the upgrade sets them on res.
+    adapter.use("/layered", (_req, res, next) => {
+      res.webSocketUpgradeHeaders = { "X-Layer": "res", "X-Res": "1" };
+      res.webSocketUpgradeData = { custom: { from: "res" } };
+      next();
+    });
+    adapter.ws("/layered", reportData, {
+      onUpgrade: () => ({
+        headers: { "X-Layer": "hook" },
+      }),
+    });
+    adapter.ws("/layered/custom", reportData, {
+      onUpgrade: () => ({
+        custom: { from: "hook" },
+      }),
+    });
+
+    // A bare upgrade from an ordinary route layers the same way. With data
+    // passed outright, that data is used as is; its headers still inherit.
+    adapter.get("/layered/built", (_req, res) => res.upgradeToWebsocket());
+    adapter.get("/layered/explicit", (req, res) => {
+      return res.upgradeToWebsocket(
+        {
+          host: req.host,
+          path: req.path,
+          search: req.search,
+          hash: req.hash,
+          originalUrl: req.originalUrl,
+          headers: req.headersObj,
+          custom: { from: "explicit" },
+        },
+        { headers: { "X-Layer": "explicit" } },
+      );
+    });
+    // `inherit: false`: only this call's own arguments.
+    adapter.get("/layered/alone", (_req, res) => {
+      return res.upgradeToWebsocket(undefined, { inherit: false });
+    });
+    adapter.webSocketAdapter.on("open", (ws) => {
+      if (!ws.data.route) {
+        ws.sendText(
+          JSON.stringify({ custom: ws.data.custom, hash: ws.data.hash }),
+        );
+      }
+    });
+  });
+
+  const hookHead = await upgradeHead(`${served.origin}/layered`);
+  checkEqual(
+    "headers merge by name: router, then res, then the hook",
+    {
+      layer: hookHead.values("x-layer"),
+      trace: hookHead.values("x-trace"),
+      res: hookHead.values("x-res"),
+    },
+    { layer: ["hook"], trace: ["t-1"], res: ["1"] },
+  );
+  const layered = await reportFor(`${served.origin}/layered`);
+  checkEqual(
+    "data merges shallowly: res's custom over the router's, the router's hash kept",
+    { custom: layered.custom, hash: layered.hash },
+    { custom: { from: "res" }, hash: "#router" },
+  );
+  checkEqual(
+    "a hook's custom beats both layers",
+    (await reportFor(`${served.origin}/layered/custom`)).custom,
+    { from: "hook" },
+  );
+
+  const built = await reportFor<BareReport>(`${served.origin}/layered/built`);
+  checkEqual(
+    "a bare upgradeToWebsocket() builds its data under the same layers",
+    built,
+    { custom: { from: "res" }, hash: "#router" },
+  );
+  const explicit = await reportFor<BareReport>(
+    `${served.origin}/layered/explicit`,
+  );
+  checkEqual(
+    "explicit data is used as is: no router or res data merged in",
+    explicit,
+    { custom: { from: "explicit" }, hash: "" },
+  );
+  const explicitHead = await upgradeHead(`${served.origin}/layered/explicit`);
+  checkEqual(
+    "…while its headers inherit, and the explicit one wins per name",
+    [explicitHead.values("x-layer"), explicitHead.values("x-trace")],
+    [["explicit"], ["t-1"]],
+  );
+  const aloneHead = await upgradeHead(`${served.origin}/layered/alone`);
+  checkEqual(
+    "inherit: false sends exactly Bun's default 101",
+    aloneHead.headers.map(([name]) => name),
+    ["upgrade", "connection", "sec-websocket-accept", "date"],
+  );
+
+  served.adapter.webSocketUpgradeHeaders = undefined;
+  checkEqual(
+    "router defaults are read at upgrade time: cleared, they are gone",
+    (await upgradeHead(`${served.origin}/layered`)).values("x-trace"),
+    [],
+  );
+
+  // A ws() route takes the defaults of the router ws() was called on, even
+  // a sub-router mounted elsewhere.
+  const sub = new BunRouter({ bunWebsocket: served.adapter.webSocketAdapter });
+  sub.setWebSocketUpgradeHeaders({ "X-Router": "sub" });
+  sub.ws("/sub-feed", reportData);
+  served.adapter.setWebSocketUpgradeHeaders({ "X-Router": "adapter" });
+  served.adapter.use("/api", sub);
+  checkEqual(
+    "a sub-router's ws() route gets the sub-router's defaults",
+    (await upgradeHead(`${served.origin}/sub-feed`)).values("x-router"),
+    ["sub"],
+  );
+}
+
+/* ------------------------------------------------------------------ */
+step("customDataToWsClientFn — deprecated, still works");
+
+{
+  const served = await serve(
+    {
+      // The old name: whatever it returns becomes ws.data.custom.
+      customDataToWsClientFn: () => ({ legacy: true }),
+    },
+    (adapter) => {
+      adapter.ws("/legacy", reportData);
+      // A function as a route's third argument is the old mapping, always:
+      // whatever it returns is custom, even an object with `data`/`custom`
+      // keys. The hook goes in `{ onUpgrade }` instead.
+      adapter.ws("/legacy/route", reportData, () => ({ room: "lobby" }));
+      adapter.ws("/legacy/shaped", reportData, () => ({
+        data: "x",
+        custom: 1,
+      }));
+    },
+  );
+  checkEqual(
+    "the deprecated option still sets custom",
+    (await reportFor(`${served.origin}/legacy`)).custom,
+    { legacy: true },
+  );
+  checkEqual(
+    "…and so does the old shape of a route's third argument",
+    (await reportFor(`${served.origin}/legacy/route`)).custom,
+    { room: "lobby" },
+  );
+  checkEqual(
+    "…whose result is custom whatever its shape: { data, custom } is not a hook result",
+    (await reportFor(`${served.origin}/legacy/shaped`)).custom,
+    { data: "x", custom: 1 },
   );
 }
 
@@ -885,8 +1142,8 @@ await checkRejects(
     serverOptions: { maxRequestBodySize: 1024 },
     bunRequestOpts: { parseBody: false, parseQuery: false, parseCookies: true },
     wsOptions: { perMessageDeflate: false },
-    customDataToWsClientFn: () => {
-      return { channel: "standalone" };
+    onUpgrade: () => {
+      return { custom: { channel: "standalone" } };
     },
   });
   const server = standalone.getServer();
@@ -938,7 +1195,7 @@ await checkRejects(
     404,
   );
   checkEqual(
-    "customDataToWsClientFn applies to its upgrades",
+    "onUpgrade applies to its upgrades",
     (await reportFor(`ws://127.0.0.1:${port}/feed`)).custom,
     { channel: "standalone" },
   );

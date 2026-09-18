@@ -16,7 +16,7 @@
  *   as well as its upgrades.
  *
  * Both share `BunWebSocketGeneralOptions`: `wsOptions` (Bun's
- * `WebSocketHandler` settings), `router` and `customDataToWsClientFn`.
+ * `WebSocketHandler` settings), `router` and `onUpgrade`.
  *
  * `wsOptions` is merged over defaults that are *not* Bun's:
  * `perMessageDeflate: true` (Bun: `false`), `idleTimeout: 30` (Bun: `120`) and
@@ -46,7 +46,7 @@ interface Feed {
 
 /** What the tuned adapter's connections carry in `ws.data.custom`. */
 interface Origin {
-  /** Which `customDataToWsClientFn` produced it: the adapter's or the route's. */
+  /** Which `onUpgrade` hook produced it: the adapter's or the route's. */
   source: "adapter" | "route";
 }
 
@@ -102,8 +102,8 @@ const tuned = new BunHttpAdapter<Origin>(0, {
       publishToSelf: true, // `ws.publish` reaches the sender too
     },
     // Adapter-wide: every `ws()` route without its own function uses this.
-    customDataToWsClientFn: () => {
-      return { source: "adapter" };
+    onUpgrade: () => {
+      return { custom: { source: "adapter" } };
     },
   },
 });
@@ -132,9 +132,11 @@ tuned.webSocketAdapter.on("drain", () => {
 });
 
 tuned.ws("/room", roomHandler);
-// A route's own `customDataToWsClientFn` wins over the adapter's.
-tuned.ws("/vip", roomHandler, () => {
-  return { source: "route" } satisfies Origin;
+// A route's own `onUpgrade` wins over the adapter's.
+tuned.ws("/vip", roomHandler, {
+  onUpgrade: () => {
+    return { custom: { source: "route" } satisfies Origin };
+  },
 });
 
 await tuned.listen(0);
@@ -150,7 +152,7 @@ show(
 );
 
 /* ------------------------------------------------------------------ */
-step("`customDataToWsClientFn`: adapter-wide, or per route");
+step("`onUpgrade`: adapter-wide, or per route");
 
 const regular = await connect(`${tunedUrl}/room`);
 const vip = await connect(`${tunedUrl}/vip`);
@@ -291,8 +293,8 @@ const standalone = new BunWebSocket<Feed>({
   // How this server builds each `BunRequest` (default: parse body, query, cookies).
   bunRequestOpts: { parseBody: false, parseQuery: true, parseCookies: false },
   wsOptions: { perMessageDeflate: false },
-  customDataToWsClientFn: (req) => {
-    return { channel: String(req.query.channel ?? "general") };
+  onUpgrade: (req) => {
+    return { custom: { channel: String(req.query.channel ?? "general") } };
   },
   // Not used here: `request` and `response` hand the server one pre-built
   // `BunRequest`/`BunResponse` to reuse for *every* fetch — a fixture, not

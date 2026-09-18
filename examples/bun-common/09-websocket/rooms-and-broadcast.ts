@@ -70,7 +70,7 @@ function roomTopic(room: string): string {
 
 /**
  * A connection's membership. `ws.data.custom` is typed by the adapter's type
- * argument; this route's `customDataToWsClientFn` is what put it there.
+ * argument; this route's `onUpgrade` hook is what put it there.
  */
 function membershipOf(ws: WebSocketClient<Membership>): Membership {
   return ws.data.custom;
@@ -202,13 +202,18 @@ adapter.ws(
       );
     },
   },
-  // This route's own `customDataToWsClientFn`. It runs after the middleware,
-  // so the token has already been checked when it reads the room.
-  (req) => {
-    return {
-      room: String(req.query.room ?? "lobby"),
-      joinedAt: Date.now(),
-    } satisfies Membership;
+  {
+    // This route's own `onUpgrade` hook, passed in the route options. It runs
+    // after the middleware, so the token has already been checked when it
+    // reads the room. Its `custom` becomes `ws.data.custom`.
+    onUpgrade: (req) => {
+      return {
+        custom: {
+          room: String(req.query.room ?? "lobby"),
+          joinedAt: Date.now(),
+        } satisfies Membership,
+      };
+    },
   },
 );
 
