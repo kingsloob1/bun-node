@@ -1,5 +1,6 @@
+import type { BunRequest } from "@kingsleyweb/bun-common";
 import type { BunQueue } from "../../queue/BunQueue";
-import type { ResolvedJobsApiConfig } from "../config";
+import type { JobsApiAuthorizeContext, ResolvedJobsApiConfig } from "../config";
 import type {
   OverviewDto,
   PageInfoDto,
@@ -15,6 +16,7 @@ import {
   throughputBucket,
 } from "../../drivers/index";
 import { normalizeLimits } from "../../queue/limits";
+import { decide } from "../auth";
 import { mapCallSiteError } from "../errors";
 import { s } from "../schema/builder";
 import { JOB_STATES } from "../schemas/common";
@@ -65,22 +67,83 @@ export function queueNameMatches(name: string, search?: string): boolean {
 }
 
 /**
+ * The route `GET /queues/:queue` reports to `authorize` — the context a
+ * `listQueues: "authorized"` check carries, so a host deciding by route
+ * answers it as it answers the queue's own read.
+ */
+const QUEUE_READ_ROUTE: NonNullable<JobsApiAuthorizeContext["route"]> =
+  Object.freeze({ method: "GET", path: "/queues/:queue" });
+
+/**
+ * `queues.read` decisions already asked during a request, by queue: a request
+ * never asks `authorize` twice about one queue, however many of its reads
+ * filter. Keyed weakly, so a finished request's decisions go with it.
+ */
+const readDecisions = new WeakMap<BunRequest, Map<string, Promise<boolean>>>();
+
+/**
+ * The names a caller is shown: all of them under `listQueues: "all"`; under
+ * `"authorized"`, those `authorize` allows `queues.read` on — asked with the
+ * context `GET /queues/:queue` carries, at most `FAN_OUT` at a time, once per
+ * queue per request. Order is kept. A throwing `authorize` rejects, and the
+ * request fails as any route's does.
+ */
+export async function visibleQueueNames(
+  services: RouteServices,
+  req: BunRequest,
+  names: readonly string[],
+): Promise<string[]> {
+  const { config } = services;
+  if (config.listQueues !== "authorized") {
+    return [...names];
+  }
+  let decisions = readDecisions.get(req);
+  if (!decisions) {
+    decisions = new Map();
+    readDecisions.set(req, decisions);
+  }
+  const cache = decisions;
+  const allowed = await mapBounded(names, async (queue) => {
+    let decision = cache.get(queue);
+    if (!decision) {
+      decision = decide(config, req, {
+        action: "queues.read",
+        transport: "http",
+        queue,
+        route: QUEUE_READ_ROUTE,
+      }).then((answer) => answer.allow);
+      cache.set(queue, decision);
+    }
+    return await decision;
+  });
+  return names.filter((_, index) => allowed[index]);
+}
+
+/**
  * One page of summaries of the reachable queues whose name contains
  * `search` (ignoring case), sorted by name: `offset` names skipped, at most
  * `limit` (by default, and at most, `limits.maxQueues`) summarised, read
  * `FAN_OUT` queues at a time. Every path lists names the same way — through
- * `services.queues`, then this filter — whatever the driver.
+ * `services.queues`, then this filter, then {@link visibleQueueNames} —
+ * whatever the driver.
  */
 async function summarizeQueues(
   services: RouteServices,
+  req: BunRequest,
   options: { search?: string; offset?: number; limit?: number } = {},
 ): Promise<{
   items: QueueSummaryDto[];
   truncated: boolean;
   page: PageInfoDto;
 }> {
-  const names = (await services.queues.names()).filter((name) =>
-    queueNameMatches(name, options.search),
+  // Filtered before paging, so `offset`, `limit`, `total` and `hasMore` all
+  // describe the list the caller is shown.
+  const names = await visibleQueueNames(
+    services,
+    req,
+    (await services.queues.names()).filter((name) =>
+      queueNameMatches(name, options.search),
+    ),
   );
   const offset = options.offset ?? 0;
   const limit = options.limit ?? services.config.limits.maxQueues;
@@ -201,12 +264,12 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Job counts across every reachable queue",
       description:
-        "Sums the counts of up to `limits.maxQueues` queues; `truncated` says when there were more. `workers` and `throughput` are present only where the backend keeps them. `throughputSeries` is the namespace-wide per-minute series, in the shape of `GET /queues/{queue}/throughput`: each queue's buckets summed (read a queue at a time, 16 at once: the backend has no namespace-wide count).",
+        'Sums the counts of up to `limits.maxQueues` queues; `truncated` says when there were more. With `listQueues: "authorized"`, only the queues `authorize` allows `queues.read` on are summed (one call per reachable queue). `workers` and `throughput` are present only where the backend keeps them. `throughputSeries` is the namespace-wide per-minute series, in the shape of `GET /queues/{queue}/throughput`: each queue\'s buckets summed (read a queue at a time, 16 at once: the backend has no namespace-wide count).',
       tags: ["Queues"],
       query: minutesQuerySchema(MAX_THROUGHPUT_MINUTES),
       responses: { 200: OverviewSchema },
-      handler: async ({ query, services }) => {
-        const { items, truncated } = await summarizeQueues(services, {
+      handler: async ({ req, query, services }) => {
+        const { items, truncated } = await summarizeQueues(services, req, {
           limit: services.config.limits.maxQueues,
         });
         const counts = Object.fromEntries(
@@ -237,12 +300,12 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Every reachable queue, at a glance",
       description:
-        "A page of queues sorted by name: `limit` (at most, and by default, `limits.maxQueues`) after skipping `offset`. `search` keeps names containing it, ignoring case. `truncated` (the same as `page.hasMore`) says when more follow.",
+        'A page of queues sorted by name: `limit` (at most, and by default, `limits.maxQueues`) after skipping `offset`. `search` keeps names containing it, ignoring case. `truncated` (the same as `page.hasMore`) says when more follow.\n\nWith `listQueues: "authorized"`, a queue is listed only when `authorize` allows `queues.read` on it, asked as `GET /queues/{queue}` would ask; paging and `page.total` count only those. That costs one `authorize` call per queue matching `search` (every one, since the total needs them all), 16 at a time.',
       tags: ["Queues"],
       query: queueListQuerySchema(limits.maxQueues),
       responses: { 200: QueueListSchema },
-      handler: async ({ query, services }) => ({
-        body: await summarizeQueues(services, query),
+      handler: async ({ req, query, services }) => ({
+        body: await summarizeQueues(services, req, query),
       }),
     }),
     defineRoute({
@@ -455,12 +518,23 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       enabledWhen: (config) => supportsWorkers(config.driver),
       summary: "Every worker in the namespace",
       description:
-        "Across every queue this API may see, oldest first. A worker consuming a queue outside `queues` is not listed.",
+        'Across every queue this API may see, oldest first. A worker consuming a queue outside `queues` is not listed, nor, with `listQueues: "authorized"`, one consuming a queue `authorize` denies `queues.read` on (one call per queue a worker consumes).',
       tags: ["Queues"],
       responses: { 200: WorkerListSchema },
-      handler: async ({ services }) => {
+      handler: async ({ req, services }) => {
         const workers = await services.config.jobs!.listWorkers();
-        const allowed = new Set(await services.queues.names());
+        // Only the queues a worker consumes are asked about, not every queue.
+        const reachable = new Set(await services.queues.names());
+        const consumed = [
+          ...new Set(
+            workers
+              .map((worker) => worker.queue)
+              .filter((queue) => reachable.has(queue)),
+          ),
+        ].sort();
+        const allowed = new Set(
+          await visibleQueueNames(services, req, consumed),
+        );
         return {
           body: {
             items: workers

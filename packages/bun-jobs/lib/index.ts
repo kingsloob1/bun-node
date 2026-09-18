@@ -39,6 +39,7 @@ export {
   type JobsApiCsrfOptions,
   type JobsApiDocsOptions,
   type JobsApiLimits,
+  type JobsApiListQueues,
   type JobsApiMode,
   type JobsApiRouteInfo,
   type JobsApiSerializers,

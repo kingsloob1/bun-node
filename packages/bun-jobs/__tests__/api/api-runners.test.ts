@@ -51,9 +51,33 @@ describe("listing and reading", () => {
     const listed = await h.call("GET", "/runners");
     expect(listed.status).toBe(200);
     expect(listed.body.items).toEqual([
-      { id: "nightly", local: true, name: "nightly", status: h.nightly.status },
-      { id: "remote", local: false },
+      {
+        id: "nightly",
+        local: true,
+        name: "nightly",
+        status: h.nightly.status,
+        isPaused: false,
+        isRunning: false,
+      },
+      { id: "remote", local: false, isPaused: false, isRunning: false },
     ]);
+  });
+
+  it("says in the list which runners are paused, remote ones included (UI-G16)", async () => {
+    const h = await withRunners();
+    await (await h.jobs.runners.remote("remote")).pause();
+
+    const listed = await h.call("GET", "/runners");
+    expect(listed.status).toBe(200);
+    // What the list says is what reading each runner says.
+    for (const item of listed.body.items) {
+      const read = await h.call("GET", `/runners/${item.id}`);
+      expect(item.isPaused, item.id).toBe(read.body.isPaused);
+      expect(item.isRunning, item.id).toBe(read.body.isRunning);
+    }
+    expect(
+      listed.body.items.find((item: { id: string }) => item.id === "remote"),
+    ).toMatchObject({ local: false, isPaused: true, isRunning: false });
   });
 
   it("reads a local runner and a remote one, never its file unless exposed", async () => {
@@ -241,6 +265,37 @@ describe("control", () => {
       schedule: 0,
     });
     expect(zero.body).toMatchObject({ code: "VALIDATION" });
+  });
+
+  it("says which part of a refused schedule is wrong, as a VALIDATION-style issue (UI-G18)", async () => {
+    const h = await withRunners();
+    const refused = async (schedule: unknown) => {
+      const response = await h.call("PUT", "/runners/nightly/schedule", {
+        schedule,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe("INVALID_SCHEDULE");
+      expect(response.body.issues).toHaveLength(1);
+      expect(response.body.issues[0]).toMatchObject({
+        target: "body",
+        message: response.body.detail,
+      });
+      return response.body.issues[0].path;
+    };
+
+    expect(await refused("not a cron expression")).toBe("schedule");
+    expect(await refused({ cron: "99 * * * *" })).toBe("schedule.cron");
+    expect(await refused({ cron: "0 9 * * *", tz: "Nowhere/Land" })).toBe(
+      "schedule.tz",
+    );
+    // A bad expression is blamed before the zone, whatever the zone.
+    expect(await refused({ cron: "99 * * * *", tz: "Nowhere/Land" })).toBe(
+      "schedule.cron",
+    );
+    // Nothing was written by any of them.
+    expect((await h.call("GET", "/runners/nightly")).body.schedule).toEqual(
+      h.nightly.schedule ?? null,
+    );
   });
 
   it("kills local runs: 202 at once, 200 after waiting, 404 for an unknown run", async () => {

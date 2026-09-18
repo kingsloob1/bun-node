@@ -64,6 +64,13 @@ export function isMutation(action: JobsApiAction): boolean {
   return JOBS_API_MUTATIONS.has(action);
 }
 
+/**
+ * Which queues `GET /queues`, `GET /overview` and `GET /workers` show a
+ * caller: `"all"` reachable queues, or only those `authorize` allows
+ * `queues.read` on (`"authorized"`). See `JobsApiConfig.listQueues`.
+ */
+export type JobsApiListQueues = "all" | "authorized";
+
 /** What `authorize` is told about the request being decided. */
 export interface JobsApiAuthorizeContext {
   /** The action being attempted. */
@@ -481,6 +488,27 @@ export interface JobsApiConfig {
   /** Registers no mutating route, and prunes them from the spec. Defaults to `false`. */
   readOnly?: boolean;
   /**
+   * Which reachable queues the queue-wide reads show a caller. Defaults to
+   * `"all"`: every reachable queue (`queues`), whoever asks — `authorize` is
+   * asked once per request, about `queues.list` (or `metrics.read`,
+   * `workers.list`), never per queue.
+   *
+   * `"authorized"` also asks `authorize` about `queues.read` for each queue,
+   * with the context `GET /queues/:queue` carries (`queue`, `transport:
+   * "http"`, `route: { method: "GET", path: "/queues/:queue" }`), and leaves
+   * out every queue it denies from `GET /queues` — its `page.total`,
+   * `page.hasMore`, `truncated`, `offset` and `limit` all count the filtered
+   * list — from `GET /overview`'s sums, and from `GET /workers`.
+   *
+   * **Cost:** one `authorize` call per queue matching the request's `search`
+   * — every one, not just the page's, since the total needs them all — made
+   * at most 16 at a time and never twice for one queue within a request. An
+   * `authorize` that throws fails the request (500), as it does on any route.
+   * Needs the `queues.read` action: without it every queue would be hidden, so
+   * construction throws `ConfigError`.
+   */
+  listQueues?: JobsApiListQueues;
+  /**
    * Per-request authorization for HTTP and WebSocket. **Required** unless
    * `allowUnauthenticated` is `true`; construction throws `ConfigError` otherwise.
    */
@@ -700,6 +728,11 @@ export interface ResolvedJobsApiConfig {
   basePath: string;
   /** Whether mutations are removed. */
   readOnly: boolean;
+  /**
+   * Which queues the queue-wide reads show: every reachable one (`"all"`, the
+   * default), or only those `authorize` allows `queues.read` on.
+   */
+  listQueues: JobsApiListQueues;
   /** The authorization hook, or `undefined` when `allowUnauthenticated` stands in. */
   authorize: JobsApiAuthorize | undefined;
   /** Whether requests are allowed with no `authorize`. Only ever `true` when `authorize` is absent. */
@@ -1321,6 +1354,23 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
     ),
   );
 
+  const listQueues = config.listQueues ?? "all";
+  if (listQueues !== "all" && listQueues !== "authorized") {
+    throw new ConfigError('listQueues must be "all" or "authorized"', {
+      listQueues,
+    });
+  }
+  if (
+    listQueues === "authorized" &&
+    mode !== "runner" &&
+    !enabledActions.has("queues.read")
+  ) {
+    throw new ConfigError(
+      'listQueues: "authorized" asks `authorize` about `queues.read` for each queue, but `actions` does not enable it: every queue would be hidden',
+      { listQueues },
+    );
+  }
+
   const middleware = config.middleware ?? [];
   if (
     !Array.isArray(middleware) ||
@@ -1366,6 +1416,7 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
     mode,
     basePath,
     readOnly,
+    listQueues,
     authorize: config.authorize,
     allowUnauthenticated,
     actions,

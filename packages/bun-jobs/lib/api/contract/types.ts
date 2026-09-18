@@ -1,4 +1,9 @@
-import type { JobInclude, JobsApiMode, JobState } from "./constants";
+import type {
+  JobInclude,
+  JobsApiAction,
+  JobsApiMode,
+  JobState,
+} from "./constants";
 
 /**
  * Every request and response of the management API's HTTP routes, as named
@@ -214,7 +219,12 @@ export interface JobDto {
   data?: unknown;
   /** The processor's return value; with `include=returnValue`. */
   returnValue?: unknown;
-  /** Recent failures, newest first; with `include=stacktrace`. */
+  /**
+   * Recent failures, newest first; with `include=stacktrace`. Despite the
+   * name, an entry carries `stack` only when `serialize.exposeStacks` is on
+   * (it is off by default); otherwise each entry is the error's `name` and
+   * `message`, plus `code`, `data` and `cause` when it had them.
+   */
   stacktrace?: ErrorDto[];
   /** Options after defaults; with `include=opts`. */
   opts?: JobOptionsDto;
@@ -751,7 +761,15 @@ export interface CleanResultDto {
 /** Where a run executes. */
 export type ExecutionModeDto = "spawn" | "worker" | "in-process";
 
-/** What a runner instance is doing. */
+/**
+ * A runner instance's lifecycle in its own process — not whether a run is in
+ * progress (that is `isRunning`, and `local.activeRuns`):
+ *
+ * - `idle`: registered, not started yet;
+ * - `running`: started, its schedule armed — whether or not a run is in flight;
+ * - `paused`: started, and paused (the schedule does not fire);
+ * - `stopped`: stopped for good.
+ */
 export type RunnerStatusDto = "idle" | "running" | "paused" | "stopped";
 
 /** One run as a client sees it. */
@@ -886,7 +904,7 @@ export interface RunnerInfoDto {
   updatedAt?: number;
   /** This process's view, when the runner is registered here. */
   local?: {
-    /** The local instance's status. */
+    /** The local instance's lifecycle ({@link RunnerStatusDto}): not whether a run is in flight, which is `activeRuns`. */
     status: RunnerStatusDto;
     /** Runs in flight in this process. */
     activeRuns: RunRecordDto[];
@@ -903,8 +921,12 @@ export interface RunnerListItemDto {
   local: boolean;
   /** Its name; local runners only. */
   name?: string;
-  /** Its status; local runners only. */
+  /** Its lifecycle in this process ({@link RunnerStatusDto}); local runners only. */
   status?: RunnerStatusDto;
+  /** Whether it is paused, from the backend, so the same from every process. */
+  isPaused: boolean;
+  /** Whether a run is in flight anywhere, from the backend's lock. */
+  isRunning: boolean;
 }
 
 /** `GET /runners`. */
@@ -1190,8 +1212,13 @@ export interface ChannelPermissionDto {
 
 /** `GET /meta/permissions`. */
 export interface PermissionsDto {
-  /** For every action relevant to this API's mode, whether the caller may perform it. */
-  actions: Record<string, boolean>;
+  /**
+   * For every action the API routes (plus the socket's two, when it has one),
+   * whether the caller may perform it. Keyed by action: an action whose routes
+   * are pruned — by `mode`, `readOnly`, `actions` or the driver — is absent,
+   * not `false`, so read it as `actions[action] === true`.
+   */
+  actions: Partial<Record<JobsApiAction, boolean>>;
   /** The channel preview, when `channel` was asked. */
   channel?: ChannelPermissionDto;
 }

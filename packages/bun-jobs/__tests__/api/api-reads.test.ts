@@ -478,3 +478,74 @@ describe("authorizing the read routes", () => {
     ]);
   });
 });
+
+describe("stacktrace", () => {
+  /** A job on `mail` that failed once, with a real stack. */
+  async function failedJob(jobs: BunJobs): Promise<string> {
+    const job = await jobs.queue("mail").add("send", {}, { attempts: 1 });
+    const worker = new BunQueueWorker(
+      "mail",
+      async () => {
+        throw new Error("smtp down");
+      },
+      { namespace: jobs.namespace, driver: jobs.driver, pollInterval: 10 },
+    );
+    closers.push(async () => await worker.close({ timeout: 1_000 }));
+    void worker.run();
+    await waitFor(
+      async () => (await jobs.queue("mail").getJob(job.id))?.state === "dead",
+      { message: "the job never died" },
+    );
+    return job.id;
+  }
+
+  it("carries stacks only with serialize.exposeStacks, as documented", async () => {
+    const hidden = harness();
+    const id = await failedJob(hidden.jobs);
+    const plain = await hidden.call(
+      "GET",
+      `/queues/mail/jobs/${id}?include=stacktrace`,
+    );
+    expect(plain.body.stacktrace).toHaveLength(1);
+    expect(plain.body.stacktrace[0]).toMatchObject({
+      name: "Error",
+      message: "smtp down",
+    });
+    expect(plain.body.stacktrace[0]).not.toHaveProperty("stack");
+    expect(plain.body.failedReason).not.toHaveProperty("stack");
+
+    const shown = harness({ serialize: { exposeStacks: true } });
+    const shownId = await failedJob(shown.jobs);
+    const withStacks = await shown.call(
+      "GET",
+      `/queues/mail/jobs/${shownId}?include=stacktrace`,
+    );
+    expect(withStacks.body.stacktrace[0].stack).toContain("smtp down");
+
+    // The documents say so, where `stacktrace` and `stack` are described.
+    const doc = hidden.api.openapi() as unknown as {
+      paths: Record<string, Record<string, { description?: string }>>;
+      components: {
+        schemas: Record<
+          string,
+          { properties: Record<string, { description?: string }> }
+        >;
+      };
+    };
+    const { schemas } = doc.components;
+    expect(schemas.Job!.properties.stacktrace!.description).toContain(
+      "`serialize.exposeStacks`",
+    );
+    expect(schemas.Error!.properties.stack!.description).toContain(
+      "`serialize.exposeStacks`",
+    );
+    for (const [path, method] of [
+      ["/queues/{queue}/jobs", "get"],
+      ["/queues/{queue}/jobs/{id}", "get"],
+    ] as const) {
+      expect(doc.paths[path]![method]!.description).toContain(
+        "`stack` only with `serialize.exposeStacks`",
+      );
+    }
+  });
+});

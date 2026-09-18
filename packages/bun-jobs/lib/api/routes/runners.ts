@@ -4,6 +4,7 @@ import type { ScheduleInput } from "../../shared/schedule";
 import type { ResolvedJobsApiConfig } from "../config";
 import type { Infer } from "../schema/builder";
 import type { AnyRouteDef } from "./define";
+import { validateCron } from "../../shared/cron";
 import { ConfigError, NotSupportedError } from "../../shared/errors";
 import { ApiError } from "../errors";
 import {
@@ -24,6 +25,7 @@ import {
 import { toRunnerInfoDto, toRunRecordDto } from "../serialize";
 import { defineRoute } from "./define";
 import {
+  mapBounded,
   REMOTE_LATENCY_NOTE,
   RunnerParams,
   runnerTarget,
@@ -55,6 +57,36 @@ function toScheduleInput(
 }
 
 /**
+ * Which part of a schedule a refused `PUT /runners/:runner/schedule` body got
+ * wrong, as a VALIDATION-style issue path: `schedule.cron`, `schedule.tz`,
+ * `schedule.every`, `schedule.anchor`, `schedule.at`, or `schedule` itself
+ * for a bare cron string or interval. Found by re-checking each part with the
+ * same validators the schedule goes through, never by reading the message.
+ */
+export function scheduleIssuePath(
+  schedule: Infer<typeof ScheduleBodySchema>["schedule"],
+): string {
+  if (schedule === null || typeof schedule !== "object") {
+    return "schedule";
+  }
+  if ("cron" in schedule) {
+    if (!validateCron(schedule.cron)) {
+      return "schedule.cron";
+    }
+    return schedule.tz !== undefined &&
+      !validateCron(schedule.cron, { tz: schedule.tz })
+      ? "schedule.tz"
+      : "schedule";
+  }
+  if ("at" in schedule) {
+    return "schedule.at";
+  }
+  return schedule.anchor !== undefined && Number.isNaN(toEpoch(schedule.anchor))
+    ? "schedule.anchor"
+    : "schedule.every";
+}
+
+/**
  * The runner routes. Every runner in the namespace can be read and controlled
  * — one registered here directly, one registered by another process through
  * the backend — except that only this process can kill its own runs or reset
@@ -71,24 +103,38 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "runner",
       summary: "Every runner in the namespace",
       description:
-        "Runners registered in this process (`local: true`, with name and status), then the ids of runners only other processes registered (`local: false`).",
+        "Runners registered in this process (`local: true`, with name and lifecycle `status`), then runners only other processes registered (`local: false`). Every item carries `isPaused` and `isRunning`, read from the backend with one bounded read per runner.",
       tags: ["Runners"],
       responses: { 200: RunnerListSchema },
       handler: async ({ services }) => {
         const { local, remote } = await services.runners.list();
+        // One backend read per runner, bounded: paused and running come from
+        // the backend, as `GET /runners/:runner` reports them.
+        const flags = async (id: string) => {
+          const { controller } = await services.runners.resolve(id);
+          const { isPaused, isRunning } = await controller.info();
+          return { isPaused, isRunning };
+        };
         const items: {
           id: string;
           local: boolean;
           name?: string;
           status?: RunnerStatus;
+          isPaused: boolean;
+          isRunning: boolean;
         }[] = [
-          ...local.map((runner) => ({
+          ...(await mapBounded(local, async (runner) => ({
             id: runner.id,
             local: true,
             name: runner.name,
             status: runner.status,
-          })),
-          ...remote.map((id) => ({ id, local: false })),
+            ...(await flags(runner.id)),
+          }))),
+          ...(await mapBounded(remote, async (id) => ({
+            id,
+            local: false,
+            ...(await flags(id)),
+          }))),
         ];
         return { body: { items } };
       },
@@ -250,7 +296,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.reschedule",
       mode: "runner",
       summary: "Replace and persist the runner's schedule",
-      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. A malformed schedule is 400 \`INVALID_SCHEDULE\`, and nothing is written. ${REMOTE_LATENCY_NOTE}`,
+      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. A malformed schedule is 400 \`INVALID_SCHEDULE\`, with one \`issues\` entry whose \`path\` names the part at fault (\`schedule.cron\`, \`schedule.tz\`, \`schedule.every\`, \`schedule.anchor\`, \`schedule.at\`, or \`schedule\` for a bare cron string or interval), and nothing is written. ${REMOTE_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       body: ScheduleBodySchema,
@@ -268,6 +314,13 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           ) {
             throw new ApiError("INVALID_SCHEDULE", 400, error.message, {
               cause: error,
+              issues: [
+                {
+                  target: "body",
+                  path: scheduleIssuePath(body.schedule),
+                  message: error.message,
+                },
+              ],
             });
           }
           throw error;

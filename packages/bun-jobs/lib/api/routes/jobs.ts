@@ -126,7 +126,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "A page of the queue's jobs",
       description:
-        "Offset pagination over the states asked for, in their natural order. Jobs move between states while you page, so a page can repeat or skip a job: treat it as live data. Lists omit `data`, `returnValue`, `stacktrace` and `opts` unless `include` asks for them.",
+        "Offset pagination over the states asked for, in their natural order. Jobs move between states while you page, so a page can repeat or skip a job: treat it as live data. Lists omit `data`, `returnValue`, `stacktrace` and `opts` unless `include` asks for them. `stacktrace` entries (and `failedReason`) carry `stack` only with `serialize.exposeStacks`; otherwise each is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
       tags: ["Jobs"],
       params: QueueParams,
       query: jobListQuerySchema(limits.defaultPageSize, limits.maxPageSize),
@@ -235,7 +235,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "One job",
       description:
-        "Includes `data`, `returnValue` and `opts` unless `include` narrows it.",
+        "Includes `data`, `returnValue` and `opts` unless `include` narrows it; `stacktrace` only when `include` names it. `stacktrace` entries (and `failedReason`) carry `stack` only with `serialize.exposeStacks`; otherwise each is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
       tags: ["Jobs"],
       params: JobParams,
       query: IncludeQuerySchema,
