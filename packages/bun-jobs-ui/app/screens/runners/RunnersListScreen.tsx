@@ -17,7 +17,10 @@ import { listRefetchInterval } from "./live";
 import { filterRunners, orderRunners, RUNNER_STATUS } from "./runnerFormat";
 import "./runners.css";
 
-/** One row: a local runner with its name and status, or a remote id. */
+/**
+ * One row: a local runner with its name and lifecycle status, or a remote id
+ * with its shared paused flag; either one's run in flight is marked.
+ */
 function RunnerRow({ item }: { item: RunnerListItemDto }) {
   const status = item.status ? RUNNER_STATUS[item.status] : null;
   return (
@@ -41,7 +44,7 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
         ) : (
           <Badge
             tone="neutral"
-            title="Registered by another process: its name and status show on its own screen."
+            title="Registered by another process: its name shows on its own screen."
           >
             Remote
           </Badge>
@@ -55,8 +58,28 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
           >
             {status.label}
           </Badge>
+        ) : item.isPaused ? (
+          <Badge
+            tone="warning"
+            title="Paused through the shared state: its owner skips scheduled runs."
+          >
+            Paused
+          </Badge>
         ) : (
-          <span className="muted">—</span>
+          <Badge
+            tone="neutral"
+            title="Not paused. Its lifecycle status shows only in its own process."
+          >
+            Active
+          </Badge>
+        )}{" "}
+        {item.isRunning && (
+          <Badge
+            tone="accent"
+            title="A run holds this runner's lock right now, in whichever process."
+          >
+            Run in flight
+          </Badge>
         )}
       </td>
     </tr>

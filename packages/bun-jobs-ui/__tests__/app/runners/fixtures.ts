@@ -150,10 +150,24 @@ export function runnerListFixture(
 ): RunnerListDto {
   return {
     items: [
-      { id: "nightly", local: true, name: "Nightly report", status: "idle" },
-      { id: "sync", local: true, name: "sync", status: "running" },
-      { id: "billing", local: false },
-      { id: AWKWARD_RUNNER, local: false },
+      {
+        id: "nightly",
+        local: true,
+        name: "Nightly report",
+        status: "idle",
+        isPaused: false,
+        isRunning: false,
+      },
+      {
+        id: "sync",
+        local: true,
+        name: "sync",
+        status: "running",
+        isPaused: false,
+        isRunning: true,
+      },
+      { id: "billing", local: false, isPaused: true, isRunning: false },
+      { id: AWKWARD_RUNNER, local: false, isPaused: false, isRunning: false },
     ],
     ...overrides,
   };

@@ -20,8 +20,10 @@ export interface PermissionScopeProps {
 /**
  * Asks `/meta/permissions` about one queue or runner, so a host whose
  * `authorize` decides per target gets buttons that match. Until the answer
- * arrives (or if it fails), the untargeted map from the bootstrap applies, so
- * the screen never waits on it.
+ * arrives (or if it fails), the untargeted map from the bootstrap applies to
+ * buttons and panels, which never wait on it. A screen whose own read the
+ * target's answer might refuse (the job and runner screens) waits for it
+ * through `usePermissionsSettled()` instead.
  */
 export function PermissionScope({ target, children }: PermissionScopeProps) {
   const api = useApiClient();
