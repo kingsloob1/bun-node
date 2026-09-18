@@ -1072,7 +1072,7 @@ await queue.add("report", {}, { repeat: { every: "1 hour", startAt: "tomorrow at
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `cron` | `string` | | Five-field cron, or six-field with seconds first. |
-| `tz` | `string` | | The IANA time zone the cron expression is read in. |
+| `tz` | `string` | | The IANA time zone the cron expression is read in. It must be a zone `Intl` knows: `add()` throws `ConfigError` naming it otherwise (`repeat.tz does not know the time zone "…"`), before anything is written, and `repeatEvery(interval, { tz })` throws at the call. |
 | `every` | `number \| string` | | Milliseconds, a duration, a cron expression, or a phrase that may also name a start and end. Dates in the phrase fill `startAt` and `endAt` only when those are not given. |
 | `startAt` / `endAt` | `Date \| number \| string` | | The window, as a date, epoch ms, or words. |
 | `limit` | `number` | | Stop after this many occurrences. |

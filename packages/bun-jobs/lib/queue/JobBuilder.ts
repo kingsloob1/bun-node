@@ -9,6 +9,7 @@ import {
   parseWhen,
   readRecurrence,
 } from "../shared/humanTime";
+import { assertTimeZone } from "./repeat";
 
 /**
  * Everything a job can be told, in one object — all of it except the name.
@@ -265,6 +266,15 @@ export class JobBuilder<
     interval: number | string,
     options: RepeatEveryOptions = {},
   ): this {
+    // At the call, as `tz()` checks it: the series' zone is refused where it
+    // was given, not when the job is started, and before anything on the
+    // builder has changed.
+    if (options.tz !== undefined) {
+      assertTimeZone(options.tz, "repeatEvery()", {
+        method: "repeatEvery()",
+      });
+    }
+
     try {
       this.every(interval);
     } catch (error) {
@@ -385,12 +395,7 @@ export class JobBuilder<
    * call that gave it rather than when an occurrence is first computed.
    */
   tz(zone: string): this {
-    if (!isTimeZone(zone)) {
-      throw new ConfigError(`tz() does not know the time zone "${zone}"`, {
-        method: "tz()",
-        tz: zone,
-      });
-    }
+    assertTimeZone(zone, "tz()", { method: "tz()" });
 
     this.#repeat = { ...this.#repeat, tz: zone };
     return this;
@@ -639,23 +644,4 @@ function requireDuration(input: string, what: string): number {
   }
 
   return ms;
-}
-
-/**
- * Whether `zone` names a time zone this runtime knows. `Intl` is the
- * authority the schedule is later read with, so asking it now gives the same
- * answer that an occurrence would.
- */
-function isTimeZone(zone: string): boolean {
-  if (typeof zone !== "string" || zone.length === 0) {
-    return false;
-  }
-
-  try {
-    // eslint-disable-next-line no-new
-    new Intl.DateTimeFormat("en-US", { timeZone: zone });
-    return true;
-  } catch {
-    return false;
-  }
 }

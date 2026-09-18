@@ -695,6 +695,59 @@ for (const backend of backends) {
         expect(await total(queue)).toBe(0);
       });
 
+      it("checks a zone given to repeatEvery() at the call, as tz() does", async () => {
+        // Lagos is in Africa/: close enough to a real zone to pass a glance.
+        for (const call of [
+          () =>
+            jobs.create("mail").repeatEvery("1 day", { tz: "Europe/Lagos" }),
+          () =>
+            jobs.schedule("mail").repeatEvery("1 day", { tz: "Europe/Lagos" }),
+          () =>
+            jobs
+              .schedule("mail")
+              .repeatEvery("0 9 * * *", { tz: "Europe/Lagos" }),
+        ]) {
+          let error: unknown;
+          try {
+            call();
+          } catch (thrown) {
+            error = thrown;
+          }
+          expect(error).toBeInstanceOf(ConfigError);
+          expect((error as ConfigError).message).toBe(
+            `repeatEvery() does not know the time zone "Europe/Lagos"`,
+          );
+          expect((error as ConfigError).context).toEqual({
+            method: "repeatEvery()",
+            tz: "Europe/Lagos",
+          });
+        }
+
+        // The control: the real zone goes through, and is kept.
+        await jobs
+          .create("mail")
+          .repeatEvery("1 day", { tz: "Africa/Lagos", key: "lagos" })
+          .save();
+        expect((await queue.listRepeatables())[0]?.tz).toBe("Africa/Lagos");
+      });
+
+      it("refuses a zone in withOptions({ repeat }) before anything is written", async () => {
+        // A whole repeat object is taken as given at the call and read at
+        // start(), where every repeat is normalised: the same check applies.
+        const error = await rejection(
+          jobs
+            .schedule("mail")
+            .withOptions({ repeat: { every: "1 day", tz: "Europe/Lagos" } })
+            .start(),
+        );
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as ConfigError).message).toBe(
+          `repeat.tz does not know the time zone "Europe/Lagos"`,
+        );
+        expect(await queue.listRepeatables()).toEqual([]);
+        expect(await total(queue)).toBe(0);
+      });
+
       it("guards the builder's limit() the same way", () => {
         // Without a series there is nothing to limit; spreading an absent one
         // used to invent `{ limit: 3 }`, a repeat with nothing to repeat.
