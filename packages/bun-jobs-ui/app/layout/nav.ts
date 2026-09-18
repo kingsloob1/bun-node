@@ -69,7 +69,12 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
       });
     }
     if (meta.websocket && can("events.connect")) {
-      items.push({ id: "events", label: "Events", to: "/events", comingIn: 4 });
+      items.push({
+        id: "events",
+        label: "Events",
+        to: "/events",
+        comingIn: null,
+      });
     }
   }
   if (sections.docs && meta.docs && can("docs.read")) {

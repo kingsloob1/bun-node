@@ -1,7 +1,12 @@
+import { useCallback } from "react";
+import { runnerKeys } from "../../api/runners";
+import { liveChannels, useLiveInvalidation, usePollInterval } from "../../live";
+
 /**
- * How the runner screens stay current. Today every read polls; M4's
- * WebSocket replaces this one module (an interval of `false` plus event
- * invalidations), and nothing else in the screens changes.
+ * How the runner screens stay current: runner events invalidate the reads
+ * they change ({@link useRunnerListLive}, {@link useRunnerLive}), and every
+ * read also polls — at the base intervals below while live updates are off,
+ * much slower while they are live (`usePollInterval`).
  */
 export const RUNNER_REFRESH = {
   /** The runner list: statuses change rarely. */
@@ -53,4 +58,39 @@ export function listRefetchInterval(): number | false {
 /** The refetch interval of a runner's history. */
 export function historyRefetchInterval(): number | false {
   return RUNNER_REFRESH.history;
+}
+
+/** {@link runnerRefetchInterval}, relaxed while live updates are on. */
+export function useRunnerRefetchInterval(): (
+  runner: RunnerActivity | undefined,
+) => number | false {
+  const busy = usePollInterval(RUNNER_REFRESH.busy);
+  const idle = usePollInterval(RUNNER_REFRESH.idle);
+  return useCallback((runner) => (isBusy(runner) ? busy : idle), [busy, idle]);
+}
+
+/** {@link listRefetchInterval}, relaxed while live updates are on. */
+export function useListRefetchInterval(): number | false {
+  return usePollInterval(listRefetchInterval());
+}
+
+/** {@link historyRefetchInterval}, relaxed while live updates are on. */
+export function useHistoryRefetchInterval(): number | false {
+  return usePollInterval(historyRefetchInterval());
+}
+
+/** The Runners list's live updates: any event on `runners` refreshes every runner list. */
+export function useRunnerListLive(enabled: boolean): void {
+  useLiveInvalidation([liveChannels.runners], [runnerKeys.all], { enabled });
+}
+
+/**
+ * One runner's live updates, on `runner/<id>`: any of its events (a run
+ * started or ended, a control) refreshes its detail, stats and history,
+ * which all sit under its key.
+ */
+export function useRunnerLive(id: string, enabled: boolean): void {
+  useLiveInvalidation([liveChannels.runner(id)], [runnerKeys.runner(id)], {
+    enabled,
+  });
 }

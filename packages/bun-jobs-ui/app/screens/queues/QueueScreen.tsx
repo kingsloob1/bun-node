@@ -15,13 +15,13 @@ import { UrlTabs } from "../../components/Tabs";
 import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
 import { useUrlTab } from "../../hooks/useUrlTab";
-import { useCan, useMeta } from "../../meta/hooks";
+import { useCan, useMeta, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
 import { AddJobDialog } from "../job";
 import { canAddJobs, useCanMutate } from "./gating";
 import { JobsTable } from "./JobsTable";
-import { refreshInterval } from "./live";
+import { useQueueLive, useRefreshInterval } from "./live";
 import { LimitsPanel } from "./panels/LimitsPanel";
 import { RepeatablesPanel } from "./panels/RepeatablesPanel";
 import { ThroughputPanel } from "./panels/ThroughputPanel";
@@ -40,19 +40,30 @@ export function QueueScreen() {
   const canRead = useCan("queues.read");
   const canListJobs = useCan("jobs.list");
   const canAdd = useCan("jobs.add");
+  const canRepeatables = useCan("repeatables.list");
+  const settled = usePermissionsSettled();
+  const detailInterval = useRefreshInterval("detail");
+  const countsInterval = useRefreshInterval("counts");
+  // Subscribes once the queue's own permissions have answered, and only
+  // while its detail is readable.
+  useQueueLive(queue, {
+    enabled: canRead && settled,
+    jobs: canListJobs,
+    repeatables: canRepeatables,
+  });
   const [adding, setAdding] = useState(false);
   const addButtonRef = useRef<HTMLButtonElement>(null);
 
   const detail = useQuery({
     queryKey: queueKeys.detail(queue),
     queryFn: ({ signal }) => getQueue(api, queue, signal),
-    refetchInterval: refreshInterval("detail"),
+    refetchInterval: detailInterval,
     enabled: canRead,
   });
   const counts = useQuery({
     queryKey: queueKeys.counts(queue),
     queryFn: ({ signal }) => getQueueCounts(api, queue, signal),
-    refetchInterval: refreshInterval("counts"),
+    refetchInterval: countsInterval,
     enabled: canRead,
   });
 

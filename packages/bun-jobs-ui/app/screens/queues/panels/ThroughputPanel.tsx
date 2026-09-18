@@ -7,7 +7,7 @@ import { ProblemBanner } from "../../../components/ProblemBanner";
 import { Spinner } from "../../../components/Spinner";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
-import { refreshInterval } from "../live";
+import { useRefreshInterval } from "../live";
 import { useUrlParams } from "../urlState";
 import {
   DEFAULT_WINDOW,
@@ -31,10 +31,11 @@ export function ThroughputPanel({ queue }: ThroughputPanelProps) {
   const [params, update] = useUrlParams();
   const minutes = parseWindowParam(params.get("window"));
   const selectId = useId();
+  const refetchInterval = useRefreshInterval("throughput");
   const throughput = useQuery({
     queryKey: queueKeys.throughput(queue, minutes),
     queryFn: ({ signal }) => getThroughput(api, queue, minutes, signal),
-    refetchInterval: refreshInterval("throughput"),
+    refetchInterval,
     placeholderData: keepPreviousData,
   });
   return (

@@ -15,7 +15,7 @@ import { useCan, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
 import { RunnerActions } from "./actions";
-import { runnerRefetchInterval } from "./live";
+import { useRunnerLive, useRunnerRefetchInterval } from "./live";
 import {
   describeConcurrency,
   describeQueueing,
@@ -325,6 +325,7 @@ export function RunnerScreen() {
   const canRead = useCan("runners.read");
   const settled = usePermissionsSettled();
   const allowed = canRead && settled;
+  const refetchInterval = useRunnerRefetchInterval();
 
   const detail = useQuery({
     queryKey: runnerKeys.detail(id),
@@ -333,7 +334,7 @@ export function RunnerScreen() {
     refetchInterval: (query) =>
       isRunnerNotFound(query.state.error) || isRunnerDenied(query.state.error)
         ? false
-        : runnerRefetchInterval(query.state.data),
+        : refetchInterval(query.state.data),
   });
   const stats = useQuery({
     queryKey: runnerKeys.stats(id),
@@ -342,8 +343,14 @@ export function RunnerScreen() {
     refetchInterval: (query) =>
       isRunnerNotFound(query.state.error) || isRunnerDenied(query.state.error)
         ? false
-        : runnerRefetchInterval(detail.data),
+        : refetchInterval(detail.data),
   });
+  // Subscribes once the runner's map allows the read, and stops when the
+  // runner turns out to be refused or gone.
+  useRunnerLive(
+    id,
+    allowed && !isRunnerDenied(detail.error) && !isRunnerNotFound(detail.error),
+  );
 
   if (settled && !canRead) {
     return <RunnerHidden />;

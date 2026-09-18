@@ -7,6 +7,7 @@ import {
 } from "./meta/PermissionScope";
 import { Navigate } from "./router";
 import {
+  EventsScreen,
   JobScreen,
   QueueScreen,
   QueuesListScreen,
@@ -22,9 +23,8 @@ import { PlaceholderScreen } from "./screens/Placeholder";
  * routes in {@link buildRoutes}.
  */
 const PLACEHOLDER_ROUTES: Readonly<
-  Record<Exclude<NavId, "overview" | "queues" | "runners">, string[]>
+  Record<Exclude<NavId, "overview" | "queues" | "runners" | "events">, string[]>
 > = {
-  events: ["/events"],
   docs: ["/docs", "/docs/*"],
 };
 
@@ -73,6 +73,10 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
         },
         { path: "/queues", element: <QueuesListScreen /> },
       );
+      continue;
+    }
+    if (item.id === "events") {
+      routes.push({ path: "/events", element: <EventsScreen /> });
       continue;
     }
     if (item.id === "runners") {

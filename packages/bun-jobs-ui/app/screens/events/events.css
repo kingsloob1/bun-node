@@ -1,0 +1,98 @@
+/* The Events console: the subscription controls and the event log. */
+
+.events-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.events-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+
+.events-picker .field {
+  min-width: 12rem;
+  margin: 0;
+}
+
+.events-types {
+  margin-top: var(--space-3);
+}
+
+.events-types summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.events-types fieldset {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.events-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.events-channel {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.events-rejected {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.events-rejected p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.events-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.events-held {
+  font-variant-numeric: tabular-nums;
+}
+
+.events-table td {
+  vertical-align: top;
+}
+
+.events-time {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.events-kind {
+  white-space: nowrap;
+}
+
+.events-target,
+.events-id {
+  overflow-wrap: anywhere;
+}
+
+.events-payload {
+  min-width: 12rem;
+}
+
+.events-gap td {
+  font-style: italic;
+}

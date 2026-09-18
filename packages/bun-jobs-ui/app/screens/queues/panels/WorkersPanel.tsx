@@ -8,7 +8,7 @@ import { Spinner } from "../../../components/Spinner";
 import { Table } from "../../../components/Table";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
-import { refreshInterval } from "../live";
+import { useRefreshInterval } from "../live";
 
 /** Props of {@link WorkersPanel}. */
 export interface WorkersPanelProps {
@@ -19,10 +19,11 @@ export interface WorkersPanelProps {
 /** `GET /queues/:queue/workers`: live workers, with host/pid when the API exposes them. */
 export function WorkersPanel({ queue }: WorkersPanelProps) {
   const api = useApiClient();
+  const refetchInterval = useRefreshInterval("workers");
   const workers = useQuery({
     queryKey: queueKeys.workers(queue),
     queryFn: ({ signal }) => listQueueWorkers(api, queue, signal),
-    refetchInterval: refreshInterval("workers"),
+    refetchInterval,
   });
   if (workers.isPending) {
     return (

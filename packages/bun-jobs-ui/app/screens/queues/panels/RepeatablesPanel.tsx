@@ -18,7 +18,7 @@ import { Table } from "../../../components/Table";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
-import { refreshInterval } from "../live";
+import { useRefreshInterval } from "../live";
 import { describeSchedule } from "../queueFormat";
 
 /** Props of {@link RepeatablesPanel}. */
@@ -33,10 +33,11 @@ export interface RepeatablesPanelProps {
 export function RepeatablesPanel({ queue, canRemove }: RepeatablesPanelProps) {
   const api = useApiClient();
   const [removing, setRemoving] = useState<RepeatableDto | null>(null);
+  const refetchInterval = useRefreshInterval("repeatables");
   const repeatables = useQuery({
     queryKey: queueKeys.repeatables(queue),
     queryFn: ({ signal }) => listRepeatables(api, queue, signal),
-    refetchInterval: refreshInterval("repeatables"),
+    refetchInterval,
   });
   const remove = useApiMutation({
     mutationFn: (key: string) => removeRepeatable(api, queue, key),

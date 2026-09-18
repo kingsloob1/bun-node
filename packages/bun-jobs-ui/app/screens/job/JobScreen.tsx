@@ -29,7 +29,7 @@ import { ErrorDetails } from "./ErrorDetails";
 import { JobActions } from "./JobActions";
 import { JobFlow } from "./JobFlow";
 import { JobLogs } from "./JobLogs";
-import { jobRefetchInterval } from "./polling";
+import { useJobLive, useJobRefetchInterval } from "./polling";
 import "./job.css";
 
 /** Whether an error means the job (or its queue) does not exist. */
@@ -321,6 +321,7 @@ export function JobScreen() {
   // queue's own answer refuses; a later `false` also stops the polling.
   const canRead = useCan("jobs.read");
   const settled = usePermissionsSettled();
+  const refetchInterval = useJobRefetchInterval();
   const job = useQuery({
     queryKey: jobKeys.job(queue, id),
     queryFn: ({ signal }) =>
@@ -329,8 +330,15 @@ export function JobScreen() {
     refetchInterval: (query) =>
       isNotFound(query.state.error) || isDenied(query.state.error)
         ? false
-        : jobRefetchInterval(query.state.data?.state),
+        : refetchInterval(query.state.data?.state),
   });
+  // Subscribes once the queue's map allows the read, and stops when the job
+  // turns out to be refused or gone.
+  useJobLive(
+    queue,
+    id,
+    canRead && settled && !isDenied(job.error) && !isNotFound(job.error),
+  );
 
   if (settled && !canRead) {
     return <JobHidden queue={queue} />;

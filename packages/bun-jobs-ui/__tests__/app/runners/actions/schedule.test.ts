@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { ApiError } from "../../../../app/api/errors";
 import {
   cronShapeError,
   emptyScheduleForm,
   formFromSchedule,
   intervalMs,
-  invalidScheduleField,
+  invalidScheduleErrors,
   isValidTimeZone,
   scheduleBody,
   scheduleFieldErrors,
@@ -177,24 +178,43 @@ describe("validateScheduleForm", () => {
 });
 
 describe("server errors onto fields", () => {
-  it("puts INVALID_SCHEDULE on tz when it names a time zone, else the main field", () => {
+  it("reads INVALID_SCHEDULE's issues as field errors, by path", () => {
+    const error = new ApiError({
+      kind: "problem",
+      status: 400,
+      code: "INVALID_SCHEDULE",
+      title: "Invalid schedule",
+      detail: "Bun.cron: unknown time zone 'Mars/Base'",
+      issues: [
+        { target: "body", path: "schedule.tz", message: "unknown time zone" },
+      ],
+    });
+    expect(invalidScheduleErrors(error)).toEqual({
+      "schedule.tz": "unknown time zone",
+    });
     expect(
-      invalidScheduleField(
-        "cron",
-        `Invalid cron expression "0 9 * * *": Bun.cron: unknown time zone 'Mars/Base'`,
-      ),
-    ).toBe("tz");
-    expect(
-      invalidScheduleField("cron", 'Invalid cron expression "61 * * * *"'),
-    ).toBe("cron");
-    expect(
-      invalidScheduleField("every", "schedule.every must be positive"),
-    ).toBe("every");
-    expect(
-      invalidScheduleField("every", "schedule.anchor must be a valid date"),
-    ).toBe("anchor");
-    expect(invalidScheduleField("at", "schedule.at must be valid")).toBe("at");
-    expect(invalidScheduleField("none", "whatever")).toBeNull();
+      scheduleFieldErrors(invalidScheduleErrors(error), "cron").fields,
+    ).toEqual({ tz: "unknown time zone" });
+  });
+
+  it("reads nothing from an issue-less INVALID_SCHEDULE, or another error", () => {
+    const bare = new ApiError({
+      kind: "problem",
+      status: 400,
+      code: "INVALID_SCHEDULE",
+      title: "Invalid schedule",
+      detail: "Bun.cron: unknown time zone 'Mars/Base'",
+    });
+    expect(invalidScheduleErrors(bare)).toEqual({});
+    expect(invalidScheduleErrors(new Error("boom"))).toEqual({});
+    const other = new ApiError({
+      kind: "problem",
+      status: 400,
+      code: "VALIDATION",
+      title: "Validation failed",
+      issues: [{ target: "body", path: "schedule.tz", message: "x" }],
+    });
+    expect(invalidScheduleErrors(other)).toEqual({});
   });
 
   it("maps VALIDATION paths onto fields, a bare path onto the mode's field", () => {
