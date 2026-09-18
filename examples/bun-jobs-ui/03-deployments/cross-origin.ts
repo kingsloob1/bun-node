@@ -25,6 +25,11 @@
  * And the UI must be told the API's `csrf.header`, because with `apiUrl` it
  * cannot read it: `csrfHeader: "X-Jobs-CSRF"`.
  *
+ * The shell's `connect-src` then lists the API's origin in its `http(s)` and
+ * `ws(s)` forms. Keep the socket on the API's own port in this setup: with
+ * `apiUrl` the UI only learns a dedicated socket port from `/meta` at
+ * runtime, so that port is not in `connect-src`.
+ *
  * What this script can and cannot show: it sends exactly the requests a
  * browser on the UI's origin would — the preflight, the `Origin` and
  * `Sec-Fetch-Site` headers, the cookie — and checks the API's answers and the
@@ -135,12 +140,19 @@ checkEqual(
 const connectSrc = cspDirectives(page.headers.get("content-security-policy"))[
   "connect-src"
 ];
-checkEqual("the CSP lets the page connect to the API's origin", connectSrc, [
-  "'self'",
-  "ws:",
-  "wss:",
-  apiOrigin,
-]);
+// After 'self': the page's own origin as a socket (from the Host the browser
+// sent), then the API's origin in its http(s) and ws(s) forms. Never a bare
+// ws: or wss:.
+checkEqual(
+  "connect-src: the page's socket origin, and the API's origin as http and ws",
+  connectSrc,
+  [
+    "'self'",
+    `ws://${new URL(uiOrigin).host}`,
+    apiOrigin,
+    `ws://${new URL(apiOrigin).host}`,
+  ],
+);
 
 /** What the page's app sends: the UI's origin, a cross-site fetch, the cookie. */
 const fromUi = {

@@ -44,13 +44,13 @@ published package ships `dist/` and never builds.
 
 | File | Shows |
 |---|---|
-| [`shell-and-assets.ts`](./02-serving/shell-and-assets.ts) | the shell's headers and Content-Security-Policy, a fresh nonce on each request, the injected `UiConfig`, deep links, SRI, asset content types and `Cache-Control`, ETag/304, `HEAD`, an unknown asset's 404 problem, what falls through to the host, and `ui.router.fetch()` unmounted. Every request goes through `fetch()` with no socket bound |
+| [`shell-and-assets.ts`](./02-serving/shell-and-assets.ts) | the shell's headers and Content-Security-Policy, a fresh nonce on each request, `connect-src` built per request from the `Host` (`ws://` or `wss://`, the port kept, a dedicated socket port added, a malformed `Host` ignored — never a bare `ws:`/`wss:`), the injected `UiConfig`, deep links, SRI, asset content types and `Cache-Control`, ETag/304, `HEAD`, an unknown asset's 404 problem, what falls through to the host, and `ui.router.fetch()` unmounted. Every request goes through `fetch()` with no socket bound |
 
 ### 03 — Deployments
 
 | File | Shows |
 |---|---|
-| [`cross-origin.ts`](./03-deployments/cross-origin.ts) | the UI and the API on two origins: `apiUrl`, `csrfHeader` set by hand, and the API's `cors`, `csrf.allowedOrigins` and `websocket.allowedOrigins`, each checked with the requests a browser on the UI's origin would send |
+| [`cross-origin.ts`](./03-deployments/cross-origin.ts) | the UI and the API on two origins: `apiUrl`, `csrfHeader` set by hand, and the API's `cors`, `csrf.allowedOrigins` and `websocket.allowedOrigins`, each checked with the requests a browser on the UI's origin would send, and the API's origin in `connect-src` as `http(s)` and `ws(s)` (keep the socket on the API's port: a dedicated one is not listed with `apiUrl`) |
 
 For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts):
 `jobsUi()` over the API that `BunJobsApiModule` built, mounted with
@@ -64,7 +64,7 @@ and tries every value `jobsUi()` refuses, which must throw a `ConfigError`.
 
 | File | Covers |
 |---|---|
-| [`jobs-ui-options.ts`](./10-options/jobs-ui-options.ts) | the exported constants; `logger`, and the one-time in-memory build it hears about; `dev`; `api` or `apiUrl` (exactly one) and every rejected `apiUrl` form; what the UI reads from `api` (a dedicated socket port, custom docs paths, neither); every `basePath` rule, and an API mounted under the UI in either order; `csrfHeader` by default, set by hand and `false`; `title` and its escaping; `sections`; `theme`; every `authorize` answer (`true`/`false`, the object form with `status` and `reason`, async, unrecognised → 403, throw → 500, the `asset` flag, `HEAD`); `middleware` before `authorize`; the frozen result |
+| [`jobs-ui-options.ts`](./10-options/jobs-ui-options.ts) | the package's exact runtime exports and the exported constants; `logger`, and the one-time in-memory build it hears about; `dev`; `api` or `apiUrl` (exactly one), the root and trailing-slash forms it accepts and every form it rejects (a URL path checked as written, credentials of any kind, a query or fragment even when empty); what the UI reads from `api` (a dedicated socket port, custom docs paths, neither); every `basePath` rule, and an API mounted under the UI in either order; `csrfHeader` by default (none, unless the API reports one), set by hand and `false`; `title` and its escaping; `sections`; `theme`; every `authorize` answer (`true`/`false`, the object form with `status` and `reason`, any status but 401 → 403, async, unrecognised → 403, throw → 500, the `asset` flag, `HEAD`); `middleware` before `authorize`; the frozen result |
 
 ## Checking the examples
 
