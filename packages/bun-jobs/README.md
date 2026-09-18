@@ -1393,8 +1393,19 @@ for await (const event of notifier) {
   `new JobsNotifier(driver, namespace, options)`, then call `start()`.
   `close()` ends it and any iterators.
 - **Members.** `follow(kind, target)` starts following a queue or runner
-  before it exists, so nothing is missed. `following` lists what is followed.
-  The emitted events are `event`, `subscribed` and `error`.
+  before it exists, so nothing is missed, and for good. `following` lists
+  the **live** subscriptions, as `<kind>:<target>`: a target whose subscribe
+  is still in flight, or failed (reported as `error`), is not in it yet. The
+  emitted events are `event`, `subscribed` and `error`.
+- **Holding a target.** `hold(kind, target)` follows a queue or runner like
+  `follow()`, but reference-counted: each `hold` needs its own
+  `unfollow(kind, target)`, and the subscription is closed when the last
+  holder lets go. It is for followers whose names come from outside — the
+  live-events socket holds each `queue/<q>` and `runner/<r>` channel's target
+  while a client is subscribed, since a client may name a queue that does not
+  exist yet, or never will. What discovery, the configured `queues`/`runners`
+  lists or `follow()` follow stays followed for good: `unfollow()` never drops
+  it, and releasing something not held does nothing.
 - **Event shape.** Each event is a `DriverEvent`, with fields `kind`, `type`,
   `ns`, `target`, `at`, `origin` and `payload`. A `switch` on `kind`, then
   `type`, narrows the payload.
@@ -1524,7 +1535,10 @@ export class AppModule {}
 `authorize` is required — `createJobsApi` throws `ConfigError` without it,
 unless you pass `allowUnauthenticated: true` (local development only, and it
 warns on every start). It is asked once per request, before the handler runs,
-and again per channel on the socket:
+and again per channel on the socket — and, on the broad channels `all`,
+`queues` and `runners`, once per queue or runner an event comes from, with
+`channel` plus that `queue` or `runner` (see
+[Live events](#live-events)):
 
 ```ts
 export type Authorize = (
@@ -1568,8 +1582,8 @@ re-enable what configuration removed.
 | `jobs.list` | read | |
 | `jobs.read` | read | |
 | `jobs.logs` | read | |
-| `jobs.add` | mutation | opt-in |
-| `jobs.update` | mutation | opt-in |
+| `jobs.add` | mutation | off by default |
+| `jobs.update` | mutation | off by default |
 | `jobs.retry` | mutation | |
 | `jobs.retryAll` | mutation | |
 | `jobs.remove` | mutation | |
@@ -1588,9 +1602,24 @@ re-enable what configuration removed.
 | `events.connect` | read | |
 | `events.subscribe` | read | |
 
-The two **opt-in** actions write payloads your handlers trust, so they are
-absent unless named in `actions`. `jobs.add` is further restricted to
-`addableNames` (by default, the names in `jobs.definitions()`).
+**`actions` is an allow-list, not a list of extras.** Left unset, it
+defaults to every action except `jobs.add` and `jobs.update`
+(`JOBS_API_OPT_IN_ACTIONS`), which write payloads your handlers trust. Once
+you pass it, *only* the actions it names are enabled: `actions: ["jobs.add",
+"jobs.update"]` alone turns those two on and every other action — reads,
+`meta.read` and `docs.read` included — off. To enable the two on top of the
+defaults, list the defaults too:
+
+```ts
+import { JOBS_API_ACTIONS } from "@kingsleyweb/bun-jobs";
+
+createJobsApi({ ...options, actions: [...JOBS_API_ACTIONS] }); // everything
+```
+
+`jobs.add` is further restricted to `addableNames` (by default, the names in
+`jobs.definitions()`). The queue it names need not exist yet: the first job
+added creates it, as `BunQueue.add` does. With `queues` set to a list, a
+queue outside the list is still 404 `QUEUE_NOT_FOUND`.
 `GET /meta/permissions` evaluates the whole table for the caller, so a UI can
 hide what it may not do.
 
@@ -1754,9 +1783,23 @@ ws.onopen = () =>
 | `all` | every event (mode `both` only) |
 | `queues` | every queue event |
 | `queue/{queue}` | one queue's events |
-| `queue/{queue}/job/{jobId}` | one job's events (the id is `encodeURIComponent`-escaped) |
+| `queue/{queue}/job/{jobId}` | one job's events (the id escaped with `encodeJobId`, below) |
 | `runners` | every runner event |
 | `runner/{runner}` | one runner's events |
+
+**Naming a job channel.** Escape the id with `encodeJobId(id)`, exported by
+`@kingsleyweb/bun-jobs/api/contract` (and the root): it is
+`encodeURIComponent`, except that a lone UTF-16 surrogate — which
+`encodeURIComponent` throws on — becomes `%uXXXX` (upper-case hex), so every
+job id has a channel. `decodeJobId` reverses either form. The two cannot be
+confused, because `encodeURIComponent` escapes `%` itself as `%25`. The `ack`
+lists each channel in canonical form, the id re-encoded this way.
+
+One `subscribe` or `unsubscribe` names at most 256 channels
+(`JOBS_API_WS_MAX_CHANNELS_PER_FRAME`); more is refused whole, with an
+`error` frame of code `VALIDATION`. A connection holds at most
+`maxSubscriptions` (default 50); channels past that are refused in the `ack`
+as `SUBSCRIPTION_LIMIT`, without asking `authorize`.
 
 The server sends `hello` on open, `ack` for each `subscribe`/`unsubscribe`
 (with per-channel `rejected` entries, so one refused channel does not close
@@ -1766,10 +1809,40 @@ an event matching several of your channels arrives **once**.
 
 **Resuming.** After a reconnect, `subscribe` with `resume: { epoch, afterSeq }`
 replays what the server still holds (`websocket.replay`, by default 1000
-events or five minutes) and answers `ack { resumed: true }`. Otherwise you get
-`ack { resumed: false }` and a `gap` — refetch over HTTP. A different `epoch`
-means a different server instance, which is normal behind a load balancer
-without sticky sessions.
+events or five minutes), for the channels that frame accepted, **before** the
+`ack`, and answers `ack { resumed: true }`. `resumed: false` means some events
+could not be replayed and a `gap` covers them: right after the `ack`, or — if
+the connection fell behind during the replay — when it drains. Refetch over
+HTTP what a gap covers. The gap's `reason` says why:
+
+- `resume-expired` — the events after `afterSeq` are older than the server
+  still holds; the gap runs from `afterSeq + 1`.
+- `epoch-changed` — a different server instance (normal behind a load
+  balancer without sticky sessions), or an `afterSeq` **ahead** of anything
+  this instance has stamped in that epoch, which can only come from another
+  instance; the gap runs from `0`.
+
+**`seq` and duplicates.** `seq` increases within an `epoch`, across every
+channel, and one connection never sends the same `seq` twice — an event
+already delivered live is skipped by a replay. So the last `seq` processed,
+with its `epoch`, is all a client needs to keep; drop anything at or below it
+if you replay from your own buffer too. `heartbeat.seq` is the server's
+latest across *all* connections, so a jump in it says nothing about missed
+events — only `gap` frames do.
+
+**Authorizing broad channels.** Subscribing to a channel asks `authorize` for
+`events.subscribe` once, with `channel` (and `queue`, `runner` or `jobId` for
+a named channel). The broad channels — `all`, `queues` and `runners` — reach
+every queue or runner, so each target is also authorized on its own: the
+first event from a queue or runner on a broad channel asks `authorize` again,
+with `channel` plus that `queue` or `runner`, and events from a target the
+host denies are dropped from that channel without a frame. Each answer is
+remembered for the subscription (an `authorize` that threw is asked again for
+the next event), and forgotten on `unsubscribe`. While a decision is pending,
+that connection's events are held back, in `seq` order, so the first event
+from a new target can be delayed by one `authorize` call. At most 1000 events
+are held; past that the connection is treated as a slow consumer — it stops
+receiving events and gets a `slow-consumer` `gap` once the backlog clears.
 
 **Backpressure.** A client that cannot keep up stops receiving events, gets one
 `gap` when its socket drains, and is closed `4008` after
@@ -1813,8 +1886,10 @@ mirror re-encodes anything — or leave the pages off and use the JSON.
   here belongs on the public internet.
 - **`authorize` is mandatory** and fails closed. Use `readOnly` and `actions`
   as static limits that no hook can re-enable.
-- **Leave the opt-in actions off** unless a UI genuinely needs them:
-  `jobs.add` and `jobs.update` write payloads your handlers trust.
+- **Leave `jobs.add` and `jobs.update` off** unless a UI genuinely needs
+  them: they write payloads your handlers trust. Enabling them means passing
+  `actions`, which is an allow-list — name every action you want, not just
+  these two.
 - **CSRF, for cookie sessions.** Mutations require `Content-Type:
   application/json` by default, and cross-site `Origin`/`Sec-Fetch-Site` are
   refused; add `csrf.header` to force a preflight. CORS is off by default, and
@@ -1843,7 +1918,7 @@ served slowly. Override any of them through `limits`.
 | `maxLogPage` | `500` | largest log page |
 | `maxHistory` | `200` | largest runner history page |
 | `maxQueues` | `500` | queues summarised by `/queues` and `/overview` |
-| `queueCacheMs` | `2000` | how long the known-queue list is cached |
+| `queueCacheMs` | `2000` | how long the known-queue list is cached; a queue missing from it is checked against the backend once more (at most once per window) before a 404 |
 | `maxJobDataBytes` | `1048576` | body accepted by `jobs.add`/`jobs.update` |
 
 The socket has its own (`websocket`): `maxConnections` `1000`,
@@ -1854,7 +1929,11 @@ The socket has its own (`websocket`): `maxConnections` `1000`,
 
 `GET /meta` reports every cap above except `queueCacheMs` as `limits`, read
 from the very values the routes enforce, so a client can size pages and bulk
-selections without meeting a 400.
+selections without meeting a 400. Two more are reported there though they are
+not options: `defaultClean`, the `limit` a `clean` uses when none is given
+(`min(1000, maxClean)`), and `maxRetryAllIds`, the most ids a `retry-all`
+answers with (`1000`; past it `ids` holds the first `1000` and `truncated` is
+`true`).
 
 ### Writing a client
 
@@ -1872,7 +1951,10 @@ selections without meeting a 400.
 
 `GET /meta/permissions?channel=queue/mail` previews a WebSocket subscription:
 the channel is parsed and checked as a `subscribe` frame's would be, and
-`authorize` is asked about `events.subscribe` on it. `GET /overview` adds
+`authorize` is asked about `events.subscribe` on it. The answer's `key` is the
+channel's canonical name whenever it parsed — refused afterwards or not
+(`CHANNEL_NOT_AVAILABLE`, `QUEUE_NOT_FOUND`, `RUNNER_NOT_FOUND`, `FORBIDDEN`,
+…); only an `INVALID_CHANNEL` has none. `GET /overview` adds
 `throughputSeries`, the namespace's per-minute throughput in the shape of
 `GET /queues/:queue/throughput`.
 
@@ -1892,7 +1974,10 @@ response (`MetaDto`, `OverviewDto`, `QueueListDto`, `JobDto`, `AddJobBody`,
 `TriggerOutcomeDto`, …), and for the socket every frame
 (`JobsApiClientMessage`, `JobsApiServerMessage` and their members) and every
 event (`EventWire`, with payload errors as `ErrorWire`), plus
-`JOBS_API_WS_MAX_CHANNELS_PER_FRAME`. It imports nothing outside itself — no driver, no
+`JOBS_API_WS_MAX_CHANNELS_PER_FRAME` and `encodeJobId`/`decodeJobId` for job
+channel names. The server defines none of the socket types itself: the root
+entry's `JobsApiEventMessage` and the rest *are* the contract's, so the two
+imports mix freely. It imports nothing outside itself — no driver, no
 bun-common, no `node:*` — so it bundles for the browser, and the server takes
 its constants from it, so the two cannot disagree.
 
