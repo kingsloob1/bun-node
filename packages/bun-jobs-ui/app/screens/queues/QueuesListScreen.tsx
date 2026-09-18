@@ -9,7 +9,7 @@ import { Spinner } from "../../components/Spinner";
 import { useApiClient } from "../../context";
 import { useCan, useMeta } from "../../meta/hooks";
 import { QueueTable } from "../Overview";
-import { refreshInterval } from "./live";
+import { useQueueListLive, useRefreshInterval } from "./live";
 import { clampLimit, intParam, useUrlParams } from "./urlState";
 import "./queues.css";
 
@@ -33,11 +33,13 @@ export function QueuesListScreen() {
   );
   const offset = intParam(params, "offset", 0);
   const query = { search: deferredSearch, offset, limit };
+  const refetchInterval = useRefreshInterval("list");
+  useQueueListLive(canList);
 
   const queues = useQuery({
     queryKey: queueKeys.page(query),
     queryFn: ({ signal }) => listQueuesPage(api, query, signal),
-    refetchInterval: refreshInterval("list"),
+    refetchInterval,
     placeholderData: keepPreviousData,
     enabled: canList,
   });

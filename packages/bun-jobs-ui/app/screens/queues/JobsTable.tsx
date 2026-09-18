@@ -46,7 +46,7 @@ import {
   readJobFilters,
   truncate,
 } from "./jobFilters";
-import { refreshInterval } from "./live";
+import { useRefreshInterval } from "./live";
 import { listIds } from "./queueFormat";
 import { splitList, useUrlParams } from "./urlState";
 
@@ -86,11 +86,12 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
   ];
   const tab = useUrlTab<StateTab>("state", tabs, ALL_STATES);
   const filters = readJobFilters(params, tab, meta.limits);
+  const refetchInterval = useRefreshInterval("jobs");
 
   const jobs = useQuery({
     queryKey: queueKeys.jobs(queue, filters),
     queryFn: ({ signal }) => listJobs(api, queue, filters, signal),
-    refetchInterval: refreshInterval("jobs"),
+    refetchInterval,
     placeholderData: keepPreviousData,
   });
 

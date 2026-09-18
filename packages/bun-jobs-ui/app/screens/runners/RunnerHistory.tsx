@@ -13,7 +13,7 @@ import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
 import { useMeta } from "../../meta/hooks";
 import { clampLimit, intParam, useUrlParams } from "../queues/urlState";
-import { historyRefetchInterval } from "./live";
+import { useHistoryRefetchInterval } from "./live";
 import {
   defaultHistoryLimit,
   historyLimitOptions,
@@ -93,10 +93,11 @@ export function RunnerHistory({ runner, enabled = true }: RunnerHistoryProps) {
   );
   const options = historyLimitOptions(limits.maxHistory);
 
+  const refetchInterval = useHistoryRefetchInterval();
   const history = useQuery({
     queryKey: runnerKeys.history(runner, limit),
     queryFn: ({ signal }) => getRunnerHistory(api, runner, limit, signal),
-    refetchInterval: historyRefetchInterval(),
+    refetchInterval,
     enabled,
   });
 

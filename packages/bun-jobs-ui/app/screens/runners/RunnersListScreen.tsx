@@ -13,7 +13,7 @@ import { plural } from "../../format";
 import { useCan } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useUrlParams } from "../queues/urlState";
-import { listRefetchInterval } from "./live";
+import { useListRefetchInterval, useRunnerListLive } from "./live";
 import { filterRunners, orderRunners, RUNNER_STATUS } from "./runnerFormat";
 import "./runners.css";
 
@@ -95,10 +95,12 @@ export function RunnersListScreen() {
   const filter = params.get("search") ?? "";
   const deferredFilter = useDeferredValue(filter);
 
+  const refetchInterval = useListRefetchInterval();
+  useRunnerListLive(canList);
   const runners = useQuery({
     queryKey: runnerKeys.list(),
     queryFn: ({ signal }) => listRunners(api, signal),
-    refetchInterval: listRefetchInterval(),
+    refetchInterval,
     enabled: canList,
   });
 

@@ -1,11 +1,22 @@
-import type { JobState } from "../../api/types";
-import { isFinished } from "../../api/jobs";
+import type { JobDto, JobState, QueueEventName } from "../../api/types";
+import { QUEUE_EVENT_TYPES } from "@kingsleyweb/bun-jobs/api/contract";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { isFinished, jobKeys } from "../../api/jobs";
+import {
+  liveChannels,
+  useLiveInvalidation,
+  useLiveSubscription,
+  usePollInterval,
+} from "../../live";
 import { POLL_INTERVAL_MS } from "../../queryClient";
 
 /**
- * How the job screen stays fresh. Until live updates land (milestone 4, the
- * WebSocket), it polls; every interval the screen uses is chosen here, so
- * switching to socket-driven invalidation means changing this one module.
+ * How the job screen stays fresh: events on the job's channel invalidate it
+ * (see {@link useJobLive}), and it also polls — at the intervals below while
+ * live updates are off, much slower while they are live. Log lines and a
+ * child's progress announce nothing on this job's channel, so the logs and
+ * the children table keep their own intervals either way.
  */
 
 /** How often an unfinished job is re-read, ms. */
@@ -45,4 +56,60 @@ export const LOG_PAGE_SIZES: readonly number[] = [50, 100, 200, 500];
 /** The API's default log page: `min(100, maxLogPage)`. */
 export function defaultLogLimit(maxLogPage: number): number {
   return Math.max(1, Math.min(100, maxLogPage));
+}
+
+/**
+ * The job's refetch interval, given live updates: a function of its state
+ * ({@link jobRefetchInterval}, relaxed by `usePollInterval` while live).
+ */
+export function useJobRefetchInterval(): (
+  state: JobState | undefined,
+) => number | false {
+  const poll = usePollInterval(JOB_POLL_MS);
+  return useCallback(
+    (state) => (jobRefetchInterval(state) === false ? false : poll),
+    [poll],
+  );
+}
+
+/** Job events that change nothing the job screen shows: progress is patched in place instead, and an add that added nothing is no change. */
+const NOT_REFETCHED: ReadonlySet<QueueEventName> = new Set<QueueEventName>([
+  "progress",
+  "duplicate",
+  "throttled",
+]);
+
+/** The events on a job's channel that refetch the job, its logs and its children. */
+export const JOB_EVENTS: readonly QueueEventName[] = QUEUE_EVENT_TYPES.filter(
+  (type) => !NOT_REFETCHED.has(type),
+);
+
+/**
+ * The job screen's live updates, on `queue/<q>/job/<id>`. A state change
+ * (or a retry, clean, removal, debounce) invalidates the job's key, which is
+ * the prefix of its logs, stack traces and children, so all of them refetch.
+ * A `progress` event refetches nothing: its value is written into the cached
+ * job directly.
+ */
+export function useJobLive(queue: string, id: string, enabled: boolean): void {
+  const queryClient = useQueryClient();
+  const channels = [liveChannels.job(queue, id)];
+  useLiveInvalidation(channels, [jobKeys.job(queue, id)], {
+    events: JOB_EVENTS,
+    enabled,
+  });
+  useLiveSubscription({
+    channels,
+    events: ["progress"],
+    enabled,
+    onEvent: (event) => {
+      if (event.kind !== "queue" || event.type !== "progress") {
+        return;
+      }
+      const { progress } = event.payload;
+      const patch = (job: JobDto | undefined) =>
+        job ? { ...job, progress } : job;
+      queryClient.setQueryData<JobDto>(jobKeys.job(queue, id), patch);
+    },
+  });
 }

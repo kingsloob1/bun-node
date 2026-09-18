@@ -16,10 +16,12 @@ import { useApiClient } from "../context";
 import { formatNumber, plural } from "../format";
 import { useInView } from "../hooks/useInView";
 import { createLimiter } from "../limiter";
+import { usePollInterval } from "../live";
 import { useCan, useFeature } from "../meta/hooks";
 import { POLL_INTERVAL_MS } from "../queryClient";
 import { Link } from "../router";
 import { useQueryParam } from "../routing";
+import { useOverviewLive } from "./queues/live";
 
 /** Minutes of throughput each row's sparkline covers. */
 const SPARKLINE_MINUTES = 60;
@@ -27,7 +29,7 @@ const SPARKLINE_MINUTES = 60;
 /** Most throughput requests in flight at once, however many rows are visible. */
 const SPARKLINE_CONCURRENCY = 4;
 
-/** Sparklines refresh slower than counts: their buckets are a minute wide. */
+/** Sparklines refresh slower than counts: their buckets are a minute wide. No event announces a bucket, so they poll at this rate even while live. */
 const SPARKLINE_REFETCH_MS = 30_000;
 
 /** Shared across rows so the cap is global. */
@@ -254,10 +256,12 @@ function QueuesCard() {
   const [search, setSearch] = useQueryParam("q");
   const deferredSearch = useDeferredValue(search);
   const searchId = useId();
+  const refetchInterval = usePollInterval(POLL_INTERVAL_MS);
+  useOverviewLive({ overview: false, search: deferredSearch });
   const queues = useQuery({
     queryKey: queryKeys.queues(deferredSearch),
     queryFn: ({ signal }) => api.listQueues(deferredSearch, signal),
-    refetchInterval: POLL_INTERVAL_MS,
+    refetchInterval,
     placeholderData: keepPreviousData,
   });
 
@@ -332,10 +336,12 @@ function QueuesCard() {
 /** The namespace-wide totals card. */
 function SummaryCard() {
   const api = useApiClient();
+  const refetchInterval = usePollInterval(POLL_INTERVAL_MS);
+  useOverviewLive({ overview: true, search: null });
   const overview = useQuery({
     queryKey: queryKeys.overview(),
     queryFn: ({ signal }) => api.getOverview(undefined, signal),
-    refetchInterval: POLL_INTERVAL_MS,
+    refetchInterval,
   });
   return (
     <Card title="Jobs">
