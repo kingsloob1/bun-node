@@ -1999,7 +1999,8 @@ export class SqlDriver implements JobsDriver {
       const document = JSON.stringify(
         batchable.map((one) => ({
           id: one.id,
-          return_value: one.result ?? null,
+          // Embedded, not bound: see "JSON columns" in `dialect.ts`.
+          return_value: this.dialect.jsonEmbed(one.result),
           expires_at:
             this.#ttlOf(one.retention) === null
               ? null
@@ -4090,9 +4091,12 @@ export class SqlDriver implements JobsDriver {
   /**
    * A job as an object keyed by column name, for the JSON insert path.
    *
-   * Unlike {@link SqlDriver.#toRow} the JSON columns keep their real values
-   * rather than being stringified: they are about to be embedded in a document
-   * that is itself serialised once, so pre-encoding them would double-encode.
+   * Unlike {@link SqlDriver.#toRow} the JSON columns are not stringified: they
+   * are about to be embedded in a document that is itself serialised once.
+   * They go through `jsonEmbed` instead, which on Postgres wraps a string in
+   * the envelope a bound `jsonIn` would have given it — embedded bare, the
+   * string `"warm"` was read back as `null` and `"42"` as `42`. See "JSON
+   * columns" in `dialect.ts`.
    */
   #toDocument(
     q: QueueRef,
@@ -4103,6 +4107,7 @@ export class SqlDriver implements JobsDriver {
     this.#assertFits(q.queue, "queue name");
     this.#assertFits(job.id, "job id");
 
+    const json = (value: unknown) => this.dialect.jsonEmbed(value);
     const values = [
       q.ns,
       q.queue,
@@ -4118,17 +4123,17 @@ export class SqlDriver implements JobsDriver {
       job.attemptsMade,
       job.maxAttempts,
       job.stalledCount,
-      job.data ?? null,
-      job.opts ?? null,
-      job.progress ?? null,
-      job.returnValue ?? null,
-      job.failedReason ?? null,
-      job.stacktrace ?? null,
+      json(job.data),
+      json(job.opts),
+      json(job.progress),
+      json(job.returnValue),
+      json(job.failedReason),
+      json(job.stacktrace),
       job.lockToken,
       job.lockExpiresAt,
       job.workerId,
       job.repeatKey,
-      job.flow ?? null,
+      json(job.flow),
     ];
 
     const indices = columnIndices(columns);

@@ -532,6 +532,168 @@ export function driverContract(
         await driver.removeJob(q, "stringly");
       });
 
+      it("round-trips every JSON value exactly, on every write path", async () => {
+        // A string that is itself JSON text is the dangerous case: a driver
+        // that decodes one time too many turns `"42"` into `42`, and one that
+        // decodes a plain string like `"warm"` throws and falls back to null.
+        // Which write path runs is decided by timing in production — a lone
+        // completion goes out singly, a burst as one batch — and the bulk and
+        // singular inserts are separate statements too, so every value goes
+        // through each of them.
+        const values: { label: string; value: unknown }[] = [
+          { label: "plain", value: "warm" },
+          { label: "spaced", value: "report x" },
+          { label: "numeric", value: "42" },
+          { label: "null-text", value: "null" },
+          { label: "empty", value: "" },
+          { label: "quoted", value: '"quoted"' },
+          { label: "true-text", value: "true" },
+          { label: "object-text", value: '{"a":1}' },
+          {
+            label: "nested",
+            value: {
+              a: "42",
+              b: "null",
+              c: ["true", '"q"', "", 7, null, false],
+              d: { e: "warm", f: '{"g":1}' },
+            },
+          },
+          { label: "number", value: 42 },
+          { label: "boolean", value: false },
+          { label: "null", value: null },
+          { label: "absent", value: undefined },
+        ];
+        // `undefined` is not JSON: every driver stores it as null.
+        const expected = (value: unknown) => value ?? null;
+        const rq: QueueRef = { ns, queue: "json-roundtrip" };
+        const now = Date.now();
+        await driver.ensureQueue(rq);
+
+        // Three copies of each value: one completed singly, one in a batch
+        // that keeps the job, one in a batch with a TTL.
+        const paths = ["single", "batch", "ttl"] as const;
+        const cases = paths.flatMap((path) =>
+          values.map(({ label, value }) => ({
+            path,
+            id: `${path}-${label}`,
+            value,
+          })),
+        );
+        const jobs = cases.map(({ id, value }, index) =>
+          makeJob({ id, data: value, runAt: now, createdAt: now + index }),
+        );
+
+        // The bulk insert takes the "single" copies and the singular insert the
+        // rest — each is its own statement on the SQL engines.
+        const bulk = jobs.filter((job) => job.id.startsWith("single-"));
+        const oneByOne = jobs.filter((job) => !job.id.startsWith("single-"));
+        expect((await driver.addJobs(rq, bulk)).every((r) => r.added)).toBe(
+          true,
+        );
+        for (const job of oneByOne) {
+          expect((await driver.addJob(rq, job)).added).toBe(true);
+        }
+
+        // And the "ttl" copies' data is rewritten in place, which is a third
+        // write path for it.
+        if (driver.updateJob) {
+          for (const { path, id, value } of cases) {
+            if (path === "ttl") {
+              expect(
+                (await driver.updateJob(rq, id, { data: value }, now))?.data,
+              ).toEqual(expected(value));
+            }
+          }
+        }
+
+        // One token for every claim, so a batch can settle them together.
+        const token = newToken();
+        for (let claimed = 0; claimed < jobs.length; claimed++) {
+          expect(
+            await driver.claimJob(rq, {
+              workerId: "w1",
+              token,
+              lockMs: 60_000,
+              now,
+            }),
+          ).not.toBeNull();
+        }
+
+        for (const { path, id, value } of cases) {
+          if (path === "single") {
+            expect(await driver.updateProgress(rq, id, value)).toBe(true);
+            expect(
+              await driver.completeJob(rq, id, token, value, false, now),
+            ).toBe(true);
+          }
+        }
+
+        for (const path of ["batch", "ttl"] as const) {
+          const completions = cases
+            .filter((one) => one.path === path)
+            .map(({ id, value }) => ({
+              id,
+              result: value,
+              retention: path === "ttl" ? { ttl: 60_000 } : false,
+            }));
+
+          if (driver.completeJobs) {
+            expect(
+              (await driver.completeJobs(rq, token, completions, now)).sort(),
+            ).toEqual(completions.map((one) => one.id).sort());
+            continue;
+          }
+
+          for (const one of completions) {
+            expect(
+              await driver.completeJob(
+                rq,
+                one.id,
+                token,
+                one.result,
+                one.retention,
+                now,
+              ),
+            ).toBe(true);
+          }
+        }
+
+        // One object per job, so a failure names it. `toEqual` compares types
+        // (`"42"` is not `42`), and the `typeof`s make that explicit.
+        for (const { path, id, value } of cases) {
+          const stored = await driver.getJob(rq, id);
+          const want = expected(value);
+          expect({
+            id,
+            state: stored?.state,
+            data: stored?.data,
+            dataType: typeof stored?.data,
+            returnValue: stored?.returnValue,
+            returnType: typeof stored?.returnValue,
+            ...(path === "single"
+              ? {
+                  progress: stored?.progress,
+                  progressType: typeof stored?.progress,
+                }
+              : {}),
+          }).toEqual({
+            id,
+            state: "completed",
+            data: want,
+            dataType: typeof want,
+            returnValue: want,
+            returnType: typeof want,
+            ...(path === "single"
+              ? { progress: want, progressType: typeof want }
+              : {}),
+          });
+        }
+
+        for (const { id } of cases) {
+          await driver.removeJob(rq, id);
+        }
+      });
+
       it("stamps the claim on the job", async () => {
         const now = Date.now();
         const token = newToken();

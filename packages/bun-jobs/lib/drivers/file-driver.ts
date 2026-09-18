@@ -514,7 +514,8 @@ export class FileDriver implements JobsDriver {
     this.#assertNameFits(job.id, "id", "addJob");
     await this.ensureQueue(q);
     const path = this.#jobPath(q, job.id);
-    const record = jsonClone(job);
+    // `undefined` is not JSON; every other driver stores it as null.
+    const record = jsonClone({ ...job, data: job.data ?? null });
 
     // The record file *is* the idempotency key: exactly one caller creates it.
     if (!(await this.#createExclusive(path, JSON.stringify(record)))) {
@@ -712,7 +713,7 @@ export class FileDriver implements JobsDriver {
         ...record,
         state: "completed",
         finishedOn: now,
-        returnValue: jsonClone(result),
+        returnValue: jsonClone(result ?? null),
         expiresAt: expiryFor(retention, now, record.expiresAt),
         lockToken: null,
         lockExpiresAt: null,
@@ -816,7 +817,7 @@ export class FileDriver implements JobsDriver {
       if (record.state !== "active") {
         const updated = await this.#mutateJob(q, id, (current) => ({
           ...current,
-          progress: jsonClone(progress),
+          progress: jsonClone(progress ?? null),
         }));
         return updated !== null;
       }
@@ -836,7 +837,7 @@ export class FileDriver implements JobsDriver {
       const marker = this.#markerFor(record);
       const updated: JobRecord = {
         ...record,
-        progress: jsonClone(progress),
+        progress: jsonClone(progress ?? null),
         lockExpiresAt: (record.lockExpiresAt ?? 0) + 1,
       };
 

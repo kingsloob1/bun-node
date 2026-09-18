@@ -937,14 +937,90 @@ describe("SQL driver: engine differences", () => {
   it("decodes a JSON column however the engine returns it", async () => {
     const { dialectFor } = await import("../lib/index");
     const dialect = dialectFor("postgres");
+    const sqlite = dialectFor("sqlite");
 
-    // Postgres hands back an object, SQLite a string; both arrive the same.
-    expect(dialect.jsonOut<unknown>({ a: 1 }, null)).toEqual({ a: 1 });
-    expect(dialect.jsonOut<unknown>('{"a":1}', null)).toEqual({ a: 1 });
-    expect(dialect.jsonOut(null, "fallback")).toBe("fallback");
-    expect(dialect.jsonOut("not json", "fallback")).toBe("fallback");
+    // Postgres' client hands back an object as an object, and a string value
+    // as the envelope around its JSON text; SQLite hands back the text.
+    for (const reader of [dialect, sqlite]) {
+      expect(reader.jsonOut<unknown>({ a: 1 }, null)).toEqual({ a: 1 });
+      expect(reader.jsonOut<unknown>('{"a":1}', null)).toEqual({ a: 1 });
+      expect(reader.jsonOut<unknown>('"42"', null)).toBe("42");
+      expect(reader.jsonOut(null, "fallback")).toBe("fallback");
+    }
+    // Text that is not JSON cannot be an envelope — those are always
+    // `JSON.stringify` output — so on Postgres it is a bare string an earlier
+    // version stored, and is the value itself. SQLite never stores one.
+    expect(dialect.jsonOut("not json", "fallback")).toBe("not json");
+    expect(sqlite.jsonOut("not json", "fallback")).toBe("fallback");
+  });
+
+  it("embeds a string in its envelope on Postgres, and nothing else", async () => {
+    const { dialectFor } = await import("../lib/index");
+    const dialect = dialectFor("postgres");
+
+    expect(dialect.jsonEmbed("warm")).toBe('"warm"');
+    expect(dialect.jsonEmbed("42")).toBe('"42"');
+    expect(dialect.jsonEmbed({ a: "42" })).toEqual({ a: "42" });
+    expect(dialect.jsonEmbed(42)).toBe(42);
+    expect(dialect.jsonEmbed(undefined)).toBeNull();
+    // Only Postgres expands a document into rows.
+    expect(dialectFor("sqlite").jsonEmbed("warm")).toBe("warm");
   });
 });
+
+/**
+ * A row an earlier version's bulk insert or batched completion wrote on
+ * Postgres holds a string value as a *bare* JSON string rather than the
+ * envelope every other path writes, and was read back as `null`. The reader
+ * recovers every such row whose text is not itself JSON; one whose text is
+ * (`"42"`) is byte for byte an envelope around a different value, and reads as
+ * that value — pinned here so the limit is a decision, not a surprise.
+ */
+describe.skipIf(!SERVERS.find((server) => server.adapter === "postgres")?.url)(
+  "SQL driver: postgres rows stored by an earlier version",
+  () => {
+    it("reads a bare JSON string back as the string it is", async () => {
+      const url = SERVERS.find((server) => server.adapter === "postgres")!.url!;
+      const driver = new SqlDriver({
+        url,
+        adapter: "postgres",
+        tablePrefix: "bun_jobs_test_",
+      });
+      const raw = rawClient(url);
+      const q: QueueRef = { ns: testNamespace("legacy-json"), queue: "legacy" };
+
+      try {
+        await driver.connect();
+        await driver.addJob(q, makeJob({ id: "legacy" }));
+
+        // Exactly what `UPDATE … FROM json_to_recordset` stored for a result
+        // of "warm", and the bulk insert for data of "report x".
+        await raw.unsafe(
+          `UPDATE bun_jobs_test_jobs
+              SET data = to_json($1::text), return_value = to_json($2::text),
+                  progress = to_json($3::text)
+            WHERE ns = $4 AND queue = $5 AND id = 'legacy'`,
+          ["report x", "warm", "42", q.ns, q.queue],
+        );
+        const [stored] = (await raw.unsafe(
+          `SELECT json_typeof(return_value) AS kind, return_value::text AS text
+             FROM bun_jobs_test_jobs WHERE ns = $1 AND queue = $2 AND id = 'legacy'`,
+          [q.ns, q.queue],
+        )) as { kind: string; text: string }[];
+        expect(stored).toEqual({ kind: "string", text: '"warm"' });
+
+        const job = await driver.getJob(q, "legacy");
+        expect(job?.data).toBe("report x");
+        expect(job?.returnValue).toBe("warm");
+        // Indistinguishable from the envelope around the number 42.
+        expect(job?.progress).toBe(42);
+      } finally {
+        await driver.purge(q.ns);
+        await driver.close();
+      }
+    });
+  },
+);
 
 /**
  * Postgres counts a completion or failure inside its own statement, on a
