@@ -30,8 +30,33 @@
  * process that produces events.
  */
 import type {
+  JobsApiAckMessage as RootAckMessage,
+  JobsApiClientMessage as RootClientMessage,
+  JobsApiErrorMessage as RootErrorMessage,
+  JobsApiEventMessage as RootEventMessage,
+  JobsApiGapMessage as RootGapMessage,
+  JobsApiHeartbeatMessage as RootHeartbeatMessage,
+  JobsApiHelloMessage as RootHelloMessage,
+  JobsApiPingMessage as RootPingMessage,
+  JobsApiPongMessage as RootPongMessage,
+  JobsApiServerMessage as RootServerMessage,
+  JobsApiSubscribeMessage as RootSubscribeMessage,
+  JobsApiUnsubscribeMessage as RootUnsubscribeMessage,
+} from "@kingsleyweb/bun-jobs";
+import type {
   EventWire,
+  JobsApiAckMessage,
+  JobsApiClientMessage,
+  JobsApiErrorMessage,
   JobsApiEventMessage,
+  JobsApiGapMessage,
+  JobsApiHeartbeatMessage,
+  JobsApiHelloMessage,
+  JobsApiPingMessage,
+  JobsApiPongMessage,
+  JobsApiServerMessage,
+  JobsApiSubscribeMessage,
+  JobsApiUnsubscribeMessage,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import type { Server, ServerWebSocket } from "bun";
 import { BunHttpAdapter, BunRouter, noopLogger } from "@kingsleyweb/bun-common";
@@ -41,8 +66,13 @@ import {
   JOBS_API_WS_CLOSE,
   JOBS_API_WS_SUBPROTOCOL,
   MemoryDriver,
+  encodeJobId as rootEncodeJobId,
 } from "@kingsleyweb/bun-jobs";
-import { JOBS_API_WS_MAX_CHANNELS_PER_FRAME } from "@kingsleyweb/bun-jobs/api/contract";
+import {
+  decodeJobId,
+  encodeJobId,
+  JOBS_API_WS_MAX_CHANNELS_PER_FRAME,
+} from "@kingsleyweb/bun-jobs/api/contract";
 import { connectJobsSocket } from "../11-management-api/helpers/jobs-socket";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
@@ -764,18 +794,43 @@ step("Job ids encodeURIComponent cannot encode");
 // A lone UTF-16 surrogate is a legal JavaScript string but not valid UTF-8,
 // so `encodeURIComponent` throws on it — and a job with such an id used to
 // take the process down with it. Job channels write it `%uXXXX` instead.
+// `encodeJobId` and `decodeJobId`, from the browser-safe contract (and the
+// root), are the two directions: a client never builds the form by hand.
 const lone = "inv-\uD800-1";
 await checkRejects(
   "encodeURIComponent refuses a lone surrogate",
   () => encodeURIComponent(lone),
   { name: "URIError" },
 );
+const loneChannel = `queue/mail/job/${encodeJobId(lone)}`;
+// Every other character is escaped exactly as `encodeURIComponent` escapes
+// it, and a `%` always becomes `%25`, so the two forms cannot be confused.
+checkEqual(
+  "encodeJobId writes the surrogate %uXXXX, upper case, and the rest as encodeURIComponent",
+  [loneChannel, encodeJobId("a/b%"), encodeJobId("inv-%uD800")],
+  ["queue/mail/job/inv-%uD800-1", "a%2Fb%25", "inv-%25uD800"],
+);
+checkEqual(
+  "decodeJobId reverses either form, in either case",
+  [
+    decodeJobId(encodeJobId(lone)) === lone,
+    decodeJobId("inv-%ud800-1") === lone,
+    decodeJobId("inv-%25uD800"),
+  ],
+  [true, true, "inv-%uD800"],
+);
+await checkRejects(
+  "and refuses %u for a character that is not a surrogate",
+  () => decodeJobId("inv-%u0041"),
+  { name: "URIError" },
+);
+check(
+  "the root exports the very same function",
+  rootEncodeJobId === encodeJobId,
+);
 const surrogates = await served({}, "surrogate");
 const surrogateClient = await connectJobsSocket(surrogates.url);
 await surrogateClient.next("hello");
-// Every other character is escaped exactly as `encodeURIComponent` escapes
-// it, and a `%` always becomes `%25`, so the two forms cannot be confused.
-const loneChannel = "queue/mail/job/inv-%uD800-1";
 surrogateClient.send({
   op: "subscribe",
   id: "s",
@@ -1627,6 +1682,38 @@ checkEqual(
   }),
   "boom",
 );
+
+// There is one definition of every socket type: the root entry re-exports
+// the contract's, so a server-side import and a browser client's agree by
+// construction. Compile-time identity, checked by the examples typecheck.
+/** Whether two types are identical, not merely mutually assignable. */
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+/** Fails to compile unless every entry is `true`. */
+type ExpectAll<T extends readonly true[]> = T;
+type _oneDefinition = ExpectAll<
+  [
+    Equal<RootEventMessage["event"], EventWire>,
+    Equal<RootEventMessage, JobsApiEventMessage>,
+    Equal<RootServerMessage, JobsApiServerMessage>,
+    Equal<RootClientMessage, JobsApiClientMessage>,
+    Equal<RootHelloMessage, JobsApiHelloMessage>,
+    Equal<RootAckMessage, JobsApiAckMessage>,
+    Equal<RootGapMessage, JobsApiGapMessage>,
+    Equal<RootHeartbeatMessage, JobsApiHeartbeatMessage>,
+    Equal<RootPongMessage, JobsApiPongMessage>,
+    Equal<RootErrorMessage, JobsApiErrorMessage>,
+    Equal<RootSubscribeMessage, JobsApiSubscribeMessage>,
+    Equal<RootUnsubscribeMessage, JobsApiUnsubscribeMessage>,
+    Equal<RootPingMessage, JobsApiPingMessage>,
+  ]
+>;
+// The negative control: a structurally similar type is not identical.
+type _control = ExpectAll<
+  [Equal<Equal<RootEventMessage["event"], { kind: "queue" }>, false>]
+>;
 
 /* ------------------------------------------------------------------ */
 step("The AsyncAPI document: limits, close codes and refusals");

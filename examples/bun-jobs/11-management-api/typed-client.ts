@@ -22,6 +22,11 @@
  *   against it cannot disagree with the server it talks to.
  * - **`/meta/permissions?channel=`** answers whether a subscription would be
  *   accepted, before a socket is opened.
+ * - **A job channel's id is escaped with the contract's `encodeJobId`**, not
+ *   `encodeURIComponent`, which throws on a lone UTF-16 surrogate;
+ *   `decodeJobId` reads a channel back.
+ * - **Adding a queue's first job creates it**: the client needs no queue to
+ *   exist before it adds to one.
  */
 import type { JobsApiServerMessage } from "@kingsleyweb/bun-jobs/api/contract";
 import type { FrameOf } from "./helpers/contract-client";
@@ -30,7 +35,12 @@ import { BunJobs, createDriver, createJobsApi } from "@kingsleyweb/bun-jobs";
 import { exampleDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
-import { connectJobsClient, JobsApiProblem } from "./helpers/contract-client";
+import {
+  connectJobsClient,
+  jobChannel,
+  jobOfChannel,
+  JobsApiProblem,
+} from "./helpers/contract-client";
 
 title("The management API: a client typed by its contract");
 
@@ -71,7 +81,7 @@ const api = createJobsApi({
   limits: { maxQueues: 2, queueCacheMs: 0 },
   websocket: { heartbeatMs: 0 },
 });
-// The API manages queues that exist; it does not create them.
+// Seeded from code; the API could equally create it with its first job.
 await jobs.queue("billing").add("send-invoice", { invoice: 0 });
 const adapter = new BunHttpAdapter(0, { logger: noopLogger });
 adapter.use(api.basePath, api.router);
@@ -148,6 +158,23 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("The first job a client adds creates its queue");
+
+const firstInQueue = await client.addJob("onboarding", {
+  name: "send-invoice",
+  data: { invoice: 100 },
+});
+checkEqual(
+  "a queue the backend had never seen: the job is added",
+  firstInQueue.added,
+  true,
+);
+check(
+  "and the queue is listed at once",
+  (await client.allQueues()).some((queue) => queue.name === "onboarding"),
+);
+
+/* ------------------------------------------------------------------ */
 step("Ask before subscribing, then subscribe");
 
 const mail = await client.permissions({ channel: "queue/billing" });
@@ -182,6 +209,42 @@ const event = live.frames.find(isAdded) as FrameOf<"event">;
 checkEqual("its event arrived, typed by the contract", event.subscriptions, [
   "queue/billing",
 ]);
+
+/* ------------------------------------------------------------------ */
+step("A job's channel, whatever the id holds");
+
+// `encodeURIComponent` throws on a lone UTF-16 surrogate, which a job id read
+// back from a store may still hold. `jobChannel` uses the contract's
+// `encodeJobId`, which writes it `%uXXXX`; `jobOfChannel` reads it back with
+// `decodeJobId`.
+const oddId = "inv-\uD800-7";
+const oddChannel = jobChannel("billing", oddId);
+checkEqual(
+  "the channel carries the surrogate as %uXXXX",
+  oddChannel,
+  "queue/billing/job/inv-%uD800-7",
+);
+check(
+  "and reads back to the same queue and id",
+  jobOfChannel(oddChannel)?.queue === "billing" &&
+    jobOfChannel(oddChannel)?.jobId === oddId,
+);
+const oddPreview = await client.permissions({ channel: oddChannel });
+checkEqual(
+  "the API would accept it, under the same canonical key",
+  [oddPreview.channel?.allowed, oddPreview.channel?.key === oddChannel],
+  [true, true],
+);
+live.send({ op: "subscribe", id: "odd", channels: [oddChannel] });
+const oddAck = await live.next("ack", (frame) => frame.id === "odd");
+check(
+  "the subscription is accepted as sent",
+  oddAck.channels.length === 1 && oddAck.channels[0] === oddChannel,
+);
+// The channel is only a name here: no job with this id is added. Server
+// backends cannot store a lone surrogate faithfully, and bun-jobs is moving to
+// refuse ids that are not well-formed Unicode, so the encoding matters for
+// names a client builds, not for ids it should create.
 live.socket.close();
 
 /* ------------------------------------------------------------------ */

@@ -29,9 +29,10 @@
  * - **`Add job` and `Update` are opt-in.** `jobs.add` and `jobs.update` write
  *   caller-supplied payloads, so `actions` must name them, and `addableNames`
  *   limits which names may be added (`null` in `/meta` means any).
- * - **The first job cannot be added through the API to a queue the backend
- *   does not know yet** (404 `QUEUE_NOT_FOUND`). Every queue here is seeded
- *   from code first. The fix for this is on its way.
+ * - **`Add job` can create a queue.** Adding the first job to a queue the
+ *   backend does not know yet creates it, as `BunQueue.add` does; only a
+ *   configured `queues` list makes an unknown queue a 404. The queues here
+ *   are seeded from code so each has jobs in every state.
  * - **Every action is allowed here.** `04-screens/permissions.ts` shows a host
  *   that decides per queue, and what the screens then hide.
  */
