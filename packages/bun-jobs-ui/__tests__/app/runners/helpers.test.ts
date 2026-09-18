@@ -135,19 +135,35 @@ describe("the runner's settings", () => {
 describe("the list helpers", () => {
   it("puts local runners first, keeping each group's order", () => {
     const shuffled = [
-      { id: "b-remote", local: false, isPaused: false, isRunning: false },
+      {
+        id: "b-remote",
+        local: false,
+
+        isLocal: false,
+        isPaused: false,
+        isRunning: false,
+      },
       {
         id: "z-local",
         local: true,
+        isLocal: true,
         name: "z",
         status: "idle" as const,
         isPaused: false,
         isRunning: false,
       },
-      { id: "a-remote", local: false, isPaused: false, isRunning: false },
+      {
+        id: "a-remote",
+        local: false,
+
+        isLocal: false,
+        isPaused: false,
+        isRunning: false,
+      },
       {
         id: "a-local",
         local: true,
+        isLocal: true,
         name: "a",
         status: "paused" as const,
         isPaused: true,

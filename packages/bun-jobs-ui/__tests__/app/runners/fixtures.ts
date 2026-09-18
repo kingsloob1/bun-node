@@ -153,6 +153,7 @@ export function runnerListFixture(
       {
         id: "nightly",
         local: true,
+        isLocal: true,
         name: "Nightly report",
         status: "idle",
         isPaused: false,
@@ -161,13 +162,28 @@ export function runnerListFixture(
       {
         id: "sync",
         local: true,
+        isLocal: true,
         name: "sync",
         status: "running",
         isPaused: false,
         isRunning: true,
       },
-      { id: "billing", local: false, isPaused: true, isRunning: false },
-      { id: AWKWARD_RUNNER, local: false, isPaused: false, isRunning: false },
+      {
+        id: "billing",
+        local: false,
+
+        isLocal: false,
+        isPaused: true,
+        isRunning: false,
+      },
+      {
+        id: AWKWARD_RUNNER,
+        local: false,
+
+        isLocal: false,
+        isPaused: false,
+        isRunning: false,
+      },
     ],
     ...overrides,
   };
