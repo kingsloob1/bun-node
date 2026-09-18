@@ -6,5 +6,6 @@ import { boot } from "./boot";
  */
 import "./styles/tokens.css";
 import "./styles/base.css";
+import "./components/components.css";
 
 boot();
