@@ -4,7 +4,10 @@ import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "../api/queryKeys";
 import { useApiClient } from "../context";
 import { useParams } from "../routing";
-import { ScopedPermissionsContext } from "./hooks";
+import {
+  PermissionScopeStatusContext,
+  ScopedPermissionsContext,
+} from "./hooks";
 
 /** Props of {@link PermissionScope}. */
 export interface PermissionScopeProps {
@@ -27,9 +30,13 @@ export function PermissionScope({ target, children }: PermissionScopeProps) {
     queryFn: ({ signal }) => api.getPermissions(target, signal),
   });
   return (
-    <ScopedPermissionsContext value={scoped.data ?? null}>
-      {children}
-    </ScopedPermissionsContext>
+    <PermissionScopeStatusContext
+      value={scoped.isPending ? "pending" : "settled"}
+    >
+      <ScopedPermissionsContext value={scoped.data ?? null}>
+        {children}
+      </ScopedPermissionsContext>
+    </PermissionScopeStatusContext>
   );
 }
 
@@ -43,4 +50,18 @@ export interface QueuePermissionScopeProps {
 export function QueuePermissionScope({ children }: QueuePermissionScopeProps) {
   const { queue = "" } = useParams<{ queue: string }>();
   return <PermissionScope target={{ queue }}>{children}</PermissionScope>;
+}
+
+/** Props of {@link RunnerPermissionScope}. */
+export interface RunnerPermissionScopeProps {
+  /** The screen, routed under `/runners/:runner`. */
+  children: ReactNode;
+}
+
+/** A {@link PermissionScope} for the runner in the route's `:runner` param. */
+export function RunnerPermissionScope({
+  children,
+}: RunnerPermissionScopeProps) {
+  const { runner = "" } = useParams<{ runner: string }>();
+  return <PermissionScope target={{ runner }}>{children}</PermissionScope>;
 }

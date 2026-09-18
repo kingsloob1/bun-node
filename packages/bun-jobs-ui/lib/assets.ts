@@ -199,7 +199,29 @@ export async function buildAssets(
   if (js === undefined) {
     throw new Error(`bun-jobs-ui: building ${entry} produced no entry module`);
   }
-  return { entry: { js, css }, files, source: "memory" };
+  return {
+    entry: { js, css: entryStylesheets(js, css) },
+    files,
+    source: "memory",
+  };
+}
+
+/** A hashed file name without its hash and extension: `main-3kx9.css` → `main`. */
+function stemOf(name: string): string {
+  return name.replace(/-[a-z0-9]+\.[a-z]+$/, "");
+}
+
+/**
+ * The stylesheets the shell links. With code splitting, Bun emits the entry's
+ * stylesheet holding every rule, lazily imported ones included, plus one per
+ * split chunk repeating that chunk's rules, and marks them all "asset". The
+ * entry's is the one named after the entry module; linking the others too
+ * would download the same rules twice. If none matches (a bundler change),
+ * every stylesheet is linked, which is redundant but never unstyled.
+ */
+export function entryStylesheets(js: string, css: readonly string[]): string[] {
+  const own = css.filter((name) => stemOf(name) === stemOf(js));
+  return own.length > 0 ? own : [...css];
 }
 
 /** The manifest describing a bundle. */

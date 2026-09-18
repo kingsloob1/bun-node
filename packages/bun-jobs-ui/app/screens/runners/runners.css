@@ -1,0 +1,127 @@
+/* The runner screens: the list, one runner's header, summary, runs and history. */
+
+.runner-link {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.runner-id {
+  margin-left: var(--space-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.runners-count {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+.runner-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.runner-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.runner-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.runner-title {
+  overflow-wrap: anywhere;
+}
+
+.runner-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.runner-last-error {
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+.run-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-list > li + li {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.run-record {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.run-id-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.run-id {
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.run-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.run-toggle:hover {
+  border-color: var(--border);
+}
+
+.run-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.run-details-row > td {
+  background: var(--surface-2);
+}
+
+.history-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-limit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}

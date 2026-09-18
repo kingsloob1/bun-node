@@ -52,6 +52,13 @@ describe("buildAssets", () => {
     ]);
     expect(names.some((name) => /^lazy-[a-z0-9]+\.js$/.test(name))).toBe(true);
     expect(names).toContain(`${assets.entry.js}.map`);
+    // The lazy chunk's stylesheet is emitted and served, but not linked: the
+    // entry's stylesheet already carries its rules.
+    expect(names.some((name) => /^lazy-[a-z0-9]+\.css$/.test(name))).toBe(true);
+    const entryCss = new TextDecoder().decode(
+      assets.files.get(assets.entry.css[0]!)!.body,
+    );
+    expect(entryCss).toContain(".fixture-lazy");
 
     const entry = assets.files.get(assets.entry.js)!;
     expect(entry.type).toBe("text/javascript; charset=utf-8");
