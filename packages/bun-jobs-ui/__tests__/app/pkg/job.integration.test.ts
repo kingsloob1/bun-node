@@ -77,6 +77,16 @@ afterAll(async () => {
   await jobs.close();
 });
 
+/**
+ * Adds a waiting job through the API's own queue. Each test that needs a job
+ * makes its own, so none depends on another having run first (`bun test
+ * --randomize` reorders them).
+ */
+async function waitingJob(queue: string, id: string) {
+  await jobs.queue(queue).add("send-welcome", { id }, { jobId: id });
+  expect((await jobs.queue(queue).getJob(id))?.state).toBe("waiting");
+}
+
 /** Makes a job in `queue` that failed an attempt and awaits its retry. */
 async function failedJob(queue: string, id: string) {
   await jobs.queue(queue).add("send-welcome", { id }, { jobId: id });
@@ -131,14 +141,16 @@ describe("the job UI against a real createJobsApi", () => {
   });
 
   it("opens the job and updates its priority", async () => {
-    const view = await ui.openJob("emails", ID);
+    const id = "welcome/grace 2";
+    await waitingJob("emails", id);
+    const view = await ui.openJob("emails", id);
     expect(view.heading).toContain("send-welcome");
     expect(view.heading).toContain("Waiting");
-    expect(view.id).toBe(ID);
+    expect(view.id).toBe(id);
 
     const updated = await ui.updatePriority(7);
     expect(updated.priority).toBe("7");
-    expect((await jobs.queue("emails").getJob(ID))?.priority).toBe(7);
+    expect((await jobs.queue("emails").getJob(id))?.priority).toBe(7);
   });
 
   it("retries a failed job, resetting its attempts", async () => {
@@ -156,8 +168,10 @@ describe("the job UI against a real createJobsApi", () => {
   });
 
   it("removes a job and returns to its queue", async () => {
-    await ui.openJob("emails", ID);
+    const id = "welcome/linus 3";
+    await waitingJob("emails", id);
+    await ui.openJob("emails", id);
     expect(await ui.remove()).toBe("/jobs/queues/emails");
-    expect(await jobs.queue("emails").getJob(ID)).toBeNull();
+    expect(await jobs.queue("emails").getJob(id)).toBeNull();
   });
 });
