@@ -74,7 +74,7 @@ const fromConfig: { name: string; options: JobBuilderOptions<Report> }[] = [
     options: {
       data: { report: "signups", recipients: ["growth@example.com"] },
       every: "1 day",
-      tz: "Europe/Lagos",
+      tz: "Africa/Lagos",
       repeatKey: "daily-signups",
       attempts: 3,
     },
@@ -138,13 +138,20 @@ step("Ambiguity is refused, not guessed at");
 for (const options of [
   { in: "5 minutes", delay: 1_000 }, // `in` and `delay` mean the same thing
   { every: "every fortnightish" }, // not an interval, a cron or a phrase
+  // A zone is checked against the runtime's zone database as it is given,
+  // for an interval series as well as a cron one: Lagos is in Africa/.
+  { every: "1 day", tz: "Europe/Lagos" },
 ] satisfies JobBuilderOptions<Report>[]) {
+  let refused = false;
   try {
     await jobs.schedule<Report>("buildReport").withOptions(options).start();
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
+    refused = true;
     show("ConfigError", error.message);
   }
+  if (!refused)
+    throw new Error(`expected a ConfigError for ${JSON.stringify(options)}`);
 }
 
 await jobs.purge();

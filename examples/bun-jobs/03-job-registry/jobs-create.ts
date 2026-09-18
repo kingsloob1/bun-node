@@ -146,7 +146,7 @@ digestStart.setUTCHours(8, 0, 0, 0);
 
 const digest = await jobs
   .create<Email>("sendEmail", { to: "team@example.com", template: "digest" })
-  .repeatEvery("1 day", { tz: "Europe/Lagos", limit: 30, key: "daily-digest" })
+  .repeatEvery("1 day", { tz: "Africa/Lagos", limit: 30, key: "daily-digest" })
   .schedule(digestStart) // on a repeating draft: when the series begins
   .save();
 

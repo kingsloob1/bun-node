@@ -1281,9 +1281,17 @@ checkEqual("middleware first, then authorize", order, [
 /* ------------------------------------------------------------------ */
 step("What /meta reports about publishing");
 
-// `publishing` is `null` rather than true/false: `BunJobs` has no public
-// getter for `publishEvents`, so the API cannot tell a client either way and
-// says so honestly instead of guessing.
+// `publishing` is the context's resolved `publishEvents` (its
+// `publishesEvents` getter): `true` when set, `false` when it was not given.
+// The same answer decides whether the API warns that its live events will be
+// empty — that warning is logged only when publishing is off.
+const socketWarning = "jobs api live events only carry what producers publish";
+const warned = (logged: readonly { level: string; message: string }[]) =>
+  logged.some(
+    (event) =>
+      event.level === "warn" && event.message.startsWith(socketWarning),
+  );
+
 const publishing = new BunJobs({
   namespace: `${namespace}-publishing`,
   driver,
@@ -1291,11 +1299,32 @@ const publishing = new BunJobs({
   publishEvents: true,
 });
 contexts.push(publishing);
+check("the context says it publishes", publishing.publishesEvents);
 const published = mount({}, publishing);
 checkEqual(
-  "publishing is reported as unknown",
+  "publishing is reported as true",
   (await published.call("GET", "/meta")).body.publishing,
-  null,
+  true,
+);
+check("…and the API does not warn", !warned(published.events));
+
+const silent = context("silent");
+check("a context without publishEvents does not", !silent.publishesEvents);
+const unpublished = mount({}, silent);
+checkEqual(
+  "publishing is reported as false",
+  (await unpublished.call("GET", "/meta")).body.publishing,
+  false,
+);
+check(
+  "…and the API warns that its live events carry only what producers publish",
+  warned(unpublished.events),
+  unpublished.events.map((event) => event.message),
+);
+const noSocketNoWarning = mount({ websocket: false }, context("silent-nows"));
+check(
+  "…but not when it has no socket to carry them",
+  !warned(noSocketNoWarning.events),
 );
 
 /* ------------------------------------------------------------------ */
@@ -1833,6 +1862,27 @@ checkEqual(
   "one more is 400 VALIDATION, on opts.jobId",
   [tooLong.status, tooLong.body.code, tooLong.body.issues?.[0]?.path],
   [400, "VALIDATION", "opts.jobId"],
+);
+// Past the schema, `assertJobId` has the last word, and what it refuses is
+// the caller's to fix: 400 INVALID_ARGUMENT, not a 500. JSON carries a lone
+// surrogate as a `\ud800` escape, so a client can send one.
+for (const [label, jobId] of [
+  ["a control character", "inv\u0000-1"],
+  ["C1 controls too", "inv\u0085-1"],
+  ["a leading .", ".hidden"],
+  ["a lone surrogate", "inv-\uD800-1"],
+] as const) {
+  const refused = await addWithId(jobId);
+  checkEqual(
+    `an id with ${label} is 400 INVALID_ARGUMENT`,
+    [refused.status, refused.body.code],
+    [400, "INVALID_ARGUMENT"],
+  );
+}
+checkEqual(
+  "while a slash is an ordinary character",
+  (await addWithId("tenant/7")).status,
+  201,
 );
 const longRef = "r".repeat(MAX_JOB_REF_LENGTH);
 checkEqual(
