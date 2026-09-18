@@ -31,7 +31,12 @@ import type {
   JobsApi,
 } from "@kingsleyweb/bun-nest/jobs";
 import type { INestApplication } from "@nestjs/common";
-import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
+import {
+  BunJobs,
+  createJobsApi,
+  JOBS_API_WS_SUBPROTOCOL,
+  MemoryDriver,
+} from "@kingsleyweb/bun-jobs";
 import { BunHttpAdapter, BunWebSocketAdapter } from "@kingsleyweb/bun-nest";
 import {
   BUN_JOBS_API,
@@ -121,13 +126,19 @@ interface JobsSocket {
   next: (what: string, predicate: (frame: any) => boolean) => Promise<any>;
   /** The close code, once the socket has closed. */
   closeCode: () => number | undefined;
+  /** The subprotocol the server negotiated; `""` when none. */
+  protocol: string;
   /** Closes it and resolves once closed. */
   close: () => Promise<void>;
 }
 
 /** Opens a live-events client; `undefined` when the upgrade was refused. */
-async function openSocket(url: string): Promise<JobsSocket | undefined> {
-  const socket = new WebSocket(url);
+async function openSocket(
+  url: string,
+  /** Subprotocols to offer; none by default. */
+  protocols?: string[],
+): Promise<JobsSocket | undefined> {
+  const socket = new WebSocket(url, protocols);
   const frames: Record<string, any>[] = [];
   let code: number | undefined;
 
@@ -169,6 +180,7 @@ async function openSocket(url: string): Promise<JobsSocket | undefined> {
       return frames.find(predicate)!;
     },
     closeCode: () => code,
+    protocol: socket.protocol,
     close: async () => {
       if (code !== undefined) {
         return;
@@ -425,6 +437,19 @@ step("websocket: { port } serves the socket on a server of its own");
   checkEqual("it greets a client on that port", hello.protocol, 1);
   await client!.close();
 
+  // A server answers with the first protocol offered unless told otherwise;
+  // the API names its own, wherever the client put it in the list.
+  const negotiated = await openSocket(`ws://127.0.0.1:${port}/admin/jobs/ws`, [
+    "other",
+    JOBS_API_WS_SUBPROTOCOL,
+  ]);
+  checkEqual(
+    'offering ["other", "bun-jobs.v1"] negotiates bun-jobs.v1',
+    negotiated?.protocol,
+    JOBS_API_WS_SUBPROTOCOL,
+  );
+  await negotiated?.close();
+
   checkEqual(
     "and the HTTP server does not upgrade that path at all",
     (await adapter.fetch("/admin/jobs/ws")).status,
@@ -579,9 +604,19 @@ step("sharing the server with a catch-all gateway");
     "the session count to fall",
     () => api.websocket!.sessions === 1,
   );
-  const third = await openSocket(`${base}/admin/jobs/ws`);
+  // This one offers a list with ours second: attached through Nest, the API
+  // still names its own, as it does on a server of its own.
+  const third = await openSocket(`${base}/admin/jobs/ws`, [
+    "other",
+    JOBS_API_WS_SUBPROTOCOL,
+  ]);
   await third!.next("a hello", (f) => f.type === "hello");
   checkEqual("a released slot is reusable", api.websocket!.sessions, 2);
+  checkEqual(
+    'offering ["other", "bun-jobs.v1"] through Nest negotiates bun-jobs.v1',
+    third!.protocol,
+    JOBS_API_WS_SUBPROTOCOL,
+  );
 
   await third!.close();
   await ours!.close();

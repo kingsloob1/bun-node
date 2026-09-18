@@ -11,9 +11,10 @@
  * Covers every `JobsNotifierOptions` field — `queues` and `runners` (`"all"`
  * and a list), `discoveryInterval`, `bufferSize` — and every member: `start`,
  * `close`, `for await`, `on("event" | "subscribed" | "error")`, `following`,
- * `wants`, `follow`, `dropped`, `namespace`. Then what it hears: each queue and
- * runner event with its payload, nothing from producers that do not publish,
- * events from another process, and nothing from another namespace.
+ * `wants`, `follow`, `hold`, `unfollow`, `dropped`, `namespace`. Then what it
+ * hears: each queue and runner event with its payload, nothing from producers
+ * that do not publish, events from another process, and nothing from another
+ * namespace.
  *
  * Points worth knowing:
  *
@@ -274,6 +275,14 @@ const doomed = await orders.add(
   { attempts: 2, backoff: 20 },
 );
 const dead = await queueEvent(heard, "dead", (e) => e.id === doomed.id);
+// Each event is its own notification, and a transport such as Postgres
+// LISTEN may hand over the last attempt's `failed` after `dead`: wait for both
+// rather than reading what happens to have arrived.
+await waitFor(
+  "a failed event for each attempt",
+  () => about(heard, doomed.id).filter((e) => e.type === "failed").length >= 2,
+  WAIT,
+);
 const failures = about(heard, doomed.id).filter((e) => e.type === "failed");
 const retrying = await queueEvent(heard, "retrying", (e) => e.id === doomed.id);
 
@@ -748,6 +757,153 @@ await Promise.all([
   lateQueue.close(),
   newcomer.close(),
 ]);
+
+/* ------------------------------------------------------------------ */
+step("hold() and unfollow(): following only while something needs it");
+
+// `follow()` is for good. `hold()` is for followers whose names come from
+// outside — the management API's socket holds a queue while a client is
+// subscribed to it, and a client may name one that never exists — so it is
+// reference-counted, and `unfollow()` releases one hold.
+
+/** Set while the tour wants subscriptions to wait. */
+let subscribeGate: PromiseWithResolvers<void> | undefined;
+/** Every queue list the driver answered with, in order. */
+const listings: string[][] = [];
+
+// The real driver, except that a subscribe can be held at a gate and every
+// listing is recorded. Methods are bound so its private state works.
+const observed = new Proxy(driver, {
+  get(real, property) {
+    if (property === "subscribe") {
+      const subscribe: JobsDriver["subscribe"] = async (...args) => {
+        await subscribeGate?.promise;
+        return await real.subscribe(...args);
+      };
+      return subscribe;
+    }
+    if (property === "listQueues") {
+      const listQueues: JobsDriver["listQueues"] = async (ns) => {
+        const queues = await real.listQueues(ns);
+        listings.push(queues);
+        return queues;
+      };
+      return listQueues;
+    }
+    const value = Reflect.get(real, property, real) as unknown;
+    return typeof value === "function" ? value.bind(real) : value;
+  },
+});
+
+const holding = new JobsNotifier(observed, namespace, {
+  runners: [],
+  discoveryInterval: 100,
+});
+const holdSubscribed: string[] = [];
+holding.on("subscribed", (kind, name) => {
+  holdSubscribed.push(`${kind}:${name}`);
+});
+await holding.start();
+
+// `following` lists live subscriptions only — not one still being set up.
+subscribeGate = Promise.withResolvers<void>();
+const firstHold = holding.hold("queue", "held");
+check(
+  "a subscription in flight is not listed in following",
+  !holding.following.includes("queue:held"),
+  holding.following,
+);
+subscribeGate.resolve();
+subscribeGate = undefined;
+await firstHold;
+check(
+  "hold() resolves once it is live, and listed",
+  holding.following.includes("queue:held"),
+  holding.following,
+);
+
+await holding.hold("queue", "held");
+checkEqual(
+  "two holds, one subscription",
+  holdSubscribed.filter((key) => key === "queue:held").length,
+  1,
+);
+await holding.unfollow("queue", "held");
+check(
+  "releasing one of two holds keeps it",
+  holding.following.includes("queue:held"),
+  holding.following,
+);
+await holding.unfollow("queue", "held");
+check(
+  "releasing the last drops it",
+  !holding.following.includes("queue:held"),
+  holding.following,
+);
+await holding.unfollow("queue", "held");
+await holding.unfollow("queue", "never-held");
+check("releasing what is not held does nothing", true);
+
+// Discovery, the configured lists and follow() follow for good, and a hold
+// never undoes them.
+await holding.follow("queue", "kept");
+await holding.hold("queue", "kept");
+await holding.unfollow("queue", "kept");
+check(
+  "follow() then hold(): the unfollow leaves it followed",
+  holding.following.includes("queue:kept"),
+  holding.following,
+);
+await holding.hold("queue", "promoted");
+await holding.follow("queue", "promoted");
+await holding.unfollow("queue", "promoted");
+check(
+  "hold() then follow(): followed for good from then on",
+  holding.following.includes("queue:promoted"),
+  holding.following,
+);
+
+// A held name that a discovery pass later finds becomes permanent too.
+await holding.hold("queue", "found-later");
+const foundLater = new BunQueue("found-later", {
+  namespace,
+  driver,
+  publish: true,
+});
+await foundLater.add("first", {});
+const listingsBefore = listings.length;
+await waitFor(
+  "a discovery pass to list found-later",
+  () =>
+    listings
+      .slice(listingsBefore)
+      .some((queues) => queues.includes("found-later")),
+  WAIT,
+);
+await holding.unfollow("queue", "found-later");
+check(
+  "a held name discovery found stays followed after its last unfollow",
+  holding.following.includes("queue:found-later"),
+  holding.following,
+);
+
+const configured = new JobsNotifier(driver, namespace, {
+  queues: ["late"],
+  runners: [],
+});
+await configured.start();
+await configured.hold("queue", "late");
+await configured.unfollow("queue", "late");
+checkEqual(
+  "a configured name stays followed after hold and unfollow",
+  configured.following,
+  ["queue:late"],
+);
+
+await holding.hold("queue", "at-close");
+await holding.close();
+checkEqual("close() drops every hold with the rest", holding.following, []);
+await Promise.all([configured.close(), foundLater.close()]);
 
 /* ------------------------------------------------------------------ */
 step('on("error"): a failed subscription and a failed discovery pass');

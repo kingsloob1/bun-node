@@ -37,11 +37,19 @@ import {
   BunJobs,
   createDriver,
   createJobsApi,
+  DEFAULT_JOBS_API_LIMITS,
   JOBS_API_ACTIONS,
   JOBS_API_MUTATIONS,
   JOBS_API_OPT_IN_ACTIONS,
   runnerKey,
 } from "@kingsleyweb/bun-jobs";
+import {
+  JOBS_API_ACTIONS as CONTRACT_ACTIONS,
+  MAX_JOB_ID_LENGTH,
+  MAX_JOB_REF_LENGTH,
+  MAX_NAME_LENGTH,
+  NAME_PARAM_PATTERN,
+} from "@kingsleyweb/bun-jobs/api/contract";
 import { exampleDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { step, title, waitFor } from "../shared/console";
@@ -1281,6 +1289,460 @@ check(
 );
 
 /* ------------------------------------------------------------------ */
+step("/meta tells a client what it needs before its first write");
+
+// csrf: the header every mutation must carry (lower case, or null) and
+// whether every POST must be JSON even with no body.
+checkEqual(
+  "csrf by default: no header, JSON required",
+  (await defended.call("GET", "/meta")).body.csrf,
+  { header: null, requireJson: true },
+);
+checkEqual(
+  "a configured header is reported in lower case",
+  (await headerGuarded.call("GET", "/meta")).body.csrf,
+  { header: "x-bun-jobs-csrf", requireJson: true },
+);
+checkEqual(
+  "csrf: false reports neither",
+  (await undefended.call("GET", "/meta")).body.csrf,
+  { header: null, requireJson: false },
+);
+
+// limits: every cap the routes enforce, read from the same values.
+checkEqual(
+  "limits: each configured cap, and the defaults for the rest",
+  (await limited.call("GET", "/meta")).body.limits,
+  {
+    defaultPageSize: 2,
+    maxPageSize: 5,
+    maxBulkIds: 3,
+    maxRetryAll: DEFAULT_JOBS_API_LIMITS.maxRetryAll,
+    maxClean: 10,
+    maxLogPage: 4,
+    maxHistory: 6,
+    maxJobDataBytes: 64,
+    maxQueues: 1,
+  },
+);
+
+// addableNames: null for any name, [] when nothing can be added, else the
+// list — by default the definitions, read at request time.
+checkEqual(
+  "addableNames: the defined names by default",
+  (await adding.call("GET", "/meta")).body.addableNames,
+  ["send"],
+);
+adding.jobs.define("receipt", async () => {});
+checkEqual(
+  "read when asked: a name defined since is there",
+  (await adding.call("GET", "/meta")).body.addableNames,
+  ["send", "receipt"],
+);
+checkEqual(
+  '"any" is null',
+  (await anyName.call("GET", "/meta")).body.addableNames,
+  null,
+);
+checkEqual(
+  "a list is itself",
+  (await listedNames.call("GET", "/meta")).body.addableNames,
+  ["allowed"],
+);
+checkEqual(
+  "and with jobs.add not routed (it is opt-in), nothing",
+  (await docsDefault.call("GET", "/meta")).body.addableNames,
+  [],
+);
+
+// runnerTriggerArgs: whether a trigger is routed and accepts args.
+checkEqual(
+  "runnerTriggerArgs: true when configured and routed",
+  (await withArgs.call("GET", "/meta")).body.runnerTriggerArgs,
+  true,
+);
+checkEqual(
+  "false by default",
+  (await defended.call("GET", "/meta")).body.runnerTriggerArgs,
+  false,
+);
+const argsReadOnly = mount({ runnerTriggerArgs: true, readOnly: true });
+checkEqual(
+  "and false when the trigger route is not registered",
+  (await argsReadOnly.call("GET", "/meta")).body.runnerTriggerArgs,
+  false,
+);
+
+// websocket.port: only for a socket on a port of its own.
+check(
+  "a shared socket reports no port",
+  !("port" in (await defended.call("GET", "/meta")).body.websocket),
+);
+const ownPort = mount({ websocket: { port: 0 } });
+const ownPortMeta = (await ownPort.call("GET", "/meta")).body;
+check(
+  "a dedicated one reports the port it bound, not the 0 it was given",
+  ownPortMeta.websocket.port > 0 &&
+    ownPortMeta.websocket.port === ownPort.api.websocket!.port,
+  ownPortMeta.websocket,
+);
+
+/* ------------------------------------------------------------------ */
+step("api.info: the same answers on the server, without a request");
+
+const info = ownPort.api.info;
+checkEqual("what the API resolved to", info, {
+  basePath: "/admin/jobs",
+  namespace: ownPort.jobs.namespace,
+  mode: "both",
+  readOnly: false,
+  csrf: { header: null, requireJson: true },
+  docs: {
+    openapi: "/admin/jobs/openapi.json",
+    asyncapi: "/admin/jobs/asyncapi.json",
+  },
+  websocket: { path: "/admin/jobs/ws", port: ownPort.api.websocket!.port },
+});
+check(
+  "frozen all the way down",
+  Object.isFrozen(info) &&
+    Object.isFrozen(info.csrf) &&
+    Object.isFrozen(info.docs) &&
+    Object.isFrozen(info.websocket),
+);
+checkEqual("the header as /meta reports it", headerGuarded.api.info.csrf, {
+  header: "x-bun-jobs-csrf",
+  requireJson: true,
+});
+checkEqual(
+  "docs reflects the routes registered: none with docs: false",
+  docsOff.api.info.docs,
+  null,
+);
+const noDocsAction = mount({
+  actions: [...JOBS_API_ACTIONS].filter((action) => action !== "docs.read"),
+});
+checkEqual(
+  "and none when docs.read is not an allowed action",
+  noDocsAction.api.info.docs,
+  null,
+);
+const noSocket = mount({ websocket: false });
+checkEqual(
+  "no socket: no asyncapi, and websocket is null",
+  [noSocket.api.info.docs, noSocket.api.info.websocket],
+  [{ openapi: "/admin/jobs/openapi.json" }, null],
+);
+checkEqual(
+  "a shared socket has a path and no port",
+  defended.api.info.websocket,
+  { path: "/admin/jobs/ws" },
+);
+
+/* ------------------------------------------------------------------ */
+step("/meta/permissions?channel= previews a socket subscription");
+
+const previewing = mount({
+  queues: ["mail", "secret"],
+  authorize: (_req, authorizeContext) =>
+    authorizeContext.queue !== "secret" || {
+      allow: false,
+      reason: "secret is private",
+    },
+});
+/** The `channel` part of a permissions answer. */
+const preview = async (channel?: string) =>
+  (
+    await previewing.call(
+      "GET",
+      channel === undefined
+        ? "/meta/permissions"
+        : `/meta/permissions?channel=${encodeURIComponent(channel)}`,
+    )
+  ).body.channel;
+checkEqual("allowed, with the canonical key", await preview("queue/mail"), {
+  channel: "queue/mail",
+  key: "queue/mail",
+  allowed: true,
+});
+checkEqual(
+  "the key re-encodes a job id; the channel is as asked",
+  await preview("queue/mail/job/a%2fb"),
+  {
+    channel: "queue/mail/job/a%2fb",
+    key: "queue/mail/job/a%2Fb",
+    allowed: true,
+  },
+);
+checkEqual(
+  "denied by authorize, with its reason",
+  await preview("queue/secret"),
+  {
+    channel: "queue/secret",
+    key: "queue/secret",
+    allowed: false,
+    code: "FORBIDDEN",
+    status: 403,
+    detail: "secret is private",
+  },
+);
+// A channel that does not parse, or names a queue outside `queues`, has no
+// canonical key: it is refused as a subscribe ack would refuse it.
+checkEqual(
+  "refused before authorize, with no key",
+  [await preview("nonsense"), await preview("queue/other")].map((answer) => [
+    answer.allowed,
+    answer.code,
+    answer.status,
+    "key" in answer,
+  ]),
+  [
+    [false, "INVALID_CHANNEL", 400, false],
+    [false, "QUEUE_NOT_FOUND", 404, false],
+  ],
+);
+checkEqual("and absent unless asked for", await preview(), undefined);
+
+/* ------------------------------------------------------------------ */
+step("GET /queues pages, and searches ignoring case");
+
+const paging = mount(
+  { limits: { queueCacheMs: 0, maxQueues: 2 } },
+  context("paging"),
+);
+for (const name of ["mail-eu", "Mail-us", "reports"]) {
+  await paging.jobs.queue(name).add("send", {});
+}
+const firstPage = (await paging.call("GET", "/queues")).body;
+checkEqual("limit defaults to limits.maxQueues", firstPage.page, {
+  offset: 0,
+  limit: 2,
+  total: 3,
+  hasMore: true,
+});
+checkEqual("truncated is page.hasMore", firstPage.truncated, true);
+const lastPage = (await paging.call("GET", "/queues?offset=2")).body;
+checkEqual(
+  "offset skips, in name order",
+  [lastPage.page, lastPage.truncated],
+  [{ offset: 2, limit: 2, total: 3, hasMore: false }, false],
+);
+const names = [...firstPage.items, ...lastPage.items].map(
+  (item: { name: string }) => item.name,
+);
+checkEqual("every queue once, sorted by name", names, names.toSorted());
+checkEqual(
+  "a limit over maxQueues is a VALIDATION error",
+  (await paging.call("GET", "/queues?limit=3")).body.code,
+  "VALIDATION",
+);
+checkEqual(
+  "search ignores case",
+  (await paging.call("GET", "/queues?search=MAIL")).body.items
+    .map((item: { name: string }) => item.name)
+    .toSorted(),
+  ["Mail-us", "mail-eu"],
+);
+
+/* ------------------------------------------------------------------ */
+step("GET /overview: a per-minute series beside the totals");
+
+const overview = (await paging.call("GET", "/overview?minutes=5")).body;
+checkEqual(
+  "throughputSeries is present exactly when throughput is",
+  "throughputSeries" in overview,
+  "throughput" in overview,
+);
+if (overview.throughputSeries) {
+  const series = overview.throughputSeries;
+  checkEqual(
+    "one bucket a minute, across the window asked for",
+    [series.interval, series.buckets.length, series.to - series.from],
+    [60_000, 5, 4 * 60_000],
+  );
+  checkEqual(
+    "its totals are its buckets' sums",
+    [series.completed, series.failed],
+    [
+      series.buckets.reduce(
+        (sum: number, bucket: { completed: number }) => sum + bucket.completed,
+        0,
+      ),
+      series.buckets.reduce(
+        (sum: number, bucket: { failed: number }) => sum + bucket.failed,
+        0,
+      ),
+    ],
+  );
+}
+const uncounted = mount(
+  {},
+  new BunJobs({
+    namespace: `${namespace}-uncounted`,
+    driver: without(driver, ["getThroughput"]),
+    logger: createTestLogger().logger,
+  }),
+);
+contexts.push(uncounted.jobs);
+const uncountedOverview = (await uncounted.call("GET", "/overview")).body;
+checkEqual(
+  "a driver that does not count throughput reports neither",
+  ["throughput" in uncountedOverview, "throughputSeries" in uncountedOverview],
+  [false, false],
+);
+
+/* ------------------------------------------------------------------ */
+step("Job ids: 191 characters for a new one, 1024 to address one");
+
+const identified = mount({
+  actions: [...JOBS_API_ACTIONS],
+  addableNames: "any",
+});
+/** Adds a job with `jobId` through the API. */
+const addWithId = async (jobId: string) =>
+  await identified.call("POST", "/queues/mail/jobs", {
+    name: "send",
+    data: {},
+    opts: { jobId },
+  });
+checkEqual(
+  "MAX_JOB_ID_LENGTH characters is a new id",
+  (await addWithId("n".repeat(MAX_JOB_ID_LENGTH))).status,
+  201,
+);
+const tooLong = await addWithId("n".repeat(MAX_JOB_ID_LENGTH + 1));
+checkEqual(
+  "one more is 400 VALIDATION, on opts.jobId",
+  [tooLong.status, tooLong.body.code, tooLong.body.issues?.[0]?.path],
+  [400, "VALIDATION", "opts.jobId"],
+);
+const longRef = "r".repeat(MAX_JOB_REF_LENGTH);
+checkEqual(
+  "a path may address an id of MAX_JOB_REF_LENGTH: not found, not invalid",
+  (await identified.call("GET", `/queues/mail/jobs/${longRef}`)).body.code,
+  "JOB_NOT_FOUND",
+);
+checkEqual(
+  "and so may a bulk body",
+  (
+    await identified.call("POST", "/queues/mail/jobs/lookup", {
+      ids: [longRef],
+    })
+  ).body.items,
+  [null],
+);
+checkEqual(
+  "one more is VALIDATION",
+  [
+    (await identified.call("GET", `/queues/mail/jobs/${longRef}r`)).body.code,
+    (
+      await identified.call("POST", "/queues/mail/jobs/lookup", {
+        ids: [`${longRef}r`],
+      })
+    ).body.code,
+  ],
+  ["VALIDATION", "VALIDATION"],
+);
+
+/* ------------------------------------------------------------------ */
+step("The OpenAPI document states what a client must send");
+
+/** Every operation in a document, with its path and method. */
+function operationsOf(api: { openapi: () => unknown }) {
+  const paths = (api.openapi() as { paths: Record<string, any> }).paths;
+  return Object.entries(paths).flatMap(([path, methods]) =>
+    Object.entries(methods as Record<string, any>).map(([method, op]) => ({
+      path,
+      method,
+      op,
+    })),
+  );
+}
+/** The operation for one action. */
+const operationFor = (api: { openapi: () => unknown }, action: string) =>
+  operationsOf(api).find(({ op }) => op["x-bun-jobs-action"] === action)!.op;
+
+const pauseOp = operationFor(headerGuarded.api, "queues.pause");
+checkEqual(
+  "a mutation requires the CSRF header",
+  pauseOp.parameters
+    .filter((parameter: { in: string }) => parameter.in === "header")
+    .map((parameter: { name: string; required: boolean }) => [
+      parameter.name,
+      parameter.required,
+    ]),
+  [["x-bun-jobs-csrf", true]],
+);
+checkEqual("and says so in x-bun-jobs-csrf", pauseOp["x-bun-jobs-csrf"], {
+  header: "x-bun-jobs-csrf",
+  requireJson: true,
+});
+checkEqual(
+  "a bodiless POST still declares application/json",
+  [
+    pauseOp.requestBody?.required,
+    Object.keys(pauseOp.requestBody?.content ?? {}),
+  ],
+  [false, ["application/json"]],
+);
+check(
+  "a read carries neither",
+  operationsOf(headerGuarded.api)
+    .filter(({ method }) => method === "get")
+    .every(
+      ({ op }) =>
+        op["x-bun-jobs-csrf"] === undefined &&
+        !(op.parameters ?? []).some(
+          (parameter: { in: string }) => parameter.in === "header",
+        ),
+    ),
+);
+const unguardedPause = operationFor(undefended.api, "queues.pause");
+checkEqual(
+  "with csrf: false, a bodiless POST declares no body at all",
+  [unguardedPause["x-bun-jobs-csrf"], unguardedPause.requestBody],
+  [undefined, undefined],
+);
+/** The schema of one path parameter of an action's operation. */
+const paramSchema = (action: string, name: string) =>
+  operationFor(withArgs.api, action).parameters.find(
+    (parameter: { name: string }) => parameter.name === name,
+  ).schema;
+checkEqual(
+  ":queue and :runner carry the name rule the routes enforce",
+  [
+    paramSchema("queues.pause", "queue"),
+    paramSchema("runners.trigger", "runner"),
+  ].map((schema: { pattern: string; maxLength: number }) => [
+    schema.pattern,
+    schema.maxLength,
+  ]),
+  [
+    [NAME_PARAM_PATTERN, MAX_NAME_LENGTH],
+    [NAME_PARAM_PATTERN, MAX_NAME_LENGTH],
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+step("The contract entry point is where the server's constants come from");
+
+check(
+  "the root's action list is the contract's own",
+  JOBS_API_ACTIONS === CONTRACT_ACTIONS,
+);
+checkEqual(
+  "the name rule, and the id caps",
+  [MAX_NAME_LENGTH, MAX_JOB_ID_LENGTH, MAX_JOB_REF_LENGTH],
+  [200, 191, 1024],
+);
+check(
+  "the pattern refuses . and .. and accepts an ordinary name",
+  !new RegExp(NAME_PARAM_PATTERN).test(".") &&
+    !new RegExp(NAME_PARAM_PATTERN).test("..") &&
+    new RegExp(NAME_PARAM_PATTERN).test("mail.eu-1"),
+);
+
+/* ------------------------------------------------------------------ */
 step("Cleaning up");
 
 await Promise.all(
@@ -1322,6 +1784,14 @@ await Promise.all(
     docsOff,
     wrapped,
     published,
+    argsReadOnly,
+    ownPort,
+    noDocsAction,
+    noSocket,
+    previewing,
+    paging,
+    uncounted,
+    identified,
   ].map((mounted) => mounted.api.close()),
 );
 for (const jobs of contexts) {

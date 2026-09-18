@@ -218,20 +218,25 @@ const movedGap = await resumed.next(
 );
 show("epoch-changed", movedGap);
 
-// 2. A `seq` the server never stamped: nothing to replay from.
+// 2. A `seq` beyond anything this server has stamped. It was never part of
+//    this epoch's history, so it is answered exactly like a foreign epoch:
+//    `resumed: false` and a gap from 0 — nothing the client holds is known.
+//    (`resume-expired` is the other reason, for a position the ring has
+//    already forgotten; `10-options/jobs-api-socket-options.ts` provokes it.)
 resumed.send({
   op: "subscribe",
   id: "r3",
   channels: ["queue/billing"],
   resume: { epoch: hello.epoch, afterSeq: 9999 },
 });
-const expiredAck = await resumed.next("ack", (frame) => frame.id === "r3");
-show("ack.resumed", expiredAck.resumed);
-const expiredGap = await resumed.next(
+const aheadAck = await resumed.next("ack", (frame) => frame.id === "r3");
+show("ack.resumed", aheadAck.resumed);
+const aheadGap = await resumed.next(
   "gap",
-  (frame) => frame.reason === "resume-expired",
+  // `next` also sees frames already received; skip the first gap.
+  (frame) => frame !== movedGap && frame.reason === "epoch-changed",
 );
-show("resume-expired", expiredGap);
+show("a resume ahead of the server", aheadGap);
 show(
   "what a client does with a gap",
   "refetch the affected resources over HTTP; the events between fromSeq and toSeq may be missing",
