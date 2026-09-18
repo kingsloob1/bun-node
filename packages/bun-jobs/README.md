@@ -1621,7 +1621,59 @@ createJobsApi({ ...options, actions: [...JOBS_API_ACTIONS] }); // everything
 added creates it, as `BunQueue.add` does. With `queues` set to a list, a
 queue outside the list is still 404 `QUEUE_NOT_FOUND`.
 `GET /meta/permissions` evaluates the whole table for the caller, so a UI can
-hide what it may not do.
+hide what it may not do. Its `actions` is typed
+`Partial<Record<JobsApiAction, boolean>>`: an action whose routes are pruned
+is absent, not `false`.
+
+It costs **N + 1** `authorize` calls, N being the number of actions in the
+answer: one for the request itself (`meta.read` on `GET /meta/permissions`,
+as every route asks), then one per action. The first is not reused for the
+map's `meta.read` entry, because that entry previews `GET /meta`, a different
+route. `?channel=` adds one more when the channel parses and is available.
+
+Each call is shaped like the real request it previews, so an `authorize`
+that decides by route gives the map the answer the request gets:
+
+- an HTTP action carries `transport: "http"` and `route` — the method and
+  pattern of one of its routes. Where an action has several, the first
+  registered (in `api.routes` order) whose pattern names what was asked
+  about: `?queue=` picks a route with `:queue` (`metrics.read` →
+  `GET /queues/:queue/throughput`), `?runner=` one with `:runner`, and
+  neither picks one with neither (`metrics.read` → `GET /overview`,
+  `workers.list` → `GET /workers`); failing that, the action's first route
+  (`jobs.read` untargeted → `POST /queues/:queue/jobs/lookup`, a read);
+- `events.connect` and `events.subscribe` carry `transport: "ws"` and no
+  `route`, as the upgrade and a `subscribe` frame do;
+- no call names a job, so a rule on `jobId` cannot be previewed.
+
+#### Showing only the queues a caller may read
+
+By default `GET /queues`, `GET /overview` and `GET /workers` show every
+reachable queue to anyone allowed `queues.list` (or `metrics.read`,
+`workers.list`). With `listQueues: "authorized"` they also ask `authorize`
+about `queues.read` for each queue — with the context `GET /queues/:queue`
+carries, `route` included — and leave out the queues it denies:
+
+```ts
+createJobsApi({
+  ...options,
+  listQueues: "authorized", // default "all"
+  authorize: (req, ctx) => !(ctx.queue === "payroll" && !isFinance(req)),
+});
+```
+
+`GET /queues` pages the filtered list: `offset`, `limit`, `page.total`,
+`page.hasMore` and `truncated` all count only the queues shown. `/overview`
+sums only those, and `/workers` drops workers of hidden queues.
+
+That costs one `authorize` call per queue matching the request's `search` —
+every one, not just the page's, because the total needs them all — made at
+most 16 at a time and never twice for one queue within a request. An
+`authorize` that throws fails the request with a 500, as it does on any
+route. The option needs `queues.read` enabled: otherwise every queue would
+be hidden, so construction throws `ConfigError`. It filters the HTTP reads
+only; the socket's broad channels (`all`, `queues`) already ask
+`events.subscribe` per queue.
 
 ### Modes and pruning
 
@@ -1716,7 +1768,11 @@ lookup) may be up to 1024 characters, so a job stored with a longer id by an
 earlier version stays readable, retryable and removable.
 
 Lists omit the heavy fields; ask for them with `include=data,returnValue,stacktrace,opts`.
-A single read includes `data`, `returnValue` and `opts` by default. Timestamps
+A single read includes `data`, `returnValue` and `opts` by default. Despite its
+name, `stacktrace` holds stack traces only when the API is created with
+`serialize: { exposeStacks: true }`, which is off by default: otherwise each
+entry, like `failedReason`, is the error's `name` and `message`, plus `code`,
+`data` and `cause` when it had them. Timestamps
 are epoch milliseconds throughout. `serialize.job` (and the `repeatable`,
 `runner`, `run` and `event` hooks) is where you redact before anything leaves
 the process.
