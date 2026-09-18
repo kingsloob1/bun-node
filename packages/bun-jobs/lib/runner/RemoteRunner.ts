@@ -251,6 +251,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
         source: "manual",
         requestedAt: Date.now(),
         requestedBy: newToken(this.id),
+        ...(options?.force ? { force: true } : {}),
       },
       max,
     );
