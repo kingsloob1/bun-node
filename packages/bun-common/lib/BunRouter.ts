@@ -373,24 +373,53 @@ export const FETCH_STUB_SERVER = fetchStubServer as Parameters<
   typeof BunRequestClass.init
 >[1];
 
+/**
+ * Whether `input` is a `Request`, recognised by shape rather than by
+ * `instanceof`.
+ *
+ * `instanceof Request` compares against whatever `globalThis.Request` is at
+ * call time. A DOM shim (happy-dom's `GlobalRegistrator`, jsdom) replaces it,
+ * after which a native Bun `Request` fails the check and would be taken for a
+ * bodiless `GET`. Capturing the native constructor at module load does not
+ * fix that either: a shim registered in a test preload is installed before
+ * this module loads. A `RequestInit` never has `arrayBuffer`, and a `URL` has
+ * neither `method` nor `arrayBuffer`, so the forms cannot be confused.
+ */
+function isRequestLike(input: unknown): input is Request {
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+  const candidate = input as Partial<Record<keyof Request, unknown>>;
+  return (
+    typeof candidate.url === "string" &&
+    typeof candidate.method === "string" &&
+    typeof candidate.arrayBuffer === "function"
+  );
+}
+
 /** Builds a native `Request` from anything {@link FetchInput} allows. */
 export function toNativeRequest(
   input: FetchInput,
   init?: RequestInit,
   origin: string = FETCH_DEFAULT_ORIGIN,
 ): Request {
-  if (input instanceof Request) {
+  if (isRequestLike(input)) {
     // Already a request: `init` would have to rebuild it (and re-read its
     // body), so it is ignored rather than silently half-applied.
     return input;
   }
 
-  const target =
-    typeof input === "string" || input instanceof URL ? input : input.url;
-  const options: RequestInit | undefined =
-    typeof input === "string" || input instanceof URL
-      ? init
-      : { ...(input as RequestInit), ...init };
+  // The init form is the only object form carrying a `url`; any other
+  // non-string is a `URL`. Told apart by shape for the same reason as above:
+  // a shim may replace `globalThis.URL` too.
+  const initForm =
+    typeof input === "object" && "url" in input && input.url !== undefined
+      ? input
+      : undefined;
+  const target = initForm ? initForm.url : (input as string | URL);
+  const options: RequestInit | undefined = initForm
+    ? { ...initForm, ...init }
+    : init;
 
   // `Request` accepts a string or another `Request`, not a `URL`.
   const url = new URL(String(target), origin).href;

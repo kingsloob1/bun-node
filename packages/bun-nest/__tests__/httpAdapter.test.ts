@@ -951,3 +951,34 @@ describe("BunHttpAdapter: request options merge over the defaults", () => {
     });
   });
 });
+
+describe("BunHttpAdapter.fetch: a Request from before a DOM shim replaced globalThis.Request", () => {
+  it("keeps the request's method and body", async () => {
+    const adapter = new BunHttpAdapter();
+    adapter.post("/echo", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+    const native = globalThis.Request;
+    const built = new Request("http://localhost/echo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "hello" }),
+    });
+
+    // As happy-dom's `GlobalRegistrator` does: a working `Request`, but a
+    // different class, so `built` is no longer an `instanceof` the global.
+    globalThis.Request = class ShimRequest extends native {};
+    let response: Response;
+    try {
+      response = await adapter.fetch(built);
+    } finally {
+      globalThis.Request = native;
+    }
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      method: "POST",
+      body: { title: "hello" },
+    });
+  });
+});
