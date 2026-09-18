@@ -33,7 +33,16 @@
  *   `pollInterval`, `syncSchema`, `eventRetentionMs`;
  * - `createDriver` with every `DriverConfig` shape, and `resolveDriver`'s
  *   ownership flag: a driver built from a config is closed by whoever built
- *   it; an instance handed in never is.
+ *   it; an instance handed in never is;
+ * - the JSON-safe tuning options a config carries, each checked *after a trip
+ *   through JSON* (what a spawned runner receives): `pollInterval` and
+ *   `eventRetentionMs` for file, SQL and MongoDB, `maxBlockSeconds` for Redis,
+ *   `clientOptions` for MongoDB;
+ * - `capabilities.multiHost` is `false` for SQLite — a file, shareable by the
+ *   processes of one host only — and `true` for every server engine;
+ * - reading an unknown runner (`getLock`, `getState`, `listHistory`, queued
+ *   triggers) registers nothing, on every driver;
+ * - Redis: a wake token taken by an abandoned wait reaches the next wait.
  *
  * Every table and collection this creates starts with `bun_jobs_example_`,
  * and every Redis key with `examples:`. They are left in place (empty) so a
@@ -41,6 +50,7 @@
  */
 import type {
   DriverCapabilities,
+  DriverConfig,
   DriverEvent,
   JobsDriver,
   SqlDriverOptions,
@@ -97,6 +107,14 @@ function ns(label: string, what: string): string {
   return `opts-${label}-${what}-${RUN}`;
 }
 
+/**
+ * A config after a trip through JSON — what a spawned runner actually
+ * receives. Anything a config carries has to survive this.
+ */
+function viaJson<T extends DriverConfig>(config: T): T {
+  return JSON.parse(JSON.stringify(config)) as T;
+}
+
 /** Publishes one runner event, the smallest thing a driver stores. */
 async function publishOne(
   driver: JobsDriver,
@@ -149,6 +167,67 @@ async function checkContract(
   checkEqual(`${label}: listRunners()`, await driver.listRunners(here), [
     "nightly",
   ]);
+
+  // Asking about a runner nobody registered must not bring it into being.
+  // The memory driver used to: every read went through a lookup that created
+  // the runner's state, so a mere `info()` of a mistyped id put it in
+  // `listRunners()` for good. Every driver now answers a read without writing
+  // — and so does popping an unknown runner's empty trigger queue, which on
+  // the file and SQL drivers used to create the runner's state.
+  const ghost = runnerKey("ghost");
+  const reads = {
+    lock: await driver.getLock(here, ghost, Date.now()),
+    state: await driver.getState(here, ghost),
+    history: await driver.listHistory(here, ghost, 5),
+    queued: await driver.countQueuedTriggers(here, ghost),
+    popped: await driver.popQueuedTrigger(here, ghost),
+  };
+  checkEqual(`${label}: reads of an unknown runner answer empty`, reads, {
+    lock: null,
+    state: {},
+    history: [],
+    queued: 0,
+    popped: null,
+  });
+  checkEqual(
+    `${label}: …and register nothing — listRunners() is unchanged`,
+    await driver.listRunners(here),
+    ["nightly"],
+  );
+
+  // A queued trigger records whether it was forced past a pause, so the
+  // process that later drains it can tell. A record without the field — one
+  // an earlier version wrote — reads as not forced.
+  const nightly = runnerKey("nightly");
+  const trigger = {
+    source: "manual",
+    requestedAt: Date.now(),
+    requestedBy: newToken(),
+  } as const;
+  await driver.pushQueuedTrigger(
+    here,
+    nightly,
+    { ...trigger, id: "forced", force: true },
+    10,
+  );
+  await driver.pushQueuedTrigger(
+    here,
+    nightly,
+    { ...trigger, id: "older" },
+    10,
+  );
+  const drained = [
+    await driver.popQueuedTrigger(here, nightly),
+    await driver.popQueuedTrigger(here, nightly),
+  ];
+  checkEqual(
+    `${label}: a queued trigger keeps force: true; one without it reads as not forced`,
+    drained.map((popped) => [popped?.id, popped?.force === true]),
+    [
+      ["forced", true],
+      ["older", false],
+    ],
+  );
 
   await driver.purge(here);
   checkEqual(
@@ -596,6 +675,19 @@ await checkEventRetention(
   fileEvents(fileRoot),
 );
 
+// The same two options through a config — the form a spawned runner
+// receives, so it goes through JSON on the way. `createDriver` used to pass
+// only `root` on, and a config could not tune the driver at all.
+await checkPollInterval("file-config", (pollInterval) => {
+  return createDriver(viaJson({ type: "file", root: fileRoot, pollInterval }));
+});
+await checkEventRetention(
+  "file-config",
+  (eventRetentionMs) =>
+    createDriver(viaJson({ type: "file", root: fileRoot, eventRetentionMs })),
+  fileEvents(fileRoot),
+);
+
 /* ------------------------------------------------------------------ */
 step(
   "SQLite: url, adapter, tablePrefix, tables, syncSchema, sql, pollInterval, eventRetentionMs",
@@ -643,11 +735,14 @@ checkEqual(
   ],
 );
 
+// `multiHost: false`: SQLite is a file, so processes on this machine can share
+// it (`multiProcess: true`) but a process on another host cannot. Every other
+// SQL engine is reached over a socket, and says `multiHost: true`.
 await checkContract("sqlite", sqlite, {
   blockingWait: false,
   events: "poll",
   multiProcess: true,
-  multiHost: true,
+  multiHost: false,
 });
 
 await checkRejects(
@@ -767,6 +862,17 @@ await checkEventRetention(
   (eventRetentionMs) => new SqlDriver({ ...sqliteBase, eventRetentionMs }),
   sqliteEvents,
 );
+
+// …and through a config, as JSON.
+await checkPollInterval("sqlite-config", (pollInterval) => {
+  return createDriver(viaJson({ type: "sql", ...sqliteBase, pollInterval }));
+});
+await checkEventRetention(
+  "sqlite-config",
+  (eventRetentionMs) =>
+    createDriver(viaJson({ type: "sql", ...sqliteBase, eventRetentionMs })),
+  sqliteEvents,
+);
 inspect.close();
 
 /* ------------------------------------------------------------------ */
@@ -834,6 +940,32 @@ check(
     fromMongoConfig.collections.events === `${SERVER_PREFIX}event_log`,
 );
 await fromMongoConfig.close();
+
+// clientOptions through a config. They are declared as plain JSON values,
+// not the driver library's own option type, precisely so a config survives
+// JSON: functions, streams and TLS buffers go to the constructor instead.
+// No server is needed to see them arrive — a short server-selection timeout
+// makes an unreachable address fail in well under the client's 30s default.
+const unreachableConfig = createDriver(
+  viaJson({
+    type: "mongodb",
+    url: "mongodb://127.0.0.1:1/unreachable",
+    clientOptions: { serverSelectionTimeoutMS: 300 },
+  }),
+);
+const configTriedAt = Date.now();
+await checkRejects(
+  "createDriver: mongodb clientOptions — an unreachable server",
+  () => unreachableConfig.connect(),
+  { name: "DriverError" },
+);
+const configFailedIn = Date.now() - configTriedAt;
+check(
+  "createDriver: …failing on the timeout the config gave",
+  configFailedIn < 10_000,
+  configFailedIn,
+);
+await unreachableConfig.close();
 
 await checkRejects(
   "createDriver: an unknown type",
@@ -1178,6 +1310,57 @@ if (!redisUrl) {
     await blocking.close();
   }
 
+  // …and through a config, which used to drop it: `createDriver` passed on
+  // only the connection and the prefix.
+  const fromConfig = createDriver(
+    viaJson({ type: "redis", url: redisUrl, keyPrefix, maxBlockSeconds: 0.2 }),
+  );
+  const configWaitFrom = Date.now();
+  await fromConfig.waitForJob(
+    { ns: ns("redis", "block-config"), queue: "idle" },
+    10_000,
+  );
+  const configWaited = Date.now() - configWaitFrom;
+  check(
+    `redis: maxBlockSeconds 0.2 from a config — a 10s wait returned after ${configWaited}ms`,
+    configWaited >= 100 && configWaited <= 3_000,
+    configWaited,
+  );
+  await fromConfig.close();
+
+  // A wait that was given up on. `BLPOP` cannot be called off, so an aborted
+  // wait leaves its pop parked on the blocking connection — and the pop is a
+  // destructive read, so the wake token the next add() pushes is taken by
+  // that parked pop with nobody to hand it to. The next wait then sat out a
+  // whole block (5s by default) before noticing the job. The driver now
+  // shares one pop per queue and hands a token nobody took to the next waiter.
+  const wakeNs = ns("redis", "wake");
+  const wakeRef = { ns: wakeNs, queue: "orders" };
+  const waking = new RedisDriver({ url: redisUrl, keyPrefix });
+  const wakeQueue = new BunQueue("orders", {
+    namespace: wakeNs,
+    driver: waking,
+  });
+  await waking.connect();
+  const abort = new AbortController();
+  const abandoned = waking.waitForJob(wakeRef, 30_000, abort.signal);
+  await Bun.sleep(100); // long enough to be parked inside the pop
+  abort.abort();
+  await abandoned;
+  await wakeQueue.add("reindex", {});
+  await Bun.sleep(150); // the parked pop takes the token in this time
+  const wokeFrom = Date.now();
+  await waking.waitForJob(wakeRef, 30_000);
+  const woke = Date.now() - wokeFrom;
+  check(
+    `redis: the wake an abandoned wait took reaches the next wait (${woke}ms, not a full block)`,
+    woke < 1_000,
+    woke,
+  );
+  await wakeQueue.close();
+  await waking.purge(wakeNs);
+  await waking.close();
+
   inspectRedis.close();
   await redis.close();
 }
@@ -1370,6 +1553,26 @@ if (!mongoUrl) {
   await checkEventRetention(
     "mongodb",
     (eventRetentionMs) => new MongoDriver({ ...mongoBase, eventRetentionMs }),
+    async (namespace, target) => {
+      return await db.collection(mongoEvents).countDocuments({
+        ns: namespace,
+        channel: `runner:${target}`,
+      });
+    },
+  );
+
+  // …and both through a config, as JSON.
+  await checkPollInterval("mongodb-config", (pollInterval) => {
+    return createDriver(
+      viaJson({ type: "mongodb", ...mongoBase, pollInterval }),
+    );
+  });
+  await checkEventRetention(
+    "mongodb-config",
+    (eventRetentionMs) =>
+      createDriver(
+        viaJson({ type: "mongodb", ...mongoBase, eventRetentionMs }),
+      ),
     async (namespace, target) => {
       return await db.collection(mongoEvents).countDocuments({
         ns: namespace,
