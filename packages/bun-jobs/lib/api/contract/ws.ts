@@ -181,7 +181,12 @@ export type JobsApiWsErrorCode =
  * subscribed.
  *
  * With `resume`, replayed events are sent before the `ack`; when they cannot
- * be replayed the `ack` says `resumed: false` and a `gap` follows it.
+ * be replayed the `ack` says `resumed: false` and a `gap` follows it. A resume
+ * may be split over several frames (different `events` per channel group, or
+ * more than 256 channels), each with the same `resume`: each frame's replay
+ * covers its own channels, re-sending an event an earlier frame (or live
+ * delivery) sent only for other channels. No `(seq, channel)` pair is sent
+ * twice on one connection.
  */
 export interface JobsApiSubscribeMessage {
   /** The operation. */
@@ -201,9 +206,14 @@ export interface JobsApiSubscribeMessage {
     /** The `epoch` the client last saw. */
     epoch: string;
     /**
-     * The last `seq` the client processed. One beyond anything the server
-     * has stamped in `epoch` is answered as a changed epoch: `resumed: false`
-     * and a `gap` from `0`.
+     * The last `seq` the client processed, meaning every event at or below it
+     * was received on every channel resumed. Live delivery is in `seq` order,
+     * so the highest `seq` seen qualifies — except while a resume is still
+     * replaying: a later frame's replay can carry `seq`s below ones an
+     * earlier frame's already did, so until every resuming frame is acked,
+     * resume again from the position that resume used. One beyond anything
+     * the server has stamped in `epoch` is answered as a changed epoch:
+     * `resumed: false` and a `gap` from `0`.
      */
     afterSeq: number;
   };
@@ -281,9 +291,10 @@ export interface JobsApiAckMessage {
   rejected?: JobsApiAckRejection[];
   /**
    * For a `subscribe` with `resume`: `true` when every missed event was
-   * replayed (before this ack); `false` when some could not be, in which case
-   * a `gap` covers them — right after this ack, or, if the connection was
-   * lagging, when it drains.
+   * replayed for this frame's channels (before this ack), including events an
+   * earlier frame or live delivery sent only for other channels; `false` when
+   * some could not be, in which case a `gap` covers them — right after this
+   * ack, or, if the connection was lagging, when it drains.
    */
   resumed?: boolean;
   /** The latest `seq` stamped when the ack was sent. */
@@ -298,7 +309,13 @@ export interface JobsApiEventMessage {
   seq: number;
   /** The server instance's epoch. */
   epoch: string;
-  /** Every subscribed channel it matched: an event is sent once, however many match. */
+  /**
+   * The channels it is sent for. Live: every subscribed channel it matched,
+   * in one frame however many match. In a resume's replay: the resuming
+   * frame's channels it matched and had not been sent for yet — so an event
+   * can arrive a second time, only for channels it had not reached. No
+   * `(seq, channel)` pair repeats: de-duplicate on that pair, not on `seq`.
+   */
   subscriptions: string[];
   /** The event. */
   event: EventWire;
