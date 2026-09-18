@@ -62,7 +62,7 @@ function eventEnvelope(descriptor: EventDescriptor): Schema<unknown> {
         subscriptions: s.array(s.string(), {
           minItems: 1,
           description:
-            "Every subscribed channel the event matched; it is sent once.",
+            "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone.",
         }),
         event: descriptor.event,
       },
@@ -395,7 +395,7 @@ export function generateAsyncApi(
       title: "Connection",
       description: [
         `The WebSocket itself (subprotocol \`${JOBS_API_WS_SUBPROTOCOL}\`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.`,
-        "Ordering: a subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.",
+        "Ordering: live events arrive in `seq` order. A subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A resume split over several subscribes replays each one's channels in full, so a later one can replay `seq`s below ones already received: resume again from the same position until every resuming subscribe is acked. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.",
         "Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.",
         "An upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
       ].join("\n\n"),

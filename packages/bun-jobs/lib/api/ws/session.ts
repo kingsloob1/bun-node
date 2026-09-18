@@ -109,6 +109,11 @@ interface HeldEvent {
   stamped: StampedEvent;
   /** The session's channels it matched when it arrived. */
   keys: string[];
+  /**
+   * Set when a resume's replay held it, not live delivery: skipping it into a
+   * lag then makes that resume `resumed: false`.
+   */
+  replay?: true;
 }
 
 /** What became of one event offered to the session. */
@@ -226,8 +231,19 @@ export class Session implements HubSubscriber {
   #outbox: HeldEvent[] = [];
   /** Resolved when the outbox empties. */
   #outboxWaiters: (() => void)[] = [];
-  /** `seq`s sent to this client that the hub may still replay: a resume never sends one twice. */
-  readonly #sent = new Set<number>();
+  /**
+   * The channels each `seq` was sent for, for every `seq` the hub may still
+   * replay: no `(seq, channel)` pair is sent twice, so a resume re-sends an
+   * event only for the channels it has not reached yet. Pruned to the replay
+   * window; each entry lists at most the session's channels the event matched.
+   */
+  readonly #sent = new Map<number, readonly string[]>();
+  /**
+   * Set while a resume waits for the replayed events it had to hold: a
+   * replayed event skipped into a lag meanwhile sets it, and the resume then
+   * answers `resumed: false`. `undefined` when no resume is waiting.
+   */
+  #replayLagged: boolean | undefined;
   /**
    * Notifier holds this session took, by the channel that needed them: each
    * is released when the channel is left or the session ends, so names a
@@ -637,8 +653,9 @@ export class Session implements HubSubscriber {
       }
     }
 
-    // From here to the ack nothing awaits, so no event can be stamped between
-    // indexing the channels, replaying and going live.
+    // From here to the end of the replay nothing awaits, so no event can be
+    // stamped between indexing the channels, replaying and going live. Only
+    // the ack may wait, for replayed events held behind a decision.
     const accepted: string[] = [];
     for (const { channel, decision } of allowed) {
       accepted.push(channel.key);
@@ -649,6 +666,8 @@ export class Session implements HubSubscriber {
 
     let resumed: boolean | undefined;
     let gap: JobsApiGapMessage | undefined;
+    /** Whether the ack waited for held replayed events, deferring any gap. */
+    let waited = false;
     if (message.resume) {
       const { epoch, afterSeq } = message.resume;
       const replay =
@@ -656,14 +675,37 @@ export class Session implements HubSubscriber {
       if (replay?.status === "ok") {
         const scope = new Set(accepted);
         let lagged = false;
+        let held = false;
         for (const stamped of replay.events) {
-          // Already sent live: a second copy would be a duplicate `seq`.
-          if (this.#sent.has(stamped.seq)) {
+          // Only this frame's channels the event has not been sent for: an
+          // earlier frame's replay, or live delivery, may have sent it for
+          // others, and a second copy there would be a duplicate.
+          const keys = this.#unsent(
+            stamped.seq,
+            stamped.keys.filter((key) => scope.has(key)),
+          );
+          if (keys.length === 0) {
             continue;
           }
-          const keys = stamped.keys.filter((key) => scope.has(key));
-          if (keys.length > 0 && this.#route(stamped, keys) === "lagged") {
+          const outcome = this.#route(stamped, keys, true);
+          if (outcome === "lagged") {
             lagged = true;
+          } else if (outcome === "held") {
+            held = true;
+          }
+        }
+        if (held) {
+          // A decision the preparation could not settle (its rounds ran out,
+          // or an `authorize` that threw is being asked again): the ack waits
+          // for what was held, so the replay still precedes it. A gap the
+          // outbox would announce meanwhile waits for the ack, too.
+          this.#replayLagged = false;
+          waited = true;
+          await this.#outboxIdle();
+          lagged ||= this.#replayLagged;
+          this.#replayLagged = undefined;
+          if (this.#ended) {
+            return;
           }
         }
         // Replayed events skipped into a lag were not resumed: the gap sent
@@ -696,6 +738,21 @@ export class Session implements HubSubscriber {
     if (gap) {
       this.#send(gap);
     }
+    if (waited) {
+      // A lag the outbox ended while the ack waited announces its gap now.
+      this.drain();
+    }
+  }
+
+  /**
+   * The channels among `keys` that `seq` has not been sent for on this
+   * connection. With replay off nothing is recorded, and all of them are.
+   */
+  #unsent(seq: number, keys: readonly string[]): string[] {
+    const sent = this.#sent.get(seq);
+    return sent === undefined
+      ? [...keys]
+      : keys.filter((key) => !sent.includes(key));
   }
 
   /**
@@ -719,13 +776,10 @@ export class Session implements HubSubscriber {
       }
       const waits: Promise<void>[] = [];
       for (const stamped of replay.events) {
-        if (
-          this.#sent.has(stamped.seq) ||
-          (filter !== undefined && !filter.has(stamped.event.type))
-        ) {
+        if (filter !== undefined && !filter.has(stamped.event.type)) {
           continue;
         }
-        for (const key of stamped.keys) {
+        for (const key of this.#unsent(stamped.seq, stamped.keys)) {
           if (scope.has(key) && BROAD_CHANNELS.has(key)) {
             const pending = this.#resolveTarget(key, stamped);
             if (pending) {
@@ -893,8 +947,12 @@ export class Session implements HubSubscriber {
     this.#route(stamped, keys);
   }
 
-  /** {@link deliver}, saying what became of the event. */
-  #route(stamped: StampedEvent, keys: readonly string[]): Outcome {
+  /** {@link deliver}, saying what became of the event; `replay` marks a resume's replay. */
+  #route(
+    stamped: StampedEvent,
+    keys: readonly string[],
+    replay = false,
+  ): Outcome {
     if (this.#ended) {
       return "none";
     }
@@ -912,7 +970,11 @@ export class Session implements HubSubscriber {
         this.#lag!.outbox = true;
         return "lagged";
       }
-      this.#outbox.push({ stamped, keys: matched });
+      this.#outbox.push(
+        replay
+          ? { stamped, keys: matched, replay: true }
+          : { stamped, keys: matched },
+      );
       return "held";
     }
     return this.#emit(stamped, matched);
@@ -931,10 +993,14 @@ export class Session implements HubSubscriber {
       if (keys.length === 0) {
         continue;
       }
+      let outcome: Outcome = "lagged";
       if (this.#lag) {
         this.#startLag(head.stamped.seq, head.stamped.seq);
       } else {
-        this.#emit(head.stamped, keys);
+        outcome = this.#emit(head.stamped, keys);
+      }
+      if (outcome === "lagged" && head.replay && this.#replayLagged === false) {
+        this.#replayLagged = true;
       }
     }
     for (const key of this.#targetFailed) {
@@ -962,9 +1028,14 @@ export class Session implements HubSubscriber {
     });
   }
 
-  /** Serialises and sends an event whose channels are all known to be admitted, bar denied targets. */
+  /**
+   * Serialises and sends an event whose channels are all known to be
+   * admitted, bar denied targets — and bar channels it was already sent for,
+   * which an event held live and then replayed by a resume could otherwise
+   * reach twice.
+   */
   #emit(stamped: StampedEvent, matched: readonly string[]): Outcome {
-    const keys = matched.filter(
+    const keys = this.#unsent(stamped.seq, matched).filter(
       (key) =>
         !BROAD_CHANNELS.has(key) ||
         this.#targetDecisions.get(this.#targetKey(key, stamped))?.allow ===
@@ -1006,24 +1077,27 @@ export class Session implements HubSubscriber {
       stamped.seq,
     );
     if (outcome === "sent") {
-      this.#recordSent(stamped.seq);
+      this.#recordSent(stamped.seq, keys);
     }
     return outcome;
   }
 
   /**
-   * Remembers a `seq` as sent, for as long as the hub may replay it. Pruned
-   * past twice the replay size, so the set stays within that bound.
+   * Remembers the channels a `seq` was sent for, for as long as the hub may
+   * replay it. Pruned past twice the replay size to what is still retained,
+   * so the map stays within that bound, and each entry within the channels
+   * the event matched.
    */
-  #recordSent(seq: number): void {
+  #recordSent(seq: number, keys: readonly string[]): void {
     const { hub, options } = this.#ctx;
     if (options.replay === false || !hub.replayEnabled) {
       return;
     }
-    this.#sent.add(seq);
+    const earlier = this.#sent.get(seq);
+    this.#sent.set(seq, earlier === undefined ? keys : [...earlier, ...keys]);
     if (this.#sent.size > options.replay.size * 2) {
       const oldest = hub.oldestRetainedSeq;
-      for (const sent of this.#sent) {
+      for (const sent of this.#sent.keys()) {
         if (sent < oldest) {
           this.#sent.delete(sent);
         }
@@ -1034,7 +1108,12 @@ export class Session implements HubSubscriber {
   /** The socket drained: when every lagging event is behind us, announce the gap and go live. */
   drain(): void {
     const lag = this.#lag;
-    if (!lag || this.#ended || this.#outbox.length > 0) {
+    if (
+      !lag ||
+      this.#ended ||
+      this.#outbox.length > 0 ||
+      this.#replayLagged !== undefined
+    ) {
       return;
     }
     if (this.#ws.getBufferedAmount() > this.#ctx.options.maxBufferedBytes) {

@@ -2004,7 +2004,7 @@ describe("review fixes", () => {
     expect(dedicated.ws.protocol).toBe(JOBS_API_WS_SUBPROTOCOL);
   });
 
-  it("#7 a resume never re-sends a seq already delivered, but still replays what was not", async () => {
+  it("#7 a resume never re-sends an event for a channel it already reached, but still replays what was not", async () => {
     const h = await served();
     const client = await connect(h.url);
     const hello = await client.next("hello");
@@ -2022,12 +2022,22 @@ describe("review fixes", () => {
     client.send({
       op: "subscribe",
       id: "s2",
-      channels: ["queues"],
+      channels: ["queue/q", "queues"],
       resume: { epoch: hello.epoch, afterSeq: 0 },
     });
     const ack = await client.next("ack", (frame) => frame.id === "s2");
     expect(ack.resumed).toBe(true);
-    expect(seqs(client.frames)).toEqual([1, 2, 3, 4]);
+    // Seq 1 and 2 reached queue/q live: replayed for `queues` alone.
+    expect(
+      client.all("event").map((frame) => [frame.seq, frame.subscriptions]),
+    ).toEqual([
+      [1, ["queue/q"]],
+      [2, ["queue/q"]],
+      [1, ["queues"]],
+      [2, ["queues"]],
+      [3, ["queues"]],
+      [4, ["queues"]],
+    ]);
     // Replayed before the ack.
     const ackAt = client.frames.indexOf(ack);
     expect(
@@ -2035,6 +2045,18 @@ describe("review fixes", () => {
         (frame) => frame.type === "event" && frame.seq === 4,
       ),
     ).toBeLessThan(ackAt);
+
+    // Every channel has had every event: a second resume sends nothing.
+    client.send({
+      op: "subscribe",
+      id: "s3",
+      channels: ["queue/q", "queues"],
+      resume: { epoch: hello.epoch, afterSeq: 0 },
+    });
+    expect(
+      (await client.next("ack", (frame) => frame.id === "s3")).resumed,
+    ).toBe(true);
+    expect(client.all("event")).toHaveLength(6);
   });
 
   it("#8 a resume from beyond the server's seq is a changed epoch: a gap from 0", async () => {
@@ -2373,5 +2395,172 @@ describe("review follow-ups", () => {
       CONNECTION_LIMIT: 429,
       UNSUPPORTED_SUBPROTOCOL: 400,
     });
+  });
+});
+
+/*
+ * A resume split over several subscribe frames — different event filters per
+ * channel group, or more channels than one frame may carry. Each frame's
+ * replay reaches its own channels, whatever an earlier frame's replay sent.
+ */
+describe("split resumes", () => {
+  /** A witness that opens the hub and sees every event of `queue`, so their seqs are known. */
+  async function witnessOf(url: string, queue: string) {
+    const witness = await connect(url);
+    const hello = await witness.next("hello");
+    witness.send({ op: "subscribe", id: "w", channels: [`queue/${queue}`] });
+    await witness.next("ack");
+    return { witness, epoch: hello.epoch };
+  }
+
+  /** The events between one ack and the one before it: what that frame replayed. */
+  function replayedBefore(client: Client, id: string) {
+    const ackAt = client.frames.findIndex(
+      (frame) => frame.type === "ack" && frame.id === id,
+    );
+    const previousAck = client.frames.findLastIndex(
+      (frame, index) => index < ackAt && frame.type === "ack",
+    );
+    return client.frames
+      .slice(previousAck + 1, ackAt)
+      .filter((frame): frame is Frame<"event"> => frame.type === "event")
+      .map((frame) => [frame.seq, [...frame.subscriptions].sort()]);
+  }
+
+  /** Every `(seq, channel)` pair the connection received: none may repeat. */
+  function pairs(client: Client): string[] {
+    return client
+      .all("event")
+      .flatMap((frame) =>
+        frame.subscriptions.map((channel) => `${frame.seq} ${channel}`),
+      );
+  }
+
+  it("replays an event matching both frames' channels for each frame, and both acks say resumed", async () => {
+    const h = await served();
+    const { witness, epoch } = await witnessOf(h.url, "mail");
+    await h.jobs.queue("mail").add("n", {}, { jobId: "j1" });
+    await waitFor(() => witness.all("event").length === 2);
+
+    const client = await connect(h.url);
+    await client.next("hello");
+    // One channel group wants `added` only; the other every type.
+    client.send({
+      op: "subscribe",
+      id: "a",
+      channels: ["queue/mail"],
+      events: ["added"],
+      resume: { epoch, afterSeq: 0 },
+    });
+    client.send({
+      op: "subscribe",
+      id: "b",
+      channels: ["queues"],
+      resume: { epoch, afterSeq: 0 },
+    });
+    const ackA = await client.next("ack", (frame) => frame.id === "a");
+    const ackB = await client.next("ack", (frame) => frame.id === "b");
+    expect(ackA.resumed).toBe(true);
+    expect(ackB.resumed).toBe(true);
+    expect(client.all("gap")).toEqual([]);
+    expect(replayedBefore(client, "a")).toEqual([[1, ["queue/mail"]]]);
+    // Seq 1 went out for queue/mail already; `queues` still needs it.
+    expect(replayedBefore(client, "b")).toEqual([
+      [1, ["queues"]],
+      [2, ["queues"]],
+    ]);
+
+    // Live, an event matching both arrives once, listing both.
+    await h.jobs.queue("mail").add("n", {}, { jobId: "j2" });
+    const live = await client.next("event", (frame) => frame.seq === 3);
+    expect([...live.subscriptions].sort()).toEqual(["queue/mail", "queues"]);
+    const all = pairs(client);
+    expect(new Set(all).size).toBe(all.length);
+    expect(client.invalid).toEqual([]);
+  });
+
+  it("resumes more channels than one frame carries, over two frames", async () => {
+    const h = await served({ websocket: { maxSubscriptions: 400 } });
+    const { witness, epoch } = await witnessOf(h.url, "mail");
+    await h.jobs.queue("mail").add("n", {}, { jobId: "j0" });
+    await h.jobs.queue("mail").add("n", {}, { jobId: "j299" });
+    await waitFor(() => witness.all("event").length === 4);
+
+    const jobChannels = Array.from(
+      { length: 300 },
+      (_, index) => `queue/mail/job/j${index}`,
+    );
+    const first = jobChannels.slice(0, 256);
+    const second = [...jobChannels.slice(256), "queue/mail"];
+    const client = await connect(h.url);
+    await client.next("hello");
+    client.send({
+      op: "subscribe",
+      id: "a",
+      channels: first,
+      resume: { epoch, afterSeq: 0 },
+    });
+    client.send({
+      op: "subscribe",
+      id: "b",
+      channels: second,
+      resume: { epoch, afterSeq: 0 },
+    });
+    const ackA = await client.next("ack", (frame) => frame.id === "a");
+    const ackB = await client.next("ack", (frame) => frame.id === "b");
+    expect(ackA).toMatchObject({ resumed: true, channels: first });
+    expect(ackA.rejected).toBeUndefined();
+    expect(ackB).toMatchObject({ resumed: true, channels: second });
+    expect(replayedBefore(client, "a")).toEqual([
+      [1, ["queue/mail/job/j0"]],
+      [2, ["queue/mail/job/j0"]],
+    ]);
+    // j0's events reached its job channel in the first frame; queue/mail,
+    // in the second, gets them too.
+    expect(replayedBefore(client, "b")).toEqual([
+      [1, ["queue/mail"]],
+      [2, ["queue/mail"]],
+      [3, ["queue/mail", "queue/mail/job/j299"]],
+      [4, ["queue/mail", "queue/mail/job/j299"]],
+    ]);
+    const all = pairs(client);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("sends replayed events held behind a decision before the ack", async () => {
+    const h = await served({
+      authorize: (_req, context) => {
+        if (context.channel === "queues" && context.queue === "boom") {
+          throw new Error("the policy service is down");
+        }
+        return true;
+      },
+    });
+    const { witness, epoch } = await witnessOf(h.url, "boom");
+    witness.send({ op: "subscribe", id: "w2", channels: ["queue/mail"] });
+    await witness.next("ack", (frame) => frame.id === "w2");
+    await h.jobs.queue("boom").add("n", {}, { jobId: "b1" });
+    await h.jobs.queue("mail").add("n", {}, { jobId: "m1" });
+    await waitFor(() => witness.all("event").length === 4);
+
+    const client = await connect(h.url);
+    await client.next("hello");
+    // `boom`'s decision throws every time it is asked, so the preparation's
+    // rounds run out and the replay holds its events — and mail's behind them.
+    client.send({
+      op: "subscribe",
+      id: "r",
+      channels: ["queues"],
+      resume: { epoch, afterSeq: 0 },
+    });
+    const ack = await client.next("ack", (frame) => frame.id === "r");
+    expect(ack.resumed).toBe(true);
+    // boom's events are dropped as denied; mail's precede the ack.
+    expect(replayedBefore(client, "r")).toEqual([
+      [3, ["queues"]],
+      [4, ["queues"]],
+    ]);
+    await Bun.sleep(20);
+    expect(client.all("event")).toHaveLength(2);
   });
 });

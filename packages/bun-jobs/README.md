@@ -2144,7 +2144,7 @@ The server sends `hello` on open, `ack` for each `subscribe`/`unsubscribe`
 (with per-channel `rejected` entries, so one refused channel does not close
 the connection), `event`, `gap`, `heartbeat`, `pong` and `error`. Each `event`
 carries a `seq` within an `epoch`, and lists every subscription it matched —
-an event matching several of your channels arrives **once**.
+live, an event matching several of your channels arrives **once**.
 
 **Resuming.** After a reconnect, `subscribe` with `resume: { epoch, afterSeq }`
 replays what the server still holds (`websocket.replay`, by default 1000
@@ -2161,13 +2161,26 @@ HTTP what a gap covers. The gap's `reason` says why:
   this instance has stamped in that epoch, which can only come from another
   instance; the gap runs from `0`.
 
+A resume may be split over several `subscribe`s — a different `events` filter
+per group of channels, or more than 256 channels — each carrying the same
+`resume`. Each one's replay covers its own channels in full, and its `resumed`
+speaks for them.
+
 **`seq` and duplicates.** `seq` increases within an `epoch`, across every
-channel, and one connection never sends the same `seq` twice — an event
-already delivered live is skipped by a replay. So the last `seq` processed,
-with its `epoch`, is all a client needs to keep; drop anything at or below it
-if you replay from your own buffer too. `heartbeat.seq` is the server's
-latest across *all* connections, so a jump in it says nothing about missed
-events — only `gap` frames do.
+channel, and live events arrive in `seq` order. One connection never sends the
+same event twice **for the same channel**: a replay skips the channels an event
+already reached, live or in an earlier frame's replay, and re-sends it for the
+others, listing just those in `subscriptions`. So de-duplicate on
+`(seq, channel)`, not on `seq` alone — an event can arrive a second time, for a
+channel it had not reached.
+
+The last `seq` processed, with its `epoch`, is all a client needs to resume —
+with one caveat for a split resume: a later frame's replay can carry `seq`s
+below ones an earlier frame's replay already delivered, so if the connection
+drops before every resuming `subscribe` is acked, resume again from the
+position that resume used, not the highest `seq` seen. `heartbeat.seq` is the
+server's latest across *all* connections, so a jump in it says nothing about
+missed events — only `gap` frames do.
 
 **Authorizing broad channels.** Subscribing to a channel asks `authorize` for
 `events.subscribe` once, with `channel` (and `queue`, `runner` or `jobId` for
@@ -2179,9 +2192,12 @@ host denies are dropped from that channel without a frame. Each answer is
 remembered for the subscription (an `authorize` that threw is asked again for
 the next event), and forgotten on `unsubscribe`. While a decision is pending,
 that connection's events are held back, in `seq` order, so the first event
-from a new target can be delayed by one `authorize` call. At most 1000 events
-are held; past that the connection is treated as a slow consumer — it stops
-receiving events and gets a `slow-consumer` `gap` once the backlog clears.
+from a new target can be delayed by one `authorize` call — and a held event is
+never overtaken by a later one. A resume's replay settles the decisions it
+needs first; one still pending then delays the `ack`, so the replay still
+precedes it. At most 1000 events are held; past that the connection is treated
+as a slow consumer — it stops receiving events and gets a `slow-consumer`
+`gap` once the backlog clears.
 
 **Backpressure.** A client that cannot keep up stops receiving events, gets one
 `gap` when its socket drains, and is closed `4008` after

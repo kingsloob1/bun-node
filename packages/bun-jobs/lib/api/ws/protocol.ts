@@ -110,7 +110,7 @@ export const SubscribeMessageSchema = s.named(
     },
     {
       description:
-        "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket. Only as many channels not already held as the connection has free slots are authorized; the rest are refused SUBSCRIPTION_LIMIT. Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it. With `resume`, replayed events arrive before the ack; if they cannot be replayed the ack says `resumed: false` and a gap follows it.",
+        "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket. Only as many channels not already held as the connection has free slots are authorized; the rest are refused SUBSCRIPTION_LIMIT. Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it. With `resume`, replayed events arrive before the ack; if they cannot be replayed the ack says `resumed: false` and a gap follows it. A resume split over several frames replays each frame's channels in full: an event an earlier frame (or live delivery) sent only for other channels is sent again, listing just this frame's channels it had not reached. No (seq, channel) pair is sent twice on one connection.",
     },
   ),
 );
