@@ -135,10 +135,24 @@ describe("the runner's settings", () => {
 describe("the list helpers", () => {
   it("puts local runners first, keeping each group's order", () => {
     const shuffled = [
-      { id: "b-remote", local: false },
-      { id: "z-local", local: true, name: "z", status: "idle" as const },
-      { id: "a-remote", local: false },
-      { id: "a-local", local: true, name: "a", status: "paused" as const },
+      { id: "b-remote", local: false, isPaused: false, isRunning: false },
+      {
+        id: "z-local",
+        local: true,
+        name: "z",
+        status: "idle" as const,
+        isPaused: false,
+        isRunning: false,
+      },
+      { id: "a-remote", local: false, isPaused: false, isRunning: false },
+      {
+        id: "a-local",
+        local: true,
+        name: "a",
+        status: "paused" as const,
+        isPaused: true,
+        isRunning: false,
+      },
     ];
     expect(orderRunners(shuffled).map((item) => item.id)).toEqual([
       "z-local",

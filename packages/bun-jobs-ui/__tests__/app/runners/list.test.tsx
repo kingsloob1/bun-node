@@ -25,6 +25,23 @@ function rowIds(table: HTMLElement): string[] {
 }
 
 describe("the runner list screen", () => {
+  it("shows a remote runner's shared paused flag, and any runner's run in flight", async () => {
+    renderRunner({ path: "/runners" });
+    const table = await page().findByRole("table", { name: "Runners" });
+    const billing = within(table).getByTestId("runner-row-billing");
+    expect(billing.textContent).toContain("Paused");
+    expect(billing.textContent).not.toContain("Run in flight");
+    const awkward = within(table).getByTestId(`runner-row-${AWKWARD_RUNNER}`);
+    expect(awkward.textContent).toContain("Active");
+    // `sync` is local, started, and has a run holding its lock.
+    const sync = within(table).getByTestId("runner-row-sync");
+    expect(sync.textContent).toContain("Running");
+    expect(sync.textContent).toContain("Run in flight");
+    expect(
+      within(table).getByTestId("runner-row-nightly").textContent,
+    ).not.toContain("Run in flight");
+  });
+
   it("lists local runners first with name and status, then remote ids marked remote", async () => {
     renderRunner({
       path: "/runners",
@@ -33,9 +50,19 @@ describe("the runner list screen", () => {
         "GET /runners": {
           body: {
             items: [
-              { id: "billing", local: false },
+              {
+                id: "billing",
+                local: false,
+                isPaused: false,
+                isRunning: false,
+              },
               ...runnerListFixture().items.filter((item) => item.local),
-              { id: AWKWARD_RUNNER, local: false },
+              {
+                id: AWKWARD_RUNNER,
+                local: false,
+                isPaused: false,
+                isRunning: false,
+              },
             ],
           },
         },
