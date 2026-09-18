@@ -40,7 +40,7 @@
     "@types/bun": ">=1.4.2",
     "chrono-node": ">=2.7.0 <3",
     "mongodb": ">=6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
     "@types/bun": {
@@ -50,6 +50,9 @@
       "optional": true
     },
     "mongodb": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     }
   },

@@ -43,10 +43,21 @@ export type {
 export { FileDriver, type FileDriverOptions } from "./file-driver";
 export { MemoryDriver } from "./memory-driver";
 export {
+  type CollectionLike,
+  type DbLike,
+  type FilterLike,
+  type FindCursorLike,
+  type IndexDescriptionLike,
   MONGO_COLLECTIONS,
+  type MongoClientConstructor,
+  type MongoClientLike,
+  type MongoClientOptionsLike,
   type MongoCollection,
   MongoDriver,
   type MongoDriverOptions,
+  type ObjectIdLike,
+  type UpdateFilterLike,
+  type UpdateResultLike,
 } from "./mongo/mongo-driver";
 export {
   countQueues,
