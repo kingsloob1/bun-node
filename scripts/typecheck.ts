@@ -2,9 +2,9 @@
 /**
  * Type-checks every project in the repo.
  *
- * There are nine: the three packages, their nested benchmark and playground
- * projects, the standalone `benchmarks/` package, and the root. Each has its
- * own `tsconfig.json`, and all of them extend `tsconfig.base.json`, so a file
+ * They are listed in `PROJECTS` below: the packages, their nested benchmark,
+ * playground and app projects, the standalone `benchmarks/` package and the
+ * example projects. Each has its own `tsconfig.json`, and all of them extend `tsconfig.base.json`, so a file
  * is checked the same way wherever it is checked from.
  *
  * This exists because the per-package `include` used to be `./lib/**\/*` alone.
@@ -33,6 +33,7 @@ const PROJECTS = [
   "examples/bun-jobs/tsconfig.json",
   "examples/bun-common/tsconfig.json",
   "examples/bun-nest/tsconfig.json",
+  "examples/bun-jobs-ui/tsconfig.json",
 ] as const;
 
 /**
