@@ -1,7 +1,8 @@
 /**
  * The queue and job screens in a real browser: pause a queue by clicking,
- * then open a dead job and retry it. Every step is read back from the API,
- * not from the page.
+ * check the Clean dialog's default, open a dead job and retry it, then open a
+ * job of a queue whose jobs this caller may not read. Every step is read back
+ * from the API or the host, not from the page.
  *
  * ```bash
  * bun 06-browser/pause-and-retry.ts
@@ -20,8 +21,9 @@
  * Worth knowing:
  *
  * - **Hooks to drive the screens by.** They are stable on purpose:
- *   `data-testid` `queues-list`, `queue-screen`, `queue-total`, `job-screen`,
- *   `job-id` and `job-not-found`. The queue's buttons are in
+ *   `data-testid` `queues-list`, `queue-screen`, `queue-total`,
+ *   `job-row-<id>`, `job-screen`, `job-id`, `job-not-found` and `job-hidden`.
+ *   The queue's buttons are in
  *   `[role="group"][aria-label="Queue actions"]`, and a confirmation is the
  *   open `<dialog>` (`dialog[open]`).
  * - **Wait on conditions, never on time.** Every page-side helper below polls
@@ -30,9 +32,18 @@
  *   is as fast as the app and fails with the name of what never happened.
  * - **The page's own state is not the proof.** The API is: a click counts
  *   when `GET /queues/mail` says `paused: true`.
+ * - **A hidden job is never fetched.** The job screen asks for `jobs.read`
+ *   on the queue's own map (`/meta/permissions?queue=`). While that map
+ *   loads, the untargeted one stands in, so this host answers `jobs.read`
+ *   with `false` there: a real job read always names its queue, so only the
+ *   queue's map can say yes. The cost is that an allowed queue's job shows
+ *   "Job hidden" for the moment before its map arrives. A host that said
+ *   `true` untargeted would let one job request out first, which its
+ *   `authorize` then refuses with a 403, shown in the same panel.
  * - **The CSP holds.** The page raises no Content-Security-Policy violation
  *   along the way, checked with a `ReportingObserver`.
  */
+import type { JobsApiAuthorize, MetaDto } from "@kingsleyweb/bun-jobs";
 import { existsSync } from "node:fs";
 import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
@@ -73,6 +84,10 @@ if (chromePath === undefined) {
 const QUEUE = "mail";
 /** A dead job, with a `/` in its id so its URL carries `%2F`. */
 const DEAD_ID = "bounce/ada";
+/** A queue whose jobs this caller may list but not read. */
+const VAULT = "vault";
+/** The job in it. */
+const VAULT_JOB = "payslip-1";
 
 /* --- the server: a real API with CSRF on, and the UI --------------- */
 
@@ -81,10 +96,32 @@ const jobs = new BunJobs({
   driver: new MemoryDriver(),
   logger: noopLogger,
 });
+
+/** Every `jobs.read` that `authorize` was asked about one of vault's jobs. */
+const vaultJobReads: string[] = [];
+
+/**
+ * Everything is allowed, except reading a job: refused on vault, and refused
+ * untargeted (see the notes above), so the job screen waits for the queue's
+ * own map rather than fetching on the untargeted one.
+ */
+const authorize: JobsApiAuthorize = (_req, ctx) => {
+  if (ctx.action !== "jobs.read") {
+    return true;
+  }
+  if (ctx.queue === VAULT && ctx.jobId !== undefined) {
+    vaultJobReads.push(ctx.jobId);
+  }
+  if (ctx.queue === undefined || ctx.queue === VAULT) {
+    return { allow: false, reason: `jobs of ${ctx.queue ?? "any queue"}` };
+  }
+  return true;
+};
+
 const api = createJobsApi({
   jobs,
   basePath: "/jobs-api",
-  authorize: () => true,
+  authorize,
   // The UI reads the header name from `api.info` and sends it on mutations.
   csrf: { header: "x-bun-jobs-csrf" },
   // Read queue state fresh, so `paused` is true the moment the click lands.
@@ -93,6 +130,21 @@ const api = createJobsApi({
 });
 const ui = jobsUi({ api, logger: noopLogger });
 const app = new BunHttpAdapter();
+
+/** Every request the host received for one of vault's jobs (not its list). */
+const vaultJobRequests: string[] = [];
+/** How often the page asked for vault's own permissions map. */
+let vaultMaps = 0;
+// Ahead of the API, so it sees every request whatever the API answers.
+app.use((req, _res, next) => {
+  if (req.originalUrl.startsWith(`${api.basePath}/queues/${VAULT}/jobs/`)) {
+    vaultJobRequests.push(`${req.method} ${req.originalUrl}`);
+  }
+  if (req.originalUrl === `${api.basePath}/meta/permissions?queue=${VAULT}`) {
+    vaultMaps++;
+  }
+  next();
+});
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 await app.listen(0);
@@ -121,6 +173,7 @@ await waitFor("the job to die", async () => (await queue.count()).dead === 1);
 await worker.close({ timeout: 1_000 });
 await queue.add("send-email", { to: "alan@example.com" });
 await queue.add("send-email", { to: "grace@example.com" });
+await jobs.queue(VAULT).add("payslip", { to: "ada" }, { jobId: VAULT_JOB });
 
 // Build the bundle before the browser asks, so the first page load is not
 // the in-memory build.
@@ -208,6 +261,54 @@ function button(
   })`;
 }
 
+/**
+ * Page-side: the value of the input labelled `label` inside the open
+ * dialog, once it exists (or `null` after `ms`).
+ */
+function dialogInput(label: string, ms = 10_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      for (const element of document.querySelectorAll("dialog[open] label")) {
+        if (element.textContent.trim() === ${JSON.stringify(label)}) {
+          const input = document.getElementById(element.htmlFor);
+          if (input) return resolve(input.value);
+        }
+      }
+      if (Date.now() > deadline) return resolve(null);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/**
+ * Page-side: clicks the first link inside `selector`, once it exists.
+ * Resolves with its `href`, or `null` after `ms`.
+ */
+function clickLinkIn(selector: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const link = document.querySelector(${JSON.stringify(`${selector} a[href]`)});
+      if (link) {
+        const href = link.getAttribute("href");
+        link.click();
+        return resolve(href);
+      }
+      if (Date.now() > deadline) return resolve(null);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Page-side: every link inside `selector`, as `[text, href]` pairs. */
+function linksIn(selector: string): string {
+  return `[...document.querySelectorAll(${JSON.stringify(`${selector} a[href]`)})]
+    .map((link) => [link.textContent.trim(), link.getAttribute("href")])`;
+}
+
 /** Page-side: every CSP violation so far, buffered ones included. */
 const COLLECT_VIOLATIONS = `new Promise((resolve) => {
   const observer = new ReportingObserver(() => {}, { types: ["csp-violation"], buffered: true });
@@ -271,6 +372,41 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
+  step("Clean… starts from /meta's limits.defaultClean");
+
+  const { limits } = await read<MetaDto>("/meta");
+  show("GET /meta → limits.defaultClean", limits.defaultClean);
+  check(
+    "Clean… is offered",
+    await view.evaluate<boolean>(button(QUEUE_ACTIONS, "Clean…", true)),
+  );
+  checkEqual(
+    "its Limit field starts at limits.defaultClean",
+    await view.evaluate<string | null>(dialogInput("Limit")),
+    String(limits.defaultClean),
+  );
+  check(
+    "Cancel is offered in it",
+    await view.evaluate<boolean>(button("dialog[open]", "Cancel", true)),
+  );
+  checkEqual(
+    "and closes it, with all 3 jobs still in mail",
+    [
+      await view.evaluate<boolean>(`new Promise((resolve) => {
+        const deadline = Date.now() + 5000;
+        const poll = () => {
+          if (!document.querySelector("dialog[open]")) return resolve(true);
+          if (Date.now() > deadline) return resolve(false);
+          setTimeout(poll, 50);
+        };
+        poll();
+      })`),
+      (await read<{ total: number }>(`/queues/${QUEUE}`)).total,
+    ],
+    [true, 3],
+  );
+
+  /* ---------------------------------------------------------------- */
   step("Open the dead job and retry it");
 
   const jobUrl = `${origin}${ui.basePath}/queues/${QUEUE}/jobs/${encodeURIComponent(DEAD_ID)}`;
@@ -316,6 +452,52 @@ try {
     await view.evaluate<boolean>(
       waitForSelector('[data-testid="job-not-found"]'),
     ),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A job this caller may not read: vault");
+
+  await view.navigate(`${origin}${ui.basePath}/queues/${VAULT}`);
+  // jobs.list is allowed, so the table lists the job and links to it.
+  checkEqual(
+    "vault's jobs table links to its job",
+    await view.evaluate<string | null>(
+      clickLinkIn(`[data-testid="job-row-${VAULT_JOB}"]`),
+    ),
+    `${ui.basePath}/queues/${VAULT}/jobs/${VAULT_JOB}`,
+  );
+  checkEqual(
+    "clicking it shows data-testid=job-hidden, not the job",
+    await view.evaluate<string | null>(textOf('[data-testid="job-hidden"]')),
+    `Job hiddenYou may not read the jobs of queue ${VAULT}.Back to ${VAULT}`,
+  );
+  checkEqual(
+    "with a link back to the queue",
+    await view.evaluate<[string, string][]>(
+      linksIn('[data-testid="job-hidden"]'),
+    ),
+    [[`Back to ${VAULT}`, `${ui.basePath}/queues/${VAULT}`]],
+  );
+  await waitFor("the page to ask vault's own map", () => vaultMaps > 0);
+  check(
+    "no job-screen markup at all",
+    !(await view.evaluate<boolean>(
+      waitForSelector('[data-testid="job-screen"]', 0),
+    )),
+  );
+  checkEqual(
+    "and the job was never requested: none reached the host, none authorize",
+    [vaultJobRequests, vaultJobReads],
+    [[], []],
+  );
+  // The API is the authority either way: the same read, sent anyway.
+  const refused = await fetch(
+    `${origin}${api.basePath}/queues/${VAULT}/jobs/${VAULT_JOB}`,
+  );
+  checkEqual(
+    "GET the vault job directly → 403",
+    [refused.status, vaultJobRequests.length, vaultJobReads.length],
+    [403, 1, 1],
   );
 
   checkEqual(
