@@ -47,17 +47,26 @@ export type { RepeatEveryOptions } from "./JobBuilder";
  *   again. A failure after the backend accepted the write can still have
  *   added the job, so give `unique(id)` where a retried save must not add a
  *   second one.
+ *
+ * @typeParam TData What the job carries.
+ * @typeParam TResult What running it answers with.
+ * @typeParam TJob What `save()` and `job` answer with: `Job<TData, TResult>`
+ * by default, and a `TypedJob` of the draft's name from a typed `BunJobs`.
  */
-export class JobDraft<TData = unknown, TResult = unknown> {
+export class JobDraft<
+  TData = unknown,
+  TResult = unknown,
+  TJob extends Job<unknown, unknown> = Job<TData, TResult>,
+> {
   /** The defined name the job is saved under. */
   readonly name: string;
 
   /** Holds the description, and adds it on save. */
-  readonly #builder: JobBuilder<TData, TResult>;
+  readonly #builder: JobBuilder<TData, TResult, TJob>;
   /** The job the first successful save returned. */
-  #saved: Job<TData, TResult> | undefined;
+  #saved: TJob | undefined;
   /** The save in flight, which a concurrent `save()` joins. */
-  #saving: Promise<Job<TData, TResult>> | undefined;
+  #saving: Promise<TJob> | undefined;
   /** Whether a setter was called after a save began. */
   #changed = false;
   /**
@@ -70,7 +79,7 @@ export class JobDraft<TData = unknown, TResult = unknown> {
 
   constructor(
     /** The builder that holds the description, with the definition's defaults under it. */
-    builder: JobBuilder<TData, TResult>,
+    builder: JobBuilder<TData, TResult, TJob>,
     /** The defined name the job is saved under. */
     name: string,
   ) {
@@ -84,7 +93,7 @@ export class JobDraft<TData = unknown, TResult = unknown> {
   }
 
   /** The job the successful save returned, or `undefined` before one. */
-  get job(): Job<TData, TResult> | undefined {
+  get job(): TJob | undefined {
     return this.#saved;
   }
 
@@ -259,7 +268,7 @@ export class JobDraft<TData = unknown, TResult = unknown> {
    * `debounce` with `throttle`, `unique` with either — is refused here, as a
    * `ConfigError`, and nothing is written. See the class for saving twice.
    */
-  async save(): Promise<Job<TData, TResult>> {
+  async save(): Promise<TJob> {
     if (this.#changed) {
       // Joining the save in flight, or answering with the saved job, would
       // hand back a job that does not match the draft as it now stands.
@@ -313,7 +322,7 @@ export class JobDraft<TData = unknown, TResult = unknown> {
     /** The setter's name, without parentheses — `"limit"`, `"endingAt"`. */
     method: string,
     /** What to do to the builder once a series is known to exist. */
-    apply: (builder: JobBuilder<TData, TResult>) => void,
+    apply: (builder: JobBuilder<TData, TResult, TJob>) => void,
   ): this {
     if (!this.#builder.hasSeries) {
       throw new ConfigError(
@@ -362,7 +371,7 @@ export class JobDraft<TData = unknown, TResult = unknown> {
   }
 
   /** Applies a setter, noting it when a save has already begun. */
-  #edit(apply: (builder: JobBuilder<TData, TResult>) => void): this {
+  #edit(apply: (builder: JobBuilder<TData, TResult, TJob>) => void): this {
     apply(this.#builder);
 
     if (this.#saved || this.#saving) {

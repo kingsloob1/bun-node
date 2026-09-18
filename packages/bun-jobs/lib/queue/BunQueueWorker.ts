@@ -14,8 +14,11 @@ import type {
   BunQueueWorkerEvents,
   BunQueueWorkerOptions,
   DeadLetter,
+  JobMap,
+  JobMapOf,
   JobProcessor,
   ProcessorContext,
+  WorkerEventsOf,
 } from "./types";
 import process from "node:process";
 import {
@@ -214,11 +217,22 @@ function storedResult(result: unknown): unknown {
  * });
  * await worker.run();
  * ```
+ *
+ * @typeParam TData What the jobs it runs carry.
+ * @typeParam TResult What its processor answers with.
+ * @typeParam TJobs A declared job map, for the registry worker `jobs.start()`
+ * returns: its listeners are then handed a `TypedJob`, discriminated by name,
+ * and each declared name's scoped events carry that name's own types. The
+ * default, `JobMap`, means none — the events are exactly as before.
  */
 export class BunQueueWorker<
   TData = unknown,
   TResult = unknown,
-> extends TypedEmitterBase<BunQueueWorkerEvents<TData, TResult>> {
+  TJobs extends JobMapOf<TJobs> = JobMap,
+> extends TypedEmitterBase<
+  WorkerEventsOf<TData, TResult, TJobs>,
+  BunQueueWorkerEvents<TData, TResult>
+> {
   /** Identifies this worker in job records and logs. */
   readonly id: string;
   /** The queue it consumes. */

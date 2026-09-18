@@ -168,10 +168,21 @@ export interface FlowNode<TData = unknown> {
   children?: FlowNode[];
 }
 
-/** A flow as it was added: each job, with its children in the same shape. */
-export interface FlowResult<TData = unknown, TResult = unknown> {
+/**
+ * A flow as it was added: each job, with its children in the same shape.
+ *
+ * @typeParam TData The top job's payload type.
+ * @typeParam TResult The top job's result type.
+ * @typeParam TJob The top job's type: `Job<TData, TResult>` by default, a
+ * `TypedJob` from a registry-bound queue.
+ */
+export interface FlowResult<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+> {
   /** The job. */
-  job: Job<TData, TResult>;
+  job: TJob;
   /** Its children, in the order they were given. */
   children: FlowResult[];
 }
@@ -183,6 +194,583 @@ export interface DebounceOptions {
   /** The window: milliseconds, or a duration such as `"30 seconds"`. */
   ttl: number | string;
 }
+
+/* --- the typed job registry ------------------------------------------ *
+ *
+ * A service knows its own job names at compile time, and knows what each one
+ * carries. Declaring that once, as a map, is what lets `define`, `now`,
+ * `schedule`, `create` and a registry-bound `add` check the name and infer the
+ * payload — rather than every call site repeating `<Mail>` and nothing
+ * catching the one that repeats it wrong.
+ *
+ * The map is opt-in, and its absence is the default: a `BunJobs` with no type
+ * argument is `BunJobs<JobMap>`, whose keys are `string`, and every signature
+ * below reads that as "no map declared" and falls back to exactly the types
+ * the package had before.
+ */
+
+/**
+ * What one name in a {@link JobMap} carries, and what running it answers with.
+ *
+ * `data` is required — a job with no payload declares `data: void` — because
+ * an entry is always an object with those keys. A bare payload type is
+ * deliberately *not* accepted: `{ data: Buffer }` would be ambiguous between
+ * "an entry whose data is a Buffer" and "a payload that happens to have a
+ * `data` field", and one spelling that always means the same thing is worth
+ * more than the characters the other would save.
+ */
+export interface JobTypeEntry {
+  /** What a job of this name carries. `void` for one with no payload. */
+  data: unknown;
+  /**
+   * What its handler answers with. Omitted means `unknown`, which is what a
+   * job whose return value nothing reads should say.
+   */
+  result?: unknown;
+}
+
+/**
+ * A service's jobs declared as types: each name it defines, mapped to what
+ * that job carries and what running it answers with.
+ *
+ * ```ts
+ * interface Jobs {
+ *   "send-report": { data: { month: string }; result: string };
+ *   "reindex": { data: void };
+ * }
+ *
+ * const jobs = new BunJobs<Jobs>({ namespace: "reports", driver });
+ * ```
+ *
+ * `JobMap` itself is also the default type argument, and that is the whole
+ * back-compatibility mechanism: `keyof JobMap` is `string`, so
+ * `string extends keyof TJobs` is true exactly when no map was declared, and
+ * every signature keyed on it falls back to its former shape.
+ */
+export type JobMap = Record<string, JobTypeEntry>;
+
+/**
+ * The constraint a declared map has to satisfy.
+ *
+ * Written as a mapped type over `TJobs`'s *own* keys rather than as
+ * `Record<string, JobTypeEntry>`, because a map is meant to be written as an
+ * `interface` and an interface has no implicit index signature — it would fail
+ * `Record` for that reason alone, with a message about index signatures that
+ * says nothing about the entry that is actually wrong. This way the error
+ * names the offending entry.
+ */
+export type JobMapOf<TJobs> = { [TName in keyof TJobs]: JobTypeEntry };
+
+/**
+ * `TWhen` for a context that declared a job map, and `never` for one that did
+ * not — which makes a signature written in terms of it uncallable there.
+ *
+ * This, and {@link WhenUndeclared}, are how the typed and untyped overloads of
+ * one method are kept mutually exclusive. Without the gate the wider overload
+ * catches what the narrow one rejects, and a wrong payload compiles.
+ */
+export type WhenDeclared<TJobs, TWhen> = string extends keyof TJobs
+  ? never
+  : TWhen;
+
+/**
+ * `TWhen` for a context that declared no job map, and `never` for one that
+ * did. The mirror of {@link WhenDeclared}.
+ */
+export type WhenUndeclared<TJobs, TWhen> = string extends keyof TJobs
+  ? TWhen
+  : never;
+
+/** Every name a map declares; `string` for a context with no map. */
+export type JobName<TJobs> = keyof TJobs & string;
+
+/**
+ * The names the narrow, map-checked overloads accept: the declared ones, and
+ * `never` when nothing was declared.
+ */
+export type TypedJobName<TJobs> = WhenDeclared<TJobs, keyof TJobs & string>;
+
+/**
+ * The names the wide, back-compatible overloads accept: any string when no map
+ * was declared, and `never` when one was.
+ */
+export type UntypedJobName<TJobs> = WhenUndeclared<TJobs, string>;
+
+/**
+ * What one declared name's entry says its jobs carry.
+ *
+ * Read with `infer` rather than as `TJobs[TName]["data"]` so it answers
+ * `unknown` — never an error — for a `TJobs` that turns out not to describe
+ * that name. `TName` is one name here; {@link JobDataOf} is what handles a
+ * union of them.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName One declared name.
+ */
+export type JobEntryData<
+  TJobs,
+  TName extends keyof TJobs,
+> = TJobs[TName] extends { data: infer TData } ? TData : unknown;
+
+/**
+ * What one declared name's entry says running it answers with — `unknown`
+ * when the entry leaves `result` out.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName One declared name.
+ */
+export type JobEntryResult<
+  TJobs,
+  TName extends keyof TJobs,
+> = TJobs[TName] extends { result: infer TResult } ? TResult : unknown;
+
+/**
+ * Every member of a union, as one intersection — computed by placing each
+ * member in a contravariant position and inferring once across them all.
+ *
+ * Each member arrives here already boxed as a whole payload, so a payload
+ * that is itself a union (`{ kind: "a" } | { kind: "b" }`) stays one union
+ * rather than being intersected with itself into `never`.
+ *
+ * @typeParam TBoxed A union of `(value: T) => void`, one per member to intersect.
+ */
+type IntersectBoxed<TBoxed> = [TBoxed] extends [(value: infer TAll) => void]
+  ? TAll
+  : never;
+
+/**
+ * `true` when `T` is a union of two or more members, `false` for one.
+ *
+ * Each member is compared with the whole: only a union is wider than every
+ * one of its members.
+ *
+ * @typeParam T The type to test.
+ * @typeParam TWhole `T` itself, kept whole while `T` distributes.
+ */
+type IsUnion<T, TWhole = T> = T extends unknown
+  ? [TWhole] extends [T]
+    ? false
+    : true
+  : never;
+
+/**
+ * An intersection of object types, flattened into the one object type it
+ * describes — `{ a: string } & { b: number }` as `{ a: string; b: number }`.
+ *
+ * Only ever an equivalence. The mapped copy always accepts what `T` accepts;
+ * it is used only when `T` accepts the copy too, and otherwise `T` is left as
+ * it is — a class with private members, or a callable, loses something a
+ * mapped type cannot copy. Not an object at all, `T` is left alone.
+ * Distributes, so each member of a union is flattened on its own.
+ *
+ * @typeParam T The type to flatten.
+ */
+type Flatten<T> = T extends object
+  ? [{ [TKey in keyof T]: T[TKey] }] extends [T]
+    ? { [TKey in keyof T]: T[TKey] }
+    : T
+  : T;
+
+/**
+ * The intersection of the payloads of `TName` that are objects, or of those
+ * that are not — `TObjects` says which — and `unknown` when there are none.
+ *
+ * Split so the object half can be flattened and the rest, such as `void`,
+ * kept beside it: flattening `{ month: string } & void` whole would drop the
+ * `void`, and accept payloads the intersection refuses.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The names, a union.
+ * @typeParam TObjects `true` for the payloads that are objects, `false` for
+ * the rest.
+ */
+type PayloadPart<
+  TJobs,
+  TName extends keyof TJobs,
+  TObjects extends boolean,
+> = IntersectBoxed<
+  TName extends keyof TJobs
+    ? (
+        [JobEntryData<TJobs, TName>] extends [object] ? true : false
+      ) extends TObjects
+      ? (value: JobEntryData<TJobs, TName>) => void
+      : never
+    : never
+>;
+
+/**
+ * The payload a job of `TName` may be given, according to the map.
+ *
+ * For one name, that name's `data`. For a *union* of names it is the
+ * intersection of their payloads, because it is a value going in: a payload
+ * handed to "whichever of these it turns out to be" has to satisfy each of
+ * them. So two names that carry the same shape accept that shape, and two
+ * whose shapes cannot both hold — `{ month: string }` and `void` — accept
+ * nothing, which is exactly what their union should accept.
+ *
+ * The union would be the unsound choice: `now(name as "a" | "b", payloadOfA)`
+ * would compile and run `b`'s handler on `a`'s payload.
+ *
+ * The object payloads' part of the intersection is flattened for display —
+ * `{ userId: string } & { userId: string }` reads as `{ userId: string }` —
+ * only where that is an exact equivalence; see {@link Flatten}.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName A declared name, or a union of them.
+ */
+export type JobDataOf<TJobs, TName extends keyof TJobs> =
+  true extends IsUnion<TName>
+    ? Flatten<PayloadPart<TJobs, TName, true>> &
+        PayloadPart<TJobs, TName, false>
+    : JobEntryData<TJobs, TName>;
+
+/**
+ * What a job of `TName` answers with, according to the map — `unknown` when
+ * its entry leaves `result` out.
+ *
+ * For a union of names, the union of their results: this is a value coming
+ * out*, and a job of any one of those names may be the one that answered.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName A declared name, or a union of them.
+ */
+export type JobResultOf<
+  TJobs,
+  TName extends keyof TJobs,
+> = TName extends keyof TJobs ? JobEntryResult<TJobs, TName> : never;
+
+/**
+ * What a handler defined for `TName` must answer with. For one name, that
+ * name's result; for a union, the intersection of theirs, since the handler
+ * is registered under whichever one the name turns out to be at runtime and
+ * must satisfy that one — so it has to satisfy each.
+ *
+ * A single name reads its entry directly, so a handler's literal return —
+ * `() => ({ via: "email" })` for a declared `{ via: "email" }` — keeps its
+ * literal; see {@link JobHandlerResultOfEach}.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName A declared name, or a union of them.
+ */
+export type JobHandlerResultOf<
+  TJobs,
+  TName extends keyof TJobs,
+> = JobHandlerResultOfEach<TJobs, TName, TName>;
+
+/**
+ * {@link JobHandlerResultOf}, distributed over `TName` with the whole union
+ * kept in `TWhole`.
+ *
+ * Each member of a union answers with its own result intersected with every
+ * member's. That is the same type as the plain intersection, but spelled so
+ * that the member's own result is visible in it: TypeScript decides whether a
+ * handler's `return { via: "email" }` keeps its literal from the *constraint*
+ * of the return type while `TName` is being inferred, and the bare
+ * intersection's constraint is `unknown`, which widens `"email"` to `string`.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName One member of `TWhole`, as distribution hands it over.
+ * @typeParam TWhole Every name the handler is defined for.
+ */
+type JobHandlerResultOfEach<
+  TJobs,
+  TName extends keyof TJobs,
+  TWhole extends keyof TJobs,
+> = TName extends keyof TJobs
+  ? [TWhole] extends [TName]
+    ? JobEntryResult<TJobs, TName>
+    : JobEntryResult<TJobs, TName> &
+        IntersectBoxed<
+          TWhole extends keyof TJobs
+            ? (value: JobEntryResult<TJobs, TWhole>) => void
+            : never
+        >
+  : never;
+
+/**
+ * The arguments that carry a payload, as a tuple: optional exactly when
+ * leaving it out is itself a valid payload.
+ *
+ * That is `[undefined] extends [TData]`, not `[TData] extends [void |
+ * undefined]`, and the difference matters for a union name: two names
+ * carrying `{ month: string }` and `void` intersect to `{ month: string } &
+ * void`, which *is* assignable to `void` — so the second test would make the
+ * payload optional for a pair that should accept nothing. Asking whether
+ * `undefined` is a valid payload gives the right answer for `void`,
+ * `undefined`, `unknown` and every union containing `undefined`, and refuses
+ * that pair.
+ *
+ * @typeParam TData The payload type the call takes.
+ */
+export type DataArgs<TData> = [undefined] extends [TData]
+  ? [data?: TData]
+  : [data: TData];
+
+/**
+ * The trailing arguments of an immediate add — the payload, required unless
+ * leaving it out is valid (see {@link DataArgs}), then the job's options.
+ *
+ * @typeParam TData The payload type the call takes.
+ */
+export type JobAddArgs<TData> = [...DataArgs<TData>, options?: JobOptions];
+
+/**
+ * A name the escape-hatch `add` accepts: one literal the map does *not*
+ * declare. `never` — so the call cannot compile — for a declared name, whose
+ * payload the checked overload already knows, and for plain `string`, which
+ * could be any declared name at runtime.
+ *
+ * Distributes over a union, so of `"scratch" | "send-report"` only
+ * `"scratch"` survives.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The name the escape hatch was given, as a literal.
+ */
+export type AdHocJobName<TJobs, TName extends string> = string extends TName
+  ? never
+  : TName extends JobName<TJobs>
+    ? never
+    : TName;
+
+/**
+ * A job read from the registry, discriminated by its name: checking
+ * `job.name` narrows `job.data` and `job.returnValue` to that name's types.
+ *
+ * `TName` narrows it to some of the declared names, and defaults to all of
+ * them. A job read back is typed on the assumption that the map describes
+ * everything on the registry queue — a job added through the escape hatch,
+ * under a name this map does not declare, is not described by it.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The names to include; every declared name by default.
+ */
+export type TypedJob<TJobs, TName extends JobName<TJobs> = JobName<TJobs>> = {
+  [TEach in TName]: Job<JobDataOf<TJobs, TEach>, JobResultOf<TJobs, TEach>> & {
+    /** The name, as the literal that discriminates this job. */
+    readonly name: TEach;
+  };
+}[TName];
+
+/**
+ * What a handler defined for `TName` is given and must answer with: a job
+ * discriminated by name, and that name's result.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The name, or names, the handler is defined for.
+ */
+export type TypedJobProcessor<TJobs, TName extends JobName<TJobs>> = (
+  job: TypedJob<TJobs, TName>,
+  ctx: ProcessorContext,
+) =>
+  | JobHandlerResultOf<TJobs, TName>
+  | Promise<JobHandlerResultOf<TJobs, TName>>;
+
+/**
+ * The payload property of an entry that names its job: optional exactly when
+ * leaving it out is a valid payload — the object form of {@link DataArgs}.
+ *
+ * @typeParam TData The payload type the entry takes.
+ */
+export type DataField<TData> = [undefined] extends [TData]
+  ? {
+      /** The payload; may be left out, since that is a valid payload. */
+      data?: TData;
+    }
+  : {
+      /** The payload. */
+      data: TData;
+    };
+
+/**
+ * One entry of `addBulk` on a registry-bound queue, discriminated by name:
+ * each declared name with exactly its payload. An entry whose `name` is a
+ * union is checked against every member, so its payload has to suit each.
+ *
+ * Written as a distributive conditional over `TName`, rather than a mapped
+ * type, so that `addBulk` can infer each entry's name from it.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The names to include; every declared name by default.
+ */
+export type RegistryBulkEntry<
+  TJobs,
+  TName extends JobName<TJobs> = JobName<TJobs>,
+> =
+  TName extends JobName<TJobs>
+    ? {
+        /** A declared name. */
+        name: TName;
+        /** The job's options. */
+        opts?: JobOptions;
+      } & DataField<JobDataOf<TJobs, TName>>
+    : never;
+
+/**
+ * A flow node that stays on the registry queue — the top of a flow added
+ * there, or a descendant that names no `queue` of its own and so inherits it —
+ * discriminated by name like {@link RegistryBulkEntry}.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TName The names to include; every declared name by default.
+ * `addFlow` infers it from the top node, to type the job it answers with.
+ */
+export type RegistryFlowNode<
+  TJobs,
+  TName extends JobName<TJobs> = JobName<TJobs>,
+> =
+  TName extends JobName<TJobs>
+    ? {
+        /** A declared name. */
+        name: TName;
+        /** Its options, as on {@link FlowNode}. */
+        opts?: JobOptions;
+        /**
+         * Left out: the node is on its parent's queue, the registry's. A node
+         * on another queue is a {@link ForeignFlowNode}.
+         */
+        queue?: undefined;
+        /** The jobs that must settle before this one runs. */
+        children?: RegistryFlowChild<TJobs>[];
+      } & DataField<JobDataOf<TJobs, TName>>
+    : never;
+
+/**
+ * A node in a registry flow that names a queue of its own. The map does not
+ * describe another queue, so its name and payload are unchecked, as on an
+ * untyped queue — and so are its children, which inherit that queue.
+ *
+ * Naming the registry queue itself here, rather than leaving `queue` out, is
+ * the one way past the check: a type cannot say "any string but this one",
+ * so leave `queue` out for a node that belongs on the registry queue.
+ */
+export interface ForeignFlowNode extends FlowNode {
+  /** The queue it goes in: one other than the registry's. */
+  queue: string;
+}
+
+/**
+ * A child in a registry flow: a {@link RegistryFlowNode} when it inherits the
+ * registry queue, a {@link ForeignFlowNode} when it names another.
+ *
+ * @typeParam TJobs The declared job map.
+ */
+export type RegistryFlowChild<TJobs> =
+  | RegistryFlowNode<TJobs>
+  | ForeignFlowNode;
+
+/**
+ * What `addBulk` takes: plain entries with no declared map, exactly as
+ * before, and with one, a {@link RegistryBulkEntry} per entry whose name is
+ * inferred into `TNames` — which is what lets the result be typed entry by
+ * entry.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TName The queue's job names when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TNames Each entry's name, in order: a tuple for an array
+ * literal, an array of every declared name for an array built elsewhere.
+ */
+export type BulkEntriesOf<
+  TData,
+  TName,
+  TJobs,
+  TNames extends readonly string[],
+> = string extends keyof TJobs
+  ? {
+      /** The job's name. */
+      name: TName;
+      /** Its payload. */
+      data: TData;
+      /** Its options. */
+      opts?: JobOptions;
+    }[]
+  : {
+      [TIndex in keyof TNames]: RegistryBulkEntry<
+        TJobs,
+        TNames[TIndex] & JobName<TJobs>
+      >;
+    };
+
+/**
+ * What `addBulk` answers with: plain jobs with no declared map, exactly as
+ * before, and with one, each entry's job as a {@link TypedJob} of that
+ * entry's name — a tuple, in order, for an array literal, and
+ * `TypedJob<TJobs>[]` for an array whose names are not known statically.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TResult The queue's result type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TNames Each entry's name, as {@link BulkEntriesOf} inferred it.
+ */
+export type BulkJobsOf<
+  TData,
+  TResult,
+  TJobs,
+  TNames extends readonly string[],
+> = string extends keyof TJobs
+  ? Job<TData, TResult>[]
+  : {
+      [TIndex in keyof TNames]: TypedJob<
+        TJobs,
+        TNames[TIndex] & JobName<TJobs>
+      >;
+    };
+
+/**
+ * What `addFlow` takes: a {@link FlowNode} with no declared map, exactly as
+ * before, and a {@link RegistryFlowNode} with one, whose top name is inferred
+ * into `TTop`.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TTop The top node's name on a registry-bound queue.
+ */
+export type FlowNodeOf<
+  TData,
+  TJobs,
+  TTop extends JobName<TJobs> = JobName<TJobs>,
+> = string extends keyof TJobs
+  ? FlowNode<TData>
+  : RegistryFlowNode<TJobs, TTop>;
+
+/**
+ * The payload `update` may write: the queue's own with no declared map, and
+ * on a registry-bound queue one valid for *every* declared name — the
+ * intersection of their payloads. `update` is given an id, not a name, so the
+ * job it changes could be any of them; a payload suiting only one would be
+ * written under another's name as readily. See the README for changing a
+ * payload on a map whose shapes differ.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ */
+export type UpdateDataOf<TData, TJobs> = string extends keyof TJobs
+  ? TData
+  : JobDataOf<TJobs, JobName<TJobs>>;
+
+/**
+ * Every declared job's data as one union — what a registry-bound queue reads
+ * back where the name is not known statically and a {@link TypedJob} does
+ * not apply.
+ *
+ * Mapped and then indexed, so the union is built one entry at a time.
+ */
+export type JobMapData<TJobs> = {
+  [TName in keyof TJobs]: JobDataOf<TJobs, TName>;
+}[keyof TJobs];
+
+/**
+ * Every declared job's result as one union; see {@link JobMapData}.
+ *
+ * `unknown` whenever any entry leaves `result` out — `unknown` absorbs every
+ * other member of a union, and that is the truth: a job of that name may
+ * have answered with anything. Nothing reads a result through this where the
+ * name is at hand. A {@link TypedJob} narrows `returnValue` per name, and the
+ * name-scoped events (`completed:send-report`) carry that name's own result.
+ */
+export type JobMapResult<TJobs> = {
+  [TName in keyof TJobs]: JobResultOf<TJobs, TName>;
+}[keyof TJobs];
 
 /** What a worker calls for each job. */
 export type JobProcessor<TData = unknown, TResult = unknown> = (
@@ -420,10 +1008,24 @@ export interface DeadLetter<TData = unknown> {
   diedAt: number;
 }
 
-/** Which finished jobs {@link BunQueue.retryAll} returns to the queue. */
-export interface RetryAllOptions<TData = unknown, TResult = unknown> {
+/**
+ * Which finished jobs {@link BunQueue.retryAll} returns to the queue.
+ *
+ * @typeParam TData The jobs' payload type.
+ * @typeParam TResult The jobs' result type.
+ * @typeParam TJob The job type `filter` is handed: `Job<TData, TResult>` by
+ * default, a `TypedJob` on a registry-bound queue.
+ * @typeParam TName The type of `name`: any string by default; on a
+ * registry-bound queue, the literal that narrows what `filter` is handed.
+ */
+export interface RetryAllOptions<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+  TName extends string = string,
+> {
   /** Only jobs with this name. */
-  name?: string;
+  name?: TName;
   /**
    * Only jobs whose last failure matches: a substring of, or a pattern tested
    * against, `"<error name>: <message>"`. A job with no failure never matches,
@@ -431,12 +1033,52 @@ export interface RetryAllOptions<TData = unknown, TResult = unknown> {
    */
   reason?: string | RegExp;
   /** Only jobs this returns `true` for. Applied after `name` and `reason`. */
-  filter?: (job: Job<TData, TResult>) => boolean;
+  filter?: (job: TJob) => boolean;
   /** Stop after this many. Defaults to every match. */
   limit?: number;
   /** Start their attempts again from zero. Defaults to `true`, as `retry()` does. */
   resetAttempts?: boolean;
 }
+
+/**
+ * The job a registry-bound `retryAll`'s `filter` is handed, given the `name`
+ * it was told to match: a {@link TypedJob} of that name when the map declares
+ * it, and a plain `Job<unknown, unknown>` when it does not — a name added
+ * through the escape hatch, or a `string` that could be anything.
+ *
+ * Distributes over a union, so `"send-report" | "audit"` is handed either.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TRetryName The `name` option, or every declared name without one.
+ */
+export type RetryJobOf<TJobs, TRetryName extends string> =
+  TRetryName extends JobName<TJobs>
+    ? TypedJob<TJobs, TRetryName>
+    : Job<unknown, unknown>;
+
+/**
+ * What `retryAll` takes: {@link RetryAllOptions} exactly as before with no
+ * declared map, and with one, options whose `name` narrows the job `filter`
+ * is handed — `{ name: "send-report", filter: (job) => job.data.month … }`.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TResult The queue's result type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TRetryName The `name` option on a registry-bound queue.
+ */
+export type RetryAllOptionsOf<
+  TData,
+  TResult,
+  TJobs,
+  TRetryName extends string,
+> = string extends keyof TJobs
+  ? RetryAllOptions<TData, TResult>
+  : RetryAllOptions<
+      JobMapData<TJobs>,
+      JobMapResult<TJobs>,
+      RetryJobOf<TJobs, TRetryName>,
+      TRetryName
+    >;
 
 /**
  * The events that are about one job, and so can be scoped to its name.
@@ -478,29 +1120,39 @@ export type JobScopedEvents<TEvents, TName extends string = string> = {
     JobScopedEvent as `${Event}:${TName}`]: TEvents[Event];
 };
 
-/** Events a {@link BunQueue} emits. */
+/**
+ * Events a {@link BunQueue} emits.
+ *
+ * @typeParam TData The jobs' payload type.
+ * @typeParam TResult The jobs' result type.
+ * @typeParam TJob The job type listeners are handed: `Job<TData, TResult>` by default, a `TypedJob` on a registry-bound queue.
+ */
 // eslint-disable-next-line ts/consistent-type-definitions
-type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
+type BunQueueBaseEvents<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+> = {
   /** A job was added. */
-  added: (job: Job<TData, TResult>) => void;
+  added: (job: TJob) => void;
   /** An `add()` matched an existing id, so nothing was added. */
-  duplicate: (job: Job<TData, TResult>) => void;
+  duplicate: (job: TJob) => void;
   /** A job became claimable. */
-  waiting: (job: Job<TData, TResult>) => void;
+  waiting: (job: TJob) => void;
   /** A job was added for later. */
-  delayed: (job: Job<TData, TResult>, runAt: number) => void;
+  delayed: (job: TJob, runAt: number) => void;
   /** A worker claimed a job. */
-  active: (job: Job<TData, TResult>) => void;
+  active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: Job<TData, TResult>, value: unknown) => void;
+  progress: (job: TJob, value: unknown) => void;
   /** A job completed. */
-  completed: (job: Job<TData, TResult>, result: TResult) => void;
+  completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */
-  failed: (job: Job<TData, TResult>, error: Error) => void;
+  failed: (job: TJob, error: Error) => void;
   /** An attempt failed and another is due. */
-  retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
+  retrying: (job: TJob, error: Error, runAt: number) => void;
   /** A job exhausted its attempts, or failed unrecoverably. */
-  dead: (job: Job<TData, TResult>, error: Error) => void;
+  dead: (job: TJob, error: Error) => void;
   /**
    * Jobs were recovered from workers that died holding them.
    *
@@ -529,9 +1181,9 @@ type BunQueueBaseEvents<TData = unknown, TResult = unknown> = {
    * An add found a pending job with the same debounce id, replaced its data
    * and pushed its run time back, rather than adding another.
    */
-  debounced: (job: Job<TData, TResult>) => void;
+  debounced: (job: TJob) => void;
   /** An add fell inside a throttle window; `job` is the one that opened it. */
-  throttled: (job: Job<TData, TResult>) => void;
+  throttled: (job: TJob) => void;
   /** A repeat series scheduled its next occurrence. */
   repeatScheduled: (key: string, nextRunAt: number) => void;
   /** Something failed outside a job. */
@@ -548,32 +1200,39 @@ export type BunQueueEvents<
 > = BunQueueBaseEvents<TData, TResult> &
   JobScopedEvents<BunQueueBaseEvents<TData, TResult>>;
 
-/** Events a {@link BunQueueWorker} emits. */
+/**
+ * Events a {@link BunQueueWorker} emits.
+ *
+ * @typeParam TData The jobs' payload type.
+ * @typeParam TResult The jobs' result type.
+ * @typeParam TJob The job type listeners are handed: `Job<TData, TResult>` by default, a `TypedJob` on the registry worker.
+ */
 // eslint-disable-next-line ts/consistent-type-definitions
-type BunQueueWorkerBaseEvents<TData = unknown, TResult = unknown> = {
+type BunQueueWorkerBaseEvents<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+> = {
   /** The worker connected and started consuming. */
   ready: () => void;
   /** A job was claimed. */
-  active: (job: Job<TData, TResult>) => void;
+  active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: Job<TData, TResult>, value: unknown) => void;
+  progress: (job: TJob, value: unknown) => void;
   /** A job completed. */
-  completed: (job: Job<TData, TResult>, result: TResult) => void;
+  completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */
-  failed: (job: Job<TData, TResult>, error: Error) => void;
+  failed: (job: TJob, error: Error) => void;
   /** An attempt failed and another is due. */
-  retrying: (job: Job<TData, TResult>, error: Error, runAt: number) => void;
+  retrying: (job: TJob, error: Error, runAt: number) => void;
   /** A job exhausted its attempts. */
-  dead: (job: Job<TData, TResult>, error: Error) => void;
+  dead: (job: TJob, error: Error) => void;
   /** A dead job was copied to its dead-letter queue, as `letter`. */
-  deadLettered: (
-    job: Job<TData, TResult>,
-    letter: Job<DeadLetter<TData>, unknown>,
-  ) => void;
+  deadLettered: (job: TJob, letter: Job<DeadLetter<TData>, unknown>) => void;
   /** Jobs were recovered from workers that died holding them. */
   stalled: (ids: string[]) => void;
   /** A job's lock was lost mid-attempt. */
-  lockLost: (job: Job<TData, TResult>) => void;
+  lockLost: (job: TJob) => void;
   /** There was nothing left to claim. */
   drained: () => void;
   /** The worker stopped claiming. */
@@ -597,6 +1256,124 @@ export type BunQueueWorkerEvents<
   TResult = unknown,
 > = BunQueueWorkerBaseEvents<TData, TResult> &
   JobScopedEvents<BunQueueWorkerBaseEvents<TData, TResult>>;
+
+/**
+ * Name-scoped events for a declared map: `completed:send-report` is heard
+ * with that name's own job and result, rather than the whole map's union.
+ *
+ * Built by pairing each scopable event with each declared name and reading
+ * the pair back out of the key. The event half never contains a colon, so
+ * `${infer TEvent}:${infer TName}` splits at the right one even when a job
+ * name contains colons of its own.
+ *
+ * @typeParam TJobs The declared job map.
+ * @typeParam TEvents The unscoped event map, which says which events scope.
+ * @typeParam TPerName Each declared name's own event map.
+ */
+type TypedScopedEvents<TJobs, TEvents, TPerName> = {
+  [TKey in `${keyof TEvents & JobScopedEvent}:${JobName<TJobs>}`]: TKey extends `${infer TEvent extends keyof TEvents & JobScopedEvent}:${infer TName extends JobName<TJobs>}`
+    ? TName extends keyof TPerName
+      ? TEvent extends keyof TPerName[TName]
+        ? TPerName[TName][TEvent]
+        : never
+      : never
+    : never;
+};
+
+/** The queue events for one declared name, keyed by that name. */
+type RegistryQueueEventsByName<TJobs> = {
+  [TName in JobName<TJobs>]: BunQueueBaseEvents<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+};
+
+/**
+ * What a registry-bound queue's listeners hear: every job event with a
+ * {@link TypedJob}, so `job.name` narrows the rest of the job, and each
+ * declared name's scoped events with exactly that name's job and result.
+ */
+export type RegistryQueueEvents<TJobs> = BunQueueBaseEvents<
+  JobMapData<TJobs>,
+  JobMapResult<TJobs>,
+  TypedJob<TJobs>
+> &
+  TypedScopedEvents<
+    TJobs,
+    BunQueueBaseEvents<JobMapData<TJobs>, JobMapResult<TJobs>, TypedJob<TJobs>>,
+    RegistryQueueEventsByName<TJobs>
+  >;
+
+/** The worker events for one declared name, keyed by that name. */
+type RegistryWorkerEventsByName<TJobs> = {
+  [TName in JobName<TJobs>]: BunQueueWorkerBaseEvents<
+    JobDataOf<TJobs, TName>,
+    JobResultOf<TJobs, TName>,
+    TypedJob<TJobs, TName>
+  >;
+};
+
+/**
+ * What the listeners of a registry worker — the one `jobs.start()` returns —
+ * hear. See {@link RegistryQueueEvents}.
+ */
+export type RegistryWorkerEvents<TJobs> = BunQueueWorkerBaseEvents<
+  JobMapData<TJobs>,
+  JobMapResult<TJobs>,
+  TypedJob<TJobs>
+> &
+  TypedScopedEvents<
+    TJobs,
+    BunQueueWorkerBaseEvents<
+      JobMapData<TJobs>,
+      JobMapResult<TJobs>,
+      TypedJob<TJobs>
+    >,
+    RegistryWorkerEventsByName<TJobs>
+  >;
+
+/**
+ * The events a queue's listeners hear: the plain map for a queue with no
+ * declared {@link JobMap}, exactly as before, and {@link RegistryQueueEvents}
+ * for a registry-bound one.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TResult The queue's result type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ */
+export type QueueEventsOf<TData, TResult, TJobs> = string extends keyof TJobs
+  ? BunQueueEvents<TData, TResult>
+  : RegistryQueueEvents<TJobs>;
+
+/**
+ * The worker counterpart of {@link QueueEventsOf}.
+ *
+ * @typeParam TData The worker's payload type when no map is declared.
+ * @typeParam TResult The worker's result type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ */
+export type WorkerEventsOf<TData, TResult, TJobs> = string extends keyof TJobs
+  ? BunQueueWorkerEvents<TData, TResult>
+  : RegistryWorkerEvents<TJobs>;
+
+/**
+ * What a queue's reads answer with: a plain `Job` for a queue with no declared
+ * {@link JobMap}, exactly as before, and a {@link TypedJob} for a
+ * registry-bound one.
+ *
+ * @typeParam TData The queue's payload type when no map is declared.
+ * @typeParam TResult The queue's result type when no map is declared.
+ * @typeParam TJobs The declared job map, or the default `JobMap` for none.
+ * @typeParam TName On a registry-bound queue, the names the job may have:
+ * every declared one by default, fewer where the call says which.
+ */
+export type QueueJobOf<
+  TData,
+  TResult,
+  TJobs,
+  TName extends JobName<TJobs> = JobName<TJobs>,
+> = string extends keyof TJobs ? Job<TData, TResult> : TypedJob<TJobs, TName>;
 
 /** A repeat definition as reported by `listRepeatables()`. */
 export type Repeatable = RepeatRecord;
@@ -623,10 +1400,20 @@ export interface ListJobsOptions {
   search?: string;
 }
 
-/** A page of jobs, and how many matched in all. */
-export interface JobsPage<TData = unknown, TResult = unknown> {
+/**
+ * A page of jobs, and how many matched in all.
+ *
+ * @typeParam TData The jobs' payload type.
+ * @typeParam TResult The jobs' result type.
+ * @typeParam TJob The job type the page holds: `Job<TData, TResult>` by default, a `TypedJob` from a registry-bound queue.
+ */
+export interface JobsPage<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+> {
   /** The page. */
-  jobs: Job<TData, TResult>[];
+  jobs: TJob[];
   /** Every job that matched, ignoring `offset` and `limit`. */
   total: number;
 }

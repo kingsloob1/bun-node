@@ -66,6 +66,7 @@ reference.
 - [The BunJobs registry and builder](#the-bunjobs-registry-and-builder)
   - [BunJobs options](#bunjobs-options)
   - [Defining and adding jobs](#defining-and-adding-jobs)
+  - [Typed jobs](#typed-jobs)
   - [Builder methods](#builder-methods)
   - [Saved drafts](#saved-drafts)
   - [Registry polling](#registry-polling)
@@ -760,6 +761,159 @@ Defining a name again replaces the earlier definition. Adding a name that
 was never defined throws `ConfigError`. A worker that claims a name its process
 does not define fails the job, leaving it for a deployment that does define
 it.
+
+### Typed jobs
+
+Declare the service's job names and payloads once, as a map, and `define`,
+`now`, `schedule`/`run`/`process`, `create` and the registry queue's `add`
+check them at compile time:
+
+```ts
+interface Jobs {
+  "send-report": { data: { month: string }; result: string };
+  reindex: { data: void }; // `result` is optional; omitted means `unknown`
+}
+
+const jobs = new BunJobs<Jobs>({ namespace: "reports", driver });
+
+// job.data is { month: string }, and the handler must answer with a string
+jobs.define("send-report", async (job) => render(job.data.month));
+
+await jobs.now("send-report", { month: "2026-08" }); // TypedJob<Jobs, "send-report">
+await jobs.now("reindex"); // no payload declared, none needed
+
+jobs.now("nope"); // error: not a declared name
+jobs.now("send-report", { month: 8 }); // error: month is a string
+jobs.now("send-report"); // error: the payload is required
+```
+
+An entry is always `{ data; result? }`. `data` is required — a job with no
+payload declares `data: void` — and a bare payload type is deliberately not
+accepted, because `{ data: Buffer }` would be ambiguous between an entry and a
+payload that happens to have a `data` field.
+
+`now()`, the registry queue's `add()`, a builder's `start()` and a draft's
+`save()` (and its `job`) answer with a `TypedJob` of the name they were given:
+a `Job` of that name's payload and result, whose `name` is the literal. A handler is typed by its name's `result`, literals included, so
+`() => ({ via: "email" })` satisfies `result: { via: "email" }`. (A bare
+literal from an `async` handler, `async () => "done"`, widens to `string` before
+it is checked, as it would with any function type; write `"done" as const`.)
+
+**The payload is required on `now()` and `add()`** unless leaving it out is a
+valid payload — `void`, `undefined`, or a type that includes `undefined`.
+`schedule`/`run`/`process` and `create` keep it optional, because the builder's
+and the draft's `withData()` can supply it later.
+
+**A union name takes a payload valid for every name in it.**
+`jobs.now(name as "notify-email" | "notify-sms", { userId })` compiles when
+both carry `{ userId: string }`; `name as "send-report" | "reindex"` accepts
+nothing, since no payload is both `{ month: string }` and `void`. The job
+answered with is a `TypedJob` of either name. A handler defined for a union
+name must answer with a value valid for every name's result.
+
+**Only the registry queue is typed by the map.** `jobs.queue("jobs")` — or the
+name declared with `BunJobs<Jobs, "work">` — hands back the registry's queue
+type: `add` takes a declared name and that name's payload. Every other name,
+including a plain `string` known only at runtime, is a plain queue exactly as on
+an untyped context. A registry queue other than `"jobs"` is declared as the
+second type argument and must be passed as the option too; the two are checked
+against each other:
+
+```ts
+const jobs = new BunJobs<Jobs, "work">({ namespace, driver, registryQueue: "work" });
+jobs.queue("work"); // RegistryQueue<Jobs>
+jobs.queue("jobs"); // a plain queue
+```
+
+**Reads are discriminated by name.** `getJob`, `getJobs`, `list` and `page` on
+the registry queue answer with a `TypedJob<Jobs>`, so checking `job.name`
+narrows `job.data` and `job.returnValue`. So do the handler `define` is given,
+the queue's and the `start()` worker's event listeners, and `definitions()`.
+Name-scoped events carry that name's own types:
+
+```ts
+const job = await jobs.queue("jobs").getJob(id);
+if (job?.name === "send-report") job.data.month; // string
+
+const worker = await jobs.start();
+worker.on("completed:send-report", (job, result) => result); // result: string
+```
+
+The unscoped `completed` listener's `result` is the union of every declared
+result, which is `unknown` as soon as one entry leaves `result` out — narrow
+`job.name` and read `job.returnValue`, or listen on the scoped event, instead.
+A read assumes every job on the registry queue is one the map declares.
+
+**The registry queue's other writes follow the same rules.**
+
+- `addBulk` entries are discriminated by name, so each payload is checked
+  against its own entry. An array literal answers with a tuple, each job a
+  `TypedJob` of its own entry's name; an array built elsewhere answers with
+  `TypedJob<Jobs>[]`. The escape hatch below is `add` only: a bulk entry must
+  be a declared name.
+- `addFlow`'s `flow.job` is a `TypedJob` of the top node's name. It checks
+  the top of the flow and every child that inherits the
+  registry queue by leaving `queue` out. A child that names another queue is
+  unchecked, as it would be on any untyped queue, and so are its children. That
+  includes a child that names the registry queue itself: leave `queue` out for
+  a node that belongs there.
+- `update(id, { data })` is given an id, not a name, so the job could be any
+  declared name, and `data` must be valid for all of them: object payloads
+  that differ need every field of each (`{ id: string; width: number }`), and
+  one beside `void` accepts nothing (`{ ... } & void`). When only the data changes and the job is in
+  hand, narrow its name and call `updateData`, which is checked against that
+  name's payload:
+
+  ```ts
+  const job = await queue.getJob(id);
+  if (job?.name === "send-report") await job.updateData({ month: "2026-10" });
+  ```
+
+  For the other fields together, or with only an id, use the untyped view of
+  the same queue, `jobs.queue<unknown>("jobs").update(...)`, after checking the
+  job's name yourself.
+- `retryAll`'s `filter` is handed a `TypedJob`, narrowed by `name` when one is
+  given. A name the map does not declare, or a plain `string`, hands it a
+  plain `Job<unknown, unknown>`, since nothing describes that job.
+
+```ts
+const queue = jobs.queue("jobs");
+const [report] = await queue.addBulk([
+  { name: "send-report", data: { month: "2026-08" } },
+  { name: "reindex" },
+]); // [TypedJob<Jobs, "send-report">, TypedJob<Jobs, "reindex">]
+report.data.month; // string
+queue.addBulk([{ name: "reindex", data: { month: "x" } }]); // error
+
+await queue.addFlow({
+  name: "send-report",
+  data: { month: "2026-08" },
+  children: [
+    { name: "reindex" }, // inherits the registry queue: checked
+    { name: "welcome", data: { to: "ops" }, queue: "mail" }, // unchecked
+  ],
+});
+
+await queue.retryAll("dead", {
+  name: "send-report",
+  filter: (job) => job.data.month < "2026-06", // job.data: { month: string }
+});
+```
+
+Two escape hatches keep other work possible:
+
+| Escape hatch | For |
+|---|---|
+| `jobs.queue<Payload>("scratch")` with a `jobs.worker("scratch", ...)` | Ad-hoc work this service runs itself. A queue of its own, typed as you name it. |
+| `queue.add<"audit", Payload>("audit", data)` | A name the map does not declare, on the registry queue, **for a deployment that defines it**. This service's own registry worker claims every job on that queue and fails one it has no definition for (`ConfigError: No job is defined for "audit"`), so only a service that defines the name can run it. Both type arguments are required: the name is spelled twice because TypeScript cannot infer one type argument while being told another. A declared name, or a plain `string`, is refused, so this can never carry the wrong payload for a declared name. |
+
+A `BunQueue` built directly with `new BunQueue(...)` never knows a registry.
+
+**Without the type argument nothing changes.** `new BunJobs({ ... })` accepts
+any name and any `registryQueue`, still takes `TData` from `create<TData>()` or
+from the payload passed in, and adds no new errors. Runtime behaviour is
+identical either way: a name that was never defined throws `ConfigError`
+whether or not the types would also have caught it.
 
 ### Builder methods
 

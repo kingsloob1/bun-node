@@ -10,9 +10,18 @@ import { EventEmitter } from "node:events";
  * the first `on`/`once` call keeps those instances free, and `emit` is a
  * no-op until someone listens. The pattern is bun-common's `BunWebSocket`,
  * generalised so three classes do not each re-implement fifteen methods.
+ *
+ * `Events` is what a listener sees; `EmitEvents` is what the class itself
+ * emits, and the two differ only where a listener is promised something
+ * narrower than the emitting code can state. A registry-bound `BunQueue`
+ * emits a plain `Job`, and its listeners are handed a job discriminated by
+ * name — the same object, described by the job map the context declared.
+ * Keeping the emitting side on the plain map is what lets the class body stay
+ * free of casts: it never has to prove, generically, what only the map says.
  */
 export abstract class TypedEmitterBase<
   Events extends Record<string, (...args: any[]) => any>,
+  EmitEvents extends Record<string, (...args: any[]) => any> = Events,
 > implements TypedEmitter<Events> {
   /** The emitter, absent until something listens. */
   #emitter: EventEmitter | undefined = undefined;
@@ -154,12 +163,16 @@ export abstract class TypedEmitterBase<
    * caller — a failing metrics listener must not fail the job it observed.
    * Returns whether anything was listening.
    */
-  protected safeEmit<E extends keyof Events>(
+  protected safeEmit<E extends keyof EmitEvents>(
     event: E,
-    ...args: Parameters<Events[E]>
+    ...args: Parameters<EmitEvents[E]>
   ): boolean {
     try {
-      return this.emit(event, ...args);
+      // The raw emitter rather than `emit`, which is typed for listeners and
+      // may describe these arguments more narrowly than this class can.
+      return this.#emitter
+        ? this.#emitter.emit(event as string | symbol, ...args)
+        : false;
     } catch {
       return true;
     }
@@ -178,10 +191,10 @@ export abstract class TypedEmitterBase<
    * Building it unconditionally would allocate a string per event per job on
    * a path that is otherwise allocation-free.
    */
-  protected safeEmitScoped<E extends keyof Events & string>(
+  protected safeEmitScoped<E extends keyof EmitEvents & string>(
     event: E,
     jobName: string,
-    ...args: Parameters<Events[E]>
+    ...args: Parameters<EmitEvents[E]>
   ): boolean {
     const heard = this.safeEmit(event, ...args);
 
@@ -191,12 +204,14 @@ export abstract class TypedEmitterBase<
       return heard;
     }
 
-    const scoped = `${event}:${jobName}` as keyof Events;
+    const scoped = `${event}:${jobName}`;
 
-    if (this.listenerCount(scoped) === 0) {
+    if ((this.#emitter?.listenerCount(scoped) ?? 0) === 0) {
       return heard;
     }
 
-    return this.safeEmit(scoped, ...(args as never)) || heard;
+    return (
+      this.safeEmit(scoped as keyof EmitEvents, ...(args as never)) || heard
+    );
   }
 }

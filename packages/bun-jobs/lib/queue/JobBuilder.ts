@@ -112,8 +112,17 @@ export type RepeatEveryOptions = Omit<RepeatOptions, "cron" | "every">;
  * Nothing happens until `start()`. A builder that is never started adds no
  * job, which is what makes it safe to pass one around and finish describing it
  * somewhere else.
+ *
+ * @typeParam TData What the job carries.
+ * @typeParam TResult What running it answers with.
+ * @typeParam TJob What `start()` answers with: `Job<TData, TResult>` by
+ * default, and a `TypedJob` of the builder's name from a typed `BunJobs`.
  */
-export class JobBuilder<TData = unknown, TResult = unknown> {
+export class JobBuilder<
+  TData = unknown,
+  TResult = unknown,
+  TJob extends Job<unknown, unknown> = Job<TData, TResult>,
+> {
   /** The queue the job will be added to. */
   readonly #queue: BunQueue<TData, TResult, string>;
   /** The name it is added under. */
@@ -557,7 +566,7 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
    *
    * The only method that does anything. Everything before it describes.
    */
-  async start(): Promise<Job<TData, TResult>> {
+  async start(): Promise<TJob> {
     const options: JobOptions = { ...this.#defaults, ...this.#options };
     // Worked on as a copy, so starting the same builder twice reads its
     // phrases twice rather than inheriting the first reading.
@@ -597,7 +606,11 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
       }
     }
 
-    return await this.#queue.add(this.#name, this.#data as TData, options);
+    const job = await this.#queue.add(this.#name, this.#data as TData, options);
+
+    // The job the queue built; `TJob` only says, where a typed context made
+    // this builder, which name that job was added under.
+    return job as TJob;
   }
 }
 
