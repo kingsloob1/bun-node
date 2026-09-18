@@ -156,12 +156,12 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 | [`bunjobs-options.ts`](./10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`draft-and-process-every.ts`](./10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, precedence, saving twice, refused combinations; `processEvery` (option and method) and a worker's runtime `pollInterval` / `maxBlock`: limits, precedence, waits in progress per driver, the promotion sweep, pause, a failed `run()`, Redis `maxBlockSeconds` |
 | [`read-apis.ts`](./10-options/read-apis.ts) | every `ListJobsOptions` field; `search` taken literally and folded for case per engine; `page` totals; `getJobs` order, gaps and repeats; `listWorkers` fields, `reportInterval` and a lapsed record; `getThroughput` bounds, buckets and retried failures; `getQueueSummaries`; each driver fallback |
-| [`notifier.ts`](./10-options/notifier.ts) | every `JobsNotifierOptions` field and member, every published queue and runner event and its payload |
+| [`notifier.ts`](./10-options/notifier.ts) | every `JobsNotifierOptions` field and member — `hold()` / `unfollow()` reference-counted and `following` listing only live subscriptions among them — every published queue and runner event and its payload |
 | [`driver-options.ts`](./10-options/driver-options.ts) | every option of every driver and connection helper; server sections run when their URL is set |
 | [`errors.ts`](./10-options/errors.ts) | every error class, triggered through the public API, with its `code` and fields |
 | [`utilities.ts`](./10-options/utilities.ts) | every exported helper: cron, schedules, repeats, options, backoff, JSON, ids, keys, connection, constants |
-| [`jobs-api-options.ts`](./10-options/jobs-api-options.ts) | every `createJobsApi` option: each `ConfigError` it refuses construction with, `mode` / `readOnly` / `actions` / driver-capability pruning cross-checked against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked exactly once (and untargeted first), `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `addableNames`, `runnerTriggerArgs`, `validateResponses`, `docs` |
-| [`jobs-api-socket-options.ts`](./10-options/jobs-api-socket-options.ts) | every `websocket` option, per-channel subscribe refusals, `seq` / `epoch`, replay and both `gap` reasons, coalesced progress, the client limits and every documented close code |
+| [`jobs-api-options.ts`](./10-options/jobs-api-options.ts) | every `createJobsApi` option: each `ConfigError` it refuses construction with, `mode` / `readOnly` / `actions` / driver-capability pruning cross-checked against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked exactly once (and untargeted first), `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `addableNames`, `runnerTriggerArgs`, `validateResponses`, `docs`, and what a client is told: `/meta` `csrf` / `limits` / `addableNames` / `runnerTriggerArgs` / `websocket.port`, `api.info`, `/meta/permissions?channel=`, `/queues` paging and case-insensitive search, `/overview` `throughputSeries`, the 191 / 1024 job-id caps, the CSRF header and JSON rule in the OpenAPI document, the contract's constants |
+| [`jobs-api-socket-options.ts`](./10-options/jobs-api-socket-options.ts) | every `websocket` option, subprotocol negotiation on the attached, dedicated and raw `Bun.serve` paths, per-channel subscribe refusals echoing the client's spelling, the cap applied before `authorize`, 256 channels per frame, broad channels authorized per queue, lone-surrogate job ids (`%uXXXX`), last-subscribe-wins, `seq` / `epoch`, replay and resume (never a `seq` twice, ahead of the server, while lagging), both `gap` reasons, coalesced progress, the client limits, every documented close code and the AsyncAPI extensions |
 
 ### 11 — The management API
 
@@ -169,8 +169,11 @@ of every option on whichever backend `EXAMPLE_DRIVER` names.
 |---|---|
 | [`mounting-and-auth.ts`](./11-management-api/mounting-and-auth.ts) | mounting on a `BunHttpAdapter`, an `authorize` hook with roles, a walk through the queue, job, repeatable, worker and throughput routes, and `close()` |
 | [`live-events.ts`](./11-management-api/live-events.ts) | the socket: subscribing to several channels, `seq` / `epoch`, resuming from the replay ring, and two deliberate `gap`s |
+| [`live-events-delivery.ts`](./11-management-api/live-events-delivery.ts) | what the socket delivers, on any backend: the first events of a queue or runner nothing has discovered, `retried` / `cleaned` on each job's channel, and `all` / `queues` / `runners` hiding a queue or runner the host denies |
+| [`typed-client.ts`](./11-management-api/typed-client.ts) | a client written against `@kingsleyweb/bun-jobs/api/contract` alone: configured by `/meta` (CSRF header, addable names, page size, the socket), paging queues, previewing a channel before subscribing, and a browser build proving the contract brings none of the server |
 | [`openapi-and-docs.ts`](./11-management-api/openapi-and-docs.ts) | `openapi()` / `asyncapi()` and their endpoints, `docs.ui` off and on, and how a pruned API documents less |
 | [`helpers/jobs-socket.ts`](./11-management-api/helpers/jobs-socket.ts) | the typed socket client those examples and the socket tour use |
+| [`helpers/contract-client.ts`](./11-management-api/helpers/contract-client.ts) | the browser-safe client `typed-client.ts` drives, importing only the contract |
 
 ## Checking the examples
 
