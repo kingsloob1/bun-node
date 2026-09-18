@@ -1,11 +1,18 @@
 import type { BunQueue } from "../../queue/BunQueue";
 import type { ResolvedJobsApiConfig } from "../config";
+import type {
+  OverviewDto,
+  PageInfoDto,
+  QueueThroughputDto,
+  ThroughputBucketDto,
+} from "../contract/types";
 import type { QueueSummaryDto } from "../serialize";
 import type { AnyRouteDef, RouteServices } from "./define";
 import {
   supportsWorkers,
   THROUGHPUT_BUCKET_MS,
   THROUGHPUT_RETENTION_MS,
+  throughputBucket,
 } from "../../drivers/index";
 import { normalizeLimits } from "../../queue/limits";
 import { mapCallSiteError } from "../errors";
@@ -22,7 +29,7 @@ import {
   PausedSchema,
   QueueDetailSchema,
   QueueLimitsInputSchema,
-  QueueListQuerySchema,
+  queueListQuerySchema,
   QueueListSchema,
   StoredLimitsSchema,
   ThroughputSchema,
@@ -49,18 +56,35 @@ export async function summarizeQueue(
 }
 
 /**
- * Summaries of the reachable queues whose name contains `search`, at most
- * `limits.maxQueues` of them, read `FAN_OUT` queues at a time.
+ * Whether a queue name matches a `search`: a substring, ignoring case — the
+ * rule job search uses (`LOWER(…) LIKE`, `toLowerCase().includes`). Queue
+ * names are ASCII key segments, so lower-casing both sides is exact.
+ */
+export function queueNameMatches(name: string, search?: string): boolean {
+  return !search || name.toLowerCase().includes(search.toLowerCase());
+}
+
+/**
+ * One page of summaries of the reachable queues whose name contains
+ * `search` (ignoring case), sorted by name: `offset` names skipped, at most
+ * `limit` (by default, and at most, `limits.maxQueues`) summarised, read
+ * `FAN_OUT` queues at a time. Every path lists names the same way — through
+ * `services.queues`, then this filter — whatever the driver.
  */
 async function summarizeQueues(
   services: RouteServices,
-  search?: string,
-): Promise<{ items: QueueSummaryDto[]; truncated: boolean }> {
-  const names = (await services.queues.names()).filter(
-    (name) => !search || name.includes(search),
+  options: { search?: string; offset?: number; limit?: number } = {},
+): Promise<{
+  items: QueueSummaryDto[];
+  truncated: boolean;
+  page: PageInfoDto;
+}> {
+  const names = (await services.queues.names()).filter((name) =>
+    queueNameMatches(name, options.search),
   );
-  const max = services.config.limits.maxQueues;
-  const chosen = names.slice(0, max);
+  const offset = options.offset ?? 0;
+  const limit = options.limit ?? services.config.limits.maxQueues;
+  const chosen = names.slice(offset, offset + limit);
 
   // One read for every queue the backend knows, rather than a count and a
   // paused check per queue. It is a fast path, never a wider view: only names
@@ -80,7 +104,12 @@ async function summarizeQueues(
       (await summarizeQueue(await services.queues.get(name)))
     );
   });
-  return { items, truncated: names.length > max };
+  const hasMore = offset + chosen.length < names.length;
+  return {
+    items,
+    truncated: hasMore,
+    page: { offset, limit, total: names.length, hasMore },
+  };
 }
 
 /** Live workers across the queues summarised, when the backend keeps records. */
@@ -96,13 +125,24 @@ async function overviewWorkers(
   return { workers: workers.filter((one) => allowed.has(one.queue)).length };
 }
 
-/** What finished across the queues summarised, when the driver counts it. */
+/**
+ * What finished across the queues summarised, when the driver counts it.
+ *
+ * The driver contract counts throughput per queue only (`getThroughput(q,
+ * range)`), with no namespace-wide read, so this reads each queue — at most
+ * `FAN_OUT` at a time — and sums them. `throughput` is unchanged: the sums
+ * of each queue's own totals. `throughputSeries` sums the buckets by minute
+ * over the window of the newest read (reads straddling a minute boundary would
+ * otherwise disagree about which minute is current), and its totals are those
+ * buckets' sums.
+ */
 async function overviewThroughput(
   services: RouteServices,
   names: readonly string[],
   minutes: number,
 ): Promise<{
-  throughput?: { minutes: number; completed: number; failed: number };
+  throughput?: OverviewDto["throughput"];
+  throughputSeries?: QueueThroughputDto;
 }> {
   if (!driverImplements(services.config.driver, ["getThroughput"])) {
     return {};
@@ -110,11 +150,38 @@ async function overviewThroughput(
   const reads = await mapBounded(names, async (name) => {
     return await (await services.queues.get(name)).getThroughput({ minutes });
   });
+  const to = reads.reduce(
+    (latest, read) => Math.max(latest, read.to),
+    throughputBucket(Date.now()),
+  );
+  const from = to - (minutes - 1) * THROUGHPUT_BUCKET_MS;
+  const byMinute = new Map<number, ThroughputBucketDto>();
+  for (let at = from; at <= to; at += THROUGHPUT_BUCKET_MS) {
+    byMinute.set(at, { at, completed: 0, failed: 0 });
+  }
+  for (const read of reads) {
+    for (const bucket of read.buckets) {
+      const sum = byMinute.get(bucket.at);
+      if (sum) {
+        sum.completed += bucket.completed;
+        sum.failed += bucket.failed;
+      }
+    }
+  }
+  const buckets = [...byMinute.values()];
   return {
     throughput: {
       minutes,
       completed: reads.reduce((sum, read) => sum + read.completed, 0),
       failed: reads.reduce((sum, read) => sum + read.failed, 0),
+    },
+    throughputSeries: {
+      interval: THROUGHPUT_BUCKET_MS,
+      from,
+      to,
+      buckets,
+      completed: buckets.reduce((sum, bucket) => sum + bucket.completed, 0),
+      failed: buckets.reduce((sum, bucket) => sum + bucket.failed, 0),
     },
   };
 }
@@ -134,12 +201,14 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Job counts across every reachable queue",
       description:
-        "Sums the counts of up to `limits.maxQueues` queues; `truncated` says when there were more. `workers` and `throughput` are present only where the backend keeps them.",
+        "Sums the counts of up to `limits.maxQueues` queues; `truncated` says when there were more. `workers` and `throughput` are present only where the backend keeps them. `throughputSeries` is the namespace-wide per-minute series, in the shape of `GET /queues/{queue}/throughput`: each queue's buckets summed (read a queue at a time, 16 at once: the backend has no namespace-wide count).",
       tags: ["Queues"],
       query: minutesQuerySchema(MAX_THROUGHPUT_MINUTES),
       responses: { 200: OverviewSchema },
       handler: async ({ query, services }) => {
-        const { items, truncated } = await summarizeQueues(services);
+        const { items, truncated } = await summarizeQueues(services, {
+          limit: services.config.limits.maxQueues,
+        });
         const counts = Object.fromEntries(
           JOB_STATES.map((state) => [
             state,
@@ -168,12 +237,12 @@ export function queueRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "Every reachable queue, at a glance",
       description:
-        "At most `limits.maxQueues` queues, sorted by name; `truncated` says when there were more.",
+        "A page of queues sorted by name: `limit` (at most, and by default, `limits.maxQueues`) after skipping `offset`. `search` keeps names containing it, ignoring case. `truncated` (the same as `page.hasMore`) says when more follow.",
       tags: ["Queues"],
-      query: QueueListQuerySchema,
+      query: queueListQuerySchema(limits.maxQueues),
       responses: { 200: QueueListSchema },
       handler: async ({ query, services }) => ({
-        body: await summarizeQueues(services, query.search),
+        body: await summarizeQueues(services, query),
       }),
     }),
     defineRoute({

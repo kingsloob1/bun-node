@@ -1,4 +1,6 @@
+import { DEFAULT_JOBS_API_LIMITS } from "../config";
 import { s } from "../schema/builder";
+import { PageInfoSchema } from "./common";
 
 /**
  * Schemas for the queue routes: counts, summaries, limits and the queue-wide
@@ -91,6 +93,25 @@ export const QueueDetailSchema = s.named(
   }),
 );
 
+/** One minute of throughput. Mirrors `ThroughputBucket`. */
+export const ThroughputBucketSchema = s.named(
+  "ThroughputBucket",
+  s.object({ at: s.integer(), completed: Count, failed: Count }),
+);
+
+/** A queue's recent throughput. Mirrors `QueueThroughput`. */
+export const ThroughputSchema = s.named(
+  "QueueThroughput",
+  s.object({
+    interval: s.integer({ minimum: 1 }),
+    from: s.integer(),
+    to: s.integer(),
+    buckets: s.array(ThroughputBucketSchema),
+    completed: Count,
+    failed: Count,
+  }),
+);
+
 /** `GET /overview`. */
 export const OverviewSchema = s.named(
   "Overview",
@@ -116,6 +137,25 @@ export const OverviewSchema = s.named(
         completed: Count,
         failed: Count,
       }),
+    ),
+    throughputSeries: s.optional(
+      s.named(
+        "OverviewThroughputSeries",
+        s.object(
+          {
+            interval: s.integer({ minimum: 1 }),
+            from: s.integer(),
+            to: s.integer(),
+            buckets: s.array(ThroughputBucketSchema),
+            completed: Count,
+            failed: Count,
+          },
+          {
+            description:
+              "Namespace-wide throughput, one bucket per minute, in the shape of a queue's: each minute summed over the queues summarised. Present exactly when `throughput` is.",
+          },
+        ),
+      ),
     ),
   }),
 );
@@ -149,25 +189,6 @@ export const WorkerSchema = s.named(
 /** `GET /workers` and `GET /queues/:queue/workers`. */
 export const WorkerListSchema = s.object({ items: s.array(WorkerSchema) });
 
-/** One minute of throughput. Mirrors `ThroughputBucket`. */
-export const ThroughputBucketSchema = s.named(
-  "ThroughputBucket",
-  s.object({ at: s.integer(), completed: Count, failed: Count }),
-);
-
-/** A queue's recent throughput. Mirrors `QueueThroughput`. */
-export const ThroughputSchema = s.named(
-  "QueueThroughput",
-  s.object({
-    interval: s.integer({ minimum: 1 }),
-    from: s.integer(),
-    to: s.integer(),
-    buckets: s.array(ThroughputBucketSchema),
-    completed: Count,
-    failed: Count,
-  }),
-);
-
 /** The `minutes` a throughput or overview read covers. */
 export function minutesQuerySchema(maxMinutes: number) {
   return s.query(
@@ -187,19 +208,47 @@ export function minutesQuerySchema(maxMinutes: number) {
 /** `GET /queues`. */
 export const QueueListSchema = s.object({
   items: s.array(QueueSummarySchema),
-  truncated: s.boolean(),
+  truncated: s.boolean({
+    description: "Whether more queues follow this page: `page.hasMore`.",
+  }),
+  page: PageInfoSchema,
 });
 
-/** `GET /queues` query. */
-export const QueueListQuerySchema = s.query(
-  s.object({
-    search: s.optional(
-      s.string({
-        maxLength: 200,
-        description: "A substring of the queue name.",
-      }),
-    ),
-  }),
+/** `GET /queues` query, paged up to `limits.maxQueues` at a time. */
+export function queueListQuerySchema(maxQueues: number) {
+  return s.query(
+    s.object({
+      search: s.optional(
+        s.string({
+          maxLength: 200,
+          description: "A substring of the queue name, ignoring case.",
+        }),
+      ),
+      offset: s.optional(
+        s.integer({
+          minimum: 0,
+          default: 0,
+          description: "Matching queues skipped, in name order.",
+        }),
+      ),
+      limit: s.optional(
+        s.integer({
+          minimum: 1,
+          maximum: maxQueues,
+          default: maxQueues,
+          description: `Queues summarised; at most ${maxQueues} (\`limits.maxQueues\`).`,
+        }),
+      ),
+    }),
+  );
+}
+
+/**
+ * `GET /queues` query with the default `limits.maxQueues`. Kept for callers
+ * of the earlier export; the route builds its own from the configured cap.
+ */
+export const QueueListQuerySchema = queueListQuerySchema(
+  DEFAULT_JOBS_API_LIMITS.maxQueues,
 );
 
 /** Whether a queue is paused, after pausing or resuming it. */

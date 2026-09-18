@@ -1,6 +1,7 @@
+import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { ApiError } from "../errors";
 import { s } from "../schema/builder";
-import { JobIdSchema } from "../schemas/jobs";
+import { JobIdRefSchema } from "../schemas/jobs";
 import { RunnerIdSchema } from "../schemas/runners";
 import { parseSegment } from "../sources";
 
@@ -9,19 +10,27 @@ import { parseSegment } from "../sources";
  * checks that must run before `authorize`, and bounded fan-out.
  */
 
-/** A queue name as a path parameter. Validated as a key segment before `authorize`. */
-export const QueueNameSchema = s.string({
-  minLength: 1,
-  maxLength: 200,
-  description: 'A queue name: letters, digits, "_", "." and "-".',
-});
+/**
+ * A queue name as a path parameter. Validated as a key segment before
+ * `authorize` — by the route, so a bad one is 400 `INVALID_NAME` rather than
+ * a validation error — and documented with that same rule as its pattern.
+ */
+export const QueueNameSchema = s.documented(
+  s.string({
+    minLength: 1,
+    maxLength: MAX_NAME_LENGTH,
+    description:
+      'A queue name: letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME.',
+  }),
+  { pattern: NAME_PARAM_PATTERN },
+);
 
 /** `:queue`. */
 export const QueueParams = s.query(s.object({ queue: QueueNameSchema }));
 
 /** `:queue/:id`. */
 export const JobParams = s.query(
-  s.object({ queue: QueueNameSchema, id: JobIdSchema }),
+  s.object({ queue: QueueNameSchema, id: JobIdRefSchema }),
 );
 
 /** `:queue/:key`. */

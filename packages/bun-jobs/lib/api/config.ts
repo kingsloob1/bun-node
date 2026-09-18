@@ -21,6 +21,8 @@ import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { BunRunnerManager } from "../runner/BunRunnerManager";
 import type { RemoteRunnerInfo } from "../runner/types";
+import type { JobsApiAction, JobsApiMode } from "./contract/constants";
+import type { JobsApiInfo } from "./contract/types";
 import type {
   EventDto,
   JobDto,
@@ -31,6 +33,11 @@ import type {
 import { resolveLogger } from "@kingsleyweb/bun-common";
 import { ConfigError } from "../shared/errors";
 import { assertSegment } from "../shared/keys";
+import {
+  JOBS_API_ACTIONS,
+  JOBS_API_MUTATIONS,
+  JOBS_API_OPT_IN_ACTIONS,
+} from "./contract/constants";
 
 /**
  * The management API's configuration: what `createJobsApi` accepts, and the
@@ -42,79 +49,15 @@ import { assertSegment } from "../shared/keys";
  * `authorize`) is a failure discovered in production.
  */
 
-/** Which half of the package the API exposes: routes, channels and spec entries alike. */
-export type JobsApiMode = "jobs" | "runner" | "both";
-
-/** Every action `authorize` can be asked about. The list is the source of truth for specs and pruning. */
-export const JOBS_API_ACTIONS = [
-  "meta.read",
-  "docs.read",
-  "queues.list",
-  "queues.read",
-  "queues.pause",
-  "queues.resume",
-  "queues.drain",
-  "queues.clean",
-  "queues.limits",
-  "metrics.read",
-  "workers.list",
-  "jobs.list",
-  "jobs.read",
-  "jobs.logs",
-  "jobs.add",
-  "jobs.update",
-  "jobs.retry",
-  "jobs.retryAll",
-  "jobs.remove",
-  "jobs.promote",
-  "repeatables.list",
-  "repeatables.remove",
-  "definitions.list",
-  "runners.list",
-  "runners.read",
-  "runners.trigger",
-  "runners.pause",
-  "runners.resume",
-  "runners.kill",
-  "runners.reschedule",
-  "runners.resetStats",
-  "events.connect",
-  "events.subscribe",
-] as const;
-
-/** One authorizable action. */
-export type JobsApiAction = (typeof JOBS_API_ACTIONS)[number];
-
-/**
- * Actions that change state; all are removed by `readOnly: true`.
- *
- * `queues.limits` is only ever the `PUT`: reading limits is `queues.read`.
- */
-export const JOBS_API_MUTATIONS: ReadonlySet<JobsApiAction> =
-  new Set<JobsApiAction>([
-    "queues.pause",
-    "queues.resume",
-    "queues.drain",
-    "queues.clean",
-    "queues.limits",
-    "jobs.add",
-    "jobs.update",
-    "jobs.retry",
-    "jobs.retryAll",
-    "jobs.remove",
-    "jobs.promote",
-    "repeatables.remove",
-    "runners.trigger",
-    "runners.pause",
-    "runners.resume",
-    "runners.kill",
-    "runners.reschedule",
-    "runners.resetStats",
-  ]);
-
-/** Actions excluded when `actions` is not given, because they write caller-supplied payloads. */
-export const JOBS_API_OPT_IN_ACTIONS: ReadonlySet<JobsApiAction> =
-  new Set<JobsApiAction>(["jobs.add", "jobs.update"]);
+// The action list, the mutation set and the mode are part of the wire
+// contract, defined once in the browser-safe `contract/` module.
+export {
+  JOBS_API_ACTIONS,
+  JOBS_API_MUTATIONS,
+  JOBS_API_OPT_IN_ACTIONS,
+  type JobsApiAction,
+  type JobsApiMode,
+} from "./contract/constants";
 
 /** Whether an action changes state. */
 export function isMutation(action: JobsApiAction): boolean {
@@ -681,6 +624,13 @@ export interface JobsApi {
   readonly basePath: string;
   /** The effective mode. */
   readonly mode: JobsApiMode;
+  /**
+   * What the API resolved its configuration to — base path, namespace, mode,
+   * read-only, CSRF rules, the docs documents' paths and the socket's path and
+   * (dedicated) port — the same values `/meta` reports, without a request.
+   * Frozen.
+   */
+  readonly info: JobsApiInfo;
   /** Every registered route, after pruning: method, full path, action, mutation. */
   readonly routes: readonly JobsApiRouteInfo[];
   /** The socket, or `undefined` when `websocket: false` or `events.subscribe` is not allowed. */

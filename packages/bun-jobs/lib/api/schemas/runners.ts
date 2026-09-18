@@ -1,3 +1,4 @@
+import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s } from "../schema/builder";
 import { ErrorDtoSchema } from "./common";
 
@@ -5,12 +6,20 @@ import { ErrorDtoSchema } from "./common";
  * Schemas for the runner routes.
  */
 
-/** A runner id, as a path parameter. Validated as a key segment before `authorize`. */
-export const RunnerIdSchema = s.string({
-  minLength: 1,
-  maxLength: 200,
-  description: 'Letters, digits, "_", "." and "-".',
-});
+/**
+ * A runner id, as a path parameter. Validated as a key segment before
+ * `authorize` by the route (400 `INVALID_NAME`), and documented with that
+ * rule as its pattern.
+ */
+export const RunnerIdSchema = s.documented(
+  s.string({
+    minLength: 1,
+    maxLength: MAX_NAME_LENGTH,
+    description:
+      'Letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME.',
+  }),
+  { pattern: NAME_PARAM_PATTERN },
+);
 
 /** Where a run executed. Mirrors `ExecutionMode`. */
 const ExecutionModeSchema = s.enum(["spawn", "worker", "in-process"]);

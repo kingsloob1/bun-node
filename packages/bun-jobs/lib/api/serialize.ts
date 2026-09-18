@@ -1,6 +1,5 @@
 import type { BunRequest, SerializedError } from "@kingsleyweb/bun-common";
 import type {
-  DriverCapabilities,
   DriverEvent,
   JobFlow,
   JobRecord,
@@ -10,7 +9,10 @@ import type {
   RunRecord,
 } from "../drivers/index";
 import type { RemoteRunnerInfo, RunnerStatus } from "../runner/types";
-import type { JobsApiMode, ResolvedJobsApiSerializers } from "./config";
+import type { ResolvedJobsApiSerializers } from "./config";
+import type { JobInclude } from "./contract/constants";
+import type { EventWire } from "./ws/events";
+import { JOB_INCLUDES } from "./contract/constants";
 
 /**
  * What leaves the process, and how it is shaped.
@@ -69,16 +71,8 @@ export interface ErrorDto {
   cause?: ErrorDto;
 }
 
-/** Optional job fields a client asks for with `include=`. */
-export const JOB_INCLUDES = [
-  "data",
-  "returnValue",
-  "stacktrace",
-  "opts",
-] as const;
-
-/** One optional job field. */
-export type JobInclude = (typeof JOB_INCLUDES)[number];
+/** Optional job fields a client asks for with `include=`. Defined in the contract. */
+export { JOB_INCLUDES, type JobInclude };
 
 /** What lists include by default: nothing optional, to keep pages small and payloads private. */
 export const JOB_LIST_INCLUDE: ReadonlySet<JobInclude> = new Set<JobInclude>();
@@ -239,13 +233,12 @@ export interface RunnerInfoDto extends Omit<
   };
 }
 
-/** `Omit` applied to each member of a union, keeping it a union. */
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
-  ? Omit<T, K>
-  : never;
-
-/** A notifier event as it leaves the process: `DriverEvent` minus `ns` and `origin`. */
-export type EventDto = DistributiveOmit<DriverEvent, "ns" | "origin">;
+/**
+ * A notifier event as it leaves the process: `DriverEvent` minus `ns` and
+ * `origin`, with every payload error shaped as an `ErrorDto` — what
+ * {@link toEventDto} builds and the socket sends ({@link EventWire}).
+ */
+export type EventDto = EventWire;
 
 /**
  * A worker as the backend reports it.
@@ -285,65 +278,8 @@ export interface WorkerDto extends Omit<WorkerInfoLike, "host" | "pid"> {
   pid?: number;
 }
 
-/** What `/meta` answers. */
-export interface MetaDto {
-  /** The namespace managed. */
-  namespace: string;
-  /** The effective mode. */
-  mode: JobsApiMode;
-  /** Whether mutations are disabled. */
-  readOnly: boolean;
-  /** The API protocol version. */
-  protocol: 1;
-  /** The backend: its name and capabilities, never connection details. */
-  driver: {
-    /** The driver's name, e.g. `"redis"`. */
-    name: string;
-    /** What the backend supports. */
-    capabilities: DriverCapabilities;
-  };
-  /** Optional features this backend supports, so a UI can explain an absent button. */
-  features: {
-    /** Job logs. */
-    logs: boolean;
-    /** Job updates. */
-    update: boolean;
-    /** Queue limits. */
-    limits: boolean;
-    /** Flows. */
-    flows: boolean;
-    /** Name/id search. */
-    search: boolean;
-    /** Worker listing. */
-    workers: boolean;
-    /** Throughput metrics. */
-    throughput: boolean;
-  };
-  /** How events reach this process. */
-  events: "push" | "poll" | "local";
-  /** Whether this context publishes events, or `null` when unknown. */
-  publishing: boolean | null;
-  /** The socket, or `null` when it is off. */
-  websocket: {
-    /** Full socket path. */
-    path: string;
-    /** Heartbeat interval in ms. */
-    heartbeatMs: number;
-    /** Most subscriptions per connection. */
-    maxSubscriptions: number;
-  } | null;
-  /** Docs endpoints, or `null` when they are off. */
-  docs: {
-    /** OpenAPI JSON path. */
-    openapi: string;
-    /** AsyncAPI JSON path, when the socket is on. */
-    asyncapi?: string;
-    /** Swagger UI path, when the UI is on. */
-    ui?: string;
-    /** AsyncAPI viewer path, when the UI is on and the socket exists. */
-    asyncapiUi?: string;
-  } | null;
-}
+/** What `/meta` answers. Defined in the contract, which a browser client imports. */
+export type { MetaDto } from "./contract/types";
 
 /** How deep an error's cause chain is followed. */
 const MAX_CAUSE_DEPTH = 5;
