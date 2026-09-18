@@ -2,7 +2,7 @@ import type { JobsApiAction } from "../../app/api/contract";
 import type { NavInputs } from "../../app/layout/nav";
 import { describe, expect, it } from "bun:test";
 import { buildNav } from "../../app/layout/nav";
-import { page, setupDom, visit } from "./dom";
+import { page, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, permissionsFixture } from "./fixtures";
 import { renderApp } from "./renderApp";
 
@@ -128,19 +128,19 @@ describe("the rendered layout", () => {
     await page().findByTestId("not-found");
     first.unmount();
 
-    visit("/jobs/runners/nightly");
+    visit("/jobs/events");
     renderApp();
     const placeholder = await page().findByTestId("placeholder");
-    expect(placeholder.textContent).toContain("Runners");
-    expect(placeholder.textContent).toContain("milestone 3");
+    expect(placeholder.textContent).toContain("Events");
+    expect(placeholder.textContent).toContain("milestone 4");
   });
 
   it("redirects the start page to the first section when Overview is not available", async () => {
     renderApp({
       handlers: { "GET /meta": { body: metaFixture({ mode: "runner" }) } },
     });
-    await page().findByTestId("placeholder");
-    expect(window.location.pathname).toBe("/jobs/runners");
+    await page().findByTestId("app-ready");
+    await waitFor(() => expect(window.location.pathname).toBe("/jobs/runners"));
   });
 
   it("explains an app with no sections at all", async () => {

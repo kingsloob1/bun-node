@@ -65,7 +65,7 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "runners",
         label: "Runners",
         to: "/runners",
-        comingIn: 3,
+        comingIn: null,
       });
     }
     if (meta.websocket && can("events.connect")) {

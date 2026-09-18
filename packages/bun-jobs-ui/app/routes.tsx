@@ -1,17 +1,29 @@
 import type { NavId, NavItem } from "./layout/nav";
 import type { RouteDef } from "./routing";
 import { EmptyState } from "./components/EmptyState";
-import { QueuePermissionScope } from "./meta/PermissionScope";
+import {
+  QueuePermissionScope,
+  RunnerPermissionScope,
+} from "./meta/PermissionScope";
 import { Navigate } from "./router";
-import { JobScreen } from "./screens/job";
+import {
+  JobScreen,
+  QueueScreen,
+  QueuesListScreen,
+  RunnerScreen,
+  RunnersListScreen,
+} from "./screens/lazy";
 import { OverviewScreen } from "./screens/Overview";
 import { PlaceholderScreen } from "./screens/Placeholder";
-import { QueueScreen, QueuesListScreen } from "./screens/queues";
 
-/** Route patterns of each nav section; a section's routes exist only when its entry does. */
-const SECTION_ROUTES: Readonly<Record<Exclude<NavId, "overview">, string[]>> = {
-  queues: ["/queues", "/queues/:queue", "/queues/:queue/*"],
-  runners: ["/runners", "/runners/:runner", "/runners/:runner/*"],
+/**
+ * Route patterns of the sections still shown as placeholders; a section's
+ * routes exist only when its entry does. Built sections register their own
+ * routes in {@link buildRoutes}.
+ */
+const PLACEHOLDER_ROUTES: Readonly<
+  Record<Exclude<NavId, "overview" | "queues" | "runners">, string[]>
+> = {
   events: ["/events"],
   docs: ["/docs", "/docs/*"],
 };
@@ -63,7 +75,21 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
       );
       continue;
     }
-    for (const path of SECTION_ROUTES[item.id]) {
+    if (item.id === "runners") {
+      routes.push(
+        {
+          path: "/runners/:runner",
+          element: (
+            <RunnerPermissionScope>
+              <RunnerScreen />
+            </RunnerPermissionScope>
+          ),
+        },
+        { path: "/runners", element: <RunnersListScreen /> },
+      );
+      continue;
+    }
+    for (const path of PLACEHOLDER_ROUTES[item.id]) {
       routes.push({
         path,
         element: (
