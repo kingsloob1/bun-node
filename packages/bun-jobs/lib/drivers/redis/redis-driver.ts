@@ -207,6 +207,22 @@ export class RedisDriver implements JobsDriver {
   #blocking: RedisClient | undefined;
   /** The connection reserved for pub/sub, once anything subscribes. */
   #subscriber: RedisClient | undefined;
+  /**
+   * The blocking pop in flight per wake key, so waits share one rather than
+   * stacking up behind each other on the single blocking connection.
+   */
+  readonly #pops = new Map<string, Promise<unknown>>();
+  /** How many callers are currently waiting on each key's pop. */
+  readonly #waiters = new Map<string, number>();
+  /**
+   * Keys whose pop took a wake token with nobody left to give it to.
+   *
+   * `BLPOP` is a destructive read of a list, so a token it takes is gone for
+   * everyone. A pop whose caller has since given up would therefore swallow
+   * the wake an `add()` sent and leave that job waiting out a whole further
+   * period; remembering it here hands it to the next waiter instead.
+   */
+  readonly #missed = new Set<string>();
   /** Channels with listeners, so `close()` can unsubscribe them. */
   readonly #channels = new Map<string, Set<(event: DriverEvent) => void>>();
   /** Resolves once the client is connected. */
@@ -247,6 +263,12 @@ export class RedisDriver implements JobsDriver {
     await this.#subscriber?.close();
     this.#blocking = undefined;
     this.#subscriber = undefined;
+
+    // Closing the connection settles any parked pop; nothing may be carried
+    // over to a driver that connects again.
+    this.#pops.clear();
+    this.#waiters.clear();
+    this.#missed.clear();
 
     if (this.#ownsClient) {
       this.#client.close();
@@ -1560,6 +1582,15 @@ export class RedisDriver implements JobsDriver {
       return;
     }
 
+    const key = this.keys.queue(q).wake;
+
+    // A wake that landed while nobody was listening goes to the next waiter.
+    // Without this the token a pop took just after its caller gave up was
+    // simply lost, and the job that sent it waited out the next full period.
+    if (this.#missed.delete(key)) {
+      return;
+    }
+
     // A blocking pop occupies its connection for the whole wait, so it gets
     // one of its own rather than stalling every other command.
     const blocking = await this.#blockingClient();
@@ -1571,12 +1602,14 @@ export class RedisDriver implements JobsDriver {
     // The caller's signal outlives this wait — a worker passes the same one to
     // every wait it makes — so nothing may be left listening on it when the
     // pop wins, which on a busy queue is every job. See `waitForAny`.
-    await waitForAny(timeoutMs, {
-      signal,
-      others: [
-        blocking.blpop(this.keys.queue(q).wake, seconds).catch(() => null),
-      ],
-    });
+    const pop = this.#pop(blocking, key, seconds);
+    this.#waiters.set(key, (this.#waiters.get(key) ?? 0) + 1);
+
+    try {
+      await waitForAny(timeoutMs, { signal, others: [pop] });
+    } finally {
+      this.#waiters.set(key, Math.max(0, (this.#waiters.get(key) ?? 1) - 1));
+    }
   }
 
   async publish(event: DriverEvent): Promise<void> {
@@ -1641,6 +1674,46 @@ export class RedisDriver implements JobsDriver {
   /** The runner id inside a `r:<id>` key. */
   #runnerId(key: string): string {
     return key.replace(/^r:/, "");
+  }
+
+  /**
+   * The blocking pop for a wake key, started if one is not already running.
+   *
+   * A `BLPOP` cannot be called off, so an abandoned one stays parked on the
+   * connection until the server times it out — and because Redis serves one
+   * connection's commands in order, a second pop issued meanwhile queues
+   * behind it. Sharing the one in flight fixes both: nothing stacks up, and
+   * the token it eventually takes reaches whoever is waiting by then rather
+   * than a caller that has gone.
+   *
+   * The hot path is a `Map` lookup and no extra Redis command at all. A
+   * caller that joins a pop started with a shorter budget may be released
+   * early with nothing to claim; it simply waits again, which is what it does
+   * after any empty claim.
+   */
+  #pop(client: RedisClient, key: string, seconds: number): Promise<unknown> {
+    const running = this.#pops.get(key);
+    if (running) {
+      return running;
+    }
+
+    const pop = client
+      .blpop(key, seconds)
+      .catch(() => null)
+      .then((token) => {
+        this.#pops.delete(key);
+
+        // Resolved before any waiter has stopped awaiting it, so this count
+        // still includes them — nobody left means every caller gave up.
+        if (token !== null && (this.#waiters.get(key) ?? 0) === 0) {
+          this.#missed.add(key);
+        }
+
+        return token;
+      });
+
+    this.#pops.set(key, pop);
+    return pop;
   }
 
   /** The connection reserved for blocking pops, made on first use. */
