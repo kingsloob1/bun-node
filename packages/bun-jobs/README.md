@@ -2250,8 +2250,8 @@ so a caller can add to them but never overwrite them.
 
 | Class | `code` | Raised when |
 |---|---|---|
-| `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory, or a feature needs an optional driver method the driver lacks. |
-| `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. It is exported for driver authors; the built-in optional-method checks currently throw a plain `ConfigError` with the same `driver` and `method` context. |
+| `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory. A feature that needs an optional driver method the driver lacks raises `NotSupportedError`, which is one of these. |
+| `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. Every built-in optional-method check raises it — `queue.cleanWindows()`, `queue.getThroughput()`, `queue.listWorkers()`, `job.log()` and the rest — with `context.needs` naming the feature that wanted the method. |
 | `DriverError` | `DRIVER_ERROR` | A driver operation failed. `driver` and `operation` are set, and the backend's error is the `cause`. |
 | `LockUnavailableError` | `LOCK_UNAVAILABLE` | A lock is held elsewhere (`context.key`). |
 | `LockLostError` | `LOCK_LOST` | A lock expired or was taken mid-work. |

@@ -469,16 +469,17 @@ export class SqlDriver implements JobsDriver {
   readonly dialect: SqlDialect;
 
   /**
-   * A database is reachable from anywhere, and its concurrency control is
-   * what makes claiming safe. Waiting is polled: `LISTEN/NOTIFY` exists on
+   * A server database is reachable from anywhere, and its concurrency control
+   * is what makes claiming safe. Waiting is polled: `LISTEN/NOTIFY` exists on
    * Postgres but not the others, so the contract stays the same everywhere.
+   *
+   * `multiHost` is the one that varies by engine, and SQLite is the exception:
+   * it is a file, so processes on the same machine can share it but another
+   * host cannot. Assigned in the constructor rather than here, because a class
+   * field initialiser runs *before* the constructor body and would read
+   * {@link SqlDriver.adapter} as `undefined`.
    */
-  readonly capabilities: DriverCapabilities = {
-    blockingWait: false,
-    events: "poll",
-    multiProcess: true,
-    multiHost: true,
-  };
+  readonly capabilities: DriverCapabilities;
 
   /** The resolved table names. */
   readonly #tables: Record<SqlTable, string>;
@@ -609,6 +610,14 @@ export class SqlDriver implements JobsDriver {
 
     this.adapter = options.adapter ?? detectAdapter(options.url);
     this.dialect = dialectFor(this.adapter);
+
+    this.capabilities = {
+      blockingWait: false,
+      events: "poll",
+      multiProcess: true,
+      // SQLite is a local file; every other engine is reached over a socket.
+      multiHost: this.adapter !== "sqlite",
+    };
 
     this.#tables = resolveNames(SQL_TABLES, {
       prefix: options.tablePrefix,
@@ -1051,6 +1060,12 @@ export class SqlDriver implements JobsDriver {
     ns: string,
     key: string,
   ): Promise<QueuedTrigger | null> {
+    // Read first: a mutation creates the runner's row, and asking an unknown
+    // runner whether it has anything queued must not bring it into being.
+    if ((await this.#readState(ns, key)).queued.length === 0) {
+      return null;
+    }
+
     let trigger: QueuedTrigger | null = null;
 
     await this.#mutateState(ns, key, (state) => {

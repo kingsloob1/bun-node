@@ -461,6 +461,12 @@ export class FileDriver implements JobsDriver {
     ns: string,
     key: string,
   ): Promise<QueuedTrigger | null> {
+    // Read first: a mutation writes the runner's state file, and asking an
+    // unknown runner whether it has anything queued must not create it.
+    if ((await this.#readState(ns, key)).queued.length === 0) {
+      return null;
+    }
+
     let trigger: QueuedTrigger | null = null;
 
     await this.#mutateState(ns, key, (state) => {

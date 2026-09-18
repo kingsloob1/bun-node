@@ -96,6 +96,17 @@ export interface QueuedTrigger {
   requestedAt: number;
   /** Token of the process that queued it. */
   requestedBy: string;
+  /**
+   * Whether the request asked to run even while the runner is paused.
+   *
+   * The pause is checked when a trigger is *requested*, but a drain happens
+   * later and elsewhere, so without this a drainer cannot tell a forced
+   * trigger from an ordinary one and runs whatever it pops.
+   *
+   * Optional, and absent on a record an earlier version wrote — which reads
+   * as not forced, the safe default. Test it as `trigger.force === true`.
+   */
+  force?: boolean;
 }
 
 /** How a run was asked for. */

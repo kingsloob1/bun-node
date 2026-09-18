@@ -8,7 +8,24 @@
  *   single-run locking, queued triggers, timeouts and kill escalation;
  * - the **queue** (`BunQueue` / `BunQueueWorker`): queue and process jobs
  *   across processes and services with priorities, delays, retries, stalled
- *   recovery, repeatable jobs and retention.
+ *   recovery, repeatable jobs, debounce and throttle windows, and retention.
+ *
+ * Built across both:
+ *
+ * - **flows** — parent jobs that wait on children, with failures burying the
+ *   parent unless a child is marked to be ignored;
+ * - the **registry** (`BunJobs`): the per-service context that fixes the
+ *   namespace and driver once and derives every runner, queue and worker from
+ *   them, defines named jobs, holds the `processEvery` scheduling interval and
+ *   saves drafts (`JobDraft`) for later;
+ * - the **notifier** (`JobsNotifier`): driver-backed pub/sub, so an event
+ *   raised in one process reaches listeners in another;
+ * - the **read APIs**: what a management UI needs — paged and searchable job
+ *   listings with totals, per-queue counts and summaries, batch reads by id,
+ *   the live worker inventory and per-minute throughput.
+ *
+ * Backends: memory, file, Redis, SQL (PostgreSQL, MySQL, MariaDB, SQLite)
+ * and MongoDB.
  *
  * The public surface is assembled here in grouped, alphabetised export
  * blocks as each subsystem lands.

@@ -418,7 +418,7 @@ export class BunQueue<
 
     if (!supportsWorkers(this.driver)) {
       throw new NotSupportedError(this.driver.name, "listWorkers", {
-        needs: "worker records or queue state",
+        needs: "listWorkers()",
       });
     }
 
@@ -563,7 +563,7 @@ export class BunQueue<
   async addFlow(node: FlowNode<TData>): Promise<FlowResult<TData, TResult>> {
     await this.connect();
     this.#requireDriver(
-      "addFlow",
+      "addFlow()",
       "recordChild",
       "requeueParent",
       "markChildRecorded",
@@ -1163,7 +1163,7 @@ export class BunQueue<
     }
 
     const driver = this.#requireDriver(
-      `${kind}`,
+      `add({ ${kind} })`,
       "getQueueState",
       "setQueueState",
       "updateJob",
@@ -1277,10 +1277,10 @@ export class BunQueue<
   ): JobsDriver {
     for (const method of methods) {
       if (typeof this.driver[method] !== "function") {
-        throw new ConfigError(
-          `${what} needs a driver that implements ${method}, and the ${this.driver.name} driver does not`,
-          { driver: this.driver.name, method },
-        );
+        // A `ConfigError` still — `NotSupportedError` extends it and keeps the
+        // `CONFIG` code — but one that says which driver lacks which method in
+        // its type as well as its text, so a caller can branch on it.
+        throw new NotSupportedError(this.driver.name, method, { needs: what });
       }
     }
 

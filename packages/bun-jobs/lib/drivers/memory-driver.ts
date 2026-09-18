@@ -271,14 +271,14 @@ export class MemoryDriver implements JobsDriver {
     key: string,
     now: number,
   ): Promise<LockInfo | null> {
-    const held = this.#runner(ns, key).lock;
+    const held = this.#existingRunner(ns, key)?.lock;
     return held && held.expiresAt > now ? { ...held } : null;
   }
 
   /* --- runner: state, history, queued triggers ---------------------- */
 
   async getState(ns: string, key: string): Promise<Record<string, string>> {
-    return Object.fromEntries(this.#runner(ns, key).fields);
+    return Object.fromEntries(this.#existingRunner(ns, key)?.fields ?? []);
   }
 
   async setState(
@@ -348,7 +348,7 @@ export class MemoryDriver implements JobsDriver {
     key: string,
     limit?: number,
   ): Promise<RunRecord[]> {
-    const history = this.#runner(ns, key).history;
+    const history = this.#existingRunner(ns, key)?.history ?? [];
     const slice = limit && limit > 0 ? history.slice(0, limit) : history;
     return slice.map((entry) => ({ ...entry }));
   }
@@ -376,11 +376,11 @@ export class MemoryDriver implements JobsDriver {
     ns: string,
     key: string,
   ): Promise<QueuedTrigger | null> {
-    return this.#runner(ns, key).queued.shift() ?? null;
+    return this.#existingRunner(ns, key)?.queued.shift() ?? null;
   }
 
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
-    return this.#runner(ns, key).queued.length;
+    return this.#existingRunner(ns, key)?.queued.length ?? 0;
   }
 
   async clearQueuedTriggers(ns: string, key: string): Promise<number> {
@@ -1335,6 +1335,20 @@ export class MemoryDriver implements JobsDriver {
       namespace.runners.set(key, runner);
     }
     return runner;
+  }
+
+  /**
+   * A runner's state if it already has any, without bringing one into being.
+   *
+   * Every read goes through this rather than {@link MemoryDriver.#runner}:
+   * asking a question about a runner must not create it. It used to, so
+   * merely inspecting an id — which `info()` does through `getLock` and
+   * `getState` — put that id into `listRunners()` for good, and kept its
+   * namespace alive for as long as the driver. Every other driver answers a
+   * read without writing; this is that behaviour.
+   */
+  #existingRunner(ns: string, key: string): RunnerState | undefined {
+    return this.#namespaces.get(ns)?.runners.get(key);
   }
 
   /** A queue's state, created on first use. */

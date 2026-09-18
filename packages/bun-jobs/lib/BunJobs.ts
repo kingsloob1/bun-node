@@ -681,7 +681,7 @@ export class BunJobs {
 
     if (!supportsWorkers(this.driver)) {
       throw new NotSupportedError(this.driver.name, "listWorkers", {
-        needs: "worker records or queue state",
+        needs: "listWorkers()",
       });
     }
 

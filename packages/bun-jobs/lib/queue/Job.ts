@@ -8,7 +8,7 @@ import type {
 } from "../drivers/index";
 import { deserializeError } from "@kingsleyweb/bun-common";
 import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
-import { ConfigError } from "../shared/errors";
+import { ConfigError, NotSupportedError } from "../shared/errors";
 import { parseWhen } from "../shared/humanTime";
 import { assertJsonSafe } from "../shared/json";
 import { retryJob } from "./retry";
@@ -281,10 +281,10 @@ export class Job<TData = unknown, TResult = unknown> {
     what: string,
   ): JobsDriver {
     if (typeof this.#driver[method] !== "function") {
-      throw new ConfigError(
-        `${what} needs a driver that implements ${method}, and the ${this.#driver.name} driver does not`,
-        { driver: this.#driver.name, method },
-      );
+      // A `ConfigError` still — `NotSupportedError` extends it and keeps the
+      // `CONFIG` code — but one a caller can branch on by type, with the
+      // feature that wanted the method recorded beside it.
+      throw new NotSupportedError(this.#driver.name, method, { needs: what });
     }
 
     return this.#driver;
