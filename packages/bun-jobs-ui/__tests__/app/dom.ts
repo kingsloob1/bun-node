@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { afterAll, afterEach, beforeAll } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { DOM_URL, registerDom } from "./register-dom";
 
 /**
@@ -21,6 +21,39 @@ const testingLibrary = await import("@testing-library/react");
 export const { act, cleanup, fireEvent, render, waitFor, within } =
   testingLibrary;
 
+const { environmentManager, focusManager, onlineManager } =
+  await import("@tanstack/react-query");
+
+/**
+ * TanStack Query decides whether it runs on a server ONCE, when query-core
+ * evaluates: `typeof window === "undefined"`. On a "server" it schedules no
+ * timers at all, so `refetchInterval` never fires and a polling screen reads
+ * once and stops. `bun test` shares that module across files, so whichever
+ * file loads it first decides for the whole run: a DOM-less file (one testing
+ * a helper next to `app/queryClient.ts`, say) ahead of the DOM files leaves
+ * every later polling test broken — and only in whole-package runs. Asking
+ * again at each call answers for the DOM that is registered now.
+ */
+environmentManager.setIsServer(() => typeof window === "undefined");
+
+/**
+ * Fails a test that starts with TanStack Query believing it runs on a
+ * server, in a background tab or offline: in each, polling silently stops,
+ * and a test asserting a refetch would fail far from the cause.
+ */
+export function assertQueryEnvironment(): void {
+  const problems = [
+    environmentManager.isServer() && "believes it runs on a server",
+    !focusManager.isFocused() && "believes the tab is unfocused",
+    !onlineManager.isOnline() && "believes it is offline",
+  ].filter(Boolean);
+  if (problems.length > 0) {
+    throw new Error(
+      `TanStack Query ${problems.join(", ")} at the start of a DOM test: an earlier test leaked that state, and polling would not run.`,
+    );
+  }
+}
+
 export { DOM_URL };
 
 /** Lets React's scheduler (and any queued microtasks) finish. */
@@ -39,6 +72,7 @@ async function settle(): Promise<void> {
  */
 export function setupDom(): void {
   beforeAll(() => registerDom());
+  beforeEach(() => assertQueryEnvironment());
   afterEach(async () => {
     cleanup();
     await settle();
