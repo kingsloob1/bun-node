@@ -353,8 +353,8 @@ describe("the job screen's access gate", () => {
     expect(page().queryByTestId("job-screen")).toBeNull();
   });
 
-  it("switches to the hidden panel, and stops polling, when the queue's scoped permissions deny jobs.read", async () => {
-    jest.useFakeTimers();
+  /** Renders the job screen with the queue's scoped permissions held back until released. */
+  async function renderWithPendingScope(scopedReadable: boolean) {
     let answerScoped: (() => void) | undefined;
     const scopedArrived = new Promise<void>((resolve) => {
       answerScoped = resolve;
@@ -362,34 +362,51 @@ describe("the job screen's access gate", () => {
     const { calls } = await renderJobScreen(jobFixture("active"), {
       handlers: {
         ...sideHandlers(),
-        // Untargeted: granted. Scoped to `emails`: refused, answered on demand.
+        // Untargeted: granted. Scoped to `emails`: answered on demand.
         "GET /meta/permissions": async (call) => {
           if (call.query.get("queue") !== "emails") {
             return { body: allPermissions() };
           }
           await scopedArrived;
-          return { body: allPermissions({ "jobs.read": false }) };
+          return {
+            body: allPermissions(scopedReadable ? {} : { "jobs.read": false }),
+          };
         },
       },
       wait: false,
     });
-    await advance(100, 10);
-    // The untargeted grant applies while the scoped answer is pending.
-    expect(page().getByTestId("job-screen")).toBeTruthy();
     const reads = () =>
       calls.filter((call) => call.path === jobApiPath()).length;
-    await advance(5_000);
-    expect(reads()).toBe(2);
+    return { reads, release: () => answerScoped?.() };
+  }
 
-    answerScoped?.();
+  it("does not read the job until the queue's own permissions answer, and never when they deny jobs.read", async () => {
+    jest.useFakeTimers();
+    const { reads, release } = await renderWithPendingScope(false);
+    await advance(5_000);
+    // The untargeted map grants jobs.read, but the queue's is still pending.
+    expect(reads()).toBe(0);
+    expect(page().queryByTestId("job-hidden")).toBeNull();
+
+    release();
     await advance(100, 10);
     expect(page().getByTestId("job-hidden").textContent).toContain(
       "Job hidden",
     );
     expect(page().queryByTestId("job-screen")).toBeNull();
-    const after = reads();
     await advance(15_000);
-    expect(reads()).toBe(after);
+    expect(reads()).toBe(0);
+  });
+
+  it("reads the job once the queue's own permissions grant jobs.read", async () => {
+    jest.useFakeTimers();
+    const { reads, release } = await renderWithPendingScope(true);
+    await advance(5_000);
+    expect(reads()).toBe(0);
+    release();
+    await advance(100, 10);
+    expect(reads()).toBeGreaterThanOrEqual(1);
+    expect(page().getByTestId("job-screen")).toBeTruthy();
   });
 
   it("shows the hidden panel with the API's detail when GET job answers 403", async () => {

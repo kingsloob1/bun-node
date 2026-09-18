@@ -24,6 +24,27 @@ export const MetaContext = createContext<MetaContextValue | null>(null);
 export const ScopedPermissionsContext = createContext<Permissions | null>(null);
 
 /**
+ * Where the nearest `<PermissionScope>` is: `"unscoped"` outside one,
+ * `"pending"` while its targeted request is in flight, `"settled"` once it
+ * answered or failed (a failure keeps the untargeted map).
+ */
+export type PermissionScopeStatus = "unscoped" | "pending" | "settled";
+
+/** Carries the nearest `<PermissionScope>`'s {@link PermissionScopeStatus}. */
+export const PermissionScopeStatusContext =
+  createContext<PermissionScopeStatus>("unscoped");
+
+/**
+ * Whether the permissions that apply here are final: `false` only while a
+ * `<PermissionScope>`'s targeted answer is still loading. A screen that must
+ * not send a request the target's own map might refuse (a job's data, say)
+ * waits for this before fetching.
+ */
+export function usePermissionsSettled(): boolean {
+  return use(PermissionScopeStatusContext) !== "pending";
+}
+
+/**
  * Whether the caller may perform `action`: `true` only when the action is
  * present **and** `true`. An action whose routes are pruned (mode, `readOnly`,
  * `actions`, driver capability) is absent from the map, which is `false` too.

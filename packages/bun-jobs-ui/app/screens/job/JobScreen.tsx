@@ -22,7 +22,7 @@ import { Spinner } from "../../components/Spinner";
 import { StateBadge } from "../../components/StateBadge";
 import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
-import { useCan, useFeature } from "../../meta/hooks";
+import { useCan, useFeature, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
 import { ErrorDetails } from "./ErrorDetails";
@@ -308,28 +308,31 @@ function JobDetail({ job }: { job: JobDto }) {
 
 /**
  * `/queues/:queue/jobs/:id`: one job, polled until it finishes. Needs
- * `jobs.read` for the queue; without it (or on a 401/403) the job is hidden
- * and never fetched again.
+ * `jobs.read` for the queue, as the queue's own map answers it: the job is
+ * not fetched until that map has loaded, and never without `jobs.read` (or
+ * after a 401/403), so a host that refuses one queue's jobs is never asked
+ * for one.
  */
 export function JobScreen() {
   const { queue = "", id = "" } = useParams<{ queue: string; id: string }>();
   const api = useApiClient();
-  // Scoped to the queue by the route's <QueuePermissionScope>. While that
-  // loads this is the untargeted answer; a later scoped `false` disables the
-  // query, which also stops its polling.
+  // Scoped to the queue by the route's <QueuePermissionScope>. The job waits
+  // for that map (`settled`), so an untargeted grant cannot send a read the
+  // queue's own answer refuses; a later `false` also stops the polling.
   const canRead = useCan("jobs.read");
+  const settled = usePermissionsSettled();
   const job = useQuery({
     queryKey: jobKeys.job(queue, id),
     queryFn: ({ signal }) =>
       getJob(api, queue, id, DEFAULT_JOB_INCLUDE, signal),
-    enabled: canRead,
+    enabled: canRead && settled,
     refetchInterval: (query) =>
       isNotFound(query.state.error) || isDenied(query.state.error)
         ? false
         : jobRefetchInterval(query.state.data?.state),
   });
 
-  if (!canRead) {
+  if (settled && !canRead) {
     return <JobHidden queue={queue} />;
   }
   if (isDenied(job.error)) {
