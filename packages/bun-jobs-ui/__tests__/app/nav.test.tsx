@@ -1,12 +1,14 @@
 import type { JobsApiAction } from "../../app/api/contract";
 import type { NavInputs } from "../../app/layout/nav";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { buildNav } from "../../app/layout/nav";
 import { page, setupDom, visit, waitFor } from "./dom";
 import { metaFixture, permissionsFixture } from "./fixtures";
+import { liveFake } from "./liveFake";
 import { renderApp } from "./renderApp";
 
 setupDom();
+afterEach(() => liveFake.uninstall());
 
 /** Nav ids for the given inputs. */
 function ids(overrides: Partial<NavInputs> = {}, denied: JobsApiAction[] = []) {
@@ -98,6 +100,13 @@ function sidebarLinks(): string[] {
 
 describe("the rendered layout", () => {
   it("renders the gated sidebar, chips and live status", async () => {
+    // The live client's status (its own tests cover how it is derived).
+    liveFake.install({
+      state: "off",
+      detail: "No socket",
+      events: "local",
+      publishing: null,
+    });
     renderApp({
       handlers: {
         "GET /meta": { body: metaFixture({ mode: "jobs" }) },
@@ -116,7 +125,7 @@ describe("the rendered layout", () => {
     expect(header.textContent).toContain("drivermemory");
     expect(header.textContent).toContain("modejobs");
     expect(page().getByTestId("live-status").textContent).toBe(
-      "Polling 5s · events: local · publishing: unknown",
+      "Polling 5s · events: local",
     );
   });
 
@@ -128,11 +137,11 @@ describe("the rendered layout", () => {
     await page().findByTestId("not-found");
     first.unmount();
 
-    visit("/jobs/events");
+    visit("/jobs/docs");
     renderApp();
     const placeholder = await page().findByTestId("placeholder");
-    expect(placeholder.textContent).toContain("Events");
-    expect(placeholder.textContent).toContain("milestone 4");
+    expect(placeholder.textContent).toContain("API docs");
+    expect(placeholder.textContent).toContain("milestone 5");
   });
 
   it("redirects the start page to the first section when Overview is not available", async () => {

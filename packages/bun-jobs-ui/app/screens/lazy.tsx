@@ -51,6 +51,12 @@ export const JobScreen = onDemand(
   "Loading the job",
 );
 
+/** `/events`, on demand. */
+export const EventsScreen = onDemand(
+  async () => (await import("./events")).EventsScreen,
+  "Loading the events",
+);
+
 /** `/runners`, on demand. */
 export const RunnersListScreen = onDemand(
   async () => (await import("./runners")).RunnersListScreen,
