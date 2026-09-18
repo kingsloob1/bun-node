@@ -16,7 +16,7 @@ import { defineRoute, isRouteEnabled } from "../../lib/api/routes/define";
 import { probeFeatures } from "../../lib/api/routes/meta";
 import { s } from "../../lib/api/schema/builder";
 import { MetaSchema } from "../../lib/api/schemas/meta";
-import { BunQueue, ConfigError, MemoryDriver } from "../../lib/index";
+import { BunJobs, BunQueue, ConfigError, MemoryDriver } from "../../lib/index";
 import { apiConfig, jobsContext, openContexts, testRoutes } from "./fixtures";
 
 afterAll(async () => {
@@ -463,6 +463,61 @@ describe("pruning", () => {
 });
 
 describe("GET /meta", () => {
+  describe("publishing", () => {
+    /** A context with `publishEvents` as given, closed after the file. */
+    function context(publishEvents?: boolean): BunJobs {
+      const jobs = new BunJobs({
+        namespace: "api-routes",
+        driver: new MemoryDriver(),
+        ...(publishEvents === undefined ? {} : { publishEvents }),
+      });
+      openContexts.push(jobs);
+      return jobs;
+    }
+
+    /** What `/meta` reports as `publishing` for this configuration. */
+    async function publishing(
+      overrides: Partial<JobsApiConfig>,
+    ): Promise<unknown> {
+      const response = await mounted(
+        api({ websocket: false, ...overrides }),
+      ).fetch("/admin/jobs/meta");
+      return ((await response.json()) as { publishing: unknown }).publishing;
+    }
+
+    it("reports the context's resolved publishEvents, and null with no context", async () => {
+      expect(await publishing({ jobs: context(true) })).toBe(true);
+      expect(await publishing({ jobs: context(false) })).toBe(false);
+      // Unset resolves to `false`: the context does not publish.
+      expect(await publishing({ jobs: context() })).toBe(false);
+
+      // Without a `BunJobs` there is nothing to ask.
+      const queue = new BunQueue("mail", {
+        namespace: "api-routes",
+        driver: new MemoryDriver(),
+      });
+      expect(await publishing({ jobs: undefined, queues: [queue] })).toBeNull();
+      await queue.close();
+    });
+
+    it("warns that live events will be empty only when the context does not publish", async () => {
+      /** The warnings `createJobsApi` logged for this context. */
+      async function warnings(jobs: BunJobs): Promise<string[]> {
+        const { logger, events } = createTestLogger();
+        const created = createJobsApi(apiConfig({ jobs, logger }));
+        await created.close();
+        return events
+          .filter((event) => event.level === "warn")
+          .map((event) => event.message)
+          .filter((message) => message.includes("set publishEvents"));
+      }
+
+      expect(await warnings(context(true))).toEqual([]);
+      expect(await warnings(context(false))).toHaveLength(1);
+      expect(await warnings(context())).toHaveLength(1);
+    });
+  });
+
   it("describes the API and its backend, matching the Meta schema", async () => {
     const jobs = jobsContext();
     // Socket off: what `/meta` says about a socket is the WebSocket unit's to pin.
@@ -482,7 +537,8 @@ describe("GET /meta", () => {
       },
       features: probeFeatures(jobs.driver),
       events: jobs.driver.capabilities.events,
-      publishing: null,
+      // A context that never set `publishEvents` does not publish.
+      publishing: false,
       websocket: null,
       docs: { openapi: "/admin/jobs/openapi.json" },
       csrf: { header: null, requireJson: true },

@@ -220,8 +220,6 @@ export function buildMeta(
 ): MetaDto {
   const { driver } = config;
   const port = socket?.port;
-  const publishing = (config.jobs as { publishesEvents?: unknown } | undefined)
-    ?.publishesEvents;
   return {
     namespace: config.namespace,
     mode: config.mode,
@@ -233,9 +231,9 @@ export function buildMeta(
     },
     features: probeFeatures(driver),
     events: driver.capabilities.events,
-    // `BunJobs` has no public getter for `publishEvents` yet (gap G3); until
-    // it does, a client is told honestly that this is unknown.
-    publishing: typeof publishing === "boolean" ? publishing : null,
+    // The context's resolved `publishEvents`. Without a `BunJobs` there is
+    // nothing to ask, so a client is told honestly that it is unknown.
+    publishing: config.jobs ? config.jobs.publishesEvents : null,
     websocket:
       config.websocket !== false && isWebSocketEnabled(config)
         ? {

@@ -119,10 +119,9 @@ export function buildJobsApi(
     const asyncApiSource = (req: BunRequest): AsyncApiDocument =>
       asyncApiForRequest(built, req, info);
     registerAsyncApiSource(config, asyncApiSource);
-    const publishing = (
-      config.jobs as { publishesEvents?: unknown } | undefined
-    )?.publishesEvents;
-    if (config.jobs && publishing !== true) {
+    // Only when the context says it does not publish: with `publishEvents`
+    // set, the live events carry what its producers publish.
+    if (config.jobs && !config.jobs.publishesEvents) {
       config.logger.warn(
         "jobs api live events only carry what producers publish: set publishEvents on BunJobs (or publish on each queue, worker and runner) in every process that produces events",
         { path: socket.websocket.path },

@@ -220,6 +220,19 @@ export class BunJobs {
   }
 
   /**
+   * Whether the queues, workers and runners created here publish their events
+   * for other processes: the resolved `publishEvents` option, so `false` when
+   * it was not given. A `publish` option passed to one of them still wins for
+   * that one, and is not reflected here.
+   *
+   * What the management API reports as `publishing` on `GET /meta`, and what
+   * decides whether it warns that its live events will be empty.
+   */
+  get publishesEvents(): boolean {
+    return this.#publishEvents;
+  }
+
+  /**
    * Creates a runner in this namespace, registered with {@link runners} so
    * `startAll()`/`stopAll()` reach it.
    */

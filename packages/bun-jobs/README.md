@@ -728,6 +728,7 @@ The context has these members:
 | `create(name, data?)` | Returns a [draft](#saved-drafts), which is added only when saved. |
 | `processEvery(interval)` | Sets how often the registry worker looks for due work. See [Registry polling](#registry-polling). |
 | `processEveryMs` | That interval in milliseconds, or `undefined` when it was never set. Readable before `start()`. |
+| `publishesEvents` | Whether what the context creates publishes its events: the resolved `publishEvents` option, `false` when unset. The management API reports it as `publishing` on `GET /meta`. |
 | `start(workerOpts?)` | Starts consuming the defined jobs. |
 | `stop({ force?, timeout? })` | Stops consuming, letting in-flight jobs finish. |
 | `drain({ delayed? })` | Drops pending jobs from the registry's queue. |

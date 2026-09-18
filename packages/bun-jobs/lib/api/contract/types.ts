@@ -1113,7 +1113,10 @@ export interface MetaDto {
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";
-  /** Whether this context publishes events, or `null` when unknown. */
+  /**
+   * Whether the context publishes events — its resolved `publishEvents` —
+   * or `null` when the API was built without a `BunJobs` to ask.
+   */
   publishing: boolean | null;
   /** The socket, or `null` when it is off. */
   websocket: {
