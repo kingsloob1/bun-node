@@ -407,7 +407,8 @@ export class MemoryDriver implements JobsDriver {
       return { job: { ...existing }, added: false };
     }
 
-    const stored = jsonClone(job);
+    // `undefined` is not JSON; every other driver stores it as null.
+    const stored = jsonClone({ ...job, data: job.data ?? null });
     queue.jobs.set(stored.id, stored);
     queue.order.set(stored.id, queue.seq++);
 
@@ -497,7 +498,7 @@ export class MemoryDriver implements JobsDriver {
 
     this.#setState(queue, job, "completed");
     job.finishedOn = now;
-    job.returnValue = jsonClone(result);
+    job.returnValue = jsonClone(result ?? null);
     job.lockToken = null;
     job.lockExpiresAt = null;
     job.workerId = null;
@@ -555,7 +556,7 @@ export class MemoryDriver implements JobsDriver {
       return false;
     }
 
-    job.progress = jsonClone(progress);
+    job.progress = jsonClone(progress ?? null);
     return true;
   }
 

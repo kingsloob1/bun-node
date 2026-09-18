@@ -405,10 +405,23 @@ export interface SqlDialect {
    * free, so it reads what the engine already knows rather than counting.
    */
   estimatedRows: (table: string) => string | null;
-  /** Parses a JSON column, which some engines return already decoded. */
+  /**
+   * Decodes a JSON column as the client returned it, exactly once. See
+   * "JSON columns" above `parseJson` for the rule every engine follows.
+   */
   jsonOut: <T>(value: unknown, fallback: T) => T;
-  /** Encodes a value for a JSON column. */
+  /**
+   * Encodes a value for a JSON column bound as its own parameter: its JSON
+   * text, `undefined` as `null`.
+   */
   jsonIn: (value: unknown) => string;
+  /**
+   * Encodes a value for a JSON column that travels *inside* a JSON document —
+   * a field of the `json_to_recordset` payload the bulk insert and the batched
+   * completion expand — so that it is stored exactly as {@link SqlDialect.jsonIn}
+   * would have stored it. See "JSON columns" above `parseJson`.
+   */
+  jsonEmbed: (value: unknown) => unknown;
   /** Statements run once when the connection opens. */
   readonly pragmas: string[];
 }
@@ -922,7 +935,50 @@ function normalizeSqlType(type: string): string {
   return synonyms[bare] ?? bare;
 }
 
-/** Parses a JSON column that may arrive as text or already decoded. */
+/*
+ * JSON columns — the one rule.
+ *
+ * Every JSON column (a job's data, opts, progress, return value, failure and
+ * stacktrace, its flow; a queue-state, repeat, kv, event or worker document)
+ * is written from `JSON.stringify` of the value and decoded exactly once on
+ * the way out. What "exactly once" means depends on what the client hands
+ * back, which differs per engine, so the reader is per engine:
+ *
+ * - **SQLite** stores the text in a `TEXT` column and returns it as text:
+ *   `jsonOut` parses it once ({@link parseJson}).
+ * - **MySQL and MariaDB**: the engine parses text bound into a `JSON` column,
+ *   and Bun's client decodes the column on the way out, so `jsonOut` takes
+ *   the value as it comes. Parsing again was a bug — see `mysql.jsonOut`.
+ * - **Postgres** is the subtle one. Bun binds a JS string into a `json`
+ *   column as a JSON *string*, so the text `{"a":1}` is stored as the JSON
+ *   string `"{\"a\":1}"` — an envelope around the value's JSON text — and the
+ *   client decodes the column, handing back the text again. `jsonOut` parses
+ *   that once. But not every write goes through a bind of its own: the bulk
+ *   insert and the batched completion carry the values *inside* one
+ *   `json_to_recordset` document, where a value lands as the real JSON it is
+ *   — and a real JSON string comes back from the client as the bare string,
+ *   indistinguishable from an envelope. Parsing it again threw on `"warm"`
+ *   (read back as `null`) and turned `"42"` into `42`.
+ *
+ *   So on Postgres a JSON column **never holds a bare JSON string**: a string
+ *   value is always stored as its envelope. `jsonIn` gets that for free by
+ *   binding untyped; a value embedded in a document goes through `jsonEmbed`,
+ *   which wraps a string in its envelope and leaves everything else as real
+ *   JSON (unambiguous: only a string could be mistaken for text to parse, and
+ *   the client decodes an object, number, boolean or null to itself). The
+ *   documents written as real JSON on purpose — `jsonParameter`'s queue state
+ *   and `jsonSetInteger`'s opts — are always objects, which the rule allows.
+ *
+ *   The reader, {@link parsePostgresJson}, therefore parses any string once,
+ *   and a string that does not parse can only be a bare string an earlier
+ *   version's bulk insert or batched completion stored — an envelope is
+ *   `JSON.stringify` output and always parses — so it is that value, and is
+ *   returned as is. A bare string that *does* parse (`"42"`, `"null"`) is byte
+ *   for byte an envelope around a different value, and nothing can tell them
+ *   apart; those rows keep reading as the parsed value.
+ */
+
+/** Parses a JSON column that arrives as its text: SQLite's reader. */
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) {
     return fallback;
@@ -939,10 +995,34 @@ function parseJson<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
+/**
+ * Postgres' reader: the client has decoded the column already, and a string is
+ * then the envelope around the value's JSON text, parsed once — or, when it is
+ * not JSON at all, a bare string an earlier version stored, which *is* the
+ * value. See "JSON columns" above.
+ */
+function parsePostgresJson<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return value as T;
+    }
+  }
+
+  return value as T;
+}
+
 /** Shared behaviour, overridden per engine below. */
 const base = {
   jsonOut: parseJson,
   jsonIn: (value: unknown) => JSON.stringify(value ?? null),
+  // Only Postgres expands a document into rows; see "JSON columns" above.
+  jsonEmbed: (value: unknown) => value ?? null,
   limitedIdSubquery: (select: string) => select,
   pragmas: [] as string[],
 } satisfies Partial<SqlDialect>;
@@ -958,6 +1038,11 @@ const postgres: SqlDialect = {
   // parse buys nothing and costs, over alternating runs, 12% of the insert.
   // `jsonOut` reads either, so a table created before this still works.
   jsonType: "JSON",
+  // See "JSON columns" above: a string is stored in its envelope on every
+  // path, and read back by parsing exactly once.
+  jsonOut: parsePostgresJson,
+  jsonEmbed: (value: unknown) =>
+    typeof value === "string" ? JSON.stringify(value) : (value ?? null),
   partialIndex: (predicate) => ` WHERE ${predicate}`,
   concurrentIndex: "CONCURRENTLY ",
   // No collation: every identifier is declared in the default one, and
