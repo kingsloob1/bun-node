@@ -34,6 +34,7 @@ import type {
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { assertWritableStateName } from "../../queue/windows";
 import {
   databaseFromUrl,
   resolveConnectionUrl,
@@ -287,7 +288,7 @@ export interface FindCursorLike<TDoc> {
    *
    * `TShape` is constrained exactly as the driver library constrains its own
    * `project<T extends Document>`. Left unconstrained, a real `MongoClient` is
-   * *not* assignable to {@link MongoClientLike} — TypeScript reports that
+   * not* assignable to {@link MongoClientLike} — TypeScript reports that
    * `TShape` "could be instantiated with an arbitrary type" — which would
    * quietly break lending the driver a client of your own.
    */
@@ -2863,7 +2864,10 @@ export class MongoDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+
     const kv = await this.#kv();
     const _id = this.#queueStateId(q, name);
 

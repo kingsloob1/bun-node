@@ -1,4 +1,5 @@
 import type { JobsDriver, QueueRef } from "../drivers/index";
+import { ConfigError } from "../shared/errors";
 
 /**
  * The stored pointers behind debounce and throttle, and how the ones whose
@@ -15,11 +16,81 @@ import type { JobsDriver, QueueRef } from "../drivers/index";
  * delete does nothing, and the producer's pointer survives.
  */
 
+/**
+ * The prefix this package reserves in queue state for its own entries.
+ *
+ * Window pointers used to be named `debounce:<id>` / `throttle:<id>`, which is
+ * a name an application could choose too — and the sweep, seeing a name it
+ * believed it owned, **deleted it**. Anything under this prefix is the
+ * library's; everything else belongs to the caller and is never touched.
+ */
+export const RESERVED_STATE_PREFIX = "__win:";
+
 /** The prefix of every debounce pointer's name. */
-export const DEBOUNCE_PREFIX = "debounce:";
+export const DEBOUNCE_PREFIX = `${RESERVED_STATE_PREFIX}debounce:`;
 
 /** The prefix of every throttle pointer's name. */
-export const THROTTLE_PREFIX = "throttle:";
+export const THROTTLE_PREFIX = `${RESERVED_STATE_PREFIX}throttle:`;
+
+/**
+ * The token a library write to a reserved name carries.
+ *
+ * Deliberately never exported, and a `symbol` rather than a flag: a public
+ * `{ internal: true }` was a bypass anyone could type. Only
+ * {@link setReservedState} can attach it, and only
+ * {@link assertWritableStateName} can recognise it.
+ */
+const INTERNAL_WRITE = Symbol("bun-jobs: reserved queue-state write");
+
+/** What {@link setReservedState} passes to `setQueueState`. */
+const INTERNAL_WRITE_OPTIONS = Object.freeze({ internal: INTERNAL_WRITE });
+
+/**
+ * Refuses a caller's write to a name this package reserves.
+ *
+ * The prefix move already stops the sweep from deleting an application's
+ * entries; this stops the reverse — an application writing over a pointer and
+ * confusing the sweep. Only a write made through {@link setReservedState}
+ * gets through, and that is checked here, at the driver, against a token no
+ * caller can obtain. A driver passes on the `options` its `setQueueState` was
+ * given, untouched.
+ */
+export function assertWritableStateName(
+  name: string,
+  options?: { internal?: symbol },
+): void {
+  if (
+    options?.internal !== INTERNAL_WRITE &&
+    name.startsWith(RESERVED_STATE_PREFIX)
+  ) {
+    throw new ConfigError(
+      `Queue state names beginning with "${RESERVED_STATE_PREFIX}" are reserved by bun-jobs; choose another name`,
+      { name, reserved: RESERVED_STATE_PREFIX },
+    );
+  }
+}
+
+/**
+ * Writes one of this package's own queue-state entries, which a caller's
+ * `setQueueState` may not. Same contract as `setQueueState`.
+ *
+ * Internal: not re-exported from the package.
+ */
+export async function setReservedState(
+  driver: JobsDriver,
+  q: QueueRef,
+  name: string,
+  value: unknown,
+  expected: number | null,
+): Promise<number | null> {
+  return await driver.setQueueState!(
+    q,
+    name,
+    value,
+    expected,
+    INTERNAL_WRITE_OPTIONS,
+  );
+}
 
 /** A debounce pointer, as stored. */
 export interface DebouncePointer {
@@ -100,7 +171,7 @@ export async function sweepWindows(
 
     if (
       stale &&
-      (await driver.setQueueState!(q, name, null, entry.version)) === 0
+      (await setReservedState(driver, q, name, null, entry.version)) === 0
     ) {
       removed++;
     }

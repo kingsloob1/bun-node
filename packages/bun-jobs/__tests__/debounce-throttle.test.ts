@@ -6,9 +6,11 @@ import {
   BunQueue,
   BunQueueWorker,
   ConfigError,
+  DEBOUNCE_PREFIX,
   FileDriver,
   MemoryDriver,
   newToken,
+  THROTTLE_PREFIX,
 } from "../lib/index";
 import { makeTmpDir, testNamespace, waitFor } from "./helpers";
 
@@ -275,9 +277,13 @@ for (const backend of backends) {
           prefix: "",
           limit: 1_000,
         });
+        // By the exported prefixes, not by a literal: these names are
+        // reserved (`__win:`) precisely so an application's own entry can
+        // never be mistaken for one of ours.
         return names.filter(
           (name) =>
-            name.startsWith("debounce:") || name.startsWith("throttle:"),
+            name.startsWith(DEBOUNCE_PREFIX) ||
+            name.startsWith(THROTTLE_PREFIX),
         );
       }
 
@@ -306,7 +312,9 @@ for (const backend of backends) {
         expect(claimed?.id).toBe(started.id);
 
         expect(await queue.cleanWindows()).toBe(1);
-        expect(await pointers(driver, queue)).toEqual(["debounce:waiting"]);
+        expect(await pointers(driver, queue)).toEqual([
+          `${DEBOUNCE_PREFIX}waiting`,
+        ]);
 
         // Still debounces into the pending one.
         const again = await queue.add(
@@ -346,7 +354,9 @@ for (const backend of backends) {
         await Bun.sleep(40);
 
         expect(await queue.cleanWindows()).toBe(1);
-        expect(await pointers(driver, queue)).toEqual(["throttle:open"]);
+        expect(await pointers(driver, queue)).toEqual([
+          `${THROTTLE_PREFIX}open`,
+        ]);
       });
 
       it("leaves other queue state alone", async () => {
@@ -430,7 +440,7 @@ for (const backend of backends) {
 
           const pointer = await driver.getQueueState!(
             queue.ref,
-            "debounce:busy",
+            `${DEBOUNCE_PREFIX}busy`,
           );
           if (added.wasAdded) {
             expect(

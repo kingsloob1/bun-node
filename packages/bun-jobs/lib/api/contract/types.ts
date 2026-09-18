@@ -404,8 +404,8 @@ export interface AddJobOptions {
   /**
    * A caller-chosen id, at most `MAX_JOB_ID_LENGTH` (191) characters; an
    * existing one answers that job with `added: false`. bun-jobs may still
-   * refuse it (400 `INVALID_ARGUMENT`): control characters, a leading `.`, or
-   * more than 191 UTF-16 units.
+   * refuse it (400 `INVALID_ARGUMENT`): control characters, a leading `.`, a
+   * lone surrogate, or more than 191 UTF-16 units.
    */
   jobId?: string;
   /** Lower runs first. */

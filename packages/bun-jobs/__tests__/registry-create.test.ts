@@ -289,6 +289,8 @@ for (const backend of backends) {
           [before, "schedule-before"],
         ] as const) {
           expect(job.runAt).toBe(at);
+          // A key the caller chose is stored namespaced, so it can never
+          // equal a generated one.
           expect(series.find((record) => record.key === key)?.startAt).toBe(at);
         }
 

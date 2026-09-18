@@ -27,6 +27,7 @@ import type {
   WorkerInfo,
 } from "./driver";
 import { jsonClone } from "@kingsleyweb/bun-common";
+import { assertWritableStateName } from "../queue/windows";
 import { compareCodePoints } from "../shared/strings";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 import {
@@ -1147,7 +1148,10 @@ export class MemoryDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+
     const state = this.#queue(q).state;
     const current = state.get(name);
 

@@ -34,13 +34,14 @@ export const JobIdSchema = JobIdRefSchema;
  * A job id a caller chooses for a new job (`opts.jobId`): at most
  * {@link MAX_JOB_ID_LENGTH} characters, the cap bun-jobs' `assertJobId`
  * applies. The schema is a first check only: `assertJobId` is the authority
- * (it counts UTF-16 units and refuses control characters and a leading `.`),
+ * (it counts UTF-16 units and refuses control characters, a leading `.` and a
+ * lone surrogate),
  * and its refusal is answered 400 `INVALID_ARGUMENT`.
  */
 export const NewJobIdSchema = s.string({
   minLength: 1,
   maxLength: MAX_JOB_ID_LENGTH,
-  description: `A new job's id, at most ${MAX_JOB_ID_LENGTH} characters. bun-jobs may still refuse it (400 INVALID_ARGUMENT): control characters, a leading ".", or more than ${MAX_JOB_ID_LENGTH} UTF-16 units.`,
+  description: `A new job's id, at most ${MAX_JOB_ID_LENGTH} characters. bun-jobs may still refuse it (400 INVALID_ARGUMENT): control characters, a leading ".", a lone surrogate, or more than ${MAX_JOB_ID_LENGTH} UTF-16 units.`,
 });
 
 /** Optional fields a client asks for with `include`. */

@@ -271,7 +271,7 @@ built-in defaults are exported as `DEFAULT_JOB_OPTIONS`.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `jobId` | `string` | fresh id | The job's id, and also its idempotency key. Adding an existing id returns the stored job untouched (`wasAdded: false`) and emits `duplicate`. |
+| `jobId` | `string` | fresh id | The job's id, and also its idempotency key. Adding an existing id returns the stored job untouched (`wasAdded: false`) and emits `duplicate`. Checked — see [What an id may be](#what-an-id-may-be). |
 | `priority` | `number` | `0` | Lower runs first; ties break FIFO. Clamped to ±1,048,576. |
 | `delay` | `number` | `0` | Milliseconds before the job may run. |
 | `runAt` | `Date \| number` | | An absolute time the job may run. Takes precedence over `delay`. |
@@ -297,6 +297,126 @@ forms:
 - `{ count, ttl }` does both.
 
 A flow child is never removed before its parent has recorded its outcome.
+
+#### What an id may be
+
+**Breaking change.** Ids you choose are now checked, and a bad one throws
+`ConfigError` at the call that supplied it rather than being written. This
+applies to `jobId`, a flow child's `jobId`, `debounce.id` / `throttle.id`, and
+`repeat.key` (see [below](#repeat-keys-you-choose-are-namespaced)), checked
+before anything is written.
+
+An id is rejected when it is:
+
+| Rejected | Why |
+|---|---|
+| empty | an id is an identity, and `""` names nothing |
+| longer than **191 characters** | MySQL and MariaDB store ids as `VARCHAR(191)` and used to **truncate** silently, merging two jobs into one — after which neither id resolved |
+| a control character (C0 `U+0000`–`U+001F`, NUL included; DEL and C1 `U+007F`–`U+009F`) | PostgreSQL rejects NUL outright while every other driver accepted it, so the same id worked on one backend and failed on another |
+| starting with `.` | `.` and `..` are directories, and a dotfile hides from the tools people use to inspect a queue's directory |
+| not well-formed UTF-16 (a lone surrogate) | it has no UTF-8 spelling, so a backend storing UTF-8 replaces it with U+FFFD — two different ids then collide — or refuses it |
+
+Everything else is allowed, punctuation and unicode included — `:`, `|`, `@`,
+`*`, `,`, spaces, emoji, **and `/`** all pass. The rule is a denylist on
+purpose: this package builds its own ids by joining text with `:` and `|`, and
+an ordinary cron series contributes spaces, `*`, `,` and `@`, so anything
+tidier would reject the library's own ids.
+
+Slashes are allowed deliberately. It is tempting to refuse them because the
+file driver turns an id into a file name, but `encodeName` escapes every
+character, so a slash was never a path hazard there — what actually bounds a
+file name is the encoded *byte* length, which that driver checks itself (see
+below). Tenant-scoped ids like `tenant/7` work, and the management API
+URL-encodes them (`GET /queues/mail/jobs/tenant%2F7`).
+
+The cap is **one number for every driver**, set by the tightest of them. 191
+characters is itself the widest a `utf8mb4` id column can be while the
+composite claim index stays inside InnoDB's 3,072-byte key limit
+(191 × 4 × 4 + 12 = 3,068), so it is a ceiling rather than a preference.
+
+Ids and names this package *derives* — a dead-letter copy's id, a repeat
+occurrence's, a debounced job's, a window pointer's name, a generated series
+key — are shortened to fit rather than refused, so a long but legal id never
+makes a later step throw. They are fitted to the tightest store: 191 characters
+*and* the file driver's 201-byte encoded budget below. Shortening keeps the
+start and appends `~` and a hash of the whole, so two long names stay distinct,
+and it is deterministic, so every process derives the same one.
+
+**One more limit, on the file driver only.** The character cap does not bound a
+*file name*. `encodeName` expands per character — 9 bytes for a character
+outside Latin such as `漢`, 12 for an emoji — so 120 perfectly legal
+characters can encode to over 1,000 against a budget of 201 (`NAME_MAX` 255,
+less 54 for the marker and temp-file suffixes). The file driver refuses such an id — and a queue-state name of
+yours, from `setQueueState` — before writing anything, naming the encoded byte
+size and the limit. Lowercase letters and digits encode to one byte each, so
+an id of those alone never comes near it; an uppercase letter takes two (the
+encoding is case-proof), so 101 capitals already exceed it. Repeat keys are
+exempt: the file driver fits their file names itself.
+
+**On MySQL and MariaDB, namespaces and queue names are limited to 191
+characters** — the width of those columns — although the shared check allows
+200. A longer one throws `ConfigError` instead of being truncated, as it used
+to be. A long queue name also leaves less room in the 191-character key under
+which that driver stores a queue's state and repeat entries: names that no
+longer fit are fitted as above, and a queue name that leaves no room at all is
+refused with `ConfigError`.
+
+#### Reserved queue-state names
+
+**Breaking change.** Debounce and throttle pointers are now stored under
+`__win:` — `__win:debounce:<id>` and `__win:throttle:<id>` — and that prefix is
+reserved: `setQueueState` throws `ConfigError` for any name beginning with it.
+The library's own writes carry a private token that no option you can pass
+reproduces, so the reservation cannot be bypassed from outside.
+
+This fixes a data-loss bug. Pointers used to be named `debounce:<id>`, a name an
+application could choose too, and the window sweep deleted whatever it found
+under it — so a `debounce:`-prefixed entry of your own silently vanished at the
+next sweep.
+
+*Migration: wait one window.* Pointers written by an earlier version are
+orphaned under the old names. Nothing reads them, and each expires by its own
+TTL, so they clear themselves once every window that was open at upgrade has
+passed. Debounced adds during that time open a fresh window rather than joining
+the orphan, which at worst means one extra job per id.
+
+#### Repeat keys you choose are namespaced
+
+A `repeat.key` you supply is **stored** namespaced, as `k:<your key>`, so one
+job can no longer pass another job's generated key and take that series over.
+Generated keys — `<name>|<schedule>|<start>` — are unchanged, except that one
+longer than 191 characters is now shortened to fit (it is stored in a column of
+that width on MySQL and MariaDB). Such a series registers again under the
+shortened key on its next `add`, and the old one stays until removed.
+
+A key you supply is checked by the same rules as an id
+([above](#what-an-id-may-be)), at `add()` and before anything is written, with
+one tighter bound: at most **189 characters**, since it is stored with the
+two-character `k:` in front.
+
+**For almost everyone this is invisible.** The prefix is hidden everywhere it
+would surface: `job.repeatKey`, `listRepeatables()[].key`, the
+`repeatScheduled` event payload, and the occurrence id
+(`repeat:<key>:<runAt>`). `removeRepeatable()` takes either spelling, and a
+series that is *listed* as the key you pass wins over one merely *stored* that
+way: with series keyed `nightly` and `k:nightly`, listed as exactly that,
+`removeRepeatable("k:nightly")` removes the second.
+
+**The one exception**, and the reason for it: if your key itself contains `|`,
+the prefix stays visible. A generated key always contains `|`, so a key like
+`report|every:60000|` could be either — and hiding the prefix would make two
+genuinely different series display identically. That is not merely confusing:
+the occurrence id is built from the key and is the idempotency key for
+scheduling, so two series that displayed alike would derive the *same*
+occurrence id at the same instant and silently merge into one job, losing one
+series' run. Keys without `|` can never collide with a generated key, which is
+why they are safe to show bare.
+
+*Migration:* a series with a custom key re-registers under the new name on its
+next `add`, and the old series stays until you remove it. `listRepeatables()`
+shows both; `removeRepeatable(key)` accepts either spelling — the key as listed,
+or the one you originally supplied — so removing the stale one is
+`await queue.removeRepeatable("<your key>")` against the old, unprefixed entry.
 
 ### Queue options
 
@@ -1717,8 +1837,8 @@ case, as job search does.
 A new job's `opts.jobId` is at most 191 characters, the cap bun-jobs applies
 to every id a caller chooses; more is 400 `VALIDATION`. That schema is only a
 first check: bun-jobs' own `assertJobId` is the authority — it counts UTF-16
-units rather than characters, and refuses control characters and a leading
-`.` — so an id the schema passes can still be refused, answered 400
+units rather than characters, and refuses control characters, a leading `.`
+and a lone surrogate — so an id the schema passes can still be refused, answered 400
 `INVALID_ARGUMENT`. An id that *addresses* a job (a path, a bulk body, a
 lookup) may be up to 1024 characters, so a job stored with a longer id by an
 earlier version stays readable, retryable and removable.

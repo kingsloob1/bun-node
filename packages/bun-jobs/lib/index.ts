@@ -229,6 +229,9 @@ export type { BackoffWarningFields } from "./queue/backoff";
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
 export {
+  assertJobId,
+  assertRepeatKey,
+  assertWritableStateName,
   type BackoffContext,
   BackoffStrategies,
   type BackoffStrategy,
@@ -239,10 +242,13 @@ export {
   BunQueueWorker,
   type BunQueueWorkerEvents,
   type BunQueueWorkerOptions,
+  CALLER_REPEAT_KEY_PREFIX,
   type DeadLetter,
+  DEBOUNCE_PREFIX,
   type DebounceOptions,
   DEFAULT_JOB_OPTIONS,
   defineProcessor,
+  displayRepeatKey,
   IsolatedProcessor,
   type IsolationMode,
   type IsolationOptions,
@@ -258,6 +264,8 @@ export {
   type JobProcessor,
   type JobsPage,
   type ListJobsOptions,
+  MAX_JOB_ID_LENGTH,
+  MAX_REPEAT_KEY_LENGTH,
   MAX_TIMER_MS,
   type NameLimits,
   nextOccurrence,
@@ -272,11 +280,14 @@ export {
   repeatJobId,
   repeatKeyFor,
   type RepeatOptions,
+  RESERVED_STATE_PREFIX,
   resolveJobOptions,
   resolveRunAt,
   retentionExpiry,
   type RetryAllOptions,
+  shortenJobId,
   type StoredLimits,
+  THROTTLE_PREFIX,
   toRepeatRecord,
 } from "./queue/index";
 

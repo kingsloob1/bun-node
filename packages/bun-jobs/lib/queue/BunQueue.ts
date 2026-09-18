@@ -47,6 +47,7 @@ import {
   QueueClosedError,
 } from "../shared/errors";
 import { queueEvent } from "../shared/events";
+import { fitName } from "../shared/fit";
 import { assertDateParser, parseDuration } from "../shared/humanTime";
 import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
@@ -54,10 +55,24 @@ import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Job } from "./Job";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
-import { resolveJobOptions, resolveRunAt } from "./options";
+import {
+  assertJobId,
+  assertRepeatKey,
+  CALLER_REPEAT_KEY_PREFIX,
+  DERIVED_NAME_LIMITS,
+  displayRepeatKey,
+  resolveJobOptions,
+  resolveRunAt,
+  shortenJobId,
+} from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
 import { retryJob } from "./retry";
-import { DEBOUNCE_PREFIX, sweepWindows, THROTTLE_PREFIX } from "./windows";
+import {
+  DEBOUNCE_PREFIX,
+  setReservedState,
+  sweepWindows,
+  THROTTLE_PREFIX,
+} from "./windows";
 
 /** How many times a debounce or throttle retries a pointer it lost. */
 const WINDOW_ATTEMPTS = 12;
@@ -217,6 +232,18 @@ export class BunQueue<
   ): Promise<Job<TData, TResult>> {
     await this.connect();
 
+    // The caller's own id, checked once, here — before any path below derives
+    // an id of its own from it.
+    if (options?.jobId !== undefined) {
+      assertJobId(options.jobId, "jobId");
+    }
+
+    // So is a series key the caller chose, before anything is written: a bad
+    // one must not leave a first occurrence behind with no series to own it.
+    if (options?.repeat?.key !== undefined) {
+      assertRepeatKey(options.repeat.key);
+    }
+
     if (options?.debounce || options?.throttle) {
       return await this.#addWindowed(name, data, options);
     }
@@ -225,6 +252,21 @@ export class BunQueue<
       return await this.#addRepeatable(name, data, options);
     }
 
+    return await this.#addSimple(name, data, options);
+  }
+
+  /**
+   * Adds one plain job — no window, no repeat — and emits for it.
+   *
+   * Split out of {@link BunQueue.add} so a windowed add can reach it with the
+   * id it derived, without that id going back through the caller-facing check
+   * at the top of `add` and being refused for looking like what it is.
+   */
+  async #addSimple(
+    name: TName,
+    data: TData,
+    options?: JobOptions,
+  ): Promise<Job<TData, TResult>> {
     const record = this.#buildRecord(name, data, options);
     const { job, added } = await this.driver.addJob(this.ref, record);
     const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
@@ -256,6 +298,18 @@ export class BunQueue<
     entries: { name: TName; data: TData; opts?: JobOptions }[],
   ): Promise<Job<TData, TResult>[]> {
     await this.connect();
+
+    // Every caller's id checked before anything is written, so one bad entry
+    // does not leave the rest of the batch half-added.
+    for (const entry of entries) {
+      if (entry.opts?.jobId !== undefined) {
+        assertJobId(entry.opts.jobId, "jobId");
+      }
+
+      if (entry.opts?.repeat?.key !== undefined) {
+        assertRepeatKey(entry.opts.repeat.key);
+      }
+    }
 
     // A repeat is a definition plus a first occurrence, so it cannot be part
     // of a bulk insert; adding them one at a time keeps that explicit.
@@ -597,7 +651,10 @@ export class BunQueue<
       }
     }
 
-    const id = node.opts?.jobId ?? newId();
+    const id =
+      node.opts?.jobId === undefined
+        ? newId()
+        : assertJobId(node.opts.jobId, "flow node jobId");
     const key = `${queue}:${id}`;
 
     if (seen.has(key)) {
@@ -1068,14 +1125,43 @@ export class BunQueue<
   /** Every repeat definition in this queue. */
   async listRepeatables(): Promise<RepeatRecord[]> {
     await this.connect();
-    return await this.driver.listRepeats(this.ref);
+    const stored = await this.driver.listRepeats(this.ref);
+
+    // Shown as the caller named it. `removeRepeatable` takes either spelling,
+    // so a key from here can be handed straight back.
+    return stored.map((record) => ({
+      ...record,
+      key: displayRepeatKey(record.key),
+    }));
   }
 
   /** Removes a repeat definition and the occurrence it had scheduled. */
   async removeRepeatable(key: string): Promise<boolean> {
     await this.connect();
 
-    const definition = await this.driver.getRepeat(this.ref, key);
+    // Either spelling: the key as `listRepeatables()` reports it, or the one
+    // the caller gave to `repeat.key`, which is stored namespaced.
+    //
+    // The listed spelling is matched first, and only a stored series that
+    // *displays* as `key` counts. Looking the raw key up first was wrong: a
+    // caller key of `k:nightly` is stored as `k:k:nightly` and listed as
+    // `k:nightly`, while `k:nightly` is also the stored spelling of the series
+    // keyed `nightly` — so removing the one listed removed the other.
+    const stored = [key, `${CALLER_REPEAT_KEY_PREFIX}${key}`];
+    let definition: RepeatRecord | null = null;
+
+    for (const candidate of stored) {
+      const found = await this.driver.getRepeat(this.ref, candidate);
+      if (found && displayRepeatKey(found.key) === key) {
+        definition = found;
+        break;
+      }
+    }
+
+    // Then the spelling the caller originally supplied, for a key containing
+    // `|`, whose prefix stays visible when listed.
+    definition ??= await this.driver.getRepeat(this.ref, stored[1]!);
+
     if (!definition) {
       return false;
     }
@@ -1084,7 +1170,7 @@ export class BunQueue<
       await this.driver.removeJob(this.ref, definition.nextJobId);
     }
 
-    return await this.driver.removeRepeat(this.ref, key);
+    return await this.driver.removeRepeat(this.ref, definition.key);
   }
 
   /** Closes the subscription and, if this queue built the driver, the driver. */
@@ -1152,6 +1238,10 @@ export class BunQueue<
       throw new ConfigError(`${kind}.id is required`, { [kind]: window });
     }
 
+    // The window id is a caller's, and becomes both a queue-state key and part
+    // of the job's id, so it is held to the same rules as any other.
+    assertJobId(window.id, `${kind}.id`);
+
     const ttl =
       typeof window.ttl === "string" ? parseDuration(window.ttl) : window.ttl;
 
@@ -1175,7 +1265,13 @@ export class BunQueue<
       runAt: _runAt,
       ...rest
     } = options;
-    const pointerName = `${kind === "debounce" ? DEBOUNCE_PREFIX : THROTTLE_PREFIX}${window.id}`;
+    // Fitted like any name this package derives, so a legal window id always
+    // makes a storable pointer name. The prefix is at the head and survives
+    // fitting, which is how `sweepWindows` still finds it.
+    const pointerName = fitName(
+      `${kind === "debounce" ? DEBOUNCE_PREFIX : THROTTLE_PREFIX}${window.id}`,
+      DERIVED_NAME_LIMITS,
+    );
 
     for (let attempt = 0; attempt < WINDOW_ATTEMPTS; attempt++) {
       const now = Date.now();
@@ -1237,8 +1333,11 @@ export class BunQueue<
         }
       }
 
-      const jobId = `${pointerName}:${newId()}`;
-      const moved = await driver.setQueueState!(
+      // The pointer name keeps its literal prefix — `sweepWindows` finds it by
+      // that — but the job's own id may be shortened to fit.
+      const jobId = shortenJobId(`${pointerName}:${newId()}`);
+      const moved = await setReservedState(
+        driver,
         this.ref,
         pointerName,
         kind === "throttle" ? { jobId, until: now + ttl } : { jobId },
@@ -1251,7 +1350,7 @@ export class BunQueue<
         continue;
       }
 
-      return await this.add(name, data, {
+      const added = await this.#addSimple(name, data, {
         ...rest,
         jobId,
         ...(kind === "debounce"
@@ -1262,6 +1361,8 @@ export class BunQueue<
               ? { delay: options.delay }
               : {}),
       });
+
+      return added;
     }
 
     throw new ConfigError(
@@ -1369,6 +1470,11 @@ export class BunQueue<
     }
 
     return {
+      // Deliberately *not* checked here. This is also where ids this package
+      // derived arrive — a repeat occurrence carries its series key, which a
+      // cron expression or a time zone puts a `/` in — and a derived id is
+      // shortened to fit rather than refused. A caller's own id is checked
+      // once, in `add` and `addBulk`, before anything derives from it.
       id: options?.jobId ?? newId(),
       name,
       // Checked here, at the boundary, so an unserialisable payload is
@@ -1412,7 +1518,14 @@ export class BunQueue<
   ): Promise<Job<TData, TResult>> {
     const now = Date.now();
     const opts = resolveJobOptions(this.#defaults, options);
-    const repeat = options.repeat!;
+    const given = options.repeat!;
+    // A caller's own key is namespaced so it can never equal a generated one
+    // (`<name>|<schedule>|<start>`) and take that series over.
+    const repeat =
+      given.key === undefined
+        ? given
+        : // Checked in `add()`, before anything was written.
+          { ...given, key: `${CALLER_REPEAT_KEY_PREFIX}${given.key}` };
     const definition = toRepeatRecord(
       this.ref,
       name,
@@ -1444,7 +1557,16 @@ export class BunQueue<
       );
     }
 
-    const jobId = repeatJobId(merged.key, firstRunAt);
+    // Shortened, never refused: a series key is derived from the job's name
+    // and schedule, so a long name must not make the series unaddable. Every
+    // site that derives this id shortens it the same deterministic way, which
+    // is what keeps two workers scheduling one occurrence idempotent.
+    // Built from the *displayed* key, which is what keeps it unambiguous: a
+    // caller key without `|` cannot equal a generated key, and one with `|`
+    // keeps its prefix here too, so two series can never derive one id.
+    const jobId = shortenJobId(
+      repeatJobId(displayRepeatKey(merged.key), firstRunAt),
+    );
     const record = this.#buildRecord(
       name,
       data,
@@ -1461,9 +1583,12 @@ export class BunQueue<
       updatedAt: now,
     });
 
-    this.safeEmit("repeatScheduled", merged.key, firstRunAt);
+    // The key as the caller named it, here and on the wire: the prefix is
+    // storage, not contract.
+    const shown = displayRepeatKey(merged.key);
+    this.safeEmit("repeatScheduled", shown, firstRunAt);
     await this.#publish("repeatScheduled", {
-      key: merged.key,
+      key: shown,
       nextRunAt: firstRunAt,
     });
 

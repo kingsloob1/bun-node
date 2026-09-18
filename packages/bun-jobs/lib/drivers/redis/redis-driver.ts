@@ -35,6 +35,7 @@ import type {
 import { Buffer } from "node:buffer";
 import { jsonClone } from "@kingsleyweb/bun-common";
 import { RedisClient as BunRedis } from "bun";
+import { assertWritableStateName } from "../../queue/windows";
 import { resolveConnectionUrl } from "../../shared/connection";
 import { DriverError } from "../../shared/errors";
 import { safeJsonParse } from "../../shared/json";
@@ -1417,7 +1418,10 @@ export class RedisDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+
     await this.connect();
 
     const keys = this.keys.queue(q);

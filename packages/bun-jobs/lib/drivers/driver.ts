@@ -1103,6 +1103,14 @@ export interface QueueDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    /**
+     * Carries this package's private token on a write to one of its own
+     * reserved entries. A caller leaves it unset, and cannot forge it; a name
+     * under the reserved prefix is then refused. A driver hands it, untouched,
+     * to `assertWritableStateName`. Optional, so an external driver that
+     * ignores it keeps working.
+     */
+    options?: { internal?: symbol },
   ) => Promise<number | null>;
   /**
    * Names of a queue's state entries that begin with `prefix`, in ascending

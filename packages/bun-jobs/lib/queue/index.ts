@@ -32,10 +32,17 @@ export {
   type StoredLimits,
 } from "./limits";
 export {
+  assertJobId,
+  assertRepeatKey,
+  CALLER_REPEAT_KEY_PREFIX,
   DEFAULT_JOB_OPTIONS,
+  displayRepeatKey,
+  MAX_JOB_ID_LENGTH,
+  MAX_REPEAT_KEY_LENGTH,
   resolveJobOptions,
   resolveRunAt,
   retentionExpiry,
+  shortenJobId,
 } from "./options";
 export {
   nextOccurrence,
@@ -62,8 +69,10 @@ export type {
   RetryAllOptions,
 } from "./types";
 export {
+  assertWritableStateName,
   DEBOUNCE_PREFIX,
   type DebouncePointer,
+  RESERVED_STATE_PREFIX,
   supportsWindowSweep,
   sweepWindows,
   THROTTLE_PREFIX,

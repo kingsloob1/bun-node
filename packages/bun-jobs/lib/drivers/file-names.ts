@@ -33,6 +33,24 @@
  * literal in both, and an uppercase letter reads as itself behind one marker.
  */
 
+/** Longest a single file name may be, in bytes, on every filesystem this targets. */
+export const NAME_MAX = 255;
+
+/**
+ * How much of a file name is spent on everything but the encoded name.
+ *
+ * The widest is an atomic write's temporary name — `.<pid>.<uuid>.tmp` on top
+ * of `jobs/<id>.json` — at 54 characters. A marker's ordering prefix and a
+ * hold's stamp are narrower, so budgeting for the widest covers them all.
+ */
+export const NAME_OVERHEAD = 54;
+
+/**
+ * The most a job id, queue-state name or repeat key may encode to as a file
+ * name, leaving room for {@link NAME_OVERHEAD}: 201 bytes.
+ */
+export const MAX_ENCODED_NAME = NAME_MAX - NAME_OVERHEAD;
+
 /**
  * Literal in a name: the characters that no filesystem folds and that sort in
  * the same relative order encoded as raw.

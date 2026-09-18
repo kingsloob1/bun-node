@@ -11,6 +11,7 @@ import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
 import { ConfigError, NotSupportedError } from "../shared/errors";
 import { parseWhen } from "../shared/humanTime";
 import { assertJsonSafe } from "../shared/json";
+import { displayRepeatKey } from "./options";
 import { retryJob } from "./retry";
 
 /**
@@ -117,7 +118,12 @@ export class Job<TData = unknown, TResult = unknown> {
       : null;
     this.stacktrace = record.stacktrace.map((entry) => deserializeError(entry));
     this.workerId = record.workerId;
-    this.repeatKey = record.repeatKey;
+    // Shown as the caller named it: a series key is stored namespaced so one
+    // job cannot hijack another's series, and the prefix is hidden again here.
+    // The record keeps the stored spelling, which is what the worker looks the
+    // series up by.
+    this.repeatKey =
+      record.repeatKey === null ? null : displayRepeatKey(record.repeatKey);
     this.parent = record.flow?.parent ?? null;
   }
 

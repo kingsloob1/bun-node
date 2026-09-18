@@ -223,11 +223,12 @@ export const MAX_NAME_LENGTH = 200;
 /**
  * Longest id a caller may choose for a new job (`opts.jobId`), in
  * characters: the cap bun-jobs' own `assertJobId` applies
- * (`MAX_JOB_ID_LENGTH` in `lib/queue/options.ts`, landing with the
- * queued-fixes branch). MySQL and MariaDB store ids as `VARCHAR(191)`, and one
- * cap everywhere keeps an id that works on one driver from failing on another.
- * `assertJobId` stays the authority: it counts UTF-16 units and refuses control
- * characters and a leading `.`, answered 400 `INVALID_ARGUMENT`.
+ * (`MAX_JOB_ID_LENGTH` in `lib/queue/options.ts`, restated here because the
+ * contract must not import the queue; a test pins the two together). MySQL and
+ * MariaDB store ids as `VARCHAR(191)`, and one cap everywhere keeps an id that
+ * works on one driver from failing on another. `assertJobId` stays the
+ * authority: it counts UTF-16 units and refuses control characters, a leading
+ * `.` and a lone surrogate, answered 400 `INVALID_ARGUMENT`.
  */
 export const MAX_JOB_ID_LENGTH = 191;
 
