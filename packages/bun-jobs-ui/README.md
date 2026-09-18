@@ -91,10 +91,11 @@ through to the host):
   problem, never the shell.
 - `/` and `/*` serve the HTML shell for every client route.
 
-## Screens (M2)
+## Screens
 
 The app's routes sit under the UI's `basePath`. A path the caller has no
-route for shows a not-found screen.
+route for shows a not-found screen. The queue and job screens arrived in M2,
+the runner screens in M3.
 
 | Route | What it shows |
 |---|---|
@@ -102,6 +103,8 @@ route for shows a not-found screen.
 | `/queues` | Every queue, searchable by name (case-insensitive) and paged. Each row links to its queue. |
 | `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions) and the detail panels: limits, workers, throughput and repeatables. |
 | `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Remove and Edit. |
+| `/runners` | Every runner in the namespace (`GET /runners`): local ones first, with their name and status, then remote ones by id. Filtered by id or name in the browser, with no paging. Each row links to its runner. |
+| `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. |
 
 ### URL parameters
 
@@ -124,6 +127,8 @@ default.
 | `/queues/:queue` | `order=desc` | Newest first. Absent means oldest first. |
 | `/queues/:queue` | `panel` | The open detail panel: `limits`, `workers`, `throughput` or `repeatables`. Defaults to the first one shown. |
 | `/queues/:queue` | `window` | The throughput window in minutes: `15`, `60`, `360` or `1440`. Defaults to `60`. |
+| `/runners` | `search` | Filters by id or name (case-insensitive, trimmed), as you type. The list is filtered in the browser, so nothing is re-fetched. |
+| `/runners/:runner` | `history` | Runs shown in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The select offers `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter. |
 
 On the queue screen, changing `state`, `name`, `search` or `order` resets
 `offset` and clears the selection.
@@ -135,7 +140,10 @@ entry, and so every `/queues*` route, depends on that map's `queues.list`.
 Screens under `/queues/:queue` also ask `GET /meta/permissions?queue=<queue>`,
 and that per-queue answer refines only the buttons and panels inside that
 queue's screens. Until it arrives, or if it fails, those screens use the
-untargeted map. An action counts only when the map holds it and it is `true`.
+untargeted map. Runners work the same way: the Runners nav entry and every
+`/runners*` route depend on the untargeted `runners.list`, and
+`/runners/:runner` asks `GET /meta/permissions?runner=<runner>` for its own
+reads and buttons. An action counts only when the map holds it and it is `true`.
 An element that is not allowed is absent, not disabled. "Mutation" below means
 the action and `meta.readOnly` false. The API's own 401/403 stays the
 authority, since the map is never asked about one particular job.
@@ -154,21 +162,91 @@ authority, since the map is never asked about one particular job.
 | Add job | mutation `jobs.add`, and `meta.addableNames` is `null` (any name) or non-empty |
 | Add job's name suggestions | `definitions.list`, when `addableNames` is `null` |
 | Bulk Retry / Promote / Remove selected | `jobs.list`, and mutation `jobs.retry` / `jobs.promote` / `jobs.remove` |
-| Limits panel | `queues.read` and `features.limits`, and the queue's detail carries `limits` |
+| Limits panel | `queues.read` and `features.limits`; shown with a spinner while the queue's detail loads, then only if the detail carries `limits` |
 | Limits panel, editable | the above, and mutation `queues.limits` |
 | Workers panel | `workers.list` and `features.workers` |
 | Throughput panel | `metrics.read` and `features.throughput` |
 | Repeatables panel | `repeatables.list` |
 | Repeatables panel, Remove | the above, and mutation `repeatables.remove` |
-| Job screen | `jobs.read`; without it, "Job hidden", and the job is never fetched. A 401/403 on the job itself shows the same panel with the API's detail. |
+| Job screen | `jobs.read`, as the queue's own permissions answer it: the job is not fetched until they have loaded, and never without `jobs.read` ("Job hidden"). A 401/403 on the job itself shows the same panel with the API's detail. |
 | Job logs | `jobs.logs` and `features.logs` |
 | Job Retry | mutation `jobs.retry`, and the job is `completed`, `failed` or `dead` |
 | Job Promote | mutation `jobs.promote`, and the job is `delayed` |
 | Job Remove | mutation `jobs.remove` |
 | Job Edit | mutation `jobs.update` and `features.update` |
+| Runners nav entry and every `/runners*` route | `sections.manage`, `meta.mode` `runner` or `both`, and `runners.list` (untargeted) |
+| Runner screen | `runners.read`, as the runner's own permissions answer it: the runner is not fetched until they have loaded, and never without `runners.read` ("Runner hidden"). A 401/403 on the runner itself shows the same panel with the API's detail and stops the polling. A 404 (`RUNNER_NOT_FOUND`) shows "Runner not found". |
+| Runner stats and history | the runner screen's `runners.read`; the stats are read once the runner has loaded, and the tiles show the runner's own `stats` until then |
+| Runner active runs | the runner is registered in the API's process (`local` is present) |
+| Runner Trigger… | mutation `runners.trigger`; its Arguments field only when `meta.runnerTriggerArgs` |
+| Runner Pause / Resume… | mutation `runners.pause` / `runners.resume`: Pause shows while `isPaused` is false, Resume while it is true |
+| Runner Reschedule… | mutation `runners.reschedule` |
+| Runner Kill… | mutation `runners.kill`, and the runner is local with at least one run in `local.activeRuns` |
+| Runner Reset stats… | mutation `runners.resetStats`, and the runner is local (`isLocal`) |
+| Runner remote hint | mutation `runners.kill` or `runners.resetStats`, and the runner is not local |
 
-If the per-queue answer takes away `jobs.read` after the untargeted map
-granted it, the job screen switches to "Job hidden" and stops polling.
+The job screen waits for the queue's own permissions before its first read
+(a spinner shows meanwhile), so a host that grants `jobs.read` in general but
+refuses it for one queue is never asked for that queue's jobs. If the
+queue's permissions fail to load, the untargeted map applies.
+
+The runner screen does the same with the runner's own permissions, for the
+runner, its stats and its history. The runner's actions sit in one group
+named `Runner actions`, which is absent when none of them is offered and the
+remote hint does not apply.
+
+Kill needs a run in `local.activeRuns`, not just `isRunning`. `isRunning` is
+true while a run holds the runner's lock in any process, and only the process
+executing a run can kill it: for a runner registered only elsewhere the API
+answers 409 `RUNNER_NOT_LOCAL`. Nor does `local.status` `running` mean a run
+is in flight (see below).
+
+### Runners
+
+- **Status is the lifecycle, not activity.** A local runner's badge is its
+  instance's `status`: `idle` (registered, not started), `running` (started:
+  its schedule is armed and triggers are accepted), `paused` or `stopped`. A
+  run in flight is a separate "Run in flight" badge, shown while `isRunning`
+  is true or `local.activeRuns` is not empty. A remote runner has no status
+  of its own here: the list shows none, and its screen shows Paused or Active
+  from the shared `isPaused` flag.
+- **Remote runners** are registered by another process. Pause, resume,
+  reschedule and trigger still work, through the shared state, and the owner
+  adopts them at its next sync; the screen says so. A trigger for a remote
+  runner always goes through the trigger queue, whatever its `queueRuns`
+  says, so it comes back `queued` with its position, or `skipped` with
+  `paused` or `queue-full`. A local trigger comes back `started` (with the
+  run id), `queued`, or `skipped` with `paused`, `busy`, `lock-held`,
+  `max-concurrency`, `queue-full` or `stopped`; `busy`, `lock-held` and
+  `max-concurrency` are skips only because the runner does not queue
+  triggers.
+- **"Run even while paused"** sends `force`, which skips only the pause check.
+  A busy runner, a lock held elsewhere, the concurrency cap and a full
+  trigger queue still apply.
+- **Resume** can also ask for a run at once (`triggerNow`).
+- **Reschedule** replaces the stored schedule for every process running the
+  runner. The editor is prefilled from it and has four forms: Cron (5 fields,
+  6 with seconds first, or a nickname such as `@daily`, at most 200
+  characters, plus an optional time zone of at most 100), Every (an amount in
+  seconds, minutes or hours, greater than zero, plus an optional anchor
+  whose grid the runs keep to), Once (a time; one already past is accepted,
+  with a warning that it will not fire) and None (`schedule: null`: it runs
+  only when triggered). The time zone is checked against the browser's
+  `Intl.supportedValuesOf("timeZone")`, case-insensitively, then against
+  `Intl.DateTimeFormat`, so an alias such as `US/Eastern`, which the server's
+  `Bun.cron` accepts, is accepted too. A UTC offset such as `+01:00` is
+  refused: `Intl` would take it, `Bun.cron` does not. The API stays the
+  authority. Its 400 `INVALID_SCHEDULE` is shown on the time zone field when
+  its detail names a time zone, on the anchor when it names the anchor, and
+  on the schedule's main field otherwise.
+- **Kill** stops one active run, or every one, after you type the runner's
+  id. Force skips straight to the end of the kill escalation, and a reason
+  (at most 200 characters) is recorded on the run. Without Wait the API
+  answers 202 at once ("Kill requested"). With Wait (`wait: true`) it answers
+  only once the runs have settled, which can take the runner's
+  `closeTimeout` plus `killTimeout`, and the dialog says it is waiting.
+- **Reset stats** sets every lifetime counter back to zero, for every
+  process. The history is kept.
 
 ### Refreshing
 
@@ -186,6 +264,9 @@ socket will replace these intervals.
 | Throughput and repeatables panels | 30 s |
 | A job, and its flow children | 5 s until it is `completed`, `failed` or `dead`, then not at all |
 | A job's logs | 3 s while it is `active` or `waiting`, then not at all |
+| Runner list | 10 s |
+| A runner, and its stats | 5 s while a run is in flight (`isRunning`, or a run in `local.activeRuns`), else 15 s; not at all after a 404 or a 401/403 |
+| A runner's history | 15 s |
 
 Every read also refreshes when the window regains focus. `/meta` and the
 permission maps are not polled.
@@ -212,12 +293,36 @@ These `data-testid` hooks are stable:
 - Job: `job-screen`, `job-id`, `job-not-found`, `job-hidden`,
   `job-stacktraces`, `logs-follow`, `flow-child-<queue>:<id>`,
   `flow-truncated`.
+- Runners: `runners-list`, `runners-count`, `runner-row-<id>`,
+  `runner-screen`, `runner-status`, `runner-id` (only when the name differs
+  from the id), `runner-schedule`, `runner-concurrency`, `runner-stats`,
+  `no-active-runs`, `run-<runId>`, `history-row-<runId>`, `remote-note`,
+  `runner-hidden`, `runner-not-found`.
+- Runner actions: the buttons sit in a `role="group"` named
+  `Runner actions`. Inside it or its dialogs: `runner-remote-hint`,
+  `trigger-remote-note`, `kill-waiting`, and `schedule-next-run` in the
+  reschedule's success toast.
 
 `__tests__/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
 through `Bun.WebView`, against a real `createJobsApi` with CSRF on. It pauses a
 queue, opens a dead job and retries it, reads each step back from the API and
 checks that the page raised no CSP violation. It skips visibly when Chrome is
 not found. Set `BUN_CHROME_PATH` to point it at one.
+
+The runner screens have no Chrome flow yet.
+`__tests__/app/pkg/runners.integration.test.ts` and
+`runner-actions.integration.test.ts` render them under happy-dom against a
+real `createJobsApi` in `runner` mode with a real local `BunRunner`.
+
+### Loaded on demand
+
+The Overview ships in the entry bundle. The queue, job and runner screens are
+split chunks, fetched the first time one is opened (a labelled spinner shows
+meanwhile) and served from the same assets path, which the CSP's
+`script-src 'self'` allows. Styles are not split the same way: Bun's entry
+stylesheet carries every rule, the lazily loaded screens' included, so the
+shell links only that one and never a chunk's stylesheet, which would repeat
+its rules (`entryStylesheets` in `lib/assets.ts`).
 
 ## Testing without a socket
 
