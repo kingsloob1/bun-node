@@ -52,6 +52,7 @@ The package ships its TypeScript source (`main` and `types` both point at
   - [Response compression](#response-compression)
   - [Multipart uploads](#multipart-uploads)
   - [WebSockets](#websockets)
+    - [Headers on the 101](#headers-on-the-101)
   - [Structured logging](#structured-logging)
   - [Native utilities](#native-utilities)
 - [Examples](#examples)
@@ -1213,6 +1214,41 @@ bun-nest's `useWebSocketAdapter()` install an adapter after the server has
 started. The `wsOptions` settings are *not* late-bound — Bun reads
 `idleTimeout`, `maxPayloadLength` and `perMessageDeflate` once, when the server
 binds — so a swap changes dispatch, not the socket settings.
+
+#### Headers on the 101
+
+Any route can upgrade by itself with `res.upgradeToWebsocket(data?, options?)`:
+`data` becomes `ws.data` (built from the request when omitted), and the
+socket's events go to the instance's emitter. `options.headers`
+(`UpgradeToWebsocketOptions`, any `HeadersInit`) are sent on the
+`101 Switching Protocols` response. That is how a server chooses a subprotocol:
+Bun otherwise echoes the *first* protocol the client offered, so a client
+offering `["other", "chat.v1"]` would negotiate `"other"`.
+
+```ts
+app.get("/live", (req, res) => {
+  const offered = (req.get("sec-websocket-protocol") ?? "").split(/\s*,\s*/);
+  if (!offered.includes("chat.v1")) {
+    return res.status(426).send("chat.v1 required");
+  }
+  return res.upgradeToWebsocket(undefined, {
+    headers: { "Sec-WebSocket-Protocol": "chat.v1" },
+  });
+});
+// client: new WebSocket(url, ["other", "chat.v1"]).protocol === "chat.v1"
+```
+
+- Only `options.headers` reach the 101. Headers set on `res` with
+  `setHeader`/`set`/`cookie` do not, so an upgrade without the option sends
+  exactly what Bun sends by default.
+- Supply a protocol the client offered: a browser fails the connection when the
+  server answers with one it did not.
+- Each call replaces the previous call's headers, and an empty set counts as
+  none. `res.upgradeToWsHeaders` shows what will be sent.
+- Every server that performs an upgrade passes them on: `BunHttpAdapter`,
+  a dedicated `BunWebSocket` server (`newInstance: true`), and bun-nest's
+  adapter. `app.ws()` routes have no way to set them yet; upgrade from an
+  ordinary route instead.
 
 Examples:
 [`echo-and-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/09-websocket/echo-and-events.ts),

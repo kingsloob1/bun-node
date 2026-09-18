@@ -420,6 +420,11 @@ export class BunHttpAdapter<
           // The port of the server that accepted the client, unless the
           // upgrade already named one. A socket-free stub has no port.
           data: { ...upgradeData, port: upgradeData.port ?? server.port },
+          // Only headers the upgrade was explicitly given; the key is left out
+          // otherwise so the 101 is exactly Bun's default.
+          ...(res.upgradeToWsHeaders
+            ? { headers: res.upgradeToWsHeaders }
+            : {}),
         });
 
         if (success) {

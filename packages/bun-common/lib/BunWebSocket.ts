@@ -628,6 +628,11 @@ export class BunWebSocket<
                 ...res.upgradeToWsData,
                 port: res.upgradeToWsData.port ?? server.port,
               },
+              // Only headers the upgrade was explicitly given; the key is left
+              // out otherwise so the 101 is exactly Bun's default.
+              ...(res.upgradeToWsHeaders
+                ? { headers: res.upgradeToWsHeaders }
+                : {}),
             });
             if (success) {
               return undefined;
