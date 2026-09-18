@@ -47,6 +47,40 @@ const backends: {
   },
 ];
 
+/**
+ * The driver with a one-shot hook that runs immediately before a job record
+ * is written.
+ *
+ * That is the gap a windowed add leaves: it moves the pointer first and adds
+ * the job second, so for a moment the pointer names a job that does not exist
+ * yet. Anything landing there — a sweep, another producer — used to judge the
+ * pointer by a job that had not been written, decide the window was over and
+ * open one of its own, which gave the caller two jobs where it asked for one.
+ */
+function withAddGap(
+  driver: JobsDriver,
+  hook: () => Promise<unknown> | unknown,
+): JobsDriver {
+  let pending: typeof hook | undefined = hook;
+
+  return new Proxy(driver, {
+    get(target, property) {
+      if (property === "addJob") {
+        const addJob: JobsDriver["addJob"] = async (...args) => {
+          const fire = pending;
+          pending = undefined;
+          await fire?.();
+          return await target.addJob(...args);
+        };
+        return addJob;
+      }
+
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 const closers: (() => Promise<unknown>)[] = [];
 
 afterEach(async () => {
@@ -448,6 +482,66 @@ for (const backend of backends) {
             ).toBe(added.id);
           }
         }
+      });
+    });
+
+    describe("opening a window", () => {
+      /** A queue whose driver runs `hook` just before it writes a job record. */
+      async function setupWithGap(hook: () => Promise<unknown> | unknown) {
+        const { driver, cleanup } = await backend.make();
+        const namespace = testNamespace();
+        const queue = new BunQueue<Doc>("windowed", {
+          namespace,
+          driver: withAddGap(driver, hook),
+          logger: noopLogger,
+        });
+        closers.push(
+          cleanup,
+          () => driver.close(),
+          () => queue.close(),
+        );
+        return { driver, queue };
+      }
+
+      it("keeps the window when a sweep lands between the pointer and the job", async () => {
+        let sweep: (() => Promise<unknown>) | undefined;
+        const { queue } = await setupWithGap(async () => await sweep?.());
+        const options = { debounce: { id: "gap", ttl: 10_000 } };
+
+        // The sweep runs inside the very gap the first add leaves, sees a
+        // pointer naming a job that is not there yet, and must leave it be.
+        sweep = () => queue.cleanWindows();
+        const first = await queue.add("reindex", { version: 1 }, options);
+        const second = await queue.add("reindex", { version: 2 }, options);
+
+        expect(second.id).toBe(first.id);
+        expect(second.wasAdded).toBe(false);
+        expect(await everyJob(queue)).toHaveLength(1);
+      });
+
+      it("confirms the pointer only once its job exists", async () => {
+        let inTheGap: { jobId: string; ready?: boolean } | undefined;
+        const { driver, queue } = await setupWithGap(async () => {
+          inTheGap = (
+            await driver.getQueueState!(queue.ref, `${DEBOUNCE_PREFIX}staged`)
+          )?.value as typeof inTheGap;
+        });
+
+        const job = await queue.add(
+          "reindex",
+          { version: 1 },
+          { debounce: { id: "staged", ttl: 10_000 } },
+        );
+
+        // Mid-add the pointer already names the job, and says so plainly.
+        expect(inTheGap?.jobId).toBe(job.id);
+        expect(inTheGap?.ready).toBeUndefined();
+
+        const settled = (
+          await driver.getQueueState!(queue.ref, `${DEBOUNCE_PREFIX}staged`)
+        )?.value as typeof inTheGap;
+        expect(settled?.jobId).toBe(job.id);
+        expect(settled?.ready).toBe(true);
       });
     });
 

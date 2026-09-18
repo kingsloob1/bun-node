@@ -28,7 +28,8 @@ import type {
   QueueThroughput,
   RetryAllOptions,
 } from "./types";
-import { deserializeError } from "@kingsleyweb/bun-common";
+import type { DebouncePointer } from "./windows";
+import { deserializeError, sleep } from "@kingsleyweb/bun-common";
 import {
   findJobPage,
   findJobsByScan,
@@ -69,6 +70,7 @@ import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
 import { retryJob } from "./retry";
 import {
   DEBOUNCE_PREFIX,
+  debounceIsPending,
   setReservedState,
   sweepWindows,
   THROTTLE_PREFIX,
@@ -76,6 +78,14 @@ import {
 
 /** How many times a debounce or throttle retries a pointer it lost. */
 const WINDOW_ATTEMPTS = 12;
+
+/**
+ * How long a debounce waits before looking again at a pointer whose job
+ * another producer has not finished writing. Short enough that an add is not
+ * noticeably held up, long enough that {@link WINDOW_ATTEMPTS} attempts span
+ * an ordinary backend round trip rather than being spent in a spin.
+ */
+const WINDOW_RETRY_MS = 5;
 
 /** How many finished jobs `retryAll` reads at a time. */
 const RETRY_PAGE = 200;
@@ -1277,7 +1287,7 @@ export class BunQueue<
       const now = Date.now();
       const pointer = await driver.getQueueState!(this.ref, pointerName);
       const current = pointer?.value as
-        | { jobId: string; until?: number }
+        | (DebouncePointer & { until?: number })
         | undefined;
 
       if (current && kind === "debounce") {
@@ -1315,6 +1325,18 @@ export class BunQueue<
         if (pending?.state === "waiting" || pending?.state === "delayed") {
           continue;
         }
+
+        // No job at all, under a pointer nobody has confirmed: another
+        // producer moved it a moment ago and has not finished writing the job
+        // it names. Treating that as a finished job and opening a window of
+        // our own is exactly what leaves two jobs where the caller asked for
+        // one, so wait a beat and read again. A pointer that stays unconfirmed
+        // past `WINDOW_PENDING_MS` belongs to a producer that died, and falls
+        // through to be replaced as it always was.
+        if (!pending && debounceIsPending(current, now)) {
+          await sleep(WINDOW_RETRY_MS, { unref: true }).catch(() => undefined);
+          continue;
+        }
       }
 
       if (current && kind === "throttle" && (current.until ?? 0) > now) {
@@ -1340,7 +1362,9 @@ export class BunQueue<
         driver,
         this.ref,
         pointerName,
-        kind === "throttle" ? { jobId, until: now + ttl } : { jobId },
+        kind === "throttle"
+          ? { jobId, until: now + ttl }
+          : ({ jobId, at: now } satisfies DebouncePointer),
         pointer?.version ?? null,
       );
 
@@ -1361,6 +1385,24 @@ export class BunQueue<
               ? { delay: options.delay }
               : {}),
       });
+
+      if (kind === "debounce") {
+        // The job exists now, so confirm the pointer that named it before it
+        // did. This is what gives everyone else's compare-and-set something to
+        // catch: until the version moves, a sweep or a second producer that
+        // read the unconfirmed pointer would judge it by a job that was not
+        // there yet, and delete or replace a live window. One extra write per
+        // window *opened* — never per debounced add, which is the path that
+        // repeats. A pointer somebody else has already moved fails the
+        // compare-and-set and is left as theirs.
+        await setReservedState(
+          driver,
+          this.ref,
+          pointerName,
+          { jobId, at: now, ready: true } satisfies DebouncePointer,
+          moved,
+        );
+      }
 
       return added;
     }

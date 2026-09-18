@@ -71,11 +71,13 @@ export type {
 export {
   assertWritableStateName,
   DEBOUNCE_PREFIX,
+  debounceIsPending,
   type DebouncePointer,
   RESERVED_STATE_PREFIX,
   supportsWindowSweep,
   sweepWindows,
   THROTTLE_PREFIX,
   type ThrottlePointer,
+  WINDOW_PENDING_MS,
   type WindowSweep,
 } from "./windows";

@@ -96,6 +96,25 @@ export async function setReservedState(
 export interface DebouncePointer {
   /** The job debounced adds go into while it is pending. */
   jobId: string;
+  /**
+   * When the pointer was written, in epoch milliseconds. Absent on a pointer
+   * written before this field existed, which is read as long past.
+   */
+  at?: number;
+  /**
+   * Whether {@link jobId} names a job that has actually been written.
+   *
+   * A producer moves the pointer *before* adding the job, so between the two
+   * the pointer names a job that does not exist yet. That is indistinguishable
+   * from a pointer whose job has since been removed unless the pointer says
+   * so, and treating the one as the other is what let a sweep — or a second
+   * producer — delete a live window and leave two jobs where the caller asked
+   * for one. Set by a second compare-and-set once the job is there.
+   *
+   * Absent on a pointer written before this field existed, which is read as
+   * confirmed so those keep behaving exactly as they did.
+   */
+  ready?: boolean;
 }
 
 /** A throttle pointer, as stored. */
@@ -112,6 +131,33 @@ export interface WindowSweep {
   removed: number;
   /** The last name examined, to pass back as `after`; `undefined` at the end. */
   next: string | undefined;
+}
+
+/**
+ * How long a debounce pointer may name a job that does not exist yet before it
+ * is treated as abandoned rather than in flight.
+ *
+ * Generous on purpose: the only cost of being too patient is that a pointer
+ * left by a producer that died mid-add survives this much longer, while being
+ * too hasty deletes a live window and duplicates a job. It is compared against
+ * a clock that may be another process's, so it also has to absorb ordinary
+ * clock skew.
+ */
+export const WINDOW_PENDING_MS = 30_000;
+
+/**
+ * Whether a debounce pointer's job may still be on its way to the backend —
+ * the pointer has not been confirmed, and was written recently enough that the
+ * producer that wrote it could still be adding.
+ *
+ * A pointer from before {@link DebouncePointer.at} existed has no timestamp,
+ * reads as long past, and is therefore never pending.
+ */
+export function debounceIsPending(
+  pointer: DebouncePointer,
+  now: number,
+): boolean {
+  return pointer.ready !== true && now - (pointer.at ?? 0) <= WINDOW_PENDING_MS;
 }
 
 /** Whether a driver can list, read and conditionally delete queue state. */
@@ -166,7 +212,12 @@ export async function sweepWindows(
     }
 
     const stale = isDebounce
-      ? await debounceIsStale(driver, q, entry.value as DebouncePointer)
+      ? await debounceIsStale(
+          driver,
+          q,
+          entry.value as DebouncePointer,
+          options.now,
+        )
       : ((entry.value as ThrottlePointer).until ?? 0) <= options.now;
 
     if (
@@ -187,12 +238,24 @@ export async function sweepWindows(
  * Whether a debounce pointer can go: its job is gone, or has started. A later
  * add would replace either anyway, so removing it changes nothing a producer
  * can observe.
+ *
+ * With one exception, which is the whole reason {@link DebouncePointer.ready}
+ * exists: no job *yet* is not the same as no job. A producer writes the
+ * pointer and then adds the job, and for that moment there is nothing to
+ * find — so a pointer still {@link debounceIsPending} is left alone. Deleting
+ * it here let the next add open a second window, and the caller got two jobs.
  */
 async function debounceIsStale(
   driver: JobsDriver,
   q: QueueRef,
   pointer: DebouncePointer,
+  now: number,
 ): Promise<boolean> {
   const job = await driver.getJob(q, pointer.jobId);
-  return !job || (job.state !== "waiting" && job.state !== "delayed");
+
+  if (!job) {
+    return !debounceIsPending(pointer, now);
+  }
+
+  return job.state !== "waiting" && job.state !== "delayed";
 }
