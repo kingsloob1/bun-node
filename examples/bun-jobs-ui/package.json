@@ -6,6 +6,7 @@
   "description": "Runnable, commented examples for @kingsleyweb/bun-jobs-ui: the management UI mounted beside the bun-jobs management API, its shell, bundle, security headers and every option",
   "scripts": {
     "all": "bun run-all.ts",
-    "quick-start": "bun 01-quick-start/index.ts"
+    "quick-start": "bun 01-quick-start/index.ts",
+    "demo": "bun 05-demo/seeded-demo.ts --serve"
   }
 }
