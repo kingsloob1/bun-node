@@ -46,6 +46,7 @@ project per package. Each example is a single script you run with `bun`.
 | [`examples/bun-common`](examples/bun-common/README.md) | Routing, the HTTP adapter, requests and responses, validation, CORS, static files, compression, multipart uploads, WebSockets, logging and utilities, plus option tours |
 | [`examples/bun-nest`](examples/bun-nest/README.md) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, plus option tours |
 | [`examples/bun-jobs`](examples/bun-jobs/README.md) | Queues, workers, the job registry, scheduling, flow control, failures, the runner, every driver and integrations, plus option tours |
+| [`examples/bun-jobs-ui`](examples/bun-jobs-ui/README.md) | The management UI beside the management API: mounting, the shell and bundle with their security headers, a cross-origin API, plus an option tour |
 
 ```bash
 bun install                 # at the repo root
@@ -171,7 +172,8 @@ bun-node/
 ├── examples/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/
-│   └── bun-jobs/
+│   ├── bun-jobs/
+│   └── bun-jobs-ui/
 ├── benchmarks/            # router benchmarks (its own package)
 ├── scripts/
 │   ├── typecheck.ts       # type-checks every project

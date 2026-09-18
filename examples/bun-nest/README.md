@@ -17,8 +17,8 @@ bun run-all.ts 04 10               # only folders 04-* and 10-*
 ```
 
 No install step: `@nestjs/core`, `@nestjs/common`, `@nestjs/websockets`,
-`reflect-metadata`, `rxjs` and — for the two `@kingsleyweb/bun-nest/jobs`
-examples — `@kingsleyweb/bun-jobs` resolve from the repo's root `node_modules`
+`reflect-metadata`, `rxjs` and — for the `@kingsleyweb/bun-nest/jobs`
+examples — `@kingsleyweb/bun-jobs` and `@kingsleyweb/bun-jobs-ui` resolve from the repo's root `node_modules`
 (`@nestjs/platform-express` is not needed, and not installed). The legacy
 decorator options Nest relies on come from the repo's `tsconfig.base.json`.
 Applications listen on port `0`.
@@ -60,6 +60,12 @@ Applications listen on port `0`.
 | File | Shows |
 |---|---|
 | [`module.ts`](./05-jobs-api/module.ts) | `BunJobsApiModule.forRoot` from `@kingsleyweb/bun-nest/jobs`, `@InjectJobsApi()`, authorized requests against the mounted routes, and what `app.close()` closes |
+
+### 06 — The jobs UI
+
+| File | Shows |
+|---|---|
+| [`mount.ts`](./06-jobs-ui/mount.ts) | `jobsUi()` from `@kingsleyweb/bun-jobs-ui` over the API `BunJobsApiModule` built (`app.get(BUN_JOBS_API)`), mounted with `adapter.use()` or `adapter.getInstance().use()`, a page `authorize` sharing the API's session, and what a global prefix does not touch. More in [`../bun-jobs-ui`](../bun-jobs-ui) |
 
 ### 10 — Option tours
 

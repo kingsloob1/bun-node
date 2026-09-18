@@ -8,7 +8,8 @@ to bottom as usage rather than as a test.
 |---|---|---|
 | [`@kingsleyweb/bun-jobs`](../packages/bun-jobs) | [`bun-jobs/`](./bun-jobs) | 47 examples: queues, workers (with search, paging and a worker/throughput dashboard), the job registry (with saved drafts and registry polling), scheduling, flow control, failures, the runner, every driver, integrations, the management API (mounting, live events and its documents) — plus 14 option tours that assert every option works as documented |
 | [`@kingsleyweb/bun-common`](../packages/bun-common) | [`bun-common/`](./bun-common) | 35 examples: routing, the HTTP adapter, requests and responses (request bodies in gzip, deflate, br and zstd, stacked or dictionary-compressed), validation, CORS, static files (precompressed or compressed on the fly), response compression (gzip, deflate, br, zstd and `dcb`/`dcz` dictionaries), multipart uploads, WebSockets, logging, utilities — plus 12 option tours |
-| [`@kingsleyweb/bun-nest`](../packages/bun-nest) | [`bun-nest/`](./bun-nest) | 11 examples: NestJS on Bun with the HTTP adapter, file upload interceptors, the WebSocket adapter and the bun-jobs management API module — plus 4 option tours |
+| [`@kingsleyweb/bun-nest`](../packages/bun-nest) | [`bun-nest/`](./bun-nest) | 12 examples: NestJS on Bun with the HTTP adapter, file upload interceptors, the WebSocket adapter, the bun-jobs management API module and the jobs UI mounted beside it — plus 4 option tours |
+| [`@kingsleyweb/bun-jobs-ui`](../packages/bun-jobs-ui) | [`bun-jobs-ui/`](./bun-jobs-ui) | 4 examples: the management UI beside the management API — quick start, the shell, bundle and security headers checked without a socket, a cross-origin API — plus an option tour; each asserts what it shows |
 
 ## Conventions
 
