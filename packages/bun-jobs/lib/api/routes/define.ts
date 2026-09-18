@@ -59,6 +59,12 @@ export interface RouteServices {
   routes: () => readonly JobsApiRouteInfo[];
   /** A fresh copy of the OpenAPI document. */
   openapi: () => OpenApiDocument;
+  /**
+   * The port of the socket's dedicated server (the bound one), or `undefined`
+   * when the socket shares the host's port or there is none. Absent when the
+   * API was assembled without a socket.
+   */
+  socketPort?: () => number | undefined;
 }
 
 /** What a route handler receives, with validated and typed inputs. */

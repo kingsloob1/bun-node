@@ -227,6 +227,12 @@ function make<TOut, TIn = TOut>(
 /** Component names by JSON node, so `toJsonSchema` can emit `$ref`s. */
 const NAMED = new WeakMap<JsonSchema, string>();
 
+/**
+ * Keywords emitted into the documents but not validated, by JSON node: see
+ * {@link s.documented}.
+ */
+const DOCUMENTED = new WeakMap<JsonSchema, Readonly<Record<string, unknown>>>();
+
 /** The component name registered for a JSON node, if any. */
 export function namedSchemaOf(json: JsonSchema): string | undefined {
   return NAMED.get(json);
@@ -465,6 +471,32 @@ export const s = {
   },
 
   /**
+   * Adds keywords to what the documents say about a schema **without the
+   * validator enforcing them**, for a rule a route enforces itself with its
+   * own error. A `:queue` path segment is the case: the route checks it with
+   * the drivers' key rule and answers 400 `INVALID_NAME`, and the document
+   * should still state the pattern a client must follow. Only for keywords
+   * that describe exactly what the route enforces. Returns a new schema; the
+   * one passed in is unchanged.
+   */
+  documented<S extends Schema<any, any>>(
+    schema: S,
+    keywords: { pattern?: string },
+  ): S {
+    if (keywords.pattern !== undefined) {
+      // Compiled now, so a bad pattern fails where it is written.
+      compilePattern({ pattern: keywords.pattern });
+    }
+    const json = deepFreeze({ ...schema.json });
+    const name = NAMED.get(schema.json);
+    if (name !== undefined) {
+      NAMED.set(json, name);
+    }
+    DOCUMENTED.set(json, Object.freeze({ ...keywords }));
+    return make(json, { ref: schema.ref, coerce: schema.coerce }) as S;
+  },
+
+  /**
    * Coerces string input before validating: `"42"` to `42` where a number is
    * expected, `"true"`/`"false"` (and `"1"`/`"0"`) to booleans, and a
    * comma-separated value or a single value into an array. Use for `query` and
@@ -527,7 +559,10 @@ export function toJsonSchema(
       return { $ref: `${prefix}${name}` };
     }
 
-    const out: Record<string, unknown> = { ...node };
+    const out: Record<string, unknown> = {
+      ...node,
+      ...DOCUMENTED.get(node),
+    };
     if (node.properties) {
       out.properties = Object.fromEntries(
         Object.entries(node.properties).map(([key, child]) => [

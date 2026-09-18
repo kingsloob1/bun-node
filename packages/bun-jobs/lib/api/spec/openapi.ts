@@ -155,6 +155,29 @@ function operation(
     });
   }
 
+  const mutation = isMutation(def.action);
+  const csrf = mutation && config.csrf !== false ? config.csrf : undefined;
+  if (csrf && csrf.header !== false) {
+    parameters.push({
+      name: csrf.header,
+      in: "header",
+      required: true,
+      description:
+        "CSRF defence: every mutation must carry this header with a non-empty value. Its presence forces a CORS preflight, which a cross-site form cannot pass.",
+      schema: { type: "string", minLength: 1 },
+    });
+  }
+  // `checkCsrf` refuses a POST that is not `application/json` — body or no
+  // body — and any other mutation that sends a body. A route with a body
+  // schema already declares only `application/json`; a bodiless POST has to
+  // say so, or a generated client sends it with no `Content-Type` and gets 415.
+  const jsonRequired =
+    csrf !== undefined &&
+    csrf.requireJson &&
+    (def.method === "POST" || def.body !== undefined);
+  const JSON_REQUIRED_NOTE =
+    "Send `Content-Type: application/json` even with no body (an empty body, or `{}`): this API refuses a state-changing POST of any other media type with 415 UNSUPPORTED_MEDIA_TYPE.";
+
   const responses: Record<string, unknown> = {};
   for (const [key, schema] of Object.entries(def.responses as RouteResponses)) {
     const status = Number(key);
@@ -200,14 +223,41 @@ function operation(
       ? {
           requestBody: {
             required: !def.bodyOptional,
+            ...(jsonRequired && def.bodyOptional
+              ? { description: JSON_REQUIRED_NOTE }
+              : {}),
             content: { "application/json": { schema: emit(def.body.json) } },
           },
         }
-      : {}),
+      : jsonRequired
+        ? {
+            // No body schema: whatever is sent is ignored, but the media type
+            // is still checked.
+            requestBody: {
+              required: false,
+              description: JSON_REQUIRED_NOTE,
+              content: {
+                "application/json": {
+                  schema: {
+                    description: "Ignored. Send no body, or `{}`.",
+                  },
+                },
+              },
+            },
+          }
+        : {}),
     responses,
     "x-bun-jobs-action": def.action,
-    "x-bun-jobs-mutation": isMutation(def.action),
+    "x-bun-jobs-mutation": mutation,
     "x-bun-jobs-requires": [...(def.requires ?? [])],
+    ...(csrf
+      ? {
+          "x-bun-jobs-csrf": {
+            header: csrf.header === false ? null : csrf.header,
+            requireJson: jsonRequired,
+          },
+        }
+      : {}),
   };
 }
 

@@ -218,3 +218,45 @@ describe("api.info (a newer API's read-only summary)", () => {
     expect(ui.config.docs?.openapi).toBe("/jobs-api/openapi.json");
   });
 });
+
+describe("with the real api.info", () => {
+  it("takes the CSRF header, socket and docs from the API, with no csrfHeader given", async () => {
+    const jobs = new BunJobs({
+      namespace: `ui-info-${crypto.randomUUID().slice(0, 8)}`,
+      driver: new MemoryDriver(),
+      publishEvents: true,
+      logger: noopLogger,
+    });
+    cleanups.push(() => jobs.close());
+    const api = createJobsApi({
+      jobs,
+      basePath: "/jobs-api",
+      mode: "jobs",
+      authorize: () => true,
+      csrf: { header: "X-Bun-Jobs-CSRF" },
+      logger: noopLogger,
+    });
+    cleanups.push(() => api.close());
+    expect(api.info.csrf.header).toBe("x-bun-jobs-csrf");
+
+    const ui = fixtureUi({ api });
+    expect(ui.config.csrfHeader).toBe("x-bun-jobs-csrf");
+    expect(ui.config.websocket).toEqual({ path: "/jobs-api/ws", port: null });
+    expect(ui.config.docs).toEqual({
+      openapi: "/jobs-api/openapi.json",
+      asyncapi: "/jobs-api/asyncapi.json",
+    });
+
+    // And the header the page carries is the one the API enforces.
+    const app = new BunHttpAdapter();
+    cleanups.push(() => app.close());
+    app.use(api.basePath, api.router);
+    const post = (headers: Record<string, string>) =>
+      app.fetch("/jobs-api/queues/mail/pause", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+      });
+    expect((await post({})).status).toBe(403);
+    expect((await post({ [ui.config.csrfHeader!]: "1" })).status).not.toBe(403);
+  });
+});

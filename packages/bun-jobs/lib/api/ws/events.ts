@@ -210,13 +210,8 @@ export const RUNNER_EVENT_NAMES = Object.keys(
   RUNNER_EVENT_PAYLOADS,
 ) as RunnerEventName[];
 
-/** Every distinct event name (`failed` is both a queue and a runner event). */
-export const EVENT_TYPES = [
-  ...new Set<string>([...QUEUE_EVENT_NAMES, ...RUNNER_EVENT_NAMES]),
-] as unknown as readonly [
-  QueueEventName | RunnerEventName,
-  ...(QueueEventName | RunnerEventName)[],
-];
+/** Every distinct event name (`failed` is both a queue and a runner event): defined in the browser-safe contract. */
+export { EVENT_TYPES } from "../contract/constants";
 
 /** `repeatScheduled` → `RepeatScheduled`. */
 function pascal(name: string): string {

@@ -4,9 +4,11 @@ import type {
   JobsApi,
   JobsApiConfig,
   JobsApiRouteInfo,
+  JobsApiWebSocket,
   OpenApiDocument,
   ResolvedJobsApiConfig,
 } from "./config";
+import type { JobsApiInfo } from "./contract/types";
 import type { AnyRouteDef, RouteServices } from "./routes/define";
 import type { SourceOptions } from "./sources";
 import type { JobsApiWebSocketInternalOptions } from "./ws/attach";
@@ -16,7 +18,7 @@ import { createApiErrorHandler, createNotFoundHandler } from "./errors";
 import { isRouteEnabled, registerRoutes } from "./routes/define";
 import { docsRoutes } from "./routes/docs";
 import { jobRoutes } from "./routes/jobs";
-import { metaRoutes } from "./routes/meta";
+import { buildMeta, csrfOf, metaRoutes } from "./routes/meta";
 import { queueRoutes } from "./routes/queues";
 import { repeatableRoutes } from "./routes/repeatables";
 import { runnerRoutes } from "./routes/runners";
@@ -40,6 +42,41 @@ export function builtInRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
     ...repeatableRoutes(),
     ...runnerRoutes(config),
   ];
+}
+
+/**
+ * What `api.info` reports: the resolved configuration, and the documents and
+ * socket actually registered — the docs paths from `/meta`'s own reading of
+ * the routes, the socket's path and bound port from the socket itself.
+ */
+function apiInfo(
+  config: ResolvedJobsApiConfig,
+  routes: readonly JobsApiRouteInfo[],
+  socket: JobsApiWebSocket | undefined,
+): JobsApiInfo {
+  const meta = buildMeta(config, routes, socket);
+  const websocket = socket
+    ? Object.freeze({
+        path: socket.path,
+        ...(socket.port === undefined ? {} : { port: socket.port }),
+      })
+    : null;
+  return Object.freeze({
+    basePath: config.basePath,
+    namespace: config.namespace,
+    mode: config.mode,
+    readOnly: config.readOnly,
+    csrf: Object.freeze(csrfOf(config)),
+    docs: meta.docs
+      ? Object.freeze({
+          openapi: meta.docs.openapi,
+          ...(meta.docs.asyncapi === undefined
+            ? {}
+            : { asyncapi: meta.docs.asyncapi }),
+        })
+      : null,
+    websocket,
+  });
 }
 
 /**
@@ -95,12 +132,14 @@ export function buildJobsApi(
 
   let routes: readonly JobsApiRouteInfo[] = [];
   const openapi = (): OpenApiDocument => structuredClone(document);
+  const socketPort = (): number | undefined => socket?.websocket.port;
   const services: RouteServices = {
     config,
     queues: new QueueSource(config, options),
     runners: new RunnerSource(config, options),
     routes: () => routes,
     openapi,
+    socketPort,
   };
 
   const router = new BunRouter();
@@ -131,6 +170,7 @@ export function buildJobsApi(
     router,
     basePath: config.basePath,
     mode: config.mode,
+    info: apiInfo(config, routes, socket?.websocket),
     routes,
     websocket: socket?.websocket,
     openapi,

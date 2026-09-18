@@ -6,21 +6,27 @@ import type {
   JobsApiRouteInfo,
   ResolvedJobsApiConfig,
 } from "../config";
+import type {
+  ChannelPermissionDto,
+  MetaCsrfDto,
+  MetaLimitsDto,
+} from "../contract/types";
 import type { MetaDto } from "../serialize";
 import type { AnyRouteDef, RouteMode } from "./define";
 import { supportsWorkers } from "../../drivers/index";
-import { decide } from "../auth";
+import { decide, denialError } from "../auth";
 import { JOBS_API_ACTIONS } from "../config";
+import { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
 import {
   MetaSchema,
   PermissionsQuerySchema,
   PermissionsSchema,
 } from "../schemas/meta";
-import { isWebSocketEnabled } from "../ws/channels";
+import { isWebSocketEnabled, parseChannel } from "../ws/channels";
 import { defineRoute, joinPath } from "./define";
 
-/** The API protocol version, reported by `/meta` and the socket's `hello`. */
-export const JOBS_API_PROTOCOL_VERSION = 1 as const;
+/** The API protocol version, reported by `/meta` and the socket's `hello`. Defined in the contract. */
+export { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
 
 /**
  * The driver methods behind each optional feature. A feature is on when the
@@ -120,15 +126,95 @@ function docsOf(
   };
 }
 
+/** The CSRF rules as `/meta` and `api.info` report them. */
+export function csrfOf(
+  config: Pick<ResolvedJobsApiConfig, "csrf">,
+): MetaCsrfDto {
+  return config.csrf === false
+    ? { header: null, requireJson: false }
+    : {
+        header: config.csrf.header === false ? null : config.csrf.header,
+        requireJson: config.csrf.requireJson,
+      };
+}
+
+/**
+ * The caps `/meta` reports: read from `config.limits`, the very object the
+ * routes read theirs from, so the two cannot disagree.
+ */
+export function limitsOf(
+  config: Pick<ResolvedJobsApiConfig, "limits">,
+): MetaLimitsDto {
+  const { limits } = config;
+  return {
+    defaultPageSize: limits.defaultPageSize,
+    maxPageSize: limits.maxPageSize,
+    maxBulkIds: limits.maxBulkIds,
+    maxRetryAll: limits.maxRetryAll,
+    maxClean: limits.maxClean,
+    maxLogPage: limits.maxLogPage,
+    maxHistory: limits.maxHistory,
+    maxJobDataBytes: limits.maxJobDataBytes,
+    maxQueues: limits.maxQueues,
+  };
+}
+
+/**
+ * Whether an operation is routed: from the registered routes when given,
+ * else from the static limits and the mode (what pruning would decide
+ * before driver capabilities).
+ */
+function isRouted(
+  config: ResolvedJobsApiConfig,
+  routes: readonly JobsApiRouteInfo[] | undefined,
+  operationId: string,
+  action: JobsApiAction,
+): boolean {
+  if (routes) {
+    return routes.some((route) => route.operationId === operationId);
+  }
+  const mode = actionMode(action);
+  return (
+    config.enabledActions.has(action) &&
+    (mode === "any" || config.mode === "both" || config.mode === mode)
+  );
+}
+
+/**
+ * The names `POST /queues/:queue/jobs` accepts right now: `null` for any
+ * name, `[]` when the route is not registered, else the configured list or —
+ * by default — the names of `jobs.definitions()`, read now, exactly as the
+ * route reads them (`isAddableName`).
+ */
+export function addableNamesOf(
+  config: ResolvedJobsApiConfig,
+  routes?: readonly JobsApiRouteInfo[],
+): string[] | null {
+  if (!isRouted(config, routes, "addJob", "jobs.add")) {
+    return [];
+  }
+  if (config.addableNames === "any") {
+    return null;
+  }
+  const names =
+    config.addableNames === "defined"
+      ? (config.jobs?.definitions() ?? []).map((definition) => definition.name)
+      : config.addableNames;
+  return [...new Set(names)];
+}
+
 /**
  * What `/meta` reports. `routes`, the registered routes, decides which docs
- * are advertised; without it the configuration does.
+ * are advertised and whether adding and triggering are routed; without it the
+ * configuration does. `socket` gives the dedicated port the socket bound.
  */
 export function buildMeta(
   config: ResolvedJobsApiConfig,
   routes?: readonly JobsApiRouteInfo[],
+  socket?: { readonly port: number | undefined },
 ): MetaDto {
   const { driver } = config;
+  const port = socket?.port;
   const publishing = (config.jobs as { publishesEvents?: unknown } | undefined)
     ?.publishesEvents;
   return {
@@ -151,9 +237,58 @@ export function buildMeta(
             path: joinPath(config.basePath, config.websocket.path),
             heartbeatMs: config.websocket.heartbeatMs,
             maxSubscriptions: config.websocket.maxSubscriptions,
+            ...(port === undefined ? {} : { port }),
           }
         : null,
     docs: docsOf(config, routes),
+    csrf: csrfOf(config),
+    limits: limitsOf(config),
+    addableNames: addableNamesOf(config, routes),
+    runnerTriggerArgs:
+      config.runnerTriggerArgs &&
+      isRouted(config, routes, "triggerRunner", "runners.trigger"),
+  };
+}
+
+/**
+ * Whether subscribing to `channel` would be authorized: the socket's own
+ * checks, in the socket's own order — {@link parseChannel} (syntax,
+ * availability, a configured queue or runner list), then `authorize` for
+ * `events.subscribe` with the channel's target, as a `subscribe` frame asks
+ * it. Read-only: nothing is subscribed.
+ */
+export async function previewChannel(
+  config: ResolvedJobsApiConfig,
+  req: BunRequest,
+  channel: string,
+): Promise<ChannelPermissionDto> {
+  const parsed = parseChannel(channel, config);
+  if (!parsed.ok) {
+    return {
+      channel,
+      allowed: false,
+      code: parsed.rejection.code,
+      status: parsed.rejection.status,
+      detail: parsed.rejection.detail,
+    };
+  }
+  const key = parsed.channel.key;
+  const decision = await decide(config, req, {
+    action: "events.subscribe",
+    transport: "ws",
+    ...parsed.channel.target,
+  });
+  if (decision.allow) {
+    return { channel, key, allowed: true };
+  }
+  const error = denialError(decision);
+  return {
+    channel,
+    key,
+    allowed: false,
+    code: error.code,
+    status: error.status,
+    detail: error.message,
   };
 }
 
@@ -230,7 +365,9 @@ export function metaRoutes(): AnyRouteDef[] {
       tags: ["Meta"],
       responses: { 200: MetaSchema },
       handler: ({ services }) => ({
-        body: buildMeta(services.config, services.routes()),
+        body: buildMeta(services.config, services.routes(), {
+          port: services.socketPort?.(),
+        }),
       }),
     }),
     defineRoute({
@@ -241,7 +378,7 @@ export function metaRoutes(): AnyRouteDef[] {
       mode: "any",
       summary: "Which actions the caller may perform",
       description:
-        "Asks `authorize` once for each distinct action among the routes this API registered (plus `events.connect` and `events.subscribe` when it has a socket), optionally for one queue or runner, so a client can hide what it may not do. The cost is that many `authorize` calls per request.",
+        "Asks `authorize` once for each distinct action among the routes this API registered (plus `events.connect` and `events.subscribe` when it has a socket), optionally for one queue or runner, so a client can hide what it may not do. The cost is that many `authorize` calls per request. With `channel`, also previews a WebSocket subscription: the channel is parsed and checked as a `subscribe` frame's would be, and `authorize` is asked once more, about `events.subscribe` on that channel.",
       tags: ["Meta"],
       query: PermissionsQuerySchema,
       responses: { 200: PermissionsSchema },
@@ -253,6 +390,15 @@ export function metaRoutes(): AnyRouteDef[] {
             query,
             permissionActions(services.config, services.routes()),
           )) as Record<string, boolean>,
+          ...(query.channel === undefined
+            ? {}
+            : {
+                channel: await previewChannel(
+                  services.config,
+                  req,
+                  query.channel,
+                ),
+              }),
         },
       }),
     }),

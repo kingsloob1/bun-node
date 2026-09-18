@@ -1,6 +1,7 @@
 import type { JobsApiMode } from "../config";
 import type { Infer } from "../schema/builder";
 import type { Equivalent, EventWire } from "./events";
+import { JOBS_API_WS_MAX_CHANNELS_PER_FRAME } from "../contract/constants";
 import { s } from "../schema/builder";
 import { EVENT_TYPES, EventDtoSchema } from "./events";
 
@@ -13,26 +14,11 @@ import { EVENT_TYPES, EventDtoSchema } from "./events";
  * sends `type` messages.
  */
 
-/** The WebSocket subprotocol. A client offering subprotocols must offer this one. */
-export const JOBS_API_WS_SUBPROTOCOL = "bun-jobs.v1";
-
-/** Close codes the server uses. */
-export const JOBS_API_WS_CLOSE = {
-  /** A normal close. */
-  NORMAL: 1000,
-  /** The API is closing (`api.close()`). */
-  GOING_AWAY: 1001,
-  /** The client sent a binary frame. */
-  UNSUPPORTED_DATA: 1003,
-  /** The client broke a policy: rate limit breached twice within 10 s. */
-  POLICY: 1008,
-  /** The client sent a frame over `maxMessageBytes`. */
-  TOO_BIG: 1009,
-  /** The client could not keep up for `slowConsumerTimeoutMs`. */
-  SLOW_CONSUMER: 4008,
-  /** Reserved: the session is no longer authorized. Not sent in protocol 1. */
-  UNAUTHORIZED: 4401,
-} as const;
+/** The WebSocket subprotocol and the server's close codes: defined in the browser-safe contract. */
+export {
+  JOBS_API_WS_CLOSE,
+  JOBS_API_WS_SUBPROTOCOL,
+} from "../contract/constants";
 
 /** Codes an `error` message or an `ack` rejection may carry. */
 export type JobsApiWsErrorCode =
@@ -276,8 +262,8 @@ const ChannelSchema = s.string({
     "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeURIComponent(jobId)>`, `runners` or `runner/<runner>`.",
 });
 
-/** Most channels one `subscribe` or `unsubscribe` may name. */
-export const JOBS_API_WS_MAX_CHANNELS_PER_FRAME = 256;
+/** Most channels one `subscribe` or `unsubscribe` may name: defined in the browser-safe contract. */
+export { JOBS_API_WS_MAX_CHANNELS_PER_FRAME };
 
 /**
  * Channel lists. At most 256 per frame: well above the default of 50

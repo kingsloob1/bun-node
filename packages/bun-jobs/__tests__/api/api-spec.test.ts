@@ -249,7 +249,10 @@ describe("the generated document", () => {
       apiConfig({ runners: false, actions: ["meta.read", "docs.read"] }),
     );
     expect(schemasOf(metaOnly.openapi()).sort()).toEqual([
+      "ChannelPermission",
       "Meta",
+      "MetaCsrf",
+      "MetaLimits",
       "Permissions",
       "Problem",
     ]);

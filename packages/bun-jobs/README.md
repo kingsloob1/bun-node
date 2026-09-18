@@ -1672,6 +1672,20 @@ only when you need a count — it costs a second query. Jobs can be filtered by
 `state` (repeated or comma-separated), by `name`, and by `search` (a substring
 of id or name, never the payload).
 
+`GET /queues` pages the same way (`?offset=&limit=`, `limit` at most and by
+default `limits.maxQueues`) and answers `page` beside `items`; `truncated` is
+`page.hasMore`. Its `search` matches a substring of the queue name ignoring
+case, as job search does.
+
+A new job's `opts.jobId` is at most 191 characters, the cap bun-jobs applies
+to every id a caller chooses; more is 400 `VALIDATION`. That schema is only a
+first check: bun-jobs' own `assertJobId` is the authority — it counts UTF-16
+units rather than characters, and refuses control characters and a leading
+`.` — so an id the schema passes can still be refused, answered 400
+`INVALID_ARGUMENT`. An id that *addresses* a job (a path, a bulk body, a
+lookup) may be up to 1024 characters, so a job stored with a longer id by an
+earlier version stays readable, retryable and removable.
+
 Lists omit the heavy fields; ask for them with `include=data,returnValue,stacktrace,opts`.
 A single read includes `data`, `returnValue` and `opts` by default. Timestamps
 are epoch milliseconds throughout. `serialize.job` (and the `repeatable`,
@@ -1837,6 +1851,64 @@ The socket has its own (`websocket`): `maxConnections` `1000`,
 `messagesPerSecond` `20`, `maxBufferedBytes` `1048576`,
 `slowConsumerTimeoutMs` `30000`, `heartbeatMs` `25000`,
 `coalesceProgressMs` `250`, and `replay` of `1000` events or five minutes.
+
+`GET /meta` reports every cap above except `queueCacheMs` as `limits`, read
+from the very values the routes enforce, so a client can size pages and bulk
+selections without meeting a 400.
+
+### Writing a client
+
+`GET /meta` tells a client everything it needs before its first write:
+
+- `csrf: { header, requireJson }` — the header every mutation must carry
+  (lower case, or `null`), and whether every `POST` must be sent as
+  `Content-Type: application/json` *even with no body*;
+- `limits` — the caps above;
+- `addableNames` — the names `POST /queues/:queue/jobs` accepts right now:
+  `null` for any name, `[]` when adding is not routed, else the list (by
+  default, the names of `jobs.definitions()`);
+- `runnerTriggerArgs` — whether a trigger may carry `args`;
+- `websocket.port` — present when the socket has its own port.
+
+`GET /meta/permissions?channel=queue/mail` previews a WebSocket subscription:
+the channel is parsed and checked as a `subscribe` frame's would be, and
+`authorize` is asked about `events.subscribe` on it. `GET /overview` adds
+`throughputSeries`, the namespace's per-minute throughput in the shape of
+`GET /queues/:queue/throughput`.
+
+On the server, `api.info` holds the same resolved values without a request:
+`{ basePath, namespace, mode, readOnly, csrf, docs, websocket }`.
+
+The OpenAPI document states the CSRF header as a required header parameter
+on every mutation, marks bodiless `POST`s as still needing
+`application/json`, and gives `:queue` and `:runner` the name pattern the
+routes enforce.
+
+For a browser client, `@kingsleyweb/bun-jobs/api/contract` exports the
+constants (`JOBS_API_ACTIONS`, `JOBS_API_MUTATIONS`,
+`JOBS_API_PROTOCOL_VERSION`, `JOBS_API_WS_SUBPROTOCOL`, `JOBS_API_WS_CLOSE`,
+`EVENT_TYPES`, `JOB_STATES`, …) and a named type for every request and
+response (`MetaDto`, `OverviewDto`, `QueueListDto`, `JobDto`, `AddJobBody`,
+`TriggerOutcomeDto`, …), and for the socket every frame
+(`JobsApiClientMessage`, `JobsApiServerMessage` and their members) and every
+event (`EventWire`, with payload errors as `ErrorWire`), plus
+`JOBS_API_WS_MAX_CHANNELS_PER_FRAME`. It imports nothing outside itself — no driver, no
+bun-common, no `node:*` — so it bundles for the browser, and the server takes
+its constants from it, so the two cannot disagree.
+
+```ts
+import type { MetaDto, QueueListDto } from "@kingsleyweb/bun-jobs/api/contract";
+import { JOBS_API_WS_SUBPROTOCOL } from "@kingsleyweb/bun-jobs/api/contract";
+
+const meta: MetaDto = await (await fetch("/admin/jobs/meta")).json();
+const queues: QueueListDto = await (
+  await fetch(`/admin/jobs/queues?limit=${meta.limits.maxQueues}`)
+).json();
+const socket = new WebSocket(`wss://${location.host}${meta.websocket!.path}`, [
+  JOBS_API_WS_SUBPROTOCOL,
+]);
+socket.addEventListener("open", () => console.log(queues.page.total));
+```
 
 ### Features that need driver support
 

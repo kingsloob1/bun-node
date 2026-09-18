@@ -7,6 +7,14 @@
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "",
+  "exports": {
+    ".": "./lib/index.ts",
+    "./api/contract": "./lib/api/contract/index.ts",
+    "./lib/*.ts": "./lib/*.ts",
+    "./lib/*.js": "./lib/*.ts",
+    "./lib/*": "./lib/*.ts",
+    "./package.json": "./package.json"
+  },
   "main": "lib/index.ts",
   "types": "lib/index.ts",
   "publishConfig": {

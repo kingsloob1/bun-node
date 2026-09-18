@@ -1,5 +1,6 @@
 import type { JobState } from "../../drivers/index";
 import type { Schema } from "../schema/builder";
+import { JOB_STATES } from "../contract/constants";
 import { s } from "../schema/builder";
 
 /**
@@ -7,16 +8,11 @@ import { s } from "../schema/builder";
  * references and job states.
  */
 
-/** Every job state, in lifecycle order. */
-export const JOB_STATES = [
-  "waiting",
-  "delayed",
-  "active",
-  "completed",
-  "failed",
-  "dead",
-  "waiting-children",
-] as const satisfies readonly JobState[];
+/** Every job state, in lifecycle order. Defined in the contract. */
+export { JOB_STATES };
+
+/** Compile-time guard that every contract state is a driver `JobState`. */
+const _everyStateIsAJobState: readonly JobState[] = JOB_STATES;
 
 /**
  * Compile-time guard that {@link JOB_STATES} lists every `JobState`: adding a

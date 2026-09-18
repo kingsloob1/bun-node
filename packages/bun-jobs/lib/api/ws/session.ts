@@ -8,7 +8,6 @@ import type {
 } from "../config";
 import type { Schema } from "../schema/builder";
 import type { ParsedChannel } from "./channels";
-import type { EventWire } from "./events";
 import type { EventHub, HubSubscriber, StampedEvent, WsClock } from "./hub";
 import type {
   JobsApiAckRejection,
@@ -1002,10 +1001,7 @@ export class Session implements HubSubscriber {
         seq: stamped.seq,
         epoch: this.#ctx.hub.epoch,
         subscriptions: keys,
-        // `toEventDto` has already shaped every payload error as an
-        // `ErrorDto`; its declared return type (in `serialize.ts`) still
-        // names the pre-serialisation `SerializedError`.
-        event: event as unknown as EventWire,
+        event,
       },
       stamped.seq,
     );

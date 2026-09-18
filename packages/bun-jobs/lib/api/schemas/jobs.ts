@@ -1,5 +1,9 @@
+import {
+  JOB_INCLUDES,
+  MAX_JOB_ID_LENGTH,
+  MAX_JOB_REF_LENGTH,
+} from "../contract/constants";
 import { s } from "../schema/builder";
-import { JOB_INCLUDES } from "../serialize";
 import {
   ErrorDtoSchema,
   JobRefSchema,
@@ -11,11 +15,32 @@ import {
  * Schemas for the job, bulk, repeatable and definition routes.
  */
 
-/** A job id: arbitrary text, percent-encoded in paths. */
-export const JobIdSchema = s.string({
+/**
+ * A job id that addresses an existing job: in a path, a bulk body or a lookup.
+ * At most {@link MAX_JOB_REF_LENGTH} characters — deliberately wider than the
+ * cap on a new id, because a backend may hold jobs whose ids predate that cap,
+ * and those must stay readable, retryable and removable.
+ */
+export const JobIdRefSchema = s.string({
   minLength: 1,
-  maxLength: 1024,
-  description: "A job id. Percent-encode it in a path: `/` is `%2F`.",
+  maxLength: MAX_JOB_REF_LENGTH,
+  description: `A job id, at most ${MAX_JOB_REF_LENGTH} characters. Percent-encode it in a path: \`/\` is \`%2F\`.`,
+});
+
+/** The id schema of the first cut, kept for importers: the addressing rule. */
+export const JobIdSchema = JobIdRefSchema;
+
+/**
+ * A job id a caller chooses for a new job (`opts.jobId`): at most
+ * {@link MAX_JOB_ID_LENGTH} characters, the cap bun-jobs' `assertJobId`
+ * applies. The schema is a first check only: `assertJobId` is the authority
+ * (it counts UTF-16 units and refuses control characters and a leading `.`),
+ * and its refusal is answered 400 `INVALID_ARGUMENT`.
+ */
+export const NewJobIdSchema = s.string({
+  minLength: 1,
+  maxLength: MAX_JOB_ID_LENGTH,
+  description: `A new job's id, at most ${MAX_JOB_ID_LENGTH} characters. bun-jobs may still refuse it (400 INVALID_ARGUMENT): control characters, a leading ".", or more than ${MAX_JOB_ID_LENGTH} UTF-16 units.`,
 });
 
 /** Optional fields a client asks for with `include`. */
@@ -176,7 +201,7 @@ export const IncludeQuerySchema = s.query(s.object({ include: IncludeQuery }));
 /** `POST /queues/:queue/jobs/lookup` body. */
 export function lookupBodySchema(maxBulkIds: number) {
   return s.object({
-    ids: s.array(JobIdSchema, {
+    ids: s.array(JobIdRefSchema, {
       minItems: 1,
       description: `At most ${maxBulkIds} ids; more is 400 BULK_LIMIT.`,
     }),
@@ -250,7 +275,7 @@ export const RetryBodySchema = s.object({
 /** A bulk body: ids, capped by `limits.maxBulkIds`. */
 export function bulkBodySchema(maxBulkIds: number) {
   return s.object({
-    ids: s.array(JobIdSchema, {
+    ids: s.array(JobIdRefSchema, {
       minItems: 1,
       description: `At most ${maxBulkIds} ids; more is 400 BULK_LIMIT.`,
     }),
@@ -260,7 +285,7 @@ export function bulkBodySchema(maxBulkIds: number) {
 /** `POST /queues/:queue/jobs/retry` body. */
 export function bulkRetryBodySchema(maxBulkIds: number) {
   return s.object({
-    ids: s.array(JobIdSchema, {
+    ids: s.array(JobIdRefSchema, {
       minItems: 1,
       description: `At most ${maxBulkIds} ids; more is 400 BULK_LIMIT.`,
     }),
@@ -302,7 +327,7 @@ export const AddBodySchema = s.object({
   opts: s.optional(
     s.object(
       {
-        jobId: s.optional(JobIdSchema),
+        jobId: s.optional(NewJobIdSchema),
         priority: s.optional(s.number()),
         delay: s.optional(s.integer({ minimum: 0 })),
         runAt: s.optional(TimeInput),

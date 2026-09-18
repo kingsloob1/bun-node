@@ -485,6 +485,21 @@ describe("GET /meta", () => {
       publishing: null,
       websocket: null,
       docs: { openapi: "/admin/jobs/openapi.json" },
+      csrf: { header: null, requireJson: true },
+      limits: {
+        defaultPageSize: 20,
+        maxPageSize: 100,
+        maxBulkIds: 1000,
+        maxRetryAll: 10_000,
+        maxClean: 10_000,
+        maxLogPage: 500,
+        maxHistory: 200,
+        maxJobDataBytes: 1_048_576,
+        maxQueues: 500,
+      },
+      // `jobs.add` is opt-in and not enabled here: nothing can be added.
+      addableNames: [],
+      runnerTriggerArgs: false,
     });
     expect(JSON.stringify(body)).not.toContain("url");
   });
