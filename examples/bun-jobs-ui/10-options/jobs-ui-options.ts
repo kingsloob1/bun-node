@@ -19,8 +19,12 @@
  *   then discovers the socket and docs from the API's `/meta` at runtime, so
  *   `config.websocket` and `config.docs` are `null`.
  * - **`authorize` guards the page and the bundle only.** The data is guarded
- *   by the API's own `authorize`, always. An unrecognised answer is a 403 and
- *   a throw is a 500: it fails closed.
+ *   by the API's own `authorize`, always. Only `status: 401` gives a 401: any
+ *   other status is a 403, an unrecognised answer is a 403 and a throw is a
+ *   500. It fails closed.
+ * - **`apiUrl` is checked as written.** A URL's path obeys `basePath`'s
+ *   segment rules before `new URL()` can normalise it; credentials, a query
+ *   and a fragment are refused, even an empty `?` or `#`.
  * - **`dev` and `logger` come first below**, because the in-memory build of
  *   the app happens once per process and is logged once — by the first UI
  *   that needs it.
@@ -43,6 +47,7 @@ import {
   noopLogger,
 } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
+import * as entry from "@kingsleyweb/bun-jobs-ui";
 import {
   ASSET_CACHE_CONTROL,
   DEFAULT_BASE_PATH,
@@ -126,6 +131,27 @@ checkEqual(
   "public, max-age=31536000, immutable",
 );
 checkEqual("UI_CONFIG_ELEMENT_ID", UI_CONFIG_ELEMENT_ID, "bun-jobs-ui-config");
+
+// The package's whole runtime surface: jobsUi and the four constants. The
+// bundle machinery (building, writing and loading dist/) is internal.
+checkEqual(
+  "the entry exports exactly these runtime values",
+  Object.keys(entry).sort(),
+  [
+    "ASSET_CACHE_CONTROL",
+    "DEFAULT_BASE_PATH",
+    "DEFAULT_TITLE",
+    "UI_CONFIG_ELEMENT_ID",
+    "jobsUi",
+  ],
+);
+checkEqual(
+  "buildAssets, loadDistAssets and writeAssets are not exported",
+  ["buildAssets", "loadDistAssets", "writeAssets"].filter(
+    (name) => name in entry,
+  ),
+  [],
+);
 
 /* ================================================================== */
 step("logger — anything resolveLogger accepts; hears the one-time build");
@@ -307,11 +333,13 @@ checkEqual("no docs known → null", samePath.config.docs, null);
 const samePathCsp = cspDirectives(
   (await samePath.router.fetch("/")).headers.get("content-security-policy"),
 );
-checkEqual("a path adds nothing to connect-src", samePathCsp["connect-src"], [
-  "'self'",
-  "ws:",
-  "wss:",
-]);
+// router.fetch("/") requests http://localhost: the page's own origin as a
+// socket is all connect-src lists. A same-origin API is already 'self'.
+checkEqual(
+  "a path: connect-src is 'self' and the page's socket origin only",
+  samePathCsp["connect-src"],
+  ["'self'", "ws://localhost"],
+);
 
 const remote = ui({ apiUrl: "https://ops.example.com:8443/jobs-api/" });
 checkEqual(
@@ -327,17 +355,39 @@ checkEqual(
 const remoteCsp = cspDirectives(
   (await remote.router.fetch("/")).headers.get("content-security-policy"),
 );
-checkEqual("a URL's origin joins connect-src", remoteCsp["connect-src"], [
-  "'self'",
-  "ws:",
-  "wss:",
-  "https://ops.example.com:8443",
-]);
 checkEqual(
-  "an origin alone is fine",
-  ui({ apiUrl: "http://localhost:4000" }).config.apiBase,
-  "http://localhost:4000",
+  "a URL: its origin joins connect-src as https:// and wss://",
+  remoteCsp["connect-src"],
+  [
+    "'self'",
+    "ws://localhost",
+    "https://ops.example.com:8443",
+    "wss://ops.example.com:8443",
+  ],
 );
+
+// The URL's path may be empty or "/": the API at the origin root. Every
+// trailing slash is trimmed.
+for (const [why, apiUrl, apiBase] of [
+  ["an origin alone", "http://localhost:4000", "http://localhost:4000"],
+  ['a "/" path', "http://localhost:4000/", "http://localhost:4000"],
+  [
+    "a trailing slash",
+    "https://ops.example.com/v1/jobs/",
+    "https://ops.example.com/v1/jobs",
+  ],
+  [
+    "every trailing slash",
+    "https://ops.example.com/v1/jobs//",
+    "https://ops.example.com/v1/jobs",
+  ],
+] as const) {
+  checkEqual(
+    `apiUrl accepts ${why}: ${JSON.stringify(apiUrl)} → ${apiBase}`,
+    ui({ apiUrl }).config.apiBase,
+    apiBase,
+  );
+}
 
 // Every form jobsUi() refuses.
 for (const [why, apiUrl] of [
@@ -351,10 +401,6 @@ for (const [why, apiUrl] of [
   ["an ftp: URL", "ftp://ops.example.com/jobs-api"],
   ["a javascript: URL", "javascript:alert(1)"],
   ["a file: URL", "file:///etc/passwd"],
-  ["a query", "https://ops.example.com/jobs-api?token=1"],
-  ["a fragment", "https://ops.example.com/jobs-api#top"],
-  ["credentials", "https://admin:secret@ops.example.com/jobs-api"],
-  ["a user name alone", "https://admin@ops.example.com/jobs-api"],
   ["not a URL at all", "http://"],
 ] as const) {
   await checkRejects(
@@ -362,6 +408,62 @@ for (const [why, apiUrl] of [
     () => ui({ apiUrl }),
     CONFIG,
   );
+}
+
+// A URL's path obeys the path form's segment rules, checked on the string as
+// written: new URL() would resolve "..", encode a space and turn "\" into
+// "/", quietly pointing the app somewhere else.
+for (const [why, apiUrl] of [
+  ['a ".." segment', "https://ops.example.com/a/../jobs-api"],
+  ['a "." segment', "https://ops.example.com/a/./jobs-api"],
+  ["a space", "https://ops.example.com/jobs api"],
+  ["an encoded space", "https://ops.example.com/jobs%20api"],
+  ["an encoded slash", "https://ops.example.com/jobs%2Fapi"],
+  ["an empty segment", "https://ops.example.com/a//jobs-api"],
+  ['a ":"', "https://ops.example.com/jobs:api"],
+  ["a backslash", "https://ops.example.com/a\\jobs-api"],
+  ["a tab", "https://ops.example.com/jobs\tapi"],
+] as const) {
+  await checkRejects(
+    `a URL's path refuses ${why}: ${JSON.stringify(apiUrl)}`,
+    () => ui({ apiUrl }),
+    { ...CONFIG, message: /may only contain "\/"-separated segments/ },
+  );
+}
+
+// Credentials of any kind: a user, a user and password, a password alone,
+// or a bare "@" with nothing before it.
+for (const [why, apiUrl] of [
+  ["a user and password", "https://admin:secret@ops.example.com/jobs-api"],
+  ["a user name alone", "https://admin@ops.example.com/jobs-api"],
+  ["a password alone", "https://:secret@ops.example.com/jobs-api"],
+  ['a bare "@"', "https://@ops.example.com/jobs-api"],
+] as const) {
+  await checkRejects(
+    `apiUrl refuses ${why}: ${JSON.stringify(apiUrl)}`,
+    () => ui({ apiUrl }),
+    { ...CONFIG, message: /^apiUrl may not carry credentials$/ },
+  );
+}
+
+// A query or a fragment, in the path form and the URL form alike. An empty
+// "?" or "#" counts.
+for (const [form, prefix] of [
+  ["a path", "/jobs-api"],
+  ["a URL", "https://ops.example.com/jobs-api"],
+] as const) {
+  for (const [suffix, message] of [
+    ["?token=1", /^apiUrl may not carry a query$/],
+    ["?", /^apiUrl may not carry a query$/],
+    ["#top", /^apiUrl may not carry a fragment$/],
+    ["#", /^apiUrl may not carry a fragment$/],
+  ] as const) {
+    await checkRejects(
+      `${form} refuses ${JSON.stringify(prefix + suffix)}`,
+      () => ui({ apiUrl: prefix + suffix }),
+      { ...CONFIG, message },
+    );
+  }
 }
 
 /* ================================================================== */
@@ -557,6 +659,11 @@ check(
 );
 
 checkEqual(
+  "unset with apiUrl → null: none, unless set by hand",
+  ui({ apiUrl: "https://ops.example.com/jobs-api" }).config.csrfHeader,
+  null,
+);
+checkEqual(
   "false → null (the API has no header)",
   ui({ api, csrfHeader: false }).config.csrfHeader,
   null,
@@ -749,6 +856,25 @@ checkEqual(
   [forbidden.status, forbidden.code, forbidden.detail],
   [403, "FORBIDDEN", "Admins only"],
 );
+
+// Only status 401 gives a 401. Any other status is answered 403, as the API's
+// own authorize does; to answer 429, rate-limit in `middleware`. The type
+// says `401 | 403`; the cast stands in for a JavaScript caller or a wider value.
+for (const status of [429, 500, 404]) {
+  const other = await answer(
+    guardedBy(() => ({
+      allow: false,
+      status: status as 401,
+      reason: "Try later",
+    })).app,
+    "/jobs",
+  );
+  checkEqual(
+    `{ allow: false, status: ${status} } → 403 FORBIDDEN, with the reason`,
+    [other.status, other.code, other.detail],
+    [403, "FORBIDDEN", "Try later"],
+  );
+}
 
 const asyncDenied = await answer(
   guardedBy(async () => {

@@ -23,6 +23,11 @@
  *   travels as a `<script type="application/json">` (data, never run), and
  *   the one module script is loaded from this origin under a per-request
  *   nonce.
+ * - **`connect-src` is built per request, never a bare `ws:`/`wss:`.** After
+ *   `'self'` it lists the page's own origin as a socket (`ws://` on http,
+ *   `wss://` on https, with the `Host`'s port), and a dedicated socket port on
+ *   the same hostname. A `Host` that is not a plain `host[:port]` adds
+ *   nothing, so a forged one cannot inject a directive.
  * - **The first request may bundle the app in memory** inside this repo (no
  *   `dist/`). It is a one-time cost of tens of milliseconds.
  */
@@ -133,10 +138,13 @@ checkEqual(
 );
 checkEqual("style-src: files only", directives["style-src"], ["'self'"]);
 checkEqual("img-src", directives["img-src"], ["'self'", "data:"]);
+// `app.fetch("/path")` requests http://localhost, so the page's own origin
+// as a socket is ws://localhost. Never a bare ws: or wss:, which would allow
+// a socket to any host.
 checkEqual(
-  "connect-src: this origin and any socket (a same-origin API adds nothing)",
+  "connect-src: 'self' and this page's origin as a socket (a same-origin API adds nothing)",
   directives["connect-src"],
-  ["'self'", "ws:", "wss:"],
+  ["'self'", "ws://localhost"],
 );
 checkEqual("base-uri", directives["base-uri"], ["'none'"]);
 checkEqual("frame-ancestors: never framed", directives["frame-ancestors"], [
@@ -175,6 +183,139 @@ checkEqual(
   second.shell.html.replaceAll(secondNonce, "NONCE"),
   html.replaceAll(nonce, "NONCE"),
 );
+
+/* ------------------------------------------------------------------ */
+step("connect-src: built from each request's Host");
+
+// connect-src is computed per request from the Host header (the origin the
+// browser loaded the page from) and whether the page is https. `fetch()`
+// takes a full Request, so each case sets the URL or the Host explicitly.
+/** The connect-src sources of the shell answered for `request`. */
+async function connectSrcFor(
+  target: { fetch: (request: Request) => Promise<Response> },
+  request: Request,
+): Promise<string[]> {
+  const response = await target.fetch(request);
+  await response.arrayBuffer();
+  return (
+    cspDirectives(response.headers.get("content-security-policy"))[
+      "connect-src"
+    ] ?? []
+  );
+}
+
+checkEqual(
+  "an https page → wss://",
+  await connectSrcFor(app, new Request("https://jobs.example/admin/jobs")),
+  ["'self'", "wss://jobs.example"],
+);
+checkEqual(
+  "https behind a proxy (X-Forwarded-Proto) → wss:// too",
+  await connectSrcFor(
+    app,
+    new Request("http://jobs.example/admin/jobs", {
+      headers: { "X-Forwarded-Proto": "https" },
+    }),
+  ),
+  ["'self'", "wss://jobs.example"],
+);
+checkEqual(
+  "a Host with a port keeps the port",
+  await connectSrcFor(
+    app,
+    new Request("http://localhost/admin/jobs", {
+      headers: { Host: "jobs.example:8080" },
+    }),
+  ),
+  ["'self'", "ws://jobs.example:8080"],
+);
+
+// A Host that is not a plain host[:port] (a DNS name or an IPv4 address) adds
+// nothing: a forged Host cannot write a directive into the header.
+const malformedHosts = [
+  "evil; script-src *",
+  "jobs.example, *",
+  "jobs example",
+  "jobs.example:99999",
+];
+for (const host of malformedHosts) {
+  checkEqual(
+    `a malformed Host ${JSON.stringify(host)} → only 'self'`,
+    await connectSrcFor(
+      app,
+      new Request("http://jobs.example/admin/jobs", {
+        headers: { Host: host },
+      }),
+    ),
+    ["'self'"],
+  );
+}
+checkEqual(
+  "an IPv6 Host is left out too (CSP has no form for it)",
+  await connectSrcFor(app, new Request("http://[::1]:3000/admin/jobs")),
+  ["'self'"],
+);
+
+// A socket on its own port (`websocket: { port }`): its ws(s) origin on the
+// page's hostname joins the list.
+const socketApi = createJobsApi({
+  jobs,
+  basePath: "/socket-api",
+  authorize: () => true,
+  websocket: { port: 0 },
+  logger: noopLogger,
+});
+const socketUi = jobsUi({
+  api: socketApi,
+  basePath: "/socket-ui",
+  logger: noopLogger,
+});
+const socketPort = socketUi.config.websocket?.port;
+show("the dedicated socket's port", socketPort);
+checkEqual(
+  "a dedicated socket port adds ws://<hostname>:<port>",
+  await connectSrcFor(
+    socketUi.router,
+    new Request("http://jobs.example:8080/"),
+  ),
+  ["'self'", "ws://jobs.example:8080", `ws://jobs.example:${socketPort}`],
+);
+checkEqual(
+  "and wss://<hostname>:<port> on an https page",
+  await connectSrcFor(socketUi.router, new Request("https://jobs.example/")),
+  ["'self'", "wss://jobs.example", `wss://jobs.example:${socketPort}`],
+);
+
+// Whatever the Host, every source is a single CSP token.
+const everySource = (
+  await Promise.all(
+    ["jobs.example", "jobs.example:8080", ...malformedHosts, "a\tb", ""].map(
+      (host) =>
+        connectSrcFor(
+          socketUi.router,
+          new Request("http://jobs.example/", { headers: { Host: host } }),
+        ),
+    ),
+  )
+).flat();
+check(
+  "no source contains whitespace, ; or ,",
+  everySource.every((source) => !/[\s;,]/.test(source)),
+  everySource,
+);
+const rawCsp = (
+  await socketUi.router.fetch(
+    new Request("http://jobs.example/", {
+      headers: { Host: "evil; script-src *" },
+    }),
+  )
+).headers.get("content-security-policy");
+checkEqual(
+  "and the forged Host never reaches the header",
+  [rawCsp?.includes("evil"), rawCsp?.match(/script-src/g)?.length],
+  [false, 1],
+);
+await socketApi.close();
 
 /* ------------------------------------------------------------------ */
 step("Deep links and the bare mount");
