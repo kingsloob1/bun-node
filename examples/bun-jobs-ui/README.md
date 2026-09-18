@@ -16,6 +16,7 @@ wrong answer fails the script.
 cd examples/bun-jobs-ui
 bun 01-quick-start/index.ts            # start here
 bun 01-quick-start/index.ts --serve    # and keep serving, to open it in a browser
+bun 05-demo/seeded-demo.ts --serve     # every queue screen, seeded, with a URL for each
 bun run-all.ts                         # every example; prints ok / skip / FAIL
 bun run-all.ts 02 10                   # only folders 02-* and 10-*
 ```
@@ -24,9 +25,17 @@ No install step: `@kingsleyweb/bun-jobs-ui`, `@kingsleyweb/bun-jobs` and
 `@kingsleyweb/bun-common` resolve from the repo's root `node_modules`. The
 memory driver keeps every job in the process, so no database is needed.
 
-In 0.1.0 only the app's **Overview** screen is real. Queues, Runners, Events
-and API docs are placeholders, so these examples cover the server side: what
-`jobsUi()` serves, how it is configured and how it is mounted.
+The app's **Overview** and **Queues** screens are real: the queue list, one
+queue (its actions, jobs table and panels) and one job. Runners, Events and API
+docs are still placeholders. Folders 01–03 and 10 cover the server side: what
+`jobsUi()` serves, how it is configured and how it is mounted. Folders 04–06
+cover the queue screens: their URLs, the permissions they are drawn from, a
+seeded demo to click through, and a browser driving them.
+
+`05-demo/seeded-demo.ts` reads `EXAMPLE_DRIVER` like the
+[`bun-jobs` examples](../bun-jobs/README.md#choosing-a-backend) do (`memory` by
+default; `file` and `sqlite` need nothing; a server backend needs its URL, and
+skips without one).
 
 The repo has no prebuilt `dist/`, so the first request in each process bundles
 the app in memory. That takes tens of milliseconds and logs one line. A
@@ -55,6 +64,25 @@ published package ships `dist/` and never builds.
 For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts):
 `jobsUi()` over the API that `BunJobsApiModule` built, mounted with
 `adapter.use(ui.basePath, ui.router)`.
+
+### 04 — The queue screens
+
+| File | Shows |
+|---|---|
+| [`deep-links.ts`](./04-screens/deep-links.ts) | every Queues URL, `/jobs/queues`, `/jobs/queues/mail`, `?state=failed&panel=workers`, the jobs table's `offset`/`limit`/`total`/`name`/`search`/`order`, the throughput `window`, and a job at `/jobs/queues/mail/jobs/a%2Fb`, answered with the same shell and the same config; a job id as one percent-encoded segment (`/`, `?`, `#`, a space, non-ASCII) that the API finds too; and the API still answering under its own `basePath` on the same host. No socket |
+| [`permissions.ts`](./04-screens/permissions.ts) | what each screen needs, asserted on the API: an `authorize` that allows `mail` fully, `audit` read-only and `payroll` nothing; `GET /meta/permissions` (the boot map and the fallback) and `?queue=mail\|audit\|payroll`, restated as every gate the screens use (list, header, jobs table, Pause/Resume, Drain, Clean, Retry all, Add job, bulk retry/promote/remove, each panel and its edit, the job's logs, Retry, Promote, Remove, Update); the server's 403 for every mutation a client sends anyway, and for one the map allowed but `authorize` refuses for a particular job; `readOnly`, where mutations are absent from the map rather than `false` |
+
+### 05 — A seeded demo
+
+| File | Shows |
+|---|---|
+| [`seeded-demo.ts`](./05-demo/seeded-demo.ts) | the one to open in a browser: `--serve` seeds four queues with jobs in every state (waiting, delayed, active, completed, failed, dead, waiting-children), failures with a `cause` and stack traces (`serialize.exposeStacks`), logs, a flow, a repeatable, queue limits, a paused queue long enough to page, two workers and this minute's throughput, then prints the URL of every screen and panel and keeps work flowing. Without `--serve` it asserts the seed through the API, the reads the screens make, and exits. Honours `EXAMPLE_DRIVER` |
+
+### 06 — In a browser
+
+| File | Shows |
+|---|---|
+| [`pause-and-retry.ts`](./06-browser/pause-and-retry.ts) | headless Chrome through `Bun.WebView`, as the package's e2e test drives it: pause a queue from its screen, then open a dead job (its id carrying `%2F`), retry it through the `dialog[open]` confirmation, and read each result back from the API, with no CSP violation. It uses the stable `data-testid` hooks and waits on conditions, never on time. **Skips** when there is no `Bun.WebView` or no Chrome (`BUN_CHROME_PATH` overrides the search; `EXAMPLE_BROWSER=0` skips on purpose) |
 
 ### 10 — Option tour
 
