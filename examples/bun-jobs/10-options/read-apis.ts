@@ -630,7 +630,7 @@ checkEqual(
   {
     driver: driver.name,
     method: "listWorkers",
-    needs: "worker records or queue state",
+    needs: "listWorkers()",
   },
 );
 

@@ -241,10 +241,11 @@ check(
   "the subscription is accepted as sent",
   oddAck.channels.length === 1 && oddAck.channels[0] === oddChannel,
 );
-// The channel is only a name here: no job with this id is added. Server
-// backends cannot store a lone surrogate faithfully, and bun-jobs is moving to
-// refuse ids that are not well-formed Unicode, so the encoding matters for
-// names a client builds, not for ids it should create.
+// The channel is only a name here: no job with this id is added, and none
+// could be — server backends cannot store a lone surrogate faithfully, so
+// bun-jobs refuses a new id that is not well-formed Unicode (400
+// INVALID_ARGUMENT over the API, a ConfigError directly). The encoding
+// matters for names a client builds, and for ids an older store still holds.
 live.socket.close();
 
 /* ------------------------------------------------------------------ */

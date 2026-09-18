@@ -22,11 +22,16 @@
  *   constructs them to show their shape.
  * - **`UnrecoverableJobError` is recognised by name**, so it still stops
  *   retries when thrown in an isolated (spawned) processor.
+ * - **`NotSupportedError` is a `ConfigError`.** Every feature that needs a
+ *   driver method the driver lacks — `cleanWindows()`, `getThroughput()`,
+ *   `job.log()` and the rest — raises it, with `context.driver`,
+ *   `context.method` and `context.needs`. It keeps the `CONFIG` code, so a
+ *   branch on `CONFIG` catches both.
  * - **JSON is the boundary.** A cycle or a `BigInt` in job data is a
  *   `SerializationError` at `add()`; a function is silently dropped, because
  *   that is what JSON does with one.
  */
-import type { RunRecord } from "@kingsleyweb/bun-jobs";
+import type { JobsDriver, RunRecord } from "@kingsleyweb/bun-jobs";
 import {
   BunJobs,
   BunQueue,
@@ -42,8 +47,11 @@ import {
   JobTimeoutError,
   LockLostError,
   LockUnavailableError,
+  MAX_JOB_ID_LENGTH,
+  NotSupportedError,
   QueueClosedError,
   QueueFullError,
+  RESERVED_STATE_PREFIX,
   RunKilledError,
   RunnerNotFoundError,
   RunnerStoppedError,
@@ -343,6 +351,164 @@ await checkConfig(
   },
   /start\(\) has nothing to run/,
 );
+
+// Ids a caller chooses are checked where they are given — see
+// `ids-and-keys.ts` for every rule. One of each, to show the shape.
+const idError = await checkRejects(
+  "a jobId over the cap",
+  () => queue.add("x", {}, { jobId: "a".repeat(MAX_JOB_ID_LENGTH + 1) }),
+  { name: "ConfigError", code: "CONFIG", message: /the most is 191/ },
+);
+checkEqual(
+  "…context: the length and the max",
+  [fields(idError).context?.length, fields(idError).context?.max],
+  [MAX_JOB_ID_LENGTH + 1, MAX_JOB_ID_LENGTH],
+);
+await checkConfig(
+  "a control character in a jobId",
+  () => queue.add("x", {}, { jobId: `a${String.fromCharCode(7)}b` }),
+  /may not contain control characters, and has U\+0007 at index 1/,
+);
+await checkConfig(
+  "a debounce id beginning with a dot",
+  () => queue.add("x", {}, { debounce: { id: ".x", ttl: 1_000 } }),
+  /^debounce\.id may not begin with "\."/,
+);
+await checkConfig(
+  "a queue-state name under the reserved prefix",
+  () =>
+    driver.setQueueState!(queue.ref, `${RESERVED_STATE_PREFIX}mine`, 1, null),
+  /reserved by bun-jobs/,
+);
+{
+  const registry = new BunJobs({ namespace, driver });
+  registry.define("mail", async () => null);
+  await checkConfig(
+    "a series setter before repeatEvery()",
+    () => registry.create("mail").limit(3),
+    /^limit\(\) sets one option of a repeating series, so it needs repeatEvery\(\) before it$/,
+  );
+  await checkConfig(
+    "a draft date phrase that cannot be read — at save(), naming the setter",
+    () => registry.create("mail").schedule("the twelfth of Octember").save(),
+    /^schedule\(\) could not read "the twelfth of Octember" as a date$/,
+  );
+  await registry.close();
+}
+
+/* ------------------------------------------------------------------ */
+step("NotSupportedError: a driver without a method a feature needs");
+
+// A driver may leave some methods out — a custom driver, or one written
+// before they existed. The feature that needs one then throws
+// NotSupportedError: a ConfigError subclass, so it keeps the CONFIG code and a
+// branch on `code === "CONFIG"` catches both, with `context.driver`,
+// `context.method` and `context.needs` saying which is missing and why.
+
+/**
+ * The same driver with some optional methods hidden. Methods are bound to the
+ * real driver so its private state still works.
+ */
+function without(real: JobsDriver, methods: (keyof JobsDriver)[]): JobsDriver {
+  return new Proxy(real, {
+    get(target, property) {
+      if (methods.includes(property as keyof JobsDriver)) {
+        return undefined;
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+const bare = without(driver, [
+  "getThroughput",
+  "listQueueState",
+  "getQueueState",
+  "setQueueState",
+  "getJobLogs",
+  "addJobLog",
+  "updateJob",
+]);
+const bareQueue = new BunQueue("bare", { namespace, driver: bare });
+const plainJob = await bareQueue.add("x", {});
+
+for (const [label, run, method, needs] of [
+  [
+    "queue.getThroughput()",
+    () => bareQueue.getThroughput(),
+    "getThroughput",
+    "getThroughput()",
+  ],
+  [
+    "queue.cleanWindows()",
+    () => bareQueue.cleanWindows(),
+    "listQueueState",
+    "cleanWindows()",
+  ],
+  [
+    "queue.getJobLogs()",
+    () => bareQueue.getJobLogs(plainJob.id),
+    "getJobLogs",
+    "getJobLogs()",
+  ],
+  [
+    "queue.update()",
+    () => bareQueue.update(plainJob.id, { priority: 1 }),
+    "updateJob",
+    "update()",
+  ],
+  ["job.log()", () => plainJob.log("hello"), "addJobLog", "log()"],
+  ["job.getLogs()", () => plainJob.getLogs(), "getJobLogs", "getLogs()"],
+  [
+    "a debounced add",
+    () => bareQueue.add("x", {}, { debounce: { id: "d", ttl: 1_000 } }),
+    "getQueueState",
+    "add({ debounce })",
+  ],
+  [
+    "a throttled add",
+    () => bareQueue.add("x", {}, { throttle: { id: "t", ttl: 1_000 } }),
+    "getQueueState",
+    "add({ throttle })",
+  ],
+  [
+    "job.updateData()",
+    () => plainJob.updateData({}),
+    "updateJob",
+    "updateData()",
+  ],
+  [
+    "job.setPriority()",
+    () => plainJob.setPriority(3),
+    "updateJob",
+    "setPriority()",
+  ],
+  [
+    "job.reschedule()",
+    () => plainJob.reschedule(Date.now() + 60_000),
+    "updateJob",
+    "reschedule()",
+  ],
+] as const) {
+  const error = await checkRejects(label, run, {
+    name: "NotSupportedError",
+    code: "CONFIG",
+    message: new RegExp(`does not support ${method}\\(\\)`),
+  });
+  check(
+    `${label}: instanceof NotSupportedError, ConfigError and JobsError`,
+    error instanceof NotSupportedError &&
+      error instanceof ConfigError &&
+      error instanceof JobsError,
+  );
+  checkEqual(`${label}: context`, fields(error).context, {
+    driver: driver.name,
+    method,
+    needs,
+  });
+}
+await bareQueue.close();
 
 /* ------------------------------------------------------------------ */
 step("DriverError: a backend that cannot be reached");

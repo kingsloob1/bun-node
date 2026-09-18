@@ -22,27 +22,42 @@
  * - **An interval series is anchored to its creation**, so two `add` calls a
  *   millisecond apart agree on the next occurrence — that is what makes a
  *   repeat idempotent.
+ * - **Caller ids are checked; derived ids are shortened.** `assertJobId` is
+ *   the denylist every caller-chosen id goes through; `shortenJobId` is how an
+ *   id the package builds itself is brought under `MAX_JOB_ID_LENGTH`
+ *   characters *and* the file driver's 201 encoded bytes — deterministically,
+ *   so two workers deriving one occurrence agree. `assertRepeatKey` is the
+ *   same denylist for a `repeat.key`, capped at `MAX_REPEAT_KEY_LENGTH` (189).
+ * - **A caller's repeat key is stored as `k:<key>`** and shown bare by
+ *   `displayRepeatKey` — unless it contains `|`, where hiding the prefix
+ *   could make it look exactly like a generated key.
  * - Not exported from the package, so not covered: `nextBackoff`,
- *   `sweepWindows`, `supportsWindowSweep`, `DEBOUNCE_PREFIX`,
- *   `THROTTLE_PREFIX` and `DEFAULT_LIMITS_REFRESH_MS` live in `queue/` but
- *   `lib/index.ts` does not re-export them.
+ *   `sweepWindows`, `supportsWindowSweep`, `debounceIsPending`,
+ *   `WINDOW_PENDING_MS` and `DEFAULT_LIMITS_REFRESH_MS` live in `queue/` but
+ *   `lib/index.ts` does not re-export them. (`DEBOUNCE_PREFIX` and
+ *   `THROTTLE_PREFIX` now are, with `RESERVED_STATE_PREFIX`.)
  */
 import type { LogFields, RepeatRecord } from "@kingsleyweb/bun-jobs";
 import { hostname } from "node:os";
 import process from "node:process";
 import {
   assertDateParser,
+  assertJobId,
   assertJsonSafe,
   assertNamespace,
+  assertRepeatKey,
   assertSegment,
+  assertWritableStateName,
   BackoffStrategies,
   BUILT_IN_BACKOFFS,
+  CALLER_REPEAT_KEY_PREFIX,
   CHILD_ENV,
   CHRONO_VERSION_RANGE,
   createDriver,
   createJobsLogger,
   createTicker,
   databaseFromUrl,
+  DEBOUNCE_PREFIX,
   DEFAULT_CLOSE_TIMEOUT,
   DEFAULT_JOB_BACKOFF,
   DEFAULT_JOB_OPTIONS,
@@ -62,8 +77,11 @@ import {
   DEFAULT_STALLED_INTERVAL,
   DEFAULT_START_TIMEOUT,
   DEFAULT_SYNC_INTERVAL,
+  displayRepeatKey,
   HOST,
   isRunnerChild,
+  MAX_JOB_ID_LENGTH,
+  MAX_REPEAT_KEY_LENGTH,
   newId,
   newToken,
   nextCronDate,
@@ -77,6 +95,7 @@ import {
   QueueLimiter,
   repeatJobId,
   repeatKeyFor,
+  RESERVED_STATE_PREFIX,
   resolveConnectionUrl,
   resolveJobOptions,
   resolveLogger,
@@ -87,7 +106,9 @@ import {
   runnerEvent,
   runnerKey,
   safeJsonParse,
+  shortenJobId,
   stringifyBounded,
+  THROTTLE_PREFIX,
   toConnectionUrl,
   toRepeatRecord,
   validateCron,
@@ -1242,6 +1263,171 @@ checkEqual(
     parseToken("box:42:"),
   ],
   [null, null, null, null],
+);
+
+/* ------------------------------------------------------------------ */
+step("Job ids: assertJobId, shortenJobId, displayRepeatKey");
+
+checkEqual("MAX_JOB_ID_LENGTH", MAX_JOB_ID_LENGTH, 191);
+checkEqual(
+  "assertJobId: answers with the id it accepted",
+  ["tenant/7", "a\\b", "report|every:60000|", "a".repeat(191)].map((id) =>
+    assertJobId(id, "jobId"),
+  ),
+  ["tenant/7", "a\\b", "report|every:60000|", "a".repeat(191)],
+);
+const tooLongId = await checkConfig(
+  "assertJobId: one over the cap",
+  () => assertJobId("a".repeat(192), "jobId"),
+  /^jobId is 192 characters long; the most is 191$/,
+);
+checkEqual(
+  "…context: the id, its length, the max",
+  (tooLongId as { context?: unknown } | undefined)?.context,
+  { jobId: "a".repeat(192), length: 192, max: 191 },
+);
+const controlId = await checkConfig(
+  "assertJobId: a C1 control, named by code point and index",
+  () => assertJobId(`ab${String.fromCharCode(0x85)}`, "flow node jobId"),
+  /^flow node jobId may not contain control characters, and has U\+0085 at index 2$/,
+);
+const controlContext = (
+  controlId as { context?: Record<string, unknown> } | undefined
+)?.context;
+checkEqual(
+  "…context: character and index",
+  [controlContext?.character, controlContext?.index],
+  ["U+0085", 2],
+);
+await checkConfig(
+  "assertJobId: empty — the label is the caller's",
+  () => assertJobId("", "debounce.id"),
+  /^debounce\.id must be a non-empty string$/,
+);
+await checkConfig(
+  "assertJobId: a leading dot",
+  () => assertJobId("..", "jobId"),
+  /may not begin with "\."/,
+);
+await checkConfig(
+  "assertJobId: a lone surrogate — not well-formed UTF-16",
+  () => assertJobId(`inv-${String.fromCharCode(0xd800)}-1`, "jobId"),
+  /^jobId contains a lone surrogate, which no backend can store faithfully$/,
+);
+checkEqual(
+  "assertJobId: a surrogate *pair* is an ordinary character",
+  assertJobId("unicode-🙂", "jobId"),
+  "unicode-🙂",
+);
+
+checkEqual(
+  "MAX_REPEAT_KEY_LENGTH: the cap less the k: prefix",
+  MAX_REPEAT_KEY_LENGTH,
+  189,
+);
+checkEqual(
+  "assertRepeatKey: returns a key at the cap",
+  assertRepeatKey("r".repeat(189)).length,
+  189,
+);
+const longKey = await checkConfig(
+  "assertRepeatKey: 190 characters",
+  () => assertRepeatKey("r".repeat(190)),
+  /^repeat\.key is 190 characters long; the most is 189 \(it is stored with a "k:" prefix\)$/,
+);
+checkEqual(
+  "…context: the key, its length, the max",
+  (longKey as { context?: Record<string, unknown> } | undefined)?.context,
+  { "repeat.key": "r".repeat(190), length: 190, max: 189 },
+);
+await checkConfig(
+  "assertRepeatKey: the id rules first, under its own name",
+  () => assertRepeatKey("a\u0000b"),
+  /^repeat\.key may not contain control characters, and has U\+0000 at index 1$/,
+);
+
+const derived = `orders:${"a".repeat(191)}:1789548510000`;
+const shortened = shortenJobId(derived);
+checkEqual(
+  "shortenJobId: fits the cap, ends in ~ and a base-36 hash of the whole",
+  [shortened.length, /~[0-9a-z]+$/.test(shortened)],
+  [191, true],
+);
+checkEqual(
+  "shortenJobId: deterministic — two workers derive the same id",
+  shortenJobId(derived),
+  shortened,
+);
+// Fitted in bytes as well as characters: a capital takes two bytes in a file
+// name, so 191 capitals are cut shorter than 191 characters — and whatever
+// shortenJobId returns, it returns unchanged when given back.
+const capitals = shortenJobId("C".repeat(191));
+checkEqual(
+  "shortenJobId: 191 capitals, cut to fit the file driver's 201 bytes",
+  [
+    capitals.length < 191,
+    capitals.startsWith("C".repeat(90)),
+    shortenJobId(capitals) === capitals,
+  ],
+  [true, true, true],
+);
+check(
+  "shortenJobId: ids differing only past the cut stay apart",
+  shortenJobId(`${derived}1`) !== shortenJobId(`${derived}2`),
+);
+checkEqual(
+  "shortenJobId: an id that fits is left alone",
+  shortenJobId("orders:plain:1"),
+  "orders:plain:1",
+);
+
+checkEqual("CALLER_REPEAT_KEY_PREFIX", CALLER_REPEAT_KEY_PREFIX, "k:");
+checkEqual(
+  "displayRepeatKey: bare for a caller key, as is for a generated one",
+  [displayRepeatKey("k:nightly"), displayRepeatKey("report|every:60000|")],
+  ["nightly", "report|every:60000|"],
+);
+checkEqual(
+  "displayRepeatKey: a caller key with | keeps its prefix",
+  displayRepeatKey("k:report|every:60000|"),
+  "k:report|every:60000|",
+);
+
+checkEqual(
+  "RESERVED_STATE_PREFIX, DEBOUNCE_PREFIX, THROTTLE_PREFIX",
+  [RESERVED_STATE_PREFIX, DEBOUNCE_PREFIX, THROTTLE_PREFIX],
+  ["__win:", "__win:debounce:", "__win:throttle:"],
+);
+await checkConfig(
+  "assertWritableStateName: a caller's name under the prefix",
+  () => assertWritableStateName("__win:mine"),
+  /reserved by bun-jobs/,
+);
+// The package's own writes carry an unexported symbol; nothing a caller can
+// build gets past — not a symbol with the same description, and not the
+// `{ internal: true }` an earlier version accepted.
+await checkConfig(
+  "assertWritableStateName: a look-alike symbol is refused",
+  () =>
+    assertWritableStateName("__win:debounce:x", {
+      internal: Symbol("bun-jobs: reserved queue-state write"),
+    }),
+  /reserved by bun-jobs/,
+);
+await checkConfig(
+  "assertWritableStateName: so is { internal: true }",
+  () =>
+    assertWritableStateName("__win:debounce:x", {
+      internal: true as unknown as symbol,
+    }),
+  /reserved by bun-jobs/,
+);
+check(
+  "assertWritableStateName: any name outside the prefix passes",
+  (() => {
+    assertWritableStateName("debounce:mine");
+    return true;
+  })(),
 );
 
 /* ------------------------------------------------------------------ */

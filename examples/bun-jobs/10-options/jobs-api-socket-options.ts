@@ -853,54 +853,45 @@ checkEqual(
   loneAck.rejected?.map((rejection) => [rejection.channel, rejection.code]),
   [["queue/mail/job/inv-%u0041", "INVALID_CHANNEL"]],
 );
-await surrogates.jobs.queue("mail").add("send", {}, { jobId: lone });
-const loneEvent = await surrogateClient.next(
-  "event",
-  (frame) => frame.event.type === "added",
+// The channel form exists so a client can name any id it is given, but a
+// *new* job may not have one: `assertJobId` refuses an id that is not
+// well-formed UTF-16, because a backend storing UTF-8 would replace the
+// surrogate with U+FFFD and two different ids would become one. Directly
+// that is a ConfigError; over the API, 400 INVALID_ARGUMENT.
+await checkRejects(
+  "a job with a lone-surrogate id is refused, on add",
+  () => surrogates.jobs.queue("mail").add("send", {}, { jobId: lone }),
+  { name: "ConfigError", message: /lone surrogate/ },
 );
-checkEqual("and its events arrive there", loneEvent.subscriptions, [
-  loneChannel,
-]);
-checkEqual("carrying the id intact", loneEvent.event.id, lone);
-
-// The fatal path was coalesced progress: held back, then flushed from a
-// timer, where a throw has no caller to catch it and ends the process. Here
-// the second value is held, and the processor waits until the timer has
-// delivered it before it lets the job finish.
-const coalescing = await served(
-  { websocket: { coalesceProgressMs: 50 } },
-  "surrogate-progress",
+const addingOverHttp = await served(
+  { actions: ["jobs.add"], addableNames: "any" },
+  "surrogate-http",
 );
-const progressWatcher = await connectJobsSocket(coalescing.url);
-await progressWatcher.next("hello");
-progressWatcher.send({ op: "subscribe", id: "p", channels: [loneChannel] });
-await progressWatcher.next("ack", (frame) => frame.id === "p");
-/** The progress values the watcher has received for the lone-surrogate job. */
-const progressValues = () =>
-  progressWatcher
-    .all("event")
-    .filter((frame) => frame.event.type === "progress")
-    .map((frame) => (frame.event.payload as { progress: unknown }).progress);
-const reporter = coalescing.jobs.worker("mail", async (job) => {
-  await job.updateProgress(1);
-  await job.updateProgress(2);
-  await waitFor("the coalescing timer to flush progress 2", () => {
-    return progressValues().includes(2);
-  });
-  return null;
-});
-const reporting = reporter.run();
-await coalescing.jobs.queue("mail").add("report", {}, { jobId: lone });
-await progressWatcher.next(
-  "event",
-  (frame) => frame.event.type === "completed",
+const refusedOverHttp = await fetch(
+  `${addingOverHttp.origin}/admin/jobs/queues/mail/jobs`,
+  {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-bun-jobs-csrf": "1" },
+    // JSON carries the surrogate as a `\ud800` escape.
+    body: JSON.stringify({ name: "send", data: {}, opts: { jobId: lone } }),
+  },
 );
-await reporter.close();
-await reporting;
 checkEqual(
-  "progress held for such a job is flushed by the timer, and the process lives",
-  progressValues(),
-  [1, 2],
+  "and over the API it is 400 INVALID_ARGUMENT",
+  [
+    refusedOverHttp.status,
+    ((await refusedOverHttp.json()) as { code: string }).code,
+  ],
+  [400, "INVALID_ARGUMENT"],
+);
+checkEqual(
+  "so nothing was stored, and nothing was published on its channel",
+  [
+    await surrogates.jobs.queue("mail").count("waiting"),
+    await addingOverHttp.jobs.queue("mail").count("waiting"),
+    surrogateClient.all("event").length,
+  ],
+  [0, 0, 0],
 );
 
 /* ------------------------------------------------------------------ */

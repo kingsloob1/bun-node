@@ -23,6 +23,16 @@
  *   delays a new job.
  * - **A wait in progress** is cut short on a polling driver and left to
  *   finish on a blocking one.
+ * - **Series setters** — `limit()`, `tz()`, `endingAt()`, `catchUp()`,
+ *   `immediately()` — change one field of the series and leave the rest.
+ *   Called before `repeatEvery()` they throw `ConfigError` at once; a later
+ *   `repeatEvery()` replaces what they set.
+ * - **Date phrases are read at `save()`**, so "in 1 hour" is an hour from the
+ *   save, and an unreadable one fails there — naming `schedule()` or
+ *   `endingAt()` and quoting the phrase.
+ * - **`jobs.processEveryMs`** reads back what `processEvery` was given, in
+ *   milliseconds (`undefined` when never set) — what was asked for, not what
+ *   a worker started with its own `pollInterval` uses.
  */
 import type {
   Job,
@@ -758,6 +768,331 @@ step(
 }
 
 /* ------------------------------------------------------------------ */
+step("Series setters: limit(), tz(), endingAt(), catchUp(), immediately()");
+
+// Each changes ONE field of the series `repeatEvery()` described and leaves
+// the rest — unlike `repeatEvery()` itself, which replaces the whole series.
+// Without a series to change they throw at once: spreading an absent series
+// would otherwise have manufactured `{ limit: 3 }`, a repeat with nothing to
+// repeat.
+
+{
+  const before = await total(queue);
+  const setters = [
+    ["limit", (draft: JobDraft<Mail>) => draft.limit(3)],
+    ["tz", (draft: JobDraft<Mail>) => draft.tz("UTC")],
+    ["endingAt", (draft: JobDraft<Mail>) => draft.endingAt("in 2 days")],
+    ["catchUp", (draft: JobDraft<Mail>) => draft.catchUp()],
+    ["immediately", (draft: JobDraft<Mail>) => draft.immediately()],
+  ] as const;
+
+  for (const [method, call] of setters) {
+    const draft = jobs.create<Mail>("mail", { to: method });
+    const error = await checkRejects(
+      `${method}() before repeatEvery() throws at the setter`,
+      () => call(draft),
+      {
+        name: "ConfigError",
+        code: "CONFIG",
+        message: new RegExp(
+          `^${method}\\(\\) .*needs repeatEvery\\(\\) before it`,
+        ),
+      },
+    );
+    checkEqual(
+      `${method}(): context names the method and the job`,
+      (error as ConfigError | undefined)?.context,
+      { name: "mail", method: `${method}()` },
+    );
+
+    // Refused before it touched anything: the draft is still a plain one-off
+    // and saves as one — no series, and no stray field from the refused call.
+    const saved = await draft.save();
+    checkEqual(
+      `${method}(): the refused draft still saves, as a one-off`,
+      [saved.isRepeat, saved.repeatKey, saved.state],
+      [false, null, "waiting"],
+    );
+  }
+  checkEqual(
+    "…one job per refused draft, and no series",
+    [(await total(queue)) - before, (await queue.listRepeatables()).length],
+    [setters.length, 0],
+  );
+  await jobs.drain({ delayed: true });
+
+  // One field each, the rest left as repeatEvery() gave it.
+  await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "one-field", limit: 9, tz: "UTC" })
+    .limit(3)
+    .catchUp()
+    .save();
+  const oneField = await seriesFor("one-field");
+  checkEqual(
+    "limit(3).catchUp(): those two changed; every and tz kept",
+    [oneField?.every, oneField?.limit, oneField?.tz, oneField?.catchUp],
+    [HOUR, 3, "UTC", true],
+  );
+
+  // tz() on a cron series: the zone is part of the generated key.
+  const zoned = await jobs
+    .create<Mail>("mail")
+    .repeatEvery("0 9 * * 1")
+    .tz("Asia/Tokyo")
+    .save();
+  checkEqual(
+    "tz(): the cron is read in that zone, and the default key says so",
+    [zoned.repeatKey, (await seriesFor("mail|0 9 * * 1@Asia/Tokyo|"))?.tz],
+    ["mail|0 9 * * 1@Asia/Tokyo|", "Asia/Tokyo"],
+  );
+
+  // endingAt(): a Date, epoch ms or words — a phrase read at save().
+  const endAt = Date.now() + 20 * DAY;
+  for (const [form, when] of [
+    ["a Date", new Date(endAt)],
+    ["epoch ms", endAt],
+  ] as const) {
+    await jobs
+      .create<Mail>("mail")
+      .repeatEvery("1 day", { key: `ending-${form}` })
+      .endingAt(when)
+      .save();
+    checkEqual(
+      `endingAt(${form})`,
+      (await seriesFor(`ending-${form}`))?.endAt,
+      endAt,
+    );
+  }
+  await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 day", { key: "ending-words" })
+    .endingAt("in 20 days")
+    .save();
+  const wordsEnd = (await seriesFor("ending-words"))?.endAt ?? 0;
+  check(
+    'endingAt("in 20 days"): read at save()',
+    Math.abs(wordsEnd - (Date.now() + 20 * DAY)) < MINUTE,
+    wordsEnd,
+  );
+
+  // catchUp(false) and immediately(false) undo what repeatEvery()'s options
+  // said; bare immediately() runs the first occurrence now.
+  await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "no-catch", catchUp: true })
+    .catchUp(false)
+    .save();
+  const notNow = await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "not-now", immediately: true })
+    .immediately(false)
+    .save();
+  const now = await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "now" })
+    .immediately()
+    .save();
+  checkEqual(
+    "catchUp(false) over { catchUp: true }; immediately(false) and immediately()",
+    [(await seriesFor("no-catch"))?.catchUp, notNow.state, now.state],
+    [false, "delayed", "waiting"],
+  );
+
+  // A later repeatEvery() replaces the series — setters' fields included.
+  await jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "reset" })
+    .limit(3)
+    .repeatEvery("2 hours", { key: "reset" })
+    .save();
+  const reset = await seriesFor("reset");
+  checkEqual(
+    "repeatEvery() after limit(): the limit goes with the old series",
+    [reset?.every, reset?.limit ?? undefined],
+    [2 * HOUR, undefined],
+  );
+
+  // withOptions({ every }) describes a series just as repeatEvery() does.
+  await jobs
+    .create<Mail>("mail")
+    .withOptions({ every: "2 days", repeatKey: "via-options" })
+    .limit(4)
+    .save();
+  checkEqual(
+    "withOptions({ every }) then limit(): allowed, and applied",
+    (await seriesFor("via-options"))?.limit,
+    4,
+  );
+
+  // A series setter is a setter: after a save it makes the next save refuse.
+  const savedSeries = jobs
+    .create<Mail>("mail")
+    .repeatEvery("1 hour", { key: "saved-series" });
+  await savedSeries.save();
+  savedSeries.limit(2);
+  await checkRejects(
+    "limit() after a save: the next save() is refused",
+    () => savedSeries.save(),
+    { name: "ConfigError", message: /already saved/ },
+  );
+
+  // The builder's limit() has the same guard: with no interval it throws at
+  // the setter, rather than inventing a repeat with nothing to repeat.
+  await checkRejects(
+    "JobBuilder.limit() with no every(): refused at the setter",
+    () => jobs.schedule<Mail>("mail").limit(3),
+    {
+      name: "ConfigError",
+      message: /^limit\(\) .*needs every\(\) or repeatEvery\(\) before it/,
+    },
+  );
+
+  // And the values are read at the setter too, on either side: limit() wants
+  // a whole number of at least 1, and tz() a zone the runtime knows — on an
+  // interval series as well as a cron one.
+  for (const [label, call] of [
+    [
+      "draft limit(0)",
+      () => jobs.create<Mail>("mail").repeatEvery("1 hour").limit(0),
+    ],
+    [
+      "draft limit(1.5)",
+      () => jobs.create<Mail>("mail").repeatEvery("1 hour").limit(1.5),
+    ],
+    [
+      "builder limit(-1)",
+      () => jobs.schedule<Mail>("mail").every("1 hour").limit(-1),
+    ],
+  ] as const) {
+    await checkRejects(`${label}: refused at the setter`, call, {
+      name: "ConfigError",
+      message: /^limit\(\) needs a whole number of occurrences, at least 1/,
+    });
+  }
+  for (const [label, call] of [
+    [
+      "draft tz() on an interval series",
+      () => jobs.create<Mail>("mail").repeatEvery("1 hour").tz("Europe/Lagos"),
+    ],
+    [
+      "builder tz() on an interval series",
+      () => jobs.schedule<Mail>("mail").every("1 hour").tz("Europe/Lagos"),
+    ],
+    [
+      "withOptions({ every, tz })",
+      () =>
+        jobs
+          .schedule<Mail>("mail")
+          .withOptions({ every: "1 hour", tz: "Europe/Lagos" }),
+    ],
+  ] as const) {
+    const error = await checkRejects(
+      `${label}: an unknown zone is refused`,
+      call,
+      {
+        name: "ConfigError",
+        message: /^tz\(\) does not know the time zone "Europe\/Lagos"/,
+      },
+    );
+    checkEqual(
+      `${label}: context names the method and the zone`,
+      (error as ConfigError | undefined)?.context,
+      { method: "tz()", tz: "Europe/Lagos" },
+    );
+  }
+
+  for (const repeatable of await queue.listRepeatables()) {
+    await queue.removeRepeatable(repeatable.key);
+  }
+  await jobs.drain({ delayed: true });
+}
+
+/* ------------------------------------------------------------------ */
+step("Date phrases are read at save(), and an unreadable one names its setter");
+
+{
+  // Read at save, not at the setter: "in 1 hour" is an hour from the save.
+  const draft = jobs.create<Mail>("mail").schedule("in 1 hour");
+  await Bun.sleep(300);
+  const savedAt = Date.now();
+  const job = await draft.save();
+  check(
+    'schedule("in 1 hour"): an hour from save(), not from schedule()',
+    job.runAt >= savedAt + HOUR - 50,
+    { runAt: job.runAt, savedAt },
+  );
+
+  // An unreadable phrase fails at save() — so the error names the method it
+  // was given to and quotes it, instead of `runAt could not be understood`,
+  // an option name the caller never wrote.
+  const before = await total(queue);
+  const unreadable = jobs
+    .create<Mail>("mail")
+    .schedule("the twelfth of Octember");
+  const error = await checkRejects(
+    "schedule(unreadable): refused at save()",
+    () => unreadable.save(),
+    { name: "ConfigError", code: "CONFIG" },
+  );
+  checkEqual(
+    "…naming schedule() and quoting the phrase",
+    error?.message,
+    'schedule() could not read "the twelfth of Octember" as a date',
+  );
+  checkEqual(
+    "…with the method in its context",
+    (error as ConfigError | undefined)?.context?.method,
+    "schedule()",
+  );
+  checkEqual(
+    "…and nothing written, the draft unsaved",
+    [(await total(queue)) - before, unreadable.isSaved],
+    [0, false],
+  );
+  const fixed = await unreadable.schedule(Date.now() + HOUR).save();
+  checkEqual(
+    "a readable schedule() replaces it, and the draft saves",
+    fixed.state,
+    "delayed",
+  );
+
+  await checkRejects(
+    "endingAt(unreadable): refused at save(), naming endingAt()",
+    () =>
+      jobs
+        .create<Mail>("mail")
+        .repeatEvery("1 hour")
+        .endingAt("the fifth of Octember")
+        .save(),
+    {
+      name: "ConfigError",
+      message:
+        /^endingAt\(\) could not read "the fifth of Octember" as a date$/,
+    },
+  );
+
+  // A different ConfigError from the same save() is not renamed.
+  const other = await checkRejects(
+    "an unrelated refusal from save() keeps its own message",
+    () =>
+      jobs
+        .create<Mail>("mail")
+        .schedule("in 2 hours")
+        .unique("u")
+        .debounce("d", 1_000)
+        .save(),
+    { name: "ConfigError" },
+  );
+  check(
+    "…not blamed on schedule()",
+    !other?.message.includes("schedule()"),
+    other?.message,
+  );
+  await jobs.drain({ delayed: true });
+}
+
+/* ------------------------------------------------------------------ */
 step("debounce() and throttle()");
 
 {
@@ -1208,6 +1543,51 @@ step("processEvery(): what it reads, and what it refuses");
     (await countOver(ctx.waits, 300)) <= 2,
   );
   await dispose(ctx);
+}
+
+/* ------------------------------------------------------------------ */
+step("processEveryMs: what was asked for, readable before start()");
+
+{
+  const unset = await spiedContext("every-ms-unset");
+  checkEqual(
+    "never set: undefined, leaving the worker its own defaults",
+    unset.jobs.processEveryMs,
+    undefined,
+  );
+  await dispose(unset);
+
+  const optioned = await spiedContext("every-ms-option", {
+    processEvery: "90 seconds",
+  });
+  checkEqual(
+    'the processEvery option: "90 seconds" reads back as ms, before start()',
+    optioned.jobs.processEveryMs,
+    90_000,
+  );
+  optioned.jobs.processEvery("250ms");
+  checkEqual(
+    "processEvery(): the later call wins",
+    optioned.jobs.processEveryMs,
+    250,
+  );
+  await caught(() => optioned.jobs.processEvery("whenever"));
+  checkEqual(
+    "a refused call leaves it as it was",
+    optioned.jobs.processEveryMs,
+    250,
+  );
+
+  // It reports what was *asked for*. start()'s own pollInterval wins over it
+  // for that worker, and the getter does not pretend otherwise.
+  optioned.jobs.define("tick", async () => null);
+  const worker = await optioned.jobs.start({ pollInterval: 999 });
+  checkEqual(
+    "start({ pollInterval }): the worker uses 999, processEveryMs still says 250",
+    [worker.pollInterval, optioned.jobs.processEveryMs],
+    [999, 250],
+  );
+  await dispose(optioned);
 }
 
 /* ------------------------------------------------------------------ */
