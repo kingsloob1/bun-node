@@ -12,8 +12,8 @@ import { JOBS_API_ACTIONS } from "../../app/api/contract";
 
 /**
  * Response fixtures, recorded from a real `createJobsApi` over the memory
- * driver (namespace `shop`, one queue) and typed against the DTO mirrors, so
- * a shape change fails the typecheck.
+ * driver (namespace `shop`, one queue) and typed against the package's
+ * contract types, so a shape change fails the typecheck.
  */
 
 /** A resolved UI config, as `jobsUi()` would inject it. */
@@ -72,6 +72,20 @@ export function metaFixture(overrides: Partial<MetaDto> = {}): MetaDto {
       openapi: "/jobs-api/openapi.json",
       asyncapi: "/jobs-api/asyncapi.json",
     },
+    csrf: { header: null, requireJson: true },
+    limits: {
+      defaultPageSize: 20,
+      maxPageSize: 100,
+      maxBulkIds: 1000,
+      maxRetryAll: 10000,
+      maxClean: 10000,
+      maxLogPage: 500,
+      maxHistory: 200,
+      maxJobDataBytes: 1048576,
+      maxQueues: 500,
+    },
+    addableNames: [],
+    runnerTriggerArgs: false,
     ...overrides,
   };
 }
@@ -147,6 +161,7 @@ export function queueListFixture(
       },
     ],
     truncated: false,
+    page: { offset: 0, limit: 500, total: 2, hasMore: false },
     ...overrides,
   };
 }

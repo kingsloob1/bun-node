@@ -2,22 +2,21 @@
   // The browser bundle. Compiler options come from the repo root's
   // `tsconfig.base.json`; this adds only the DOM libs, the types and `include`.
   //
-  // `types: ["bun"]` is deliberate, not an oversight: the app imports DTO types
-  // (type-only) from `@kingsleyweb/bun-jobs`, which ships raw `.ts`, so checking
-  // the app compiles that package's source graph, and it needs Bun's types
-  // (`import type { Server } from "bun"`, `node:buffer`, ...). The tests in
-  // `__tests__/app` run under `bun:test` and need them too. The browser code
-  // never uses a Bun global; the trial bundle (`bun build --target browser`)
-  // is what proves nothing server-side reaches it.
+  // The app imports the API's types and constants only from
+  // `@kingsleyweb/bun-jobs/api/contract`, which imports nothing but its own
+  // files, so no server source is compiled here. `types: ["bun"]` is for the
+  // tests in `__tests__/app`, which run under `bun:test`. The browser code
+  // never uses a Bun global; `__tests__/app/pkg/bundle-safety.test.ts` builds
+  // the app and proves nothing server-side reaches it.
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "types": ["bun"]
   },
   "include": ["./**/*", "../shared/**/*", "../__tests__/app/**/*"],
-  // Tests that import `@kingsleyweb/bun-jobs` itself (the contract drift and
-  // real-API tests) cannot compile under the DOM lib — the package's source
-  // graph conflicts with it (see app/api/types.ts). They are their own
-  // DOM-free project, typechecked by `__tests__/app/pkg/typecheck.test.ts`.
+  // Tests that import the `@kingsleyweb/bun-jobs` package root (the real-API
+  // and bundle-safety tests) cannot compile under the DOM lib: the package's
+  // source graph conflicts with it. They are their own DOM-free project,
+  // typechecked by `__tests__/app/pkg/typecheck.test.ts`.
   "exclude": ["../__tests__/app/pkg"]
 }
