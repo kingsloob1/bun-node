@@ -244,12 +244,16 @@ describe("clean", () => {
     });
   });
 
-  it("defaults the limit to min(1000, maxClean) and refuses more than maxClean", async () => {
+  it("defaults the limit to the API's defaultClean and refuses more than maxClean", async () => {
     renderQueue({
       handlers: {
         "GET /meta": {
           body: metaFixture({
-            limits: { ...metaFixture().limits, maxClean: 300 },
+            limits: {
+              ...metaFixture().limits,
+              defaultClean: 300,
+              maxClean: 300,
+            },
           }),
         },
       },
@@ -309,7 +313,9 @@ describe("retry-all", () => {
         "Retried 1,500 jobs in emails",
       ),
     );
-    expect(notifications().textContent).toContain("truncated");
+    expect(notifications().textContent).toContain(
+      "(ids of the first 1000 only)",
+    );
     expect(
       JSON.parse(callTo(calls, "POST", "/queues/emails/jobs/retry-all")!.body!),
     ).toEqual({
