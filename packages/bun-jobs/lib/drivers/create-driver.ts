@@ -23,7 +23,11 @@ export function createDriver(config: DriverConfig): JobsDriver {
     case "memory":
       return new MemoryDriver();
     case "file":
-      return new FileDriver({ root: config.root });
+      return new FileDriver({
+        root: config.root,
+        pollInterval: config.pollInterval,
+        eventRetentionMs: config.eventRetentionMs,
+      });
     case "sql":
       return new SqlDriver({
         url: config.url,
@@ -33,6 +37,8 @@ export function createDriver(config: DriverConfig): JobsDriver {
         tables: config.tables,
         notify: config.notify,
         syncSchema: config.syncSchema,
+        pollInterval: config.pollInterval,
+        eventRetentionMs: config.eventRetentionMs,
       });
     case "mongodb":
       return new MongoDriver({
@@ -42,6 +48,9 @@ export function createDriver(config: DriverConfig): JobsDriver {
         collectionPrefix: config.collectionPrefix,
         collections: config.collections,
         syncSchema: config.syncSchema,
+        clientOptions: config.clientOptions,
+        pollInterval: config.pollInterval,
+        eventRetentionMs: config.eventRetentionMs,
       });
     case "redis":
       return new RedisDriver({
@@ -49,6 +58,7 @@ export function createDriver(config: DriverConfig): JobsDriver {
         connection: config.connection,
         cluster: config.cluster,
         keyPrefix: config.keyPrefix,
+        maxBlockSeconds: config.maxBlockSeconds,
       });
     default:
       throw new ConfigError("Unrecognised driver config", {

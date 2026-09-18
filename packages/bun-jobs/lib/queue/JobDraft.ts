@@ -60,6 +60,13 @@ export class JobDraft<TData = unknown, TResult = unknown> {
   #saving: Promise<Job<TData, TResult>> | undefined;
   /** Whether a setter was called after a save began. */
   #changed = false;
+  /**
+   * The phrase `schedule()` was last given, when it was words rather than an
+   * instant. Kept only so `save()` can quote it if it cannot be read.
+   */
+  #schedulePhrase: string | undefined;
+  /** The phrase `endingAt()` was last given, kept for the same reason. */
+  #endingAtPhrase: string | undefined;
 
   constructor(
     /** The builder that holds the description, with the definition's defaults under it. */
@@ -112,6 +119,9 @@ export class JobDraft<TData = unknown, TResult = unknown> {
    * series begins. Wins over `delay()`, as `runAt` wins over `delay`.
    */
   schedule(when: Date | number | string): this {
+    // Remembered only to name it in an error. The phrase is read at `save()`,
+    // so an unreadable one fails there — a long way from the call that set it.
+    this.#schedulePhrase = typeof when === "string" ? when : undefined;
     return this.#edit((builder) => builder.on(when));
   }
 
@@ -155,6 +165,45 @@ export class JobDraft<TData = unknown, TResult = unknown> {
    */
   repeatEvery(interval: number | string, options?: RepeatEveryOptions): this {
     return this.#edit((builder) => builder.repeatEvery(interval, options));
+  }
+
+  /**
+   * Stops the repeating series after this many occurrences.
+   *
+   * One field of the series `repeatEvery()` described, leaving the rest as
+   * they are — unlike `repeatEvery()`, which replaces the whole series.
+   */
+  limit(occurrences: number): this {
+    return this.#series("limit", (builder) => builder.limit(occurrences));
+  }
+
+  /** Reads the series' cron expression in this time zone. One field of the series. */
+  tz(zone: string): this {
+    return this.#series("tz", (builder) => builder.tz(zone));
+  }
+
+  /**
+   * Ends the repeating series at a given moment — a `Date`, epoch
+   * milliseconds, or words. One field of the series.
+   *
+   * A phrase is read at `save()`, exactly as `schedule()`'s is.
+   */
+  endingAt(when: Date | number | string): this {
+    // Recorded only once the guard has let the call through, so a refused one
+    // leaves the draft as it was.
+    const applied = this.#series("endingAt", (b) => b.endingAt(when));
+    this.#endingAtPhrase = typeof when === "string" ? when : undefined;
+    return applied;
+  }
+
+  /** Runs every occurrence missed while nothing was consuming. One field of the series. */
+  catchUp(enabled = true): this {
+    return this.#series("catchUp", (builder) => builder.catchUp(enabled));
+  }
+
+  /** Runs the first occurrence at once, then follows the schedule. One field of the series. */
+  immediately(enabled = true): this {
+    return this.#series("immediately", (b) => b.immediately(enabled));
   }
 
   /** How long the job is kept once it completes; see `JobOptions.removeOnComplete`. */
@@ -244,10 +293,72 @@ export class JobDraft<TData = unknown, TResult = unknown> {
       // Nothing was saved, so an edit made while it was in flight is simply
       // part of the next attempt.
       this.#changed = false;
-      throw error;
+      throw this.#named(error);
     } finally {
       this.#saving = undefined;
     }
+  }
+
+  /**
+   * Applies a setter that changes one field of the current series, refusing
+   * when there is no series to change.
+   *
+   * Without the check the builder would quietly invent one — spreading an
+   * absent series yields `{ limit: 5 }`, a repeat with nothing to repeat — and
+   * the draft would save something nobody described. It throws before touching
+   * the builder, so a refused call leaves the draft exactly as it was,
+   * `#changed` included.
+   */
+  #series(
+    /** The setter's name, without parentheses — `"limit"`, `"endingAt"`. */
+    method: string,
+    /** What to do to the builder once a series is known to exist. */
+    apply: (builder: JobBuilder<TData, TResult>) => void,
+  ): this {
+    if (!this.#builder.hasSeries) {
+      throw new ConfigError(
+        `${method}() sets one option of a repeating series, so it needs repeatEvery() before it`,
+        { name: this.name, method: `${method}()` },
+      );
+    }
+
+    return this.#edit(apply);
+  }
+
+  /**
+   * Re-reports an unreadable date under the draft method that was given it,
+   * quoting the phrase.
+   *
+   * The builder reads dates when it adds the job and knows them only as
+   * `runAt` or `repeat.endAt` — `JobOptions` names the caller never wrote, in
+   * a message that arrives from `save()` rather than from the setter. Parsing
+   * stays at `save()`, because "tomorrow" has to mean tomorrow from the save,
+   * so this translates the report rather than moving the work.
+   */
+  #named(error: unknown): unknown {
+    if (!(error instanceof ConfigError)) {
+      return error;
+    }
+
+    const named = [
+      { field: "runAt", method: "schedule()", phrase: this.#schedulePhrase },
+      {
+        field: "repeat.endAt",
+        method: "endingAt()",
+        phrase: this.#endingAtPhrase,
+      },
+    ].find(
+      (candidate) =>
+        candidate.phrase !== undefined &&
+        error.message.startsWith(`${candidate.field} `),
+    );
+
+    return named
+      ? new ConfigError(
+          `${named.method} could not read "${named.phrase}" as a date`,
+          { ...error.context, method: named.method },
+        )
+      : error;
   }
 
   /** Applies a setter, noting it when a save has already begun. */

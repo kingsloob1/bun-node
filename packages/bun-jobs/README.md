@@ -607,6 +607,7 @@ The context has these members:
 | `now(name, data?, opts?)` | Adds a defined job to run now. |
 | `create(name, data?)` | Returns a [draft](#saved-drafts), which is added only when saved. |
 | `processEvery(interval)` | Sets how often the registry worker looks for due work. See [Registry polling](#registry-polling). |
+| `processEveryMs` | That interval in milliseconds, or `undefined` when it was never set. Readable before `start()`. |
 | `start(workerOpts?)` | Starts consuming the defined jobs. |
 | `stop({ force?, timeout? })` | Stops consuming, letting in-flight jobs finish. |
 | `drain({ delayed? })` | Drops pending jobs from the registry's queue. |
@@ -659,7 +660,7 @@ await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, atte
 | `in(delay)` | Runs after a delay: `"5 minutes"` or milliseconds. |
 | `startingAt(when)` / `endingAt(when)` | The window of a repeating series. `on()` and `startingAt()` set the same start, so whichever was called last wins. |
 | `repeatEvery(interval, opts?)` | Repeats the job, replacing the whole series description. Options from an earlier call are dropped unless given again. |
-| `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. |
+| `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. `limit` needs a series first (`every()` / `repeatEvery()`) and a whole number of at least 1; `tz` must be a zone `Intl` knows. Both throw `ConfigError` at the call otherwise. |
 | `priority(n)`, `attempts(n)`, `timeout(ms \| "30 seconds")`, `backoff(b)` | Job options. |
 | `unique(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)`, `keepLogs(n)` | Job options. |
@@ -691,6 +692,7 @@ export const job = await draft.save();
 | `schedule(when)` | Runs at a moment: a `Date`, epoch ms, or words. On a repeating job, this is when the series begins. It wins over `delay`. |
 | `delay(ms \| "5 minutes")` | Runs after a delay. |
 | `repeatEvery(interval, opts?)` | Repeats the job, as the builder's `repeatEvery` does. |
+| `limit(n)`, `tz(zone)`, `endingAt(when)`, `catchUp(on?)`, `immediately(on?)` | Change one option of the series `repeatEvery` described, leaving the rest. Each throws `ConfigError` if there is no series yet, and `limit`/`tz` throw one for a limit that is not a whole number of at least 1 or a zone `Intl` does not know. |
 | `priority(n)`, `attempts(n)`, `backoff(b)`, `timeout(ms \| "30 seconds")` | Job options. |
 | `removeOnComplete(r)`, `removeOnFail(r)`, `keepStacktraces(n)`, `keepLogs(n)` | Retention. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)` | Job options. |
@@ -704,6 +706,10 @@ export const job = await draft.save();
 - A combination the queue refuses throws `ConfigError` at `save()`, and
   nothing is written. Examples: `repeatEvery` with `debounce` or
   `throttle`, or `unique` with either.
+- Date phrases are read at `save()`, not when they are set — so `"tomorrow"`
+  means tomorrow from the save, and a phrase that cannot be read fails at
+  `save()` too, naming the method it was given to and quoting it. Durations
+  and intervals are still read at the setter.
 - **Saving twice.** A second `save()` with nothing changed returns the job
   the first one returned and writes nothing, even while the first is still in
   flight. `save()` throws `ConfigError` if any setter was called since a
@@ -725,7 +731,9 @@ Examples:
 `jobs.processEvery(interval)` sets how often the registry worker looks for
 due work. The interval is milliseconds or a duration such as `"30 seconds"`,
 at most 2,147,483,647ms; a longer one throws `ConfigError`. The
-`processEvery` option to `BunJobs` does the same before `start()`.
+`processEvery` option to `BunJobs` does the same before `start()`, and
+`jobs.processEveryMs` reads back what was asked for — milliseconds, or
+`undefined` when it was never set.
 
 - It applies to a running worker and to every later `start()`.
 - Explicit `pollInterval` or `maxBlock` passed to `start()` win over it.

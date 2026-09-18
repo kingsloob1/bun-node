@@ -619,6 +619,135 @@ for (const backend of backends) {
       });
     });
 
+    describe("dates read at save", () => {
+      it("names schedule() and quotes the phrase when the date cannot be read", async () => {
+        const draft = jobs.create("mail").schedule("the twelfth of Octember");
+
+        // Nothing has been read yet: the phrase is parsed by `save()`, so
+        // that "tomorrow" means tomorrow from the save.
+        expect(draft.isSaved).toBe(false);
+
+        const error = await rejection(draft.save());
+
+        // Not `runAt could not be understood as a date` — a `JobOptions` name
+        // the caller never wrote, from a call it did not make.
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as Error).message).toBe(
+          'schedule() could not read "the twelfth of Octember" as a date',
+        );
+        expect(draft.isSaved).toBe(false);
+        expect(await total(queue)).toBe(0);
+      });
+
+      it("leaves a readable phrase, and an unrelated failure, alone", async () => {
+        const saved = await jobs.create("mail").schedule("in 2 hours").save();
+        expect(saved.runAt).toBeGreaterThan(Date.now() + HOUR);
+
+        // A different `ConfigError` from the same `save()` is not renamed.
+        const other = jobs
+          .create("mail")
+          .schedule("in 2 hours")
+          .unique("u")
+          .debounce("d", 1_000);
+        const error = await rejection(other.save());
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as Error).message).not.toContain("schedule()");
+      });
+    });
+
+    describe("series setters", () => {
+      it("refuses one before repeatEvery(), writing nothing", async () => {
+        for (const [call, pattern] of [
+          [() => jobs.create("mail").limit(3), /limit\(\)/],
+          [() => jobs.create("mail").tz("UTC"), /tz\(\)/],
+          [() => jobs.create("mail").endingAt("in 2 days"), /endingAt\(\)/],
+          [() => jobs.create("mail").catchUp(), /catchUp\(\)/],
+          [() => jobs.create("mail").immediately(), /immediately\(\)/],
+        ] as const) {
+          expect(call).toThrow(ConfigError);
+          expect(call).toThrow(pattern);
+          expect(call).toThrow(/repeatEvery\(\)/);
+        }
+
+        expect(await total(queue)).toBe(0);
+      });
+
+      it("checks limit() and tz() in the setter, not at save()", async () => {
+        const series = () => jobs.create("mail").repeatEvery("1 hour");
+
+        // A limit is a whole number of occurrences, at least one.
+        for (const bad of [0, -1, 1.5, Number.NaN]) {
+          const call = () => series().limit(bad);
+          expect(call, String(bad)).toThrow(ConfigError);
+          expect(call, String(bad)).toThrow(/limit\(\)/);
+        }
+
+        // A zone is checked on an interval series too, where nothing would
+        // otherwise read it until an occurrence was computed.
+        const zone = () => series().tz("Mars/Olympus_Mons");
+        expect(zone).toThrow(ConfigError);
+        expect(zone).toThrow(/tz\(\) does not know the time zone/);
+
+        // The controls: a good limit and a real zone go through.
+        expect(() => series().limit(1).tz("Europe/London")).not.toThrow();
+        expect(await total(queue)).toBe(0);
+      });
+
+      it("guards the builder's limit() the same way", () => {
+        // Without a series there is nothing to limit; spreading an absent one
+        // used to invent `{ limit: 3 }`, a repeat with nothing to repeat.
+        const bare = () => jobs.schedule("mail").limit(3);
+        expect(bare).toThrow(ConfigError);
+        expect(bare).toThrow(/limit\(\) sets one option of a repeating series/);
+
+        expect(() =>
+          jobs.schedule("mail").every("1 hour").limit(3),
+        ).not.toThrow();
+      });
+
+      it("changes one field of the series, leaving the rest", async () => {
+        await jobs
+          .create("mail")
+          .repeatEvery("1 hour", { limit: 9, tz: "UTC" })
+          .limit(3)
+          .catchUp(true)
+          .save();
+
+        // `limit` replaced; `tz` and `every` are still what `repeatEvery()`
+        // gave — the setter changes one field, it does not rebuild the series.
+        const [series] = await queue.listRepeatables();
+        expect(series).toMatchObject({
+          every: HOUR,
+          limit: 3,
+          tz: "UTC",
+          catchUp: true,
+        });
+      });
+
+      it("names endingAt() when its phrase cannot be read", async () => {
+        const draft = jobs
+          .create("mail")
+          .repeatEvery("1 hour")
+          .endingAt("the fifth of Octember");
+
+        const error = await rejection(draft.save());
+
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as Error).message).toBe(
+          'endingAt() could not read "the fifth of Octember" as a date',
+        );
+      });
+
+      it("is available after withOptions() described the series too", () => {
+        // `withOptions({ every })` establishes a series just as `repeatEvery`
+        // does, so the guard must see it — a flag set only by `repeatEvery()`
+        // would reject this wrongly.
+        expect(() =>
+          jobs.create("mail").withOptions({ every: "2 days" }).limit(4),
+        ).not.toThrow();
+      });
+    });
+
     describe("saving twice", () => {
       it("answers a second save with the same job and writes nothing", async () => {
         const draft = jobs.create("mail", { a: 1 });
