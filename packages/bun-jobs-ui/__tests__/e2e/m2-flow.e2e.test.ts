@@ -206,6 +206,13 @@ describe.skipIf(chromePath === undefined)(
           `the queue screen never loaded; console:\n${pageConsole.join("\n")}`,
         );
       }
+      // The queue screen is a lazily loaded chunk; its stylesheet's rules
+      // must still apply (they ship in the entry stylesheet).
+      expect(
+        await view!.evaluate<string>(
+          `getComputedStyle(document.querySelector(".queue-header")).display`,
+        ),
+      ).toBe("flex");
       expect(
         await view!.evaluate<boolean>(
           clickButton('[role="group"][aria-label="Queue actions"]', "Pause"),
