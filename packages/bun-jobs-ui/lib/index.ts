@@ -8,19 +8,14 @@
  * app.use(api.basePath, api.router);
  * app.use(ui.basePath, ui.router);
  * ```
+ *
+ * The bundle machinery (`lib/assets.ts`: building, writing and loading
+ * `dist/`) is internal: `scripts/build.ts` and the tests import it directly.
+ * `JobsUiBaseOptions` stays public because both option interfaces extend it,
+ * so it is part of the options' declared shape.
  */
 export type { UiConfig, UiSections, UiTheme } from "../shared/config";
 export { UI_CONFIG_ELEMENT_ID } from "../shared/config";
-export {
-  buildAssets,
-  type BuildAssetsOptions,
-  loadDistAssets,
-  type UiAsset,
-  type UiAssets,
-  type UiManifest,
-  type UiManifestFile,
-  writeAssets,
-} from "./assets";
 export {
   ASSET_CACHE_CONTROL,
   DEFAULT_BASE_PATH,

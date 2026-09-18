@@ -55,8 +55,10 @@ describe("on bun-nest's BunHttpAdapter", () => {
       logger: false,
     })) as INestApplication;
     cleanups.push(() => app.close());
-    // bun-nest's `use()` is typed for handlers only, so a router needs the
-    // same cast `BunJobsApiModule` uses; at runtime it mounts like bun-common's.
+    // TEMPORARY: bun-nest's `use()` types do not accept a BunRouter from this
+    // package, so a router needs the same cast `BunJobsApiModule` uses (at
+    // runtime it mounts like bun-common's). Remove the `as never` casts once
+    // bun-nest's `use()` accepts a BunRouter — its owner is fixing the types.
     adapter.use(api.basePath, api.router as never);
     adapter.use(ui.basePath, ui.router as never);
     await app.init();

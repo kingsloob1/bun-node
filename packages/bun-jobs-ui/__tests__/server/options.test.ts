@@ -130,7 +130,7 @@ describe("api / apiUrl", () => {
     );
   });
 
-  it("takes a same-origin path: apiBase is the path, CSP adds nothing", async () => {
+  it("takes a same-origin path: apiBase is the path, CSP adds only the page's socket origin", async () => {
     const ui = fixtureUi({ apiUrl: "/remote-api/" });
     expect(ui.config.apiBase).toBe("/remote-api");
     expect(ui.config.websocket).toBeNull();
@@ -138,7 +138,7 @@ describe("api / apiUrl", () => {
     const csp = parseCsp(
       (await ui.router.fetch("/")).headers.get("content-security-policy"),
     );
-    expect(csp.get("connect-src")).toEqual(["'self'", "ws:", "wss:"]);
+    expect(csp.get("connect-src")).toEqual(["'self'", "ws://localhost"]);
   });
 
   it("takes an http(s) URL: apiBase is the URL, CSP allows its origin", async () => {
@@ -149,9 +149,9 @@ describe("api / apiUrl", () => {
     );
     expect(csp.get("connect-src")).toEqual([
       "'self'",
-      "ws:",
-      "wss:",
+      "ws://localhost",
       "https://api.example.com:8443",
+      "wss://api.example.com:8443",
     ]);
     expect(fixtureUi({ apiUrl: "http://api.example" }).config.apiBase).toBe(
       "http://api.example",
@@ -168,6 +168,72 @@ describe("api / apiUrl", () => {
       ["https://api.example/x#y", /fragment/],
       ["https://u:p@api.example", /credentials/],
       ["/jobs/:x", /segments/],
+    ] as const) {
+      expectConfigError(() => fixtureUi({ apiUrl: bad }), pattern);
+    }
+  });
+});
+
+describe("apiUrl: the URL form follows the path form's rules", () => {
+  it("refuses credentials of any kind, a password alone included", () => {
+    for (const bad of [
+      "https://:secret@api.example/x",
+      "https://user@api.example/x",
+      "https://user:pw@api.example",
+      "https://@api.example/x",
+    ]) {
+      expectConfigError(() => fixtureUi({ apiUrl: bad }), /credentials/);
+    }
+  });
+
+  it("refuses dot segments, spaces, encoded slashes and empty segments in the raw path", () => {
+    for (const bad of [
+      "http://api.example/a/../b",
+      "http://api.example/a/./b",
+      "http://api.example/..",
+      "http://api.example/a b",
+      "http://api.example/a%20b",
+      "http://api.example/a%2Fb",
+      "http://api.example/a//b",
+      "http://api.example/a/:id",
+      "http://api.example/a\\b",
+      "http://api.example/a\tb",
+    ]) {
+      expectConfigError(() => fixtureUi({ apiUrl: bad }), /segments/);
+    }
+  });
+
+  it("allows the origin root and trims a trailing slash", () => {
+    for (const [good, base] of [
+      ["http://api.example", "http://api.example"],
+      ["http://api.example/", "http://api.example"],
+      ["https://api.example/v1/jobs/", "https://api.example/v1/jobs"],
+      ["https://api.example/v1/jobs//", "https://api.example/v1/jobs"],
+      ["https://API.example:443/a.b~c_d-e", "https://api.example/a.b~c_d-e"],
+    ] as const) {
+      expect(fixtureUi({ apiUrl: good }).config.apiBase).toBe(base);
+    }
+  });
+
+  it("refuses a query or fragment, even an empty one", () => {
+    expectConfigError(
+      () => fixtureUi({ apiUrl: "https://api.example/x?" }),
+      /may not carry a query/,
+    );
+    expectConfigError(
+      () => fixtureUi({ apiUrl: "https://api.example/x#" }),
+      /may not carry a fragment/,
+    );
+  });
+});
+
+describe("apiUrl: the path form", () => {
+  it("names a query or a fragment specifically", () => {
+    for (const [bad, pattern] of [
+      ["/jobs-api?x=1", /apiUrl may not carry a query/],
+      ["/jobs-api?", /apiUrl may not carry a query/],
+      ["/jobs-api#frag", /apiUrl may not carry a fragment/],
+      ["/jobs-api/#", /apiUrl may not carry a fragment/],
     ] as const) {
       expectConfigError(() => fixtureUi({ apiUrl: bad }), pattern);
     }

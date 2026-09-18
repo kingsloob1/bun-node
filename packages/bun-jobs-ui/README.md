@@ -42,17 +42,23 @@ under the API's: the API answers everything under its `basePath` with a JSON
 API under the UI, works whichever router is mounted first. The UI leaves
 requests under the API's path alone.
 
-**NestJS** (bun-nest's `BunHttpAdapter`): mount the router on the adapter's
-instance. You can also use `adapter.use()`, but it is typed for handlers only
-and needs the same cast that `BunJobsApiModule` uses:
+### Mounting on NestJS
+
+On bun-nest's `BunHttpAdapter`, mount the router on the adapter's instance,
+which needs no cast:
 
 ```ts
 const adapter = new BunHttpAdapter();
 const app = await NestFactory.create(AppModule, adapter);
 adapter.getInstance().use(ui.basePath, ui.router);
-// or: adapter.use(ui.basePath, ui.router as never);
 await app.listen(3000);
 ```
+
+`adapter.use(ui.basePath, ui.router)` works the same at runtime, but for now
+it only typechecks as `adapter.use(ui.basePath, ui.router as never)`: the
+adapter's `use()` types do not yet accept a `BunRouter` from this package.
+That cast is a **temporary workaround**. bun-nest's types are being fixed, and
+the cast can go once they are.
 
 **API in another process or origin:** pass `apiUrl` instead of `api`. It can
 be a same-origin path (`"/jobs-api"`) or an `http(s)://` URL. The app then
@@ -69,12 +75,12 @@ call it and throws a `ConfigError` for anything unusable.
 | Option | Type | Default | Notes |
 |---|---|---|---|
 | `api` | `JobsApi` | — | The `createJobsApi` result. The UI reads the API's `basePath`, WebSocket path/port and docs paths from it. Exactly one of `api` and `apiUrl` is required. |
-| `apiUrl` | `string` | — | A same-origin path or an `http(s)` URL. When it is a URL, its origin is added to the CSP's `connect-src`. |
+| `apiUrl` | `string` | — | A same-origin path or an `http(s)` URL. Its path follows `basePath`'s segment rules, checked on the string as written, so `..`, `.`, a space or `%2F` is refused rather than normalised away. A trailing slash is dropped. A URL's path may be empty (the API at the origin root). Neither form may carry a query or a fragment, and a URL may not carry credentials, a password alone included. When it is a URL, its origin is added to the CSP's `connect-src` in `http(s)` and `ws(s)` form. |
 | `basePath` | `string` | `"/jobs"` | Absolute, not `"/"`, with segments of `[\w.~-]`. A trailing slash is dropped. It must not equal or sit under the API's `basePath`. |
 | `title` | `string` | `"Jobs"` | The page title and brand text. It is HTML-escaped. |
 | `sections` | `{ manage?, docs? }` | both `true` | Turn either one off, for example to serve the docs only. Turning both off is an error. |
-| `csrfHeader` | `string \| false` | `false`* | Must match the API's `csrf.header`. \*When the API exposes `api.info.csrf.header`, that value becomes the default. |
-| `authorize` | `(req, { asset, path }) => boolean \| { allow, status?, reason? }` | none | Guards the shell and the bundle. It can be sync or async and fails closed: an unrecognised answer gives 403 and a throw gives 500. |
+| `csrfHeader` | `string \| false` | none* | Must match the API's `csrf.header`. `false` or unset means none, and `config.csrfHeader` is then `null`. \*When the API exposes `api.info.csrf.header`, that value becomes the default. |
+| `authorize` | `(req, { asset, path }) => boolean \| { allow, status?, reason? }` | none | Guards the shell and the bundle. It can be sync or async and fails closed, as the API's does: a denial is 401 only for `status: 401` and 403 for any other status (`429` and `500` included), an unrecognised answer gives 403 and a throw gives 500. To answer 429, rate-limit in `middleware`. |
 | `middleware` | `RouterHandler[]` | `[]` | Runs before `authorize` on the `GET`/`HEAD` requests the UI answers. An error it raises goes to the host's error handling. |
 | `theme` | `"system" \| "light" \| "dark"` | `"system"` | The initial colour scheme. |
 | `dev` | `boolean` | unset | Unset: serve `dist/` if it is there, otherwise build in memory on the first request (once per process, logged once). `true`: always build from `app/`. `false`: require `dist/`, or `jobsUi()` throws. |
@@ -106,7 +112,8 @@ await app.fetch("/jobs/queues/mail");               // mounted: the shell, as se
 
 When your `authorize` denies a request, the UI answers with a 401 or 403
 `application/problem+json` body shaped like the API's, with code
-`UNAUTHORIZED` or `FORBIDDEN`.
+`UNAUTHORIZED` or `FORBIDDEN`. Only `status: 401` gives a 401. Every other
+status, `429` or `500` included, gives a 403.
 
 ## Security notes
 
@@ -114,7 +121,28 @@ When your `authorize` denies a request, the UI answers with a 401 or 403
   the bundle. The API's own `authorize` protects the data. With no UI
   `authorize`, the only thing exposed is the app's JavaScript.
 - **CSP.** Every shell response carries a fresh nonce and this policy:
-  `default-src 'self'; script-src 'self' 'nonce-…'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss: [apiUrl origin]; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`.
+  `default-src 'self'; script-src 'self' 'nonce-…'; style-src 'self'; img-src 'self' data:; connect-src 'self' <sockets>; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`.
+  `connect-src` never allows a socket to just any host. After `'self'` it
+  lists, per request:
+  - the page's own origin as a socket, `ws://host[:port]`, or `wss://` when
+    the page is `https` (from the URL or `X-Forwarded-Proto`). Older WebKit
+    does not let `'self'` match `ws:`/`wss:`. The origin is taken from the
+    `Host` header and is left out when it is not a plain `host[:port]`, so a
+    forged `Host` cannot inject a directive;
+  - a dedicated socket port (`config.websocket.port`) on the same hostname,
+    `ws(s)://host:port`;
+  - a cross-origin `apiUrl`'s origin, in both `http(s)://` and `ws(s)://`
+    form.
+
+  For example, `connect-src 'self' wss://jobs.example` for an https page,
+  `connect-src 'self' ws://jobs.example:8080 ws://jobs.example:4567` with a
+  socket on port 4567, and
+  `connect-src 'self' wss://ui.example https://api.example wss://api.example`
+  with `apiUrl: "https://api.example/jobs"`.
+
+  With `apiUrl`, the socket's port is only discovered from `/meta` at
+  runtime, so a dedicated socket port is not in `connect-src`. Serve the
+  socket on the API's own port in that setup.
   The shell also sends `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Scripts and
   stylesheets carry SRI `integrity` attributes.
