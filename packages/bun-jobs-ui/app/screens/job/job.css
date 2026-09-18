@@ -1,0 +1,232 @@
+/* The job screen and the add/update job dialogs. Tokens only; see styles/tokens.css. */
+
+.breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.breadcrumb li + li::before {
+  content: "/";
+  margin-right: var(--space-1);
+  color: var(--text-muted);
+}
+
+.breadcrumb [aria-current="page"] {
+  color: var(--text);
+}
+
+.job-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.job-heading {
+  min-width: 0;
+}
+
+.job-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.job-name {
+  overflow-wrap: anywhere;
+}
+
+.job-id-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.job-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.job-screen .card {
+  margin-bottom: var(--space-4);
+}
+
+.job-error {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.job-error-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.job-error-name {
+  color: var(--danger-text);
+}
+
+.job-error-code {
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.job-error-stack {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+  max-height: 320px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre;
+}
+
+.job-error-causes {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--border);
+  list-style: none;
+}
+
+.job-error-caused-by {
+  display: block;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.job-details {
+  margin-top: var(--space-3);
+}
+
+.job-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.job-stacktraces {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.job-logs-order {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.job-logs {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0;
+  max-height: 480px;
+  overflow: auto;
+  list-style: none;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.job-log-line {
+  display: flex;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+}
+
+.job-log-number {
+  flex: none;
+  min-width: 4ch;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.job-log-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.job-logs-follow,
+.job-logs-total {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.job-flow-summary {
+  margin-bottom: var(--space-3);
+}
+
+.job-ref code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.job-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.job-form-options,
+.job-states-picker {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.job-states-picker {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+}
+
+.job-form-options > legend,
+.job-states-picker > legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.job-form-error {
+  margin: 0;
+}
+
+@media (min-width: 640px) {
+  .job-form-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .job-form-options > legend {
+    grid-column: 1 / -1;
+  }
+}
