@@ -45,7 +45,7 @@ describe("the shell", () => {
     expect(nonce).toBeString();
     expect(nonce!.length).toBeGreaterThanOrEqual(22);
     expect(csp).toBe(
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
     );
     expect(shell.configNonce).toBe(nonce!);
     expect(shell.script.nonce).toBe(nonce!);
@@ -195,16 +195,11 @@ describe("shell helpers", () => {
     expect(JSON.parse(text)).toEqual(value);
   });
 
-  it("cspHeader appends extra connect-src sources", () => {
+  it("cspHeader appends extra connect-src sources after 'self', no wildcard", () => {
     const csp = parseCsp(
       cspHeader({ nonce: "n", connectSrc: ["https://api.example"] }),
     );
-    expect(csp.get("connect-src")).toEqual([
-      "'self'",
-      "ws:",
-      "wss:",
-      "https://api.example",
-    ]);
+    expect(csp.get("connect-src")).toEqual(["'self'", "https://api.example"]);
     expect(csp.get("script-src")).toEqual(["'self'", "'nonce-n'"]);
   });
 });

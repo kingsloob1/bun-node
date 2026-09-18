@@ -75,11 +75,27 @@ describe("authorize", () => {
       expect(response.status).toBe(403);
       expect(await problemOf(response)).toMatchObject({ code: "FORBIDDEN" });
     }
-    // A status other than 401 is 403.
-    const other = fixtureUi({
-      authorize: () => ({ allow: false, status: 500 as 403 }),
-    });
-    expect((await other.router.fetch("/")).status).toBe(403);
+  });
+
+  it("maps any denial status other than 401 to 403, as the API does", async () => {
+    for (const status of [429, 500, 400, 404, 302, "401"]) {
+      const ui = fixtureUi({
+        authorize: () => ({
+          allow: false,
+          status: status as unknown as 403,
+          reason: "nope",
+        }),
+      });
+      for (const path of ["/", "/assets/whatever.js"]) {
+        const response = await ui.router.fetch(path);
+        expect(response.status).toBe(403);
+        expect(await problemOf(response)).toMatchObject({
+          code: "FORBIDDEN",
+          status: 403,
+          detail: "nope",
+        });
+      }
+    }
   });
 
   it("answers a throw (or rejection) with a 500 problem and logs it", async () => {

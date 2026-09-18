@@ -6,7 +6,9 @@
  *
  * It asserts the app boots under the shell's CSP (it renders
  * `[data-testid="app-ready"]` once `/meta` has loaded) and that the browser
- * reported no CSP violation. Violations are collected with a buffered
+ * reported no CSP violation — including when the page opens the API's
+ * socket, while a socket to any other host is refused as a `connect-src`
+ * violation. Violations are collected with a buffered
  * `ReportingObserver`, which also returns reports raised before it was
  * created — the ones a listener added after load would miss. A negative
  * control injects an inline script to prove the collector sees violations.
@@ -175,6 +177,59 @@ describe.skipIf(skipReason !== undefined)(
         ),
       ).toBe(true);
       expect(await view!.evaluate<Violation[]>(COLLECT_VIOLATIONS)).toEqual([]);
+    }, 30_000);
+
+    it("the page may open the API's socket: hello arrives, no CSP violation", async () => {
+      // The socket is attached in beforeAll (`api.websocket?.attach(app)`).
+      expect(api.websocket).toBeDefined();
+      await view!.navigate(`${origin}/jobs`);
+      const socketUrl = `${origin.replace(/^http/, "ws")}${api.websocket!.path}`;
+      const outcome = await view!.evaluate<{
+        first: string;
+        violations: Violation[];
+      }>(`(async () => {
+        const first = await new Promise((resolve) => {
+          const socket = new WebSocket(${JSON.stringify(socketUrl)}, "bun-jobs.v1");
+          const timer = setTimeout(() => resolve("timeout"), 5000);
+          socket.onmessage = (event) => {
+            clearTimeout(timer);
+            let type = "unparseable";
+            try { type = JSON.parse(event.data).type; } catch {}
+            socket.close();
+            resolve(type);
+          };
+          socket.onerror = () => { clearTimeout(timer); resolve("error"); };
+        });
+        const violations = await ${COLLECT_VIOLATIONS};
+        return { first, violations };
+      })()`);
+      expect(outcome.first).toBe("hello");
+      expect(outcome.violations).toEqual([]);
+    }, 30_000);
+
+    it("negative control: a socket to another host is a connect-src violation", async () => {
+      await view!.navigate(`${origin}/jobs`);
+      const outcome = await view!.evaluate<{
+        threw: boolean;
+        violations: Violation[];
+      }>(`(async () => {
+        let threw = false;
+        try {
+          const socket = new WebSocket("ws://127.0.0.2:9/");
+          socket.onerror = () => {};
+        } catch {
+          threw = true;
+        }
+        const violations = await ${COLLECT_VIOLATIONS};
+        return { threw, violations };
+      })()`);
+      expect(
+        outcome.violations.filter(
+          (v) =>
+            v.directive === "connect-src" &&
+            v.blocked.startsWith("ws://127.0.0.2:9"),
+        ),
+      ).toHaveLength(1);
     }, 30_000);
 
     it("negative control: an inline script without the nonce is blocked and reported", async () => {
