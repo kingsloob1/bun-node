@@ -476,12 +476,18 @@ export const s = {
    * own error. A `:queue` path segment is the case: the route checks it with
    * the drivers' key rule and answers 400 `INVALID_NAME`, and the document
    * should still state the pattern a client must follow. Only for keywords
-   * that describe exactly what the route enforces. Returns a new schema; the
-   * one passed in is unchanged.
+   * that describe exactly what the route enforces — or, like `deprecated`,
+   * that describe the field rather than constrain it. Returns a new schema;
+   * the one passed in is unchanged.
    */
   documented<S extends Schema<any, any>>(
     schema: S,
-    keywords: { pattern?: string },
+    keywords: {
+      /** A pattern the route enforces itself, with its own error. */
+      pattern?: string;
+      /** Marks the property deprecated in the documents; still sent and accepted. */
+      deprecated?: boolean;
+    },
   ): S {
     if (keywords.pattern !== undefined) {
       // Compiled now, so a bad pattern fails where it is written.

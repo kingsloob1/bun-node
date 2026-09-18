@@ -917,7 +917,16 @@ export interface RunnerInfoDto {
 export interface RunnerListItemDto {
   /** The runner's id. */
   id: string;
-  /** Registered in this process; only a local runner can be killed or have its stats reset. */
+  /** Registered in this process; only a local runner can be killed or have its stats reset. Named as {@link RunnerInfoDto.isLocal} is. */
+  isLocal: boolean;
+  /**
+   * The same as {@link RunnerListItemDto.isLocal}.
+   *
+   * @deprecated Use `isLocal`. On `RunnerInfoDto` a `local` field is a block
+   * of this process's view, not a boolean, so the list's boolean `local` read
+   * as the same name for a different thing. Still sent; removed in a future
+   * major version.
+   */
   local: boolean;
   /** Its name; local runners only. */
   name?: string;
