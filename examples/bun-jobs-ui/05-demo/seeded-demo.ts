@@ -1,7 +1,7 @@
 /**
- * A seeded demo of the queue and runner screens: several queues with jobs in
- * every state and runners in every state, served with the UI so you can
- * click through it.
+ * A seeded demo of the queue, runner and Events screens: several queues with
+ * jobs in every state and runners in every state, served with the UI and its
+ * live-events socket so you can click through it and watch it change.
  *
  * ```bash
  * bun 05-demo/seeded-demo.ts --serve                  # seed, serve, print every screen's URL
@@ -18,9 +18,17 @@
  * parent, and one whose id holds a `/`; then the runner list and each runner
  * (see `helpers/runners.ts`): one idle on a schedule, one paused, one with a
  * run in flight and a history, one whose run failed, and one registered by
- * another process. While it serves, a delivery is added to `webhooks` every
- * 3 s and the running job logs a line every 2 s, so the screens have
- * something to refresh on their 5 s poll.
+ * another process; then the Events console on three channels. While it
+ * serves, a delivery is added to `webhooks` every 3 s and the running job
+ * logs a line every 2 s, so there is always something happening.
+ *
+ * **Live updates are on.** The jobs publish their events
+ * (`publishEvents: true`) and the API's socket is attached to the adapter
+ * (`api.websocket.attach(app)`), so the header's badge reads `Live` (with
+ * `· events: local` on the memory driver, whose events are only this
+ * process's own) and the screens refresh on events rather than on their 5 s
+ * poll. `/events` tails any channel as it happens: the `webhooks` deliveries
+ * arriving, the runners firing.
  *
  * Without `--serve` it checks the seed through the API, the same reads the
  * screens make, and exits, so `bun run-all.ts` runs it too.
@@ -84,7 +92,8 @@ step("Seeding the queues");
 const jobs = new BunJobs({
   namespace: exampleNamespace("examples-ui-demo"),
   driver: exampleDriver(),
-  // Live events for the API's socket (the Events screen arrives later).
+  // Live events for the API's socket: the badge, the Events console, and
+  // the screens refreshing on events.
   publishEvents: true,
   logger: noopLogger,
 });
@@ -118,6 +127,8 @@ const ui = jobsUi({ api, title: "Jobs demo", logger: noopLogger });
 const app = new BunHttpAdapter();
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
+// The live-events socket, on the adapter's own port: `/meta` names its path,
+// and the app connects to it.
 api.websocket?.attach(app);
 
 /** A JSON read through the real pipeline, as the screens make it. */
@@ -208,6 +219,25 @@ step("/queues/:queue?panel=… — limits, workers, throughput, repeatables");
 
 const meta = await read<MetaDto>("/meta");
 show("features", meta.features);
+
+/* ------------------------------------------------------------------ */
+step("Live updates: a socket, events published, and events.connect");
+
+// What the app decides its live badge and the Events entry from.
+const permissions = await read<{ actions: Record<string, boolean> }>(
+  "/meta/permissions",
+);
+show("meta.websocket", meta.websocket);
+checkEqual(
+  "the socket is on, at basePath + /ws; producers publish; events.connect is allowed",
+  [
+    meta.websocket?.path,
+    meta.publishing,
+    permissions.actions["events.connect"],
+    permissions.actions["events.subscribe"],
+  ],
+  [`${api.basePath}/ws`, true, true, true],
+);
 
 if (meta.features.limits) {
   const limits = await read<{ limits: unknown }>("/queues/mail");
@@ -515,6 +545,15 @@ const screens: [string, string][] = [
     `/runners/${DEMO_RUNNERS.failing}?history=10`,
   ],
   ["runner: remote", `/runners/${DEMO_RUNNERS.remote}`],
+  ["events: everything, live", "/events"],
+  [
+    "events: webhooks deliveries",
+    `/events?channel=${encodeURIComponent("queue/webhooks")}&types=added,completed`,
+  ],
+  [
+    "events: the busy runner",
+    `/events?channel=${encodeURIComponent(`runner/${DEMO_RUNNERS.busy}`)}`,
+  ],
 ];
 for (const [, path] of screens) {
   const response = await app.fetch(`${ui.basePath}${path}`);
@@ -536,6 +575,28 @@ if (serve) {
     console.log(`  ${label.padEnd(width)}  ${base}${path}`);
   }
   console.log(`\n  the API: ${app.url}${api.basePath}/meta`);
+
+  // The socket answers on the served port: one connection, the way the app
+  // opens it, until the server says hello.
+  const socketUrl = `${app.url}${meta.websocket!.path}`.replace(/^http/, "ws");
+  const hello = await new Promise<string>((resolve, reject) => {
+    const socket = new WebSocket(socketUrl, ["bun-jobs.v1"]);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error(`no hello from ${socketUrl}`));
+    }, 5_000);
+    socket.addEventListener("message", (event) => {
+      clearTimeout(timer);
+      socket.close();
+      resolve((JSON.parse(String(event.data)) as { type: string }).type);
+    });
+    socket.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error(`could not connect to ${socketUrl}`));
+    });
+  });
+  console.log(`  live events: ${socketUrl} (said ${hello})`);
+  console.log(`  the Events console: ${base}/events`);
 
   const stopTrickle = demo.trickle(3_000);
   process.once("SIGINT", async () => {

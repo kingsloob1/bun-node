@@ -1,13 +1,13 @@
 /**
- * Deep links to the queue and runner screens — the queue list, one queue, a
- * filtered tab or panel, one job, the runner list, one runner — checked
- * without a socket.
+ * Deep links to the queue, runner and Events screens — the queue list, one
+ * queue, a filtered tab or panel, one job, the runner list, one runner, the
+ * Events console on a chosen channel — checked without a socket.
  *
  * ```bash
  * bun 04-screens/deep-links.ts
  * ```
  *
- * The Queues and Runners sections are routed in the browser, so a link
+ * The Queues, Runners and Events sections are routed in the browser, so a link
  * someone pastes or a reload on one of their screens asks the server for a
  * path it has no route for.
  * `jobsUi()` answers every path under its `basePath` with the same HTML shell
@@ -19,8 +19,8 @@
  *   JSON, so the page boots the same way whichever screen it opens on;
  * - the screen state lives in the query string (`state`, `panel`, `window`,
  *   `offset`, `limit`, `total`, `name`, `search`, `order`; `search` on the
- *   runner list, `history` on a runner), which the server ignores, so any
- *   combination can be bookmarked;
+ *   runner list, `history` on a runner; `channel` and `types` on `/events`),
+ *   which the server ignores, so any combination can be bookmarked;
  * - the shell links exactly one stylesheet and one module script. The queue,
  *   job and runner screens are split chunks the entry imports on demand,
  *   served from the same `assetsPath` with the same immutable caching, and
@@ -37,11 +37,12 @@
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { fetchShell } from "../shared/shell";
 
-title("Deep links to the queue and runner screens, without a socket");
+title("Deep links to the queue, runner and Events screens, without a socket");
 
 const jobs = new BunJobs({
   namespace: "examples-ui-deep-links",
@@ -78,7 +79,7 @@ app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 
 /* ------------------------------------------------------------------ */
-step("Every queue and runner screen's URL answers with the shell");
+step("Every queue, runner and Events screen's URL answers with the shell");
 
 // The routes the app defines under the Queues and Runners sections:
 //
@@ -120,6 +121,19 @@ const SCREEN_URLS = [
   // A runner nothing knows: the shell, then "Runner not found"
   // (`data-testid="runner-not-found"`) from the API's 404.
   "/jobs/runners/ghost",
+  // The Events console (`data-testid="events-screen"`), on its default
+  // channel: `all` in mode `both`, else `queues` or `runners`.
+  "/jobs/events",
+  // One queue's channel, filtered to two types. `channel` is the socket's
+  // own channel name; `types` is a comma list of bare event names.
+  "/jobs/events?channel=queue/mail&types=completed,failed",
+  // A type no channel carries (event names are not prefixed with their
+  // kind): the app drops it and shows every type. Still the shell.
+  "/jobs/events?channel=queue/mail&types=queue.completed",
+  // One runner's channel, and the channel of one job (its id encoded as the
+  // socket encodes it, then as a query value).
+  "/jobs/events?channel=runner/nightly",
+  `/jobs/events?channel=${encodeURIComponent(`queue/mail/job/${encodeJobId("a/b")}`)}`,
 ];
 
 const first = await fetchShell(app, SCREEN_URLS[0]!);

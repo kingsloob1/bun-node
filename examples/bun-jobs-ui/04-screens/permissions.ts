@@ -69,6 +69,13 @@
  *   `local.activeRuns`, and Reset stats needs `isLocal`. For a remote runner
  *   the screen shows a hint instead, and the API answers 409
  *   `RUNNER_NOT_LOCAL`.
+ * - **The Events console needs a socket and `events.connect`.** `/meta`'s
+ *   `websocket` is `null` when the API was built with `websocket: false`, and
+ *   `events.connect` is then absent from the map, not `false`. With a socket,
+ *   the map answers `events.connect` from `authorize`, untargeted, like the
+ *   nav entries. The console's queue and runner pickers list names only with
+ *   the untargeted `queues.list` / `runners.list`; without them they are text
+ *   boxes, which is why those rows are about the list, not the picker.
  */
 import type {
   JobsApiAction,
@@ -376,6 +383,17 @@ interface Gate {
   readonly modes?: readonly MetaDto["mode"][];
   /** The gate this one adds to ("the above" in the README). */
   readonly extends?: string;
+  /**
+   * The gate of the screen the element sits on: closed whenever that one is.
+   * Unlike `extends`, the README row does not restate it.
+   */
+  readonly on?: string;
+  /**
+   * The `/meta` fields other than `mode` that the README row names as
+   * `` `meta.<field>` ``. `when` decides on them; listing them here lets the
+   * table check notice a row that gains or loses one.
+   */
+  readonly metaFields?: readonly (keyof MetaDto)[];
   /** Whatever else it needs that no permission expresses. */
   readonly when?: (inputs: ScreenInputs) => boolean;
 }
@@ -478,6 +496,7 @@ const GATES = [
     row: "Add job",
     map: "queue",
     mutations: ["jobs.add"],
+    metaFields: ["addableNames"],
     when: ({ meta }) =>
       meta.addableNames === null || meta.addableNames.length > 0,
   },
@@ -643,6 +662,7 @@ const GATES = [
     row: "Runner Trigger…",
     map: "runner",
     mutations: ["runners.trigger"],
+    metaFields: ["runnerTriggerArgs"],
     when: ({ runner, meta }) => runner !== undefined && meta.runnerTriggerArgs,
   },
   {
@@ -688,6 +708,33 @@ const GATES = [
     anyMutation: ["runners.kill", "runners.resetStats"],
     when: ({ runner }) => runner?.isLocal === false,
   },
+  {
+    // In every mode: the console offers the mode's own channels.
+    name: "Events: nav and /events",
+    row: "Events nav entry and `/events`",
+    map: "boot",
+    sections: ["manage"],
+    reads: ["events.connect"],
+    metaFields: ["websocket"],
+    when: ({ meta }) => meta.websocket !== null,
+  },
+  {
+    name: "events: queue list in the queue and job pickers",
+    row: "Events queue and job channel pickers' queue list",
+    map: "boot",
+    on: "Events: nav and /events",
+    reads: ["queues.list"],
+    // The queue and job scopes exist only where queues do.
+    when: ({ meta }) => meta.mode !== "runner",
+  },
+  {
+    name: "events: runner list in the runner picker",
+    row: "Events runner channel picker's runner list",
+    map: "boot",
+    on: "Events: nav and /events",
+    reads: ["runners.list"],
+    when: ({ meta }) => meta.mode !== "jobs",
+  },
 ] as const satisfies readonly Gate[];
 
 /** The name of every gate. */
@@ -721,8 +768,10 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
   const mutable = (action: JobsApiAction) =>
     !meta.readOnly && can(permissions, action);
   const parent = GATES.find((other) => other.name === gate.extends);
+  const screen = GATES.find((other) => other.name === gate.on);
   return (
     (parent === undefined || isOpen(parent, inputs)) &&
+    (screen === undefined || isOpen(screen, inputs)) &&
     (gate.sections ?? []).every((section) => inputs.sections[section]) &&
     (gate.modes === undefined ||
       (gate.modes as readonly string[]).includes(meta.mode)) &&
@@ -835,6 +884,11 @@ function needsOfCell(needs: string) {
             .slice(mode + 1)
             .filter((code) => MODES.has(code))
             .sort(),
+    // "`meta.websocket`": the /meta fields named, other than the mode.
+    metaFields: codes
+      .filter((code) => code.startsWith("meta.") && code !== "meta.mode")
+      .map((code) => code.slice("meta.".length))
+      .sort(),
     mutation: /\bmutation\b/.test(needs),
     extendsAbove: needs.startsWith("the above"),
   };
@@ -855,6 +909,7 @@ function needsOfGates(gates: readonly Gate[]) {
     features: unique(gates.flatMap((gate) => gate.features ?? [])),
     sections: unique(gates.flatMap((gate) => gate.sections ?? [])),
     modes: unique(gates.flatMap((gate) => gate.modes ?? [])),
+    metaFields: unique(gates.flatMap((gate) => gate.metaFields ?? [])),
     mutation: gates.some(
       (gate) =>
         (gate.mutations ?? []).length > 0 ||
@@ -1038,6 +1093,150 @@ checkEqual(
   "the job screen waits for ?queue= (closed while pending), and falls back only if it fails",
   [pending["job: screen"], failed["job: screen"]],
   [false, true],
+);
+
+/* ------------------------------------------------------------------ */
+step("The Events console: meta.websocket and events.connect");
+
+/** The three Events gates: the nav entry and `/events`, and its two pickers' lists. */
+const EVENT_GATES = [
+  "Events: nav and /events",
+  "events: queue list in the queue and job pickers",
+  "events: runner list in the runner picker",
+] as const satisfies readonly GateName[];
+
+/** The Events gates' values in `set`, in {@link EVENT_GATES}' order. */
+function eventGates(set: Gates): boolean[] {
+  return EVENT_GATES.map((name) => set[name]);
+}
+
+// This API has a socket (`websocket` left at its default), so /meta names it
+// and the map carries `events.connect`, asked of `authorize` untargeted with
+// `transport: "ws"`, as the upgrade asks it.
+asked.length = 0;
+const { body: bootAgain } = await get<PermissionsBody>("/meta/permissions");
+checkEqual(
+  "meta.websocket names the socket's path",
+  meta.websocket?.path,
+  `${api.basePath}/ws`,
+);
+checkEqual(
+  "events.connect is in the untargeted map, and true",
+  bootAgain.actions["events.connect"],
+  true,
+);
+checkEqual(
+  "authorize was asked about events.connect with no queue or runner",
+  asked
+    .filter((call) => call.action === "events.connect")
+    .map((call) => [call.queue, call.runner]),
+  [[undefined, undefined]],
+);
+checkEqual(
+  "so the Events nav entry and both pickers' lists are on",
+  eventGates(screenGates({ meta, sections, boot })),
+  [true, true, true],
+);
+// The pickers exist only for the scopes the mode has: queue and job
+// channels without runners, a runner channel without queues.
+checkEqual(
+  "in mode jobs only the queue list, in mode runner only the runner list",
+  [
+    eventGates(
+      screenGates({ meta: { ...meta, mode: "jobs" }, sections, boot }),
+    ),
+    eventGates(
+      screenGates({ meta: { ...meta, mode: "runner" }, sections, boot }),
+    ),
+  ],
+  [
+    [true, true, false],
+    [true, false, true],
+  ],
+);
+checkEqual(
+  "and sections.manage off hides the Events entry with the others",
+  eventGates(
+    screenGates({ meta, sections: { ...sections, manage: false }, boot }),
+  ),
+  [false, false, false],
+);
+
+/**
+ * A second API over the same jobs, answered through the real pipeline: its
+ * `/meta` and untargeted `/meta/permissions`.
+ */
+async function otherHost(
+  basePath: string,
+  options: Partial<Parameters<typeof createJobsApi>[0]>,
+): Promise<{ meta: MetaDto; boot: PermissionsBody }> {
+  const other = createJobsApi({
+    jobs,
+    basePath,
+    mode: "both",
+    logger: noopLogger,
+    authorize: () => true,
+    ...options,
+  });
+  const otherApp = new BunHttpAdapter();
+  otherApp.use(other.basePath, other.router);
+  const read = async <T>(path: string) =>
+    (await (await otherApp.fetch(`${basePath}${path}`)).json()) as T;
+  const answer = {
+    meta: await read<MetaDto>("/meta"),
+    boot: await read<PermissionsBody>("/meta/permissions"),
+  };
+  await other.close();
+  return answer;
+}
+
+// A host whose authorize refuses the socket. The socket still exists, so
+// /meta still names it; only the map says no, and the UI shows no Events
+// entry and keeps its live badge off (the server would refuse the upgrade
+// with the same answer).
+const refused = await otherHost("/refused-api", {
+  authorize: (_req, ctx) =>
+    ctx.action === "events.connect"
+      ? { allow: false, reason: "no live events for you" }
+      : true,
+});
+checkEqual(
+  "authorize refuses events.connect: meta.websocket is set, events.connect false",
+  [refused.meta.websocket?.path, refused.boot.actions["events.connect"]],
+  ["/refused-api/ws", false],
+);
+checkEqual(
+  "so no Events entry, and no pickers either, though the lists are allowed",
+  [
+    eventGates(
+      screenGates({ meta: refused.meta, sections, boot: refused.boot }),
+    ),
+    [can(refused.boot, "queues.list"), can(refused.boot, "runners.list")],
+  ],
+  [
+    [false, false, false],
+    [true, true],
+  ],
+);
+
+// A host built with `websocket: false`: no socket at all. /meta says `null`,
+// and the socket's actions are absent from the map, not false.
+const socketless = await otherHost("/socketless-api", { websocket: false });
+checkEqual(
+  "websocket: false → meta.websocket null, events.connect and events.subscribe absent",
+  [
+    socketless.meta.websocket,
+    "events.connect" in socketless.boot.actions,
+    "events.subscribe" in socketless.boot.actions,
+  ],
+  [null, false, false],
+);
+checkEqual(
+  "so no Events entry: an authorize that says yes to everything cannot add one",
+  eventGates(
+    screenGates({ meta: socketless.meta, sections, boot: socketless.boot }),
+  ),
+  [false, false, false],
 );
 
 /* ------------------------------------------------------------------ */

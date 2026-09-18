@@ -45,41 +45,22 @@
  *   along the way, checked with a `ReportingObserver`.
  */
 import type { JobsApiAuthorize, MetaDto } from "@kingsleyweb/bun-jobs";
-import { existsSync } from "node:fs";
-import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import {
+  button,
+  chromeOrSkip,
+  openView,
+  textOf,
+  waitForSelector,
+} from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
-/** Prints the `skipped:` line `run-all.ts` looks for, and exits cleanly. */
-function skip(reason: string): never {
-  console.log(`skipped: ${reason}`);
-  process.exit(0);
-}
-
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
-if (process.env.EXAMPLE_BROWSER === "0") {
-  skip("EXAMPLE_BROWSER=0");
-}
-if (typeof (Bun as { WebView?: unknown }).WebView !== "function") {
-  skip(`this Bun (${Bun.version}) has no Bun.WebView`);
-}
-
-/** Where Chrome may be, in search order. */
-const chromePath = [
-  process.env.BUN_CHROME_PATH,
-  "/usr/bin/google-chrome",
-  "/usr/bin/google-chrome-stable",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-].find((path) => typeof path === "string" && path !== "" && existsSync(path));
-if (chromePath === undefined) {
-  skip("no Chrome found (set BUN_CHROME_PATH)");
-}
+const chromePath = chromeOrSkip();
 
 /** The queue the page manages. */
 const QUEUE = "mail";
@@ -215,83 +196,13 @@ await (await fetch(`${origin}${ui.basePath}`)).arrayBuffer();
 
 /** What the page printed to its console, for a failure's diagnosis. */
 const pageConsole: string[] = [];
-let view: Bun.WebView;
-try {
-  view = new Bun.WebView({
-    backend: { type: "chrome", url: false, path: chromePath },
-    width: 1280,
-    height: 900,
-    console: (type, ...args) => {
-      pageConsole.push(`${type}: ${args.map(String).join(" ")}`);
-    },
-  });
-  await view.navigate("about:blank");
-} catch (error) {
-  await shutdown();
-  skip(`Chrome at ${chromePath} did not start: ${String(error)}`);
-}
+const view = await openView(chromePath, pageConsole, shutdown);
 
 title("Pause a queue, retry a dead job and pause a runner, in Chrome");
 show("Chrome", chromePath);
 show("serving", `${origin}${ui.basePath}`);
 
 /* --- page-side helpers: each resolves once its condition holds ----- */
-
-/** Page-side: resolves `true` once `selector` exists, `false` after `ms`. */
-function waitForSelector(selector: string, ms = 15_000): string {
-  return `new Promise((resolve) => {
-    const deadline = Date.now() + ${ms};
-    const poll = () => {
-      if (document.querySelector(${JSON.stringify(selector)})) return resolve(true);
-      if (Date.now() > deadline) return resolve(false);
-      setTimeout(poll, 50);
-    };
-    poll();
-  })`;
-}
-
-/** Page-side: the trimmed text of `selector`, once it exists (or `null`). */
-function textOf(selector: string, ms = 15_000): string {
-  return `new Promise((resolve) => {
-    const deadline = Date.now() + ${ms};
-    const poll = () => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      if (element) return resolve(element.textContent.trim());
-      if (Date.now() > deadline) return resolve(null);
-      setTimeout(poll, 50);
-    };
-    poll();
-  })`;
-}
-
-/**
- * Page-side: finds the first enabled button whose text is `text` inside
- * `scope`, waiting up to `ms`. With `click`, clicks it. Resolves whether it
- * was found.
- */
-function button(
-  scope: string,
-  text: string,
-  click: boolean,
-  ms = 10_000,
-): string {
-  return `new Promise((resolve) => {
-    const deadline = Date.now() + ${ms};
-    const attempt = () => {
-      for (const root of document.querySelectorAll(${JSON.stringify(scope)})) {
-        for (const candidate of root.querySelectorAll("button")) {
-          if (candidate.textContent.trim() === ${JSON.stringify(text)} && !candidate.disabled) {
-            if (${click}) candidate.click();
-            return resolve(true);
-          }
-        }
-      }
-      if (Date.now() > deadline) return resolve(false);
-      setTimeout(attempt, 50);
-    };
-    attempt();
-  })`;
-}
 
 /**
  * Page-side: the value of the input labelled `label` inside the open
