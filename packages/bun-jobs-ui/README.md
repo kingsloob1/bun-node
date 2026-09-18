@@ -54,11 +54,7 @@ adapter.getInstance().use(ui.basePath, ui.router);
 await app.listen(3000);
 ```
 
-`adapter.use(ui.basePath, ui.router)` works the same at runtime, but for now
-it only typechecks as `adapter.use(ui.basePath, ui.router as never)`: the
-adapter's `use()` types do not yet accept a `BunRouter` from this package.
-That cast is a **temporary workaround**. bun-nest's types are being fixed, and
-the cast can go once they are.
+`adapter.use(ui.basePath, ui.router)` works too, typed, with no cast.
 
 **API in another process or origin:** pass `apiUrl` instead of `api`. It can
 be a same-origin path (`"/jobs-api"`) or an `http(s)://` URL. The app then

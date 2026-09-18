@@ -62,18 +62,17 @@ let jobs: BunJobs;
 let fetchShim: FetchLike;
 
 /**
- * Runs `fn` with Bun's `Request`/`Response` as the globals: the API builds
- * its responses from the globals, which happy-dom has replaced.
+ * Runs `fn` with Bun's `Response` as the global: the API builds its
+ * responses from the global, which happy-dom has replaced. (`Request` needs
+ * no swap: `BunRouter.fetch` recognises a request by shape.)
  */
 async function withBunGlobals<T>(fn: () => Promise<T>): Promise<T> {
-  const saved = { Request: globalThis.Request, Response: globalThis.Response };
-  globalThis.Request = native.Request;
+  const saved = globalThis.Response;
   globalThis.Response = native.Response;
   try {
     return await fn();
   } finally {
-    globalThis.Request = saved.Request;
-    globalThis.Response = saved.Response;
+    globalThis.Response = saved;
   }
 }
 

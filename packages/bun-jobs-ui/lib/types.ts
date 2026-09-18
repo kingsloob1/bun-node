@@ -121,8 +121,8 @@ export type JobsUiOptions = JobsUiApiOptions | JobsUiUrlOptions;
 /** A mountable UI. */
 export interface JobsUi {
   /**
-   * Serves the shell and the bundle. Mount with `use(ui.basePath, ui.router)`
-   * (on bun-nest's adapter, `ui.router as never` for now — see the README).
+   * Serves the shell and the bundle. Mount with `use(ui.basePath, ui.router)`,
+   * on a bun-common or a bun-nest adapter.
    */
   readonly router: BunRouter;
   /** The normalised `basePath`, no trailing slash. */

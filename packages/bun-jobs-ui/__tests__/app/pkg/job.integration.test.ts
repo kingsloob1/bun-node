@@ -54,29 +54,15 @@ root.use(api.basePath, api.router);
 
 /**
  * Routes the client's requests into the API, as Bun's own `Request`.
- *
- * While the DOM is registered, happy-dom owns the global `Request`, and
- * `BunRouter.fetch` recognises a request by `input instanceof Request`: a
- * native one then fails the check, is read as a plain `{ url }` object, and
- * arrives as a bodiless GET. So the global is Bun's for the call's
- * synchronous start, where that check runs, and restored before anything
- * else can run. The signal is dropped too: it is happy-dom's `AbortSignal`.
+ * `BunRouter.fetch` recognises it by shape, so happy-dom owning the global
+ * `Request` does not matter. The signal is dropped: it is happy-dom's
+ * `AbortSignal`, which Bun's `Request` refuses.
  */
 const fetchShim: FetchLike = async (input, init) => {
   const { signal: _signal, ...rest } = init;
-  const request = new native.Request(
-    new URL(input, "http://localhost").href,
-    rest,
+  return root.fetch(
+    new native.Request(new URL(input, "http://localhost").href, rest),
   );
-  const domRequest = globalThis.Request;
-  globalThis.Request = native.Request;
-  let response: Promise<Response>;
-  try {
-    response = root.fetch(request);
-  } finally {
-    globalThis.Request = domRequest;
-  }
-  return await response;
 };
 
 const ui: JobUiHarness = harnessModule.createJobUiHarness({
