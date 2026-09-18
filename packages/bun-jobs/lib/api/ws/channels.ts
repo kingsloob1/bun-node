@@ -80,7 +80,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     receives: "queue",
     parameters: ["queue", "jobId"],
     description:
-      "Every event about one job, including a `stalled` event listing it. The job id is `encodeURIComponent`-escaped.",
+      "Every event about one job, including a `stalled`, `retried` or `cleaned` event listing it among several. The job id is `encodeURIComponent`-escaped; a lone UTF-16 surrogate, which `encodeURIComponent` cannot encode, is written `%uXXXX`.",
   },
   {
     kind: "runners",
@@ -164,9 +164,77 @@ export interface ChannelRejection {
   detail: string;
 }
 
-/** The canonical name of a job channel. */
+/** Queue events that name several jobs in `payload.ids`, each reaching that job's channel. */
+export const MULTI_JOB_EVENTS: ReadonlySet<string> = new Set([
+  "stalled",
+  "retried",
+  "cleaned",
+]);
+
+/** Every job a queue event is about: its `id`, or each of `payload.ids` for a multi-job event. */
+export function jobIdsOf(event: DriverEvent): string[] {
+  if (event.kind !== "queue") {
+    return [];
+  }
+  if (MULTI_JOB_EVENTS.has(event.type)) {
+    const ids = (event.payload as { ids?: unknown }).ids;
+    return Array.isArray(ids)
+      ? [...new Set(ids.filter((id): id is string => typeof id === "string"))]
+      : [];
+  }
+  return event.id === undefined ? [] : [event.id];
+}
+
+/**
+ * Escapes a job id for a channel name: `encodeURIComponent`, except that a
+ * lone UTF-16 surrogate — which `encodeURIComponent` refuses with a `URIError`
+ * — becomes `%uXXXX` (upper-case hex). A well-formed id is therefore escaped
+ * exactly as before, and {@link decodeJobId} reverses either form. The two
+ * cannot be confused: `encodeURIComponent` escapes every `%` as `%25`.
+ */
+export function encodeJobId(jobId: string): string {
+  if (jobId.isWellFormed()) {
+    return encodeURIComponent(jobId);
+  }
+  let out = "";
+  let run = 0;
+  for (let index = 0; index < jobId.length; index++) {
+    const unit = jobId.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) {
+      continue;
+    }
+    const next = jobId.charCodeAt(index + 1);
+    if (unit <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      index++;
+      continue;
+    }
+    out += `${encodeURIComponent(jobId.slice(run, index))}%u${unit.toString(16).toUpperCase()}`;
+    run = index + 1;
+  }
+  return out + encodeURIComponent(jobId.slice(run));
+}
+
+/** Reverses {@link encodeJobId}. Throws `URIError` on a malformed escape. */
+export function decodeJobId(encoded: string): string {
+  return encoded
+    .split(/(%u[\dA-Fa-f]{4})/)
+    .map((part, index) => {
+      if (index % 2 === 0) {
+        return decodeURIComponent(part);
+      }
+      const unit = Number.parseInt(part.slice(2), 16);
+      // Only a surrogate needs this form; anything else has a standard one.
+      if (unit < 0xd800 || unit > 0xdfff) {
+        throw new URIError(`"${part}" is not a surrogate escape`);
+      }
+      return String.fromCharCode(unit);
+    })
+    .join("");
+}
+
+/** The canonical name of a job channel. Total: any job id has one. */
 export function jobChannel(queue: string, jobId: string): string {
-  return `queue/${queue}/job/${encodeURIComponent(jobId)}`;
+  return `queue/${queue}/job/${encodeJobId(jobId)}`;
 }
 
 /** A rejection for a malformed name. */
@@ -231,7 +299,7 @@ export function parseChannel(
         return invalid(`"${raw}" is not a channel`);
       }
       try {
-        jobId = decodeURIComponent(parts[3]!);
+        jobId = decodeJobId(parts[3]!);
       } catch {
         return invalid(`"${raw}" has a malformed job id encoding`);
       }
@@ -310,22 +378,26 @@ export function parseChannel(
   };
 }
 
+/** Channels that carry every queue's or runner's events, rather than one named target's. */
+export const BROAD_CHANNELS: ReadonlySet<string> = new Set([
+  "all",
+  "queues",
+  "runners",
+]);
+
 /**
- * Every channel name an event reaches — at most five, plus one per id of a
- * `stalled` event — so dispatch costs what the matching sessions cost, not
- * what every session costs.
+ * Every channel name an event reaches — at most four, plus one per id of a
+ * `stalled`, `retried` or `cleaned` event — so dispatch costs what the
+ * matching sessions cost, not what every session costs. Total: it never
+ * throws, whatever the job ids hold.
  */
 export function channelKeysFor(event: DriverEvent): string[] {
   if (event.kind === "runner") {
     return ["all", "runners", `runner/${event.target}`];
   }
   const keys = ["all", "queues", `queue/${event.target}`];
-  if (event.type === "stalled") {
-    for (const id of new Set(event.payload.ids)) {
-      keys.push(jobChannel(event.target, id));
-    }
-  } else if (event.id !== undefined) {
-    keys.push(jobChannel(event.target, event.id));
+  for (const id of jobIdsOf(event)) {
+    keys.push(jobChannel(event.target, id));
   }
   return keys;
 }

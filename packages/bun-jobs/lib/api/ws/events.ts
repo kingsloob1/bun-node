@@ -1,5 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
+  DriverEvent,
   QueueEventName,
   QueueEventPayloads,
   RunnerEventName,
@@ -37,6 +38,23 @@ export type ErrorWire = Infer<typeof ErrorDtoSchema>;
 export type WirePayload<T> = {
   [K in keyof T]: T[K] extends SerializedError ? ErrorWire : T[K];
 };
+
+/** One driver event as a client receives it: `ns` and `origin` dropped, payload errors shaped. */
+type WireEventOf<E> = E extends { payload: infer P }
+  ? Omit<E, "ns" | "origin" | "payload"> & {
+      /** What the event carries, every error in it shaped as an `ErrorDto`. */
+      payload: WirePayload<P>;
+    }
+  : never;
+
+/**
+ * Any event exactly as the socket sends it in an `event` frame: the
+ * `EventDto` shape, except that a payload's `error` is the `ErrorDto` a
+ * client actually receives (`stack` only with `serialize.exposeStacks`), not
+ * the in-process `SerializedError`. A union discriminated by `kind` and
+ * `type`, like `DriverEvent`.
+ */
+export type EventWire = WireEventOf<DriverEvent>;
 
 /** A job id. */
 const JobId = s.string({ description: "The job's id." });

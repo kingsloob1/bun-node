@@ -1,11 +1,14 @@
 import type { BunRequest, WebSocketClient } from "@kingsleyweb/bun-common";
+import type { EventKind } from "../../shared/events";
 import type { AuthDecision } from "../auth";
 import type {
   JobsApiSocketData,
   ResolvedJobsApiConfig,
   ResolvedJobsApiWebSocketOptions,
 } from "../config";
+import type { Schema } from "../schema/builder";
 import type { ParsedChannel } from "./channels";
+import type { EventWire } from "./events";
 import type { EventHub, HubSubscriber, StampedEvent, WsClock } from "./hub";
 import type {
   JobsApiAckRejection,
@@ -20,8 +23,13 @@ import { Buffer } from "node:buffer";
 import { decide } from "../auth";
 import { validateJson } from "../schema/validate";
 import { toEventDto } from "../serialize";
-import { parseChannel } from "./channels";
-import { ClientMessageSchema, JOBS_API_WS_CLOSE } from "./protocol";
+import { BROAD_CHANNELS, parseChannel } from "./channels";
+import {
+  JOBS_API_WS_CLOSE,
+  PingMessageSchema,
+  SubscribeMessageSchema,
+  UnsubscribeMessageSchema,
+} from "./protocol";
 
 /**
  * One connection: its subscriptions, its limits, and how it copes with a
@@ -32,17 +40,37 @@ import { ClientMessageSchema, JOBS_API_WS_CLOSE } from "./protocol";
  * `messagesPerSecond` (a token bucket, burst of two seconds' worth) is an
  * error, and a second breach within ten seconds closes `1008`.
  *
+ * **Authorization.** Each named channel is authorized once and the decision
+ * kept while the channel is held (and forgotten on `unsubscribe`). Only as
+ * many new channels as the connection has free slots are authorized at all;
+ * the rest are refused `SUBSCRIPTION_LIMIT` unasked. The broad channels
+ * (`all`, `queues`, `runners`) carry every target's events, so each target is
+ * authorized too, on its first event — `events.subscribe` with the broad
+ * `channel` and the event's `queue` or `runner` — and events of a target the
+ * host denies are not sent on that channel. Delivery stays in `seq` order
+ * while such a decision is pending: later events wait behind it.
+ *
  * **Backpressure.** `send()` says whether a frame went out (bytes), was queued
  * under backpressure (`-1`) or was dropped (`0`), and the buffered amount says
  * how far behind the client is. Past either threshold the session is
- * lagging*: it stops sending events and counts the ones it skipped. When the
- * socket drains, it sends one `gap` covering them and goes live again — it
+ * lagging*: it stops sending events and records the range it skipped. When
+ * the socket drains, it sends one `gap` covering them and goes live again — it
  * does not replay, because a client that fell behind must refetch anyway. A
  * session lagging for `slowConsumerTimeoutMs` is closed `4008`.
  */
 
 /** How long after one rate-limit breach a second one closes the socket. */
-const RATE_BREACH_WINDOW_MS = 10_000;
+export const RATE_BREACH_WINDOW_MS = 10_000;
+
+/**
+ * Most events held back waiting on a per-target `authorize` decision. Past it
+ * the session lags, as it would for a client that cannot keep up: a host whose
+ * `authorize` hangs must not grow a session's memory without bound.
+ */
+const OUTBOX_LIMIT = 1_000;
+
+/** How many times a resuming subscribe waits for pending decisions before replaying regardless. */
+const REPLAY_PREPARE_ROUNDS = 5;
 
 /** A socket as the session uses it: the parts of Bun's `ServerWebSocket` it needs. */
 export type SessionSocket = Pick<
@@ -66,16 +94,112 @@ export interface SessionContext {
 
 /** The lag being tracked. */
 interface Lag {
-  /** The first `seq` that may be missing. */
+  /** The first `seq` that may be missing. Only ever lowered while lagging. */
   fromSeq: number;
-  /** The last `seq` skipped, once one has been. */
+  /** The last `seq` skipped, once one has been. Only ever raised while lagging. */
   toSeq: number | undefined;
   /** The slow-consumer timer. */
   timer: unknown;
+  /** Set when the lag began because the outbox overflowed, not the socket: it ends when the outbox empties. */
+  outbox?: true;
 }
+
+/** An event held back until a per-target decision it needs has settled. */
+interface HeldEvent {
+  /** The event. */
+  stamped: StampedEvent;
+  /** The session's channels it matched when it arrived. */
+  keys: string[];
+}
+
+/** What became of one event offered to the session. */
+type Outcome =
+  /** Written to the socket (or queued by it under backpressure). */
+  | "sent"
+  /** Skipped into the lag: a `gap` will cover it. */
+  | "lagged"
+  /** Held back behind a pending per-target decision; sent in order later. */
+  | "held"
+  /** Deliberately not sent: filtered, denied, or dropped by `serialize.event`. */
+  | "none";
 
 /** `WebSocket.OPEN`. */
 const OPEN = 1;
+
+/** The schema for each `op`, so a malformed frame is described against the message it names. */
+const CLIENT_SCHEMAS: Record<JobsApiClientMessage["op"], Schema<unknown>> = {
+  subscribe: SubscribeMessageSchema,
+  unsubscribe: UnsubscribeMessageSchema,
+  ping: PingMessageSchema,
+};
+
+/** The request `id` a frame carries, when it is JSON with a usable one; best effort. */
+function requestIdOf(value: unknown): string | undefined {
+  const id = (value as { id?: unknown } | null)?.id;
+  return typeof id === "string" && id.length >= 1 && id.length <= 128
+    ? id
+    : undefined;
+}
+
+/** The value at a validation issue's path, for rewording its message. */
+function valueAt(value: unknown, path: readonly PropertyKey[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<PropertyKey, unknown>)[key];
+  }
+  return current;
+}
+
+/**
+ * Validates a parsed client frame against the message its `op` names. The
+ * union's own message, "Expected object or object or object", describes the
+ * schema rather than the mistake; naming the `op`, and saying why a huge
+ * integer is refused, is what a client author can act on.
+ */
+function validateFrame(
+  parsed: unknown,
+): { ok: true; message: JobsApiClientMessage } | { ok: false; detail: string } {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, detail: "Frames must be JSON objects with an `op`" };
+  }
+  const op = (parsed as { op?: unknown }).op;
+  const schema =
+    typeof op === "string" && Object.hasOwn(CLIENT_SCHEMAS, op)
+      ? CLIENT_SCHEMAS[op as JobsApiClientMessage["op"]]
+      : undefined;
+  if (!schema) {
+    return {
+      ok: false,
+      detail: `op: Expected "subscribe", "unsubscribe" or "ping", received ${op === undefined ? "none" : JSON.stringify(op).slice(0, 64)}`,
+    };
+  }
+  const result = validateJson(schema.json, parsed);
+  if (!result.issues) {
+    return { ok: true, message: result.value as JobsApiClientMessage };
+  }
+  return {
+    ok: false,
+    detail: result.issues
+      .map((issue) => {
+        const path = (issue.path ?? []).map((segment) =>
+          typeof segment === "object" ? segment.key : segment,
+        );
+        const value = valueAt(parsed, path);
+        const message =
+          typeof value === "number" &&
+          Number.isInteger(value) &&
+          !Number.isSafeInteger(value)
+            ? `Expected an integer of at most ${Number.MAX_SAFE_INTEGER} in magnitude, received ${value}`
+            : issue.message;
+        const at = path.map(String).join(".");
+        return at ? `${at}: ${message}` : message;
+      })
+      .join("; "),
+  };
+}
 
 export class Session implements HubSubscriber {
   /** The session's id. */
@@ -89,8 +213,28 @@ export class Session implements HubSubscriber {
   readonly #ctx: SessionContext;
   /** Subscribed channels, each with its event-type filter (`undefined` = every type). */
   readonly #channels = new Map<string, ReadonlySet<string> | undefined>();
-  /** `authorize` decisions, by channel, for the session's lifetime. */
-  readonly #decisions = new Map<string, Promise<AuthDecision>>();
+  /** `authorize` decisions for the channels held — only those, and forgotten on unsubscribe. */
+  readonly #decisions = new Map<string, AuthDecision>();
+  /** The target-less `events.subscribe` decision a malformed frame is answered under. */
+  #frameDecision: Promise<AuthDecision> | undefined;
+  /** Per-target decisions on broad channels, by `<channel>\0<kind>:<target>`. */
+  readonly #targetDecisions = new Map<string, AuthDecision>();
+  /** Per-target decisions in flight, by the same key. */
+  readonly #targetPending = new Map<string, Promise<void>>();
+  /** Per-target decisions that failed: used once, for the events waiting on them, then asked again. */
+  readonly #targetFailed = new Set<string>();
+  /** Events held back, in `seq` order, behind a pending per-target decision. */
+  #outbox: HeldEvent[] = [];
+  /** Resolved when the outbox empties. */
+  #outboxWaiters: (() => void)[] = [];
+  /** `seq`s sent to this client that the hub may still replay: a resume never sends one twice. */
+  readonly #sent = new Set<number>();
+  /**
+   * Notifier holds this session took, by the channel that needed them: each
+   * is released when the channel is left or the session ends, so names a
+   * client invents are not followed forever.
+   */
+  readonly #holds = new Map<string, { kind: EventKind; target: string }>();
   /** Tokens left in the rate bucket. */
   #tokens: number;
   /** When the bucket was last refilled. */
@@ -195,8 +339,17 @@ export class Session implements HubSubscriber {
         return;
       }
       this.#breachedAt = now;
+      // The refused request's `id`, when it has one, so a client awaiting
+      // its answer is not left waiting. Only the first breach pays for the
+      // parse, and the frame is already known to be small.
+      let id: string | undefined;
+      try {
+        id = requestIdOf(JSON.parse(message));
+      } catch {
+        id = undefined;
+      }
       this.#error(
-        undefined,
+        id,
         "RATE_LIMITED",
         429,
         `At most ${options.messagesPerSecond} messages per second; a second breach within ${RATE_BREACH_WINDOW_MS / 1000}s closes the connection`,
@@ -215,15 +368,15 @@ export class Session implements HubSubscriber {
     const malformed = (id: string | undefined, detail: string) => {
       this.#work = this.#work
         .then(async () => {
-          let decision = this.#decisions.get("");
+          let decision = this.#frameDecision;
           if (!decision) {
             decision = decide(this.#ctx.config, this.request, {
               action: "events.subscribe",
               transport: "ws",
             });
-            this.#decisions.set("", decision);
+            this.#frameDecision = decision;
             decision.catch(() => {
-              this.#decisions.delete("");
+              this.#frameDecision = undefined;
             });
           }
           const answer = await decision;
@@ -259,22 +412,13 @@ export class Session implements HubSubscriber {
       malformed(undefined, "Frames must be valid JSON");
       return;
     }
-    const result = validateJson(ClientMessageSchema.json, parsed);
-    if (result.issues) {
-      const id = (parsed as { id?: unknown } | null)?.id;
-      malformed(
-        typeof id === "string" ? id : undefined,
-        result.issues
-          .map((issue) => {
-            const path = (issue.path ?? []).map(String).join(".");
-            return path ? `${path}: ${issue.message}` : issue.message;
-          })
-          .join("; "),
-      );
+    const result = validateFrame(parsed);
+    if (!result.ok) {
+      malformed(requestIdOf(parsed), result.detail);
       return;
     }
 
-    const request = result.value as JobsApiClientMessage;
+    const request = result.message;
     this.#work = this.#work
       .then(async () => await this.#handle(request))
       .catch((error: unknown) => {
@@ -326,24 +470,70 @@ export class Session implements HubSubscriber {
     }
   }
 
-  /** The cached `authorize` decision for a channel. A thrown `authorize` is not cached. */
-  #authorize(channel: ParsedChannel): Promise<AuthDecision> {
-    let decision = this.#decisions.get(channel.key);
-    if (!decision) {
-      decision = decide(this.#ctx.config, this.request, {
+  /** The `authorize` decision for a channel: the one kept while it is held, else a fresh one. */
+  async #authorize(channel: ParsedChannel): Promise<AuthDecision> {
+    return (
+      this.#decisions.get(channel.key) ??
+      (await decide(this.#ctx.config, this.request, {
         action: "events.subscribe",
         transport: "ws",
         ...channel.target,
-      });
-      this.#decisions.set(channel.key, decision);
-      decision.catch(() => {
-        this.#decisions.delete(channel.key);
-      });
-    }
-    return decision;
+      }))
+    );
   }
 
-  /** Subscribes: parse, authorize each channel, apply the cap, resume, ack. */
+  /**
+   * Holds, on the notifier, every queue and runner these channels name and it
+   * is meant to follow, and waits until each is live — so an event on a queue
+   * its discovery pass has not found yet is not lost. One hold per channel,
+   * released with it. A failure is logged, and discovery remains the fallback.
+   */
+  async #follow(channels: readonly ParsedChannel[]): Promise<void> {
+    const notifier = this.#ctx.hub.notifier;
+    if (!notifier) {
+      return;
+    }
+    await Promise.all(
+      channels.map(async ({ key, target }) => {
+        const [kind, name] =
+          target.runner !== undefined
+            ? (["runner", target.runner] as const)
+            : target.queue !== undefined
+              ? (["queue", target.queue] as const)
+              : [undefined, undefined];
+        if (
+          kind === undefined ||
+          this.#holds.has(key) ||
+          !notifier.wants(kind, name)
+        ) {
+          return;
+        }
+        // Recorded before the await, so a session ending meanwhile releases it.
+        this.#holds.set(key, { kind, target: name });
+        try {
+          await notifier.hold(kind, name);
+        } catch (error) {
+          this.#ctx.config.logger.warn("jobs api could not follow a target", {
+            error,
+            kind,
+            target: name,
+          });
+        }
+      }),
+    );
+  }
+
+  /**
+   * Subscribes: parse, apply the cap, authorize what fits, follow, resume, ack.
+   *
+   * Only as many channels not already held as the connection has free slots
+   * are authorized; the rest are refused `SUBSCRIPTION_LIMIT` without asking
+   * `authorize`, so one frame can cost at most `maxSubscriptions` calls. A
+   * channel `authorize` then refuses leaves its slot unused for this frame.
+   *
+   * Subscribing to a channel already held replaces its event filter: the
+   * last subscribe wins, and one `unsubscribe` removes the channel.
+   */
   async #subscribe(message: JobsApiSubscribeMessage): Promise<void> {
     const { config, options, hub } = this.#ctx;
 
@@ -363,20 +553,38 @@ export class Session implements HubSubscriber {
     }
 
     const rejected: JobsApiAckRejection[] = [];
-    const parsed: ParsedChannel[] = [];
+    /** Each distinct channel, with the name the client first gave it. */
+    const candidates: { channel: ParsedChannel; raw: string }[] = [];
     const seen = new Set<string>();
+    let free = options.maxSubscriptions - this.#channels.size;
     for (const raw of message.channels) {
       const result = parseChannel(raw, config);
       if (!result.ok) {
         rejected.push({ channel: raw, ...result.rejection });
-      } else if (!seen.has(result.channel.key)) {
-        seen.add(result.channel.key);
-        parsed.push(result.channel);
+        continue;
+      }
+      const { channel } = result;
+      if (seen.has(channel.key)) {
+        continue;
+      }
+      seen.add(channel.key);
+      if (this.#channels.has(channel.key)) {
+        candidates.push({ channel, raw });
+      } else if (free > 0) {
+        free--;
+        candidates.push({ channel, raw });
+      } else {
+        rejected.push({
+          channel: raw,
+          code: "SUBSCRIPTION_LIMIT",
+          status: 400,
+          detail: `At most ${options.maxSubscriptions} subscriptions per connection`,
+        });
       }
     }
 
     const decisions = await Promise.all(
-      parsed.map(async (channel) => {
+      candidates.map(async ({ channel }) => {
         try {
           return await this.#authorize(channel);
         } catch (error) {
@@ -392,48 +600,52 @@ export class Session implements HubSubscriber {
       return;
     }
 
-    // From here to the ack nothing awaits, so no event can be stamped between
-    // indexing the channels, replaying and going live.
-    const accepted: string[] = [];
-    let held = this.#channels.size;
-    parsed.forEach((channel, index) => {
+    const allowed: { channel: ParsedChannel; decision: AuthDecision }[] = [];
+    candidates.forEach(({ channel, raw }, index) => {
       const decision = decisions[index];
       if (!decision) {
         rejected.push({
-          channel: channel.key,
+          channel: raw,
           code: "INTERNAL",
           status: 500,
           detail: "Authorization failed",
         });
       } else if (!decision.allow) {
         rejected.push({
-          channel: channel.key,
+          channel: raw,
           code: decision.status === 401 ? "UNAUTHORIZED" : "FORBIDDEN",
           status: decision.status,
           ...(decision.reason ? { detail: decision.reason } : {}),
         });
-      } else if (
-        !this.#channels.has(channel.key) &&
-        held >= options.maxSubscriptions
-      ) {
-        rejected.push({
-          channel: channel.key,
-          code: "SUBSCRIPTION_LIMIT",
-          status: 400,
-          detail: `At most ${options.maxSubscriptions} subscriptions per connection`,
-        });
       } else {
-        if (!this.#channels.has(channel.key)) {
-          held++;
-        }
-        accepted.push(channel.key);
+        allowed.push({ channel, decision });
       }
     });
 
+    await this.#follow(allowed.map(({ channel }) => channel));
+    if (this.#ended) {
+      return;
+    }
     const filter = message.events ? new Set<string>(message.events) : undefined;
-    for (const key of accepted) {
-      this.#channels.set(key, filter);
-      hub.subscribe(this, key);
+    if (message.resume && allowed.length > 0) {
+      await this.#prepareReplay(
+        message.resume,
+        new Set(allowed.map(({ channel }) => channel.key)),
+        filter,
+      );
+      if (this.#ended) {
+        return;
+      }
+    }
+
+    // From here to the ack nothing awaits, so no event can be stamped between
+    // indexing the channels, replaying and going live.
+    const accepted: string[] = [];
+    for (const { channel, decision } of allowed) {
+      accepted.push(channel.key);
+      this.#decisions.set(channel.key, decision);
+      this.#channels.set(channel.key, filter);
+      hub.subscribe(this, channel.key);
     }
 
     let resumed: boolean | undefined;
@@ -444,13 +656,20 @@ export class Session implements HubSubscriber {
         accepted.length > 0 ? hub.replay(epoch, afterSeq) : undefined;
       if (replay?.status === "ok") {
         const scope = new Set(accepted);
+        let lagged = false;
         for (const stamped of replay.events) {
-          this.deliver(
-            stamped,
-            stamped.keys.filter((key) => scope.has(key)),
-          );
+          // Already sent live: a second copy would be a duplicate `seq`.
+          if (this.#sent.has(stamped.seq)) {
+            continue;
+          }
+          const keys = stamped.keys.filter((key) => scope.has(key));
+          if (keys.length > 0 && this.#route(stamped, keys) === "lagged") {
+            lagged = true;
+          }
         }
-        resumed = true;
+        // Replayed events skipped into a lag were not resumed: the gap sent
+        // when the socket drains covers them instead.
+        resumed = !lagged;
       } else {
         resumed = false;
         if (replay) {
@@ -480,6 +699,49 @@ export class Session implements HubSubscriber {
     }
   }
 
+  /**
+   * Before a resume replays: waits for events held behind a pending decision
+   * to go out, and settles every per-target decision the replay will need, so
+   * the replayed events can be sent synchronously — ahead of the ack.
+   */
+  async #prepareReplay(
+    resume: NonNullable<JobsApiSubscribeMessage["resume"]>,
+    scope: ReadonlySet<string>,
+    filter: ReadonlySet<string> | undefined,
+  ): Promise<void> {
+    for (let round = 0; round < REPLAY_PREPARE_ROUNDS; round++) {
+      await this.#outboxIdle();
+      if (this.#ended) {
+        return;
+      }
+      const replay = this.#ctx.hub.replay(resume.epoch, resume.afterSeq);
+      if (replay.status !== "ok") {
+        return;
+      }
+      const waits: Promise<void>[] = [];
+      for (const stamped of replay.events) {
+        if (
+          this.#sent.has(stamped.seq) ||
+          (filter !== undefined && !filter.has(stamped.event.type))
+        ) {
+          continue;
+        }
+        for (const key of stamped.keys) {
+          if (scope.has(key) && BROAD_CHANNELS.has(key)) {
+            const pending = this.#resolveTarget(key, stamped);
+            if (pending) {
+              waits.push(pending);
+            }
+          }
+        }
+      }
+      if (waits.length === 0 && this.#outbox.length === 0) {
+        return;
+      }
+      await Promise.all(waits);
+    }
+  }
+
   /** Unsubscribes. Leaving a channel not held is not an error. */
   #unsubscribe(message: JobsApiUnsubscribeMessage): void {
     const { config, hub } = this.#ctx;
@@ -495,8 +757,13 @@ export class Session implements HubSubscriber {
       if (!removed.includes(key)) {
         removed.push(key);
       }
+      this.#decisions.delete(key);
       if (this.#channels.delete(key)) {
         hub.unsubscribe(this, key);
+      }
+      this.#release(key);
+      if (BROAD_CHANNELS.has(key)) {
+        this.#forgetTargets(key);
       }
     }
     this.#send({
@@ -509,28 +776,207 @@ export class Session implements HubSubscriber {
     });
   }
 
-  /**
-   * Sends an event matching `keys`, once. Channels whose event-type filter
-   * excludes it are dropped from `keys`; with none left nothing is sent.
-   * While lagging the event is only counted.
-   */
-  deliver(stamped: StampedEvent, keys: string[]): void {
-    if (this.#ended) {
+  /** Releases the notifier hold a channel took, if it took one. */
+  #release(channel: string): void {
+    const hold = this.#holds.get(channel);
+    if (!hold) {
       return;
     }
-    const matched = keys.filter((key) => {
+    this.#holds.delete(channel);
+    this.#ctx.hub.notifier
+      ?.unfollow(hold.kind, hold.target)
+      .catch((error: unknown) => {
+        this.#ctx.config.logger.warn("jobs api could not release a target", {
+          error,
+          ...hold,
+        });
+      });
+  }
+
+  /** Forgets the per-target decisions made for one broad channel. */
+  #forgetTargets(channel: string): void {
+    const prefix = `${channel}\0`;
+    for (const key of this.#targetDecisions.keys()) {
+      if (key.startsWith(prefix)) {
+        this.#targetDecisions.delete(key);
+      }
+    }
+  }
+
+  /** The per-target decision key for an event on a broad channel. */
+  #targetKey(channel: string, stamped: StampedEvent): string {
+    return `${channel}\0${stamped.event.kind}:${stamped.event.target}`;
+  }
+
+  /**
+   * Starts settling the per-target decision an event on a broad channel
+   * needs, returning the wait — or `undefined` when it is already known.
+   */
+  #resolveTarget(
+    channel: string,
+    stamped: StampedEvent,
+  ): Promise<void> | undefined {
+    const key = this.#targetKey(channel, stamped);
+    if (this.#targetDecisions.has(key)) {
+      return undefined;
+    }
+    let pending = this.#targetPending.get(key);
+    if (!pending) {
+      const { event } = stamped;
+      pending = decide(this.#ctx.config, this.request, {
+        action: "events.subscribe",
+        transport: "ws",
+        channel,
+        ...(event.kind === "queue"
+          ? { queue: event.target }
+          : { runner: event.target }),
+      })
+        .then(
+          (decision) => {
+            this.#targetDecisions.set(key, decision);
+          },
+          (error: unknown) => {
+            this.#ctx.config.logger.error(
+              "jobs api authorize failed for a channel's target",
+              { error, channel, target: event.target },
+            );
+            // Denied for the events waiting on it, then asked again.
+            this.#targetDecisions.set(key, { allow: false, status: 403 });
+            this.#targetFailed.add(key);
+          },
+        )
+        .finally(() => {
+          this.#targetPending.delete(key);
+          // This chain is often not awaited, so it must never reject: an
+          // unhandled rejection could end the process.
+          try {
+            this.#flushOutbox();
+          } catch (error) {
+            this.#ctx.config.logger.error("jobs api outbox flush failed", {
+              error,
+            });
+          }
+        });
+      this.#targetPending.set(key, pending);
+    }
+    return pending;
+  }
+
+  /** Whether an event needs a per-target decision not yet made; starts making it. */
+  #awaitsTarget(stamped: StampedEvent, keys: readonly string[]): boolean {
+    let waiting = false;
+    for (const key of keys) {
+      if (BROAD_CHANNELS.has(key) && this.#resolveTarget(key, stamped)) {
+        waiting = true;
+      }
+    }
+    return waiting;
+  }
+
+  /** The session's channels, among `keys`, whose filter admits the event. */
+  #match(stamped: StampedEvent, keys: readonly string[]): string[] {
+    return keys.filter((key) => {
       if (!this.#channels.has(key)) {
         return false;
       }
       const filter = this.#channels.get(key);
       return filter === undefined || filter.has(stamped.event.type);
     });
+  }
+
+  /**
+   * Sends an event matching `keys`, once. Channels whose event-type filter
+   * excludes it, and broad channels whose target the host denied, are
+   * dropped from `keys`; with none left nothing is sent. While lagging the
+   * event is only counted.
+   */
+  deliver(stamped: StampedEvent, keys: string[]): void {
+    this.#route(stamped, keys);
+  }
+
+  /** {@link deliver}, saying what became of the event. */
+  #route(stamped: StampedEvent, keys: readonly string[]): Outcome {
+    if (this.#ended) {
+      return "none";
+    }
+    const matched = this.#match(stamped, keys);
     if (matched.length === 0) {
-      return;
+      return "none";
     }
     if (this.#lag) {
-      this.#lag.toSeq = stamped.seq;
+      this.#startLag(stamped.seq, stamped.seq);
+      return "lagged";
+    }
+    if (this.#outbox.length > 0 || this.#awaitsTarget(stamped, matched)) {
+      if (this.#outbox.length >= OUTBOX_LIMIT) {
+        this.#startLag(stamped.seq, stamped.seq);
+        this.#lag!.outbox = true;
+        return "lagged";
+      }
+      this.#outbox.push({ stamped, keys: matched });
+      return "held";
+    }
+    return this.#emit(stamped, matched);
+  }
+
+  /** Sends what the outbox can, in order, stopping at the first event still waiting. */
+  #flushOutbox(): void {
+    while (this.#outbox.length > 0 && !this.#ended) {
+      const head = this.#outbox[0]!;
+      // Re-matched: the client may have left a channel while it waited.
+      const keys = this.#match(head.stamped, head.keys);
+      if (keys.length > 0 && this.#awaitsTarget(head.stamped, keys)) {
+        return;
+      }
+      this.#outbox.shift();
+      if (keys.length === 0) {
+        continue;
+      }
+      if (this.#lag) {
+        this.#startLag(head.stamped.seq, head.stamped.seq);
+      } else {
+        this.#emit(head.stamped, keys);
+      }
+    }
+    for (const key of this.#targetFailed) {
+      this.#targetDecisions.delete(key);
+    }
+    this.#targetFailed.clear();
+    for (const resolve of this.#outboxWaiters.splice(0)) {
+      resolve();
+    }
+    // A lag the outbox overflowed into is announced once it is empty, as a
+    // drained socket would announce it. A lag the socket caused waits for
+    // the socket.
+    if (this.#lag?.outbox) {
+      this.drain();
+    }
+  }
+
+  /** Resolves once no event is held behind a pending decision. */
+  async #outboxIdle(): Promise<void> {
+    if (this.#outbox.length === 0 || this.#ended) {
       return;
+    }
+    await new Promise<void>((resolve) => {
+      this.#outboxWaiters.push(resolve);
+    });
+  }
+
+  /** Serialises and sends an event whose channels are all known to be admitted, bar denied targets. */
+  #emit(stamped: StampedEvent, matched: readonly string[]): Outcome {
+    const keys = matched.filter(
+      (key) =>
+        !BROAD_CHANNELS.has(key) ||
+        this.#targetDecisions.get(this.#targetKey(key, stamped))?.allow ===
+          true,
+    );
+    if (keys.length === 0) {
+      return "none";
+    }
+    if (this.#lag) {
+      this.#startLag(stamped.seq, stamped.seq);
+      return "lagged";
     }
 
     let event;
@@ -545,27 +991,54 @@ export class Session implements HubSubscriber {
         error,
         seq: stamped.seq,
       });
-      return;
+      return "none";
     }
     if (event === null) {
-      return;
+      return "none";
     }
-    this.#send(
+    const outcome = this.#send(
       {
         type: "event",
         seq: stamped.seq,
         epoch: this.#ctx.hub.epoch,
-        subscriptions: matched,
-        event,
+        subscriptions: keys,
+        // `toEventDto` has already shaped every payload error as an
+        // `ErrorDto`; its declared return type (in `serialize.ts`) still
+        // names the pre-serialisation `SerializedError`.
+        event: event as unknown as EventWire,
       },
       stamped.seq,
     );
+    if (outcome === "sent") {
+      this.#recordSent(stamped.seq);
+    }
+    return outcome;
+  }
+
+  /**
+   * Remembers a `seq` as sent, for as long as the hub may replay it. Pruned
+   * past twice the replay size, so the set stays within that bound.
+   */
+  #recordSent(seq: number): void {
+    const { hub, options } = this.#ctx;
+    if (options.replay === false || !hub.replayEnabled) {
+      return;
+    }
+    this.#sent.add(seq);
+    if (this.#sent.size > options.replay.size * 2) {
+      const oldest = hub.oldestRetainedSeq;
+      for (const sent of this.#sent) {
+        if (sent < oldest) {
+          this.#sent.delete(sent);
+        }
+      }
+    }
   }
 
   /** The socket drained: when every lagging event is behind us, announce the gap and go live. */
   drain(): void {
     const lag = this.#lag;
-    if (!lag || this.#ended) {
+    if (!lag || this.#ended || this.#outbox.length > 0) {
       return;
     }
     if (this.#ws.getBufferedAmount() > this.#ctx.options.maxBufferedBytes) {
@@ -586,28 +1059,29 @@ export class Session implements HubSubscriber {
   }
 
   /**
-   * Sends a frame. For an event frame (`seq` given), a buffer already past
-   * `maxBufferedBytes` skips it and starts lagging. A frame queued under
-   * backpressure (`-1`) starts lagging after it; a dropped one (`0`) starts
-   * lagging with it.
+   * Sends a frame, saying whether it went out (`sent`, including queued under
+   * backpressure) or was skipped into the lag (`lagged`). For an event frame
+   * (`seq` given), a buffer already past `maxBufferedBytes` skips it and
+   * starts lagging. A frame queued under backpressure (`-1`) starts lagging
+   * after it; a dropped one (`0`) starts lagging with it.
    */
-  #send(frame: JobsApiServerMessage, seq?: number): void {
+  #send(frame: JobsApiServerMessage, seq?: number): Outcome {
     if (this.#ended || this.#ws.readyState !== OPEN) {
-      return;
+      return "none";
     }
     if (
       seq !== undefined &&
       this.#ws.getBufferedAmount() > this.#ctx.options.maxBufferedBytes
     ) {
       this.#startLag(seq, seq);
-      return;
+      return "lagged";
     }
     let sent: number;
     try {
       sent = this.#ws.send(JSON.stringify(frame));
     } catch (error) {
       this.#ctx.config.logger.error("jobs api socket send failed", { error });
-      return;
+      return "none";
     }
     if (sent === -1) {
       this.#startLag((seq ?? this.#ctx.hub.seq) + 1, undefined);
@@ -616,15 +1090,22 @@ export class Session implements HubSubscriber {
         this.#startLag(this.#ctx.hub.seq + 1, undefined);
       } else {
         this.#startLag(seq, seq);
+        return "lagged";
       }
     }
+    return "sent";
   }
 
-  /** Starts lagging (once), or extends the lag's skipped range. */
+  /**
+   * Starts lagging (once), or widens the lag to cover `skipped`. Widened both
+   * ways: a replayed event skipped while lagging can be older than the first
+   * live one, and the gap must still cover it.
+   */
   #startLag(fromSeq: number, skipped: number | undefined): void {
     if (this.#lag) {
       if (skipped !== undefined) {
-        this.#lag.toSeq = skipped;
+        this.#lag.fromSeq = Math.min(this.#lag.fromSeq, skipped);
+        this.#lag.toSeq = Math.max(this.#lag.toSeq ?? skipped, skipped);
       }
       return;
     }
@@ -677,6 +1158,16 @@ export class Session implements HubSubscriber {
       hub.unsubscribe(this, key);
     }
     this.#channels.clear();
+    for (const channel of [...this.#holds.keys()]) {
+      this.#release(channel);
+    }
+    this.#decisions.clear();
+    this.#targetDecisions.clear();
+    this.#outbox = [];
+    for (const resolve of this.#outboxWaiters.splice(0)) {
+      resolve();
+    }
+    this.#sent.clear();
     if (this.#heartbeat !== undefined) {
       clock.clearInterval(this.#heartbeat);
     }

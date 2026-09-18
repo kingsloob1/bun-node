@@ -1,7 +1,6 @@
 import type { JobsApiMode } from "../config";
 import type { Infer } from "../schema/builder";
-import type { EventDto } from "../serialize";
-import type { Equivalent } from "./events";
+import type { Equivalent, EventWire } from "./events";
 import { s } from "../schema/builder";
 import { EVENT_TYPES, EventDtoSchema } from "./events";
 
@@ -55,21 +54,35 @@ export type JobsApiWsErrorCode =
  * Client → server
  * ------------------------------------------------------------------ */
 
-/** Subscribes to channels, optionally resuming after a reconnect. */
+/**
+ * Subscribes to channels, optionally resuming after a reconnect.
+ *
+ * Subscriptions are not reference-counted: subscribing to a channel already
+ * held replaces its `events` filter (the last subscribe wins, it does not
+ * merge), and one `unsubscribe` removes the channel however many times it was
+ * subscribed.
+ *
+ * With `resume`, replayed events are sent before the `ack`; when they cannot
+ * be replayed the `ack` says `resumed: false` and a `gap` follows it.
+ */
 export interface JobsApiSubscribeMessage {
   /** The operation. */
   op: "subscribe";
   /** Echoed in the `ack` or `error` that answers it. */
   id: string;
-  /** Channels: `all`, `queues`, `queue/<q>`, `queue/<q>/job/<encoded id>`, `runners`, `runner/<r>`. */
+  /** Channels: `all`, `queues`, `queue/<q>`, `queue/<q>/job/<encoded id>`, `runners`, `runner/<r>`. At most 256. */
   channels: string[];
-  /** Only these event types, for these channels. Absent means every type. */
+  /** Only these event types, for these channels. Absent means every type. Replaces the filter of a channel already held. */
   events?: (typeof EVENT_TYPES)[number][];
   /** Replay what was missed since `afterSeq`, when the server still holds it. */
   resume?: {
     /** The `epoch` the client last saw. */
     epoch: string;
-    /** The last `seq` the client processed. */
+    /**
+     * The last `seq` the client processed. One beyond anything the server
+     * has stamped in `epoch` is answered as a changed epoch: `resumed: false`
+     * and a `gap` from `0`.
+     */
     afterSeq: number;
   };
 }
@@ -126,7 +139,7 @@ export interface JobsApiHelloMessage {
 
 /** One channel an `ack` refused. */
 export interface JobsApiAckRejection {
-  /** The channel, as the client sent it. */
+  /** The channel exactly as the client sent it (not canonicalised). */
   channel: string;
   /** Why. */
   code: JobsApiWsErrorCode;
@@ -148,7 +161,12 @@ export interface JobsApiAckMessage {
   channels: string[];
   /** Channels refused, each with its reason. */
   rejected?: JobsApiAckRejection[];
-  /** For a `subscribe` with `resume`: whether missed events were replayed. */
+  /**
+   * For a `subscribe` with `resume`: `true` when every missed event was
+   * replayed (before this ack); `false` when some could not be, in which case
+   * a `gap` covers them — right after this ack, or, if the connection was
+   * lagging, when it drains.
+   */
   resumed?: boolean;
   /** The latest `seq` stamped when the ack was sent. */
   seq: number;
@@ -165,7 +183,7 @@ export interface JobsApiEventMessage {
   /** Every subscribed channel it matched: an event is sent once, however many match. */
   subscriptions: string[];
   /** The event. */
-  event: EventDto;
+  event: EventWire;
 }
 
 /** Why events may have been missed. */
@@ -195,7 +213,11 @@ export interface JobsApiGapMessage {
 export interface JobsApiHeartbeatMessage {
   /** The message type. */
   type: "heartbeat";
-  /** The latest `seq` stamped: a jump beyond what arrived means events were missed. */
+  /**
+   * The latest `seq` the server has stamped, across every channel — not only
+   * this connection's. `seq` is global, so a jump between heartbeats says
+   * nothing about missed events: rely on `gap` frames for that.
+   */
   seq: number;
   /** Server time, epoch ms. */
   at: number;
@@ -254,10 +276,17 @@ const ChannelSchema = s.string({
     "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeURIComponent(jobId)>`, `runners` or `runner/<runner>`.",
 });
 
-/** Channel lists. */
+/** Most channels one `subscribe` or `unsubscribe` may name. */
+export const JOBS_API_WS_MAX_CHANNELS_PER_FRAME = 256;
+
+/**
+ * Channel lists. At most 256 per frame: well above the default of 50
+ * subscriptions a connection may hold, and small enough that one frame's
+ * parsing stays cheap. Authorization is bounded separately, by the free slots.
+ */
 const ChannelListSchema = s.array(ChannelSchema, {
   minItems: 1,
-  maxItems: 1000,
+  maxItems: JOBS_API_WS_MAX_CHANNELS_PER_FRAME,
 });
 
 /** A sequence number. */
@@ -284,7 +313,7 @@ export const SubscribeMessageSchema = s.named(
     },
     {
       description:
-        "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket.",
+        "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket. Only as many channels not already held as the connection has free slots are authorized; the rest are refused SUBSCRIPTION_LIMIT. Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it. With `resume`, replayed events arrive before the ack; if they cannot be replayed the ack says `resumed: false` and a gap follows it.",
     },
   ),
 );
@@ -292,11 +321,17 @@ export const SubscribeMessageSchema = s.named(
 /** `unsubscribe`. */
 export const UnsubscribeMessageSchema = s.named(
   "UnsubscribeMessage",
-  s.object({
-    op: s.literal("unsubscribe"),
-    id: MessageIdSchema,
-    channels: ChannelListSchema,
-  }),
+  s.object(
+    {
+      op: s.literal("unsubscribe"),
+      id: MessageIdSchema,
+      channels: ChannelListSchema,
+    },
+    {
+      description:
+        "Leaves channels. One unsubscribe removes a channel however many times it was subscribed; leaving a channel not held is not an error.",
+    },
+  ),
 );
 
 /** `ping`. */
@@ -339,7 +374,10 @@ export const AckMessageSchema = s.named(
     rejected: s.optional(
       s.array(
         s.object({
-          channel: s.string(),
+          channel: s.string({
+            description:
+              "The channel exactly as the client sent it (not canonicalised).",
+          }),
           code: s.enum([
             "VALIDATION",
             "RATE_LIMITED",
@@ -404,7 +442,18 @@ export const GapMessageSchema = s.named(
 /** `heartbeat`. */
 export const HeartbeatMessageSchema = s.named(
   "HeartbeatMessage",
-  s.object({ type: s.literal("heartbeat"), seq: SeqSchema, at: AtSchema }),
+  s.object(
+    {
+      type: s.literal("heartbeat"),
+      seq: s.integer({
+        minimum: 0,
+        description:
+          "The latest seq stamped, across every channel. seq is global, so a jump says nothing about missed events; rely on gap frames.",
+      }),
+      at: AtSchema,
+    },
+    { description: "Liveness. Not sent while the connection is lagging." },
+  ),
 );
 
 /** `pong`. */
