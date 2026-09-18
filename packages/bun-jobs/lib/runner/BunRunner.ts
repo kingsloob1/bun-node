@@ -395,7 +395,7 @@ export class BunRunner<
     // Single mode. A run already in flight here means the lock is ours, so
     // there is no point asking for it again.
     if (this.#active.size > 0) {
-      return await this.#queueInDriver(args, source, "busy");
+      return await this.#queueInDriver(args, source, "busy", options?.force);
     }
 
     // The lock outlives a run until its drain finishes, so a trigger arriving
@@ -408,7 +408,12 @@ export class BunRunner<
     const token = newToken(this.id);
     const acquired = await this.#acquireLock(token);
     if (!acquired) {
-      return await this.#queueInDriver(args, source, "lock-held");
+      return await this.#queueInDriver(
+        args,
+        source,
+        "lock-held",
+        options?.force,
+      );
     }
 
     this.#lockToken = token;
@@ -817,11 +822,16 @@ export class BunRunner<
   /**
    * Parks a trigger in the driver (single mode), so the demand survives this
    * process and whoever holds the lock drains it.
+   *
+   * `force` is whether the request asked to run even while paused. It is
+   * recorded on the trigger as `force: true` only when set, so a drainer can
+   * tell a forced trigger apart; an unforced record carries no `force` key.
    */
   async #queueInDriver(
     args: TArgs | undefined,
     source: RunSource,
     reason: (TriggerOutcome & { outcome: "skipped" })["reason"],
+    force?: boolean,
   ): Promise<TriggerOutcome> {
     if (!this.options.queueRuns) {
       return await this.#skip(reason);
@@ -834,6 +844,8 @@ export class BunRunner<
         source === "schedule" ? ("schedule" as const) : ("manual" as const),
       requestedAt: Date.now(),
       requestedBy: newToken(this.id),
+      // Only a forced trigger says so, so an unforced record is unchanged.
+      ...(force ? { force: true } : {}),
     };
 
     const queued = await this.driver.pushQueuedTrigger(
