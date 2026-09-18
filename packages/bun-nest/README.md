@@ -35,6 +35,7 @@ Underneath, routing is
   - [Adapter options](#adapter-options)
   - [Adapter methods and properties](#adapter-methods-and-properties)
   - [Routing and typed routes](#routing-and-typed-routes)
+    - [Mounting a bun-common router](#mounting-a-bun-common-router)
   - [Nest middleware](#nest-middleware)
   - [Responses: `@Redirect`, `StreamableFile`, `@Render`](#responses-redirect-streamablefile-render)
   - [Versioning](#versioning)
@@ -174,7 +175,7 @@ NestJS calls most of these for you. The ones you are likely to call directly:
 | `listen(port, hostname?, callback?)` | Binds `Bun.serve`. See [`listen()` and `close()`](#listen-and-close). |
 | `close()` | Stops the server with `stop(true)` and emits `close`. Routes and handlers stay registered. |
 | `fetch(input, init?)` | Runs a request through the adapter without a socket. See [Testing with `fetch()`](#testing-with-fetch). |
-| `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. |
+| `use`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, `search`, `propfind`, `proppatch`, `mkcol`, `copy`, `move`, `lock`, `unlock` | Register raw router middleware and routes beside Nest's controllers. `use` also mounts a `BunRouter`: see [Mounting a bun-common router](#mounting-a-bun-common-router). |
 | `enableCors(options, prefix?)` | See [CORS](#cors). |
 | `useStaticAssets(path, options)` | See [Static assets](#static-assets). |
 | `useBodyParser(type, rawBody, options)`, `registerParserMiddleware(prefix?, rawBody?)` | See [Body parsing and raw bodies](#body-parsing-and-raw-bodies). |
@@ -225,6 +226,37 @@ Demonstrated in
 [`controllers-and-routing.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/controllers-and-routing.ts)
 and
 [`adapter-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/02-http-adapter/adapter-options.ts).
+
+#### Mounting a bun-common router
+
+`use()` mounts a bun-common `BunRouter` (or any `@routejs/router` `Router`) as
+it takes middleware, with or without a path prefix, and with no cast. That is
+how `BunJobsApiModule` mounts the jobs API, and how the
+[jobs UI](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-jobs-ui/README.md)
+mounts on a Nest app:
+
+```ts
+import { BunRouter, validate } from "@kingsleyweb/bun-common";
+
+const admin = new BunRouter();
+admin.get("/status", (_req, res) => res.json({ ok: true }));
+adapter.use("/admin", admin); // GET /admin/status
+adapter.use(ui.basePath, ui.router); // jobsUi() from @kingsleyweb/bun-jobs-ui
+
+// A router that declares its mount sees the mount's params and validated
+// query, and must be mounted exactly there: a different path, a different
+// validated shape, or a missing validator is a compile error.
+const orgs = new BunRouter<"/orgs/:org", { query: { page: number } }>();
+orgs.get("/members", (req, res) => res.json({ org: req.params.org, page: req.query.page }));
+adapter.use("/orgs/:org", validate({ query: PageQuery }), orgs);
+```
+
+The mounting rules are bun-common's; see its
+[typed routes](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#typed-routes).
+Like other raw routes, a mounted router runs below Nest's pipeline: guards,
+interceptors and `setGlobalPrefix` do not apply to it. Mount before
+`app.listen()` or `app.init()`. Demonstrated in
+[`06-jobs-ui/mount.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/06-jobs-ui/mount.ts).
 
 ### Nest middleware
 

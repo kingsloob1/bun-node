@@ -185,6 +185,90 @@ describe("BunRouter.fetch: input forms", () => {
   });
 });
 
+/**
+ * A DOM shim (happy-dom, jsdom) replaces `globalThis.Request`, so a native
+ * Bun `Request` built before it — or captured from Bun — is no longer an
+ * `instanceof` the global. `fetch()` must still take it as a request, not as
+ * an init object, or its method and body are silently dropped.
+ */
+describe("fetch: a Request from before a DOM shim replaced globalThis.Request", () => {
+  /**
+   * A stand-in for a shim's `Request`. It builds working requests (as
+   * happy-dom's does), so the only thing that changes is that a native
+   * `Request` is no longer an `instanceof` the global — which, before the
+   * fix, turned a native `POST` into a bodiless `GET`.
+   */
+  class ShimRequest extends Request {}
+
+  /** Runs `body` with `globalThis.Request` swapped for {@link ShimRequest}. */
+  async function withShimmedRequest<T>(body: () => Promise<T>): Promise<T> {
+    const native = globalThis.Request;
+    globalThis.Request = ShimRequest;
+    try {
+      return await body();
+    } finally {
+      globalThis.Request = native;
+    }
+  }
+
+  /** A native `POST` with a JSON body, built while `Request` is Bun's own. */
+  function nativePost(): Request {
+    return new Request("http://localhost/echo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "hello" }),
+    });
+  }
+
+  it("BunRouter.fetch keeps its method and body", async () => {
+    const router = new BunRouter();
+    router.post("/echo", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+
+    const request = nativePost();
+    const response = await withShimmedRequest(() => router.fetch(request));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      method: "POST",
+      body: { title: "hello" },
+    });
+  });
+
+  it("BunHttpAdapter.fetch keeps its method and body", async () => {
+    const adapter = new BunHttpAdapter(0);
+    adapter.post("/echo", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+
+    const request = nativePost();
+    const response = await withShimmedRequest(() => adapter.fetch(request));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      method: "POST",
+      body: { title: "hello" },
+    });
+  });
+
+  it("still takes a plain { url, method, body } as the init form", async () => {
+    const router = new BunRouter();
+    router.post("/echo", (req, res) => {
+      res.json({ method: req.method, body: req.body });
+    });
+
+    const response = await router.fetch({
+      url: "/echo",
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "init" }),
+    });
+    expect(await response.json()).toEqual({
+      method: "POST",
+      body: { title: "init" },
+    });
+  });
+});
+
 describe("BunRouter.fetch: pipeline behaviour", () => {
   it("404s when nothing matches", async () => {
     const router = new BunRouter();

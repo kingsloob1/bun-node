@@ -21,6 +21,7 @@ import type {
   RouterHandler,
   RouterMiddlewareHandler,
   ServeStaticOptions,
+  UnmountedRouter,
   ValidatorMiddleware,
 } from "@kingsleyweb/bun-common";
 import type { NestApplicationOptions } from "@nestjs/common";
@@ -1410,7 +1411,6 @@ export class BunHttpAdapter<
    */
   private registerVerb(
     verb:
-      | "use"
       | "get"
       | "post"
       | "head"
@@ -1438,10 +1438,75 @@ export class BunHttpAdapter<
     return this;
   }
 
-  override use(...callbacks: RouterHandler[]): this;
-  override use(path: string, ...callbacks: RouterHandler[]): this;
-  override use(p?: string | RouterHandler, ...c: RouterHandler[]): this {
-    return this.registerVerb("use", p, c);
+  // `use` mirrors bun-common's `BunRouter.use`: middleware and mounted
+  // sub-routers, with an optional leading path. The two mount-typed overloads
+  // are hand-written there too (`use` is excluded from the verb-overload
+  // generator, because it mounts on a path *prefix*); keep them in step.
+
+  /**
+   * Mounts a bun-common sub-router at `path`, requiring the sub-router to have
+   * been declared with the same mount path.
+   *
+   * `new BunRouter<"/users/:id">()` lets the sub-router's routes see
+   * `params.id`; this signature keeps that declaration honest — a sub-router
+   * declaring a different path, or a validated `query`/`body` that no
+   * validator here produces, is a compile error. Same contract as
+   * bun-common's `BunRouter.use`.
+   */
+  override use<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    // `NoInfer`: without it `TPath` also infers from the router and widens to
+    // the union of both paths, which a mismatched mount then satisfies.
+    // `TShape` is inferred from the router and must be empty — a router
+    // declaring a validated shape needs the validator overload below.
+    router: BunRouter<NoInfer<TPath>, TShape> &
+      (keyof TShape extends never ? unknown : never),
+  ): this;
+
+  /**
+   * Mounts a bun-common sub-router at `path` behind a `validate()` middleware.
+   * The validated `query` and `body` reach the sub-router's handlers, so its
+   * declared mount shape must match them; validated `params` are not part of
+   * the contract (the pipeline rebinds `req.params` on entering each route).
+   */
+  override use<TPath extends string, TShape = EmptyShape>(
+    path: TPath,
+    validator: ValidatorMiddleware<TShape>,
+    router: BunRouter<NoInfer<TPath>, NoInfer<Omit<TShape, "params">>>,
+  ): this;
+
+  /**
+   * Registers router middleware on every path, and/or mounts sub-routers at
+   * the root — any `BunRouter` (or `@routejs/router` `Router`) that declared
+   * no mount context. Runs below Nest's pipeline: guards, interceptors and
+   * `setGlobalPrefix` do not apply.
+   */
+  override use(...callbacks: (RouterHandler | UnmountedRouter)[]): this;
+
+  /**
+   * Registers router middleware under the path prefix `path` (Express
+   * `use()` prefix matching), and/or mounts sub-routers there — e.g.
+   * `adapter.use(ui.basePath, ui.router)`. A router that declared a mount
+   * path goes through the mount-typed overloads above instead.
+   */
+  override use(
+    path: string,
+    ...callbacks: (RouterHandler | UnmountedRouter)[]
+  ): this;
+
+  override use(
+    p?: string | RouterHandler | UnmountedRouter,
+    ...c: (RouterHandler | UnmountedRouter)[]
+  ): this {
+    const args = p === undefined ? c : [p, ...c];
+    // `BunRouter.use`'s implementation signature is not callable from outside;
+    // its widest public overloads take exactly these arguments.
+    (
+      this.instance.use as (
+        ...a: (string | RouterHandler | UnmountedRouter)[]
+      ) => BunRouter
+    ).apply(this.instance, args);
+    return this;
   }
 
   /* --- BEGIN generated typed overloads: get --- */

@@ -466,7 +466,7 @@ describe("registration order", () => {
       authorize: () => true,
     });
     cleanups.push(() => api.close());
-    adapter.use(api.basePath, api.router as never);
+    adapter.use(api.basePath, api.router);
     // Before `init()`, which is when the gateway's route is registered.
     api.websocket!.attach(adapter.getInstance());
 

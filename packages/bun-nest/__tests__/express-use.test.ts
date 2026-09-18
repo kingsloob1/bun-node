@@ -2,7 +2,9 @@ import type {
   BunResponse,
   NextFunction,
   RouterHandler,
+  StandardSchemaV1,
 } from "@kingsleyweb/bun-common";
+import { BunRouter, validate } from "@kingsleyweb/bun-common";
 import { RequestMethod } from "@nestjs/common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib/BunHttpAdapter";
@@ -148,5 +150,71 @@ describe("bun-nest BunHttpAdapter: Express 5 use semantics", () => {
       `http://${adapter.listeningHost}:${adapter.listeningPort}/scoped`,
     );
     expect(ran).toBe(false);
+  });
+});
+
+describe("bun-nest BunHttpAdapter: use() mounts bun-common routers", () => {
+  it("serves a plain router mounted at a path prefix, and only under it", async () => {
+    adapter = new BunHttpAdapter();
+    const ui = new BunRouter();
+    ui.get("/", (_req, res) => res.send("home"));
+    ui.get("/queues/:name", (req, res) => res.json(req.params));
+    // No cast: a `BunRouter` is a valid `use()` argument.
+    adapter.use("/admin/jobs", ui);
+
+    expect(await (await adapter.fetch("/admin/jobs")).text()).toBe("home");
+    const queue = await adapter.fetch("/admin/jobs/queues/emails");
+    expect(queue.status).toBe(200);
+    expect(await queue.json()).toEqual({ name: "emails" });
+    expect((await adapter.fetch("/queues/emails")).status).toBe(404);
+  });
+
+  it("mounts a router with no path at the root, in order with middleware", async () => {
+    adapter = new BunHttpAdapter();
+    const seen: string[] = [];
+    const router = new BunRouter();
+    router.get("/ping", (_req, res) => {
+      seen.push("route");
+      return res.send("pong");
+    });
+    adapter.use((_req, _res, next) => {
+      seen.push("middleware");
+      next();
+    }, router);
+
+    const response = await adapter.fetch("/ping");
+    expect(await response.text()).toBe("pong");
+    expect(seen).toEqual(["middleware", "route"]);
+  });
+
+  it("gives a mount-declared router the mount's params and validated query", async () => {
+    adapter = new BunHttpAdapter();
+    const PageQuery: StandardSchemaV1<unknown, { page: number }> = {
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate: (value) => {
+          const page = Number((value as { page?: string }).page);
+          return Number.isInteger(page)
+            ? { value: { page } }
+            : { issues: [{ message: "page must be an integer" }] };
+        },
+      },
+    };
+    const orgs = new BunRouter<"/orgs/:org", { query: { page: number } }>();
+    orgs.get("/members/:member", (req, res) => {
+      return res.json({ params: req.params, page: req.query.page });
+    });
+    adapter.use("/orgs/:org", validate({ query: PageQuery }), orgs);
+
+    const ok = await adapter.fetch("/orgs/acme/members/ada?page=2");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({
+      params: { org: "acme", member: "ada" },
+      page: 2,
+    });
+    expect((await adapter.fetch("/orgs/acme/members/ada?page=x")).status).toBe(
+      400,
+    );
   });
 });

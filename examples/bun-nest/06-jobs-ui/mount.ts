@@ -16,11 +16,9 @@ import type { INestApplication } from "@nestjs/common";
  * - **Hand the UI the API the module built.** `app.get(BUN_JOBS_API)` answers
  *   with the `JobsApi` once `NestFactory.create` has resolved; `jobsUi({ api })`
  *   then reads its basePath, socket and docs paths.
- * - **Two ways to mount.** `adapter.use(ui.basePath, ui.router)` works, but
- *   bun-nest types `use()` for handlers only, so a router needs the same
- *   `as never` cast `BunJobsApiModule` uses internally.
- *   `adapter.getInstance().use(ui.basePath, ui.router)` — the adapter's own
- *   bun-common router — needs none. Both are shown.
+ * - **Mount it with `adapter.use(ui.basePath, ui.router)`.** The adapter's
+ *   `use()` takes a bun-common router as it takes middleware, with no cast —
+ *   the same way `BunJobsApiModule` mounts the API.
  * - **Below Nest's pipeline.** Like the API, the UI's routes are not
  *   controllers: Nest guards, interceptors and `setGlobalPrefix` do not apply.
  *   Guard the page with the UI's `authorize`; the data stays guarded by the
@@ -103,8 +101,9 @@ const ui = jobsUi({
 });
 show("ui.config", ui.config);
 
-// bun-nest's `use()` is typed for handlers only; a router needs the cast.
-adapter.use(ui.basePath, ui.router as never);
+// `ui.router` is a bun-common `BunRouter`; the adapter's `use()` mounts it
+// under `ui.basePath` like any sub-router.
+adapter.use(ui.basePath, ui.router);
 
 await app.listen(0);
 const url = (await app.getUrl()).replace("[::1]", "localhost");
@@ -153,23 +152,21 @@ checkEqual("and so do the app's controllers", await health.json(), {
 await app.close();
 
 /* ------------------------------------------------------------------ */
-step("The other way: the adapter's own router, no cast");
+step("The same mount, without a socket");
 
 const second = new BunHttpAdapter();
 const secondApp = (await NestFactory.create(AppModule, second, {
   logger: false,
 })) as INestApplication;
 const secondUi = jobsUi({ api: secondApp.get(BUN_JOBS_API), basePath: "/ops" });
-// `getInstance()` is the bun-common BunRouter underneath; its `use()` takes
-// a router as it is.
-second.getInstance().use(secondUi.basePath, secondUi.router);
+second.use(secondUi.basePath, secondUi.router);
 await secondApp.init();
 
 // `fetch()` runs the adapter's real pipeline with no socket bound.
 const socketFree = await second.fetch("/ops/runners");
 await socketFree.arrayBuffer();
 checkEqual(
-  "mounted on getInstance(): the shell, without a socket",
+  "adapter.fetch(): the shell, with no port bound",
   [socketFree.status, socketFree.headers.get("content-type")],
   [200, "text/html; charset=utf-8"],
 );

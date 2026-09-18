@@ -164,7 +164,7 @@ export class BunJobsApiModule
   /** Mounts the HTTP router under `basePath`. */
   onModuleInit(): void {
     const adapter = requireBunAdapter(this.adapterHost);
-    adapter.use(this.api.basePath, this.api.router as never);
+    adapter.use(this.api.basePath, this.api.router);
   }
 
   /** Attaches the socket, once the WebSocket adapter can no longer be swapped. */
