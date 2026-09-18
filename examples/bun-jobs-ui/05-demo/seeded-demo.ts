@@ -1,6 +1,7 @@
 /**
- * A seeded demo of the queue screens: several queues with jobs in every
- * state, served with the UI so you can click through it.
+ * A seeded demo of the queue and runner screens: several queues with jobs in
+ * every state and runners in every state, served with the UI so you can
+ * click through it.
  *
  * ```bash
  * bun 05-demo/seeded-demo.ts --serve                  # seed, serve, print every screen's URL
@@ -14,9 +15,12 @@
  * and prints a URL for every screen and panel: the queue list, each queue,
  * a filtered tab, each panel, and jobs that are completed, dead with a
  * `cause`, failed and waiting to retry, running and logging, delayed, a flow's
- * parent, and one whose id holds a `/`. While it serves, a delivery is added to
- * `webhooks` every 3 s and the running job logs a line every 2 s, so the
- * screens have something to refresh on their 5 s poll.
+ * parent, and one whose id holds a `/`; then the runner list and each runner
+ * (see `helpers/runners.ts`): one idle on a schedule, one paused, one with a
+ * run in flight and a history, one whose run failed, and one registered by
+ * another process. While it serves, a delivery is added to `webhooks` every
+ * 3 s and the running job logs a line every 2 s, so the screens have
+ * something to refresh on their 5 s poll.
  *
  * Without `--serve` it checks the seed through the API, the same reads the
  * screens make, and exits, so `bun run-all.ts` runs it too.
@@ -33,8 +37,11 @@
  *   backend does not know yet creates it, as `BunQueue.add` does; only a
  *   configured `queues` list makes an unknown queue a 404. The queues here
  *   are seeded from code so each has jobs in every state.
+ * - **Kill… and Reset stats… need the runner in this process.** The remote
+ *   runner offers neither, and says why; `digest` offers Kill… while its run
+ *   is in flight.
  * - **Every action is allowed here.** `04-screens/permissions.ts` shows a host
- *   that decides per queue, and what the screens then hide.
+ *   that decides per queue and per runner, and what the screens then hide.
  */
 import type {
   JobDto,
@@ -42,6 +49,12 @@ import type {
   MetaDto,
   QueueSummaryDto,
 } from "@kingsleyweb/bun-jobs";
+import type {
+  RunnerHistoryDto,
+  RunnerInfoDto,
+  RunnerListDto,
+  RunnerStatsDto,
+} from "@kingsleyweb/bun-jobs/api/contract";
 import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
@@ -57,12 +70,13 @@ import {
 } from "../shared/backend";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
+import { DEMO_RUNNERS, seedRunners } from "./helpers/runners";
 import { DEMO_IDS, EXPECTED_COUNTS, seedDemo } from "./helpers/seed";
 
 /** Keep serving after the checks, for a browser. */
 const serve = process.argv.includes("--serve");
 
-title(`A seeded demo of the queue screens (${exampleBackend()})`);
+title(`A seeded demo of the queue and runner screens (${exampleBackend()})`);
 
 /* ------------------------------------------------------------------ */
 step("Seeding the queues");
@@ -77,6 +91,7 @@ const jobs = new BunJobs({
 
 const started = performance.now();
 const demo = await seedDemo(jobs, { live: serve });
+const runners = await seedRunners(jobs);
 show(`seeded in ${(performance.now() - started).toFixed(0)}ms`);
 
 /* ------------------------------------------------------------------ */
@@ -346,6 +361,102 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("/runners — local runners first, then remote ones");
+
+const runnerList = await read<RunnerListDto>("/runners");
+checkEqual(
+  "the list: the four local runners by name and status, then the remote id",
+  runnerList.items.map((item) => [item.id, item.local, item.status ?? null]),
+  [
+    [DEMO_RUNNERS.scheduled, true, "running"],
+    [DEMO_RUNNERS.paused, true, "paused"],
+    [DEMO_RUNNERS.busy, true, "running"],
+    [DEMO_RUNNERS.failing, true, "running"],
+    [DEMO_RUNNERS.remote, false, null],
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+step("/runners/:runner — status, summary, stats, active runs, history");
+
+/** One runner and everything its screen reads. */
+async function runnerScreen(id: string) {
+  return {
+    info: await read<RunnerInfoDto>(`/runners/${id}`),
+    stats: await read<RunnerStatsDto>(`/runners/${id}/stats`),
+    history: (await read<RunnerHistoryDto>(`/runners/${id}/history`)).items,
+  };
+}
+
+const scheduled = await runnerScreen(DEMO_RUNNERS.scheduled);
+show("backup's schedule", scheduled.info.schedule);
+checkEqual(
+  "backup: started on its cron, nothing in flight, no runs yet",
+  [
+    scheduled.info.isPaused,
+    scheduled.info.isRunning,
+    scheduled.info.local?.status,
+    scheduled.info.local?.activeRuns.length,
+    scheduled.info.nextRunAt !== null,
+    scheduled.stats.total,
+    scheduled.history.length,
+  ],
+  [false, false, "running", 0, true, 0, 0],
+);
+
+const paused = await runnerScreen(DEMO_RUNNERS.paused);
+checkEqual(
+  "archive: paused (the screen offers Resume…)",
+  [paused.info.isPaused, paused.info.local?.status],
+  [true, "paused"],
+);
+
+const busy = await runnerScreen(DEMO_RUNNERS.busy);
+checkEqual(
+  "digest: a run in flight here (Kill…), and in its history, newest first, above the finished one",
+  [
+    busy.info.isRunning,
+    busy.info.local?.activeRuns.length,
+    busy.history.map((run) => [run.status, run.source]),
+    busy.stats.success,
+  ],
+  [
+    true,
+    1,
+    [
+      ["running", "manual"],
+      ["success", "manual"],
+    ],
+    1,
+  ],
+);
+
+const failing = await runnerScreen(DEMO_RUNNERS.failing);
+show("sync-crm's last error", failing.info.lastError);
+checkEqual(
+  "sync-crm: its run failed, and the runner keeps the error",
+  [
+    failing.history.map((run) => run.status),
+    failing.history[0]?.error?.message,
+    failing.stats.failed,
+    failing.info.lastError?.message,
+  ],
+  [
+    ["failed"],
+    "crm.example answered 503 Service Unavailable",
+    1,
+    "crm.example answered 503 Service Unavailable",
+  ],
+);
+
+const remote = await runnerScreen(DEMO_RUNNERS.remote);
+checkEqual(
+  "partner-feed: remote, so no local block (no active runs, Kill… or Reset stats…)",
+  [remote.info.isLocal, "local" in remote.info, remote.info.isPaused],
+  [false, false, false],
+);
+
+/* ------------------------------------------------------------------ */
 step("The UI serves every screen's URL");
 
 /** The screens worth opening, by what they show. */
@@ -394,6 +505,16 @@ const screens: [string, string][] = [
     `/queues/webhooks/jobs/${idSegment(DEMO_IDS.webhookDead)}`,
   ],
   ["job: an id with a /", `/queues/mail/jobs/${idSegment(DEMO_IDS.slashed)}`],
+  ["the runner list", "/runners"],
+  ["the runner list, searched", "/runners?search=sync"],
+  ["runner: idle on a schedule", `/runners/${DEMO_RUNNERS.scheduled}`],
+  ["runner: paused (Resume…)", `/runners/${DEMO_RUNNERS.paused}`],
+  ["runner: a run in flight (Kill…)", `/runners/${DEMO_RUNNERS.busy}`],
+  [
+    "runner: a failed run, 10 in the history",
+    `/runners/${DEMO_RUNNERS.failing}?history=10`,
+  ],
+  ["runner: remote", `/runners/${DEMO_RUNNERS.remote}`],
 ];
 for (const [, path] of screens) {
   const response = await app.fetch(`${ui.basePath}${path}`);
@@ -419,6 +540,7 @@ if (serve) {
   const stopTrickle = demo.trickle(3_000);
   process.once("SIGINT", async () => {
     stopTrickle();
+    await runners.stop();
     await demo.stop();
     await app.close();
     await api.close();
@@ -429,6 +551,7 @@ if (serve) {
     process.exit();
   });
 } else {
+  await runners.stop();
   await demo.stop();
   await api.close();
   if (exampleBackend() !== "memory") {
