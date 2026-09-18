@@ -139,11 +139,16 @@ The app boots with the untargeted `GET /meta/permissions`. The Queues nav
 entry, and so every `/queues*` route, depends on that map's `queues.list`.
 Screens under `/queues/:queue` also ask `GET /meta/permissions?queue=<queue>`,
 and that per-queue answer refines only the buttons and panels inside that
-queue's screens. Until it arrives, or if it fails, those screens use the
-untargeted map. Runners work the same way: the Runners nav entry and every
-`/runners*` route depend on the untargeted `runners.list`, and
-`/runners/:runner` asks `GET /meta/permissions?runner=<runner>` for its own
-reads and buttons. An action counts only when the map holds it and it is `true`.
+queue's screens. Until it arrives, or if it fails, those screens' buttons and
+panels use the untargeted map; the job screen's read of the job waits for it
+instead, and falls back to the untargeted map only if it fails. Runners work
+the same way: the Runners nav entry and every `/runners*` route depend on the
+untargeted `runners.list`, and `/runners/:runner` asks
+`GET /meta/permissions?runner=<runner>` for its own reads and buttons; its
+read of the runner waits for that answer too. Because the lists depend on the
+untargeted map, `/queues` and `/runners` list every queue and runner, even one
+the host's `authorize` refuses entirely; its link then leads to "Jobs hidden",
+"Job hidden" or "Runner hidden". An action counts only when the map holds it and it is `true`.
 An element that is not allowed is absent, not disabled. "Mutation" below means
 the action and `meta.readOnly` false. The API's own 401/403 stays the
 authority, since the map is never asked about one particular job.
@@ -207,9 +212,11 @@ is in flight (see below).
   instance's `status`: `idle` (registered, not started), `running` (started:
   its schedule is armed and triggers are accepted), `paused` or `stopped`. A
   run in flight is a separate "Run in flight" badge, shown while `isRunning`
-  is true or `local.activeRuns` is not empty. A remote runner has no status
-  of its own here: the list shows none, and its screen shows Paused or Active
-  from the shared `isPaused` flag.
+  is true or `local.activeRuns` is not empty (the list shows it from the
+  item's `isRunning`). A remote runner has no lifecycle status here: the list
+  and its screen show Paused or Active from the shared `isPaused` flag.
+- **The history includes the run in flight.** A run that has started and not
+  finished is the newest row, with status `running`.
 - **Remote runners** are registered by another process. Pause, resume,
   reschedule and trigger still work, through the shared state, and the owner
   adopts them at its next sync; the screen says so. A trigger for a remote
@@ -309,7 +316,9 @@ queue, opens a dead job and retries it, reads each step back from the API and
 checks that the page raised no CSP violation. It skips visibly when Chrome is
 not found. Set `BUN_CHROME_PATH` to point it at one.
 
-The runner screens have no Chrome flow yet.
+The runner screens' Chrome flow is in the examples:
+`examples/bun-jobs-ui/06-browser/pause-and-retry.ts` pauses a runner and
+checks "Runner hidden" in Chrome.
 `__tests__/app/pkg/runners.integration.test.ts` and
 `runner-actions.integration.test.ts` render them under happy-dom against a
 real `createJobsApi` in `runner` mode with a real local `BunRunner`.
