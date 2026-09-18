@@ -481,6 +481,14 @@ export class FileDriver implements JobsDriver {
     return trigger;
   }
 
+  async peekQueuedTrigger(
+    ns: string,
+    key: string,
+  ): Promise<QueuedTrigger | null> {
+    // A read alone: nothing is taken, and an unknown runner is not created.
+    return (await this.#readState(ns, key)).queued[0] ?? null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return (await this.#readState(ns, key)).queued.length;
   }

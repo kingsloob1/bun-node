@@ -567,6 +567,22 @@ export class RedisDriver implements JobsDriver {
     return head ? safeJsonParse<QueuedTrigger | null>(head, null) : null;
   }
 
+  async peekQueuedTrigger(
+    ns: string,
+    key: string,
+  ): Promise<QueuedTrigger | null> {
+    await this.connect();
+
+    // `LINDEX 0` is the element `LPOP` takes next, read without removing it;
+    // a missing key answers `nil` and is not created.
+    const head = await this.#client.lindex(
+      this.keys.runner(ns, this.#runnerId(key)).queued,
+      0,
+    );
+
+    return head ? safeJsonParse<QueuedTrigger | null>(head, null) : null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     await this.connect();
     return Number(

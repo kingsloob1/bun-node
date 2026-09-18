@@ -380,6 +380,16 @@ export class MemoryDriver implements JobsDriver {
     return this.#existingRunner(ns, key)?.queued.shift() ?? null;
   }
 
+  async peekQueuedTrigger(
+    ns: string,
+    key: string,
+  ): Promise<QueuedTrigger | null> {
+    // A copy, as on the way in: the caller must not be able to edit the
+    // stored head through the object it was handed.
+    const head = this.#existingRunner(ns, key)?.queued[0];
+    return head ? jsonClone(head) : null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return this.#existingRunner(ns, key)?.queued.length ?? 0;
   }

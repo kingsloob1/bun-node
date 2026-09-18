@@ -2445,6 +2445,14 @@ Each driver reports these figures as
 The file driver's `multiHost` is `false` on purpose: its guarantees rest on
 POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
 
+**Custom drivers.** A driver of your own implements `JobsDriver`. Its
+queued-trigger methods include **`peekQueuedTrigger(ns, key)`, which is
+required**: it returns the head of a runner's queued-trigger list, meaning the
+trigger `popQueuedTrigger` would take next, without taking it, or `null` when
+the list is empty. A paused runner uses it to see whether the head was forced
+before popping it. It must be read-only: nothing removed, reordered or
+created, and a runner nobody has written to stays out of `listRunners`.
+
 ### Driver configs
 
 A `DriverConfig` is plain JSON. That means a spawned child can receive it, and
