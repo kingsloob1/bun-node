@@ -1,0 +1,14 @@
+{
+  // The app tests that import `@kingsleyweb/bun-jobs` itself: the contract
+  // drift checks and the real-API integration test. Compiled WITHOUT the DOM
+  // lib, because the package's raw-.ts source graph conflicts with it. Checked
+  // by `typecheck.test.ts` in this directory (so `bun test` enforces it), and
+  // registrable in `scripts/typecheck.ts`.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": ["./**/*"],
+  // A deliberately failing negative control, compiled only by typecheck.test.ts.
+  "exclude": ["./negative"]
+}

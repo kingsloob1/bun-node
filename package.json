@@ -9,7 +9,8 @@
   "workspaces": [
     "packages/bun-common",
     "packages/bun-nest",
-    "packages/bun-jobs"
+    "packages/bun-jobs",
+    "packages/bun-jobs-ui"
   ],
   "devDependencies": {
     "@nx/eslint": "23.2.1",
