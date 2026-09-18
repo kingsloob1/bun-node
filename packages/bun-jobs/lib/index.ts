@@ -48,6 +48,8 @@ export {
   type OpenApiDocument,
   type OpenApiSecurityScheme,
 } from "./api/config";
+/** Job-id escaping for job channel names; also in the browser-safe contract. */
+export { decodeJobId, encodeJobId } from "./api/contract/constants";
 export { createJobsApi } from "./api/createJobsApi";
 export { JOBS_API_PROTOCOL_VERSION } from "./api/routes/meta";
 export type {
@@ -194,6 +196,7 @@ export {
   type JobsNotifierOptions,
 } from "./notifier";
 
+export type { BackoffWarningFields } from "./queue/backoff";
 /* ------------------------------------------------------------------ *
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
@@ -248,6 +251,12 @@ export {
   type StoredLimits,
   toRepeatRecord,
 } from "./queue/index";
+
+export type {
+  IsolatedJob,
+  IsolatedJobProcessor,
+} from "./runner/executors/executor";
+
 /* ------------------------------------------------------------------ *
  * The runner — run a JS/TS file on a schedule or on demand.
  * ------------------------------------------------------------------ */
@@ -285,6 +294,23 @@ export {
   type WorkerOptions,
 } from "./runner/index";
 
+// Remote runner control: a runner registered by any process sharing the
+// driver and namespace, reached through `BunRunnerManager.remote()`.
+export {
+  RemoteRunner,
+  type RemoteRunnerInfo,
+  type RemoteRunnerOptions,
+  type RemoteRunRecord,
+  type TruncatedRunResult,
+} from "./runner/index";
+export type {
+  JobChannelErrorReply,
+  JobChannelOperation,
+  JobChannelReplies,
+  JobChannelReply,
+  JobChannelRequest,
+  JobChannelValueReply,
+} from "./runner/protocol";
 export {
   type ConnectionInput,
   type ConnectionOptions,
@@ -294,13 +320,11 @@ export {
   toConnectionUrl,
   type UrlDefaults,
 } from "./shared/connection";
-
 /* ------------------------------------------------------------------ *
  * Shared building blocks used across the package, exported because a
  * consumer writing a custom driver or handler needs them too.
  * ------------------------------------------------------------------ */
 export * from "./shared/constants";
-
 /* ------------------------------------------------------------------ *
  * Scheduling — cron with optional seconds, plus the schedule shapes a
  * runner (and a repeatable job) accepts.
@@ -334,7 +358,21 @@ export {
   UnrecoverableJobError,
   WorkerClosedError,
 } from "./shared/errors";
+export {
+  type ErrorContext,
+  NotSupportedError,
+  ProtocolError,
+} from "./shared/errors";
+export { RunnerNotFoundError } from "./shared/errors";
 export { runnerEvent } from "./shared/events";
+
+// runner/shared types
+//
+// One contiguous block, kept last so a change here never collides with edits
+// to the sections above. Sorting would scatter it among them by path, which is
+// the one thing this block exists to avoid.
+
+export type { RunnerControlAction } from "./shared/events";
 // Reading dates in phrases: the parser interface, and the chrono range.
 export {
   assertDateParser,
@@ -352,6 +390,7 @@ export {
   queueKey,
   runnerKey,
 } from "./shared/keys";
+
 export {
   createJobsLogger,
   type LogFields,
@@ -359,6 +398,7 @@ export {
   type LoggerLike,
   resolveLogger,
 } from "./shared/logger";
+export type { RunProgress } from "./shared/progress";
 export {
   createTicker,
   nextFireDate,
@@ -368,41 +408,3 @@ export {
   type Ticker,
   type TickerOptions,
 } from "./shared/schedule";
-
-// runner/shared types
-//
-// One contiguous block, kept last so a change here never collides with edits
-// to the sections above. Sorting would scatter it among them by path, which is
-// the one thing this block exists to avoid.
-/* eslint-disable perfectionist/sort-exports */
-export type { BackoffWarningFields } from "./queue/backoff";
-export type {
-  IsolatedJob,
-  IsolatedJobProcessor,
-} from "./runner/executors/executor";
-export type {
-  JobChannelErrorReply,
-  JobChannelOperation,
-  JobChannelReplies,
-  JobChannelReply,
-  JobChannelRequest,
-  JobChannelValueReply,
-} from "./runner/protocol";
-export {
-  type ErrorContext,
-  NotSupportedError,
-  ProtocolError,
-} from "./shared/errors";
-export type { RunProgress } from "./shared/progress";
-
-// Remote runner control: a runner registered by any process sharing the
-// driver and namespace, reached through `BunRunnerManager.remote()`.
-export {
-  RemoteRunner,
-  type RemoteRunnerInfo,
-  type RemoteRunnerOptions,
-  type RemoteRunRecord,
-  type TruncatedRunResult,
-} from "./runner/index";
-export { RunnerNotFoundError } from "./shared/errors";
-export type { RunnerControlAction } from "./shared/events";

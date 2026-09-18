@@ -1,6 +1,16 @@
-import type { JobsApiMode } from "../config";
+import type {
+  JobsApiAckMessage,
+  JobsApiErrorMessage,
+  JobsApiGapMessage,
+  JobsApiHeartbeatMessage,
+  JobsApiHelloMessage,
+  JobsApiPingMessage,
+  JobsApiPongMessage,
+  JobsApiSubscribeMessage,
+  JobsApiUnsubscribeMessage,
+} from "../contract/ws";
 import type { Infer } from "../schema/builder";
-import type { Equivalent, EventWire } from "./events";
+import type { Equivalent } from "./events";
 import { JOBS_API_WS_MAX_CHANNELS_PER_FRAME } from "../contract/constants";
 import { s } from "../schema/builder";
 import { EVENT_TYPES, EventDtoSchema } from "./events";
@@ -20,228 +30,29 @@ export {
   JOBS_API_WS_SUBPROTOCOL,
 } from "../contract/constants";
 
-/** Codes an `error` message or an `ack` rejection may carry. */
-export type JobsApiWsErrorCode =
-  | "VALIDATION"
-  | "RATE_LIMITED"
-  | "MESSAGE_TOO_LARGE"
-  | "UNSUPPORTED_DATA"
-  | "INVALID_CHANNEL"
-  | "CHANNEL_NOT_AVAILABLE"
-  | "QUEUE_NOT_FOUND"
-  | "RUNNER_NOT_FOUND"
-  | "SUBSCRIPTION_LIMIT"
-  | "UNAUTHORIZED"
-  | "FORBIDDEN"
-  | "EVENTS_UNAVAILABLE"
-  | "INTERNAL";
-
-/* ------------------------------------------------------------------ *
- * Client → server
- * ------------------------------------------------------------------ */
-
 /**
- * Subscribes to channels, optionally resuming after a reconnect.
- *
- * Subscriptions are not reference-counted: subscribing to a channel already
- * held replaces its `events` filter (the last subscribe wins, it does not
- * merge), and one `unsubscribe` removes the channel however many times it was
- * subscribed.
- *
- * With `resume`, replayed events are sent before the `ack`; when they cannot
- * be replayed the `ack` says `resumed: false` and a `gap` follows it.
+ * The frame types themselves are defined once, in the browser-safe contract
+ * (`contract/ws.ts`), and re-exported here: the server builds and parses
+ * exactly the types a client imports, so the two cannot disagree. The
+ * schemas below are held to them by the compile-time check at the end.
  */
-export interface JobsApiSubscribeMessage {
-  /** The operation. */
-  op: "subscribe";
-  /** Echoed in the `ack` or `error` that answers it. */
-  id: string;
-  /** Channels: `all`, `queues`, `queue/<q>`, `queue/<q>/job/<encoded id>`, `runners`, `runner/<r>`. At most 256. */
-  channels: string[];
-  /** Only these event types, for these channels. Absent means every type. Replaces the filter of a channel already held. */
-  events?: (typeof EVENT_TYPES)[number][];
-  /** Replay what was missed since `afterSeq`, when the server still holds it. */
-  resume?: {
-    /** The `epoch` the client last saw. */
-    epoch: string;
-    /**
-     * The last `seq` the client processed. One beyond anything the server
-     * has stamped in `epoch` is answered as a changed epoch: `resumed: false`
-     * and a `gap` from `0`.
-     */
-    afterSeq: number;
-  };
-}
-
-/** Unsubscribes from channels. */
-export interface JobsApiUnsubscribeMessage {
-  /** The operation. */
-  op: "unsubscribe";
-  /** Echoed in the `ack` or `error` that answers it. */
-  id: string;
-  /** The channels to leave. */
-  channels: string[];
-}
-
-/** Asks for a `pong`. */
-export interface JobsApiPingMessage {
-  /** The operation. */
-  op: "ping";
-  /** Echoed in the `pong`. */
-  id: string;
-}
-
-/** Anything a client may send. */
-export type JobsApiClientMessage =
-  | JobsApiSubscribeMessage
-  | JobsApiUnsubscribeMessage
-  | JobsApiPingMessage;
-
-/* ------------------------------------------------------------------ *
- * Server → client
- * ------------------------------------------------------------------ */
-
-/** Sent once, on open. */
-export interface JobsApiHelloMessage {
-  /** The message type. */
-  type: "hello";
-  /** The protocol version. */
-  protocol: 1;
-  /** This connection's id. */
-  sessionId: string;
-  /** The server instance's epoch: `seq` values are comparable only within one. */
-  epoch: string;
-  /** The latest `seq` stamped so far. */
-  seq: number;
-  /** The API's mode, which decides which channels exist. */
-  mode: JobsApiMode;
-  /** How often a `heartbeat` arrives, in ms; `0` when none do. */
-  heartbeatMs: number;
-  /** Most channels this connection may hold. */
-  maxSubscriptions: number;
-  /** How events reach the server: `local` means only this process's events. */
-  events: "push" | "poll" | "local";
-}
-
-/** One channel an `ack` refused. */
-export interface JobsApiAckRejection {
-  /** The channel exactly as the client sent it (not canonicalised). */
-  channel: string;
-  /** Why. */
-  code: JobsApiWsErrorCode;
-  /** The HTTP-equivalent status. */
-  status: number;
-  /** A human reason, when there is one. */
-  detail?: string;
-}
-
-/** Answers a `subscribe` or `unsubscribe`. */
-export interface JobsApiAckMessage {
-  /** The message type. */
-  type: "ack";
-  /** The request's `id`. */
-  id: string;
-  /** Which operation this answers. */
-  op: "subscribe" | "unsubscribe";
-  /** The channels the operation applied to, in canonical form. */
-  channels: string[];
-  /** Channels refused, each with its reason. */
-  rejected?: JobsApiAckRejection[];
-  /**
-   * For a `subscribe` with `resume`: `true` when every missed event was
-   * replayed (before this ack); `false` when some could not be, in which case
-   * a `gap` covers them — right after this ack, or, if the connection was
-   * lagging, when it drains.
-   */
-  resumed?: boolean;
-  /** The latest `seq` stamped when the ack was sent. */
-  seq: number;
-}
-
-/** One event. */
-export interface JobsApiEventMessage {
-  /** The message type. */
-  type: "event";
-  /** Its sequence number within `epoch`. */
-  seq: number;
-  /** The server instance's epoch. */
-  epoch: string;
-  /** Every subscribed channel it matched: an event is sent once, however many match. */
-  subscriptions: string[];
-  /** The event. */
-  event: EventWire;
-}
-
-/** Why events may have been missed. */
-export type JobsApiGapReason =
-  | "resume-expired"
-  | "epoch-changed"
-  | "slow-consumer"
-  | "coalesced";
-
-/** Events in `[fromSeq, toSeq]` may have been missed: refetch over HTTP. */
-export interface JobsApiGapMessage {
-  /** The message type. */
-  type: "gap";
-  /** The server instance's epoch. */
-  epoch: string;
-  /** The first `seq` that may be missing (`0` when unknown). */
-  fromSeq: number;
-  /** The last `seq` that may be missing. */
-  toSeq: number;
-  /** Why. `coalesced` is reserved: progress coalescing announces no gap. */
-  reason: JobsApiGapReason;
-  /** The channels affected, when not every one. */
-  channels?: string[];
-}
-
-/** Liveness, every `heartbeatMs`. */
-export interface JobsApiHeartbeatMessage {
-  /** The message type. */
-  type: "heartbeat";
-  /**
-   * The latest `seq` the server has stamped, across every channel — not only
-   * this connection's. `seq` is global, so a jump between heartbeats says
-   * nothing about missed events: rely on `gap` frames for that.
-   */
-  seq: number;
-  /** Server time, epoch ms. */
-  at: number;
-}
-
-/** Answers a `ping`. */
-export interface JobsApiPongMessage {
-  /** The message type. */
-  type: "pong";
-  /** The ping's `id`. */
-  id: string;
-  /** Server time, epoch ms. */
-  at: number;
-}
-
-/** A failure: a frame that could not be handled, or a limit hit. */
-export interface JobsApiErrorMessage {
-  /** The message type. */
-  type: "error";
-  /** The request's `id`, when the failure answers one. */
-  id?: string;
-  /** Machine code. */
-  code: JobsApiWsErrorCode;
-  /** The HTTP-equivalent status. */
-  status: number;
-  /** Human detail. */
-  detail: string;
-}
-
-/** Anything the server may send. */
-export type JobsApiServerMessage =
-  | JobsApiHelloMessage
-  | JobsApiAckMessage
-  | JobsApiEventMessage
-  | JobsApiGapMessage
-  | JobsApiHeartbeatMessage
-  | JobsApiPongMessage
-  | JobsApiErrorMessage;
+export type {
+  JobsApiAckMessage,
+  JobsApiAckRejection,
+  JobsApiClientMessage,
+  JobsApiErrorMessage,
+  JobsApiEventMessage,
+  JobsApiGapMessage,
+  JobsApiGapReason,
+  JobsApiHeartbeatMessage,
+  JobsApiHelloMessage,
+  JobsApiPingMessage,
+  JobsApiPongMessage,
+  JobsApiServerMessage,
+  JobsApiSubscribeMessage,
+  JobsApiUnsubscribeMessage,
+  JobsApiWsErrorCode,
+} from "../contract/ws";
 
 /* ------------------------------------------------------------------ *
  * Schemas

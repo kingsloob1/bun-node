@@ -80,7 +80,17 @@ export interface JobsApiAuthorizeContext {
   jobIds?: readonly string[];
   /** The runner the action targets, when it targets one. */
   runner?: string;
-  /** The WebSocket channel being subscribed to, e.g. `"queue/mail"`. */
+  /**
+   * The WebSocket channel, in canonical form, e.g. `"queue/mail"`: set when a
+   * `subscribe` (or a `/meta/permissions?channel=` preview) is authorized, and
+   * on the per-target calls. A broad channel (`all`, `queues`, `runners`)
+   * reaches every queue or runner, so besides the one call for the channel
+   * itself, the first event from each target on it asks again with `channel`
+   * plus that target's `queue` or `runner` — once per target for the life of
+   * the subscription (a call that threw is asked again). A denied target's
+   * events are dropped from that channel; the connection's events are held
+   * back while such a call is pending.
+   */
   channel?: string;
   /** The matched route, for HTTP: method and the route pattern (not the concrete URL). */
   route?: {
@@ -173,7 +183,13 @@ export interface JobsApiLimits {
   maxHistory?: number;
   /** Most queues summarised by `/queues` and `/overview`. Defaults to `500`. */
   maxQueues?: number;
-  /** How long the known-queue (and known-runner) list is cached for 404 checks, in ms. `0` disables caching. Defaults to `2000`. */
+  /**
+   * How long the known-queue (and known-runner) list is cached for 404 checks,
+   * in ms. `0` disables caching. Defaults to `2000`. A queue missing from a
+   * cached list is checked against the backend once more before a 404 — at
+   * most once per this window, however many misses — so a queue created since
+   * (by another process, say) is found without waiting for the cache to expire.
+   */
   queueCacheMs?: number;
   /** Largest request body accepted for `jobs.add`/`jobs.update`, in bytes. Defaults to `1048576`. */
   maxJobDataBytes?: number;
@@ -476,8 +492,13 @@ export interface JobsApiConfig {
    */
   allowUnauthenticated?: boolean;
   /**
-   * Allow-list of actions to expose. Anything absent is neither routed nor
-   * documented. Defaults to every action except `JOBS_API_OPT_IN_ACTIONS`.
+   * Allow-list of actions to expose: **only** the actions named here are
+   * enabled, and anything absent is neither routed nor documented. Defaults,
+   * when unset, to every action except `JOBS_API_OPT_IN_ACTIONS` (`jobs.add`,
+   * `jobs.update`). It is not a list of extras on top of that default:
+   * `["jobs.add", "jobs.update"]` alone disables every other action, reads
+   * included. To add those two to the default, pass `[...JOBS_API_ACTIONS]`
+   * (or the default list plus them).
    */
   actions?: readonly JobsApiAction[];
   /**

@@ -17,11 +17,13 @@ import { supportsWorkers } from "../../drivers/index";
 import { decide, denialError } from "../auth";
 import { JOBS_API_ACTIONS } from "../config";
 import { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
+import { RETRY_ALL_MAX_IDS } from "../schemas/jobs";
 import {
   MetaSchema,
   PermissionsQuerySchema,
   PermissionsSchema,
 } from "../schemas/meta";
+import { defaultCleanLimit } from "../schemas/queues";
 import { isWebSocketEnabled, parseChannel } from "../ws/channels";
 import { defineRoute, joinPath } from "./define";
 
@@ -140,7 +142,8 @@ export function csrfOf(
 
 /**
  * The caps `/meta` reports: read from `config.limits`, the very object the
- * routes read theirs from, so the two cannot disagree.
+ * routes read theirs from, or from the constant or expression the route's
+ * schema uses, so the two cannot disagree.
  */
 export function limitsOf(
   config: Pick<ResolvedJobsApiConfig, "limits">,
@@ -151,7 +154,9 @@ export function limitsOf(
     maxPageSize: limits.maxPageSize,
     maxBulkIds: limits.maxBulkIds,
     maxRetryAll: limits.maxRetryAll,
+    maxRetryAllIds: RETRY_ALL_MAX_IDS,
     maxClean: limits.maxClean,
+    defaultClean: defaultCleanLimit(limits.maxClean),
     maxLogPage: limits.maxLogPage,
     maxHistory: limits.maxHistory,
     maxJobDataBytes: limits.maxJobDataBytes,
@@ -266,6 +271,8 @@ export async function previewChannel(
   if (!parsed.ok) {
     return {
       channel,
+      // Present whenever the name parsed, refused afterwards or not.
+      ...(parsed.key === undefined ? {} : { key: parsed.key }),
       allowed: false,
       code: parsed.rejection.code,
       status: parsed.rejection.status,

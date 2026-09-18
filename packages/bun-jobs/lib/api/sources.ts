@@ -52,6 +52,10 @@ class TtlSet {
    * arrived mid-read would be undone by the stale answer landing after it.
    */
   #generation = 0;
+  /** When the last miss-driven re-read started: at most one per `ttlMs`. */
+  #rereadAt: number | undefined;
+  /** The miss-driven re-read in flight, shared by the misses waiting on it. */
+  #rereading: Promise<ReadonlySet<string>> | undefined;
 
   constructor(
     /** Reads the current names. */
@@ -64,9 +68,57 @@ class TtlSet {
 
   /** The names, from cache when fresh. */
   async get(): Promise<ReadonlySet<string>> {
+    return (await this.#read()).names;
+  }
+
+  /**
+   * Whether `name` is in the set. A miss answered from the cache is checked
+   * against the backend once more before it is believed, since the name may
+   * have been created after the cache was filled — by another process, or by
+   * a write this one made without invalidating. That re-read is bounded to
+   * one per cache window however many misses arrive, and misses arriving
+   * while it runs share it, so unknown names cannot turn into a backend read
+   * each. A miss on a read this call started (or joined) is final.
+   */
+  async has(name: string): Promise<boolean> {
+    const read = await this.#read();
+    if (read.names.has(name)) {
+      return true;
+    }
+    if (!read.cached) {
+      return false;
+    }
+    const reread = this.#reread();
+    return reread ? (await reread).has(name) : false;
+  }
+
+  /** Starts (or joins) the miss-driven re-read, unless one ran this window. */
+  #reread(): Promise<ReadonlySet<string>> | undefined {
+    if (this.#rereading) {
+      return this.#rereading;
+    }
+    const now = this.now();
+    if (this.#rereadAt !== undefined && now - this.#rereadAt < this.ttlMs) {
+      return undefined;
+    }
+    this.#rereadAt = now;
+    this.clear();
+    const reread = this.get();
+    this.#rereading = reread;
+    const settle = () => {
+      if (this.#rereading === reread) {
+        this.#rereading = undefined;
+      }
+    };
+    reread.then(settle, settle);
+    return reread;
+  }
+
+  /** The names, and whether they came from the cache rather than a read in progress. */
+  async #read(): Promise<{ names: ReadonlySet<string>; cached: boolean }> {
     const cached = this.#cached;
     if (cached && this.ttlMs > 0 && this.now() - cached.at < this.ttlMs) {
-      return cached.names;
+      return { names: cached.names, cached: true };
     }
     if (!this.#inflight) {
       const generation = this.#generation;
@@ -85,7 +137,7 @@ class TtlSet {
       };
       load.then(settle, settle);
     }
-    return await this.#inflight;
+    return { names: await this.#inflight, cached: false };
   }
 
   /**
@@ -136,10 +188,15 @@ export class QueueSource {
     return [...names].sort();
   }
 
-  /** Whether a (valid) name is reachable. */
+  /**
+   * Whether a (valid) name is reachable. A name missing from a cached list is
+   * checked against the backend once more (at most one re-read per
+   * `limits.queueCacheMs`), so a queue created since the cache was filled is
+   * not a 404.
+   */
   async has(name: string): Promise<boolean> {
     if (this.#known) {
-      return (await this.#known.get()).has(name);
+      return await this.#known.has(name);
     }
     return (this.#config.queues as ReadonlyMap<string, unknown>).has(name);
   }
@@ -171,6 +228,30 @@ export class QueueSource {
       );
     }
     return jobs.queue(name);
+  }
+
+  /**
+   * The queue a job is about to be added to. Like {@link get}, except that
+   * with `queues: "all"` a queue the backend does not know yet is built
+   * rather than refused: adding its first job is what creates a queue, and
+   * `BunQueue.add` does exactly that in-process. The caller has already
+   * checked the job name is addable, so a queue is only built for a request
+   * that is about to write to it — not for any name a client sends. A
+   * configured list of queues still restricts: a name outside it is 404
+   * `QUEUE_NOT_FOUND`.
+   *
+   * `created` is `true` when the queue was not known; the caller invalidates
+   * the cached list once the job is written, so the queue is listed at once.
+   */
+  async getForAdd(
+    value: unknown,
+  ): Promise<{ queue: BunQueue<any, any, any>; created: boolean }> {
+    const name = parseSegment(value, "queue");
+    const jobs = this.#config.jobs;
+    if (this.#known && jobs && !(await this.has(name))) {
+      return { queue: jobs.queue(name), created: true };
+    }
+    return { queue: await this.get(name), created: false };
   }
 
   /** Forgets the cached queue list, so the next check reads the backend. */

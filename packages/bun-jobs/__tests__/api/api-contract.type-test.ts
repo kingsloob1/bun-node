@@ -1,3 +1,4 @@
+import type * as Root from "@kingsleyweb/bun-jobs";
 import type * as Contract from "@kingsleyweb/bun-jobs/api/contract";
 import type { JobsApi } from "../../lib/api/config";
 import type { Infer } from "../../lib/api/schema/builder";
@@ -478,17 +479,10 @@ export type UndefaultedCaught = Expect<UndefaultedEqual>;
 // The contract restates the socket's frames and events; each must equal the
 // server's own type (`ws/protocol.ts`, `ws/events.ts`).
 export type ErrorWireOk = Expect<DeepEqual<Contract.ErrorWire, Ws.ErrorWire>>;
-// One known quirk on the server side: `WirePayload` maps an empty payload
-// (`Record<string, never>`: `paused`, `resumed`) to `{ [key: string]:
-// ErrorWire }`, because `never extends SerializedError` holds. On the wire the
-// payload is `{}`, which is what the contract says. Both sides are compared
-// with an empty payload normalised; everything else must match exactly.
-type NormalizeEmpty<E> = E extends { payload: infer P }
-  ? Omit<E, "payload"> & {
-      payload: string extends keyof P ? Record<string, never> : P;
-    }
-  : never;
-type Normalized<E> = Deep<NormalizeEmpty<E>>;
+// The server's event types are the contract's own (re-exported), so they are
+// compared exactly — an empty payload (`paused`, `resumed`) included, which a
+// server-side mapping once turned into an index signature of errors.
+type Normalized<E> = Deep<E>;
 export type EventWireOk = Expect<
   Equal<Normalized<Contract.EventWire>, Normalized<Ws.EventWire>>
 >;
@@ -561,3 +555,73 @@ type DriftedEventEqual = Equal<
 >;
 // @ts-expect-error — an event missing from the contract is caught.
 export type DriftedEventCaught = Expect<DriftedEventEqual>;
+
+/* --- one definition: the root's socket types ARE the contract's ------- */
+
+// The root entry (`@kingsleyweb/bun-jobs`) re-exports the server's socket
+// types; a client may import them from either place and mix the two, so each
+// must be *equal* to the contract's — no normalising. An empty payload
+// (`paused`, `resumed`) once differed here: the server mapped it to an index
+// signature of errors, and a root `JobsApiEventMessage` was not assignable to
+// the contract's (TS2322).
+export type RootEventWireOk = Expect<Equal<Root.EventDto, Contract.EventWire>>;
+export type ServerEventWireOk = Expect<Equal<Ws.EventWire, Contract.EventWire>>;
+export type ServerErrorWireOk = Expect<Equal<Ws.ErrorWire, Contract.ErrorWire>>;
+export type RootSubscribeOk = Expect<
+  Equal<Root.JobsApiSubscribeMessage, Contract.JobsApiSubscribeMessage>
+>;
+export type RootUnsubscribeOk = Expect<
+  Equal<Root.JobsApiUnsubscribeMessage, Contract.JobsApiUnsubscribeMessage>
+>;
+export type RootPingOk = Expect<
+  Equal<Root.JobsApiPingMessage, Contract.JobsApiPingMessage>
+>;
+export type RootClientMessageOk = Expect<
+  Equal<Root.JobsApiClientMessage, Contract.JobsApiClientMessage>
+>;
+export type RootHelloOk = Expect<
+  Equal<Root.JobsApiHelloMessage, Contract.JobsApiHelloMessage>
+>;
+export type RootAckOk = Expect<
+  Equal<Root.JobsApiAckMessage, Contract.JobsApiAckMessage>
+>;
+export type RootAckRejectionOk = Expect<
+  Equal<Root.JobsApiAckRejection, Contract.JobsApiAckRejection>
+>;
+export type RootEventMessageOk = Expect<
+  Equal<Root.JobsApiEventMessage, Contract.JobsApiEventMessage>
+>;
+export type RootGapOk = Expect<
+  Equal<Root.JobsApiGapMessage, Contract.JobsApiGapMessage>
+>;
+export type RootGapReasonOk = Expect<
+  Equal<Root.JobsApiGapReason, Contract.JobsApiGapReason>
+>;
+export type RootHeartbeatOk = Expect<
+  Equal<Root.JobsApiHeartbeatMessage, Contract.JobsApiHeartbeatMessage>
+>;
+export type RootPongOk = Expect<
+  Equal<Root.JobsApiPongMessage, Contract.JobsApiPongMessage>
+>;
+export type RootErrorMessageOk = Expect<
+  Equal<Root.JobsApiErrorMessage, Contract.JobsApiErrorMessage>
+>;
+export type RootServerMessageOk = Expect<
+  Equal<Root.JobsApiServerMessage, Contract.JobsApiServerMessage>
+>;
+export type RootWsErrorCodeOk = Expect<
+  Equal<Root.JobsApiWsErrorCode, Contract.JobsApiWsErrorCode>
+>;
+
+/** The peer's reproduction: a root event frame handed to contract-typed code. */
+export function acceptsContractFrame(
+  frame: Root.JobsApiEventMessage,
+): Contract.JobsApiEventMessage {
+  return frame;
+}
+/** And the other way round. */
+export function acceptsRootFrame(
+  frame: Contract.JobsApiServerMessage,
+): Root.JobsApiServerMessage {
+  return frame;
+}

@@ -267,6 +267,18 @@ export const DrainBodySchema = s.object({
 /** How many jobs an operation touched. */
 export const CountResultSchema = s.object({ count: Count });
 
+/** The `limit` a clean uses when none is given, unless `maxClean` is lower. */
+export const CLEAN_DEFAULT_LIMIT = 1000;
+
+/**
+ * The `limit` a clean uses when none is given: {@link CLEAN_DEFAULT_LIMIT},
+ * or `maxClean` when that is lower. The body schema's default and `/meta`'s
+ * `limits.defaultClean` both come from here.
+ */
+export function defaultCleanLimit(maxClean: number): number {
+  return Math.min(CLEAN_DEFAULT_LIMIT, maxClean);
+}
+
 /** `POST /queues/:queue/clean` body, capped by `limits.maxClean`. */
 export function cleanBodySchema(maxClean: number) {
   return s.object({
@@ -286,7 +298,7 @@ export function cleanBodySchema(maxClean: number) {
       s.integer({
         minimum: 1,
         maximum: maxClean,
-        default: Math.min(1000, maxClean),
+        default: defaultCleanLimit(maxClean),
       }),
     ),
   });
