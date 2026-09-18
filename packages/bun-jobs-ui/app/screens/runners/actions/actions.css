@@ -1,0 +1,78 @@
+/* A runner's action buttons and their dialogs. */
+
+.runner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.runner-actions-hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.runner-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.runner-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.runner-form-row > .field {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.runner-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}
+
+.runner-note-pending {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.schedule-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.schedule-modes > legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.schedule-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+}
+
+.run-id {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.run-id code {
+  overflow-wrap: anywhere;
+}
