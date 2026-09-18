@@ -1,8 +1,10 @@
 import type { FetchLike } from "../../app/api/client";
+import type { LiveOptions } from "../../app/live";
 import type { UiConfig } from "../../shared/config.ts";
 import type { MockHandler, MockReply } from "./mockFetch";
 import { createApiClient } from "../../app/api/client";
 import { App } from "../../app/App";
+import { LiveOptionsContext } from "../../app/live";
 import { AppProviders } from "../../app/providers";
 import { createQueryClient } from "../../app/queryClient";
 import { render } from "./dom";
@@ -38,7 +40,16 @@ export interface RenderAppOptions {
   handlers?: Record<string, MockHandler | MockReply>;
   /** Use this `fetch` instead of the mock. */
   fetch?: FetchLike;
+  /**
+   * The live socket's options. Defaults to `{ disabled: true }`: there is no
+   * server to connect to, so live updates stay off and screens poll. Pass
+   * `{ WebSocket: FakeSocket }` (`live/fakes.ts`) to drive it.
+   */
+  live?: LiveOptions;
 }
+
+/** Live updates off: the default for {@link renderApp}. */
+const LIVE_OFF: LiveOptions = { disabled: true };
 
 /** Renders the whole app (providers + `<App>`) against a mocked API. */
 export function renderApp(options: RenderAppOptions = {}) {
@@ -49,13 +60,15 @@ export function renderApp(options: RenderAppOptions = {}) {
   });
   const queryClient = createQueryClient({ retry: false });
   const result = render(
-    <AppProviders
-      config={config}
-      client={client}
-      queryClient={queryClient}
-    >
-      <App />
-    </AppProviders>,
+    <LiveOptionsContext value={options.live ?? LIVE_OFF}>
+      <AppProviders
+        config={config}
+        client={client}
+        queryClient={queryClient}
+      >
+        <App />
+      </AppProviders>
+    </LiveOptionsContext>,
   );
   return { ...result, calls: mock.calls, config, client, queryClient };
 }

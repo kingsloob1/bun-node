@@ -1,11 +1,13 @@
 import type { Root } from "react-dom/client";
 import type { UiConfig } from "../shared/config.ts";
 import type { ApiClientOptions } from "./api/client";
+import type { LiveOptions } from "./live";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createApiClient } from "./api/client";
 import { App } from "./App";
 import { readUiConfig } from "./config";
+import { LiveOptionsContext } from "./live";
 import { AppProviders } from "./providers";
 import { createQueryClient } from "./queryClient";
 import { applyTheme, initialTheme } from "./theme";
@@ -18,6 +20,8 @@ export interface BootOptions {
   client?: ApiClientOptions;
   /** Retry failed reads. Defaults to `true`; tests pass `false`. */
   retry?: boolean;
+  /** Live-socket options (tests pass `{ disabled: true }` or a fake socket). Defaults to none. */
+  live?: LiveOptions;
 }
 
 /** What {@link boot} started. */
@@ -54,13 +58,15 @@ export function boot(options: BootOptions = {}): BootResult {
   const root = createRoot(container);
   root.render(
     <StrictMode>
-      <AppProviders
-        config={config}
-        client={client}
-        queryClient={queryClient}
-      >
-        <App />
-      </AppProviders>
+      <LiveOptionsContext value={options.live ?? null}>
+        <AppProviders
+          config={config}
+          client={client}
+          queryClient={queryClient}
+        >
+          <App />
+        </AppProviders>
+      </LiveOptionsContext>
     </StrictMode>,
   );
   return { config, root };

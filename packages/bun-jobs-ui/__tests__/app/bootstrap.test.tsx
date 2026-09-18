@@ -107,7 +107,11 @@ describe("boot", () => {
     const config: UiConfig = uiConfig({ theme: "dark", title: "Ops jobs" });
     writeShell(config);
     const api = mockFetch(defaultHandlers());
-    const { root } = boot({ client: { fetch: api.fetch }, retry: false });
+    const { root } = boot({
+      client: { fetch: api.fetch },
+      retry: false,
+      live: { disabled: true },
+    });
     try {
       await page().findByTestId("app-ready");
       expect(document.documentElement.dataset.theme).toBe("dark");
