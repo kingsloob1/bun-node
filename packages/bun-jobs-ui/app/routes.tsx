@@ -1,9 +1,12 @@
 import type { NavId, NavItem } from "./layout/nav";
 import type { RouteDef } from "./routing";
 import { EmptyState } from "./components/EmptyState";
+import { QueuePermissionScope } from "./meta/PermissionScope";
 import { Navigate } from "./router";
+import { JobScreen } from "./screens/job";
 import { OverviewScreen } from "./screens/Overview";
 import { PlaceholderScreen } from "./screens/Placeholder";
+import { QueueScreen, QueuesListScreen } from "./screens/queues";
 
 /** Route patterns of each nav section; a section's routes exist only when its entry does. */
 const SECTION_ROUTES: Readonly<Record<Exclude<NavId, "overview">, string[]>> = {
@@ -35,6 +38,29 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
   });
   for (const item of nav) {
     if (item.id === "overview") {
+      continue;
+    }
+    if (item.id === "queues") {
+      // Most specific first: the router takes the first match.
+      routes.push(
+        {
+          path: "/queues/:queue/jobs/:id",
+          element: (
+            <QueuePermissionScope>
+              <JobScreen />
+            </QueuePermissionScope>
+          ),
+        },
+        {
+          path: "/queues/:queue",
+          element: (
+            <QueuePermissionScope>
+              <QueueScreen />
+            </QueuePermissionScope>
+          ),
+        },
+        { path: "/queues", element: <QueuesListScreen /> },
+      );
       continue;
     }
     for (const path of SECTION_ROUTES[item.id]) {

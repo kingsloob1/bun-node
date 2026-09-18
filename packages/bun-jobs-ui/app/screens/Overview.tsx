@@ -299,7 +299,7 @@ function QueuesCard() {
         deferredSearch ? (
           <EmptyState
             title="No queues match"
-            description={`No queue name contains “${deferredSearch}” (the match is case-sensitive).`}
+            description={`No queue name contains “${deferredSearch}”.`}
           />
         ) : (
           <EmptyState

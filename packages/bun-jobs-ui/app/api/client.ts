@@ -77,7 +77,7 @@ export interface ApiClient {
   ) => Promise<Permissions>;
   /** `GET /overview`; `minutes` is the throughput window (1..1440, API default 60). */
   getOverview: (minutes?: number, signal?: AbortSignal) => Promise<Overview>;
-  /** `GET /queues`; `search` is a case-sensitive name substring. */
+  /** `GET /queues` (first page); `search` is a case-insensitive name substring. Paged lists use `listQueuesPage` in `api/queues.ts`. */
   listQueues: (search?: string, signal?: AbortSignal) => Promise<QueueList>;
   /** `GET /queues/:queue/throughput`. */
   getQueueThroughput: (
