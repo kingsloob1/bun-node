@@ -51,16 +51,13 @@ describe("on bun-nest's BunHttpAdapter", () => {
     const ui = fixtureUi({ api, basePath: "/admin/jobs" });
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
     cleanups.push(() => app.close());
-    // TEMPORARY: bun-nest's `use()` types do not accept a BunRouter from this
-    // package, so a router needs the same cast `BunJobsApiModule` uses (at
-    // runtime it mounts like bun-common's). Remove the `as never` casts once
-    // bun-nest's `use()` accepts a BunRouter — its owner is fixing the types.
-    adapter.use(api.basePath, api.router as never);
-    adapter.use(ui.basePath, ui.router as never);
+    // Typed: bun-nest's `use()` takes a bun-common router, no cast.
+    adapter.use(api.basePath, api.router);
+    adapter.use(ui.basePath, ui.router);
     await app.init();
 
     const { response, shell } = await fetchShell(adapter, "/admin/jobs/queues");
@@ -93,7 +90,7 @@ describe("on bun-nest's BunHttpAdapter", () => {
 
     const ui = fixtureUi({ apiUrl: "/jobs-api" });
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
     cleanups.push(() => app.close());
