@@ -528,7 +528,7 @@ step("sharing the server with a catch-all gateway");
     logger: false,
     abortOnError: false,
   })) as INestApplication;
-  adapter.use(api.basePath, api.router as never);
+  adapter.use(api.basePath, api.router);
   api.websocket!.attach(adapter.getInstance());
   app.useWebSocketAdapter(adapter.webSocketAdapter as never);
   await app.init();

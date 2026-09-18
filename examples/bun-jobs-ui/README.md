@@ -54,7 +54,7 @@ published package ships `dist/` and never builds.
 
 For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts):
 `jobsUi()` over the API that `BunJobsApiModule` built, mounted with
-`adapter.use()` or `adapter.getInstance().use()`.
+`adapter.use(ui.basePath, ui.router)`.
 
 ### 10 — Option tour
 
