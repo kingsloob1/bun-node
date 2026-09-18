@@ -1,8 +1,9 @@
 /**
- * The queue and job screens in a real browser: pause a queue by clicking,
- * check the Clean dialog's default, open a dead job and retry it, then open a
- * job of a queue whose jobs this caller may not read. Every step is read back
- * from the API or the host, not from the page.
+ * The queue, job and runner screens in a real browser: pause a queue by
+ * clicking, check the Clean dialog's default, open a dead job and retry it,
+ * open a job of a queue whose jobs this caller may not read, then pause a
+ * runner and open one this caller may not read. Every step is read back from
+ * the API or the host, not from the page.
  *
  * ```bash
  * bun 06-browser/pause-and-retry.ts
@@ -22,9 +23,10 @@
  *
  * - **Hooks to drive the screens by.** They are stable on purpose:
  *   `data-testid` `queues-list`, `queue-screen`, `queue-total`,
- *   `job-row-<id>`, `job-screen`, `job-id`, `job-not-found` and `job-hidden`.
- *   The queue's buttons are in
- *   `[role="group"][aria-label="Queue actions"]`, and a confirmation is the
+ *   `job-row-<id>`, `job-screen`, `job-id`, `job-not-found`, `job-hidden`,
+ *   `runner-screen` and `runner-hidden`. The queue's buttons are in
+ *   `[role="group"][aria-label="Queue actions"]`, a runner's in
+ *   `[role="group"][aria-label="Runner actions"]`, and a confirmation is the
  *   open `<dialog>` (`dialog[open]`).
  * - **Wait on conditions, never on time.** Every page-side helper below polls
  *   the DOM until what it wants is there (or a deadline passes), and every
@@ -32,14 +34,13 @@
  *   is as fast as the app and fails with the name of what never happened.
  * - **The page's own state is not the proof.** The API is: a click counts
  *   when `GET /queues/mail` says `paused: true`.
- * - **A hidden job is never fetched.** The job screen asks for `jobs.read`
- *   on the queue's own map (`/meta/permissions?queue=`). While that map
- *   loads, the untargeted one stands in, so this host answers `jobs.read`
- *   with `false` there: a real job read always names its queue, so only the
- *   queue's map can say yes. The cost is that an allowed queue's job shows
- *   "Job hidden" for the moment before its map arrives. A host that said
- *   `true` untargeted would let one job request out first, which its
- *   `authorize` then refuses with a 403, shown in the same panel.
+ * - **A hidden job or runner is never fetched.** The job screen asks for
+ *   `jobs.read` on the queue's own map (`/meta/permissions?queue=`), and
+ *   the runner screen for `runners.read` on the runner's
+ *   (`?runner=`). Each waits for that answer before its first read (a
+ *   spinner shows meanwhile), so this host can say `true` untargeted and
+ *   `false` for one queue or runner, and not one request for that queue's
+ *   job or that runner reaches it.
  * - **The CSP holds.** The page raises no Content-Security-Policy violation
  *   along the way, checked with a `ReportingObserver`.
  */
@@ -88,6 +89,10 @@ const DEAD_ID = "bounce/ada";
 const VAULT = "vault";
 /** The job in it. */
 const VAULT_JOB = "payslip-1";
+/** A runner the page pauses. */
+const RUNNER = "nightly";
+/** A runner this caller may list but not read. */
+const SECRET_RUNNER = "payroll-export";
 
 /* --- the server: a real API with CSRF on, and the UI --------------- */
 
@@ -101,19 +106,22 @@ const jobs = new BunJobs({
 const vaultJobReads: string[] = [];
 
 /**
- * Everything is allowed, except reading a job: refused on vault, and refused
- * untargeted (see the notes above), so the job screen waits for the queue's
- * own map rather than fetching on the untargeted one.
+ * Everything is allowed, untargeted too, except reading vault's jobs and
+ * anything about the secret runner. The screens wait for the targeted map,
+ * so the untargeted yes never lets a read of either out.
  */
 const authorize: JobsApiAuthorize = (_req, ctx) => {
+  if (ctx.runner === SECRET_RUNNER) {
+    return { allow: false, reason: `runner ${SECRET_RUNNER}` };
+  }
   if (ctx.action !== "jobs.read") {
     return true;
   }
   if (ctx.queue === VAULT && ctx.jobId !== undefined) {
     vaultJobReads.push(ctx.jobId);
   }
-  if (ctx.queue === undefined || ctx.queue === VAULT) {
-    return { allow: false, reason: `jobs of ${ctx.queue ?? "any queue"}` };
+  if (ctx.queue === VAULT) {
+    return { allow: false, reason: `jobs of ${ctx.queue}` };
   }
   return true;
 };
@@ -135,6 +143,10 @@ const app = new BunHttpAdapter();
 const vaultJobRequests: string[] = [];
 /** How often the page asked for vault's own permissions map. */
 let vaultMaps = 0;
+/** Every request the host received for the secret runner. */
+const secretRunnerRequests: string[] = [];
+/** How often the page asked for the secret runner's own permissions map. */
+let secretRunnerMaps = 0;
 // Ahead of the API, so it sees every request whatever the API answers.
 app.use((req, _res, next) => {
   if (req.originalUrl.startsWith(`${api.basePath}/queues/${VAULT}/jobs/`)) {
@@ -142,6 +154,15 @@ app.use((req, _res, next) => {
   }
   if (req.originalUrl === `${api.basePath}/meta/permissions?queue=${VAULT}`) {
     vaultMaps++;
+  }
+  if (req.originalUrl.startsWith(`${api.basePath}/runners/${SECRET_RUNNER}`)) {
+    secretRunnerRequests.push(`${req.method} ${req.originalUrl}`);
+  }
+  if (
+    req.originalUrl ===
+    `${api.basePath}/meta/permissions?runner=${SECRET_RUNNER}`
+  ) {
+    secretRunnerMaps++;
   }
   next();
 });
@@ -174,6 +195,17 @@ await worker.close({ timeout: 1_000 });
 await queue.add("send-email", { to: "alan@example.com" });
 await queue.add("send-email", { to: "grace@example.com" });
 await jobs.queue(VAULT).add("payslip", { to: "ada" }, { jobId: VAULT_JOB });
+// Two runners in this process, started; nothing is scheduled to run.
+for (const id of [RUNNER, SECRET_RUNNER]) {
+  await jobs
+    .runner({
+      id,
+      file: new URL("../shared/handlers/hold.ts", import.meta.url),
+      executionMode: "in-process",
+      waitToExit: false,
+    })
+    .start();
+}
 
 // Build the bundle before the browser asks, so the first page load is not
 // the in-memory build.
@@ -199,7 +231,7 @@ try {
   skip(`Chrome at ${chromePath} did not start: ${String(error)}`);
 }
 
-title("Pause a queue and retry a dead job, in Chrome");
+title("Pause a queue, retry a dead job and pause a runner, in Chrome");
 show("Chrome", chromePath);
 show("serving", `${origin}${ui.basePath}`);
 
@@ -322,6 +354,8 @@ const COLLECT_VIOLATIONS = `new Promise((resolve) => {
 
 /** The queue's action buttons. */
 const QUEUE_ACTIONS = '[role="group"][aria-label="Queue actions"]';
+/** A runner's action buttons. */
+const RUNNER_ACTIONS = '[role="group"][aria-label="Runner actions"]';
 
 /** A JSON read from the API, bypassing the page. */
 async function read<T>(path: string): Promise<T> {
@@ -498,6 +532,52 @@ try {
     "GET the vault job directly → 403",
     [refused.status, vaultJobRequests.length, vaultJobReads.length],
     [403, 1, 1],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("Pause a runner from its screen");
+
+  await view.navigate(`${origin}${ui.basePath}/runners/${RUNNER}`);
+  check(
+    "the runner screen renders (data-testid=runner-screen)",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="runner-screen"]'),
+    ),
+    pageConsole,
+  );
+  check(
+    "Pause is offered in the Runner actions group",
+    await view.evaluate<boolean>(button(RUNNER_ACTIONS, "Pause", true)),
+  );
+  await waitFor(
+    "the API to report the runner paused",
+    async () =>
+      (await read<{ isPaused: boolean }>(`/runners/${RUNNER}`)).isPaused,
+  );
+  check(`GET /runners/${RUNNER} → isPaused: true`, true);
+  check(
+    "and the screen now offers Resume…",
+    await view.evaluate<boolean>(button(RUNNER_ACTIONS, "Resume…", false)),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A runner this caller may not read");
+
+  await view.navigate(`${origin}${ui.basePath}/runners/${SECRET_RUNNER}`);
+  check(
+    "shows data-testid=runner-hidden",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="runner-hidden"]'),
+    ),
+  );
+  await waitFor(
+    "the page to ask the runner's own map",
+    () => secretRunnerMaps > 0,
+  );
+  checkEqual(
+    "and the runner was never requested, though runners.read is true untargeted",
+    secretRunnerRequests,
+    [],
   );
 
   checkEqual(

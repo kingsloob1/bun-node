@@ -16,7 +16,7 @@ wrong answer fails the script.
 cd examples/bun-jobs-ui
 bun 01-quick-start/index.ts            # start here
 bun 01-quick-start/index.ts --serve    # and keep serving, to open it in a browser
-bun 05-demo/seeded-demo.ts --serve     # every queue screen, seeded, with a URL for each
+bun 05-demo/seeded-demo.ts --serve     # every queue and runner screen, seeded, with a URL for each
 bun run-all.ts                         # every example; prints ok / skip / FAIL
 bun run-all.ts 02 10                   # only folders 02-* and 10-*
 ```
@@ -25,12 +25,15 @@ No install step: `@kingsleyweb/bun-jobs-ui`, `@kingsleyweb/bun-jobs` and
 `@kingsleyweb/bun-common` resolve from the repo's root `node_modules`. The
 memory driver keeps every job in the process, so no database is needed.
 
-The app's **Overview** and **Queues** screens are real: the queue list, one
-queue (its actions, jobs table and panels) and one job. Runners, Events and API
-docs are still placeholders. Folders 01–03 and 10 cover the server side: what
-`jobsUi()` serves, how it is configured and how it is mounted. Folders 04–06
-cover the queue screens: their URLs, the permissions they are drawn from, a
-seeded demo to click through, and a browser driving them.
+The app's **Overview**, **Queues** and **Runners** screens are real: the queue
+list, one queue (its actions, jobs table and panels), one job, the runner list
+and one runner (its actions, stats, active runs and history). Events and API
+docs are still placeholders. The queue, job and runner screens are split
+chunks, loaded the first time one is opened. Folders 01–03 and 10 cover the
+server side: what `jobsUi()` serves, how it is configured and how it is
+mounted. Folders 04–06 cover the queue and runner screens: their URLs, the
+permissions they are drawn from, a seeded demo to click through, and a browser
+driving them.
 
 `05-demo/seeded-demo.ts` reads `EXAMPLE_DRIVER` like the
 [`bun-jobs` examples](../bun-jobs/README.md#choosing-a-backend) do (`memory` by
@@ -65,24 +68,24 @@ For NestJS, see [`bun-nest/06-jobs-ui/mount.ts`](../bun-nest/06-jobs-ui/mount.ts
 `jobsUi()` over the API that `BunJobsApiModule` built, mounted with
 `adapter.use(ui.basePath, ui.router)`.
 
-### 04 — The queue screens
+### 04 — The queue and runner screens
 
 | File | Shows |
 |---|---|
-| [`deep-links.ts`](./04-screens/deep-links.ts) | every Queues URL, `/jobs/queues`, `/jobs/queues/mail`, `?state=failed&panel=workers`, the jobs table's `offset`/`limit`/`total`/`name`/`search`/`order`, the throughput `window`, and a job at `/jobs/queues/mail/jobs/a%2Fb`, answered with the same shell and the same config; a job id as one percent-encoded segment (`/`, `?`, `#`, a space, non-ASCII) that the API finds too; and the API still answering under its own `basePath` on the same host. No socket |
-| [`permissions.ts`](./04-screens/permissions.ts) | what each element needs, asserted on the API and against the package README: `screenGates()` restates the UI's rules one entry per row of the README's table "What each element needs", and the example parses that table and fails on any drift in its rows, actions, features or sections. An `authorize` that allows `mail` fully, `audit` read-only and `payroll` nothing; `GET /meta/permissions` (the boot map, which decides the nav, `/` and `/queues*`, and the fallback while a queue's map loads) and `?queue=mail\|audit\|payroll`, which decides everything inside a queue: the header, the jobs table, Pause on a running queue and Resume on a paused one (both need `queues.read`, since the paused flag is the queue detail's), Drain, Clean, Retry all, Add job and its name suggestions, bulk retry/promote/remove (which also need `jobs.list`), each panel and its edit (the limits panel only when the detail carries `limits`), and the job screen (`jobs.read`, else "Job hidden"), its logs, Retry, Promote, Remove and Edit; the server's 403 for every mutation a client sends anyway, and for one the map allowed but `authorize` refuses for a particular job; `readOnly`, where mutations are absent from the map rather than `false`; and Clean's default limit, `/meta`'s `limits.defaultClean`, which is what the API applies to a clean sent without one |
+| [`deep-links.ts`](./04-screens/deep-links.ts) | every Queues and Runners URL, `/jobs/queues`, `/jobs/queues/mail`, `?state=failed&panel=workers`, the jobs table's `offset`/`limit`/`total`/`name`/`search`/`order`, the throughput `window`, a job at `/jobs/queues/mail/jobs/a%2Fb`, `/jobs/runners` and its `?search=`, a runner and its `?history=`, and an unknown runner, answered with the same shell, config, script and stylesheet; exactly one stylesheet and one module script in the shell, and every screen chunk the entry imports on demand served from `assetsPath` as JavaScript with immutable caching; a job id as one percent-encoded segment (`/`, `?`, `#`, a space, non-ASCII) that the API finds too; and the API still answering under its own `basePath` on the same host, for a runner too. No socket |
+| [`permissions.ts`](./04-screens/permissions.ts) | what each element needs, asserted on the API and against the package README: `screenGates()` restates the UI's rules one entry per row of the README's table "What each element needs", and the example parses that table and fails on any drift in its rows, actions, features, sections, `meta.mode` values, which map decides a row and which rows wait for it. An `authorize` that allows queue `mail` fully, `audit` read-only and `payroll` nothing, and runner `nightly` fully, `ledger` read-only, `vault` nothing and `remote-sync` (registered by another `BunJobs` over the same driver) fully; `GET /meta/permissions` (the boot map, which decides the nav, `/`, `/queues*` and `/runners*`, and the fallback while a targeted map loads or if it fails) and `?queue=mail\|audit\|payroll`, which decides everything inside a queue: the header, the jobs table, Pause on a running queue and Resume on a paused one (both need `queues.read`, since the paused flag is the queue detail's), Drain, Clean, Retry all, Add job and its name suggestions, bulk retry/promote/remove (which also need `jobs.list`), each panel and its edit (the limits panel only when the detail carries `limits`), and the job screen (`jobs.read` on the queue's own map, which it waits for, else "Job hidden"), its logs, Retry, Promote, Remove and Edit; `?runner=…` for each runner action, which decides the runner screen (`runners.read`, waited for, else "Runner hidden"), its stats and history, its active runs (only when `local` is present), Trigger… and its Arguments field (`meta.runnerTriggerArgs`), Pause or Resume… by `isPaused`, Reschedule…, Kill… (only with a run in `local.activeRuns`, shown by triggering one and killing it through the API), Reset stats… (local only) and the remote hint; the server's 403 for every queue and runner mutation a client sends anyway, 403 on a denied runner's reads, 409 `RUNNER_NOT_LOCAL` for a kill or stats reset the map allowed on the remote runner, 404 `RUNNER_NOT_FOUND`, and a 403 the map allowed but `authorize` refuses for a particular job; `readOnly`, where mutations are absent from the map rather than `false`; and Clean's default limit, `/meta`'s `limits.defaultClean`, which is what the API applies to a clean sent without one |
 
 ### 05 — A seeded demo
 
 | File | Shows |
 |---|---|
-| [`seeded-demo.ts`](./05-demo/seeded-demo.ts) | the one to open in a browser: `--serve` seeds four queues with jobs in every state (waiting, delayed, active, completed, failed, dead, waiting-children), failures with a `cause` and stack traces (`serialize.exposeStacks`), logs, a flow, a repeatable, queue limits, a paused queue long enough to page, two workers and this minute's throughput, then prints the URL of every screen and panel and keeps work flowing. Without `--serve` it asserts the seed through the API, the reads the screens make, and exits. Honours `EXAMPLE_DRIVER` |
+| [`seeded-demo.ts`](./05-demo/seeded-demo.ts) | the one to open in a browser: `--serve` seeds four queues with jobs in every state (waiting, delayed, active, completed, failed, dead, waiting-children), failures with a `cause` and stack traces (`serialize.exposeStacks`), logs, a flow, a repeatable, queue limits, a paused queue long enough to page, two workers and this minute's throughput, and five runners ([`helpers/runners.ts`](./05-demo/helpers/runners.ts)): one idle on a cron schedule, one paused, one with a finished run in its history and a run in flight, one whose run failed (its `lastError`), and one registered by another `BunJobs` over the same driver (remote). It then prints the URL of every screen and panel, the runner list and each runner included, and keeps work flowing. Without `--serve` it asserts the seed through the API (`/runners`, `/runners/:runner`, its stats and history), the reads the screens make, and exits. Honours `EXAMPLE_DRIVER` |
 
 ### 06 — In a browser
 
 | File | Shows |
 |---|---|
-| [`pause-and-retry.ts`](./06-browser/pause-and-retry.ts) | headless Chrome through `Bun.WebView`, as the package's e2e test drives it: pause a queue from its screen, check that the Clean dialog's Limit starts at `/meta`'s `limits.defaultClean`, then open a dead job (its id carrying `%2F`), retry it through the `dialog[open]` confirmation, and read each result back from the API; a missing job shows `job-not-found`; a job of a queue whose `jobs.read` is refused shows `job-hidden` ("You may not read the jobs of queue vault." and a "Back to vault" link), and a host middleware and an `authorize` spy both prove the job was never requested; no CSP violation throughout. It uses the stable `data-testid` hooks and waits on conditions, never on time. **Skips** when there is no `Bun.WebView` or no Chrome (`BUN_CHROME_PATH` overrides the search; `EXAMPLE_BROWSER=0` skips on purpose) |
+| [`pause-and-retry.ts`](./06-browser/pause-and-retry.ts) | headless Chrome through `Bun.WebView`, as the package's e2e test drives it: pause a queue from its screen, check that the Clean dialog's Limit starts at `/meta`'s `limits.defaultClean`, then open a dead job (its id carrying `%2F`), retry it through the `dialog[open]` confirmation, and read each result back from the API; a missing job shows `job-not-found`; a job of a queue whose `jobs.read` is refused shows `job-hidden` ("You may not read the jobs of queue vault." and a "Back to vault" link), and a host middleware and an `authorize` spy both prove the job was never requested, though `jobs.read` is `true` untargeted; pause a runner from the `Runner actions` group and read `isPaused` back from the API; a runner whose `runners.read` is refused shows `runner-hidden`, and not one request for it reaches the host; no CSP violation throughout. It uses the stable `data-testid` hooks and waits on conditions, never on time. **Skips** when there is no `Bun.WebView` or no Chrome (`BUN_CHROME_PATH` overrides the search; `EXAMPLE_BROWSER=0` skips on purpose) |
 
 ### 10 — Option tour
 

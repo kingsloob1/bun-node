@@ -1,13 +1,15 @@
 /**
- * Deep links to the queue screens — the queue list, one queue, a filtered
- * tab or panel, one job — checked without a socket.
+ * Deep links to the queue and runner screens — the queue list, one queue, a
+ * filtered tab or panel, one job, the runner list, one runner — checked
+ * without a socket.
  *
  * ```bash
  * bun 04-screens/deep-links.ts
  * ```
  *
- * The Queues section is routed in the browser, so a link someone pastes or a
- * reload on a queue screen asks the server for a path it has no route for.
+ * The Queues and Runners sections are routed in the browser, so a link
+ * someone pastes or a reload on one of their screens asks the server for a
+ * path it has no route for.
  * `jobsUi()` answers every path under its `basePath` with the same HTML shell
  * and the React app reads the screen from the URL. This example requests each
  * screen's URL through `app.fetch()`, the adapter's real pipeline with no port
@@ -16,8 +18,13 @@
  * - every screen URL gets the shell: `200`, `text/html` and the same config
  *   JSON, so the page boots the same way whichever screen it opens on;
  * - the screen state lives in the query string (`state`, `panel`, `window`,
- *   `offset`, `limit`, `total`, `name`, `search`, `order`), which the server
- *   ignores, so any combination can be bookmarked;
+ *   `offset`, `limit`, `total`, `name`, `search`, `order`; `search` on the
+ *   runner list, `history` on a runner), which the server ignores, so any
+ *   combination can be bookmarked;
+ * - the shell links exactly one stylesheet and one module script. The queue,
+ *   job and runner screens are split chunks the entry imports on demand,
+ *   served from the same `assetsPath` with the same immutable caching, and
+ *   the entry stylesheet already carries their rules;
  * - a job id is **one percent-encoded path segment**: `a/b` is
  *   `/jobs/queues/mail/jobs/a%2Fb`, and the UI and the API both accept the
  *   `%2F`;
@@ -34,7 +41,7 @@ import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { fetchShell } from "../shared/shell";
 
-title("Deep links to the queue screens, without a socket");
+title("Deep links to the queue and runner screens, without a socket");
 
 const jobs = new BunJobs({
   namespace: "examples-ui-deep-links",
@@ -48,6 +55,14 @@ const ODD_IDS = ["a/b", "invoice 2026?#1", "café"];
 for (const jobId of ODD_IDS) {
   await jobs.queue("mail").add("send-email", { jobId }, { jobId });
 }
+// A runner, so a runner's URL has something behind it. Registered, never
+// started: nothing runs.
+jobs.runner({
+  id: "nightly",
+  file: new URL("../shared/handlers/hold.ts", import.meta.url),
+  executionMode: "in-process",
+  waitToExit: false,
+});
 
 const api = createJobsApi({
   jobs,
@@ -63,13 +78,15 @@ app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 
 /* ------------------------------------------------------------------ */
-step("Every queue screen's URL answers with the shell");
+step("Every queue and runner screen's URL answers with the shell");
 
-// The routes the app defines under the Queues section:
+// The routes the app defines under the Queues and Runners sections:
 //
 //   /queues                     the queue list
 //   /queues/:queue              one queue: header, actions, jobs, panels
 //   /queues/:queue/jobs/:id     one job
+//   /runners                    the runner list
+//   /runners/:runner            one runner: status, actions, stats, history
 //
 // Each is shown with the query parameters its screen reads.
 const SCREEN_URLS = [
@@ -92,6 +109,17 @@ const SCREEN_URLS = [
   // from the API's 404, to show its "Job not found" screen
   // (`data-testid="job-not-found"`).
   "/jobs/queues/nope/jobs/missing",
+  // The runner list, and filtered by id or name. The filter runs in the
+  // browser, so nothing is re-fetched as you type.
+  "/jobs/runners",
+  "/jobs/runners?search=night",
+  // One runner, and with the last 25 runs in its history (sent to the API
+  // as `GET /runners/:runner/history?limit=25`).
+  "/jobs/runners/nightly",
+  "/jobs/runners/nightly?history=25",
+  // A runner nothing knows: the shell, then "Runner not found"
+  // (`data-testid="runner-not-found"`) from the API's 404.
+  "/jobs/runners/ghost",
 ];
 
 const first = await fetchShell(app, SCREEN_URLS[0]!);
@@ -107,8 +135,15 @@ for (const url of SCREEN_URLS) {
       response.headers.get("content-type"),
       shell.config,
       shell.script.src,
+      shell.styles.map((style) => style.href),
     ],
-    [200, "text/html; charset=utf-8", expectedConfig, first.shell.script.src],
+    [
+      200,
+      "text/html; charset=utf-8",
+      expectedConfig,
+      first.shell.script.src,
+      first.shell.styles.map((style) => style.href),
+    ],
   );
 }
 
@@ -121,6 +156,58 @@ checkEqual(
   job.shell.html.replaceAll(job.shell.configNonce, "NONCE"),
   mail.shell.html.replaceAll(mail.shell.configNonce, "NONCE"),
 );
+
+/* ------------------------------------------------------------------ */
+step("One stylesheet, one entry script; the screens load as chunks");
+
+const { html } = first.shell;
+checkEqual(
+  "the shell links exactly one stylesheet and one module script",
+  [
+    [...html.matchAll(/<link rel="stylesheet"/g)].length,
+    [...html.matchAll(/<script type="module"/g)].length,
+  ],
+  [1, 1],
+);
+const assetsPath = first.shell.config.assetsPath;
+check(
+  "both live under assetsPath",
+  [first.shell.script.src, first.shell.styles[0]!.href].every((href) =>
+    href.startsWith(`${assetsPath}/`),
+  ),
+);
+
+// The entry imports each lazily loaded screen by a relative specifier, which
+// the browser resolves against the entry's own URL: under assetsPath.
+const entry = await (await app.fetch(first.shell.script.src)).text();
+const chunks = [
+  ...new Set(
+    [...entry.matchAll(/import\(\s*["']\.\/([\w.-]+\.js)["']\s*\)/g)].map(
+      (match) => match[1]!,
+    ),
+  ),
+];
+show("chunks the entry imports on demand", chunks);
+check("the entry imports at least one chunk on demand", chunks.length > 0);
+for (const chunk of chunks) {
+  const response = await app.fetch(`${assetsPath}/${chunk}`);
+  const body = await response.text();
+  checkEqual(
+    `${assetsPath}/${chunk} → 200 JavaScript, cached for good`,
+    [
+      response.status,
+      response.headers.get("content-type"),
+      response.headers.get("cache-control"),
+      body.length > 0,
+    ],
+    [
+      200,
+      "text/javascript; charset=utf-8",
+      "public, max-age=31536000, immutable",
+      true,
+    ],
+  );
+}
 
 /* ------------------------------------------------------------------ */
 step("A job id is one encoded path segment");
@@ -152,6 +239,22 @@ checkEqual(
 
 /* ------------------------------------------------------------------ */
 step("The API still answers for itself on the same host");
+
+const runnerScreen = await app.fetch("/jobs/runners/nightly");
+const runner = await app.fetch("/jobs-api/runners/nightly");
+const runnerBody = (await runner.json()) as { id?: string; isLocal?: boolean };
+checkEqual(
+  "/jobs/runners/nightly is the shell, /jobs-api/runners/nightly the runner",
+  [
+    runnerScreen.status,
+    runnerScreen.headers.get("content-type"),
+    runner.status,
+    runnerBody.id,
+    runnerBody.isLocal,
+  ],
+  [200, "text/html; charset=utf-8", 200, "nightly", true],
+);
+await runnerScreen.arrayBuffer();
 
 const queues = await app.fetch("/jobs-api/queues");
 const list = (await queues.json()) as { items: { name: string }[] };
