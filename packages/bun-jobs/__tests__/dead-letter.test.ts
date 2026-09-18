@@ -108,6 +108,66 @@ describe("retryJobs", () => {
   });
 });
 
+describe("retry", () => {
+  it("announces a single retry as retried, locally and to other instances", async () => {
+    const { driver, namespace, queue, runUntilDead } = setup();
+    const job = await queue.add("mail", { failWith: "boom" });
+    await runUntilDead(1);
+
+    // One instance that publishes, and another over the same backend that
+    // hears only what is published: how a dashboard or the live-events
+    // socket learns of a retry it did not make.
+    const producer = new BunQueue<Work>("work", {
+      namespace,
+      driver,
+      logger: noopLogger,
+      publish: true,
+    });
+    const observer = new BunQueue<Work>("work", {
+      namespace,
+      driver,
+      logger: noopLogger,
+      subscribe: true,
+    });
+    closers.push(
+      () => producer.close(),
+      () => observer.close(),
+    );
+    await observer.connect();
+
+    const announced: string[][] = [];
+    const heard: string[][] = [];
+    producer.on("retried", (ids) => announced.push(ids));
+    observer.on("retried", (ids) => heard.push(ids));
+
+    expect(await producer.retry(job.id)).toBe(true);
+    expect((await queue.getJob(job.id))?.state).toBe("waiting");
+
+    // The same event, with the same `{ ids }` shape, `retryJobs` sends.
+    expect(announced).toEqual([[job.id]]);
+    await waitFor(() => heard.length > 0, {
+      timeout: 2_000,
+      message: "the retry was never published",
+    });
+    expect(heard).toEqual([[job.id]]);
+  });
+
+  it("announces nothing when the retry changed nothing", async () => {
+    const { queue } = setup();
+    const waiting = await queue.add("mail", {});
+
+    const announced: string[][] = [];
+    queue.on("retried", (ids) => announced.push(ids));
+
+    // An unknown id, and a job that has not finished: neither went.
+    expect(await queue.retry("no-such-job")).toBe(false);
+    expect(await queue.retry(waiting.id)).toBe(false);
+    await Bun.sleep(20);
+
+    expect(announced).toEqual([]);
+  });
+});
+
 describe("retryAll", () => {
   it("re-drives only the jobs whose failure matches", async () => {
     const { queue, runUntilDead } = setup();

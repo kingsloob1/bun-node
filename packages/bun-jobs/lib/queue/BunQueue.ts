@@ -729,13 +729,31 @@ export class BunQueue<
     return removed;
   }
 
-  /** Returns a finished job to the queue. */
+  /**
+   * Returns a finished job to the queue.
+   *
+   * A retry that went emits and publishes `retried` with `[id]`, the same
+   * event `retryJobs` and `retryAll` send for a batch, so a listener or a
+   * live-events job channel hears about one retry as it does about many. A
+   * retry that changed nothing (an unknown id, a job not finished) sends
+   * nothing.
+   */
   async retry(
     id: string,
     options?: { resetAttempts?: boolean },
   ): Promise<boolean> {
     await this.connect();
-    return await this.#retryOne(id, options?.resetAttempts ?? true, Date.now());
+    const retried = await this.#retryOne(
+      id,
+      options?.resetAttempts ?? true,
+      Date.now(),
+    );
+
+    if (retried) {
+      await this.#announceRetried([id]);
+    }
+
+    return retried;
   }
 
   /**
