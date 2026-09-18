@@ -78,8 +78,14 @@ export class JobsNotifier
   readonly #discoveryInterval: number;
   /** The most events an iterator buffers. */
   readonly #bufferSize: number;
-  /** Unsubscribe functions, by `<kind>:<target>`. */
+  /** Unsubscribe functions of live subscriptions, by `<kind>:<target>`. */
   readonly #subscriptions = new Map<string, () => Promise<void>>();
+  /** Subscribes in flight, by key: a concurrent follower awaits the same one. */
+  readonly #inflight = new Map<string, Promise<void>>();
+  /** Keys followed for good: by discovery, the configured lists, or `follow()`. */
+  readonly #permanent = new Set<string>();
+  /** Keys followed only while held, with how many holders each has (`hold()`). */
+  readonly #held = new Map<string, number>();
   /** Events waiting for an iterator to take them. */
   readonly #buffer: DriverEvent[] = [];
   /** Iterators waiting for an event. */
@@ -151,6 +157,7 @@ export class JobsNotifier
 
     const unsubscribes = [...this.#subscriptions.values()];
     this.#subscriptions.clear();
+    this.#held.clear();
     await Promise.allSettled(unsubscribes.map((unsubscribe) => unsubscribe()));
   }
 
@@ -228,28 +235,115 @@ export class JobsNotifier
 
   /**
    * Starts following one queue or runner now, whether or not it exists yet —
-   * so nothing it publishes from its first use is missed. Following something
-   * already followed does nothing.
+   * so nothing it publishes from its first use is missed — and for good.
+   * Following something already followed does nothing; resolves once the
+   * subscription is live, even when another follow started it.
    */
   async follow(kind: EventKind, target: string): Promise<void> {
     await this.#follow(
       kind,
       assertSegment(target, kind === "queue" ? "queue name" : "runner id"),
+      "permanent",
     );
   }
 
-  /** Subscribes to one queue or runner, once. */
-  async #follow(kind: EventKind, target: string): Promise<void> {
+  /**
+   * Follows one queue or runner for as long as it is held: like
+   * {@link JobsNotifier.follow}, but reference-counted, and dropped by the
+   * last matching {@link JobsNotifier.unfollow} unless something follows it
+   * for good (discovery, the configured lists, or `follow()`). For followers
+   * whose names come from outside — a live-events subscription may name a
+   * queue that does not exist yet, or never will.
+   */
+  async hold(kind: EventKind, target: string): Promise<void> {
+    await this.#follow(
+      kind,
+      assertSegment(target, kind === "queue" ? "queue name" : "runner id"),
+      "held",
+    );
+  }
+
+  /**
+   * Releases one {@link JobsNotifier.hold}. When the last holder lets go and
+   * nothing follows the target for good, its subscription is closed. Releasing
+   * something not held does nothing.
+   */
+  async unfollow(kind: EventKind, target: string): Promise<void> {
+    const key = `${kind}:${target}`;
+    const holders = this.#held.get(key);
+    if (holders === undefined) {
+      return;
+    }
+    if (holders > 1) {
+      this.#held.set(key, holders - 1);
+      return;
+    }
+    this.#held.delete(key);
+    // A subscribe in flight checks again once it lands, and drops itself.
+    await this.#inflight.get(key);
+    if (!this.#wanted(key)) {
+      await this.#drop(key);
+    }
+  }
+
+  /** Whether a key is still followed for good or held. */
+  #wanted(key: string): boolean {
+    return this.#permanent.has(key) || this.#held.has(key);
+  }
+
+  /** Closes one live subscription. */
+  async #drop(key: string): Promise<void> {
+    const unsubscribe = this.#subscriptions.get(key);
+    if (!unsubscribe) {
+      return;
+    }
+    this.#subscriptions.delete(key);
+    try {
+      await unsubscribe();
+    } catch (error) {
+      this.#emitError(error, `unsubscribe ${key}`);
+    }
+  }
+
+  /** Follows one queue or runner, for good or as one more holder; subscribes once. */
+  async #follow(
+    kind: EventKind,
+    target: string,
+    how: "permanent" | "held" = "permanent",
+  ): Promise<void> {
     const key = `${kind}:${target}`;
 
-    if (this.#closed || this.#subscriptions.has(key)) {
+    if (this.#closed) {
+      return;
+    }
+    if (how === "permanent") {
+      this.#permanent.add(key);
+    } else {
+      this.#held.set(key, (this.#held.get(key) ?? 0) + 1);
+    }
+    if (this.#subscriptions.has(key)) {
       return;
     }
 
-    // Claimed before the await, so two discovery passes overlapping cannot
-    // both subscribe and deliver every event twice.
-    this.#subscriptions.set(key, async () => {});
+    // One subscribe per key, shared: two overlapping discovery passes cannot
+    // both subscribe and deliver every event twice, and a follower joining
+    // one in flight waits until it is live rather than resolving early.
+    let inflight = this.#inflight.get(key);
+    if (!inflight) {
+      inflight = this.#subscribe(kind, target, key).finally(() => {
+        this.#inflight.delete(key);
+      });
+      this.#inflight.set(key, inflight);
+    }
+    await inflight;
+  }
 
+  /** Subscribes to one queue or runner through the driver. Never rejects. */
+  async #subscribe(
+    kind: EventKind,
+    target: string,
+    key: string,
+  ): Promise<void> {
     try {
       const unsubscribe = await this.#driver.subscribe(
         this.namespace,
@@ -264,9 +358,13 @@ export class JobsNotifier
       }
 
       this.#subscriptions.set(key, unsubscribe);
+      // Its last holder let go while it was subscribing.
+      if (!this.#wanted(key)) {
+        await this.#drop(key);
+        return;
+      }
       this.safeEmit("subscribed", kind, target);
     } catch (error) {
-      this.#subscriptions.delete(key);
       this.#emitError(error, `subscribe ${key}`);
     }
   }

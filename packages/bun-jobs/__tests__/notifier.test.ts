@@ -364,3 +364,91 @@ describe("publishEvents on BunJobs", () => {
     expect(heard).toEqual([]);
   });
 });
+
+describe("follows", () => {
+  /** A memory driver whose subscribe waits for the test to open a gate. */
+  function gatedDriver() {
+    const driver = new MemoryDriver();
+    const subscribe = driver.subscribe.bind(driver);
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let live = 0;
+    driver.subscribe = (async (ns, kind, target, listener) => {
+      await gate;
+      const unsubscribe = await subscribe(ns, kind, target, listener);
+      live++;
+      return async () => {
+        live--;
+        await unsubscribe();
+      };
+    }) as typeof driver.subscribe;
+    return { driver, open, live: () => live };
+  }
+
+  it("makes a follow that joins one in flight wait until it is live", async () => {
+    const { driver, open, live } = gatedDriver();
+    const notifier = new JobsNotifier(driver, testNamespace(), {
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => notifier.close());
+
+    const first = notifier.follow("queue", "mail");
+    let secondDone = false;
+    const second = notifier.follow("queue", "mail").then(() => {
+      secondDone = true;
+    });
+    await Bun.sleep(20);
+    // The subscribe has not completed, so neither follow may have.
+    expect(secondDone).toBe(false);
+    open();
+    await Promise.all([first, second]);
+    expect(live()).toBe(1);
+    expect(notifier.following).toEqual(["queue:mail"]);
+  });
+
+  it("drops a held follow when its last holder lets go, and keeps permanent ones", async () => {
+    const driver = new MemoryDriver();
+    const notifier = new JobsNotifier(driver, testNamespace(), {
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => notifier.close());
+    await notifier.start();
+    await notifier.follow("queue", "configured");
+    const baseline = notifier.following;
+
+    for (let index = 0; index < 1000; index++) {
+      const name = `invented-${index}`;
+      await notifier.hold("queue", name);
+      await notifier.unfollow("queue", name);
+    }
+    expect(notifier.following).toEqual(baseline);
+
+    // Refcounted: two holders, one lets go, it stays.
+    await notifier.hold("queue", "shared");
+    await notifier.hold("queue", "shared");
+    await notifier.unfollow("queue", "shared");
+    expect(notifier.following).toContain("queue:shared");
+    await notifier.unfollow("queue", "shared");
+    expect(notifier.following).not.toContain("queue:shared");
+
+    // A permanent follow outlives its holds.
+    await notifier.hold("queue", "configured");
+    await notifier.unfollow("queue", "configured");
+    expect(notifier.following).toContain("queue:configured");
+
+    // A release while the subscribe is in flight still ends unfollowed.
+    const gated = gatedDriver();
+    const late = new JobsNotifier(gated.driver, testNamespace(), {
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => late.close());
+    const holding = late.hold("queue", "brief");
+    const releasing = late.unfollow("queue", "brief");
+    gated.open();
+    await Promise.all([holding, releasing]);
+    expect(late.following).toEqual([]);
+    expect(gated.live()).toBe(0);
+  });
+});
