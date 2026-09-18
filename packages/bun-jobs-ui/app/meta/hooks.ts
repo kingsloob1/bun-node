@@ -17,6 +17,13 @@ export interface MetaContextValue {
 export const MetaContext = createContext<MetaContextValue | null>(null);
 
 /**
+ * Permissions targeted at what the current screen shows (`/meta/permissions?queue=`
+ * or `?runner=`), set by `<PermissionScope>`. `null` outside one, or while it
+ * loads: the untargeted map applies then.
+ */
+export const ScopedPermissionsContext = createContext<Permissions | null>(null);
+
+/**
  * Whether the caller may perform `action`: `true` only when the action is
  * present **and** `true`. An action whose routes are pruned (mode, `readOnly`,
  * `actions`, driver capability) is absent from the map, which is `false` too.
@@ -42,19 +49,26 @@ export function useMeta(): MetaDto {
   return useMetaContext().meta;
 }
 
-/** `GET /meta/permissions`. */
+/**
+ * The permissions that apply here: the innermost `<PermissionScope>`'s
+ * targeted map once it has loaded, else the untargeted one. Advisory either
+ * way: `authorize` may decide per job and change its mind, so the API's 403
+ * on the request itself stays authoritative.
+ */
 export function usePermissions(): Permissions {
-  return useMetaContext().permissions;
+  const scoped = use(ScopedPermissionsContext);
+  const { permissions } = useMetaContext();
+  return scoped ?? permissions;
 }
 
-/** Whether the caller may perform `action` (see {@link canPerform}). */
+/** Whether the caller may perform `action` here (see {@link canPerform}, {@link usePermissions}). */
 export function useCan(action: JobsApiAction): boolean {
-  return canPerform(useMetaContext().permissions, action);
+  return canPerform(usePermissions(), action);
 }
 
 /** A predicate over actions, for checking several at once. */
 export function useCanFn(): (action: JobsApiAction) => boolean {
-  const { permissions } = useMetaContext();
+  const permissions = usePermissions();
   return useMemo(
     () => (action: JobsApiAction) => canPerform(permissions, action),
     [permissions],

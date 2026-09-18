@@ -53,7 +53,12 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
       });
     }
     if (jobsMode && can("queues.list")) {
-      items.push({ id: "queues", label: "Queues", to: "/queues", comingIn: 2 });
+      items.push({
+        id: "queues",
+        label: "Queues",
+        to: "/queues",
+        comingIn: null,
+      });
     }
     if (runnerMode && can("runners.list")) {
       items.push({
