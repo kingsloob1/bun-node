@@ -504,13 +504,22 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
           { repeat: { every: 60_000, key: "legacy", catchUp: false } },
         );
 
-        // A series as an earlier version stored it: `false` was left out.
-        const stored = (await driver.getRepeat(queue.ref, "legacy"))!;
+        // A caller's own key is stored namespaced, so it can never equal a
+        // generated key (`<name>|<schedule>|<start>`) and take that series
+        // over. Read the stored spelling back rather than assuming it.
+        // Stored namespaced so it can never equal a generated key, but shown
+        // without the prefix: "legacy" contains no `|`, so it cannot be
+        // mistaken for a generated key (those always do).
+        const key = (await queue.listRepeatables())[0]!.key;
+        expect(key).toBe("legacy");
+
+        // At driver level the spelling is the stored one.
+        const stored = (await driver.getRepeat(queue.ref, `k:${key}`))!;
         const { catchUp: _dropped, ...legacy } = stored;
         await driver.upsertRepeat(queue.ref, { ...legacy, count: 2 });
 
         const [before] = await queue.listRepeatables();
-        expect(before.key).toBe("legacy");
+        expect(before.key).toBe(key);
         expect(before.catchUp).toBeUndefined();
         expect(before.nextJobId).toBe(job.id);
 

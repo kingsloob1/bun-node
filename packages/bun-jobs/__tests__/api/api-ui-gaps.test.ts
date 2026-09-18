@@ -11,8 +11,11 @@ import Ajv2020 from "ajv/dist/2020";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { resolveConfig } from "../../lib/api/config";
 import { parseChannel } from "../../lib/api/ws/channels";
-import { BunQueueWorker } from "../../lib/index";
-import { waitFor } from "../helpers";
+import {
+  BunQueueWorker,
+  MAX_JOB_ID_LENGTH as QUEUE_MAX_JOB_ID_LENGTH,
+} from "../../lib/index";
+import { makeJob, waitFor } from "../helpers";
 import {
   ECHO_HANDLER,
   harness,
@@ -474,8 +477,14 @@ describe("G6: a new job id is capped where bun-jobs caps it; existing ids stay r
   it("still reads, looks up and removes a stored job whose id is longer than the new-id cap", async () => {
     const h = closing();
     const legacy = "L".repeat(1000);
-    // Stored directly through the queue, as an older version could have.
-    await h.jobs.queue("mail").add("send", {}, { jobId: legacy });
+    // `add()` refuses an id this long now, so it is stored straight through
+    // the driver, as an older version could have written it.
+    const queue = h.jobs.queue("mail");
+    await expect(queue.add("send", {}, { jobId: legacy })).rejects.toThrow(
+      /1000 characters long; the most is 191/,
+    );
+    await queue.driver.ensureQueue(queue.ref);
+    await queue.driver.addJob(queue.ref, makeJob({ id: legacy, name: "send" }));
 
     const read = await h.call("GET", `/queues/mail/jobs/${legacy}`);
     expect(read.status).toBe(200);
@@ -498,6 +507,12 @@ describe("G6: a new job id is capped where bun-jobs caps it; existing ids stay r
     expect(overRef.body.code).toBe("VALIDATION");
   });
 
+  it("states the same cap as the queue, which the contract cannot import", () => {
+    // The contract is imported by a browser client, so it restates the number
+    // rather than reach into the queue; this is what keeps the two one number.
+    expect(MAX_JOB_ID_LENGTH).toBe(QUEUE_MAX_JOB_ID_LENGTH);
+  });
+
   it("adds a 191-character opts.jobId and refuses 192 as a validation error", async () => {
     const h = closing({ addableNames: "any" });
     await h.jobs.queue("mail").add("send", {});
@@ -515,6 +530,34 @@ describe("G6: a new job id is capped where bun-jobs caps it; existing ids stay r
     expect(overCap.status).toBe(400);
     expect(overCap.body.code).toBe("VALIDATION");
     expect(overCap.body.issues[0].path).toBe("opts.jobId");
+  });
+
+  it("answers 400 INVALID_ARGUMENT for an id the schema passes and assertJobId refuses", async () => {
+    const h = closing({ addableNames: "any" });
+    await h.jobs.queue("mail").add("send", {});
+
+    // Each fits the schema's 191, so only `assertJobId` can refuse it — which
+    // is what the schema's own description promises.
+    for (const [label, jobId] of [
+      ["a leading dot", ".hidden"],
+      ["a control character", `a${String.fromCharCode(1)}b`],
+      ["a lone surrogate", `a${String.fromCharCode(0xd800)}b`],
+    ] as const) {
+      const response = await h.call("POST", "/queues/mail/jobs", {
+        name: "send",
+        data: null,
+        opts: { jobId },
+      });
+      expect(response.status, label).toBe(400);
+      expect(response.body.code, label).toBe("INVALID_ARGUMENT");
+    }
+
+    // And past the cap through the queue itself, where no schema stands in
+    // front of it.
+    await expect(
+      h.jobs.queue("mail").add("send", {}, { jobId: "x".repeat(300) }),
+    ).rejects.toThrow(/300 characters long; the most is 191/);
+    expect(await h.jobs.queue("mail").count()).toMatchObject({ waiting: 1 });
   });
 
   it("documents 191 on opts.jobId and 1024 wherever an id addresses a job", () => {

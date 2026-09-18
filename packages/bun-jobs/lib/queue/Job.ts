@@ -8,9 +8,10 @@ import type {
 } from "../drivers/index";
 import { deserializeError } from "@kingsleyweb/bun-common";
 import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
-import { ConfigError } from "../shared/errors";
+import { ConfigError, NotSupportedError } from "../shared/errors";
 import { parseWhen } from "../shared/humanTime";
 import { assertJsonSafe } from "../shared/json";
+import { displayRepeatKey } from "./options";
 import { retryJob } from "./retry";
 
 /**
@@ -117,7 +118,12 @@ export class Job<TData = unknown, TResult = unknown> {
       : null;
     this.stacktrace = record.stacktrace.map((entry) => deserializeError(entry));
     this.workerId = record.workerId;
-    this.repeatKey = record.repeatKey;
+    // Shown as the caller named it: a series key is stored namespaced so one
+    // job cannot hijack another's series, and the prefix is hidden again here.
+    // The record keeps the stored spelling, which is what the worker looks the
+    // series up by.
+    this.repeatKey =
+      record.repeatKey === null ? null : displayRepeatKey(record.repeatKey);
     this.parent = record.flow?.parent ?? null;
   }
 
@@ -281,10 +287,10 @@ export class Job<TData = unknown, TResult = unknown> {
     what: string,
   ): JobsDriver {
     if (typeof this.#driver[method] !== "function") {
-      throw new ConfigError(
-        `${what} needs a driver that implements ${method}, and the ${this.#driver.name} driver does not`,
-        { driver: this.#driver.name, method },
-      );
+      // A `ConfigError` still — `NotSupportedError` extends it and keeps the
+      // `CONFIG` code — but one a caller can branch on by type, with the
+      // feature that wanted the method recorded beside it.
+      throw new NotSupportedError(this.#driver.name, method, { needs: what });
     }
 
     return this.#driver;

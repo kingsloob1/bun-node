@@ -204,6 +204,35 @@ export class BunJobs {
   }
 
   /**
+   * How often the registry worker looks for due work, in milliseconds —
+   * `undefined` when it was never set, which leaves the worker its own
+   * defaults.
+   *
+   * Readable before `start()`: the `processEvery` option and the
+   * `processEvery()` method both normalise a duration to milliseconds the
+   * moment they are given one, so this is what the worker will be started
+   * with. It reports what was *asked for*, not what a running worker
+   * currently uses — `start()`'s own `pollInterval`/`maxBlock` options win
+   * over it, and a later `processEvery()` wins over those.
+   */
+  get processEveryMs(): number | undefined {
+    return this.#processEvery;
+  }
+
+  /**
+   * Whether the queues, workers and runners created here publish their events
+   * for other processes: the resolved `publishEvents` option, so `false` when
+   * it was not given. A `publish` option passed to one of them still wins for
+   * that one, and is not reflected here.
+   *
+   * What the management API reports as `publishing` on `GET /meta`, and what
+   * decides whether it warns that its live events will be empty.
+   */
+  get publishesEvents(): boolean {
+    return this.#publishEvents;
+  }
+
+  /**
    * Creates a runner in this namespace, registered with {@link runners} so
    * `startAll()`/`stopAll()` reach it.
    */
@@ -681,7 +710,7 @@ export class BunJobs {
 
     if (!supportsWorkers(this.driver)) {
       throw new NotSupportedError(this.driver.name, "listWorkers", {
-        needs: "worker records or queue state",
+        needs: "listWorkers()",
       });
     }
 

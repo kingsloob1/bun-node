@@ -43,8 +43,10 @@ import {
 import { join } from "node:path";
 import process from "node:process";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { assertWritableStateName } from "../queue/windows";
 import { DriverError } from "../shared/errors";
 import { EventRetention } from "../shared/eventRetention";
+import { fitName } from "../shared/fit";
 import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
@@ -54,6 +56,9 @@ import {
   decodeSegment,
   encodeName,
   encodeSegment,
+  MAX_ENCODED_NAME,
+  NAME_MAX,
+  NAME_OVERHEAD,
 } from "./file-names";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 import {
@@ -461,6 +466,12 @@ export class FileDriver implements JobsDriver {
     ns: string,
     key: string,
   ): Promise<QueuedTrigger | null> {
+    // Read first: a mutation writes the runner's state file, and asking an
+    // unknown runner whether it has anything queued must not create it.
+    if ((await this.#readState(ns, key)).queued.length === 0) {
+      return null;
+    }
+
     let trigger: QueuedTrigger | null = null;
 
     await this.#mutateState(ns, key, (state) => {
@@ -500,6 +511,7 @@ export class FileDriver implements JobsDriver {
     q: QueueRef,
     job: JobRecord,
   ): Promise<{ job: JobRecord; added: boolean }> {
+    this.#assertNameFits(job.id, "id", "addJob");
     await this.ensureQueue(q);
     const path = this.#jobPath(q, job.id);
     const record = jsonClone(job);
@@ -1818,6 +1830,11 @@ export class FileDriver implements JobsDriver {
     q: QueueRef,
     name: string,
   ): Promise<QueueStateEntry | null> {
+    // A name too long to be a file name cannot have been written.
+    if (encodeName(name).length > MAX_ENCODED_NAME) {
+      return null;
+    }
+
     // No lock: every write lands by rename, so a read sees one whole version.
     return await this.#readJson<QueueStateEntry>(this.#statePath(q, name));
   }
@@ -1827,7 +1844,13 @@ export class FileDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+    // Before anything is written or locked. This package's own names are
+    // fitted to the budget, so only a caller's name can be refused here.
+    this.#assertNameFits(name, "name", "setQueueState");
+
     const path = this.#statePath(q, name);
 
     // The compare and the write under one lock file, which is what makes them
@@ -2239,6 +2262,44 @@ export class FileDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Refuses an id whose *encoded* name would not fit in a file name.
+   *
+   * The shared character cap does not bound this. `encodeName` is a per
+   * character expansion — up to 3 for ASCII punctuation and 9 for a BMP
+   * character outside Latin — so an id of 191 characters, every one of them
+   * legal, can encode to over 1,700. And the encoded id is only part of the
+   * name: a marker prepends an ordering key, and an atomic write appends
+   * `.<pid>.<uuid>.tmp`, which is the widest of them.
+   *
+   * Checked here, when a record is created, rather than inside `#jobPath`:
+   * that is on every read too, and `getJob` of an over-long id should answer
+   * `null` rather than throw. Without this the failure was an `ENAMETOOLONG`
+   * rewrapped as a bare `DriverError` naming only the path — and on the marker
+   * and hold paths it was swallowed entirely and reported as lost contention.
+   */
+  #assertNameFits(
+    /** The job id or queue-state name. */
+    name: string,
+    /** What it is, as the message and context name it: `"id"`, `"name"`. */
+    what: string,
+    /** The driver operation refusing it. */
+    operation: string,
+  ): void {
+    const encoded = encodeName(name).length;
+
+    if (encoded > MAX_ENCODED_NAME) {
+      throw new DriverError(
+        "file",
+        operation,
+        new Error(
+          `the ${what} encodes to ${encoded} bytes as a file name, and the most is ${MAX_ENCODED_NAME} (${NAME_MAX} minus ${NAME_OVERHEAD} for the marker and temp-file suffixes)`,
+        ),
+        { [what]: name, encoded, max: MAX_ENCODED_NAME, nameMax: NAME_MAX },
+      );
+    }
+  }
+
   /** Path of a job's record. */
   #jobPath(q: QueueRef, id: string): string {
     return join(this.#queueDir(q), "jobs", `${encodeName(id)}.json`);
@@ -2290,9 +2351,25 @@ export class FileDriver implements JobsDriver {
     return join(this.#queueDir(q), "throughput");
   }
 
-  /** Path of a repeat definition. */
+  /**
+   * Path of a repeat definition.
+   *
+   * The key is fitted to the file-name budget rather than refused: a series
+   * key, generated or not, can be 191 legal characters that encode to far more
+   * than a file name holds, and refusing it would throw where the caller never
+   * chose. The fitting is invisible — `listRepeats` reads each key from the
+   * record, never from a file name — and deterministic, so every lookup of one
+   * key reaches one file.
+   */
   #repeatPath(q: QueueRef, key: string): string {
-    return join(this.#queueDir(q), "repeats", `${encodeName(key)}.json`);
+    const name = fitName(key, {
+      maxLength: MAX_ENCODED_NAME,
+      measured: {
+        max: MAX_ENCODED_NAME,
+        measure: (value) => encodeName(value).length,
+      },
+    });
+    return join(this.#queueDir(q), "repeats", `${encodeName(name)}.json`);
   }
 
   /** Path of the events log for one target. */
@@ -2986,7 +3063,10 @@ export class FileDriver implements JobsDriver {
       await Bun.write(temp, contents);
       await rename(temp, path);
     } catch (error) {
-      await rm(temp, { force: true });
+      // Best effort: the temp file may never have been created — a name too
+      // long fails before it is — and a failure here must not replace the
+      // error that explains what went wrong.
+      await rm(temp, { force: true }).catch(() => undefined);
       throw new DriverError("file", "writeAtomic", error, { path });
     }
   }

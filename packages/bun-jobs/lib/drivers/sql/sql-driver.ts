@@ -38,6 +38,7 @@ import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type { ClaimCursor, SqlAdapter, SqlDialect } from "./dialect";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
+import { assertWritableStateName } from "../../queue/windows";
 import {
   resolveConnectionUrl,
   resolveNames,
@@ -45,6 +46,7 @@ import {
 } from "../../shared/connection";
 import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
+import { fitName } from "../../shared/fit";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
 import { claimByLoop } from "../claimBatch";
@@ -362,6 +364,18 @@ const FLOW_COLUMN_RECHECK_MS = 60_000;
  */
 const METRICS_SHARDS = 8;
 
+/**
+ * Dialects whose id columns are bounded, and by how many characters.
+ *
+ * Postgres and SQLite store ids as `TEXT` and need no guard. MySQL and MariaDB
+ * use `VARCHAR(191)` — itself the widest a `utf8mb4` id can be while the
+ * composite claim index stays inside InnoDB's 3,072-byte key limit.
+ */
+const BOUNDED_ID_LENGTH: Partial<Record<SqlAdapter, number>> = {
+  mysql: 191,
+  mariadb: 191,
+};
+
 /** The tables this driver uses. */
 export const SQL_TABLES = [
   "jobs",
@@ -469,16 +483,17 @@ export class SqlDriver implements JobsDriver {
   readonly dialect: SqlDialect;
 
   /**
-   * A database is reachable from anywhere, and its concurrency control is
-   * what makes claiming safe. Waiting is polled: `LISTEN/NOTIFY` exists on
+   * A server database is reachable from anywhere, and its concurrency control
+   * is what makes claiming safe. Waiting is polled: `LISTEN/NOTIFY` exists on
    * Postgres but not the others, so the contract stays the same everywhere.
+   *
+   * `multiHost` is the one that varies by engine, and SQLite is the exception:
+   * it is a file, so processes on the same machine can share it but another
+   * host cannot. Assigned in the constructor rather than here, because a class
+   * field initialiser runs *before* the constructor body and would read
+   * {@link SqlDriver.adapter} as `undefined`.
    */
-  readonly capabilities: DriverCapabilities = {
-    blockingWait: false,
-    events: "poll",
-    multiProcess: true,
-    multiHost: true,
-  };
+  readonly capabilities: DriverCapabilities;
 
   /** The resolved table names. */
   readonly #tables: Record<SqlTable, string>;
@@ -609,6 +624,14 @@ export class SqlDriver implements JobsDriver {
 
     this.adapter = options.adapter ?? detectAdapter(options.url);
     this.dialect = dialectFor(this.adapter);
+
+    this.capabilities = {
+      blockingWait: false,
+      events: "poll",
+      multiProcess: true,
+      // SQLite is a local file; every other engine is reached over a socket.
+      multiHost: this.adapter !== "sqlite",
+    };
 
     this.#tables = resolveNames(SQL_TABLES, {
       prefix: options.tablePrefix,
@@ -1051,6 +1074,12 @@ export class SqlDriver implements JobsDriver {
     ns: string,
     key: string,
   ): Promise<QueuedTrigger | null> {
+    // Read first: a mutation creates the runner's row, and asking an unknown
+    // runner whether it has anything queued must not bring it into being.
+    if ((await this.#readState(ns, key)).queued.length === 0) {
+      return null;
+    }
+
     let trigger: QueuedTrigger | null = null;
 
     await this.#mutateState(ns, key, (state) => {
@@ -1079,6 +1108,10 @@ export class SqlDriver implements JobsDriver {
 
   async ensureQueue(q: QueueRef): Promise<void> {
     await this.connect();
+    // Named first, so a name too wide for the columns is reported as the name
+    // it is rather than as the `kv` key it would have made.
+    this.#assertFits(q.ns, "namespace");
+    this.#assertFits(q.queue, "queue name");
     // The schema is shared; a queue exists as soon as something references it.
     await this.#writeKv(q.ns, `q:${q.queue}:meta`, { paused: false }, false);
   }
@@ -3413,7 +3446,11 @@ export class SqlDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+    this.#assertFits(q.ns, "namespace");
+
     await this.connect();
 
     const { dialect } = this;
@@ -3523,11 +3560,19 @@ export class SqlDriver implements JobsDriver {
   /* --- queue: repeats ---------------------------------------------------- */
 
   async upsertRepeat(q: QueueRef, def: RepeatRecord): Promise<void> {
-    await this.#writeKv(q.ns, `q:${q.queue}:repeat:${def.key}`, def, true);
+    await this.#writeKv(
+      q.ns,
+      this.#queueKvKey(q, "repeat", def.key),
+      def,
+      true,
+    );
   }
 
   async getRepeat(q: QueueRef, key: string): Promise<RepeatRecord | null> {
-    return await this.#readKv<RepeatRecord>(q.ns, `q:${q.queue}:repeat:${key}`);
+    return await this.#readKv<RepeatRecord>(
+      q.ns,
+      this.#queueKvKey(q, "repeat", key),
+    );
   }
 
   async listRepeats(q: QueueRef): Promise<RepeatRecord[]> {
@@ -3551,7 +3596,7 @@ export class SqlDriver implements JobsDriver {
     const { bind, values } = this.#binder();
     const removed = await this.#run(
       `DELETE FROM ${this.#tables.kv}
-        WHERE ns = ${bind(q.ns)} AND kv_key = ${bind(`q:${q.queue}:repeat:${key}`)}`,
+        WHERE ns = ${bind(q.ns)} AND kv_key = ${bind(this.#queueKvKey(q, "repeat", key))}`,
       values,
     );
 
@@ -3935,12 +3980,69 @@ export class SqlDriver implements JobsDriver {
     return rows[0] ?? null;
   }
 
+  /**
+   * Refuses a value too wide for a bounded id column, rather than letting the
+   * engine quietly cut it down.
+   *
+   * MySQL and MariaDB **truncate** past `VARCHAR(191)`. Two ids sharing a
+   * 191-character prefix therefore became one row: the second add answered
+   * `wasAdded: false`, the first job's data survived under a truncated id, and
+   * afterwards *neither* id resolved through `getJob`. That is silent data
+   * loss, and a forgery vector — so it is worth an error even though callers'
+   * ids are already capped before they reach a driver.
+   *
+   * It also catches a namespace or queue name of 192–200 characters, which
+   * passes the shared segment check (its cap is 200) but overflows these
+   * columns, and a `kv` key that a long queue name or runner id pushes past
+   * the column. Those are a `ConfigError`: the name is configuration, and no
+   * retry will make it fit. A job id too wide is a `DriverError`, since a
+   * caller's id is capped and this package fits the ids it builds, so one
+   * reaching here is a bug.
+   */
+  #assertFits(value: string, what: string): void {
+    const limit = BOUNDED_ID_LENGTH[this.adapter];
+
+    if (limit === undefined || value.length <= limit) {
+      return;
+    }
+
+    if (what === "namespace" || what === "queue name" || what === "kv key") {
+      throw new ConfigError(
+        `the ${what} "${value}" is ${value.length} characters, and ${this.adapter} stores it in a column of ${limit}; use a shorter one`,
+        {
+          [what]: value,
+          length: value.length,
+          max: limit,
+          adapter: this.adapter,
+        },
+      );
+    }
+
+    throw new DriverError(
+      "sql",
+      "addJob",
+      new Error(
+        `${what} is ${value.length} characters and ${this.adapter} stores it in a column of ${limit}; writing it would truncate it and merge it with another row`,
+      ),
+      {
+        [what]: value,
+        length: value.length,
+        max: limit,
+        adapter: this.adapter,
+      },
+    );
+  }
+
   /** A job record as the columns the insert binds, in `JOB_COLUMNS` order. */
   #toRow(
     q: QueueRef,
     job: JobRecord,
     columns: readonly string[] = JOB_COLUMNS,
   ): unknown[] {
+    this.#assertFits(q.ns, "namespace");
+    this.#assertFits(q.queue, "queue name");
+    this.#assertFits(job.id, "job id");
+
     const json = (value: unknown) => this.dialect.jsonIn(value);
 
     const values: unknown[] = [
@@ -3997,6 +4099,10 @@ export class SqlDriver implements JobsDriver {
     job: JobRecord,
     columns: readonly string[] = JOB_COLUMNS,
   ): Record<string, unknown> {
+    this.#assertFits(q.ns, "namespace");
+    this.#assertFits(q.queue, "queue name");
+    this.#assertFits(job.id, "job id");
+
     const values = [
       q.ns,
       q.queue,
@@ -4466,7 +4572,47 @@ export class SqlDriver implements JobsDriver {
    * excludes this prefix explicitly.
    */
   #queueStateKey(q: QueueRef, name: string): string {
-    return `q:${q.queue}:state:${name}`;
+    return this.#queueKvKey(q, "state", name);
+  }
+
+  /**
+   * The `kv` key of a named entry under a queue — a state entry or a repeat
+   * definition — fitted to the column.
+   *
+   * On MySQL and MariaDB `kv_key` is `VARCHAR(191)`, and the queue name is part
+   * of the key, so a name that fits on its own (a 191-character series key, a
+   * window pointer for a 186-character id) overflows it. Such a name is
+   * shortened deterministically with a hash of the whole, so it stays distinct
+   * and every lookup of it reaches one row; a fitted name fits, so handing it
+   * back — as `listQueueState` does — reaches the same row too. A repeat is
+   * listed from the stored record, so its fitting is invisible; a state entry
+   * with a name that long is listed under its fitted spelling.
+   *
+   * Refused with a `ConfigError` only when the queue name leaves no room at
+   * all, which no name can fix.
+   */
+  #queueKvKey(q: QueueRef, kind: "state" | "repeat", name: string): string {
+    const base = `q:${q.queue}:${kind}:`;
+    const limit = BOUNDED_ID_LENGTH[this.adapter];
+
+    if (limit === undefined) {
+      return `${base}${name}`;
+    }
+
+    this.#assertFits(q.queue, "queue name");
+
+    try {
+      return `${base}${fitName(name, { maxLength: limit - base.length })}`;
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+
+      throw new ConfigError(
+        `the queue name "${q.queue}" is too long for ${this.adapter} to store its ${kind} entries: their keys are limited to ${limit} characters`,
+        { queue: q.queue, length: q.queue.length, max: limit, kind },
+      );
+    }
   }
 
   /**
@@ -4511,6 +4657,9 @@ export class SqlDriver implements JobsDriver {
     overwrite: boolean,
   ): Promise<void> {
     await this.connect();
+    // Refused rather than truncated: a cut key would merge two entries.
+    this.#assertFits(ns, "namespace");
+    this.#assertFits(key, "kv key");
 
     const columns = ["ns", "kv_key", "value", "updated_at"];
     const encoded = this.dialect.jsonIn(value);
@@ -4575,6 +4724,9 @@ export class SqlDriver implements JobsDriver {
   ): Promise<void> {
     await this.connect();
     const kvKey = `${key}:state`;
+    // Before the row is created, and refused rather than truncated.
+    this.#assertFits(ns, "namespace");
+    this.#assertFits(kvKey, "kv key");
 
     // Create the row first, outside the transaction.
     //

@@ -271,7 +271,7 @@ built-in defaults are exported as `DEFAULT_JOB_OPTIONS`.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `jobId` | `string` | fresh id | The job's id, and also its idempotency key. Adding an existing id returns the stored job untouched (`wasAdded: false`) and emits `duplicate`. |
+| `jobId` | `string` | fresh id | The job's id, and also its idempotency key. Adding an existing id returns the stored job untouched (`wasAdded: false`) and emits `duplicate`. Checked — see [What an id may be](#what-an-id-may-be). |
 | `priority` | `number` | `0` | Lower runs first; ties break FIFO. Clamped to ±1,048,576. |
 | `delay` | `number` | `0` | Milliseconds before the job may run. |
 | `runAt` | `Date \| number` | | An absolute time the job may run. Takes precedence over `delay`. |
@@ -297,6 +297,126 @@ forms:
 - `{ count, ttl }` does both.
 
 A flow child is never removed before its parent has recorded its outcome.
+
+#### What an id may be
+
+**Breaking change.** Ids you choose are now checked, and a bad one throws
+`ConfigError` at the call that supplied it rather than being written. This
+applies to `jobId`, a flow child's `jobId`, `debounce.id` / `throttle.id`, and
+`repeat.key` (see [below](#repeat-keys-you-choose-are-namespaced)), checked
+before anything is written.
+
+An id is rejected when it is:
+
+| Rejected | Why |
+|---|---|
+| empty | an id is an identity, and `""` names nothing |
+| longer than **191 characters** | MySQL and MariaDB store ids as `VARCHAR(191)` and used to **truncate** silently, merging two jobs into one — after which neither id resolved |
+| a control character (C0 `U+0000`–`U+001F`, NUL included; DEL and C1 `U+007F`–`U+009F`) | PostgreSQL rejects NUL outright while every other driver accepted it, so the same id worked on one backend and failed on another |
+| starting with `.` | `.` and `..` are directories, and a dotfile hides from the tools people use to inspect a queue's directory |
+| not well-formed UTF-16 (a lone surrogate) | it has no UTF-8 spelling, so a backend storing UTF-8 replaces it with U+FFFD — two different ids then collide — or refuses it |
+
+Everything else is allowed, punctuation and unicode included — `:`, `|`, `@`,
+`*`, `,`, spaces, emoji, **and `/`** all pass. The rule is a denylist on
+purpose: this package builds its own ids by joining text with `:` and `|`, and
+an ordinary cron series contributes spaces, `*`, `,` and `@`, so anything
+tidier would reject the library's own ids.
+
+Slashes are allowed deliberately. It is tempting to refuse them because the
+file driver turns an id into a file name, but `encodeName` escapes every
+character, so a slash was never a path hazard there — what actually bounds a
+file name is the encoded *byte* length, which that driver checks itself (see
+below). Tenant-scoped ids like `tenant/7` work, and the management API
+URL-encodes them (`GET /queues/mail/jobs/tenant%2F7`).
+
+The cap is **one number for every driver**, set by the tightest of them. 191
+characters is itself the widest a `utf8mb4` id column can be while the
+composite claim index stays inside InnoDB's 3,072-byte key limit
+(191 × 4 × 4 + 12 = 3,068), so it is a ceiling rather than a preference.
+
+Ids and names this package *derives* — a dead-letter copy's id, a repeat
+occurrence's, a debounced job's, a window pointer's name, a generated series
+key — are shortened to fit rather than refused, so a long but legal id never
+makes a later step throw. They are fitted to the tightest store: 191 characters
+*and* the file driver's 201-byte encoded budget below. Shortening keeps the
+start and appends `~` and a hash of the whole, so two long names stay distinct,
+and it is deterministic, so every process derives the same one.
+
+**One more limit, on the file driver only.** The character cap does not bound a
+*file name*. `encodeName` expands per character — 9 bytes for a character
+outside Latin such as `漢`, 12 for an emoji — so 120 perfectly legal
+characters can encode to over 1,000 against a budget of 201 (`NAME_MAX` 255,
+less 54 for the marker and temp-file suffixes). The file driver refuses such an id — and a queue-state name of
+yours, from `setQueueState` — before writing anything, naming the encoded byte
+size and the limit. Lowercase letters and digits encode to one byte each, so
+an id of those alone never comes near it; an uppercase letter takes two (the
+encoding is case-proof), so 101 capitals already exceed it. Repeat keys are
+exempt: the file driver fits their file names itself.
+
+**On MySQL and MariaDB, namespaces and queue names are limited to 191
+characters** — the width of those columns — although the shared check allows
+200. A longer one throws `ConfigError` instead of being truncated, as it used
+to be. A long queue name also leaves less room in the 191-character key under
+which that driver stores a queue's state and repeat entries: names that no
+longer fit are fitted as above, and a queue name that leaves no room at all is
+refused with `ConfigError`.
+
+#### Reserved queue-state names
+
+**Breaking change.** Debounce and throttle pointers are now stored under
+`__win:` — `__win:debounce:<id>` and `__win:throttle:<id>` — and that prefix is
+reserved: `setQueueState` throws `ConfigError` for any name beginning with it.
+The library's own writes carry a private token that no option you can pass
+reproduces, so the reservation cannot be bypassed from outside.
+
+This fixes a data-loss bug. Pointers used to be named `debounce:<id>`, a name an
+application could choose too, and the window sweep deleted whatever it found
+under it — so a `debounce:`-prefixed entry of your own silently vanished at the
+next sweep.
+
+*Migration: wait one window.* Pointers written by an earlier version are
+orphaned under the old names. Nothing reads them, and each expires by its own
+TTL, so they clear themselves once every window that was open at upgrade has
+passed. Debounced adds during that time open a fresh window rather than joining
+the orphan, which at worst means one extra job per id.
+
+#### Repeat keys you choose are namespaced
+
+A `repeat.key` you supply is **stored** namespaced, as `k:<your key>`, so one
+job can no longer pass another job's generated key and take that series over.
+Generated keys — `<name>|<schedule>|<start>` — are unchanged, except that one
+longer than 191 characters is now shortened to fit (it is stored in a column of
+that width on MySQL and MariaDB). Such a series registers again under the
+shortened key on its next `add`, and the old one stays until removed.
+
+A key you supply is checked by the same rules as an id
+([above](#what-an-id-may-be)), at `add()` and before anything is written, with
+one tighter bound: at most **189 characters**, since it is stored with the
+two-character `k:` in front.
+
+**For almost everyone this is invisible.** The prefix is hidden everywhere it
+would surface: `job.repeatKey`, `listRepeatables()[].key`, the
+`repeatScheduled` event payload, and the occurrence id
+(`repeat:<key>:<runAt>`). `removeRepeatable()` takes either spelling, and a
+series that is *listed* as the key you pass wins over one merely *stored* that
+way: with series keyed `nightly` and `k:nightly`, listed as exactly that,
+`removeRepeatable("k:nightly")` removes the second.
+
+**The one exception**, and the reason for it: if your key itself contains `|`,
+the prefix stays visible. A generated key always contains `|`, so a key like
+`report|every:60000|` could be either — and hiding the prefix would make two
+genuinely different series display identically. That is not merely confusing:
+the occurrence id is built from the key and is the idempotency key for
+scheduling, so two series that displayed alike would derive the *same*
+occurrence id at the same instant and silently merge into one job, losing one
+series' run. Keys without `|` can never collide with a generated key, which is
+why they are safe to show bare.
+
+*Migration:* a series with a custom key re-registers under the new name on its
+next `add`, and the old series stays until you remove it. `listRepeatables()`
+shows both; `removeRepeatable(key)` accepts either spelling — the key as listed,
+or the one you originally supplied — so removing the stale one is
+`await queue.removeRepeatable("<your key>")` against the old, unprefixed entry.
 
 ### Queue options
 
@@ -607,6 +727,8 @@ The context has these members:
 | `now(name, data?, opts?)` | Adds a defined job to run now. |
 | `create(name, data?)` | Returns a [draft](#saved-drafts), which is added only when saved. |
 | `processEvery(interval)` | Sets how often the registry worker looks for due work. See [Registry polling](#registry-polling). |
+| `processEveryMs` | That interval in milliseconds, or `undefined` when it was never set. Readable before `start()`. |
+| `publishesEvents` | Whether what the context creates publishes its events: the resolved `publishEvents` option, `false` when unset. The management API reports it as `publishing` on `GET /meta`. |
 | `start(workerOpts?)` | Starts consuming the defined jobs. |
 | `stop({ force?, timeout? })` | Stops consuming, letting in-flight jobs finish. |
 | `drain({ delayed? })` | Drops pending jobs from the registry's queue. |
@@ -659,7 +781,7 @@ await jobs.schedule("sendMails").withOptions({ every: "2 days", data: list, atte
 | `in(delay)` | Runs after a delay: `"5 minutes"` or milliseconds. |
 | `startingAt(when)` / `endingAt(when)` | The window of a repeating series. `on()` and `startingAt()` set the same start, so whichever was called last wins. |
 | `repeatEvery(interval, opts?)` | Repeats the job, replacing the whole series description. Options from an earlier call are dropped unless given again. |
-| `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. |
+| `limit(n)`, `tz(zone)`, `catchUp(on?)`, `immediately(on?)` | Repeat options. `limit` needs a series first (`every()` / `repeatEvery()`) and a whole number of at least 1; `tz` must be a zone `Intl` knows. Both throw `ConfigError` at the call otherwise. |
 | `priority(n)`, `attempts(n)`, `timeout(ms \| "30 seconds")`, `backoff(b)` | Job options. |
 | `unique(id)` | The job's id and idempotency key. On a repeating job, it names the series instead. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)`, `keepLogs(n)` | Job options. |
@@ -691,6 +813,7 @@ export const job = await draft.save();
 | `schedule(when)` | Runs at a moment: a `Date`, epoch ms, or words. On a repeating job, this is when the series begins. It wins over `delay`. |
 | `delay(ms \| "5 minutes")` | Runs after a delay. |
 | `repeatEvery(interval, opts?)` | Repeats the job, as the builder's `repeatEvery` does. |
+| `limit(n)`, `tz(zone)`, `endingAt(when)`, `catchUp(on?)`, `immediately(on?)` | Change one option of the series `repeatEvery` described, leaving the rest. Each throws `ConfigError` if there is no series yet, and `limit`/`tz` throw one for a limit that is not a whole number of at least 1 or a zone `Intl` does not know. |
 | `priority(n)`, `attempts(n)`, `backoff(b)`, `timeout(ms \| "30 seconds")` | Job options. |
 | `removeOnComplete(r)`, `removeOnFail(r)`, `keepStacktraces(n)`, `keepLogs(n)` | Retention. |
 | `deadLetter(queue)`, `debounce(id, ttl)`, `throttle(id, ttl)` | Job options. |
@@ -704,6 +827,10 @@ export const job = await draft.save();
 - A combination the queue refuses throws `ConfigError` at `save()`, and
   nothing is written. Examples: `repeatEvery` with `debounce` or
   `throttle`, or `unique` with either.
+- Date phrases are read at `save()`, not when they are set — so `"tomorrow"`
+  means tomorrow from the save, and a phrase that cannot be read fails at
+  `save()` too, naming the method it was given to and quoting it. Durations
+  and intervals are still read at the setter.
 - **Saving twice.** A second `save()` with nothing changed returns the job
   the first one returned and writes nothing, even while the first is still in
   flight. `save()` throws `ConfigError` if any setter was called since a
@@ -725,7 +852,9 @@ Examples:
 `jobs.processEvery(interval)` sets how often the registry worker looks for
 due work. The interval is milliseconds or a duration such as `"30 seconds"`,
 at most 2,147,483,647ms; a longer one throws `ConfigError`. The
-`processEvery` option to `BunJobs` does the same before `start()`.
+`processEvery` option to `BunJobs` does the same before `start()`, and
+`jobs.processEveryMs` reads back what was asked for — milliseconds, or
+`undefined` when it was never set.
 
 - It applies to a running worker and to every later `start()`.
 - Explicit `pollInterval` or `maxBlock` passed to `start()` win over it.
@@ -1761,8 +1890,8 @@ case, as job search does.
 A new job's `opts.jobId` is at most 191 characters, the cap bun-jobs applies
 to every id a caller chooses; more is 400 `VALIDATION`. That schema is only a
 first check: bun-jobs' own `assertJobId` is the authority — it counts UTF-16
-units rather than characters, and refuses control characters and a leading
-`.` — so an id the schema passes can still be refused, answered 400
+units rather than characters, and refuses control characters, a leading `.`
+and a lone surrogate — so an id the schema passes can still be refused, answered 400
 `INVALID_ARGUMENT`. An id that *addresses* a job (a path, a bulk body, a
 lookup) may be up to 1024 characters, so a job stored with a longer id by an
 earlier version stays readable, retryable and removable.
@@ -2306,8 +2435,8 @@ so a caller can add to them but never overwrite them.
 
 | Class | `code` | Raised when |
 |---|---|---|
-| `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory, or a feature needs an optional driver method the driver lacks. |
-| `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. It is exported for driver authors; the built-in optional-method checks currently throw a plain `ConfigError` with the same `driver` and `method` context. |
+| `ConfigError` | `CONFIG` | An option is missing, malformed or contradictory. A feature that needs an optional driver method the driver lacks raises `NotSupportedError`, which is one of these. |
+| `NotSupportedError` | `CONFIG` | A `ConfigError` subclass with `context.driver` and `context.method`, meaning a driver does not implement a method. It keeps the `CONFIG` code, so a branch on `CONFIG` catches both. Every built-in optional-method check raises it — `queue.cleanWindows()`, `queue.getThroughput()`, `queue.listWorkers()`, `job.log()` and the rest — with `context.needs` naming the feature that wanted the method. |
 | `DriverError` | `DRIVER_ERROR` | A driver operation failed. `driver` and `operation` are set, and the backend's error is the `cause`. |
 | `LockUnavailableError` | `LOCK_UNAVAILABLE` | A lock is held elsewhere (`context.key`). |
 | `LockLostError` | `LOCK_LOST` | A lock expired or was taken mid-work. |

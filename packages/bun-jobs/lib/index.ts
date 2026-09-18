@@ -8,7 +8,24 @@
  *   single-run locking, queued triggers, timeouts and kill escalation;
  * - the **queue** (`BunQueue` / `BunQueueWorker`): queue and process jobs
  *   across processes and services with priorities, delays, retries, stalled
- *   recovery, repeatable jobs and retention.
+ *   recovery, repeatable jobs, debounce and throttle windows, and retention.
+ *
+ * Built across both:
+ *
+ * - **flows** — parent jobs that wait on children, with failures burying the
+ *   parent unless a child is marked to be ignored;
+ * - the **registry** (`BunJobs`): the per-service context that fixes the
+ *   namespace and driver once and derives every runner, queue and worker from
+ *   them, defines named jobs, holds the `processEvery` scheduling interval and
+ *   saves drafts (`JobDraft`) for later;
+ * - the **notifier** (`JobsNotifier`): driver-backed pub/sub, so an event
+ *   raised in one process reaches listeners in another;
+ * - the **read APIs**: what a management UI needs — paged and searchable job
+ *   listings with totals, per-queue counts and summaries, batch reads by id,
+ *   the live worker inventory and per-minute throughput.
+ *
+ * Backends: memory, file, Redis, SQL (PostgreSQL, MySQL, MariaDB, SQLite)
+ * and MongoDB.
  *
  * The public surface is assembled here in grouped, alphabetised export
  * blocks as each subsystem lands.
@@ -105,9 +122,11 @@ export {
   type ChildOutcome,
   type ChildRecordResult,
   type ClaimOptions,
+  type CollectionLike,
   type ColumnRow,
   countQueues,
   createDriver,
+  type DbLike,
   detectAdapter,
   dialectFor,
   type DriverCapabilities,
@@ -121,10 +140,13 @@ export {
   type FailOutcome,
   FileDriver,
   type FileDriverOptions,
+  type FilterLike,
+  type FindCursorLike,
   findJobPage,
   findJobsByScan,
   getJobsByIds,
   getJobsByLoop,
+  type IndexDescriptionLike,
   type IndexRow,
   JOB_STATES,
   type JobFilter,
@@ -142,9 +164,13 @@ export {
   matchesFilter,
   MemoryDriver,
   MONGO_COLLECTIONS,
+  type MongoClientConstructor,
+  type MongoClientLike,
+  type MongoClientOptionsLike,
   type MongoCollection,
   MongoDriver,
   type MongoDriverOptions,
+  type ObjectIdLike,
   orderByIds,
   type PendingThroughput,
   type QueueDriver,
@@ -186,6 +212,8 @@ export {
   throughputBucket,
   ThroughputBuffer,
   type ThroughputWriteResult,
+  type UpdateFilterLike,
+  type UpdateResultLike,
   WORKER_STATE_PREFIX,
   type WorkerInfo,
 } from "./drivers/index";
@@ -202,6 +230,9 @@ export type { BackoffWarningFields } from "./queue/backoff";
  * The queue — producers, consumers and the job they exchange.
  * ------------------------------------------------------------------ */
 export {
+  assertJobId,
+  assertRepeatKey,
+  assertWritableStateName,
   type BackoffContext,
   BackoffStrategies,
   type BackoffStrategy,
@@ -212,10 +243,13 @@ export {
   BunQueueWorker,
   type BunQueueWorkerEvents,
   type BunQueueWorkerOptions,
+  CALLER_REPEAT_KEY_PREFIX,
   type DeadLetter,
+  DEBOUNCE_PREFIX,
   type DebounceOptions,
   DEFAULT_JOB_OPTIONS,
   defineProcessor,
+  displayRepeatKey,
   IsolatedProcessor,
   type IsolationMode,
   type IsolationOptions,
@@ -231,6 +265,8 @@ export {
   type JobProcessor,
   type JobsPage,
   type ListJobsOptions,
+  MAX_JOB_ID_LENGTH,
+  MAX_REPEAT_KEY_LENGTH,
   MAX_TIMER_MS,
   type NameLimits,
   nextOccurrence,
@@ -245,11 +281,14 @@ export {
   repeatJobId,
   repeatKeyFor,
   type RepeatOptions,
+  RESERVED_STATE_PREFIX,
   resolveJobOptions,
   resolveRunAt,
   retentionExpiry,
   type RetryAllOptions,
+  shortenJobId,
   type StoredLimits,
+  THROTTLE_PREFIX,
   toRepeatRecord,
 } from "./queue/index";
 

@@ -3,10 +3,10 @@
   "type": "module",
   "version": "2.2.0",
   "private": false,
-  "description": "Background work for Bun: run JS/TS files on a schedule or on demand (child process, Worker or in-process) and queue/process jobs across processes and services, over memory, file, Redis and SQL (postgres/mysql/mariadb/sqlite) drivers",
+  "description": "Background work for Bun: run JS/TS files on a schedule or on demand (child process, Worker or in-process) and queue/process jobs across processes and services, over memory, file, Redis, SQL (postgres/mysql/mariadb/sqlite) and MongoDB drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
-  "homepage": "",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs#readme",
   "exports": {
     ".": "./lib/index.ts",
     "./api/contract": "./lib/api/contract/index.ts",
@@ -40,7 +40,7 @@
     "@types/bun": ">=1.4.2",
     "chrono-node": ">=2.7.0 <3",
     "mongodb": ">=6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3 || ^6.0.0"
   },
   "peerDependenciesMeta": {
     "@types/bun": {
@@ -50,6 +50,9 @@
       "optional": true
     },
     "mongodb": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     }
   },

@@ -373,6 +373,41 @@ describe("processEvery: reading the interval", () => {
       }
     });
   });
+
+  describe("processEveryMs", () => {
+    /** A context that is never started, so this reads what was *asked for*. */
+    function context(processEvery?: number | string) {
+      return new BunJobs({
+        namespace: testNamespace("every"),
+        driver: new MemoryDriver(),
+        ...(processEvery === undefined ? {} : { processEvery }),
+      });
+    }
+
+    it("is undefined when the interval was never set", () => {
+      expect(context().processEveryMs).toBeUndefined();
+    });
+
+    it("reads back the constructor option, in milliseconds", () => {
+      expect(context("250ms").processEveryMs).toBe(250);
+      expect(context(400).processEveryMs).toBe(400);
+    });
+
+    it("reads back processEvery(), before start() has ever run", () => {
+      const jobs = context();
+      jobs.processEvery("1m 30s");
+
+      // The point of the getter: no worker exists yet, and the value is
+      // already normalised — both the option and the method parse eagerly.
+      expect(jobs.processEveryMs).toBe(90_000);
+    });
+
+    it("follows the latest call", () => {
+      const jobs = context("250ms");
+      jobs.processEvery(90);
+      expect(jobs.processEveryMs).toBe(90);
+    });
+  });
 });
 
 for (const backend of backends) {

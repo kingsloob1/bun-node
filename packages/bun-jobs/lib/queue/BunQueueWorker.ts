@@ -60,6 +60,7 @@ import { BunQueue } from "./BunQueue";
 import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
+import { displayRepeatKey, shortenJobId } from "./options";
 import { nextOccurrence, repeatJobId } from "./repeat";
 import { supportsWindowSweep, sweepWindows } from "./windows";
 
@@ -2027,7 +2028,10 @@ export class BunQueueWorker<
           attemptsMade: record.attemptsMade,
           diedAt: now,
         },
-        { jobId: `${source}:${record.id}:${record.createdAt}` },
+        // Shortened, never refused. This runs on the failure path, so a job
+        // whose own id is legal but near the limit must not throw here — that
+        // would lose the letter for the one job that most needed filing.
+        { jobId: shortenJobId(`${source}:${record.id}:${record.createdAt}`) },
       );
 
       if (job) {
@@ -2130,7 +2134,9 @@ export class BunQueueWorker<
         return;
       }
 
-      const jobId = repeatJobId(definition.key, next);
+      const jobId = shortenJobId(
+        repeatJobId(displayRepeatKey(definition.key), next),
+      );
       await this.driver.addJob(this.ref, {
         ...record,
         id: jobId,
@@ -2425,7 +2431,9 @@ export class BunQueueWorker<
         continue;
       }
 
-      const jobId = repeatJobId(definition.key, next);
+      const jobId = shortenJobId(
+        repeatJobId(displayRepeatKey(definition.key), next),
+      );
       await this.driver.addJob(this.ref, {
         id: jobId,
         name: definition.name,

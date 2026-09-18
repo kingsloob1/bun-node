@@ -1737,7 +1737,20 @@ describe("review fixes", () => {
     expect((await client.next("ack")).channels).toEqual(["queues", jobKey]);
     const queue = h.jobs.queue("q");
     await queue.add("n", {}, { jobId: "ok-1" });
-    await queue.add("n", {}, { jobId: bad });
+    // `add()` refuses such an id now — it has no UTF-8 spelling — but an
+    // event can still carry one: for a job stored before that check, or from
+    // a producer on an earlier version. Published as that producer would.
+    await expect(queue.add("n", {}, { jobId: bad })).rejects.toThrow(
+      ConfigError,
+    );
+    for (const type of ["added", "waiting"] as const) {
+      await queue.driver.publish(
+        queueEvent(
+          { ns: queue.namespace, target: "q", type, origin: "older-producer" },
+          { id: bad },
+        ),
+      );
+    }
     await queue.add("n", {}, { jobId: "ok-2" });
     await waitFor(() => client.all("event").length === 6);
     expect(

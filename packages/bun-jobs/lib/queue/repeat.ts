@@ -7,12 +7,14 @@ import type { DateParser } from "../shared/humanTime";
 import type { RepeatOptions } from "./types";
 import { nextCronDate } from "../shared/cron";
 import { ConfigError } from "../shared/errors";
+import { fitName } from "../shared/fit";
 import {
   looksLikeCron,
   parseDuration,
   parseWhen,
   readRecurrence,
 } from "../shared/humanTime";
+import { MAX_JOB_ID_LENGTH } from "./options";
 
 /**
  * Repeatable jobs.
@@ -32,6 +34,11 @@ export function repeatJobId(key: string, runAt: number): string {
 /**
  * Identifies a series. Derived from what makes it distinct, so adding the
  * same repeat twice updates it rather than creating a rival series.
+ *
+ * A generated key is fitted to {@link MAX_JOB_ID_LENGTH} characters — a job
+ * records its series' key in a column of that width on MySQL and MariaDB —
+ * deterministically, so every producer derives the same key for one series.
+ * A caller's own key is returned as given; it is checked, not fitted.
  */
 export function repeatKeyFor(name: string, repeat: ResolvedRepeat): string {
   if (repeat.key) {
@@ -43,7 +50,9 @@ export function repeatKeyFor(name: string, repeat: ResolvedRepeat): string {
     : `every:${repeat.every}`;
   const start = repeat.startAt ?? "";
 
-  return `${name}|${schedule}|${start}`;
+  return fitName(`${name}|${schedule}|${start}`, {
+    maxLength: MAX_JOB_ID_LENGTH,
+  });
 }
 
 /** Epoch milliseconds from a `Date` or number. */

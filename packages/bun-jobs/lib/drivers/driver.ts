@@ -96,6 +96,17 @@ export interface QueuedTrigger {
   requestedAt: number;
   /** Token of the process that queued it. */
   requestedBy: string;
+  /**
+   * Whether the request asked to run even while the runner is paused.
+   *
+   * The pause is checked when a trigger is *requested*, but a drain happens
+   * later and elsewhere, so without this a drainer cannot tell a forced
+   * trigger from an ordinary one and runs whatever it pops.
+   *
+   * Optional, and absent on a record an earlier version wrote — which reads
+   * as not forced, the safe default. Test it as `trigger.force === true`.
+   */
+  force?: boolean;
 }
 
 /** How a run was asked for. */
@@ -1092,6 +1103,14 @@ export interface QueueDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    /**
+     * Carries this package's private token on a write to one of its own
+     * reserved entries. A caller leaves it unset, and cannot forge it; a name
+     * under the reserved prefix is then refused. A driver hands it, untouched,
+     * to `assertWritableStateName`. Optional, so an external driver that
+     * ignores it keeps working.
+     */
+    options?: { internal?: symbol },
   ) => Promise<number | null>;
   /**
    * Names of a queue's state entries that begin with `prefix`, in ascending
@@ -1193,6 +1212,10 @@ export type DriverConfig =
       type: "file";
       /** Directory the driver owns. */
       root: string;
+      /** How often to poll for new work and events. Defaults to 25ms. */
+      pollInterval?: number;
+      /** How long a stored event is kept, in milliseconds. `0` keeps everything. */
+      eventRetentionMs?: number;
     }
   | {
       type: "redis";
@@ -1204,6 +1227,8 @@ export type DriverConfig =
       cluster?: boolean;
       /** Prepended to every key, ahead of the namespace. */
       keyPrefix?: string;
+      /** How long a single blocking wait lasts, at most. Defaults to 5 seconds. */
+      maxBlockSeconds?: number;
     }
   | {
       type: "sql";
@@ -1215,8 +1240,13 @@ export type DriverConfig =
       adapter?: "postgres" | "mysql" | "mariadb" | "sqlite";
       /** Prepended to every table name. */
       tablePrefix?: string;
-      /** Exact table names, for an existing schema. */
-      tables?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /** Exact table names, for an existing schema. Any subset; the rest are defaulted. */
+      tables?: Partial<
+        Record<
+          "jobs" | "locks" | "kv" | "events" | "logs" | "workers" | "metrics",
+          string
+        >
+      >;
       /**
        * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
        *
@@ -1256,6 +1286,10 @@ export type DriverConfig =
        * maintenance window: `{ alterColumns: true }`.
        */
       syncSchema?: boolean | SchemaSyncOptions;
+      /** How often a wait re-checks for work. Defaults to 50ms. */
+      pollInterval?: number;
+      /** How long a stored event is kept, in milliseconds. `0` keeps everything. */
+      eventRetentionMs?: number;
     }
   | {
       type: "mongodb";
@@ -1267,8 +1301,23 @@ export type DriverConfig =
       database?: string;
       /** Prepended to every collection name. */
       collectionPrefix?: string;
-      /** Exact collection names, for an existing database. */
-      collections?: Partial<Record<"jobs" | "locks" | "kv" | "events", string>>;
+      /** Exact collection names, for an existing database. Any subset; the rest are defaulted. */
+      collections?: Partial<
+        Record<"jobs" | "locks" | "kv" | "events" | "jobLogs", string>
+      >;
+      /**
+       * Options passed to the `MongoClient` this driver creates.
+       *
+       * Declared as plain JSON values, not the driver library's
+       * `MongoClientOptions`: a config has to survive `JSON.stringify` to
+       * reach a spawned child, and that type admits functions, streams and
+       * TLS buffers which would not. Pass those to the constructor instead.
+       */
+      clientOptions?: Record<string, unknown>;
+      /** How often a wait re-checks for work. Defaults to 50ms. */
+      pollInterval?: number;
+      /** How long a stored event is kept, in milliseconds. `0` keeps everything. */
+      eventRetentionMs?: number;
       /**
        * Reconcile the collections' indexes with this version's on connect.
        *

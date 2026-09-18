@@ -51,9 +51,10 @@ describe("SQL driver: dialect", () => {
     // No row locks to skip: SQLite takes one write lock for the database.
     expect(driver.dialect.supportsSkipLocked).toBe(false);
     expect(driver.dialect.supportsReturning).toBe(true);
+    // A file on this machine: processes here can share it, other hosts cannot.
     expect(driver.capabilities).toMatchObject({
       multiProcess: true,
-      multiHost: true,
+      multiHost: false,
     });
 
     await driver.close();

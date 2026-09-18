@@ -414,8 +414,8 @@ export interface AddJobOptions {
   /**
    * A caller-chosen id, at most `MAX_JOB_ID_LENGTH` (191) characters; an
    * existing one answers that job with `added: false`. bun-jobs may still
-   * refuse it (400 `INVALID_ARGUMENT`): control characters, a leading `.`, or
-   * more than 191 UTF-16 units.
+   * refuse it (400 `INVALID_ARGUMENT`): control characters, a leading `.`, a
+   * lone surrogate, or more than 191 UTF-16 units.
    */
   jobId?: string;
   /** Lower runs first. */
@@ -1135,7 +1135,10 @@ export interface MetaDto {
   };
   /** How events reach this process. */
   events: "push" | "poll" | "local";
-  /** Whether this context publishes events, or `null` when unknown. */
+  /**
+   * Whether the context publishes events — its resolved `publishEvents` —
+   * or `null` when the API was built without a `BunJobs` to ask.
+   */
   publishing: boolean | null;
   /** The socket, or `null` when it is off. */
   websocket: {

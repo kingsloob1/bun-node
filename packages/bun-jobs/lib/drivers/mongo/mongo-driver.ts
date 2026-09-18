@@ -1,14 +1,5 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
-  Collection,
-  Db,
-  Filter,
-  MongoClient,
-  MongoClientOptions,
-  ObjectId,
-  UpdateFilter,
-} from "mongodb";
-import type {
   ConnectionInput,
   ConnectionOptions,
 } from "../../shared/connection";
@@ -43,6 +34,7 @@ import type {
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { assertWritableStateName } from "../../queue/windows";
 import {
   databaseFromUrl,
   resolveConnectionUrl,
@@ -239,6 +231,246 @@ const NOT_AWAITING_DELIVERY = {
  */
 const LOG_SWEEP_LINES_PER_JOB = 10;
 
+/* --- the `mongodb` surface this driver uses -------------------------------- *
+ *
+ * Declared here rather than imported from `mongodb`, which is an *optional*
+ * peer. This package ships raw TypeScript — `main`/`types` point at
+ * `lib/index.ts` — so a consumer compiles these files, and `skipLibCheck` does
+ * not apply to them the way it would to a `.d.ts`. A static
+ * `import type { … } from "mongodb"` in a file reachable from the barrel is
+ * therefore `TS2307` for everyone who has not installed the driver, followed
+ * by a cascade of implicit-`any` errors under `noImplicitAny`. Measured on an
+ * isolated consumer: 27 errors in this file with `mongodb` absent, 0 with it.
+ *
+ * These are *structural*, so a real `MongoClient`/`Db` still satisfies them and
+ * an application can go on sharing its own client. Only what this driver
+ * actually calls is declared; everything unread is left opaque.
+ * `chrono-node`, the other optional peer, is kept at arm's length the same way.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A document's server-assigned `_id`. Opaque here: never built, never read,
+ * and never relied on for ordering.
+ */
+export interface ObjectIdLike {
+  /** Declared so a bare `{}` is not assignable; `mongodb`'s `ObjectId` has it. */
+  toHexString: () => string;
+}
+
+/** A query document — open by nature: `$or`, `$in`, `$lte`, `$exists`, … */
+export type FilterLike = Record<string, unknown>;
+
+/**
+ * An update — `$set`, `$inc`, `$unset`, `$push`, `$setOnInsert` — or an
+ * aggregation pipeline, which is how this driver expresses an update whose new
+ * value depends on the old one (`$cond`, `$max`, `$mergeObjects`).
+ */
+export type UpdateFilterLike = Record<string, unknown> | unknown[];
+
+/**
+ * Options handed to the `MongoClient` constructor, passed straight through.
+ *
+ * Deliberately open: this driver neither reads nor validates them, and naming
+ * the real option type is exactly what this block exists to avoid.
+ */
+export type MongoClientOptionsLike = Record<string, unknown>;
+
+/** The cursor `find()` returns, with the operations this driver chains onto it. */
+export interface FindCursorLike<TDoc> {
+  /** Orders the results. */
+  sort: (spec: Record<string, 1 | -1>) => FindCursorLike<TDoc>;
+  /** Caps how many come back. */
+  limit: (count: number) => FindCursorLike<TDoc>;
+  /** Skips this many first. */
+  skip: (count: number) => FindCursorLike<TDoc>;
+  /**
+   * Narrows the fields, and with them the document type.
+   *
+   * `TShape` is constrained exactly as the driver library constrains its own
+   * `project<T extends Document>`. Left unconstrained, a real `MongoClient` is
+   * not* assignable to {@link MongoClientLike} — TypeScript reports that
+   * `TShape` "could be instantiated with an arbitrary type" — which would
+   * quietly break lending the driver a client of your own.
+   */
+  project: <TShape extends Record<string, unknown> = Record<string, unknown>>(
+    spec: Record<string, unknown>,
+  ) => FindCursorLike<TShape>;
+  /** Drains the cursor. */
+  toArray: () => Promise<TDoc[]>;
+  /** The next document, or `null` at the end. */
+  next: () => Promise<TDoc | null>;
+}
+
+/** One collection, with the operations this driver performs on it. */
+export interface CollectionLike<TDoc> {
+  /** One matching document, or `null`. */
+  findOne: (
+    filter: FilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<TDoc | null>;
+  /**
+   * A cursor over the matching documents. The type argument narrows the
+   * result, which this driver uses with a `projection` to read back only the
+   * few fields a scan compares on.
+   */
+  find: <TResult = TDoc>(
+    filter?: FilterLike,
+    options?: Record<string, unknown>,
+  ) => FindCursorLike<TResult>;
+  /**
+   * A cursor over an aggregation's results, used here for grouped counts.
+   *
+   * `TResult` is constrained, and the pipeline is a mutable array, for the
+   * same reason as {@link FindCursorLike.project}: either difference makes a
+   * real `MongoClient` unassignable to {@link MongoClientLike}.
+   */
+  aggregate: <
+    TResult extends Record<string, unknown> = Record<string, unknown>,
+  >(
+    pipeline: unknown[],
+    options?: Record<string, unknown>,
+  ) => FindCursorLike<TResult>;
+  /** Inserts one document. */
+  insertOne: (
+    doc: unknown,
+    options?: Record<string, unknown>,
+  ) => Promise<{ insertedId: unknown }>;
+  /** Inserts several documents. */
+  insertMany: (
+    docs: unknown[],
+    options?: Record<string, unknown>,
+  ) => Promise<{ insertedCount: number }>;
+  /** Updates the first match. */
+  updateOne: (
+    filter: FilterLike,
+    update: UpdateFilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<UpdateResultLike>;
+  /** Updates every match. */
+  updateMany: (
+    filter: FilterLike,
+    update: UpdateFilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<UpdateResultLike>;
+  /** Replaces the first match wholesale. */
+  replaceOne: (
+    filter: FilterLike,
+    replacement: unknown,
+    options?: Record<string, unknown>,
+  ) => Promise<UpdateResultLike>;
+  /** Deletes the first match. */
+  deleteOne: (
+    filter: FilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<{ deletedCount: number }>;
+  /** Deletes every match. */
+  deleteMany: (
+    filter: FilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<{ deletedCount: number }>;
+  /** Updates one document and answers with it, which is this driver's claim. */
+  findOneAndUpdate: (
+    filter: FilterLike,
+    update: UpdateFilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<TDoc | null>;
+  /** Deletes one document and answers with it. */
+  findOneAndDelete: (
+    filter: FilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<TDoc | null>;
+  /** How many documents match. */
+  countDocuments: (
+    filter?: FilterLike,
+    options?: Record<string, unknown>,
+  ) => Promise<number>;
+  /** The distinct values of one field. */
+  distinct: (field: string, filter?: FilterLike) => Promise<unknown[]>;
+  /** Several writes in one round trip. */
+  bulkWrite: (
+    operations: unknown[],
+    options?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  /** Creates one index, answering with its name. */
+  createIndex: (
+    spec: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ) => Promise<string>;
+  /** Creates several indexes. */
+  createIndexes: (
+    specs: Record<string, unknown>[],
+    options?: Record<string, unknown>,
+  ) => Promise<string[]>;
+  /** Every index on the collection, as the server describes it. */
+  indexes: () => Promise<IndexDescriptionLike[]>;
+  /** Drops one index by name. */
+  dropIndex: (name: string) => Promise<unknown>;
+}
+
+/** What an update answers with; only the counts are read. */
+export interface UpdateResultLike {
+  /** How many documents matched the filter. */
+  matchedCount: number;
+  /** How many were actually changed. */
+  modifiedCount: number;
+  /** How many were inserted because nothing matched. */
+  upsertedCount: number;
+  /** The `_id` of an upserted document, when there was one. */
+  upsertedId?: unknown;
+}
+
+/** One index, as `indexes()` describes it. */
+export interface IndexDescriptionLike {
+  /** The index's name, which is how this driver decides whether it owns it. */
+  name?: string;
+  /** The keys it covers. */
+  key: Record<string, unknown>;
+  /** Anything else the server reports, unread here. */
+  [field: string]: unknown;
+}
+
+/** One database, with the operations this driver performs on it. */
+export interface DbLike {
+  /** A collection by name. */
+  collection: <TDoc = Record<string, unknown>>(
+    name: string,
+  ) => CollectionLike<TDoc>;
+  /** Runs a database command; used only to ping. */
+  command: (
+    command: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
+}
+
+/**
+ * A connected client, as the `client` option accepts one.
+ *
+ * Deliberately the *smallest* shape that lets this driver work, because it is
+ * public: it is what `MongoDriverOptions.client` is typed as, so every member
+ * named here is a thing a real `MongoClient` must match exactly. Requiring
+ * `db()` to return {@link DbLike} did not work — the collection surface below
+ * it is generic in several places, and matching `mongodb`'s own variance on
+ * all of them made a genuine client *unassignable*, which would have broken
+ * the very case the option exists for.
+ *
+ * So the database is `unknown` here and asserted as {@link DbLike} at the one
+ * place it is obtained. The detailed shape stays internal, where it still
+ * type-checks every call this driver makes.
+ */
+export interface MongoClientLike {
+  /** Connects, or resolves at once when already connected. */
+  connect: () => Promise<unknown>;
+  /** A database by name, or the one the URL named. */
+  db: (name?: string) => unknown;
+  /** Closes the connection. */
+  close: () => Promise<void>;
+}
+
+/** The `MongoClient` class itself, as this driver constructs it. */
+export type MongoClientConstructor = new (
+  url: string,
+  options?: MongoClientOptionsLike,
+) => MongoClientLike;
+
 /** Options for {@link MongoDriver}. */
 export interface MongoDriverOptions extends ConnectionInput {
   /**
@@ -261,9 +493,15 @@ export interface MongoDriverOptions extends ConnectionInput {
    */
   collections?: Partial<Record<MongoCollection, string>>;
   /** Options passed to the `MongoClient` this driver creates. */
-  clientOptions?: MongoClientOptions;
-  /** An already-connected client, when the application has one to share. */
-  client?: MongoClient;
+  clientOptions?: MongoClientOptionsLike;
+  /**
+   * An already-connected client, when the application has one to share.
+   *
+   * Typed structurally ({@link MongoClientLike}) rather than as `mongodb`'s
+   * `MongoClient`, so this file never names an optional peer. A real client
+   * satisfies it.
+   */
+  client?: MongoClientLike;
   /** How often a wait re-checks for work. Defaults to 50ms. */
   pollInterval?: number;
   /**
@@ -454,7 +692,7 @@ function throughputKeyMinute(at: number): string {
 /** One line of a job's log, as it is stored. */
 interface JobLogDocument {
   /** Assigned by the server; not used for ordering. */
-  _id?: ObjectId;
+  _id?: ObjectIdLike;
   /** The namespace the job belongs to. */
   ns: string;
   /** The queue it belongs to. */
@@ -537,7 +775,7 @@ export class MongoDriver implements JobsDriver {
   readonly #pauseCache = new PauseCache();
   readonly #url: string;
   /** Options for the client this driver creates. */
-  readonly #clientOptions?: MongoClientOptions;
+  readonly #clientOptions?: MongoClientOptionsLike;
   /** How often a wait re-checks. */
   readonly #poll: number;
   /** What to reconcile on connect, if anything. */
@@ -580,9 +818,9 @@ export class MongoDriver implements JobsDriver {
   #lastLogSeq = 0;
 
   /** The client, once connected. */
-  #client: MongoClient | undefined;
+  #client: MongoClientLike | undefined;
   /** Resolves once the client is connected and the indexes exist. */
-  #ready: Promise<Db> | undefined;
+  #ready: Promise<DbLike> | undefined;
 
   constructor(options: MongoDriverOptions) {
     this.#url = resolveConnectionUrl(
@@ -878,7 +1116,7 @@ export class MongoDriver implements JobsDriver {
           ...(keep > 0 ? { $slice: keep } : {}),
         },
       },
-    } as UpdateFilter<KvDocument>);
+    } as UpdateFilterLike);
   }
 
   async updateHistory(
@@ -946,7 +1184,7 @@ export class MongoDriver implements JobsDriver {
 
     // The bound is part of the filter, so the length check and the push are
     // one operation: two processes racing cannot both find room.
-    const filter: Filter<KvDocument> =
+    const filter: FilterLike =
       max > 0
         ? {
             _id: id,
@@ -959,7 +1197,7 @@ export class MongoDriver implements JobsDriver {
       {
         $set: { ns, key: `${key}:state`, updatedAt: Date.now() },
         $push: { queued: JSON.stringify(trigger) },
-      } as UpdateFilter<KvDocument>,
+      } as UpdateFilterLike,
       { upsert: false },
     );
 
@@ -1191,7 +1429,7 @@ export class MongoDriver implements JobsDriver {
   }
 
   /** The update that turns a waiting job into one held by the claimer. */
-  #claimUpdate(opts: ClaimOptions): UpdateFilter<JobDocument> {
+  #claimUpdate(opts: ClaimOptions): UpdateFilterLike {
     return {
       $set: {
         state: "active",
@@ -1216,14 +1454,14 @@ export class MongoDriver implements JobsDriver {
    * candidate somebody else claimed first is simply passed over.
    */
   async #claimExcluding(
-    jobs: Collection<JobDocument>,
+    jobs: CollectionLike<JobDocument>,
     q: QueueRef,
     opts: ClaimOptions,
     excludeNames: string[],
   ): Promise<JobRecord | null> {
     const excluded = new Set(excludeNames);
     const key = [q.ns, q.queue, ...[...excluded].sort()].join("\u0000");
-    const due: Filter<JobDocument> = {
+    const due: FilterLike = {
       ns: q.ns,
       queue: q.queue,
       state: "waiting",
@@ -1292,8 +1530,8 @@ export class MongoDriver implements JobsDriver {
    * when absent), and claims the first one whose name is allowed.
    */
   async #claimWindow(
-    jobs: Collection<JobDocument>,
-    due: Filter<JobDocument>,
+    jobs: CollectionLike<JobDocument>,
+    due: FilterLike,
     after: ClaimPosition | undefined,
     limit: number,
     excluded: ReadonlySet<string>,
@@ -1302,7 +1540,7 @@ export class MongoDriver implements JobsDriver {
     // "After" as a disjunction of compound comparisons, one per sort key, so
     // each branch is a bounded range of the claim index rather than a filter
     // applied to a scan from the start of the queue.
-    const filter: Filter<JobDocument> = after
+    const filter: FilterLike = after
       ? {
           ...due,
           $or: [
@@ -1499,7 +1737,7 @@ export class MongoDriver implements JobsDriver {
       return null;
     }
 
-    const filter: Filter<JobDocument> = {
+    const filter: FilterLike = {
       _id: this.#jobId(q, id),
       ...(allowed ? { state: { $in: allowed } } : {}),
     };
@@ -1607,7 +1845,7 @@ export class MongoDriver implements JobsDriver {
       .find(owner)
       .sort({ seq: 1 })
       .limit(count - keep)
-      .project<{ _id: ObjectId }>({ _id: 1 })
+      .project<{ _id: ObjectIdLike }>({ _id: 1 })
       .toArray();
 
     const removed = await logs.deleteMany({
@@ -1701,7 +1939,7 @@ export class MongoDriver implements JobsDriver {
         "flow.children": { $elemMatch: { queue: child.queue, id: child.id } },
         [`flow.values.${key}`]: { $exists: false },
         [`flow.failures.${key}`]: { $exists: false },
-      }) as Filter<JobDocument>;
+      }) as FilterLike;
 
     for (let round = 0; round < RECORD_CHILD_ROUNDS; round++) {
       if (!settles) {
@@ -1845,7 +2083,7 @@ export class MongoDriver implements JobsDriver {
           state: "dead",
           "flow.values": current.flow.values ?? {},
           "flow.failures": current.flow.failures ?? {},
-        } as Filter<JobDocument>,
+        } as FilterLike,
         remaining,
         now,
       );
@@ -1864,7 +2102,7 @@ export class MongoDriver implements JobsDriver {
 
   /** The requeue write itself, for {@link MongoDriver.requeueParent}. */
   async #requeueAt(
-    filter: Filter<JobDocument>,
+    filter: FilterLike,
     remaining: number,
     now: number,
   ): Promise<boolean> {
@@ -2042,7 +2280,7 @@ export class MongoDriver implements JobsDriver {
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
 
-    const where: Filter<JobDocument> = {
+    const where: FilterLike = {
       ns: q.ns,
       queue: q.queue,
       state: { $in: query.states },
@@ -2626,7 +2864,10 @@ export class MongoDriver implements JobsDriver {
     name: string,
     value: unknown,
     expected: number | null,
+    options?: { internal?: symbol },
   ): Promise<number | null> {
+    assertWritableStateName(name, options);
+
     const kv = await this.#kv();
     const _id = this.#queueStateId(q, name);
 
@@ -2964,13 +3205,35 @@ export class MongoDriver implements JobsDriver {
   /* --- internals ------------------------------------------------------------ */
 
   /** Connects the client and creates the indexes. */
-  async #open(): Promise<Db> {
-    let MongoClientCtor: typeof MongoClient;
+  async #open(): Promise<DbLike> {
+    let MongoClientCtor: MongoClientConstructor;
 
     try {
       // Imported here, not at the top: the package is an optional peer, so a
       // project that never constructs this driver never needs it installed.
-      ({ MongoClient: MongoClientCtor } = await import("mongodb"));
+      //
+      // Through a `string`-typed specifier rather than the literal, so the
+      // compiler does not try to resolve it either — a bare
+      // `import("mongodb")` is a `TS2307` site for a consumer without the
+      // package just as a static import is, and this file has to compile in
+      // their project.
+      const specifier: string = "mongodb";
+      const loaded = (await import(specifier)) as {
+        MongoClient?: MongoClientConstructor;
+        default?: { MongoClient?: MongoClientConstructor };
+      };
+
+      // Both shapes, because the specifier is typed `string`: with no literal
+      // to analyse, the loader cannot apply its CommonJS interop, so
+      // `mongodb`'s exports may arrive under `default` rather than on the
+      // module object.
+      const constructor = loaded.MongoClient ?? loaded.default?.MongoClient;
+
+      if (typeof constructor !== "function") {
+        throw new TypeError("mongodb did not export MongoClient");
+      }
+
+      MongoClientCtor = constructor;
     } catch (error) {
       throw new ConfigError(
         'The MongoDB driver needs the "mongodb" package: install it with `bun add mongodb`',
@@ -2982,7 +3245,9 @@ export class MongoDriver implements JobsDriver {
       this.#client ??= new MongoClientCtor(this.#url, this.#clientOptions);
       await this.#client.connect();
 
-      const db = this.#client.db(this.database);
+      // The one place the database is obtained, and so the one place the
+      // internal shape is asserted. See {@link MongoClientLike}.
+      const db = this.#client.db(this.database) as DbLike;
       await this.#createIndexes(db);
 
       if (this.#syncOnConnect !== false) {
@@ -3089,7 +3354,7 @@ export class MongoDriver implements JobsDriver {
    * would wait on the promise it is running inside.
    */
   async #syncSchema(
-    db: Db,
+    db: DbLike,
     options: SchemaSyncOptions,
   ): Promise<SchemaChange[]> {
     const resolved = resolveSyncOptions(options);
@@ -3194,7 +3459,7 @@ export class MongoDriver implements JobsDriver {
   }
 
   /** Creates the indexes the hot paths need. Safe to run repeatedly. */
-  async #createIndexes(db: Db): Promise<void> {
+  async #createIndexes(db: DbLike): Promise<void> {
     const byCollection = new Map<string, Record<string, 1 | -1>[]>();
 
     for (const { collection, key } of this.#indexDefinitions()) {
@@ -3217,35 +3482,35 @@ export class MongoDriver implements JobsDriver {
   }
 
   /** The database, connecting on first use. */
-  async #db(): Promise<Db> {
+  async #db(): Promise<DbLike> {
     this.#ready ??= this.#open();
     return await this.#ready;
   }
 
   /** The jobs collection. */
-  async #jobs(): Promise<Collection<JobDocument>> {
+  async #jobs(): Promise<CollectionLike<JobDocument>> {
     return (await this.#db()).collection<JobDocument>(this.collections.jobs);
   }
 
   /** The locks collection. */
-  async #locks(): Promise<Collection<LockDocument>> {
+  async #locks(): Promise<CollectionLike<LockDocument>> {
     return (await this.#db()).collection<LockDocument>(this.collections.locks);
   }
 
   /** The key/value collection. */
-  async #kv(): Promise<Collection<KvDocument>> {
+  async #kv(): Promise<CollectionLike<KvDocument>> {
     return (await this.#db()).collection<KvDocument>(this.collections.kv);
   }
 
   /** The events collection. */
-  async #events(): Promise<Collection<EventDocument>> {
+  async #events(): Promise<CollectionLike<EventDocument>> {
     return (await this.#db()).collection<EventDocument>(
       this.collections.events,
     );
   }
 
   /** The job-logs collection. */
-  async #jobLogs(): Promise<Collection<JobLogDocument>> {
+  async #jobLogs(): Promise<CollectionLike<JobLogDocument>> {
     return (await this.#db()).collection<JobLogDocument>(
       this.collections.jobLogs,
     );
@@ -3420,7 +3685,7 @@ export class MongoDriver implements JobsDriver {
   async #upsertState(
     ns: string,
     key: string,
-    update: UpdateFilter<KvDocument>,
+    update: UpdateFilterLike,
   ): Promise<void> {
     const kv = await this.#kv();
 
@@ -3429,7 +3694,7 @@ export class MongoDriver implements JobsDriver {
       {
         ...update,
         $setOnInsert: { ns, key: `${key}:state` },
-      } as UpdateFilter<KvDocument>,
+      } as UpdateFilterLike,
       { upsert: true },
     );
   }

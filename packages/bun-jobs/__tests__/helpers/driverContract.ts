@@ -279,6 +279,34 @@ export function driverContract(
         expect(await driver.clearQueuedTriggers(ns, key)).toBe(1);
         expect(await driver.countQueuedTriggers(ns, key)).toBe(0);
       });
+
+      it("carries a queued trigger's force flag, and leaves it unset when absent", async () => {
+        const key = runnerKey("forced");
+        const base = (id: string) => ({
+          id,
+          source: "manual" as const,
+          requestedAt: Date.now(),
+          requestedBy: newToken(),
+        });
+
+        await driver.pushQueuedTrigger(ns, key, base("plain"), 10);
+        await driver.pushQueuedTrigger(
+          ns,
+          key,
+          { ...base("forced"), force: true },
+          10,
+        );
+
+        // A drain decides whether to run a trigger on a paused runner, and
+        // can only do that if the record remembers what was asked for. Absent
+        // — as on every record an earlier version wrote — means not forced.
+        expect(await driver.popQueuedTrigger(ns, key)).toMatchObject({
+          id: "plain",
+        });
+        expect((await driver.popQueuedTrigger(ns, key))?.force).toBe(true);
+
+        await driver.clearQueuedTriggers(ns, key);
+      });
     });
 
     /* --- jobs -------------------------------------------------------- */
@@ -3452,6 +3480,27 @@ export function driverContract(
     });
 
     describe("discovery and purge", () => {
+      it("answers about an unknown runner without creating one", async () => {
+        const scope = testNamespace("unread");
+        const key = runnerKey("never-touched");
+
+        // Every read, each of which must answer emptily — and
+        // `popQueuedTrigger`, which a runner's drain calls on every pass and
+        // which finds nothing here. It used to write on the file and SQL
+        // drivers even so, leaving a state record that listed the runner.
+        expect(await driver.getLock(scope, key, Date.now())).toBeNull();
+        expect(await driver.getState(scope, key)).toEqual({});
+        expect(await driver.listHistory(scope, key)).toEqual([]);
+        expect(await driver.countQueuedTriggers(scope, key)).toBe(0);
+        expect(await driver.popQueuedTrigger(scope, key)).toBeNull();
+
+        // Asking about a runner is not the same as having one. The memory
+        // driver used to conjure one on any of the reads above, which put
+        // every id anyone merely inspected into the listing for good.
+        expect(await driver.listRunners(scope)).not.toContain("never-touched");
+        await driver.purge(scope);
+      });
+
       it("lists a runner that has written state but never taken a lock", async () => {
         const ns = testNamespace("unlocked");
 

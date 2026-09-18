@@ -405,7 +405,14 @@ describe("queue.listWorkers", () => {
       ]),
     );
 
-    await expect(queue.listWorkers()).rejects.toThrow(NotSupportedError);
+    const queueError: unknown = await queue
+      .listWorkers()
+      .catch((thrown: unknown) => thrown);
+    expect(queueError).toBeInstanceOf(NotSupportedError);
+    // Named as a call, like every other site's `needs`.
+    expect((queueError as NotSupportedError).context.needs).toBe(
+      "listWorkers()",
+    );
 
     // The context answers the same way, rather than with an empty list that
     // reads as "no workers".
@@ -415,7 +422,13 @@ describe("queue.listWorkers", () => {
     });
     closers.push(async () => await jobs.close());
     await queue.add("n", {});
-    await expect(jobs.listWorkers()).rejects.toThrow(NotSupportedError);
+    const jobsError: unknown = await jobs
+      .listWorkers()
+      .catch((thrown: unknown) => thrown);
+    expect(jobsError).toBeInstanceOf(NotSupportedError);
+    expect((jobsError as NotSupportedError).context.needs).toBe(
+      "listWorkers()",
+    );
   });
 });
 
@@ -507,7 +520,85 @@ describe("queue.getThroughput", () => {
     );
 
     const bare = makeQueue(without(new MemoryDriver(), ["getThroughput"]));
-    await expect(bare.getThroughput()).rejects.toThrow(ConfigError);
+
+    // `NotSupportedError` specifically, not merely the `ConfigError` it
+    // extends: asserting the base class passed either way, which is how the
+    // capability paths went on raising a plain `ConfigError` unnoticed.
+    const error = await bare.getThroughput().catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(NotSupportedError);
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as NotSupportedError).code).toBe("CONFIG");
+    expect((error as NotSupportedError).context).toMatchObject({
+      driver: "memory",
+      method: "getThroughput",
+    });
+  });
+});
+
+describe("a driver that lacks an optional method", () => {
+  it("names the driver and the method on a job's own calls", async () => {
+    const queue = makeQueue(
+      without(new MemoryDriver(), ["addJobLog", "getJobLogs"]),
+    );
+    const job = await queue.add("n", {});
+
+    for (const [call, method] of [
+      [async () => await job.log("hello"), "addJobLog"],
+      [async () => await job.getLogs(), "getJobLogs"],
+    ] as const) {
+      const error: unknown = await call().catch((thrown: unknown) => thrown);
+
+      // `NotSupportedError`, not the `ConfigError` it extends — the base class
+      // passed either way, which is how these paths went on raising a plain
+      // `ConfigError` while the docs claimed otherwise.
+      expect(error).toBeInstanceOf(NotSupportedError);
+      expect((error as NotSupportedError).code).toBe("CONFIG");
+      expect((error as NotSupportedError).context).toMatchObject({
+        driver: "memory",
+        method,
+      });
+    }
+  });
+
+  it("names the feature that wanted it, on a queue's calls", async () => {
+    const queue = makeQueue(without(new MemoryDriver(), ["listQueueState"]));
+
+    const error: unknown = await queue
+      .cleanWindows()
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(NotSupportedError);
+    expect((error as NotSupportedError).context).toMatchObject({
+      driver: "memory",
+      method: "listQueueState",
+      needs: "cleanWindows()",
+    });
+  });
+
+  it("names every feature as a call, with its parentheses", async () => {
+    // Two sites named theirs bare — "addFlow", "debounce" — where every other
+    // said "getThroughput()", "cleanWindows()": one spelling to match on.
+    const flows = makeQueue(without(new MemoryDriver(), ["recordChild"]));
+    const flowError: unknown = await flows
+      .addFlow({
+        name: "parent",
+        data: {},
+        children: [{ name: "c", data: {} }],
+      })
+      .catch((thrown: unknown) => thrown);
+    expect(flowError).toBeInstanceOf(NotSupportedError);
+    expect((flowError as NotSupportedError).context.needs).toBe("addFlow()");
+
+    const windows = makeQueue(without(new MemoryDriver(), ["setQueueState"]));
+    for (const kind of ["debounce", "throttle"] as const) {
+      const error: unknown = await windows
+        .add("n", {}, { [kind]: { id: "w", ttl: 1_000 } })
+        .catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(NotSupportedError);
+      expect((error as NotSupportedError).context.needs).toBe(
+        `add({ ${kind} })`,
+      );
+    }
   });
 });
 

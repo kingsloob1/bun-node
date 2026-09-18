@@ -142,6 +142,19 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
       }
     | undefined;
 
+  /**
+   * Whether a repeating series has been described at all — by `every()`,
+   * `repeatEvery()`, `withOptions()`, or one of the series setters.
+   *
+   * {@link JobDraft} uses it to refuse a series setter called before
+   * `repeatEvery()`. It cannot tell otherwise: the series is private, and
+   * spreading an absent one (`{ ...undefined, limit: 5 }`) quietly
+   * manufactures a repeat with nothing to repeat.
+   */
+  get hasSeries(): boolean {
+    return this.#repeat !== undefined;
+  }
+
   constructor(
     /** The queue the job will be added to. */
     queue: BunQueue<TData, TResult, string>,
@@ -332,14 +345,44 @@ export class JobBuilder<TData = unknown, TResult = unknown> {
     return this;
   }
 
-  /** Stops a repeating series after this many occurrences. */
+  /**
+   * Stops a repeating series after this many occurrences: a whole number of at
+   * least 1. Needs a series first — `every()`, `repeatEvery()` or
+   * `withOptions()` — and throws `ConfigError` without one, rather than
+   * inventing a repeat with nothing to repeat.
+   */
   limit(occurrences: number): this {
+    if (this.#repeat === undefined) {
+      throw new ConfigError(
+        "limit() sets one option of a repeating series, so it needs every() or repeatEvery() before it",
+        { method: "limit()" },
+      );
+    }
+
+    if (!Number.isInteger(occurrences) || occurrences < 1) {
+      throw new ConfigError(
+        "limit() needs a whole number of occurrences, at least 1",
+        { method: "limit()", limit: occurrences },
+      );
+    }
+
     this.#repeat = { ...this.#repeat, limit: occurrences };
     return this;
   }
 
-  /** Reads the cron expression in this time zone. */
+  /**
+   * Reads the series' schedule in this IANA time zone. Checked here, for an
+   * interval series as well as a cron one, so a misspelt zone fails at the
+   * call that gave it rather than when an occurrence is first computed.
+   */
   tz(zone: string): this {
+    if (!isTimeZone(zone)) {
+      throw new ConfigError(`tz() does not know the time zone "${zone}"`, {
+        method: "tz()",
+        tz: zone,
+      });
+    }
+
     this.#repeat = { ...this.#repeat, tz: zone };
     return this;
   }
@@ -583,4 +626,23 @@ function requireDuration(input: string, what: string): number {
   }
 
   return ms;
+}
+
+/**
+ * Whether `zone` names a time zone this runtime knows. `Intl` is the
+ * authority the schedule is later read with, so asking it now gives the same
+ * answer that an occurrence would.
+ */
+function isTimeZone(zone: string): boolean {
+  if (typeof zone !== "string" || zone.length === 0) {
+    return false;
+  }
+
+  try {
+    // eslint-disable-next-line no-new
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
 }
