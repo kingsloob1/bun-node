@@ -95,7 +95,7 @@ through to the host):
 
 The app's routes sit under the UI's `basePath`. A path the caller has no
 route for shows a not-found screen. The queue and job screens arrived in M2,
-the runner screens in M3.
+the runner screens in M3, live updates and the Events console in M4.
 
 | Route | What it shows |
 |---|---|
@@ -105,6 +105,7 @@ the runner screens in M3.
 | `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Remove and Edit. |
 | `/runners` | Every runner in the namespace (`GET /runners`): local ones first, with their name and status, then remote ones by id. Filtered by id or name in the browser, with no paging. Each row links to its runner. |
 | `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. |
+| `/events` | The Events console: a live tail of the API's socket. Pick a channel (`all` in mode `both`, `queues`, one queue from the queue list, one job by queue and id, `runners`, or one runner from the runner list) and filter by event type. Rows show the time, kind and type, the target (linked to its queue or runner), the id (a job links to its screen) and the payload. The log keeps the latest 500 rows, newest first; Pause holds up to 500 more (the rest are counted as dropped) until Resume, and Clear empties it. A channel the server refuses shows its code and reason, and a `gap` shows inline as `gap: <reason>`. When the log is empty it says why: producers not publishing, `events: "local"`, or live updates off. |
 
 ### URL parameters
 
@@ -129,6 +130,8 @@ default.
 | `/queues/:queue` | `window` | The throughput window in minutes: `15`, `60`, `360` or `1440`. Defaults to `60`. |
 | `/runners` | `search` | Filters by id or name (case-insensitive, trimmed), as you type. The list is filtered in the browser, so nothing is re-fetched. |
 | `/runners/:runner` | `history` | Runs shown in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The select offers `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter. |
+| `/events` | `channel` | The channel, as the socket names it: `all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encoded id>`, `runners` or `runner/<runner>`. One the API's mode lacks, or a malformed one, falls back to `all` in mode `both`, else `queues` or `runners`. |
+| `/events` | `types` | Event types as a comma list, e.g. `completed,failed`. Types the channel cannot carry are dropped. Absent means every type. |
 
 On the queue screen, changing `state`, `name`, `search` or `order` resets
 `offset` and clears the selection.
@@ -189,6 +192,9 @@ authority, since the map is never asked about one particular job.
 | Runner Kill… | mutation `runners.kill`, and the runner is local with at least one run in `local.activeRuns` |
 | Runner Reset stats… | mutation `runners.resetStats`, and the runner is local (`isLocal`) |
 | Runner remote hint | mutation `runners.kill` or `runners.resetStats`, and the runner is not local |
+| Events nav entry and `/events` | `sections.manage`, `meta.websocket`, and `events.connect` (untargeted) |
+| Events queue and job channel pickers' queue list | `queues.list` (untargeted); without it, a text box |
+| Events runner channel picker's runner list | `runners.list` (untargeted); without it, a text box |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but
@@ -257,10 +263,35 @@ is in flight (see below).
 
 ### Refreshing
 
-Until the live WebSocket arrives in a later milestone, the screens poll. The
-socket will replace these intervals.
+When the API has a socket (`meta.websocket`) and the caller holds
+`events.connect`, the app keeps one WebSocket open (subprotocol
+`bun-jobs.v1`) and each screen subscribes to the channels it shows. Events
+are hints: they are coalesced (about 250 ms) into refetches of the narrowest
+queries, and a `gap` refetches everything on its channels. A screen
+subscribes only while its own read is allowed, and on the queue, job and
+runner screens only once that queue's or runner's own permissions have
+answered.
 
-| What | Interval |
+| Screen | Channel | Events | Refetches |
+|---|---|---|---|
+| Overview | `queues` | every event that moves a job (not `progress`, `duplicate`, `throttled` or `debounced`) | the totals and the queue table |
+| Queue list | `queues` | the same | its pages |
+| Queue | `queue/<queue>` | the same | the counts and the jobs page; never on `progress` |
+| Queue | `queue/<queue>` | `paused`, `resumed`, `drained`, `cleaned`, `retried` | the detail (paused badge, limits) |
+| Queue | `queue/<queue>` | `repeatScheduled` | the repeatables |
+| Job | `queue/<queue>/job/<id>` | every event but `progress`, `duplicate`, `throttled` | the job, its stack traces, logs and flow children |
+| Job | `queue/<queue>/job/<id>` | `progress` | nothing: the value is written into the job on screen |
+| Runner list | `runners` | every event | every runner list |
+| Runner | `runner/<runner>` | every event | its detail, stats and history |
+
+Every read also polls, at the intervals below while live updates are off
+(no socket, refused, or reconnecting), and much slower while they are live,
+as a safety net: events are at-most-once. The reads no event announces keep
+their interval either way: the Overview sparklines, the workers and
+throughput panels, a job's logs (a log line publishes nothing) and its flow
+children (a child's events are on its own channel).
+
+| What | Interval while not live |
 |---|---|
 | Overview counts and queue table | 5 s |
 | Overview sparklines | 30 s, fetched only once a row scrolls into view |
@@ -277,6 +308,15 @@ socket will replace these intervals.
 
 Every read also refreshes when the window regains focus. `/meta` and the
 permission maps are not polled.
+
+The header badge says which it is: `Live`; `Connecting…`; `Reconnecting…`
+(a warning, with the reason in its tooltip); or `Polling 5s` when live
+updates are off, neutral, or refused, a warning. Its tooltip also gives the
+reason, how events reach the API (`meta.events`) and whether producers
+publish them (`meta.publishing`). When events are only the API's own process's
+(`events: "local"`) or producers do not publish (`publishing: false`), the
+badge is a warning in every state and adds `· events: local` or
+`· publishing: no`.
 
 ### Stack traces
 
