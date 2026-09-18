@@ -3,6 +3,7 @@ import type {
   RouteConstructorOption,
   RouterErrorMiddlewareHandler,
   RouterHandler,
+  UpgradeToWebsocketOptions,
   WebSocketClient,
   WebSocketClientData,
 } from "@kingsleyweb/bun-common";
@@ -432,21 +433,33 @@ export function createJobsApiWebSocket(
     slots.set(req, {
       timer: clock.setTimeout(() => slots.delete(req), SLOT_TTL_MS),
     });
-    res.upgradeToWebsocket({
-      host: req.host,
-      path: req.path,
-      search: req.search,
-      hash: req.hash,
-      originalUrl: req.originalUrl,
-      headers: req.headersObj,
-      user: undefined,
-      custom,
-      route: fullPath,
-      params: {},
-      ...(typeof req.server?.port === "number"
-        ? { port: req.server.port }
-        : {}),
-    } as WebSocketClientData<JobsApiSocketData>);
+    // Name the subprotocol on the 101 whenever the client offered any, as the
+    // raw `upgrade()` path does: `stateGuard` has already refused a list
+    // without it, and left to itself Bun answers with the FIRST protocol
+    // offered — `["other", "bun-jobs.v1"]` would negotiate `other`.
+    const negotiate: UpgradeToWebsocketOptions | undefined = req.getHeader(
+      "sec-websocket-protocol",
+    )
+      ? { headers: { "Sec-WebSocket-Protocol": JOBS_API_WS_SUBPROTOCOL } }
+      : undefined;
+    res.upgradeToWebsocket(
+      {
+        host: req.host,
+        path: req.path,
+        search: req.search,
+        hash: req.hash,
+        originalUrl: req.originalUrl,
+        headers: req.headersObj,
+        user: undefined,
+        custom,
+        route: fullPath,
+        params: {},
+        ...(typeof req.server?.port === "number"
+          ? { port: req.server.port }
+          : {}),
+      } as WebSocketClientData<JobsApiSocketData>,
+      negotiate,
+    );
   };
 
   /**

@@ -4,12 +4,16 @@ import type {
   JobsApiConfig,
   JobsApiSocketData,
 } from "../../lib/api/config";
+import type { Equivalent, ErrorWire } from "../../lib/api/ws/events";
 import type {
   HubSubscriber,
   StampedEvent,
   WsClock,
 } from "../../lib/api/ws/hub";
-import type { JobsApiServerMessage } from "../../lib/api/ws/protocol";
+import type {
+  JobsApiEventMessage,
+  JobsApiServerMessage,
+} from "../../lib/api/ws/protocol";
 import type { DriverEvent, JobsNotifier } from "../../lib/index";
 import {
   BunHttpAdapter,
@@ -27,6 +31,7 @@ import {
   builtInRoutes,
   createJobsApi,
 } from "../../lib/api/createJobsApi";
+import { API_ERROR_STATUS } from "../../lib/api/errors";
 import { validateJson } from "../../lib/api/schema/validate";
 import { channelKeysFor, parseChannel } from "../../lib/api/ws/channels";
 import { EventHub } from "../../lib/api/ws/hub";
@@ -831,14 +836,16 @@ describe("subscribing", () => {
       },
     ]);
 
-    // Decisions are cached for the session.
+    // A held channel's decision is kept; a refused one is not, so asking
+    // again asks `authorize` again.
     client.send({
       op: "subscribe",
       id: "s2",
       channels: ["queue/mail", "queue/secret"],
     });
     await client.next("ack", (frame) => frame.id === "s2");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
+    expect(calls[3]).toMatchObject({ channel: "queue/secret" });
 
     await h.jobs.queue("secret").add("x", {});
     await h.jobs.queue("mail").add("x", {});
@@ -1426,7 +1433,8 @@ describe("EventHub", () => {
     ).toEqual([3, 4, 5]);
     expect(hub.replay(hub.epoch, 1).status).toBe("resume-expired");
     expect(hub.replay(hub.epoch, 5)).toEqual({ status: "ok", events: [] });
-    expect(hub.replay(hub.epoch, 6).status).toBe("resume-expired");
+    // Beyond anything stamped: never in this epoch's history.
+    expect(hub.replay(hub.epoch, 6).status).toBe("epoch-changed");
     expect(hub.replay("elsewhere", 4).status).toBe("epoch-changed");
     clock.advance(1001);
     expect(hub.replay(hub.epoch, 5)).toEqual({ status: "ok", events: [] });
@@ -1637,5 +1645,720 @@ describe("sharing a router with other WebSocket routes", () => {
     // listen (`BunHttpAdapter.ts:985`), so a replacement on the router is
     // never consulted there — bun-nest's adapter delegates per call, which is
     // the path `useWebSocketAdapter()` actually takes.
+  });
+});
+
+/*
+ * Findings of the live-events review (develop @ 629aab1). Each test failed
+ * before its fix; the finding's number is in the test's name.
+ */
+describe("review fixes", () => {
+  /** A stub socket and an API driven directly, with a fake clock. */
+  async function driven(websocket: JobsApiConfig["websocket"] = {}) {
+    const clock = new FakeClock();
+    const jobs = publishingJobs();
+    const config = resolveConfig({
+      jobs,
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      logger: noopLogger,
+      websocket: { heartbeatMs: 0, ...(websocket || {}) },
+    });
+    const api = buildJobsApi(config, builtInRoutes(config), { clock });
+    cleanups.push(() => api.close());
+    const handler = api.websocket!.handler;
+    const request = await BunRequest.init(
+      new Request("http://localhost/admin/jobs/ws"),
+      testServer,
+      { parseBody: false, parseCookies: false, parseQuery: true },
+    );
+    const socket = {
+      data: { custom: { bunJobsApi: true, sessionId: "s", request } },
+      readyState: 1,
+      sendResult: 64,
+      buffered: 0,
+      sent: [] as JobsApiServerMessage[],
+      send(text: string) {
+        socket.sent.push(JSON.parse(text) as JobsApiServerMessage);
+        return socket.sendResult;
+      },
+      getBufferedAmount: () => socket.buffered,
+      close() {},
+    };
+    const client = socket as unknown as WebSocketClient<JobsApiSocketData>;
+    handler.open!(client);
+    const hello = socket.sent[0] as Frame<"hello">;
+    const send = (message: unknown) =>
+      handler.message!(client, JSON.stringify(message));
+    const ackOf = async (id: string) => {
+      await waitFor(() =>
+        socket.sent.some((frame) => frame.type === "ack" && frame.id === id),
+      );
+      return socket.sent.find(
+        (frame): frame is Frame<"ack"> =>
+          frame.type === "ack" && frame.id === id,
+      )!;
+    };
+    return { jobs, api, handler, socket, client, hello, send, ackOf, clock };
+  }
+
+  /** Every event frame's seq, in arrival order. */
+  const seqs = (frames: JobsApiServerMessage[]) =>
+    frames
+      .filter((frame): frame is Frame<"event"> => frame.type === "event")
+      .map((frame) => frame.seq);
+
+  it("#1 routes a job id holding a lone surrogate: nothing lost, no seq burnt", async () => {
+    const h = await served();
+    const bad = "bad-\uD800";
+    const jobKey = channelKeysFor(
+      queueEvent(
+        { ns: "n", target: "q", type: "added", origin: "o" },
+        { id: bad },
+      ),
+    ).at(-1)!;
+    // The job's channel name round-trips through the parser.
+    expect(parseChannel(jobKey, resolveConfig(apiConfig()))).toMatchObject({
+      ok: true,
+      channel: { key: jobKey, target: { queue: "q", jobId: bad } },
+    });
+    // A well-formed id is escaped exactly as before.
+    expect(
+      channelKeysFor(
+        queueEvent(
+          { ns: "n", target: "q", type: "added", origin: "o" },
+          { id: "a/b é" },
+        ),
+      ).at(-1),
+    ).toBe(`queue/q/job/${encodeURIComponent("a/b é")}`);
+
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["queues", jobKey] });
+    expect((await client.next("ack")).channels).toEqual(["queues", jobKey]);
+    const queue = h.jobs.queue("q");
+    await queue.add("n", {}, { jobId: "ok-1" });
+    await queue.add("n", {}, { jobId: bad });
+    await queue.add("n", {}, { jobId: "ok-2" });
+    await waitFor(() => client.all("event").length === 6);
+    expect(
+      client.all("event").map((frame) => [frame.seq, frame.event.id]),
+    ).toEqual([
+      [1, "ok-1"],
+      [2, "ok-1"],
+      [3, bad],
+      [4, bad],
+      [5, "ok-2"],
+      [6, "ok-2"],
+    ]);
+    expect(
+      client
+        .all("event")
+        .filter((frame) => frame.subscriptions.includes(jobKey)),
+    ).toHaveLength(2);
+  });
+
+  it("#1 flushes coalesced progress for such a job from the timer without throwing", () => {
+    const clock = new FakeClock();
+    const hub = new EventHub(
+      resolveConfig(apiConfig({ websocket: { coalesceProgressMs: 100 } })),
+      {
+        clock,
+        openNotifier: async () => {
+          throw new Error("not used");
+        },
+      },
+    );
+    const received: number[] = [];
+    hub.subscribe(
+      { deliver: (stamped) => received.push(stamped.seq) },
+      "queue/mail",
+    );
+    const progress = (value: number) =>
+      queueEvent(
+        { ns: "n", target: "mail", type: "progress", origin: "o" },
+        { id: "bad-\uDC00", progress: value },
+      );
+    hub.ingest(progress(1));
+    hub.ingest(progress(2));
+    // Before the fix the timer's callback threw a URIError: uncaught, fatal.
+    expect(() => clock.advance(100)).not.toThrow();
+    expect(received).toEqual([1, 2]);
+    expect(hub.seq).toBe(2);
+  });
+
+  it("#2 a resume while lagging does not claim resumed, and the gap covers what it skipped", async () => {
+    const d = await driven({ maxBufferedBytes: 1000 });
+    d.send({ op: "subscribe", id: "s1", channels: ["queue/a"] });
+    await d.ackOf("s1");
+    // Events the client is not subscribed to yet: seq 1-4.
+    await d.jobs.queue("b").add("n", {}, { jobId: "b1" });
+    await d.jobs.queue("b").add("n", {}, { jobId: "b2" });
+    // Falls behind on queue/a: seq 5 queued under backpressure, 6 skipped.
+    d.socket.sendResult = -1;
+    await d.jobs.queue("a").add("n", {}, { jobId: "a1" });
+    await waitFor(() => seqs(d.socket.sent).includes(5));
+    // While lagging, subscribes to queue/b resuming from the start.
+    d.send({
+      op: "subscribe",
+      id: "s2",
+      channels: ["queue/b"],
+      resume: { epoch: d.hello.epoch, afterSeq: d.hello.seq },
+    });
+    const ack = await d.ackOf("s2");
+    expect(ack.resumed).toBe(false);
+    d.socket.sendResult = 64;
+    d.handler.drain!(d.client);
+    const gap = d.socket.sent.find(
+      (frame): frame is Frame<"gap"> => frame.type === "gap",
+    );
+    expect(gap).toMatchObject({ reason: "slow-consumer" });
+    // Every seq of queue/b's events is either delivered or inside the gap.
+    const delivered = new Set(seqs(d.socket.sent));
+    for (const seq of [1, 2, 3, 4, 6]) {
+      expect(
+        delivered.has(seq) || (seq >= gap!.fromSeq && seq <= gap!.toSeq),
+      ).toBe(true);
+    }
+  });
+
+  it("#3 authorizes at most the free slots, and keeps decisions only for channels held", async () => {
+    let calls = 0;
+    const h = await served({
+      authorize: (_req, context) => {
+        if (context.action === "events.subscribe" && context.channel) {
+          calls++;
+        }
+        return true;
+      },
+    });
+    const client = await connect(h.url);
+    const channels = Array.from(
+      { length: 200 },
+      (_, index) => `queue/q/job/${index}`,
+    );
+    client.send({ op: "subscribe", id: "s", channels });
+    const ack = await client.next("ack");
+    expect(ack.channels).toHaveLength(50);
+    expect(
+      ack.rejected?.filter((entry) => entry.code === "SUBSCRIPTION_LIMIT"),
+    ).toHaveLength(150);
+    expect(calls).toBe(50);
+
+    // Held: not asked again. Left, then asked for again: asked again.
+    client.send({ op: "subscribe", id: "held", channels: ["queue/q/job/1"] });
+    await client.next("ack", (frame) => frame.id === "held");
+    expect(calls).toBe(50);
+    client.send({ op: "unsubscribe", id: "u", channels: ["queue/q/job/0"] });
+    await client.next("ack", (frame) => frame.id === "u");
+    client.send({ op: "subscribe", id: "again", channels: ["queue/q/job/0"] });
+    await client.next("ack", (frame) => frame.id === "again");
+    expect(calls).toBe(51);
+
+    // And a frame may name at most 256 channels.
+    client.send({
+      op: "subscribe",
+      id: "big",
+      channels: Array.from({ length: 257 }).fill("queues"),
+    });
+    expect(
+      await client.next("error", (frame) => frame.id === "big"),
+    ).toMatchObject({
+      code: "VALIDATION",
+      detail: expect.stringContaining("channels"),
+    });
+  });
+
+  it("#4 follows a queue on subscribe, so its first events are not lost to discovery", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace("ws-follow");
+    const apiJobs = new BunJobs({ namespace, driver, logger: noopLogger });
+    const producer = new BunJobs({
+      namespace,
+      driver,
+      logger: noopLogger,
+      publishEvents: true,
+    });
+    cleanups.push(async () => {
+      await producer.close();
+      await apiJobs.close();
+    });
+    const h = await served({ jobs: apiJobs });
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["queue/fresh"] });
+    await client.next("ack");
+    await producer.queue("fresh").add("n", {}, { jobId: "first" });
+    // Discovery runs every 2 s; the event must not wait for it.
+    const event = await client.next(
+      "event",
+      (frame) => frame.event.id === "first",
+      1000,
+    );
+    expect(event.subscriptions).toEqual(["queue/fresh"]);
+    expect(client.all("gap")).toEqual([]);
+  });
+
+  it("#5 fans retried and cleaned ids out to job channels", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    client.send({
+      op: "subscribe",
+      id: "s",
+      channels: ["queue/q/job/x", "queue/q/job/y"],
+    });
+    await client.next("ack");
+    const queue = h.jobs.queue("q");
+    const worker = h.jobs.worker("q", async (job) => {
+      if (job.id === "x") {
+        throw new Error("no");
+      }
+      return 1;
+    });
+    cleanups.push(() => worker.close({ force: true }));
+    void worker.run();
+    await queue.add("n", {}, { jobId: "x" });
+    await queue.add("n", {}, { jobId: "y" });
+    await client.next("event", (frame) => frame.event.type === "completed");
+    await client.next(
+      "event",
+      (frame) => frame.event.id === "x" && frame.event.type === "failed",
+    );
+    await worker.close();
+    await Bun.sleep(5);
+
+    expect(await queue.retryJobs(["x"])).toEqual(["x"]);
+    const retried = await client.next(
+      "event",
+      (frame) => frame.event.type === "retried",
+    );
+    expect(retried.subscriptions).toEqual(["queue/q/job/x"]);
+    expect(await queue.clean("completed", { olderThan: 0 })).toEqual(["y"]);
+    const cleaned = await client.next(
+      "event",
+      (frame) => frame.event.type === "cleaned",
+    );
+    expect(cleaned.subscriptions).toEqual(["queue/q/job/y"]);
+  });
+
+  it("#5 documents on the job channel only the events a job channel carries", async () => {
+    const h = await served();
+    const doc = h.api.asyncapi() as unknown as {
+      channels: Record<string, { messages: Record<string, unknown> }>;
+    };
+    const job = Object.keys(doc.channels.job!.messages);
+    for (const present of [
+      "queue.added",
+      "queue.completed",
+      "queue.stalled",
+      "queue.retried",
+      "queue.cleaned",
+    ]) {
+      expect(job).toContain(present);
+    }
+    for (const absent of [
+      "queue.paused",
+      "queue.resumed",
+      "queue.drained",
+      "queue.repeatScheduled",
+    ]) {
+      expect(job).not.toContain(absent);
+    }
+    // The queue channel still carries every queue event.
+    expect(Object.keys(doc.channels.queue!.messages)).toContain("queue.paused");
+  });
+
+  it("#6 negotiates bun-jobs.v1 when a client offers it among others, attached or on its own port", async () => {
+    const protocols = ["other", JOBS_API_WS_SUBPROTOCOL];
+    // Attached to the host's adapter.
+    const h = await served();
+    const attached = await connect(h.url, { protocols });
+    expect(attached.ws.protocol).toBe(JOBS_API_WS_SUBPROTOCOL);
+    // Offering none still upgrades, naming none.
+    expect((await connect(h.url)).ws.protocol).toBe("");
+
+    // On a dedicated port.
+    const own = createJobsApi({
+      jobs: publishingJobs(),
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      logger: noopLogger,
+      websocket: { port: 0 },
+    });
+    cleanups.push(() => own.close());
+    const dedicated = await connect(
+      `ws://127.0.0.1:${own.websocket!.port!}/admin/jobs/ws`,
+      { protocols },
+    );
+    expect(dedicated.ws.protocol).toBe(JOBS_API_WS_SUBPROTOCOL);
+  });
+
+  it("#7 a resume never re-sends a seq already delivered, but still replays what was not", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    const hello = await client.next("hello");
+    client.send({ op: "subscribe", id: "s1", channels: ["queue/q"] });
+    await client.next("ack");
+    await h.jobs.queue("q").add("n", {}, { jobId: "a" });
+    await waitFor(() => client.all("event").length === 2);
+    // Not subscribed to here: seq 3 and 4, seen by a second client.
+    const witness = await connect(h.url);
+    witness.send({ op: "subscribe", id: "w", channels: ["queue/other"] });
+    await witness.next("ack");
+    await h.jobs.queue("other").add("n", {}, { jobId: "b" });
+    await waitFor(() => witness.all("event").length === 2);
+
+    client.send({
+      op: "subscribe",
+      id: "s2",
+      channels: ["queues"],
+      resume: { epoch: hello.epoch, afterSeq: 0 },
+    });
+    const ack = await client.next("ack", (frame) => frame.id === "s2");
+    expect(ack.resumed).toBe(true);
+    expect(seqs(client.frames)).toEqual([1, 2, 3, 4]);
+    // Replayed before the ack.
+    const ackAt = client.frames.indexOf(ack);
+    expect(
+      client.frames.findIndex(
+        (frame) => frame.type === "event" && frame.seq === 4,
+      ),
+    ).toBeLessThan(ackAt);
+  });
+
+  it("#8 a resume from beyond the server's seq is a changed epoch: a gap from 0", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    const hello = await client.next("hello");
+    client.send({ op: "subscribe", id: "s1", channels: ["queue/q"] });
+    await client.next("ack");
+    await h.jobs.queue("q").add("n", {}, { jobId: "a" });
+    await waitFor(() => client.all("event").length === 2);
+    client.send({
+      op: "subscribe",
+      id: "A",
+      channels: ["queue/q"],
+      resume: { epoch: hello.epoch, afterSeq: 102 },
+    });
+    expect(await client.next("ack", (frame) => frame.id === "A")).toMatchObject(
+      { resumed: false },
+    );
+    expect(await client.next("gap")).toEqual({
+      type: "gap",
+      epoch: hello.epoch,
+      fromSeq: 0,
+      toSeq: 2,
+      reason: "epoch-changed",
+      channels: ["queue/q"],
+    });
+  });
+
+  it("#9 the last subscribe to a channel sets its filter, and one unsubscribe removes it", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "a", channels: ["queue/q"] });
+    client.send({
+      op: "subscribe",
+      id: "b",
+      channels: ["queue/q"],
+      events: ["waiting"],
+    });
+    await client.next("ack", (frame) => frame.id === "b");
+    await h.jobs.queue("q").add("n", {}, { jobId: "x" });
+    await client.next("event");
+    await Bun.sleep(50);
+    expect(client.all("event").map((frame) => frame.event.type)).toEqual([
+      "waiting",
+    ]);
+    client.send({ op: "unsubscribe", id: "u", channels: ["queue/q"] });
+    await client.next("ack", (frame) => frame.id === "u");
+    await h.jobs.queue("q").add("n", {}, { jobId: "y" });
+    await Bun.sleep(50);
+    expect(client.all("event")).toHaveLength(1);
+
+    const doc = h.api.asyncapi() as unknown as {
+      components: { schemas: Record<string, { description?: string }> };
+    };
+    expect(doc.components.schemas.SubscribeMessage!.description).toContain(
+      "the last subscribe wins",
+    );
+  });
+
+  it("#10 documents close codes, limits, upgrade refusals and ordering, matching what is served", async () => {
+    const h = await served({ websocket: { maxConnections: 1 } });
+    const doc = h.api.asyncapi() as unknown as {
+      channels: { connection: Record<string, unknown> };
+    };
+    const connection = doc.channels.connection;
+    expect(
+      (connection["x-bun-jobs-close-codes"] as { code: number }[]).map(
+        (entry) => entry.code,
+      ),
+    ).toEqual([1001, 1003, 1008, 1009, 4008, 4401]);
+    expect(connection["x-bun-jobs-limits"]).toMatchObject({
+      maxMessageBytes: 16_384,
+      messagesPerSecond: 20,
+      maxSubscriptions: 50,
+      maxConnections: 1,
+      maxChannelsPerFrame: 256,
+    });
+    const refusals = connection["x-bun-jobs-upgrade-refusals"] as {
+      status: number;
+      code: string;
+      headers?: Record<string, string>;
+    }[];
+    expect(refusals.map((entry) => `${entry.status} ${entry.code}`)).toEqual([
+      "400 UNSUPPORTED_SUBPROTOCOL",
+      "403 ORIGIN_REJECTED",
+      "429 CONNECTION_LIMIT",
+      "401 UNAUTHORIZED",
+      "403 FORBIDDEN",
+      "404 ROUTE_NOT_FOUND",
+    ]);
+    expect(String(connection.description)).toContain(
+      "replayed events first, then the `ack`",
+    );
+
+    // What the document says about a full server is what a full server does.
+    await connect(h.url);
+    const response = await fetch(`${h.origin}/admin/jobs/ws`, {
+      headers: UPGRADE_HEADERS,
+    });
+    const limit = refusals.find((entry) => entry.code === "CONNECTION_LIMIT")!;
+    expect(response.status).toBe(limit.status);
+    expect(response.headers.get("retry-after")).toBe(
+      limit.headers!["Retry-After"]!,
+    );
+    expect(await response.json()).toMatchObject({ code: limit.code });
+  });
+
+  it("#11 a refusal names the channel exactly as the client sent it", async () => {
+    const h = await served({
+      authorize: (_req, context) =>
+        context.action !== "events.subscribe" || context.jobId !== "a/b",
+      websocket: { maxSubscriptions: 1 },
+    });
+    const client = await connect(h.url);
+    client.send({
+      op: "subscribe",
+      id: "s",
+      channels: ["queue/q/job/a%2fb", "queue/q/job/x%2fy", "queue/q/job/c"],
+    });
+    const ack = await client.next("ack");
+    expect(ack.rejected).toEqual([
+      expect.objectContaining({
+        channel: "queue/q/job/x%2fy",
+        code: "SUBSCRIPTION_LIMIT",
+      }),
+      expect.objectContaining({
+        channel: "queue/q/job/c",
+        code: "SUBSCRIPTION_LIMIT",
+      }),
+      expect.objectContaining({
+        channel: "queue/q/job/a%2fb",
+        code: "FORBIDDEN",
+      }),
+    ]);
+  });
+
+  it("#12 a rate-limited request's error carries its id", async () => {
+    const h = await served({ websocket: { messagesPerSecond: 1 } });
+    const client = await connect(h.url);
+    for (const id of ["s1", "s2", "s3"]) {
+      client.send({ op: "ping", id });
+    }
+    expect(await client.next("error")).toMatchObject({
+      id: "s3",
+      code: "RATE_LIMITED",
+      status: 429,
+    });
+  });
+
+  it("#13 documents heartbeat seq as global, not a miss detector", async () => {
+    const h = await served();
+    const doc = h.api.asyncapi() as unknown as {
+      components: {
+        schemas: Record<
+          string,
+          { properties?: Record<string, { description?: string }> }
+        >;
+      };
+    };
+    expect(
+      doc.components.schemas.HeartbeatMessage!.properties!.seq!.description,
+    ).toContain("rely on gap frames");
+  });
+
+  it("#14 keeps AND requirements and scopes when mapping security to AsyncAPI", async () => {
+    const jobs = publishingJobs();
+    const api = createJobsApi({
+      jobs,
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      logger: noopLogger,
+      docs: {
+        securitySchemes: {
+          cookie: { type: "apiKey", in: "cookie", name: "sid" },
+          csrf: { type: "apiKey", in: "header", name: "x-csrf" },
+          oauth: {
+            type: "oauth2",
+            flows: {
+              clientCredentials: {
+                tokenUrl: "https://t",
+                scopes: { "jobs:read": "r", "jobs:admin": "a" },
+              },
+            },
+          },
+        },
+        security: [{ cookie: [], csrf: [] }, { oauth: ["jobs:admin"] }],
+      },
+    });
+    cleanups.push(() => api.close());
+    const server = (
+      api.asyncapi() as unknown as { servers: { api: Record<string, unknown> } }
+    ).servers.api;
+    // Only the requirement AsyncAPI can express natively, with its scope;
+    // cookie and csrf are never offered as alternatives on their own.
+    expect(server.security).toEqual([
+      {
+        type: "oauth2",
+        flows: {
+          clientCredentials: {
+            tokenUrl: "https://t",
+            availableScopes: { "jobs:read": "r", "jobs:admin": "a" },
+          },
+        },
+        scopes: ["jobs:admin"],
+      },
+    ]);
+    expect(server["x-bun-jobs-security"]).toEqual([
+      { cookie: [], csrf: [] },
+      { oauth: ["jobs:admin"] },
+    ]);
+  });
+
+  it("types an event frame's payload error as the ErrorDto on the wire (UI-G7)", () => {
+    type FailedError = Extract<
+      JobsApiEventMessage["event"],
+      { kind: "queue"; type: "failed" }
+    >["payload"]["error"];
+    const wire: Equivalent<FailedError, ErrorWire> = true;
+    expect(wire).toBe(true);
+  });
+
+  it("authorizes each target on a broad channel, keeping seq order while it asks", async () => {
+    const calls: Parameters<JobsApiAuthorize>[1][] = [];
+    const h = await served({
+      authorize: async (_req, context) => {
+        if (context.action !== "events.subscribe") {
+          return true;
+        }
+        calls.push(context);
+        if (context.queue === "slow") {
+          await Bun.sleep(50);
+        }
+        return context.queue !== "secret";
+      },
+    });
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["queues"] });
+    await client.next("ack");
+    await h.jobs.queue("slow").add("n", {}, { jobId: "1" });
+    await h.jobs.queue("secret").add("n", {}, { jobId: "2" });
+    await h.jobs.queue("mail").add("n", {}, { jobId: "3" });
+    await waitFor(() => client.all("event").length === 4);
+    await Bun.sleep(50);
+    expect(
+      client.all("event").map((frame) => [frame.seq, frame.event.target]),
+    ).toEqual([
+      [1, "slow"],
+      [2, "slow"],
+      [5, "mail"],
+      [6, "mail"],
+    ]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ channel: "queues", queue: "secret" }),
+    );
+    // Once per target, not per event.
+    expect(calls.filter((context) => context.queue === "mail")).toHaveLength(1);
+  });
+
+  it("describes a malformed frame by the op it names", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    client.ws.send("null");
+    expect(await client.next("error")).toMatchObject({
+      detail: "Frames must be JSON objects with an `op`",
+    });
+    client.send({ op: "wat", id: "u" });
+    expect(
+      await client.next("error", (frame) => frame.id === "u"),
+    ).toMatchObject({
+      detail:
+        'op: Expected "subscribe", "unsubscribe" or "ping", received "wat"',
+    });
+    client.ws.send(
+      '{"op":"subscribe","id":"g","channels":["queues"],"resume":{"epoch":"x","afterSeq":1e308}}',
+    );
+    expect(
+      await client.next("error", (frame) => frame.id === "g"),
+    ).toMatchObject({
+      detail: expect.stringContaining(
+        `resume.afterSeq: Expected an integer of at most ${Number.MAX_SAFE_INTEGER}`,
+      ),
+    });
+  });
+});
+
+describe("review follow-ups", () => {
+  it("releases the notifier follows a subscription took: 1000 invented names leave it at its baseline", async () => {
+    const jobs = publishingJobs();
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({ jobs, websocket: { messagesPerSecond: 100_000 } });
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "open", channels: ["queues"] });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    const baseline = notifier.following;
+
+    for (let index = 0; index < 1000; index++) {
+      const channel = `queue/invented-${index}`;
+      client.send({ op: "subscribe", id: `s${index}`, channels: [channel] });
+      client.send({ op: "unsubscribe", id: `u${index}`, channels: [channel] });
+    }
+    await client.next("ack", (frame) => frame.id === "u999", 20_000);
+    await waitFor(() => notifier.following.length === baseline.length);
+    expect(notifier.following).toEqual(baseline);
+
+    // A session that ends lets go of what it held.
+    client.send({ op: "subscribe", id: "held", channels: ["queue/held"] });
+    await client.next("ack", (frame) => frame.id === "held");
+    expect(notifier.following).toContain("queue:held");
+    client.ws.close();
+    await waitFor(() => !notifier.following.includes("queue:held"));
+  });
+
+  it("answers the upgrade refusals with their own codes and titles (UI-G8)", async () => {
+    const h = await served({ websocket: { maxConnections: 1 } });
+    const subprotocol = await fetch(`${h.origin}/admin/jobs/ws`, {
+      headers: { ...UPGRADE_HEADERS, "Sec-WebSocket-Protocol": "other" },
+    });
+    expect(subprotocol.status).toBe(400);
+    expect(await subprotocol.json()).toMatchObject({
+      code: "UNSUPPORTED_SUBPROTOCOL",
+      title: "Unsupported WebSocket subprotocol",
+    });
+
+    await connect(h.url);
+    const full = await fetch(`${h.origin}/admin/jobs/ws`, {
+      headers: UPGRADE_HEADERS,
+    });
+    expect(full.status).toBe(429);
+    expect(await full.json()).toMatchObject({
+      code: "CONNECTION_LIMIT",
+      title: "Too many live-event connections",
+    });
+    expect(API_ERROR_STATUS).toMatchObject({
+      CONNECTION_LIMIT: 429,
+      UNSUPPORTED_SUBPROTOCOL: 400,
+    });
   });
 });

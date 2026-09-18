@@ -5,7 +5,11 @@ import type { JsonSchema } from "../schema/validate";
 import type { ChannelDef } from "../ws/channels";
 import type { EventDescriptor } from "../ws/events";
 import { s, toJsonSchema } from "../schema/builder";
-import { enabledChannels, isWebSocketEnabled } from "../ws/channels";
+import {
+  enabledChannels,
+  isWebSocketEnabled,
+  MULTI_JOB_EVENTS,
+} from "../ws/channels";
 import { QUEUE_EVENTS, RUNNER_EVENTS } from "../ws/events";
 import {
   AckMessageSchema,
@@ -13,12 +17,15 @@ import {
   GapMessageSchema,
   HeartbeatMessageSchema,
   HelloMessageSchema,
+  JOBS_API_WS_CLOSE,
+  JOBS_API_WS_MAX_CHANNELS_PER_FRAME,
   JOBS_API_WS_SUBPROTOCOL,
   PingMessageSchema,
   PongMessageSchema,
   SubscribeMessageSchema,
   UnsubscribeMessageSchema,
 } from "../ws/protocol";
+import { RATE_BREACH_WINDOW_MS } from "../ws/session";
 import { pruneSchemaComponents } from "./refs";
 import { openApiSecurity, toAsyncApiSecurityScheme } from "./security";
 
@@ -100,7 +107,8 @@ const CONTROL_MESSAGES: readonly {
   {
     id: "ack",
     schema: AckMessageSchema,
-    summary: "Answers a subscribe or unsubscribe, listing refused channels.",
+    summary:
+      "Answers a subscribe or unsubscribe, listing refused channels. Replayed events precede it; a gap may follow it.",
   },
   {
     id: "gap",
@@ -110,7 +118,8 @@ const CONTROL_MESSAGES: readonly {
   {
     id: "heartbeat",
     schema: HeartbeatMessageSchema,
-    summary: "Liveness, carrying the latest seq.",
+    summary:
+      "Liveness, carrying the latest global seq. seq spans every channel, so it cannot detect misses: rely on gap.",
   },
   { id: "pong", schema: PongMessageSchema, summary: "Answers a ping." },
   {
@@ -120,14 +129,129 @@ const CONTROL_MESSAGES: readonly {
   },
 ];
 
+/**
+ * Whether a queue event reaches a job channel: it is about one job (its
+ * payload has an `id`) or lists several (`stalled`, `retried`, `cleaned`).
+ * Queue-level events — `paused`, `resumed`, `drained`, `repeatScheduled` —
+ * never do.
+ */
+export function reachesJobChannel(descriptor: EventDescriptor): boolean {
+  if (descriptor.kind !== "queue") {
+    return false;
+  }
+  if (MULTI_JOB_EVENTS.has(descriptor.type)) {
+    return true;
+  }
+  const properties = (
+    descriptor.payload.json as { properties?: Record<string, unknown> }
+  ).properties;
+  return properties !== undefined && Object.hasOwn(properties, "id");
+}
+
 /** The events a channel family carries. */
 function eventsOf(def: ChannelDef): readonly EventDescriptor[] {
+  if (def.kind === "job") {
+    return QUEUE_EVENTS.filter(reachesJobChannel);
+  }
   return def.receives === "queue"
     ? QUEUE_EVENTS
     : def.receives === "runner"
       ? RUNNER_EVENTS
       : [...QUEUE_EVENTS, ...RUNNER_EVENTS];
 }
+
+/** Every close code the server sends, for `x-bun-jobs-close-codes`. */
+const CLOSE_CODES: readonly {
+  /** The close code. */
+  code: number;
+  /** Its name in `JOBS_API_WS_CLOSE`. */
+  name: keyof typeof JOBS_API_WS_CLOSE;
+  /** When it is sent. */
+  description: string;
+}[] = [
+  {
+    code: JOBS_API_WS_CLOSE.GOING_AWAY,
+    name: "GOING_AWAY",
+    description: "The API is closing (`api.close()`). Reconnect and resume.",
+  },
+  {
+    code: JOBS_API_WS_CLOSE.UNSUPPORTED_DATA,
+    name: "UNSUPPORTED_DATA",
+    description:
+      "The client sent a binary frame (an UNSUPPORTED_DATA error precedes it).",
+  },
+  {
+    code: JOBS_API_WS_CLOSE.POLICY,
+    name: "POLICY",
+    description: `The rate limit was breached a second time within ${RATE_BREACH_WINDOW_MS / 1000} s (the first breach is a RATE_LIMITED error).`,
+  },
+  {
+    code: JOBS_API_WS_CLOSE.TOO_BIG,
+    name: "TOO_BIG",
+    description:
+      "The client sent a frame over `maxMessageBytes` (a MESSAGE_TOO_LARGE error precedes it).",
+  },
+  {
+    code: JOBS_API_WS_CLOSE.SLOW_CONSUMER,
+    name: "SLOW_CONSUMER",
+    description:
+      "The client stayed behind for `slowConsumerTimeoutMs`. Reconnect and resume.",
+  },
+  {
+    code: JOBS_API_WS_CLOSE.UNAUTHORIZED,
+    name: "UNAUTHORIZED",
+    description:
+      "Reserved: the session is no longer authorized. Not sent in protocol 1.",
+  },
+];
+
+/**
+ * How an upgrade is refused, before any socket exists, for
+ * `x-bun-jobs-upgrade-refusals`: an ordinary HTTP response whose body is an
+ * RFC 9457 problem (`application/problem+json`) carrying `code`.
+ */
+const UPGRADE_REFUSALS: readonly {
+  /** The HTTP status. */
+  status: number;
+  /** The problem's `code`. */
+  code: string;
+  /** When it is sent. */
+  description: string;
+  /** Response headers it carries. */
+  headers?: Record<string, string>;
+}[] = [
+  {
+    status: 400,
+    code: "UNSUPPORTED_SUBPROTOCOL",
+    description: `Sec-WebSocket-Protocol was sent without \`${JOBS_API_WS_SUBPROTOCOL}\`. Offer it, or no subprotocol.`,
+  },
+  {
+    status: 403,
+    code: "ORIGIN_REJECTED",
+    description: "The Origin header is not an allowed origin.",
+  },
+  {
+    status: 429,
+    code: "CONNECTION_LIMIT",
+    description: "`maxConnections` live-event connections are already open.",
+    headers: { "Retry-After": "1" },
+  },
+  {
+    status: 401,
+    code: "UNAUTHORIZED",
+    description: "`authorize` asked for authentication (`events.connect`).",
+  },
+  {
+    status: 403,
+    code: "FORBIDDEN",
+    description: "`authorize` refused the connection (`events.connect`).",
+  },
+  {
+    status: 404,
+    code: "ROUTE_NOT_FOUND",
+    description: "The API has been closed.",
+  },
+];
 
 /** Descriptions of address parameters. */
 const PARAMETER_DESCRIPTIONS: Record<ChannelDef["parameters"][number], string> =
@@ -164,6 +288,10 @@ export function generateAsyncApi(
     return undefined;
   }
   const docs = config.docs === false ? undefined : config.docs;
+  const websocket = config.websocket as Exclude<
+    ResolvedJobsApiConfig["websocket"],
+    false
+  >;
   const components = new Map<string, JsonSchema>();
   const emit = (schema: Schema<unknown>) =>
     toJsonSchema(schema, { components });
@@ -195,6 +323,36 @@ export function generateAsyncApi(
     }
   }
   const hasSecurity = Object.keys(securitySchemes).length > 0;
+
+  // AsyncAPI 3's `server.security` is a list of alternatives, each ONE scheme
+  // (with the scopes it needs in `scopes`); it has no way to say "these two
+  // together". So a requirement naming one scheme maps natively — a `$ref`,
+  // or an inline copy carrying `scopes` when it needs some — while one naming
+  // several (an AND) is left out of the native list rather than split into
+  // alternatives that would each claim to suffice alone. The requirements are
+  // kept whole, with OpenAPI's meaning, in `x-bun-jobs-security`.
+  const requirements = security.security ?? [];
+  const nativeSecurity: Record<string, unknown>[] = [];
+  let conjunctive = false;
+  for (const requirement of requirements) {
+    const names = Object.keys(requirement);
+    if (names.length !== 1) {
+      conjunctive ||= names.length > 1;
+      continue;
+    }
+    const name = names[0]!;
+    const scopes = requirement[name] ?? [];
+    nativeSecurity.push(
+      scopes.length === 0
+        ? { $ref: `#/components/securitySchemes/${name}` }
+        : { ...securitySchemes[name], scopes: [...scopes] },
+    );
+  }
+  if (conjunctive) {
+    notes.push(
+      "`servers.api.security` lists only the requirements AsyncAPI 3 can express — one scheme each; `x-bun-jobs-security` holds every requirement, with OpenAPI's meaning: any one object suffices, and every scheme within one object is required together, with its listed scopes.",
+    );
+  }
 
   // Messages: the control messages, then one per event type the enabled
   // channels carry.
@@ -235,11 +393,36 @@ export function generateAsyncApi(
     connection: {
       address: socket.path,
       title: "Connection",
-      description: `The WebSocket itself (subprotocol \`${JOBS_API_WS_SUBPROTOCOL}\`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.`,
+      description: [
+        `The WebSocket itself (subprotocol \`${JOBS_API_WS_SUBPROTOCOL}\`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.`,
+        "Ordering: a subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.",
+        "Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.",
+        "An upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
+      ].join("\n\n"),
       messages: Object.fromEntries(
         CONTROL_MESSAGES.map((control) => [control.id, messageRef(control.id)]),
       ),
       bindings: { ws: { method: "GET", bindingVersion: WS_BINDING_VERSION } },
+      "x-bun-jobs-close-codes": CLOSE_CODES.map((entry) => ({ ...entry })),
+      "x-bun-jobs-limits": {
+        maxMessageBytes: websocket.maxMessageBytes,
+        messagesPerSecond: websocket.messagesPerSecond,
+        rateLimitBurst: websocket.messagesPerSecond * 2,
+        rateLimitBreachWindowMs: RATE_BREACH_WINDOW_MS,
+        maxSubscriptions: websocket.maxSubscriptions,
+        maxChannelsPerFrame: JOBS_API_WS_MAX_CHANNELS_PER_FRAME,
+        maxConnections: websocket.maxConnections,
+        heartbeatMs: websocket.heartbeatMs,
+        maxBufferedBytes: websocket.maxBufferedBytes,
+        slowConsumerTimeoutMs: websocket.slowConsumerTimeoutMs,
+        coalesceProgressMs: websocket.coalesceProgressMs,
+        replay: websocket.replay === false ? false : { ...websocket.replay },
+      },
+      "x-bun-jobs-upgrade-refusals": UPGRADE_REFUSALS.map((entry) => ({
+        ...entry,
+        contentType: "application/problem+json",
+        ...(entry.headers ? { headers: { ...entry.headers } } : {}),
+      })),
     },
   };
   const operations: Record<string, Record<string, unknown>> = {
@@ -353,12 +536,9 @@ export function generateAsyncApi(
             },
           },
         }),
+    ...(nativeSecurity.length > 0 ? { security: nativeSecurity } : {}),
     ...(hasSecurity
-      ? {
-          security: Object.keys(securitySchemes).map((name) => ({
-            $ref: `#/components/securitySchemes/${name}`,
-          })),
-        }
+      ? { "x-bun-jobs-security": structuredClone(requirements) }
       : {}),
   };
 

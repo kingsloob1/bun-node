@@ -2,7 +2,7 @@ import type { DriverEvent } from "../../drivers/index";
 import type { JobsNotifierOptions } from "../../notifier";
 import type { ResolvedJobsApiConfig } from "../config";
 import { JobsNotifier } from "../../notifier";
-import { channelKeysFor } from "./channels";
+import { channelKeysFor, jobIdsOf } from "./channels";
 
 /**
  * The fan-out from one notifier to every session.
@@ -114,6 +114,7 @@ const PROGRESS_TERMINAL = new Set([
   "dead",
   "removed",
   "retrying",
+  "cleaned",
 ]);
 
 export class EventHub {
@@ -169,6 +170,20 @@ export class EventHub {
   /** The notifier, once opened (and until closed). */
   get notifier(): JobsNotifier | undefined {
     return this.#notifier;
+  }
+
+  /** Whether events are retained for resume at all. */
+  get replayEnabled(): boolean {
+    return this.#replay !== false;
+  }
+
+  /**
+   * The oldest `seq` still retained for replay; `seq + 1` when none is. A
+   * `seq` below it can never be replayed again.
+   */
+  get oldestRetainedSeq(): number {
+    this.#expire();
+    return this.#count > 0 ? this.#ring[this.#start]!.seq : this.#seq + 1;
   }
 
   /** How many channels have at least one subscriber. */
@@ -261,13 +276,7 @@ export class EventHub {
         this.#coalesce(event);
         return;
       }
-      const jobIds =
-        event.type === "stalled"
-          ? event.payload.ids
-          : event.id === undefined
-            ? []
-            : [event.id];
-      for (const id of jobIds) {
+      for (const id of jobIdsOf(event)) {
         // Progress held back for this job goes first, so it never arrives
         // after the event that ended the job.
         const key = `${event.target} ${id}`;
@@ -297,7 +306,15 @@ export class EventHub {
     state.timer ??= this.#clock.setTimeout(
       () => {
         state.timer = undefined;
-        this.#flushProgress(key);
+        // A timer callback has no caller to catch for it: a throw here would
+        // be uncaught, and would end the process.
+        try {
+          this.#flushProgress(key);
+        } catch (error) {
+          this.#config.logger.error("jobs api progress flush failed", {
+            error,
+          });
+        }
       },
       Math.max(0, state.lastAt + this.#coalesceMs - now),
     );
@@ -328,13 +345,19 @@ export class EventHub {
     }
   }
 
-  /** Stamps an event, retains it, and hands it to every matching subscriber once. */
+  /**
+   * Stamps an event, retains it, and hands it to every matching subscriber
+   * once. The channel keys are computed before the `seq` is taken, so an event
+   * that could not be routed would never burn a number every client then
+   * waits for in vain.
+   */
   #stamp(event: DriverEvent): void {
+    const keys = channelKeysFor(event);
     const stamped: StampedEvent = {
       seq: ++this.#seq,
       receivedAt: this.#clock.now(),
       event,
-      keys: channelKeysFor(event),
+      keys,
     };
     this.#retain(stamped);
 
@@ -400,16 +423,20 @@ export class EventHub {
    * The retained events after `afterSeq`, for a client that last saw
    * `afterSeq` under `epoch`:
    *
-   * - `epoch-changed` when the epoch is not this hub's;
-   * - `resume-expired` when replay is off, when events after `afterSeq` are
-   *   no longer retained, or when `afterSeq` is beyond anything stamped;
+   * - `epoch-changed` when the epoch is not this hub's, and also when
+   *   `afterSeq` is beyond anything this hub has stamped: such a position was
+   *   never in this epoch's history, so — as for a foreign epoch — nothing
+   *   about what the client holds is known, and a gap from `0` is the honest
+   *   answer (a range from `afterSeq + 1` would be inverted);
+   * - `resume-expired` when replay is off, or when events after `afterSeq`
+   *   are no longer retained;
    * - otherwise `ok`, with every retained event whose `seq` is greater.
    */
   replay(epoch: string, afterSeq: number): ReplayResult {
-    if (epoch !== this.epoch) {
+    if (epoch !== this.epoch || afterSeq > this.#seq) {
       return { status: "epoch-changed" };
     }
-    if (!this.#replay || afterSeq > this.#seq) {
+    if (!this.#replay) {
       return { status: "resume-expired" };
     }
     this.#expire();
