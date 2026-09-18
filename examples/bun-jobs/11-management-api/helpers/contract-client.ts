@@ -24,7 +24,37 @@ import type {
   QueueListQuery,
   QueueSummaryDto,
 } from "@kingsleyweb/bun-jobs/api/contract";
-import { JOBS_API_WS_SUBPROTOCOL } from "@kingsleyweb/bun-jobs/api/contract";
+import {
+  decodeJobId,
+  encodeJobId,
+  JOBS_API_WS_SUBPROTOCOL,
+} from "@kingsleyweb/bun-jobs/api/contract";
+
+/**
+ * The channel of one job. Its id is escaped by the contract's `encodeJobId`:
+ * `encodeURIComponent`, except that a lone UTF-16 surrogate (which that
+ * throws on) becomes `%uXXXX` — so every id a queue accepts has a channel.
+ */
+export function jobChannel(queue: string, jobId: string): string {
+  return `queue/${queue}/job/${encodeJobId(jobId)}`;
+}
+
+/** The queue and job id a job channel names; `undefined` for any other channel. */
+export function jobOfChannel(
+  channel: string,
+): { queue: string; jobId: string } | undefined {
+  const [kind, queue, job, encoded, ...rest] = channel.split("/");
+  if (
+    kind !== "queue" ||
+    job !== "job" ||
+    !queue ||
+    !encoded ||
+    rest.length > 0
+  ) {
+    return undefined;
+  }
+  return { queue, jobId: decodeJobId(encoded) };
+}
 
 /** A refusal from the API, carrying its RFC 9457 problem. */
 export class JobsApiProblem extends Error {

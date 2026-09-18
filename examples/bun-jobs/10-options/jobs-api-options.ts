@@ -27,6 +27,10 @@
  *   keeps an unauthenticated caller from probing a route's schema.
  * - **A 5xx never carries the underlying message.** Its `detail` is the
  *   generic title, always.
+ * - **Adding a queue's first job creates it**, as `BunQueue.add` does: a
+ *   `POST /queues/:queue/jobs` with an addable name is 201 for a queue the
+ *   backend has never seen. Only a configured `queues` list still makes an
+ *   unknown queue a 404.
  */
 import type {
   JobsApiAuthorizeContext,
@@ -419,6 +423,24 @@ checkEqual(
   "a route outside the list is a 404",
   (await narrow.call("GET", "/queues")).status,
   404,
+);
+// Not a list of extras on top of the default: naming only the two opt-ins
+// turns every other action off, `meta.read` included. `[...JOBS_API_ACTIONS]`
+// is the default plus them.
+const onlyOptIns = mount({ actions: ["jobs.add", "jobs.update"] });
+checkEqual(
+  "actions: [jobs.add, jobs.update] alone is those two routes and nothing else",
+  [
+    idsOf(onlyOptIns.api).sort(),
+    (await onlyOptIns.call("GET", "/meta")).status,
+  ],
+  [["addJob", "updateJob"], 404],
+);
+const everything = mount({ actions: [...JOBS_API_ACTIONS] });
+checkEqual(
+  "while [...JOBS_API_ACTIONS] is the default and both",
+  everything.api.routes.length,
+  byDefault.api.routes.length + 2,
 );
 
 /* ------------------------------------------------------------------ */
@@ -1309,16 +1331,21 @@ checkEqual(
   { header: null, requireJson: false },
 );
 
-// limits: every cap the routes enforce, read from the same values.
+// limits: every cap the routes enforce, read from the same values. Two are
+// derived rather than configured: `defaultClean` is the `limit` a clean uses
+// when none is given, min(1000, maxClean); `maxRetryAllIds` is how many ids a
+// `retry-all` answers with before it reports `truncated`, fixed at 1000.
 checkEqual(
-  "limits: each configured cap, and the defaults for the rest",
+  "limits: each configured cap, the defaults for the rest, and the two derived",
   (await limited.call("GET", "/meta")).body.limits,
   {
     defaultPageSize: 2,
     maxPageSize: 5,
     maxBulkIds: 3,
     maxRetryAll: DEFAULT_JOBS_API_LIMITS.maxRetryAll,
+    maxRetryAllIds: 1000,
     maxClean: 10,
+    defaultClean: 10,
     maxLogPage: 4,
     maxHistory: 6,
     maxJobDataBytes: 64,
@@ -1451,9 +1478,9 @@ const previewing = mount({
     },
 });
 /** The `channel` part of a permissions answer. */
-const preview = async (channel?: string) =>
+const preview = async (channel?: string, api = previewing) =>
   (
-    await previewing.call(
+    await api.call(
       "GET",
       channel === undefined
         ? "/meta/permissions"
@@ -1486,22 +1513,213 @@ checkEqual(
     detail: "secret is private",
   },
 );
-// A channel that does not parse, or names a queue outside `queues`, has no
-// canonical key: it is refused as a subscribe ack would refuse it.
+// Refused before authorize, as a subscribe ack would refuse it. A channel
+// that parsed has its canonical key even when refused: a queue outside
+// `queues` (QUEUE_NOT_FOUND), a job in one (its id re-encoded, as above), or
+// a runner channel on a `mode: "jobs"` API (CHANNEL_NOT_AVAILABLE). Only a
+// channel that does not parse (INVALID_CHANNEL) has none.
 checkEqual(
-  "refused before authorize, with no key",
-  [await preview("nonsense"), await preview("queue/other")].map((answer) => [
-    answer.allowed,
-    answer.code,
-    answer.status,
-    "key" in answer,
-  ]),
+  "refused before authorize: a key whenever the channel parsed",
+  await Promise.all(
+    [
+      preview("nonsense"),
+      preview("queue/other"),
+      preview("queue/other/job/a%2fb"),
+      preview("runner/nightly", jobsOnly),
+    ].map(async (pending) => {
+      const answer = await pending;
+      return [answer.allowed, answer.code, answer.status, answer.key];
+    }),
+  ),
   [
-    [false, "INVALID_CHANNEL", 400, false],
-    [false, "QUEUE_NOT_FOUND", 404, false],
+    [false, "INVALID_CHANNEL", 400, undefined],
+    [false, "QUEUE_NOT_FOUND", 404, "queue/other"],
+    [false, "QUEUE_NOT_FOUND", 404, "queue/other/job/a%2Fb"],
+    [false, "CHANNEL_NOT_AVAILABLE", 404, "runner/nightly"],
   ],
 );
 checkEqual("and absent unless asked for", await preview(), undefined);
+
+/* ------------------------------------------------------------------ */
+step("POST /queues/:queue/jobs: the first job creates its queue");
+
+// Adding a queue's first job is what creates it, through the API as through
+// `BunQueue.add`. The job name is checked first, so only a request about to
+// write builds a queue: an unknown queue is not a 404 here. A known-queue
+// cache does not hide the new one: the API forgets it once the job is written.
+const creating = mount(
+  { actions: [...JOBS_API_ACTIONS], limits: { queueCacheMs: 60_000 } },
+  context("creating"),
+);
+creating.jobs.define("send", async () => {});
+checkEqual(
+  "an empty namespace lists no queue (and fills the cache)",
+  (await creating.call("GET", "/queues")).body.items,
+  [],
+);
+const firstJob = await creating.call("POST", "/queues/welcome/jobs", {
+  name: "send",
+  data: {},
+});
+checkEqual(
+  "a queue that does not exist yet: 201, the job added",
+  [firstJob.status, firstJob.body.added],
+  [201, true],
+);
+checkEqual(
+  "and the queue is listed at once, inside the cache window",
+  (await creating.call("GET", "/queues")).body.items.map(
+    (queue: { name: string }) => queue.name,
+  ),
+  ["welcome"],
+);
+const notAddable = await creating.call("POST", "/queues/other/jobs", {
+  name: "undefined-name",
+  data: {},
+});
+checkEqual(
+  "a name that is not addable is still 403, whether or not the queue exists",
+  [notAddable.status, notAddable.body.code],
+  [403, "NAME_NOT_ADDABLE"],
+);
+checkEqual("and created nothing", await creating.jobs.listQueues(), [
+  "welcome",
+]);
+const configured = mount(
+  { actions: [...JOBS_API_ACTIONS], queues: ["mail"] },
+  context("configured"),
+);
+configured.jobs.define("send", async () => {});
+const outside = await configured.call("POST", "/queues/welcome/jobs", {
+  name: "send",
+  data: {},
+});
+checkEqual(
+  "with a configured `queues` list, a queue outside it is still 404",
+  [outside.status, outside.body.code],
+  [404, "QUEUE_NOT_FOUND"],
+);
+checkEqual(
+  "while one inside it is created by its first job",
+  (
+    await configured.call("POST", "/queues/mail/jobs", {
+      name: "send",
+      data: {},
+    })
+  ).status,
+  201,
+);
+
+/* ------------------------------------------------------------------ */
+step("A stale known-queue cache is re-checked before a 404");
+
+// `limits.queueCacheMs` caches the known-queue list for 404 checks. A queue
+// another process created since would be missing from it, so a miss is
+// re-read from the backend before it is believed — at most once per window,
+// shared by concurrent misses, so unknown names cannot each cost a read. The
+// driver here counts `listQueues`, which is what the known-queue list reads.
+/** How many times the backend's queue list has been read. */
+let queueReads = 0;
+const countingDriver = new Proxy(driver, {
+  get(target, property) {
+    const value: unknown = Reflect.get(target, property, target);
+    if (property === "listQueues" && typeof value === "function") {
+      return (...args: unknown[]) => {
+        queueReads++;
+        return value.apply(target, args);
+      };
+    }
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
+/** A context on the counting driver, in its own namespace. */
+const countedContext = (suffix: string) => {
+  const jobs = new BunJobs({
+    namespace: `${namespace}-${suffix}`,
+    driver: countingDriver,
+    logger: createTestLogger().logger,
+  });
+  contexts.push(jobs);
+  return jobs;
+};
+/** The backend reads `run` made. */
+const readsDuring = async (run: () => Promise<unknown>) => {
+  const before = queueReads;
+  await run();
+  return queueReads - before;
+};
+/** The statuses of a GET of each queue's counts, sent concurrently. */
+const countsOf = async (api: ReturnType<typeof mount>, ...names: string[]) =>
+  await Promise.all(
+    names.map(
+      async (name) => (await api.call("GET", `/queues/${name}/counts`)).status,
+    ),
+  );
+
+const cached = mount(
+  { limits: { queueCacheMs: 60_000 } },
+  countedContext("cached"),
+);
+await cached.jobs.queue("mail").add("send", {});
+checkEqual(
+  "the first check reads the backend and fills the cache",
+  await readsDuring(async () => countsOf(cached, "mail")),
+  1,
+);
+checkEqual(
+  "a hit is answered from the cache",
+  await readsDuring(async () => countsOf(cached, "mail")),
+  0,
+);
+// Created behind the API's back: the cache has not heard of it.
+await cached.jobs.queue("late").add("send", {});
+/** The statuses the concurrent misses answered. */
+let lateStatuses: number[] = [];
+checkEqual(
+  "three concurrent misses share one re-read",
+  await readsDuring(async () => {
+    lateStatuses = await countsOf(cached, "late", "late", "late");
+  }),
+  1,
+);
+checkEqual(
+  "which finds the queue: 200, not 404",
+  lateStatuses,
+  [200, 200, 200],
+);
+await cached.jobs.queue("later").add("send", {});
+/** The status of a miss after the window's re-read was spent. */
+let laterStatuses: number[] = [];
+checkEqual(
+  "another miss in the same window reads nothing",
+  await readsDuring(async () => {
+    laterStatuses = await countsOf(cached, "later");
+  }),
+  0,
+);
+checkEqual("so it is believed until the window ends", laterStatuses, [404]);
+
+const uncached = mount(
+  { limits: { queueCacheMs: 0 } },
+  countedContext("uncached"),
+);
+await uncached.jobs.queue("mail").add("send", {});
+checkEqual(
+  "queueCacheMs: 0 reads on every check, and a miss once: no re-read",
+  [
+    await readsDuring(async () => countsOf(uncached, "mail")),
+    await readsDuring(async () => countsOf(uncached, "absent")),
+  ],
+  [1, 1],
+);
+checkEqual(
+  "so a queue created behind its back is found at once",
+  await (async () => {
+    await uncached.jobs.queue("late").add("send", {});
+    return await countsOf(uncached, "late");
+  })(),
+  [200],
+);
 
 /* ------------------------------------------------------------------ */
 step("GET /queues pages, and searches ignoring case");
@@ -1755,6 +1973,8 @@ await Promise.all(
     readOnly,
     byDefault,
     narrow,
+    onlyOptIns,
+    everything,
     restricted,
     partial,
     older,
@@ -1789,6 +2009,10 @@ await Promise.all(
     noDocsAction,
     noSocket,
     previewing,
+    creating,
+    configured,
+    cached,
+    uncached,
     paging,
     uncounted,
     identified,

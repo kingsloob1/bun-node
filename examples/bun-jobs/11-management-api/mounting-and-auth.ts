@@ -248,6 +248,17 @@ show("a name the context does not define", {
   code: refused.body.code,
 });
 
+// A queue need not exist first: its first job creates it, as `BunQueue.add`
+// does. Only a configured `queues` list makes an unknown queue a 404.
+const firstJob = await call("POST", "/queues/welcome/jobs", "admin-token", {
+  name: "send-email",
+  data: { to: "first@example.com" },
+});
+show("POST /queues/welcome/jobs, a queue nothing has used yet", {
+  status: firstJob.status,
+  added: firstJob.body.added,
+});
+
 show(
   "POST /queues/mail/jobs/e3/promote",
   await call("POST", "/queues/mail/jobs/e3/promote", "admin-token"),
