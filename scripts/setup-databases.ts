@@ -228,11 +228,16 @@ async function confirm(question: string, options: Options): Promise<boolean> {
   }
 
   process.stdout.write(`${question} [y/N] `);
-  for await (const line of console) {
-    return /^y(?:es)?$/i.test(line.trim());
+  // One line is the whole answer: take it off the iterator, then close the
+  // iterator, which is exactly what leaving a `for await` early did.
+  const lines = console[Symbol.asyncIterator]();
+  const answer = await lines.next();
+  if (answer.done) {
+    return false;
   }
 
-  return false;
+  await lines.return?.();
+  return /^y(?:es)?$/i.test(answer.value.trim());
 }
 
 /** Reports what the script is doing. */
@@ -249,7 +254,8 @@ const log = {
   /** Something that failed. */
   bad: (text: string) => console.log(`  ${colour.red("x")} ${text}`),
   /** A command about to run. */
-  cmd: (argv: string[]) => console.log(`  ${colour.dim(`$ ${argv.join(" ")}`)}`),
+  cmd: (argv: string[]) =>
+    console.log(`  ${colour.dim(`$ ${argv.join(" ")}`)}`),
 };
 
 /* ------------------------------------------------------------------ *
@@ -578,7 +584,8 @@ const PLANS: Record<Service, ServicePlan> = {
       zypper: ["redis"],
       brew: ["redis"],
     },
-    unit: (platform) => (platform.manager === "brew" ? "redis" : "redis-server"),
+    unit: (platform) =>
+      platform.manager === "brew" ? "redis" : "redis-server",
     container: () => ({
       name: "bun-jobs-redis",
       image: "redis:7-alpine",
@@ -599,7 +606,8 @@ const PLANS: Record<Service, ServicePlan> = {
       return pong.stdout.trim().toUpperCase() === "PONG";
     },
     configure: async () => true,
-    configureNote: () => "nothing to configure: Redis needs no user or database",
+    configureNote: () =>
+      "nothing to configure: Redis needs no user or database",
   },
 
   postgres: {
@@ -630,7 +638,8 @@ const PLANS: Record<Service, ServicePlan> = {
     }),
     // The only check that means anything: connect as the user, to the database.
     configured: async (options) =>
-      (await portOpen(5432)) && (await sqlReachable(PLANS.postgres.url(options))),
+      (await portOpen(5432)) &&
+      (await sqlReachable(PLANS.postgres.url(options))),
     configure: async (platform, options) => {
       if (!has("psql")) {
         // A dry run has not installed anything yet, so a missing client is
@@ -655,7 +664,15 @@ const PLANS: Record<Service, ServicePlan> = {
         // A fresh install trusts local connections from the postgres user.
         const argv =
           platform.manager === "brew"
-            ? ["psql", "-v", "ON_ERROR_STOP=1", "-d", "postgres", "-c", statement]
+            ? [
+                "psql",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-d",
+                "postgres",
+                "-c",
+                statement,
+              ]
             : elevate(platform, [
                 "-u",
                 "postgres",
@@ -712,7 +729,8 @@ const PLANS: Record<Service, ServicePlan> = {
       },
     }),
     configured: async (options) =>
-      (await portOpen(3306)) && (await sqlReachable(PLANS.mariadb.url(options))),
+      (await portOpen(3306)) &&
+      (await sqlReachable(PLANS.mariadb.url(options))),
     configure: async (platform, options) => {
       const client = has("mariadb") ? "mariadb" : has("mysql") ? "mysql" : null;
 
@@ -724,7 +742,9 @@ const PLANS: Record<Service, ServicePlan> = {
           return true;
         }
 
-        log.bad("no mariadb or mysql client found, so the user cannot be created");
+        log.bad(
+          "no mariadb or mysql client found, so the user cannot be created",
+        );
         return false;
       }
 
@@ -946,7 +966,11 @@ async function setupService(
           ? `Docker is not usable here, and ${plan.dockerOnly}`
           : "Docker is not usable here",
       );
-      return { service: plan.service, ready: false, note: "docker unavailable" };
+      return {
+        service: plan.service,
+        ready: false,
+        note: "docker unavailable",
+      };
     }
 
     if (plan.dockerOnly && options.mode !== "docker") {
@@ -960,8 +984,7 @@ async function setupService(
     // usable; wait for a real connection rather than for the socket.
     const ready = options.dryRun
       ? true
-      : started &&
-        (await waitForConfigured(plan, options, plan.readyTimeout));
+      : started && (await waitForConfigured(plan, options, plan.readyTimeout));
 
     return {
       service: plan.service,
@@ -1007,7 +1030,11 @@ async function setupService(
     }
 
     if (!(await installPackages(platform, packages, options))) {
-      return { service: plan.service, ready: false, note: "the install failed" };
+      return {
+        service: plan.service,
+        ready: false,
+        note: "the install failed",
+      };
     }
 
     log.did(`installed ${packages.join(", ")}`);
@@ -1108,7 +1135,9 @@ async function main(): Promise<void> {
 
   log.section("Summary");
   for (const outcome of outcomes) {
-    const mark = outcome.ready ? colour.green("ready") : colour.red("not ready");
+    const mark = outcome.ready
+      ? colour.green("ready")
+      : colour.red("not ready");
     console.log(
       `  ${outcome.service.padEnd(9)} ${mark}  ${colour.dim(outcome.note)}`,
     );
