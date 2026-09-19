@@ -216,12 +216,14 @@ describe("headers and snippets", () => {
 });
 
 describe("gating", () => {
-  it("treats DELETE and remove/drain/clean/kill actions as destructive", () => {
+  it("treats DELETE and remove/drain/clean/kill/fail actions as destructive", () => {
     expect(isDestructive(op("removeJob"))).toBe(true);
     expect(isDestructive(op("removeJobs"))).toBe(true);
     expect(isDestructive(op("drainQueue"))).toBe(true);
     expect(isDestructive(op("cleanQueue"))).toBe(true);
     expect(isDestructive(op("killRunner"))).toBe(true);
+    expect(isDestructive(op("failJob"))).toBe(true);
+    expect(isDestructive(op("disableRepeatable"))).toBe(false);
     expect(isDestructive(op("pauseQueue"))).toBe(false);
     expect(isDestructive(op("getMeta"))).toBe(false);
   });
