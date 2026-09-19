@@ -63,6 +63,7 @@ reference.
   - [Pause, resume and shutdown](#pause-resume-and-shutdown)
   - [Stalled jobs](#stalled-jobs)
 - [The job API](#the-job-api)
+  - [Failing a job](#failing-a-job)
 - [The BunJobs registry and builder](#the-bunjobs-registry-and-builder)
   - [BunJobs options](#bunjobs-options)
   - [Defining and adding jobs](#defining-and-adding-jobs)
@@ -72,6 +73,7 @@ reference.
   - [Registry polling](#registry-polling)
   - [Dates in words](#dates-in-words)
 - [Scheduling and repeatable jobs](#scheduling-and-repeatable-jobs)
+  - [Disabling a series](#disabling-a-series)
 - [Debounce and throttle](#debounce-and-throttle)
 - [Flows](#flows)
 - [Reading a queue: search, totals, workers and throughput](#reading-a-queue-search-totals-workers-and-throughput)
@@ -457,7 +459,8 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `clean(state, { olderThan, limit = 1000 })` | Removes jobs in `state` older than `olderThan` ms. |
 | `setLimits(limits \| null)` / `getLimits()` | Cluster-wide limits. See [Rate and concurrency limits](#rate-and-concurrency-limits). |
 | `cleanWindows({ limit = 1000 })` | Removes stale debounce and throttle pointers. Workers also do this once a minute. |
-| `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, or removes one along with its scheduled occurrence. |
+| `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, each with `disabled`, or removes one along with its scheduled occurrence. Removing a series clears its disabled flag. |
+| `disableRepeatable(key)` / `enableRepeatable(key)` | Stops a series without removing it, or restarts it. See [Disabling a series](#disabling-a-series). |
 | `close()` | Closes the subscription, and the driver if the queue built it. |
 
 ## Workers
@@ -616,6 +619,10 @@ A job that dies can be copied to a dead-letter queue, named by the job's
 - `attemptsMade`
 - `diedAt`
 
+A job failed from outside its processor with `job.fail()` is copied only to
+its own `deadLetter` queue, since no worker is involved; failed from inside
+its processor, it is filed like any other death on that worker.
+
 It is added under the original job's name, so a worker on the dead-letter
 queue can dispatch on it as the original worker did. Its id is derived from
 the original's, so one death files exactly one letter. The dead job itself is
@@ -653,30 +660,66 @@ than `maxStalledCount` times is buried in `dead` instead.
 ## The job API
 
 `Job<TData, TResult>` is an immutable view of the stored record. Its mutating
-methods go to the driver and return what the driver decided.
+methods go to the driver and return what the driver decided. Those that answer
+with a job answer `this` type, or `null`: a job narrowed by a
+[typed registry](#typed-jobs) stays narrowed.
 
 | Member | Meaning |
 |---|---|
 | `id`, `name`, `data`, `opts`, `state`, `priority`, `runAt`, `createdAt` | Identity and placement. |
 | `processedOn`, `finishedOn`, `expiresAt` | Timestamps (epoch ms), or `null`. |
 | `attemptsMade`, `maxAttempts`, `stalledCount` | Attempt bookkeeping. |
-| `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. Errors are rehydrated as `Error`s. |
+| `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. `progress` is a `RunProgress` (a number or a record), or `null`. Errors are rehydrated as `Error`s. |
 | `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. |
 | `updateProgress(value)` | Records a number or an object, and emits `progress`. |
 | `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. |
 | `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
 | `setPriority(n)` | Changes the priority. A waiting job moves in claim order. |
-| `reschedule(when)` | Moves a waiting or delayed job to a `Date`, epoch ms, or words (`"in 10 minutes"`). |
-| `promote()` | Makes a delayed or retry-pending job claimable now. |
-| `retry({ resetAttempts })` | Returns a finished job to the queue. |
-| `remove()` | Removes the job. Refused while it is active. |
-| `extendLock(ms?)` / `touch(ms?)` | Extends the lock. Returns `false` once the lock is no longer yours. |
+| `reschedule(when)` / `schedule(when)` | Moves a waiting or delayed job to a `Date`, epoch ms, or words (`"in 10 minutes"`). The two are one method. |
+| `update({ data?, priority?, runAt?, onlyIn? })` | Changes several of those in one step, as `queue.update` does. `runAt` also takes words. |
+| `fail(reason)` | Fails the job for good: it goes to `dead` whatever attempts it has left. See [Failing a job](#failing-a-job). |
+| `disable()` / `enable()` | Stops or restarts the repeat series this job is an occurrence of. Throws `ConfigError` on a job in no series. |
+| `promote()` | Makes a delayed or retry-pending job claimable now, and emits and publishes `promoted`. |
+| `retry({ resetAttempts })` | Returns a finished job to the queue, and emits and publishes `retried`. |
+| `remove()` | Removes the job, and emits and publishes `removed`. Refused while it is active. |
+| `extendLock(ms?)` / `touch(ms?)` | Extends the lock, from the job the processor was handed only. Returns `false` once the lock is no longer yours, and always from any other view. |
 | `refresh()` | Re-reads the job, or returns `null` if it is gone. |
 | `getChildrenValues()` / `getChildrenFailures()` | Flow results, keyed `queue:id`. |
 | `toJSON()` | The stored record. |
 
+`remove()`, `promote()` and `retry()` announce themselves as the queue's
+methods of the same name do: the queue or worker the job came from emits the
+event locally, and publishes it when it publishes.
+
 Example:
 [`02-queues/job-lifecycle.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/job-lifecycle.ts).
+
+### Failing a job
+
+`job.fail(reason)` takes a string or an `Error` and sends the job to `dead`
+for good, with an `UnrecoverableJobError` carrying `reason` (an `Error` is
+kept as its `cause`). To have a job retried, throw from the processor instead.
+
+- **From its own processor**, the attempt ends dead once the processor
+  returns or throws. The reason given to `fail()` wins over anything thrown
+  after it, and a second `fail()` call changes nothing. The job gets the
+  worker's usual `failed` and `dead` events and dead letter.
+- **From anywhere else**, the job is buried at once: a waiting, delayed,
+  retry-pending or `waiting-children` job, or an active one still under the
+  lock the view was read with. The worker running an active one loses its lock
+  at the next heartbeat, and whatever the attempt returns is discarded. The
+  job gets `failed` and `dead`, and a copy in its own `deadLetter` queue. A
+  flow child's failure reaches its parent on the next maintenance pass.
+  `fail()` answers `false` for a job that is finished, gone, or active under
+  another lock, and throws `NotSupportedError` on a driver without `buryJob`.
+
+```ts
+const job = await queue.getJob(id);
+await job?.fail("customer cancelled"); // dead now; no more attempts
+```
+
+In an isolated processor, `fail()` is kept by the child and sent as the
+attempt's error when it settles.
 
 ## The BunJobs registry and builder
 
@@ -1087,6 +1130,26 @@ instead; `unique()` in the builder maps to it.
 
 Every worker's maintenance heals repeat series.
 
+### Disabling a series
+
+`queue.disableRepeatable(key)`, or `job.disable()` on an occurrence, stops a
+series without removing it: its pending occurrence is removed and nothing
+schedules another. `listRepeatables()` reports it with `disabled: true`.
+`enableRepeatable(key)`, or `job.enable()`, restarts it from now; occurrences
+it missed while disabled are not run. Both take either spelling of the key,
+and answer whether they changed anything.
+
+An occurrence already running when its series is disabled finishes. A worker
+scheduling the next occurrence at that same moment may add one more, which
+maintenance removes. The flag lives in reserved queue state, so both need a
+driver with queue state (every built-in one), and removing a series clears
+it. Adding a disabled series again does not re-enable it.
+
+```ts
+await queue.disableRepeatable("nightly-report");
+await queue.enableRepeatable("nightly-report");
+```
+
 Cron helpers:
 
 - `validateCron(expr, { tz? })`
@@ -1407,7 +1470,10 @@ object with every public member of `Job`.
   and `ctx.heartbeat`. Every read-only field is present, including `parent`.
 - **Unavailable**, because they would change the stored job directly, and they
   reject with an error saying so: `getLogs`, `updateData`, `setPriority`,
-  `reschedule`, `remove`, `retry`, `promote` and `refresh`.
+  `reschedule`, `schedule`, `update`, `remove`, `retry`, `promote`,
+  `disable`, `enable` and `refresh`.
+- `job.fail(reason)` is kept by the child and sent as the attempt's error when
+  it settles, so the job goes to `dead` as it would in-process.
 
 A reply on the job channel that is malformed rejects with a `ProtocolError`.
 Errors thrown in a child are rebuilt by name, so `UnrecoverableJobError` still
@@ -1871,8 +1937,11 @@ re-enable what configuration removed.
 | `jobs.retryAll` | mutation | |
 | `jobs.remove` | mutation | |
 | `jobs.promote` | mutation | |
+| `jobs.fail` | mutation | |
 | `repeatables.list` | read | |
 | `repeatables.remove` | mutation | |
+| `repeatables.disable` | mutation | |
+| `repeatables.enable` | mutation | |
 | `definitions.list` | read | |
 | `runners.list` | read | |
 | `runners.read` | read | |
@@ -2005,6 +2074,7 @@ driver support is present. Paths are relative to `basePath`.
 | DELETE | `/queues/:queue/jobs/:id` | `jobs.remove` | yes |
 | POST | `/queues/:queue/jobs/:id/retry` | `jobs.retry` | yes |
 | POST | `/queues/:queue/jobs/:id/promote` | `jobs.promote` | yes |
+| POST | `/queues/:queue/jobs/:id/fail` | `jobs.fail` | yes |
 | POST | `/queues/:queue/jobs/retry` | `jobs.retry` | yes |
 | POST | `/queues/:queue/jobs/remove` | `jobs.remove` | yes |
 | POST | `/queues/:queue/jobs/promote` | `jobs.promote` | yes |
@@ -2012,6 +2082,8 @@ driver support is present. Paths are relative to `basePath`.
 | POST | `/queues/:queue/jobs` | `jobs.add` | yes |
 | GET | `/queues/:queue/repeatables` | `repeatables.list` | no |
 | DELETE | `/queues/:queue/repeatables/:key` | `repeatables.remove` | yes |
+| POST | `/queues/:queue/repeatables/:key/disable` | `repeatables.disable` | yes |
+| POST | `/queues/:queue/repeatables/:key/enable` | `repeatables.enable` | yes |
 | GET | `/definitions` | `definitions.list` | no |
 | GET | `/runners` | `runners.list` | no |
 | GET | `/runners/:runner` | `runners.read` | no |
@@ -2364,6 +2436,10 @@ says which:
 | `search` | `?search=` on job lists | `findJobs` |
 | `workers` | `/workers`, `/queues/:queue/workers` | worker records |
 | `throughput` | `/queues/:queue/throughput`, `/overview` | `getThroughput` |
+
+`POST /jobs/:id/fail` also needs `buryJob`, and the repeatable `disable` and
+`enable` routes need queue state; every built-in driver has both, so neither
+has a feature flag.
 
 A route whose support is missing is not registered, not documented, and
 answers the API's JSON 404 — so a UI can ask `/meta` once and explain the
