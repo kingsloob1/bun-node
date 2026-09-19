@@ -33,6 +33,12 @@
  * (see {@link CheckConfig}), so bun-common, bun-nest, bun-jobs and
  * bun-jobs-ui all run this script unchanged.
  *
+ * Optional peers get two consumers. Entries without `peers` are checked in a
+ * `consumer/` that has none of the package's optional peers installed (a
+ * workspace dependency or consumer dependency that is an optional peer is
+ * left out of it), so a root that reaches one fails there. Entries with
+ * `peers` are checked in `consumer-peers/`, which has everything.
+ *
  * A cell is `OK` only with zero diagnostics anywhere. With `--baseline`, a cell
  * that was `OK` and no longer is, or a runtime import that worked and no
  * longer does, is `NEW-BROKEN` and fails the run; that is the acceptance rule
@@ -72,6 +78,14 @@ interface EntryConfig {
   browser?: boolean;
   /** Import it under Bun as well. Default `true`; turn off for type-only modules. */
   runtime?: boolean;
+  /**
+   * Optional peers this entry legitimately needs (e.g. bun-nest's `./jobs`
+   * needs `@kingsleyweb/bun-jobs`). The entry is checked in a consumer that
+   * has them installed; every entry without `peers` is checked in one that
+   * has none of the package's optional peers, which is what proves the root
+   * does not reach them. The build's verify step reads the same field.
+   */
+  peers?: string[];
 }
 
 /** `<package>/consumer-check.json`. */
@@ -128,6 +142,8 @@ interface RunResult {
   runtime: Record<string, string>;
   /** Shipped declarations importing a package the consumer may not have. */
   leaks: string[];
+  /** Spellings checked in the consumer with optional peers, and which peers. Absent in older runs. */
+  peerScoped?: Record<string, string[]>;
 }
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -333,7 +349,7 @@ function walk(dir: string, suffix: string): string[] {
  * runtime environment, provided by `@types/bun` (itself an optional peer, so
  * a consumer without it is warned by the package manager).
  */
-function scanLeaks(installed: string): string[] {
+function scanLeaks(installed: string, scoped: Set<string>): string[] {
   const pkg = JSON.parse(
     readFileSync(join(installed, "package.json"), "utf8"),
   ) as {
@@ -365,6 +381,10 @@ function scanLeaks(installed: string): string[] {
         ? `@types/${name.slice(1).replace("/", "__")}`
         : `@types/${name}`;
       if (guaranteed.has(name) || guaranteed.has(typesName)) continue;
+      // An optional peer an entry declares is allowed here; the peerless
+      // consumer's cells are what prove no other entry reaches it.
+      if (pkg.peerDependenciesMeta?.[name]?.optional && scoped.has(name))
+        continue;
       const why = pkg.peerDependenciesMeta?.[name]?.optional
         ? "optional peer"
         : "not declared";
@@ -422,7 +442,11 @@ async function main(): Promise<void> {
   ) as CheckConfig;
   const manifest = JSON.parse(
     readFileSync(join(packageDir, "package.json"), "utf8"),
-  ) as { name: string };
+  ) as {
+    name: string;
+    peerDependencies?: Record<string, string>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  };
   const tsVersion = flag("--typescript");
 
   const work = resolve(
@@ -452,36 +476,56 @@ async function main(): Promise<void> {
   }
 
   // 2. Install into a consumer that lives outside the repo, so nothing
-  // resolves through the workspace's node_modules.
-  const consumer = join(work, "consumer");
-  mkdirSync(consumer, { recursive: true });
+  // resolves through the workspace's node_modules. Entries that need an
+  // optional peer get a second consumer; the first never has one.
   const extra = Object.fromEntries(
     (config.consumerDependencies ?? []).map((d) => {
       const at = d.lastIndexOf("@");
       return at > 0 ? [d.slice(0, at), d.slice(at + 1)] : [d, "latest"];
     }),
   );
-  writeFileSync(
-    join(consumer, "package.json"),
-    JSON.stringify(
-      {
-        name: "consumer-check",
-        private: true,
-        type: "module",
-        dependencies: {
-          [manifest.name]: `file:${main}`,
-          ...siblings,
-          "@types/bun": "^1.4.2",
-          typescript: tsVersion ?? "^6.0.3",
-          ...extra,
-        },
-        overrides: siblings,
-      },
-      null,
-      2,
+  const optionalPeers = new Set(
+    Object.keys(manifest.peerDependencies ?? {}).filter(
+      (p) => manifest.peerDependenciesMeta?.[p]?.optional,
     ),
   );
-  run(["bun", "install", "--no-save"], consumer);
+  const withoutPeers = (deps: Record<string, string>) =>
+    Object.fromEntries(
+      Object.entries(deps).filter(([name]) => !optionalPeers.has(name)),
+    );
+  const install = (dir: string, peers: boolean): string => {
+    mkdirSync(dir, { recursive: true });
+    const workspace = peers ? siblings : withoutPeers(siblings);
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify(
+        {
+          name: "consumer-check",
+          private: true,
+          type: "module",
+          dependencies: {
+            [manifest.name]: `file:${main}`,
+            ...workspace,
+            "@types/bun": "^1.4.2",
+            typescript: tsVersion ?? "^6.0.3",
+            ...(peers ? extra : withoutPeers(extra)),
+          },
+          overrides: workspace,
+        },
+        null,
+        2,
+      ),
+    );
+    run(["bun", "install", "--no-save"], dir);
+    return dir;
+  };
+  const consumer = install(join(work, "consumer"), false);
+  const scoped = new Set(config.entries.flatMap((e) => e.peers ?? []));
+  const consumerWithPeers =
+    scoped.size > 0 ? install(join(work, "consumer-peers"), true) : consumer;
+  /** The consumer an entry is checked in. */
+  const consumerOf = (entry: EntryConfig) =>
+    entry.peers?.length ? consumerWithPeers : consumer;
   const tsc = join(consumer, "node_modules/typescript/bin/tsc");
   const typescript = (
     JSON.parse(
@@ -493,13 +537,13 @@ async function main(): Promise<void> {
   ).version;
 
   // 3. Type-check every spelling in every column.
-  const probes = join(consumer, "probes");
-  mkdirSync(probes, { recursive: true });
   const tasks: (() => Promise<CellResult>)[] = [];
   for (const entry of config.entries) {
+    const dir = consumerOf(entry);
+    mkdirSync(join(dir, "probes"), { recursive: true });
     const id = idOf(entry.spelling);
     const probe = `probes/${id}.ts`;
-    writeFileSync(join(consumer, probe), probeSource(entry));
+    writeFileSync(join(dir, probe), probeSource(entry));
     const columns = entry.browser
       ? ["bundler", "bun-init", "node16", "browser"]
       : ["bundler", "bun-init", "node16"];
@@ -508,7 +552,7 @@ async function main(): Promise<void> {
         const label = `${column}/${skipLibCheck ? "slc" : "strict"}`;
         const tsconfig = `tsconfig.${id}.${column}.${skipLibCheck ? "slc" : "strict"}.json`;
         writeFileSync(
-          join(consumer, tsconfig),
+          join(dir, tsconfig),
           JSON.stringify(
             {
               compilerOptions: { ...COLUMNS[column], skipLibCheck },
@@ -523,7 +567,7 @@ async function main(): Promise<void> {
           if (column === "browser") args.push("--listFiles");
           const proc = Bun.spawn({
             cmd: args,
-            cwd: consumer,
+            cwd: dir,
             stdout: "pipe",
             stderr: "pipe",
           });
@@ -545,7 +589,7 @@ async function main(): Promise<void> {
                     l,
                   ) && !/error TS/.test(l),
               )
-              .map((l) => relative(consumer, l.trim()));
+              .map((l) => relative(dir, l.trim()));
             if (leaks.length > 0) {
               cell.envLeaks = leaks;
               if (cell.status === "OK") cell.status = "LIB-ERRORS";
@@ -568,21 +612,22 @@ async function main(): Promise<void> {
   const runtime: Record<string, string> = {};
   for (const entry of config.entries) {
     if (entry.runtime === false) continue;
-    const script = join(consumer, `runtime.${idOf(entry.spelling)}.ts`);
+    const dir = consumerOf(entry);
+    const script = join(dir, `runtime.${idOf(entry.spelling)}.ts`);
     writeFileSync(
       script,
       `const m = await import(${JSON.stringify(entry.spelling)});\n` +
         `const missing = ${JSON.stringify(entry.values ?? [])}.filter((n) => m[n] === undefined);\n` +
         `if (missing.length) { console.error("undefined exports: " + missing.join(", ")); process.exit(1); }\n`,
     );
-    const r = run(["bun", script], consumer, true);
+    const r = run(["bun", script], dir, true);
     runtime[entry.spelling] =
       r.code === 0 ? "ok" : r.out.trim().split("\n").slice(-3).join(" | ");
   }
 
   // 5. Declarations importing what the consumer may not have.
   const installed = join(consumer, "node_modules", manifest.name);
-  const leaks = scanLeaks(installed);
+  const leaks = scanLeaks(installed, scoped);
 
   const result: RunResult = {
     package: manifest.name,
@@ -590,6 +635,11 @@ async function main(): Promise<void> {
     cells,
     runtime,
     leaks,
+    peerScoped: Object.fromEntries(
+      config.entries
+        .filter((e) => e.peers?.length)
+        .map((e) => [e.spelling, e.peers!]),
+    ),
   };
   report(result);
 
@@ -647,6 +697,12 @@ function report(result: RunResult): void {
   for (const [s, r] of Object.entries(result.runtime)) {
     if (r !== "ok") console.log(`runtime FAIL ${s}: ${r}`);
   }
+  for (const [s, peers] of Object.entries(result.peerScoped ?? {}))
+    console.log(`checked with optional peer(s) ${peers.join(", ")}: ${s}`);
+  if (Object.keys(result.peerScoped ?? {}).length > 0)
+    console.log(
+      `every other spelling: checked with no optional peer installed`,
+    );
 }
 
 /** Compares against a baseline; returns true when anything that worked broke. */

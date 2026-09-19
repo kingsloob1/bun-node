@@ -25,10 +25,13 @@ import type {
   ValidatorMiddleware,
 } from "@kingsleyweb/bun-common";
 import type { NestApplicationOptions } from "@nestjs/common";
+// `@nestjs/*` has no `exports` map, so a deep path is resolved as a file: it
+// needs its extension for a `node16` consumer, who reads this specifier
+// verbatim in the shipped declaration.
 import type {
   CorsOptions,
   CorsOptionsDelegate,
-} from "@nestjs/common/interfaces/external/cors-options.interface";
+} from "@nestjs/common/interfaces/external/cors-options.interface.js";
 import type { AddressInfo } from "node:net";
 import type {
   BunWebSocketAdapterOptions,
@@ -66,7 +69,7 @@ import {
   VERSION_NEUTRAL,
   VersioningType,
 } from "@nestjs/common";
-import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter";
+import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import { BunNestWebsocketAdapter } from "./BunWebSocketAdapter";
 
 export type VersionedRoute = (
@@ -154,7 +157,13 @@ export class BunHttpAdapter<
   #registeredBodyParsers = new Set<string>();
   /** When true, every response computes an `ETag`. Opt-in (off by default). */
   protected etagEnabled = false;
-  public readonly eventEmitter = new EventEmitter();
+  /**
+   * Emits the server's `listening`, `error` and `close` events, which the
+   * Nest-facing server proxy forwards. Annotated rather than inferred: the
+   * inferred `EventEmitter<[never]>` is written into the shipped declaration
+   * and fails `TS2344` against the `@types/node` a consumer resolves.
+   */
+  public readonly eventEmitter: EventEmitter = new EventEmitter();
 
   constructor(
     /**

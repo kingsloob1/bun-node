@@ -1,0 +1,104 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-nest writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-nest` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has them, and every other entry in one that has none.",
+  "workspaceDependencies": ["packages/bun-common", "packages/bun-jobs"],
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-nest",
+      "values": [
+        "BunHttpAdapter",
+        "BunNestHttpAdapter",
+        "BunWebSocketAdapter",
+        "BunNestWebsocketAdapter",
+        "MessageEventTypes",
+        "UploadedFile",
+        "UploadedFiles",
+        "AnyFilesInterceptor",
+        "FileFieldsInterceptor",
+        "FileInterceptor",
+        "FilesInterceptor",
+        "NoFilesInterceptor",
+        "getMultipartRequest",
+        "transformUploadException"
+      ],
+      "types": [
+        "BunNestWebSocketClient",
+        "BunWebSocketAdapterOptions",
+        "BunWebSocketGatewayOptions",
+        "BunWebSocketServerType",
+        "BunWebsocketHttpAdapter",
+        "MessageAckType",
+        "MessageBinaryAckType",
+        "MessageBinaryEventType",
+        "MessageConnectType",
+        "MessageDisConnectType",
+        "MessageErrorType",
+        "MessageEventType",
+        "MiddlewareFactoryRespType",
+        "RenderOptions",
+        "VersionedRoute",
+        "WebSocketClient",
+        "WebSocketClientData",
+        "WsAckFunction",
+        "UploadExceptionBody"
+      ],
+      "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/jobs",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": [
+        "BunJobsApiModule",
+        "InjectJobsApi",
+        "BUN_JOBS_API",
+        "BUN_JOBS_API_OPTIONS"
+      ],
+      "types": [
+        "BunJobsApiModuleOptions",
+        "BunJobsApiModuleAsyncOptions",
+        "JobsApi",
+        "JobsApiConfig"
+      ],
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.BunJobsApiModule.forRoot>>>;\nexport type _jobs = Expect<IsAny<t.BunJobsApiModuleOptions[\"jobs\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/jobs",
+      "peers": ["@kingsleyweb/bun-jobs"],
+      "values": ["BunJobsApiModule", "BUN_JOBS_API"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/jobs/tokens",
+      "values": ["BUN_JOBS_API", "BUN_JOBS_API_OPTIONS"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/BunHttpAdapter",
+      "values": ["BunHttpAdapter", "BunNestHttpAdapter"],
+      "types": ["VersionedRoute", "RenderOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/BunWebSocketAdapter",
+      "values": ["BunWebSocketAdapter", "MessageEventTypes"],
+      "types": ["WebSocketClient", "BunWebSocketAdapterOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/interceptors",
+      "values": ["FileInterceptor", "getMultipartRequest"],
+      "types": ["UploadExceptionBody"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/decorators",
+      "values": ["UploadedFile", "UploadedFiles"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/index",
+      "values": ["BunHttpAdapter", "FileInterceptor"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/index.ts",
+      "values": ["BunHttpAdapter"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/interceptors.js",
+      "values": ["FileInterceptor"]
+    }
+  ]
+}

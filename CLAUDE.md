@@ -27,8 +27,8 @@ published packages under `packages/`:
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
 typecheck, ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
-source directly (`main` is `lib/index.ts`; no JS is emitted). bun-common also
-ships built declarations in `dts/` and points `types` at them; bun-nest,
+source directly (`main` is `lib/index.ts`; no JS is emitted). bun-common and
+bun-nest also ship built declarations in `dts/` and point `types` at them;
 bun-jobs and bun-jobs-ui still point `types` at `lib/index.ts` until they adopt
 the same recipe — see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
 
@@ -293,9 +293,14 @@ A published package ships built `.d.ts` + `.d.ts.map` in `dts/` next to its
 `.ts` sources in `lib/`. Bun runs `lib/` (`main` and every `exports` `default`
 point there; no JS is emitted); the type checker reads `dts/` (`types` and
 every `exports` `types` condition). The maps point back into `lib/`, so
-go-to-definition lands on real source. bun-common does this today; bun-nest,
+go-to-definition lands on real source. bun-common and bun-nest do this today;
 bun-jobs and bun-jobs-ui adopt the same recipe next (until then their `types`
-is still `lib/index.ts`, so a consumer compiles their source).
+is still `lib/index.ts`, so a consumer compiles their source). The recipe is
+four files — `tsconfig.build.json` and `scripts/build-declarations.ts` copied
+unchanged (keep the copies identical), a `consumer-check.json`, and
+`__tests__/packaging.test.ts` — plus the `package.json` fields below, `dts/`
+in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
+`include`.
 
 - **Build**: `bun run build:types` (`scripts/build-declarations.ts`, also run
   on `prepack`). It runs `tsc -p tsconfig.build.json` (`emitDeclarationOnly`,
@@ -324,6 +329,9 @@ is still `lib/index.ts`, so a consumer compiles their source).
   each named export is not `any`, scans the shipped declarations for leaked
   imports, and imports each spelling under Bun. Any NEW-BROKEN cell fails.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
+  bun-nest: 58/66 OK on TS 6.0, against 34/66 on raw `.ts`; the other 8 are
+  `./jobs` under `bun-init`/`node16`, every diagnostic inside bun-jobs' raw
+  `.ts`, so they clear when bun-jobs ships declarations.
 - **`@types/*` backing a type a shipped declaration imports stays a runtime
   `dependency`**, not a `devDependency` (`@types/accepts`, `@types/busboy`,
   `@types/type-is`). Measured: moved to devDependencies, 30 consumer cells
@@ -345,8 +353,33 @@ is still `lib/index.ts`, so a consumer compiles their source).
   (`TS2724` without), while importing from `"busboy"` directly fails with
   `TS2307` (not a direct dependency of theirs). bun-nest inherits bun-common's
   types transitively, so fixing bun-common usually suffices.
-- **A declaration must never import an optional peer or an undeclared
-  package**: the build's verify step and the consumer check both fail on it.
+- **A declaration must never import an undeclared package, and imports an
+  optional peer only behind an entry that exists for it.** bun-nest's `./jobs`
+  is such an entry: `BunJobsApiModule` is written in bun-jobs' types, and
+  bun-jobs is an optional peer. The entry says so in `consumer-check.json`,
+  `"peers": ["@kingsleyweb/bun-jobs"]`. The build's verify step
+  (`checkPeerScopes`) walks the declarations' import graph from every literal
+  `exports` key and every `consumer-check.json` spelling, and fails when a
+  declaration importing an optional peer is reachable from one that does not
+  list it — the root above all. The consumer check installs two consumers:
+  entries without `peers` are checked in one with **no** optional peer
+  installed, so a root that reaches one breaks there; entries with `peers` in
+  one that has them. Measured for bun-nest: the root without bun-jobs is 6/6
+  OK and loads; `./jobs` without it is `TS2307` ×2 in `dts/jobs/*.d.ts` with
+  `skipLibCheck` off, silently `any` bun-jobs types with it on, and "Cannot
+  find module" at runtime — acceptable, since that subpath needs the peer.
+- **Deep imports into a package without an `exports` map need a file
+  extension.** tsc copies `@nestjs/common/interfaces` into the declaration
+  verbatim, and a `node16` consumer resolves neither a directory nor an
+  extensionless file there (`TS2307`). bun-nest imports
+  `@nestjs/common/interfaces/index.js`, `…/cors-options.interface.js` and
+  `@nestjs/core/adapters/http-adapter.js`.
+- **Annotate a public field whose inferred type is environment-specific.**
+  `eventEmitter = new EventEmitter()` emitted `EventEmitter<[never]>`, which
+  failed `TS2344` against the consumer's `@types/node` in every strict
+  column; `eventEmitter: EventEmitter` fixed it. No `TS2742`/`TS2883` arose
+  in bun-nest's emit: its declarations name bun-common types through
+  `@kingsleyweb/bun-common`, which exports them.
 
 ## Logging (`packages/bun-common/lib/logging.ts`)
 

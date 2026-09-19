@@ -6,5 +6,10 @@
       "lib/*": ["./lib/*"]
     }
   },
-  "include": ["./lib/**/*", "./__tests__/**/*", "eslint.config.mjs"]
+  "include": [
+    "./lib/**/*",
+    "./__tests__/**/*",
+    "./scripts/**/*",
+    "eslint.config.mjs"
+  ]
 }

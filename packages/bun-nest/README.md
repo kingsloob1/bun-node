@@ -18,9 +18,10 @@ Underneath, routing is
 
 **Requirements**
 
-- **Bun ≥ 1.4.2** (`engines.bun`). The package ships TypeScript source
-  (`main`/`types` point at `lib/index.ts`), so there is no build step. Bun runs
-  it as is.
+- **Bun ≥ 1.4.2** (`engines.bun`). Bun runs the shipped TypeScript source
+  (`main` is `lib/index.ts`), so there is no build step on your side; your
+  type checker reads the built declarations in `dts/` (`types`), so your
+  compiler options never apply to this package's source.
 - **NestJS 11**: the peers `@nestjs/common` and `@nestjs/core` (`^11.0.0`) and
   `rxjs` (`^7.1.0`) are required; `@nestjs/websockets` (`^11.0.0`) is needed
   only for gateways.
@@ -1183,25 +1184,23 @@ below it, the socket's included, so the two overlap:
 
 ### Installing bun-jobs is what makes the subpath compile
 
-`@kingsleyweb/bun-jobs` is an *optional* peer, and this package ships raw `.ts`
-(`main`/`types` point at `lib/index.ts`), so **a consumer compiles our source**
-— which `skipLibCheck` cannot suppress, since these are our files, not
-declaration files. Measured on a consumer project with the package installed
-and bun-jobs absent:
+`@kingsleyweb/bun-jobs` is an *optional* peer, and only the `./jobs` subpath's
+declarations import it. Measured on a consumer project with the packed package
+installed and bun-jobs absent:
 
-| Import | `tsc --noEmit` |
-|---|---|
-| `@kingsleyweb/bun-nest` (the barrel) | **0 errors** |
-| `@kingsleyweb/bun-nest/jobs` | **3 × `TS2307`**, "Cannot find module `@kingsleyweb/bun-jobs`" |
-| `@kingsleyweb/bun-nest/lib/jobs` | the same 3 |
+| Import | `skipLibCheck: false` | `skipLibCheck: true` |
+|---|---|---|
+| `@kingsleyweb/bun-nest` (the barrel) | **0 errors** | **0 errors** |
+| `@kingsleyweb/bun-nest/jobs` | **2 × `TS2307`**, "Cannot find module `@kingsleyweb/bun-jobs`", in `dts/jobs/*.d.ts` | no error, but `JobsApi`, `JobsApiConfig` and the options' `jobs` are silently `any` |
 
-Installing `@kingsleyweb/bun-jobs` takes all three to 0. The import path itself
-resolves either way — both `@kingsleyweb/bun-nest/jobs` and
-`@kingsleyweb/bun-nest/lib/jobs` are exports of this package and resolve to
-`lib/jobs/index.ts` — so the failure is the missing peer, not a bad specifier.
-The barrel's 0 is the point of the split: an application that has no jobs
-never compiles a line of this module, and nothing about the peer is really
-required of it.
+At runtime the subpath fails with "Cannot find module
+`@kingsleyweb/bun-jobs`", and the barrel loads. Installing
+`@kingsleyweb/bun-jobs` makes the subpath type-check and load. The import
+path resolves either way — `@kingsleyweb/bun-nest/jobs` and
+`@kingsleyweb/bun-nest/lib/jobs` are both exports of this package — so the
+failure is the missing peer, not a bad specifier. The barrel's 0 is the point
+of the split, and the declaration build enforces it: it fails if any entry
+other than the jobs subpath can reach a declaration that imports bun-jobs.
 
 ## Exported API
 
