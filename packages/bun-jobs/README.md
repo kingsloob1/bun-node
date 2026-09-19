@@ -26,6 +26,13 @@ written in words (`"every 2 weeks starting next monday"`).
 **Requires Bun ≥ 1.4.2.** The Redis and SQL drivers use `RedisClient` and
 `Bun.sql` APIs that 1.4.2 is the first release to declare.
 
+Bun runs the shipped TypeScript source (`main` is `lib/index.ts`), so there is
+no build step on your side, and a runner's child-process and `Worker`
+bootstraps run straight from `lib/runner/bootstrap/`. Your type checker reads
+the built declarations in `dts/` (`types`), so your compiler options never
+apply to this package's source. `mongodb` and `chrono-node` stay optional: no
+shipped declaration imports either.
+
 ## Status
 
 The package is being assembled in phases. What has landed on this branch, and

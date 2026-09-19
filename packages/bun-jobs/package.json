@@ -8,15 +8,65 @@
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-jobs#readme",
   "exports": {
-    ".": "./lib/index.ts",
-    "./api/contract": "./lib/api/contract/index.ts",
-    "./lib/*.ts": "./lib/*.ts",
-    "./lib/*.js": "./lib/*.ts",
-    "./lib/*": "./lib/*.ts",
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./api/contract": {
+      "@kingsleyweb/source": "./lib/api/contract/index.ts",
+      "types": "./dts/api/contract/index.d.ts",
+      "default": "./lib/api/contract/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib/api": {
+      "@kingsleyweb/source": "./lib/api/index.ts",
+      "types": "./dts/api/index.d.ts",
+      "default": "./lib/api/index.ts"
+    },
+    "./lib/api/contract": {
+      "@kingsleyweb/source": "./lib/api/contract/index.ts",
+      "types": "./dts/api/contract/index.d.ts",
+      "default": "./lib/api/contract/index.ts"
+    },
+    "./lib/drivers": {
+      "@kingsleyweb/source": "./lib/drivers/index.ts",
+      "types": "./dts/drivers/index.d.ts",
+      "default": "./lib/drivers/index.ts"
+    },
+    "./lib/queue": {
+      "@kingsleyweb/source": "./lib/queue/index.ts",
+      "types": "./dts/queue/index.d.ts",
+      "default": "./lib/queue/index.ts"
+    },
+    "./lib/runner": {
+      "@kingsleyweb/source": "./lib/runner/index.ts",
+      "types": "./dts/runner/index.d.ts",
+      "default": "./lib/runner/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
     "./package.json": "./package.json"
   },
   "main": "lib/index.ts",
-  "types": "lib/index.ts",
+  "types": "dts/index.d.ts",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -26,13 +76,16 @@
     "test": "__tests__"
   },
   "files": [
+    "dts",
     "lib"
   ],
   "engines": {
     "bun": ">=1.4.2"
   },
   "scripts": {
+    "build:types": "bun scripts/build-declarations.ts",
     "bun-version": "bun --version",
+    "prepack": "bun scripts/build-declarations.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

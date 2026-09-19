@@ -1,0 +1,126 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-jobs writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-jobs` from the repo root. Every spelling here worked at some point; removing one hides a regression. `./api/contract` is the browser-safe entry: it is also checked with no ambient Node/Bun types and must not load any.",
+  "workspaceDependencies": ["packages/bun-common"],
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-jobs",
+      "values": [
+        "BunQueue",
+        "BunQueueWorker",
+        "BunJobs",
+        "BunRunner",
+        "BunRunnerManager",
+        "RemoteRunner",
+        "JobsNotifier",
+        "MemoryDriver",
+        "FileDriver",
+        "RedisDriver",
+        "SqlDriver",
+        "MongoDriver",
+        "createDriver",
+        "createJobsApi",
+        "defineHandler",
+        "defineProcessor",
+        "ConfigError",
+        "encodeJobId",
+        "JOBS_API_WS_SUBPROTOCOL"
+      ],
+      "types": [
+        "JobsApi",
+        "JobsApiConfig",
+        "JobsApiAuthorizeResult",
+        "BunQueueOptions",
+        "BunQueueWorkerOptions",
+        "BunRunnerOptions",
+        "JobOptions",
+        "JobsDriver",
+        "MongoDriverOptions",
+        "RedisDriverOptions",
+        "SqlDriverOptions",
+        "MetaDto",
+        "JobDto"
+      ],
+      "snippet": "interface Email { to: string }\nconst driver = new m.MemoryDriver();\nconst emails = new m.BunQueue<Email, string>(\"emails\", { namespace: \"shop\", driver });\nexport const _job = emails.add(\"welcome\", { to: \"ada@example.com\" }, { attempts: 3 });\nconst worker = new m.BunQueueWorker<Email, string>(\"emails\", async (job) => {\n  type Data = typeof job.data;\n  const _dataNotAny: Expect<IsAny<Data>> = false;\n  const _dataExact: Equal<Data, Email> = true;\n  return `sent to ${job.data.to}`;\n}, { namespace: \"shop\", driver });\nexport type _worker = Expect<IsAny<typeof worker>>;\nexport type _api = Expect<IsAny<ReturnType<typeof m.createJobsApi>>>;\nexport type _mongo = Expect<IsAny<t.MongoDriverOptions[\"client\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/api/contract",
+      "browser": true,
+      "values": [
+        "encodeJobId",
+        "decodeJobId",
+        "JOBS_API_WS_SUBPROTOCOL",
+        "JOBS_API_PROTOCOL_VERSION",
+        "QUEUE_EVENT_TYPES",
+        "MAX_JOB_ID_LENGTH",
+        "JOB_STATES"
+      ],
+      "types": [
+        "MetaDto",
+        "OverviewDto",
+        "QueueListDto",
+        "EventName",
+        "ProblemDto"
+      ]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/index",
+      "values": ["BunQueue", "createJobsApi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/index.ts",
+      "values": ["BunQueue"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/index.js",
+      "values": ["BunQueue"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/api/contract",
+      "values": ["encodeJobId", "JOBS_API_WS_SUBPROTOCOL"],
+      "types": ["MetaDto"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/api/contract/constants",
+      "values": ["encodeJobId", "QUEUE_EVENT_TYPES"],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/api",
+      "values": ["createJobsApi"],
+      "types": ["JobsApi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/queue",
+      "values": ["BunQueue", "BunQueueWorker", "Job"],
+      "types": ["JobOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/runner",
+      "values": ["BunRunner", "SpawnExecutor", "WorkerExecutor"],
+      "types": ["BunRunnerOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/drivers",
+      "values": ["MemoryDriver", "createDriver"],
+      "types": ["JobsDriver"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/drivers/mongo/mongo-driver",
+      "values": ["MongoDriver"],
+      "types": ["MongoDriverOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/drivers/redis/redis-driver.js",
+      "values": ["RedisDriver"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/queue/BunQueue.ts",
+      "values": ["BunQueue"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs/lib/shared/errors",
+      "values": ["ConfigError"]
+    }
+  ]
+}
