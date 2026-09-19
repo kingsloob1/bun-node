@@ -1,10 +1,11 @@
 /**
  * The barrel must not reach `@kingsleyweb/bun-jobs`.
  *
- * `@kingsleyweb/bun-nest` ships raw `.ts`, so importing the barrel compiles
- * and executes its sources in the consumer. If the barrel re-exported the
+ * Bun executes `@kingsleyweb/bun-nest`'s shipped `.ts` sources, and the
+ * consumer type-checks its `dts/` declarations. If the barrel re-exported the
  * jobs module, every Nest application without bun-jobs would break — at type
- * level and at import time. The dependency starts at
+ * level and at import time. This test covers import time; the declaration
+ * build's verify step (`checkPeerScopes`) and the consumer check cover types. The dependency starts at
  * `@kingsleyweb/bun-nest/jobs` and nowhere else.
  *
  * Proved by construction rather than by introspection: this Bun has no
