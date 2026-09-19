@@ -1,6 +1,7 @@
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
 import type { NavigateOptions, RouteDef } from "./routing";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ScreenErrorBoundary } from "./components/ScreenErrorBoundary";
 import {
   matchPath,
   normalizeBasePath,
@@ -78,9 +79,31 @@ export interface RoutesProps {
   notFound: ReactNode;
 }
 
-/** Renders the first route matching the current location. */
+/**
+ * Renders the first route matching the current location, inside a
+ * {@link ScreenErrorBoundary}: a screen that crashes while rendering shows a
+ * recoverable panel in its place instead of blanking the app, and moving to
+ * another location tries again.
+ */
 export function Routes({ routes, notFound }: RoutesProps) {
   const { path } = useLocation();
+  return (
+    <ScreenErrorBoundary resetKey={path ?? ""}>
+      <MatchedRoute
+        routes={routes}
+        notFound={notFound}
+        path={path}
+      />
+    </ScreenErrorBoundary>
+  );
+}
+
+/** The first route matching `path`, or `notFound`. */
+function MatchedRoute({
+  routes,
+  notFound,
+  path,
+}: RoutesProps & { path: string | null }) {
   if (path !== null) {
     for (const route of routes) {
       const params = matchPath(route.path, path);

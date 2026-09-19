@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react";
 /**
  * The WebSocket API reference (AsyncAPI 3.0): `/docs/ws` and `/docs/ws/:item`.
  * The document comes from `meta.docs.asyncapi`; the pure reading of it is in
@@ -7,15 +8,17 @@
 import type { SpecDocument } from "../../../api/docs";
 import type { WsNavGroup } from "./model";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { docsKeys, getAsyncApiDocument } from "../../../api/docs";
 import { Card } from "../../../components/Card";
 import { EmptyState } from "../../../components/EmptyState";
 import { ErrorView } from "../../../components/ErrorView";
 import { Field } from "../../../components/Field";
 import { TextInput } from "../../../components/inputs";
+import { arrowTarget } from "../../../components/listKeys";
 import { Spinner } from "../../../components/Spinner";
 import { useApiClient } from "../../../context";
+import { SEARCH_SHORTCUT } from "../../../layout/shortcuts";
 import { useNav } from "../../../layout/useNav";
 import { useMeta } from "../../../meta/hooks";
 import { Link } from "../../../router";
@@ -53,8 +56,24 @@ interface WsSidebarProps {
 /** The sidebar: a search box, then the connection's panels, channels, operations and messages. */
 function WsSidebar({ groups, selected, query, onQuery }: WsSidebarProps) {
   const shown = filterGroups(groups, query);
+  const navRef = useRef<HTMLElement>(null);
+  const links = () =>
+    Array.from(
+      navRef.current?.querySelectorAll<HTMLAnchorElement>("a.ws-nav-link") ??
+        [],
+    );
+  // Arrow keys move between the links (Home/End to the ends), and ArrowDown
+  // from the search goes to the first; each link stays a Tab stop too.
+  const onListKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = arrowTarget(event.key, links(), document.activeElement);
+    if (target) {
+      event.preventDefault();
+      target.focus();
+    }
+  };
   return (
     <nav
+      ref={navRef}
       className="ws-sidebar"
       aria-label="WebSocket reference"
     >
@@ -63,7 +82,15 @@ function WsSidebar({ groups, selected, query, onQuery }: WsSidebarProps) {
           type="search"
           value={query}
           onChange={onQuery}
+          onKeyDown={(event) => {
+            const first = links()[0];
+            if (event.key === "ArrowDown" && first) {
+              event.preventDefault();
+              first.focus();
+            }
+          }}
           placeholder="Channel, message, code…"
+          {...SEARCH_SHORTCUT}
           autoComplete="off"
           spellCheck={false}
         />
@@ -76,33 +103,38 @@ function WsSidebar({ groups, selected, query, onQuery }: WsSidebarProps) {
           Nothing matches “{query}”.
         </p>
       )}
-      {shown.map((group) => (
-        <section
-          key={group.title}
-          className="ws-group"
-          data-testid={`ws-group-${group.title}`}
-        >
-          <h2 className="ws-group-title">{group.title}</h2>
-          <ul>
-            {group.items.map((item) => (
-              <li key={item.slug}>
-                <Link
-                  to={itemPath(item.slug, query)}
-                  className="ws-nav-link"
-                  activeMatch="exact"
-                  data-selected={item.slug === selected ? "true" : undefined}
-                  data-testid={`ws-nav-${item.slug}`}
-                >
-                  <span className="ws-nav-label">{item.label}</span>
-                  {item.hint && (
-                    <span className="ws-nav-hint">{item.hint}</span>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
+      <div
+        className="ws-sidebar-list"
+        onKeyDown={onListKey}
+      >
+        {shown.map((group) => (
+          <section
+            key={group.title}
+            className="ws-group"
+            data-testid={`ws-group-${group.title}`}
+          >
+            <h2 className="ws-group-title">{group.title}</h2>
+            <ul>
+              {group.items.map((item) => (
+                <li key={item.slug}>
+                  <Link
+                    to={itemPath(item.slug, query)}
+                    className="ws-nav-link"
+                    activeMatch="exact"
+                    data-selected={item.slug === selected ? "true" : undefined}
+                    data-testid={`ws-nav-${item.slug}`}
+                  >
+                    <span className="ws-nav-label">{item.label}</span>
+                    {item.hint && (
+                      <span className="ws-nav-hint">{item.hint}</span>
+                    )}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
     </nav>
   );
 }

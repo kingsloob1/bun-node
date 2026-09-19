@@ -4,6 +4,7 @@ import { Chip } from "../components/Badge";
 import { useUiConfig } from "../context";
 import { useMeta } from "../meta/hooks";
 import { Link } from "../router";
+import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { LiveStatus } from "./LiveStatus";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -83,8 +84,10 @@ export function Sidebar({ nav }: { nav: readonly NavItem[] }) {
 }
 
 /**
- * The app frame. Its root carries `data-testid="app-ready"`: it renders only
- * once the bootstrap loaded, and the E2E smoke waits on it.
+ * The app frame: a skip link to the main landmark, the header (banner), the
+ * section nav and the screen in `<main>`, plus the keyboard shortcuts (`/`
+ * and `?`, see `shortcuts.ts`). Its root carries `data-testid="app-ready"`:
+ * it renders only once the bootstrap loaded, and the E2E smoke waits on it.
  */
 export function Layout({ nav, children }: LayoutProps) {
   return (
@@ -95,6 +98,15 @@ export function Layout({ nav, children }: LayoutProps) {
       <a
         className="skip-link"
         href="#main"
+        onClick={(event) => {
+          // Focus the main landmark directly: a fragment navigation would
+          // put `#main` in the app's URL, and not every browser moves focus.
+          const main = document.getElementById("main");
+          if (main) {
+            event.preventDefault();
+            main.focus();
+          }
+        }}
       >
         Skip to content
       </a>
@@ -109,6 +121,7 @@ export function Layout({ nav, children }: LayoutProps) {
           {children}
         </main>
       </div>
+      <KeyboardShortcuts />
     </div>
   );
 }

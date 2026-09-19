@@ -674,9 +674,10 @@ export function EventsScreen() {
                   : ""}
               </span>
             )}
+            {/* The label says what a press does; an aria-pressed on top would
+                contradict it ("Resume, pressed"). */}
             <Button
               size="sm"
-              aria-pressed={paused}
               onClick={paused ? resume : pause}
             >
               {paused ? "Resume" : "Pause"}

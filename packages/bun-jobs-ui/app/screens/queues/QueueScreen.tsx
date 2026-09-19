@@ -71,6 +71,7 @@ export function QueueScreen() {
     return (
       <div className="screen">
         <ErrorView
+          headingLevel={1}
           error={detail.error}
           title={`Could not load the queue ${queue}`}
           onRetry={() => void detail.refetch()}

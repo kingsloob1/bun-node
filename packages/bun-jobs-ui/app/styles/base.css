@@ -346,7 +346,7 @@ code {
   width: 100%;
   min-width: 0;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
@@ -399,9 +399,9 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
+/* Dimmed by colour alone: an opacity on top would take it below 4.5:1. */
 .table .zero {
   color: var(--text-muted);
-  opacity: 0.6;
 }
 
 .queue-name {
@@ -420,6 +420,7 @@ code {
 
 .empty-state-title {
   margin: 0 0 var(--space-1);
+  font-size: inherit;
   font-weight: 600;
   color: var(--text);
 }
@@ -450,6 +451,8 @@ code {
 }
 
 .error-view-title {
+  margin: 0;
+  font-size: inherit;
   font-weight: 650;
 }
 
@@ -489,9 +492,25 @@ code {
   }
 }
 
+/*
+ * Reduced motion: no transition or animation anywhere, whichever stylesheet
+ * declares it (a screen's chunk included), except the spinner, which keeps
+ * turning slowly: a spinner that stops no longer says "busy".
+ */
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+
   .spinner {
-    animation-duration: 2.4s;
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

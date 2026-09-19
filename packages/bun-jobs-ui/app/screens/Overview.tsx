@@ -15,6 +15,7 @@ import { Table } from "../components/Table";
 import { useApiClient } from "../context";
 import { formatNumber, plural } from "../format";
 import { useInView } from "../hooks/useInView";
+import { SEARCH_SHORTCUT } from "../layout/shortcuts";
 import { createLimiter } from "../limiter";
 import { usePollInterval } from "../live";
 import { useCan, useFeature } from "../meta/hooks";
@@ -281,6 +282,7 @@ function QueuesCard() {
             type="search"
             className="input"
             placeholder="Filter queues"
+            {...SEARCH_SHORTCUT}
             value={search}
             maxLength={200}
             onChange={(event) => setSearch(event.target.value)}

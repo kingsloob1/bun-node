@@ -7,6 +7,7 @@ import { ErrorView } from "../../components/ErrorView";
 import { Pager } from "../../components/Pager";
 import { Spinner } from "../../components/Spinner";
 import { useApiClient } from "../../context";
+import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useCan, useMeta } from "../../meta/hooks";
 import { QueueTable } from "../Overview";
 import { useQueueListLive, useRefreshInterval } from "./live";
@@ -77,6 +78,7 @@ export function QueuesListScreen() {
               type="search"
               className="input"
               placeholder="Search queues"
+              {...SEARCH_SHORTCUT}
               value={search}
               maxLength={200}
               onChange={(event) =>

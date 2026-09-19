@@ -10,6 +10,7 @@ import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
 import { plural } from "../../format";
+import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useCan } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useUrlParams } from "../queues/urlState";
@@ -141,6 +142,7 @@ export function RunnersListScreen() {
               type="search"
               className="input"
               placeholder="Filter runners"
+              {...SEARCH_SHORTCUT}
               value={filter}
               maxLength={200}
               onChange={(event) => update({ search: event.target.value })}

@@ -2,6 +2,8 @@ import type { KeyboardEvent } from "react";
 import type { DocTagGroup } from "./model";
 import { useRef } from "react";
 import { TextInput } from "../../../components/inputs";
+import { arrowTarget } from "../../../components/listKeys";
+import { SEARCH_SHORTCUT } from "../../../layout/shortcuts";
 import { Link } from "../../../router";
 import { MethodBadge } from "./OperationView";
 
@@ -34,26 +36,11 @@ export function Sidebar({ groups, query, onQuery, hrefOf }: SidebarProps) {
   const count = groups.reduce((sum, group) => sum + group.operations.length, 0);
 
   function onListKey(event: KeyboardEvent<HTMLDivElement>) {
-    const all = links(listRef.current);
-    const index = all.indexOf(document.activeElement as HTMLAnchorElement);
-    let next: number | undefined;
-    switch (event.key) {
-      case "ArrowDown":
-        next = index < 0 ? 0 : Math.min(index + 1, all.length - 1);
-        break;
-      case "ArrowUp":
-        next = index <= 0 ? 0 : index - 1;
-        break;
-      case "Home":
-        next = 0;
-        break;
-      case "End":
-        next = all.length - 1;
-        break;
-      default:
-        return;
-    }
-    const target = all[next];
+    const target = arrowTarget(
+      event.key,
+      links(listRef.current),
+      document.activeElement,
+    );
     if (target) {
       event.preventDefault();
       target.focus();
@@ -70,6 +57,7 @@ export function Sidebar({ groups, query, onQuery, hrefOf }: SidebarProps) {
         value={query}
         aria-label="Search operations"
         placeholder="Search path, id, summary"
+        {...SEARCH_SHORTCUT}
         onChange={(value) => onQuery(value)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
