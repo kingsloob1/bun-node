@@ -57,6 +57,24 @@ export const EventsScreen = onDemand(
   "Loading the events",
 );
 
+/** `/docs`, on demand. */
+export const DocsHomeScreen = onDemand(
+  async () => (await import("./docs")).DocsHomeScreen,
+  "Loading the API docs",
+);
+
+/** `/docs/http[/:operationId]`, on demand. */
+export const HttpDocsScreen = onDemand(
+  async () => (await import("./docs")).HttpDocsScreen,
+  "Loading the HTTP reference",
+);
+
+/** `/docs/ws[/:item]`, on demand. */
+export const WsDocsScreen = onDemand(
+  async () => (await import("./docs")).WsDocsScreen,
+  "Loading the WebSocket reference",
+);
+
 /** `/runners`, on demand. */
 export const RunnersListScreen = onDemand(
   async () => (await import("./runners")).RunnersListScreen,
