@@ -1,5 +1,8 @@
+import type { QueryClient } from "@tanstack/react-query";
 import type { ErrorInfo, ReactNode } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
 import { Component } from "react";
+import { resetScreenQueries } from "../queryClient";
 import { Button } from "./Button";
 
 /** Props of {@link ScreenErrorBoundary}. */
@@ -27,14 +30,26 @@ interface ScreenErrorBoundaryState {
 /**
  * Catches a routed screen's render crash so the app around it survives: the
  * header, nav and live status stay, and the screen's place shows what
- * failed with a "Reload this screen" button that mounts it afresh. A lazy
+ * failed with a "Reload this screen" button that mounts it afresh and
+ * re-reads its data: the cached answers it read are reset first (see
+ * {@link resetScreenQueries}; `/meta` and the permissions are kept), so a
+ * crash caused by a bad answer recovers once the host answers well. A lazy
  * screen whose chunk failed to load is retried the same way (see
  * `screens/lazy.tsx`).
+ *
+ * The app's queries do not throw into it (no `throwOnError`, no suspense
+ * queries: a failed read renders the screen's own error view), so there is
+ * no `QueryErrorResetBoundary` to reset.
  */
 export class ScreenErrorBoundary extends Component<
   ScreenErrorBoundaryProps,
   ScreenErrorBoundaryState
 > {
+  static override contextType = QueryClientContext;
+
+  /** The app's query client, when a `QueryClientProvider` is above (none in some tests). */
+  declare context: QueryClient | undefined;
+
   override state: ScreenErrorBoundaryState = {
     error: null,
     failed: false,
@@ -71,8 +86,11 @@ export class ScreenErrorBoundary extends Component<
     this.props.onError?.(error, info);
   }
 
-  /** Mounts the screen again. */
+  /** Resets the screen's cached answers, then mounts it again. */
   private readonly reload = () => {
+    if (this.context) {
+      void resetScreenQueries(this.context);
+    }
     this.setState((state) => ({
       error: null,
       failed: false,
