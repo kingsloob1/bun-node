@@ -27,8 +27,46 @@
     "standard-schema",
     "cors"
   ],
+  "exports": {
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib/multipart": {
+      "@kingsleyweb/source": "./lib/multipart/index.ts",
+      "types": "./dts/multipart/index.d.ts",
+      "default": "./lib/multipart/index.ts"
+    },
+    "./lib/multipart/storage": {
+      "@kingsleyweb/source": "./lib/multipart/storage/index.ts",
+      "types": "./dts/multipart/storage/index.d.ts",
+      "default": "./lib/multipart/storage/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./package.json": "./package.json"
+  },
   "main": "lib/index.ts",
-  "types": "lib/index.ts",
+  "types": "dts/index.d.ts",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -38,13 +76,16 @@
     "test": "__tests__"
   },
   "files": [
+    "dts",
     "lib"
   ],
   "engines": {
     "bun": ">=1.4.2"
   },
   "scripts": {
+    "build:types": "bun scripts/build-declarations.ts",
     "bun-version": "bun --version",
+    "prepack": "bun scripts/build-declarations.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

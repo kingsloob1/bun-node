@@ -1,0 +1,100 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-common writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-common` from the repo root. Every spelling here worked at some point; removing one hides a regression.",
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-common",
+      "values": [
+        "BunRouter",
+        "BunRequest",
+        "BunResponse",
+        "BunHttpAdapter",
+        "BunWebSocket",
+        "validate",
+        "createLogger",
+        "cors",
+        "compression",
+        "accepts",
+        "typeIs",
+        "mime",
+        "DiskStorage",
+        "serializeError"
+      ],
+      "types": [
+        "LogEvent",
+        "MultiPartOptions",
+        "BusboyConfig",
+        "FileInfo",
+        "RouterHandler",
+        "CorsOptions",
+        "StandardSchemaV1",
+        "SerializedError",
+        "BunServer"
+      ],
+      "snippet": "const router = new m.BunRouter();\nrouter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _busboyLimits = Expect<IsAny<NonNullable<t.MultiPartOptions[\"limits\"]>>>;\nexport type _acceptsTypes = Expect<IsAny<ReturnType<typeof m.accepts>>>;\nexport type _logFields = Expect<IsAny<Parameters<t.Logger[\"info\"]>[1]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/cors",
+      "values": ["cors"],
+      "types": ["CorsStaticOrigin", "CorsOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/logging",
+      "values": ["createLogger", "resolveLogger"],
+      "types": ["LogEvent", "Logger"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/utils/native",
+      "values": ["serializeError", "deserializeError", "sleep"],
+      "types": ["SerializedError"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/utils/native.ts",
+      "values": ["serializeError"],
+      "types": ["SerializedError"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/utils/native.js",
+      "values": ["serializeError"],
+      "types": ["SerializedError"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/multipart",
+      "values": ["transformUploadOptions", "getBusBoyConfig"],
+      "types": ["StorageFile", "UploadOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/multipart/index",
+      "values": ["transformUploadOptions"],
+      "types": ["StorageFile"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/multipart/handlers",
+      "values": ["handleMultipartSingleFile", "handleNoFiles"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/multipart/storage/disk-storage",
+      "values": ["DiskStorage"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/BunRouter",
+      "values": ["BunRouter"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/index",
+      "values": ["BunRouter", "createLogger"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/index.ts",
+      "values": ["BunRouter"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/types/general",
+      "types": ["RouterHandler", "MultiPartOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-common/lib/types/standardSchema",
+      "types": ["StandardSchemaV1"],
+      "browser": true
+    }
+  ]
+}
