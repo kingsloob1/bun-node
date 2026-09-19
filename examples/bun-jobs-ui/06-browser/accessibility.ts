@@ -45,10 +45,17 @@
  *   "screen-error"` ("This screen failed to show") in its place, while the
  *   header, nav and badge keep working, and offers "Reload this screen".
  *   The crash is made from outside: a host middleware answers one job's
- *   read with a `name` that is an object, which React cannot render. That
- *   button remounts the screen over the same query cache, so a crash caused
- *   by a cached answer comes straight back; a page reload, with the host
- *   answering truthfully, draws the job.
+ *   read with a `workerId` that is an object, which React cannot render
+ *   (the client's shape check looks only at `id`, `name`, `queue` and
+ *   `state`). With the host answering truthfully again, the button resets
+ *   the screen's cached answers and mounts it afresh: the job is drawn after
+ *   exactly one new read of it, and no `/meta` or `/meta/permissions` read.
+ * - **An answer of the wrong shape is an error state, not a crash or an
+ *   empty screen.** A job read answered `{}` shows "Could not load the job"
+ *   (the page's only `h1`) with `UNEXPECTED_RESPONSE` and a Retry; a jobs
+ *   list naming a job with an object draws "(invalid)" in its name cell,
+ *   and that job's own read, failing the same shape check, shows "Could not
+ *   load the job" too.
  *
  * Keys are sent with `view.press()`, a trusted `keydown` with the key's
  * `key` (`"/"`, `"?"`, `"Tab"`, `"Enter"`, `"Escape"`), exactly what the
@@ -78,8 +85,14 @@ const chromePath = chromeOrSkip();
 const QUEUE = "mail";
 /** Its job. */
 const JOB_ID = "welcome-ada";
-/** A job whose read the host garbles until told to stop. */
+/** A job whose read the host garbles (a `workerId` React cannot draw) until told to stop. */
 const GARBLED_ID = "garbled";
+/** A queue holding the jobs whose answers are the wrong shape. */
+const ODD = "odd";
+/** A job of {@link ODD} whose read the host answers with `{}`. */
+const SHAPELESS_ID = "shapeless";
+/** A job of {@link ODD} whose `name` the host answers as an object. */
+const NAMELESS_ID = "nameless";
 /** A queue whose jobs this caller may list but not read. */
 const VAULT = "vault";
 /** Its job. */
@@ -112,31 +125,82 @@ const api = createJobsApi({
 const ui = jobsUi({ api, logger: noopLogger });
 const app = new BunHttpAdapter(0, { logger: noopLogger });
 
-/** While `true`, the host answers {@link GARBLED_ID}'s read with a body the screen cannot draw. */
-let garble = true;
-/** How many garbled answers the host sent. */
-let garbledAnswers = 0;
+/** A header the host's own reads carry, so the garbling middleware passes them straight to the API. */
+const RAW_READ = "x-example-raw-read";
 
-// Ahead of the API: a job whose `name` is an object. The client does not
-// validate shapes, so the job screen renders it, and React throws
-// ("Objects are not valid as a React child"): a render crash, which is
-// exactly what the per-screen error boundary is for.
-app.use((req, res, next) => {
+/**
+ * Per job id: turns the job's real read into the body the host answers
+ * instead. Set to garble a job's read, delete to answer truthfully again.
+ */
+const garbleJob = new Map<
+  string,
+  (real: Record<string, unknown>) => Record<string, unknown>
+>();
+/** Per job id: the `name` the host gives that job in every jobs list it answers. */
+const garbleListName = new Map<string, unknown>();
+/** How many reads of each job the host answered, garbled or not, by job id. */
+const jobReads = new Map<string, number>();
+/** How many `/meta` and `/meta/permissions` reads the host answered. */
+let metaReads = 0;
+
+/** Reads `url` (path and query) from the API itself, past the garbling. */
+async function readRaw(url: string): Promise<Record<string, unknown>> {
+  const response = await fetch(new URL(url, app.url!), {
+    headers: { [RAW_READ]: "1" },
+  });
+  return (await response.json()) as Record<string, unknown>;
+}
+
+// Ahead of the API: counts the reads a check asserts on, and garbles the
+// ones a check asks for, keyed by job id. Each garbled answer starts from
+// the job's real read, so only the field a check names is wrong.
+app.use(async (req, res, next) => {
+  if (req.method !== "GET" || req.get(RAW_READ)) {
+    next();
+    return;
+  }
+  const path = req.path;
   if (
-    garble &&
-    req.method === "GET" &&
-    req.path === `${api.basePath}/queues/${QUEUE}/jobs/${GARBLED_ID}`
+    path === `${api.basePath}/meta` ||
+    path.startsWith(`${api.basePath}/meta/`)
   ) {
-    garbledAnswers++;
+    metaReads++;
+  }
+  const [queues, , jobsSegment, id, ...rest] = path
+    .slice(api.basePath.length + 1)
+    .split("/");
+  if (queues !== "queues" || jobsSegment !== "jobs" || rest.length > 0) {
+    next();
+    return;
+  }
+  if (id === undefined) {
+    // A jobs list: rename the jobs a check garbles.
+    if (garbleListName.size === 0) {
+      next();
+      return;
+    }
+    const page = await readRaw(req.originalUrl);
+    const items = Array.isArray(page.items)
+      ? (page.items as Record<string, unknown>[])
+      : [];
     res.status(200).json({
-      id: GARBLED_ID,
-      queue: QUEUE,
-      name: { not: "a string" },
-      state: "waiting",
+      ...page,
+      items: items.map((item) =>
+        garbleListName.has(String(item.id))
+          ? { ...item, name: garbleListName.get(String(item.id)) }
+          : item,
+      ),
     });
     return;
   }
-  next();
+  const jobId = decodeURIComponent(id);
+  jobReads.set(jobId, (jobReads.get(jobId) ?? 0) + 1);
+  const garbled = garbleJob.get(jobId);
+  if (!garbled) {
+    next();
+    return;
+  }
+  res.status(200).json(garbled(await readRaw(req.originalUrl)));
 });
 app.use(api.basePath, api.router);
 api.websocket?.attach(app);
@@ -149,6 +213,22 @@ const mail = jobs.queue(QUEUE);
 await mail.add("send-email", { to: "ada@example.com" }, { jobId: JOB_ID });
 await mail.add("send-email", { to: "ops@example.com" }, { jobId: GARBLED_ID });
 await jobs.queue(VAULT).add("payslip", { to: "ada" }, { jobId: VAULT_JOB });
+const odd = jobs.queue(ODD);
+await odd.add("send-email", { to: "bob@example.com" }, { jobId: SHAPELESS_ID });
+await odd.add("send-email", { to: "eve@example.com" }, { jobId: NAMELESS_ID });
+
+// The garbling, keyed by job id. A worker id that is an object passes the
+// client's shape check (it checks only `id`, `name`, `queue` and `state`),
+// and React throws drawing it ("Objects are not valid as a React child"):
+// a render crash, which is what the per-screen error boundary is for.
+garbleJob.set(GARBLED_ID, (real) => ({ ...real, workerId: { host: "a" } }));
+// A body that is not a job at all: the shape check turns it into an error.
+garbleJob.set(SHAPELESS_ID, () => ({}));
+// A name that is not text: the jobs table draws "(invalid)", and the job's
+// own read fails the shape check.
+const OBJECT_NAME = { not: "a string" };
+garbleListName.set(NAMELESS_ID, OBJECT_NAME);
+garbleJob.set(NAMELESS_ID, (real) => ({ ...real, name: OBJECT_NAME }));
 await jobs
   .runner({
     id: RUNNER,
@@ -600,7 +680,12 @@ try {
       waitForSelector('[data-testid="live-status"]', 0),
     )) && (await view.evaluate<boolean>(waitForSelector(queuesLink, 0))),
   );
-  show("garbled answers sent", garbledAnswers);
+  show(
+    "what screen-error says",
+    await view.evaluate<string | null>(
+      textOf('[data-testid="screen-error"] [role="alert"]', 0),
+    ),
+  );
 
   check(
     '"Reload this screen" is offered',
@@ -609,21 +694,106 @@ try {
     ),
   );
 
-  // "Reload this screen" mounts the screen again, but over the same query
-  // cache: the garbled answer is still there, the screen draws it before
-  // any refetch, and crashes again. It recovers a transient crash (a screen
-  // chunk that failed to load, a render bug the next state avoids), not a
-  // bad answer still cached. Reloading the page starts a fresh cache.
-  garble = false;
-  await view.reload();
+  // The host answers truthfully again. "Reload this screen" resets the
+  // crashed screen's cached answers before mounting it again, so the screen
+  // reads the job afresh instead of drawing the garbled answer once more;
+  // `/meta` and the permissions are kept.
+  garbleJob.delete(GARBLED_ID);
+  const readsBefore = jobReads.get(GARBLED_ID) ?? 0;
+  const metaBefore = metaReads;
+  show("/meta and /meta/permissions reads so far", metaBefore);
+  check(
+    'with the host answering truthfully, "Reload this screen" is clicked',
+    await view.evaluate<boolean>(
+      button('[data-testid="screen-error"]', "Reload this screen", true),
+    ),
+  );
   checkEqual(
-    "with the host answering truthfully, a page reload draws the job",
+    "it draws the job",
     await view.evaluate<string | null>(textOf('[data-testid="job-id"]')),
     GARBLED_ID,
   );
   check(
     "and screen-error is gone",
     await view.evaluate<boolean>(gone('[data-testid="screen-error"]')),
+  );
+  checkEqual(
+    "the host saw exactly one new read of the job, and no /meta or /meta/permissions read",
+    {
+      jobReads: (jobReads.get(GARBLED_ID) ?? 0) - readsBefore,
+      metaReads: metaReads - metaBefore,
+    },
+    { jobReads: 1, metaReads: 0 },
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(
+    'Answers of the wrong shape: an error state or "(invalid)", not a crash',
+  );
+
+  await open(`/queues/${ODD}/jobs/${SHAPELESS_ID}`);
+  const errorTitle = '[role="alert"] h1.error-view-title';
+  checkEqual(
+    `a job read answered {}: "Could not load the job" is the page's only h1`,
+    [
+      await view.evaluate<string | null>(textOf(errorTitle)),
+      await view.evaluate<string[]>(H1S),
+    ],
+    ["Could not load the job", ["Could not load the job"]],
+  );
+  // The client retries a failed read (twice, backing off), so the error
+  // state arrives after the third answer, not the first.
+  show(
+    "reads of the {} job before the error state",
+    jobReads.get(SHAPELESS_ID),
+  );
+  show(
+    "what the error state says",
+    await view.evaluate<string | null>(textOf('[role="alert"]', 0)),
+  );
+  check(
+    "it names UNEXPECTED_RESPONSE, offers Retry, and is neither screen-error nor an empty job",
+    (await view.evaluate<boolean>(
+      `document.querySelector('[role="alert"]').textContent.includes("UNEXPECTED_RESPONSE")`,
+    )) &&
+      (await view.evaluate<boolean>(
+        button('[role="alert"]', "Retry", false),
+      )) &&
+      !(await view.evaluate<boolean>(
+        waitForSelector('[data-testid="screen-error"]', 0),
+      )) &&
+      !(await view.evaluate<boolean>(
+        waitForSelector('[data-testid="job-id"]', 0),
+      )),
+    pageConsole,
+  );
+
+  await open(`/queues/${ODD}`);
+  const namelessRow = `[data-testid="job-row-${NAMELESS_ID}"]`;
+  check(
+    'a jobs list naming a job with an object: its row draws "(invalid)" as the name',
+    ((await view.evaluate<string | null>(textOf(namelessRow))) ?? "").includes(
+      "(invalid)",
+    ),
+    pageConsole,
+  );
+  check(
+    "and the queue screen did not crash",
+    !(await view.evaluate<boolean>(
+      waitForSelector('[data-testid="screen-error"]', 0),
+    )),
+  );
+
+  await open(`/queues/${ODD}/jobs/${NAMELESS_ID}`);
+  checkEqual(
+    `that job's own read, with the object name: "Could not load the job", no crash`,
+    [
+      await view.evaluate<string | null>(textOf(errorTitle)),
+      await view.evaluate<boolean>(
+        waitForSelector('[data-testid="screen-error"]', 0),
+      ),
+    ],
+    ["Could not load the job", false],
   );
 
   /* ---------------------------------------------------------------- */
