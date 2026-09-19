@@ -848,6 +848,43 @@ export class RedisDriver implements JobsDriver {
     return Number(failed) === 1;
   }
 
+  async buryJob(
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: { retention: Retention; keepStacktraces: number; token?: string },
+    now: number,
+  ): Promise<JobRecord | null> {
+    await this.connect();
+
+    const existing = await this.getJob(q, id);
+    if (!existing) {
+      return null;
+    }
+
+    // Built here, as `failJob` builds it: the script only swaps it in. The
+    // state and lock are checked in the script, which is what counts.
+    const stacktrace = [error, ...existing.stacktrace].slice(
+      0,
+      Math.max(0, opts.keepStacktraces),
+    );
+    const { mode, count, ttl } = this.#retention(opts.retention);
+
+    const buried = await this.#runQueue(q, scripts.BURY, [
+      id,
+      opts.token ?? "",
+      String(now),
+      JSON.stringify(error),
+      JSON.stringify(stacktrace),
+      mode,
+      count,
+      ttl,
+    ]);
+
+    const fields = this.#toObject(buried);
+    return fields ? this.#toRecord(fields) : null;
+  }
+
   async updateProgress(
     q: QueueRef,
     id: string,

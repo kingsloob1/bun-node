@@ -142,8 +142,10 @@ export class UnrecoverableJobError extends JobsError {
     message: string,
     /** Extra detail, safe to log. */
     context?: Record<string, unknown>,
+    /** Standard error options: `cause` is the error that decided it, if any. */
+    options?: { cause?: unknown },
   ) {
-    super(message, "UNRECOVERABLE_JOB", context);
+    super(message, "UNRECOVERABLE_JOB", context, options);
   }
 }
 

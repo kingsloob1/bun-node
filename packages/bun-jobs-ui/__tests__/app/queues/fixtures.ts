@@ -152,6 +152,7 @@ export const repeatablesFixture: RepeatableListDto = {
       count: 4,
       nextRunAt: NOW + 3_600_000,
       nextJobId: "rep-5",
+      disabled: false,
       createdAt: NOW - 86_400_000,
       updatedAt: NOW - 3_600_000,
       data: { list: "weekly" },

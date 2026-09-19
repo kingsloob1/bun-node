@@ -29,6 +29,7 @@ import type {
 import { jsonClone } from "@kingsleyweb/bun-common";
 import { assertWritableStateName } from "../queue/windows";
 import { compareCodePoints } from "../shared/strings";
+import { canBury } from "./bury";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 import {
   jobFilter,
@@ -569,6 +570,39 @@ export class MemoryDriver implements JobsDriver {
     job.finishedOn = now;
     this.#applyRetention(queue, job, outcome.retention, now);
     return true;
+  }
+
+  async buryJob(
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: { retention: Retention; keepStacktraces: number; token?: string },
+    now: number,
+  ): Promise<JobRecord | null> {
+    const queue = this.#queue(q);
+    const job = queue.jobs.get(id);
+
+    if (!job || !canBury(job, opts.token)) {
+      return null;
+    }
+
+    job.failedReason = jsonClone(error);
+    job.stacktrace = [jsonClone(error), ...job.stacktrace].slice(
+      0,
+      Math.max(0, opts.keepStacktraces),
+    );
+    job.lockToken = null;
+    job.lockExpiresAt = null;
+    job.workerId = null;
+    this.#count(queue, now, "failed");
+    this.#setState(queue, job, "dead");
+    job.finishedOn = now;
+
+    // Taken before retention, which may remove the job: the caller still
+    // needs what it buried, to announce it and file its dead letter.
+    const buried = jsonClone(job);
+    this.#applyRetention(queue, job, opts.retention, now);
+    return { ...buried, expiresAt: job.expiresAt };
   }
 
   async updateProgress(

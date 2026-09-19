@@ -341,6 +341,30 @@ export interface RetryJobResultDto {
   retried: true;
 }
 
+/** `POST /queues/:queue/jobs/:id/fail` body. */
+export interface FailJobBody {
+  /** Why the job is failed; becomes its `failedReason` message. */
+  reason: string;
+}
+
+/** `POST /queues/:queue/jobs/:id/fail`. */
+export interface FailJobResultDto {
+  /** Always `true`: a refusal is a problem. */
+  failed: true;
+}
+
+/** `POST /queues/:queue/repeatables/:key/disable`. */
+export interface DisableRepeatableResultDto {
+  /** Always `true`, including for a series that already was. */
+  disabled: true;
+}
+
+/** `POST /queues/:queue/repeatables/:key/enable`. */
+export interface EnableRepeatableResultDto {
+  /** Always `true`, including for a series that already was. */
+  enabled: true;
+}
+
 /** `POST /queues/:queue/jobs/:id/promote`. */
 export interface PromoteJobResultDto {
   /** Always `true`: a refusal is a problem. */
@@ -480,6 +504,8 @@ export interface RepeatableDto {
   nextRunAt: number | null;
   /** Id of the scheduled occurrence, or `null`. */
   nextJobId: string | null;
+  /** Whether the series is disabled: it schedules nothing until enabled. */
+  disabled: boolean;
   /** When created, epoch ms. */
   createdAt: number;
   /** When last changed, epoch ms. */

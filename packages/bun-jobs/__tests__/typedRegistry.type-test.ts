@@ -759,11 +759,19 @@ export async function correlatedVerbChecks(): Promise<void> {
   const found = await registry.getJob("id");
   if (found?.name === "send-report") {
     const _updated = await found.updateData({ month: "2026-10" });
-    type Updated = Equal<
-      typeof _updated,
-      Job<{ month: string }, string> | null
-    >;
+    // The answer is the job it was asked of — `this` — so it stays narrowed.
+    type Updated = Equal<typeof _updated, typeof found | null>;
     type _Updated = Expect<Updated>;
+    type UpdatedName = Equal<
+      NonNullable<typeof _updated>["name"],
+      "send-report"
+    >;
+    type _UpdatedName = Expect<UpdatedName>;
+    type UpdatedData = Equal<
+      NonNullable<typeof _updated>["data"],
+      { month: string }
+    >;
+    type _UpdatedData = Expect<UpdatedData>;
 
     // @ts-expect-error still send-report's payload
     await found.updateData({ month: 10 });

@@ -186,6 +186,8 @@ export interface RepeatableDto extends Omit<RepeatRecord, "data"> {
   queue: string;
   /** Payload given to each instance; with `include=data`. */
   data?: unknown;
+  /** Whether the series is disabled: it schedules nothing until enabled. */
+  disabled: boolean;
 }
 
 /** One run as a client sees it. */
@@ -394,7 +396,10 @@ export function toJobDto(
 
 /** Shapes a repeat series, then applies `serialize.repeatable`. */
 export function toRepeatableDto(
-  record: RepeatRecord,
+  record: RepeatRecord & {
+    /** Whether the series is disabled; absent reads as `false`. */
+    disabled?: boolean;
+  },
   input: JobDtoInput,
   options: ResolvedJobsApiSerializers,
 ): RepeatableDto {
@@ -406,6 +411,7 @@ export function toRepeatableDto(
     count: record.count,
     nextRunAt: record.nextRunAt,
     nextJobId: record.nextJobId,
+    disabled: record.disabled ?? false,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };

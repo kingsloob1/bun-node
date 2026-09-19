@@ -9,6 +9,7 @@ import type {
 } from "../drivers/index";
 import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
+import type { JobEvent } from "./Job";
 import type { Reservation } from "./limits";
 import type {
   BunQueueWorkerEvents,
@@ -60,11 +61,17 @@ import { createJobsLogger } from "../shared/logger";
 import { waitForAny } from "../shared/wait";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
+import { addDeadLetter, selfLetterError } from "./deadLetter";
 import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
 import { displayRepeatKey, shortenJobId } from "./options";
 import { nextOccurrence, repeatJobId } from "./repeat";
+import {
+  isRepeatDisabled,
+  occurrenceRecord,
+  removePendingOccurrence,
+} from "./repeatControl";
 import { supportsWindowSweep, sweepWindows } from "./windows";
 
 /** How many jobs one maintenance sweep touches. */
@@ -225,6 +232,29 @@ function storedResult(result: unknown): unknown {
  * and each declared name's scoped events carry that name's own types. The
  * default, `JobMap`, means none — the events are exactly as before.
  */
+/**
+ * Whether a stored failure is the one given: the same name, message and
+ * stack. The stack pins it to the one throw, so two failures that merely say
+ * the same thing are not mistaken for each other.
+ */
+function sameError(
+  stored: SerializedError | null,
+  error: SerializedError,
+): boolean {
+  return (
+    stored !== null &&
+    stored.name === error.name &&
+    stored.message === error.message &&
+    stored.stack === error.stack
+  );
+}
+
+/**
+ * How long a worker trusts a series' disabled flag as last read before
+ * reading it again.
+ */
+const REPEAT_FLAG_CACHE_MS = 1_000;
+
 export class BunQueueWorker<
   TData = unknown,
   TResult = unknown,
@@ -319,6 +349,8 @@ export class BunQueueWorker<
   #limitedFor: number | undefined;
   /** The dead-letter queue for jobs that do not name their own. */
   readonly #deadLetterQueue: string | undefined;
+  /** When each series was last read as enabled; see `#repeatDisabled`. */
+  readonly #enabledRepeats = new Map<string, number>();
   /** Dead-letter queues opened so far, by name, closed with the worker. */
   readonly #deadLetters = new Map<
     string,
@@ -1162,18 +1194,31 @@ export class BunQueueWorker<
 
   /** Runs one job and records how it ended. */
   async #process(record: JobRecord): Promise<void> {
+    /** The reason the processor gave `job.fail()`, which settles the attempt. */
+    let failedWith: UnrecoverableJobError | undefined;
+    /** Whether the processor has returned or thrown, so `fail()` is too late. */
+    let attemptOver = false;
+
     // The progress hook is how `updateProgress` reaches an emitter: `Job` has
     // none of its own, and the worker is the only thing that sees the call.
-    const job = new Job<TData, TResult>(
-      this.driver,
-      this.ref,
-      record,
-      true,
-      (progress) => {
+    // `onFail` is what makes this view the job's owner.
+    const job = new Job<TData, TResult>(this.driver, this.ref, record, true, {
+      onProgress: (progress) => {
         this.safeEmitScoped("progress", record.name, job, progress);
         void this.#publish("progress", { id: record.id, progress });
       },
-    );
+      onFail: (error) => {
+        if (attemptOver) {
+          return false;
+        }
+
+        // The first reason stands: failing is final, and a second call is
+        // not a change of mind.
+        failedWith ??= error;
+        return true;
+      },
+      onEvent: async (event) => await this.#onJobEvent(event),
+    });
     const controller = new AbortController();
     this.#aborts.set(record.id, controller);
 
@@ -1230,6 +1275,14 @@ export class BunQueueWorker<
               onTimeout: () => controller.abort(),
             })
           : await running;
+      attemptOver = true;
+
+      // `job.fail()` was called: the attempt ends that way however the
+      // processor returned.
+      if (failedWith) {
+        await this.#recordFailure(job, record, failedWith);
+        return;
+      }
 
       // Not awaited, deliberately.
       //
@@ -1243,7 +1296,10 @@ export class BunQueueWorker<
       // shutdown never abandons one.
       this.#settle(job, record, result as TResult);
     } catch (error) {
-      await this.#recordFailure(job, record, error);
+      attemptOver = true;
+      // A reason given to `job.fail()` wins over whatever was thrown after it
+      // — very often the processor's own way of stopping once it had failed.
+      await this.#recordFailure(job, record, failedWith ?? error);
     } finally {
       clearInterval(heartbeat);
       this.#heartbeats.delete(record.id);
@@ -1504,6 +1560,36 @@ export class BunQueueWorker<
     }
 
     return result;
+  }
+
+  /**
+   * Announces what a job this worker handed out did to itself: `remove()`,
+   * `promote()` and `retry()` are published as the queue's own methods
+   * publish them — a worker has no local event for any of the three — and a
+   * job buried by `fail()` from outside its processor gets the `failed` and
+   * `dead` events a job that died here gets.
+   */
+  async #onJobEvent(event: JobEvent): Promise<void> {
+    switch (event.type) {
+      case "removed":
+      case "promoted":
+        await this.#publish(event.type, { id: event.id });
+        return;
+
+      case "retried":
+        await this.#publish("retried", { ids: [event.id] });
+        return;
+
+      case "buried": {
+        const { record, error } = event;
+        const job = new Job<TData, TResult>(this.driver, this.ref, record);
+        const failure = deserializeError(error);
+        this.safeEmitScoped("failed", record.name, job, failure);
+        this.safeEmitScoped("dead", record.name, job, failure);
+        await this.#publish("failed", { id: record.id, error });
+        await this.#publish("dead", { id: record.id, error });
+      }
+    }
   }
 
   /** Whether a buried parent's reason names `child` as what buried it. */
@@ -1915,7 +2001,7 @@ export class BunQueueWorker<
     try {
       if (delay !== false) {
         const runAt = now + delay;
-        await this.#persist(
+        const written = await this.#persist(
           async () =>
             await this.driver.failJob(
               this.ref,
@@ -1928,6 +2014,11 @@ export class BunQueueWorker<
             ),
         );
 
+        if (!written && !(await this.#failureLanded(record, serialized))) {
+          this.safeEmit("lockLost", job);
+          return;
+        }
+
         this.safeEmitScoped("failed", record.name, job, failure);
         this.safeEmitScoped("retrying", record.name, job, failure, runAt);
         void this.#publish("failed", { id: record.id, error: serialized });
@@ -1939,7 +2030,7 @@ export class BunQueueWorker<
         return;
       }
 
-      await this.#persist(
+      const written = await this.#persist(
         async () =>
           await this.driver.failJob(
             this.ref,
@@ -1954,6 +2045,16 @@ export class BunQueueWorker<
             record.opts.keepStacktraces,
           ),
       );
+
+      // Refused, and not because an earlier try of this very write landed:
+      // the job is someone else's now — most often buried from outside by
+      // `Job.fail()`, which announced `failed` and `dead` itself. Saying so
+      // again would deliver both twice; nor is its letter or its parent this
+      // worker's to see to.
+      if (!written && !(await this.#failureLanded(record, serialized))) {
+        this.safeEmit("lockLost", job);
+        return;
+      }
 
       this.safeEmitScoped("failed", record.name, job, failure);
       this.safeEmitScoped("dead", record.name, job, failure);
@@ -1987,13 +2088,38 @@ export class BunQueueWorker<
   }
 
   /**
-   * Adds a copy of a dead job to its dead-letter queue.
+   * Whether a failure write this worker saw refused had in fact landed: an
+   * earlier try whose reply was lost wrote it, and the retry that followed
+   * found the lock already released. Told apart from a job someone else
+   * settled — buried from outside, recovered as stalled — by reading the job
+   * back: ours is `failed` or `dead` with exactly the failure this worker
+   * wrote.
    *
-   * After the job is marked dead, never before: a worker that crashes between
-   * the two leaves a dead job with no letter, which is visible and re-drivable,
-   * rather than a letter for a job that is about to be retried. The letter's id
-   * is derived from the job's, so a death noticed twice files one letter — and
-   * from its creation time too, so a later job reusing the id files its own.
+   * A job that is gone reads as ours: retention may have removed it the
+   * moment our write landed, and reporting a failure that happened beats
+   * losing it.
+   */
+  async #failureLanded(
+    record: JobRecord,
+    written: SerializedError,
+  ): Promise<boolean> {
+    const now = await this.driver
+      .getJob(this.ref, record.id)
+      .catch(() => undefined);
+
+    if (now === undefined || now === null) {
+      return true;
+    }
+
+    return (
+      (now.state === "failed" || now.state === "dead") &&
+      sameError(now.failedReason, written)
+    );
+  }
+
+  /**
+   * Adds a copy of a dead job to its dead-letter queue, through the shared
+   * {@link addDeadLetter}, reporting rather than throwing.
    *
    * `source` is the queue the dead job is in: this worker's, or another's for
    * a flow parent a child here buried. `job` is the view local listeners get,
@@ -2007,15 +2133,9 @@ export class BunQueueWorker<
     error: SerializedError,
     now: number,
   ): Promise<void> {
-    if (queueName === source) {
-      // A letter to itself would be claimed, fail, and file another.
-      this.#emitError(
-        new ConfigError(
-          `Job ${record.id} names its own queue "${queueName}" as its dead-letter queue`,
-          { jobId: record.id, queue: queueName },
-        ),
-        "deadLetter",
-      );
+    const refused = selfLetterError(queueName, source, record);
+    if (refused) {
+      this.#emitError(refused, "deadLetter");
       return;
     }
 
@@ -2031,22 +2151,7 @@ export class BunQueueWorker<
         this.#deadLetters.set(queueName, queue);
       }
 
-      const letter = await queue.add(
-        record.name,
-        {
-          queue: source,
-          id: record.id,
-          name: record.name,
-          data: record.data,
-          failedReason: error,
-          attemptsMade: record.attemptsMade,
-          diedAt: now,
-        },
-        // Shortened, never refused. This runs on the failure path, so a job
-        // whose own id is legal but near the limit must not throw here — that
-        // would lose the letter for the one job that most needed filing.
-        { jobId: shortenJobId(`${source}:${record.id}:${record.createdAt}`) },
-      );
+      const letter = await addDeadLetter(queue, source, record, error, now);
 
       if (job) {
         this.safeEmitScoped(
@@ -2117,6 +2222,12 @@ export class BunQueueWorker<
         return;
       }
 
+      // Disabled: this occurrence runs — it was claimed before anyone could
+      // stop it — but it schedules nothing after it.
+      if (await this.#repeatDisabled(definition.key)) {
+        return;
+      }
+
       const count = definition.count + 1;
       const now = Date.now();
       const scheduled = { ...definition, count };
@@ -2182,6 +2293,42 @@ export class BunQueueWorker<
     } catch (error) {
       this.#emitError(error, "scheduleNextRepeat");
     }
+  }
+
+  /**
+   * Whether the series stored as `key` is disabled.
+   *
+   * Every claimed occurrence asks, and a busy series should not cost a read
+   * per job to answer a question whose answer changes by hand, so an
+   * enabled* answer is trusted for {@link REPEAT_FLAG_CACHE_MS}. A series
+   * disabled in that window gets at most one more occurrence, which the next
+   * maintenance pass removes.
+   *
+   * A *disabled* answer is never cached. Trusting it would outlive an
+   * `enable()`: the occurrence `enable()` scheduled would then schedule
+   * nothing after it, and the series would stop for good.
+   */
+  async #repeatDisabled(key: string): Promise<boolean> {
+    const now = Date.now();
+    const enabledAt = this.#enabledRepeats.get(key);
+
+    if (enabledAt !== undefined && now - enabledAt < REPEAT_FLAG_CACHE_MS) {
+      return false;
+    }
+
+    const disabled = await isRepeatDisabled(this.driver, this.ref, key);
+
+    if (disabled) {
+      this.#enabledRepeats.delete(key);
+    } else {
+      // Bounded: a queue with many series forgets the lot rather than growing.
+      if (this.#enabledRepeats.size >= 1_000) {
+        this.#enabledRepeats.clear();
+      }
+      this.#enabledRepeats.set(key, now);
+    }
+
+    return disabled;
   }
 
   /* --- worker inventory ------------------------------------------------------- */
@@ -2435,6 +2582,15 @@ export class BunQueueWorker<
         continue;
       }
 
+      // Read fresh, never cached: this is the pass that repairs what a stale
+      // answer let through. A disabled series keeps no pending occurrence —
+      // one a worker scheduled just as it was disabled is removed here — and
+      // gets no replacement for one that has gone.
+      if (await isRepeatDisabled(this.driver, this.ref, definition.key)) {
+        await removePendingOccurrence(this.driver, this.ref, definition);
+        continue;
+      }
+
       if (await this.driver.getJob(this.ref, definition.nextJobId)) {
         continue;
       }
@@ -2445,39 +2601,13 @@ export class BunQueueWorker<
         continue;
       }
 
-      const jobId = shortenJobId(
-        repeatJobId(displayRepeatKey(definition.key), next),
-      );
-      await this.driver.addJob(this.ref, {
-        id: jobId,
-        name: definition.name,
-        data: definition.data,
-        opts: definition.opts,
-        state: next > now ? "delayed" : "waiting",
-        priority: definition.opts.priority,
-        runAt: next,
-        createdAt: now,
-        processedOn: null,
-        finishedOn: null,
-        expiresAt: null,
-        attemptsMade: 0,
-        maxAttempts: definition.opts.attempts,
-        stalledCount: 0,
-        progress: null,
-        returnValue: null,
-        failedReason: null,
-        stacktrace: [],
-        lockToken: null,
-        lockExpiresAt: null,
-        workerId: null,
-        repeatKey: definition.key,
-        flow: null,
-      });
+      const record = occurrenceRecord(definition, next, now);
+      await this.driver.addJob(this.ref, record);
 
       await this.driver.upsertRepeat(this.ref, {
         ...definition,
         nextRunAt: next,
-        nextJobId: jobId,
+        nextJobId: record.id,
         updatedAt: now,
       });
     }

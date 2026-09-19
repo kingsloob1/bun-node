@@ -14,6 +14,7 @@ import {
   bulkBodySchema,
   bulkRetryBodySchema,
   ChildrenSchema,
+  FailBodySchema,
   IncludeQuerySchema,
   jobListQuerySchema,
   JobPageSchema,
@@ -506,6 +507,34 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           return await queue.promote(params.id);
         });
         return { body: { promoted: true } };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/queues/:queue/jobs/:id/fail",
+      operationId: "failJob",
+      action: "jobs.fail",
+      mode: "jobs",
+      requires: ["buryJob"],
+      summary: "Fail a job for good",
+      description:
+        "Moves a waiting, delayed, retry-pending or waiting-on-children job — or an active one, whose worker then loses its lock and whose result is discarded — to `dead`, with `reason` as its failure, whatever attempts it has left. It gets the `failed` and `dead` events and a copy in its own `deadLetter` queue. Refused (409 `JOB_STATE_CONFLICT`) for a job already finished.",
+      tags: ["Jobs"],
+      params: JobParams,
+      body: FailBodySchema,
+      responses: { 200: done("failed") },
+      errors: [...JOB_ERRORS, "JOB_STATE_CONFLICT"],
+      target: ({ params }) => ({
+        ...queueTarget(params.queue),
+        jobId: params.id,
+      }),
+      handler: async ({ params, body, services }) => {
+        const queue = await services.queues.get(params.queue);
+        const job = await existingJob(queue, params.id);
+        await singleJobOperation(queue, params.id, "failed", async () => {
+          return await job.fail(body.reason);
+        });
+        return { body: { failed: true } };
       },
     }),
     defineRoute({

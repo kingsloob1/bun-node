@@ -110,7 +110,13 @@ export const QUEUE_EVENT_PAYLOADS = {
   active: s.object({ id: JobId }),
   progress: s.object({
     id: JobId,
-    progress: s.unknown({ description: "The progress value, as reported." }),
+    // As reported: a number, or a record of fields.
+    progress: s.union(
+      s.number({ description: "The progress value, as a number." }),
+      s.record(s.unknown(), {
+        description: "The progress value, as a record of fields.",
+      }),
+    ),
   }),
   completed: s.object({
     id: JobId,

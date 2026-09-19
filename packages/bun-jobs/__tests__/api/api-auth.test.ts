@@ -97,6 +97,7 @@ describe("route-level authorization", () => {
     retryAllJobs: { state: "dead" },
     addJob: { name: "send", data: {} },
     updateJob: { priority: 1 },
+    failJob: { reason: "stopped by hand" },
     rescheduleRunner: { schedule: null },
   };
 

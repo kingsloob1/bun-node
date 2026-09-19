@@ -56,7 +56,7 @@ export interface QueueEventPayloadsWire {
   /** A worker claimed a job. */
   active: { id: string };
   /** A job reported progress. */
-  progress: { id: string; progress: unknown };
+  progress: { id: string; progress: number | Record<string, unknown> };
   /** A job completed. */
   completed: { id: string; returnValue: unknown };
   /** An attempt failed. */

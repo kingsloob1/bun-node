@@ -274,6 +274,15 @@ export const UpdateBodySchema = s.object({
 });
 
 /** `POST /queues/:queue/jobs/:id/retry` body. */
+/** `POST /queues/:queue/jobs/:id/fail` body. */
+export const FailBodySchema = s.object({
+  reason: s.string({
+    minLength: 1,
+    maxLength: 4096,
+    description: "Why the job is failed; becomes its `failedReason` message.",
+  }),
+});
+
 export const RetryBodySchema = s.object({
   resetAttempts: s.optional(s.boolean({ default: true })),
 });
@@ -384,6 +393,10 @@ export const RepeatableSchema = s.named(
     count: s.integer({ minimum: 0 }),
     nextRunAt: s.nullable(s.integer()),
     nextJobId: s.nullable(s.string()),
+    disabled: s.boolean({
+      description:
+        "Whether the series is disabled: it schedules nothing until enabled.",
+    }),
     createdAt: s.integer(),
     updatedAt: s.integer(),
     data: s.optional(s.unknown({ description: "With `include=data`." })),

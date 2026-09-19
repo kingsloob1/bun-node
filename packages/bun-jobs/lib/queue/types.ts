@@ -9,6 +9,7 @@ import type {
 } from "../drivers/index";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
+import type { RunProgress } from "../shared/progress";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -984,6 +985,15 @@ export interface BunQueueWorkerOptions {
   waitToExit?: boolean;
 }
 
+/** A repeat series as {@link BunQueue.listRepeatables} reports it. */
+export interface RepeatableInfo extends RepeatRecord {
+  /**
+   * Whether the series is disabled: it schedules nothing until it is enabled
+   * again. Always `false` on a driver without queue state.
+   */
+  disabled: boolean;
+}
+
 /**
  * What a dead-letter queue receives: the job that died, as it was.
  *
@@ -1144,7 +1154,7 @@ type BunQueueBaseEvents<
   /** A worker claimed a job. */
   active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: TJob, value: unknown) => void;
+  progress: (job: TJob, value: RunProgress) => void;
   /** A job completed. */
   completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */
@@ -1218,7 +1228,7 @@ type BunQueueWorkerBaseEvents<
   /** A job was claimed. */
   active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: TJob, value: unknown) => void;
+  progress: (job: TJob, value: RunProgress) => void;
   /** A job completed. */
   completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */

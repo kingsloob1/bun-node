@@ -362,6 +362,138 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
       expectAhead("default", DEFAULT_LOCK_DURATION);
       expectAhead("ms", 60_000);
     }, 30_000);
+
+    it("fails a job for good with job.fail(), however it then returns", async () => {
+      const { queue, worker, driver } = setup(mode, "job-fail-method");
+      const answers: unknown[] = [];
+      const dead: string[] = [];
+      worker.on("progress", (_job, value) => answers.push(value));
+      worker.on("dead", (job) => dead.push(job.id));
+
+      const job = await queue.add(
+        "string",
+        { reason: "not worth retrying" },
+        { attempts: 5, backoff: 1, deadLetter: "graveyard" },
+      );
+      await waitFor(
+        async () => (await queue.getJob(job.id))?.state === "dead",
+        { timeout: 20_000, message: `the ${mode} job never went dead` },
+      );
+
+      const stored = await queue.getJob(job.id);
+      expect(stored?.attemptsMade).toBe(1);
+      expect(stored?.returnValue).toBeNull();
+      expect(stored?.failedReason?.name).toBe("UnrecoverableJobError");
+      expect(stored?.failedReason?.message).toBe("not worth retrying");
+      // As `Job.fail()` builds it: a string reason has no cause.
+      expect(stored?.failedReason?.cause).toBeUndefined();
+      expect(answers).toEqual([{ answered: true }]);
+      await waitFor(() => dead.includes(job.id), { timeout: 5_000 });
+
+      // Delivered to its dead-letter queue like any other dead job.
+      const graveyard = new BunQueue("graveyard", {
+        namespace: worker.ref.ns,
+        driver,
+        logger: noopLogger,
+      });
+      closers.push(() => graveyard.close());
+      await waitFor(async () => (await graveyard.count("waiting")) === 1, {
+        timeout: 5_000,
+        message: `the ${mode} job was never dead-lettered`,
+      });
+    }, 30_000);
+
+    it("keeps an Error given to job.fail(), with its message and cause", async () => {
+      const { queue } = setup(mode, "job-fail-method");
+      const job = await queue.add("error", {}, { attempts: 3, backoff: 1 });
+
+      await waitFor(
+        async () => (await queue.getJob(job.id))?.state === "dead",
+        { timeout: 20_000, message: `the ${mode} job never went dead` },
+      );
+
+      // The stored, serialized form: what every later reader rebuilds from.
+      const reason = (await queue.getJob(job.id))?.toJSON().failedReason;
+      expect(reason?.name).toBe("UnrecoverableJobError");
+      expect(reason?.message).toBe("card declined");
+      expect(reason?.cause?.message).toBe("card declined");
+      expect(reason?.cause?.cause?.message).toBe("gateway timeout");
+    }, 30_000);
+
+    it("keeps the first job.fail() reason over a later one, and over a throw", async () => {
+      const { queue, worker } = setup(mode, "job-fail-method");
+      const answers: unknown[] = [];
+      worker.on("progress", (_job, value) => answers.push(value));
+
+      const job = await queue.add(
+        "then-throw",
+        {},
+        { attempts: 3, backoff: 1 },
+      );
+      await waitFor(
+        async () => (await queue.getJob(job.id))?.state === "dead",
+        { timeout: 20_000, message: `the ${mode} job never went dead` },
+      );
+
+      const stored = await queue.getJob(job.id);
+      expect(stored?.attemptsMade).toBe(1);
+      expect(stored?.failedReason?.name).toBe("UnrecoverableJobError");
+      expect(stored?.failedReason?.message).toBe("the first reason");
+      expect(answers).toEqual([{ answered: true }]);
+    }, 30_000);
+
+    it("tells a flow's parent about a child that called job.fail()", async () => {
+      const { queue } = setup(mode, "job-fail-method");
+      const flow = await queue.addFlow({
+        name: "parent",
+        data: {},
+        opts: { removeOnComplete: false },
+        children: [
+          {
+            name: "child",
+            data: {},
+            queue: "isolated",
+            opts: { attempts: 3, backoff: 1, ignoreFailure: true },
+          },
+        ],
+      });
+
+      await waitFor(
+        async () => (await queue.getJob(flow.job.id))?.state === "completed",
+        { timeout: 20_000, message: `the ${mode} flow never completed` },
+      );
+
+      const child = flow.children[0]!.job.id;
+      expect((await queue.getJob(child))?.attemptsMade).toBe(1);
+      expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
+        [`isolated:${child}`]: {
+          name: "UnrecoverableJobError",
+          message: "optional source down",
+        },
+      });
+    }, 30_000);
+
+    it("shows a stored progress narrowed exactly as Job narrows it", async () => {
+      const { queue, worker, driver } = setup(mode, "job-fail-method");
+      let seen: { child: unknown; worker: unknown } | undefined;
+      worker.on("progress", (job, value) => {
+        seen = {
+          child: (value as { seen: unknown }).seen,
+          worker: job.progress,
+        };
+      });
+
+      // Held back long enough to store a value no processor could report:
+      // an array, which is an object but not a `RunProgress`.
+      const job = await queue.add("progress", {}, { delay: 300 });
+      await driver.updateProgress(worker.ref, job.id, [1, 2]);
+
+      await waitFor(() => seen !== undefined, {
+        timeout: 20_000,
+        message: `the ${mode} job never reported`,
+      });
+      expect(seen).toEqual({ child: null, worker: null });
+    }, 30_000);
   });
 }
 
@@ -403,6 +535,34 @@ describe("isolation: what only isolation can do", () => {
       "is not available in an isolated job",
     );
   }, 30_000);
+
+  for (const mode of ["spawn", "worker"] as const) {
+    it(`says schedule(), update(), disable() and enable() are not available (${mode})`, async () => {
+      const { queue } = setup(mode, "job-unavailable-series");
+      const job = await queue.add("try", {}, { removeOnComplete: false });
+
+      await waitFor(
+        async () => (await queue.getJob(job.id))?.state === "completed",
+        { timeout: 20_000 },
+      );
+
+      const told = (await queue.getJob(job.id))?.returnValue as Record<
+        string,
+        string
+      >;
+      expect(Object.keys(told).sort()).toEqual([
+        "disable",
+        "enable",
+        "schedule",
+        "update",
+      ]);
+      for (const [method, message] of Object.entries(told)) {
+        expect(message).toBe(
+          `job.${method}() is not available in an isolated job: it changes the stored job, and the driver stays in the worker process`,
+        );
+      }
+    }, 30_000);
+  }
 
   it("refuses isolation for a function, and a file that does not resolve", () => {
     const namespace = testNamespace();

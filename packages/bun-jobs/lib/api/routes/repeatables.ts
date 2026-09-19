@@ -1,4 +1,6 @@
+import type { BunQueue } from "../../queue/BunQueue";
 import type { AnyRouteDef } from "./define";
+import { findRepeat } from "../../queue/repeatControl";
 import { ApiError } from "../errors";
 import { s } from "../schema/builder";
 import { DefinitionListSchema, RepeatableSchema } from "../schemas/jobs";
@@ -69,6 +71,56 @@ export function repeatableRoutes(): AnyRouteDef[] {
       },
     }),
     defineRoute({
+      method: "POST",
+      path: "/queues/:queue/repeatables/:key/disable",
+      operationId: "disableRepeatable",
+      action: "repeatables.disable",
+      mode: "jobs",
+      requires: ["getQueueState", "setQueueState"],
+      summary: "Stop a repeat series without removing it",
+      description:
+        "Removes the series' pending occurrence and schedules no further one until it is enabled; an occurrence already running finishes. The series stays, listed with `disabled: true`. Disabling a disabled series changes nothing.",
+      tags: ["Jobs"],
+      params: RepeatableParams,
+      responses: { 200: s.object({ disabled: s.literal(true) }) },
+      errors: ["INVALID_NAME", "QUEUE_NOT_FOUND", "REPEATABLE_NOT_FOUND"],
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, services }) => {
+        const queue = await services.queues.get(params.queue);
+        await toggleSeries(
+          queue,
+          params.key,
+          queue.disableRepeatable(params.key),
+        );
+        return { body: { disabled: true } };
+      },
+    }),
+    defineRoute({
+      method: "POST",
+      path: "/queues/:queue/repeatables/:key/enable",
+      operationId: "enableRepeatable",
+      action: "repeatables.enable",
+      mode: "jobs",
+      requires: ["getQueueState", "setQueueState"],
+      summary: "Restart a disabled repeat series",
+      description:
+        "Schedules the series' next occurrence from now: occurrences missed while it was disabled are not run. Enabling an enabled series changes nothing.",
+      tags: ["Jobs"],
+      params: RepeatableParams,
+      responses: { 200: s.object({ enabled: s.literal(true) }) },
+      errors: ["INVALID_NAME", "QUEUE_NOT_FOUND", "REPEATABLE_NOT_FOUND"],
+      target: ({ params }) => queueTarget(params.queue),
+      handler: async ({ params, services }) => {
+        const queue = await services.queues.get(params.queue);
+        await toggleSeries(
+          queue,
+          params.key,
+          queue.enableRepeatable(params.key),
+        );
+        return { body: { enabled: true } };
+      },
+    }),
+    defineRoute({
       method: "GET",
       path: "/definitions",
       operationId: "listDefinitions",
@@ -96,4 +148,26 @@ export function repeatableRoutes(): AnyRouteDef[] {
       }),
     }),
   ];
+}
+
+/**
+ * Awaits a disable or enable, and answers 404 when it changed nothing because
+ * there is no such series. `false` otherwise means the series already was as
+ * asked, which is not a problem: both routes are idempotent.
+ */
+async function toggleSeries(
+  queue: BunQueue<unknown, unknown, string>,
+  key: string,
+  toggling: Promise<boolean>,
+): Promise<void> {
+  if ((await toggling) || (await findRepeat(queue.driver, queue.ref, key))) {
+    return;
+  }
+
+  throw new ApiError(
+    "REPEATABLE_NOT_FOUND",
+    404,
+    `Repeat series "${key}" was not found`,
+    { context: { queue: queue.name, key } },
+  );
 }

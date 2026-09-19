@@ -553,6 +553,47 @@ describe("jobs", () => {
     );
   });
 
+  it("fails one job for good, with 409 once it is finished and 400 without a reason", async () => {
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await completed(h.jobs, "mail", "done");
+    await queue.add("send", {}, { jobId: "doomed", attempts: 5 });
+
+    const failed = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+      reason: "bad address",
+    });
+    expect(failed.status).toBe(200);
+    expect(failed.body).toEqual({ failed: true });
+    const job = await queue.getJob("doomed");
+    expect(job?.state).toBe("dead");
+    expect(job?.failedReason?.message).toBe("bad address");
+    expect(job?.failedReason?.name).toBe("UnrecoverableJobError");
+    expect(job?.attemptsMade).toBe(0);
+
+    const again = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+      reason: "twice",
+    });
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({
+      code: "JOB_STATE_CONFLICT",
+      context: { state: "dead" },
+    });
+    expect(
+      (
+        await h.call("POST", "/queues/mail/jobs/done/fail", {
+          reason: "too late",
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (await h.call("POST", "/queues/mail/jobs/ghost/fail", { reason: "x" }))
+        .status,
+    ).toBe(404);
+    expect(
+      (await h.call("POST", "/queues/mail/jobs/doomed/fail", {})).status,
+    ).toBe(400);
+  });
+
   it("retries, removes and promotes in bulk, reporting what went", async () => {
     const h = harness();
     const queue = h.jobs.queue("mail");
@@ -897,6 +938,55 @@ describe("repeatables and definitions", () => {
     const again = await h.call("DELETE", path);
     expect(again.status).toBe(404);
     expect(again.body).toMatchObject({ code: "REPEATABLE_NOT_FOUND" });
+  });
+
+  it("disables and enables a series, idempotently, and lists whether it is disabled", async () => {
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await queue.add("digest", {}, { repeat: { every: 60_000, key: "daily" } });
+    const pending = (await queue.listRepeatables())[0]!.nextJobId!;
+
+    const listed = await h.call("GET", "/queues/mail/repeatables");
+    expect(listed.body.items[0]).toMatchObject({
+      key: "daily",
+      disabled: false,
+    });
+
+    const disabled = await h.call(
+      "POST",
+      "/queues/mail/repeatables/daily/disable",
+    );
+    expect(disabled.status).toBe(200);
+    expect(disabled.body).toEqual({ disabled: true });
+    expect(await queue.getJob(pending)).toBeNull();
+    expect(
+      (await h.call("GET", "/queues/mail/repeatables")).body.items[0],
+    ).toMatchObject({ key: "daily", disabled: true });
+    // Already disabled: nothing changes, and nothing is wrong.
+    expect(
+      (await h.call("POST", "/queues/mail/repeatables/daily/disable")).body,
+    ).toEqual({ disabled: true });
+
+    const enabled = await h.call(
+      "POST",
+      "/queues/mail/repeatables/daily/enable",
+    );
+    expect(enabled.body).toEqual({ enabled: true });
+    const series = (await queue.listRepeatables())[0]!;
+    expect(series.disabled).toBe(false);
+    expect((await queue.getJob(series.nextJobId!))?.state).toBe("delayed");
+    expect(
+      (await h.call("POST", "/queues/mail/repeatables/daily/enable")).body,
+    ).toEqual({ enabled: true });
+
+    for (const verb of ["disable", "enable"]) {
+      const missing = await h.call(
+        "POST",
+        `/queues/mail/repeatables/nope/${verb}`,
+      );
+      expect(missing.status).toBe(404);
+      expect(missing.body).toMatchObject({ code: "REPEATABLE_NOT_FOUND" });
+    }
   });
 
   it("lists definitions without their handlers, and only with a jobs source", async () => {
