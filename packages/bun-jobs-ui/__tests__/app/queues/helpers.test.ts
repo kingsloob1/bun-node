@@ -32,7 +32,16 @@ import {
   intParam,
   splitList,
 } from "../../../app/screens/queues/urlState";
+import { setupDom } from "../dom";
 import { repeatablesFixture } from "./fixtures";
+
+/**
+ * `./fixtures` imports the DOM (its render helpers need one), so this file
+ * registers happy-dom just by loading. Without `setupDom()` nothing would
+ * unregister it, and whichever file runs next under `--randomize` (a server
+ * or e2e suite) would get happy-dom's `fetch`/`Request`/`Response`.
+ */
+setupDom();
 
 const LIMITS = { defaultPageSize: 20, maxPageSize: 100 };
 
