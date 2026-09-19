@@ -2,6 +2,11 @@
  * Design tokens. Light is the default; dark applies when the OS prefers it
  * and no theme is forced (`data-theme` absent = "system"), or when
  * `data-theme="dark"` forces it. `data-theme="light"` forces light.
+ *
+ * Every text/background and control/background pair the app uses is checked
+ * for WCAG AA contrast, in both themes, by `__tests__/app/a11y/contrast.test.ts`
+ * (parsed from this file): change a colour and that test says whether it
+ * still reads.
  */
 :root {
   color-scheme: light;
@@ -30,6 +35,8 @@
   --surface: #ffffff;
   --surface-2: #f0f2f5;
   --border: #d9dde3;
+  /* A control's outline (inputs): 3:1 against the surfaces, WCAG 1.4.11. */
+  --border-strong: #838c99;
   --text: #1b1f24;
   --text-muted: #5b6573;
   --accent: #2957c7;
@@ -50,7 +57,7 @@
 
   /* Job states: a line/dot colour each. */
   --state-waiting: #2f6fdb;
-  --state-delayed: #8a5cd6;
+  --state-delayed: #7a4fcf;
   --state-active: #0f8a8a;
   --state-completed: #238a4a;
   --state-failed: #d4541a;
@@ -69,6 +76,7 @@
     --surface: #171b21;
     --surface-2: #1e232b;
     --border: #2d343e;
+    --border-strong: #65717f;
     --text: #e6e9ee;
     --text-muted: #9aa4b2;
     --accent: #7ea2ff;
@@ -103,6 +111,7 @@
   --surface: #171b21;
   --surface-2: #1e232b;
   --border: #2d343e;
+  --border-strong: #65717f;
   --text: #e6e9ee;
   --text-muted: #9aa4b2;
   --accent: #7ea2ff;
