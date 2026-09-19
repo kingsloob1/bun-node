@@ -489,6 +489,32 @@ export class FileDriver implements JobsDriver {
     return (await this.#readState(ns, key)).queued[0] ?? null;
   }
 
+  async popQueuedTriggerIf(
+    ns: string,
+    key: string,
+    expectedId: string,
+  ): Promise<QueuedTrigger | null> {
+    // Read first, as a pop does: taking the lock creates the runner's
+    // directory, and a runner nobody pushed to must not appear. This read is
+    // only a shortcut — the decision is the re-check under the lock below.
+    if ((await this.#readState(ns, key)).queued[0]?.id !== expectedId) {
+      return null;
+    }
+
+    let trigger: QueuedTrigger | null = null;
+
+    // The same lock file every pop and push holds, so the check against the
+    // head and the shift are one step for every process sharing the directory.
+    await this.#mutateState(ns, key, (state) => {
+      if (state.queued[0]?.id !== expectedId) {
+        return false;
+      }
+      trigger = state.queued.shift() ?? null;
+    });
+
+    return trigger;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return (await this.#readState(ns, key)).queued.length;
   }
@@ -3168,6 +3194,9 @@ export class FileDriver implements JobsDriver {
   /**
    * Read-modify-writes a runner's state while holding an exclusive lock file,
    * so two processes cannot both read, both modify, and both write.
+   *
+   * `mutate` returning `false` means it changed nothing, and the file is left
+   * as it was rather than rewritten with the same content.
    */
   async #mutateState(
     ns: string,
@@ -3176,7 +3205,7 @@ export class FileDriver implements JobsDriver {
       fields: Record<string, string>;
       history: RunRecord[];
       queued: QueuedTrigger[];
-    }) => void,
+    }) => void | false,
   ): Promise<void> {
     const dir = this.#runnerDir(ns, key);
     await mkdir(dir, { recursive: true });
@@ -3185,8 +3214,9 @@ export class FileDriver implements JobsDriver {
 
     try {
       const state = await this.#readState(ns, key);
-      mutate(state);
-      await this.#writeAtomic(join(dir, "state.json"), JSON.stringify(state));
+      if (mutate(state) !== false) {
+        await this.#writeAtomic(join(dir, "state.json"), JSON.stringify(state));
+      }
     } finally {
       await release();
     }
