@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import type { ComponentType, LazyExoticComponent } from "react";
 import { lazy, Suspense } from "react";
 import { Spinner } from "../components/Spinner";
 
@@ -10,12 +10,28 @@ import { Spinner } from "../components/Spinner";
  * the CSP's `script-src 'self'` allows.
  */
 
-/** Wraps a lazily imported screen in a Suspense boundary with a labelled spinner. */
-function onDemand(
+/**
+ * Wraps a lazily imported screen in a Suspense boundary with a labelled
+ * spinner. A chunk that fails to load (a network blip, a redeploy) throws to
+ * the route's `ScreenErrorBoundary`; `React.lazy` would keep that rejection
+ * for good, so a failed load swaps in a fresh `lazy()` and "Reload this
+ * screen" really fetches the chunk again.
+ */
+export function onDemand(
   load: () => Promise<ComponentType>,
   label: string,
 ): ComponentType {
-  const Screen = lazy(async () => ({ default: await load() }));
+  let Screen: LazyExoticComponent<ComponentType>;
+  const create = () =>
+    lazy(async () => {
+      try {
+        return { default: await load() };
+      } catch (error) {
+        Screen = create();
+        throw error;
+      }
+    });
+  Screen = create();
   function OnDemand() {
     return (
       <Suspense

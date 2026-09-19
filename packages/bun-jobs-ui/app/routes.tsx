@@ -33,6 +33,7 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
     ) : (
       <div className="screen">
         <EmptyState
+          headingLevel={1}
           title="Nothing to show"
           description="This API offers you no screens. Ask for access, or check the mount's sections."
         />
