@@ -1,5 +1,7 @@
 import type { BunJobs } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { MAX_DATE_MS } from "../../lib/api/contract/constants";
+import { scheduleIssuePath } from "../../lib/api/routes/runners";
 import { waitFor } from "../helpers";
 import {
   ECHO_HANDLER,
@@ -332,6 +334,94 @@ describe("control", () => {
     expect((await h.call("GET", "/runners/nightly")).body.schedule).toEqual(
       h.nightly.schedule ?? null,
     );
+  });
+
+  it("refuses a time a Date cannot hold as VALIDATION, at the field", async () => {
+    const h = await withRunners();
+    const before = (await h.call("GET", "/runners/nightly")).body.schedule;
+    const cases = [
+      [{ every: 1000, anchor: Number.MAX_SAFE_INTEGER }, "schedule.anchor"],
+      [{ at: Number.MAX_SAFE_INTEGER }, "schedule.at"],
+      [{ every: 1000, anchor: MAX_DATE_MS + 1 }, "schedule.anchor"],
+      [{ at: MAX_DATE_MS + 1 }, "schedule.at"],
+      [{ at: "not a time" }, "schedule.at"],
+      [{ every: 1000, anchor: "2024-02-30T00:00:00Z" }, "schedule.anchor"],
+    ] as const;
+    for (const [schedule, path] of cases) {
+      const response = await h.call("PUT", "/runners/nightly/schedule", {
+        schedule,
+      });
+      expect({ schedule, status: response.status }).toEqual({
+        schedule,
+        status: 400,
+      });
+      expect(response.body.code).toBe("VALIDATION");
+      expect(response.body.issues).toEqual([
+        expect.objectContaining({ target: "body", path }),
+      ]);
+    }
+    expect((await h.call("GET", "/runners/nightly")).body.schedule).toEqual(
+      before,
+    );
+
+    // The last instant a Date holds is still a time.
+    const last = await h.call("PUT", "/runners/nightly/schedule", {
+      schedule: { at: MAX_DATE_MS },
+    });
+    expect(last.status).toBe(200);
+    expect(last.body.schedule).toEqual({ at: MAX_DATE_MS });
+  });
+
+  it("documents exactly the INVALID_SCHEDULE paths a request can produce", async () => {
+    const h = await withRunners();
+    const produced = new Set<string>();
+    for (const schedule of [
+      "not a cron expression",
+      { cron: "99 * * * *" },
+      { cron: "0 9 * * *", tz: "Nowhere/Land" },
+    ]) {
+      const response = await h.call("PUT", "/runners/nightly/schedule", {
+        schedule,
+      });
+      expect(response.body.code).toBe("INVALID_SCHEDULE");
+      produced.add(response.body.issues[0].path);
+    }
+    const document = h.api.openapi() as unknown as {
+      paths: Record<string, Record<string, { description?: string }>>;
+    };
+    const description = String(
+      document.paths["/runners/{runner}/schedule"]?.put?.description,
+    );
+    const listed = description
+      .slice(description.indexOf("INVALID_SCHEDULE"))
+      .match(/`schedule(?:\.\w+)?`/g)
+      ?.map((path) => path.slice(1, -1));
+    expect(new Set(listed)).toEqual(produced);
+    expect([...produced].sort()).toEqual([
+      "schedule",
+      "schedule.cron",
+      "schedule.tz",
+    ]);
+  });
+
+  it("blames each part of a schedule the normaliser refuses, with its own rule", () => {
+    expect(
+      scheduleIssuePath({ every: 1000, anchor: Number.MAX_SAFE_INTEGER }),
+    ).toBe("schedule.anchor");
+    expect(scheduleIssuePath({ every: 1000, anchor: -MAX_DATE_MS - 1 })).toBe(
+      "schedule.anchor",
+    );
+    expect(scheduleIssuePath({ every: 0, anchor: 0 })).toBe("schedule.every");
+    expect(scheduleIssuePath({ every: 0 })).toBe("schedule.every");
+    expect(scheduleIssuePath({ at: Number.MAX_SAFE_INTEGER })).toBe(
+      "schedule.at",
+    );
+    expect(scheduleIssuePath({ cron: "99 * * * *" })).toBe("schedule.cron");
+    expect(scheduleIssuePath({ cron: "0 9 * * *", tz: "Nowhere/Land" })).toBe(
+      "schedule.tz",
+    );
+    expect(scheduleIssuePath("not a cron expression")).toBe("schedule");
+    expect(scheduleIssuePath(0)).toBe("schedule");
   });
 
   it("kills local runs: 202 at once, 200 after waiting, 404 for an unknown run", async () => {

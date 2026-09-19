@@ -235,6 +235,31 @@ export interface AuthorizeHandlerOptions {
    * {@link deferFailure}).
    */
   pending?: (req: BunRequest) => unknown;
+  /**
+   * Reads the target the **path alone** decides, for a request whose full
+   * target is unavailable: a deferred check failed, or `target` threw. Return
+   * `undefined` (or throw) when the path itself is invalid, and `authorize` is
+   * asked without a target. Unset, every such request is asked without one.
+   */
+  pathTarget?: (
+    req: BunRequest,
+  ) => AuthorizeTarget | undefined | Promise<AuthorizeTarget | undefined>;
+}
+
+/** The target {@link AuthorizeHandlerOptions.pathTarget} reads, or `undefined` when it cannot. */
+async function readPathTarget(
+  req: BunRequest,
+  options: AuthorizeHandlerOptions | undefined,
+): Promise<AuthorizeTarget | undefined> {
+  if (!options?.pathTarget) {
+    return undefined;
+  }
+  try {
+    const target = await options.pathTarget(req);
+    return target === undefined ? undefined : pickTarget(target);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -243,9 +268,17 @@ export interface AuthorizeHandlerOptions {
  *
  * - every check passed and the target was read: it is asked with the target,
  *   and the request continues or is answered 401/403;
- * - a check failed, or reading the target threw: it is asked **without** a
- *   target. A denial is answered 401/403; only a caller it allows is told what
- *   was wrong with the request (400, 415, …).
+ * - a check failed, or reading the target threw, but the path is valid: it is
+ *   asked with the target the path decides (`pathTarget` — the queue, job or
+ *   runner the request names), so a host that refuses untargeted requests, or
+ *   refuses that one queue, is asked the question it would be asked had the
+ *   body been right;
+ * - the path itself is invalid (or there is no `pathTarget`): it is asked
+ *   **without** a target.
+ *
+ * Either way a denial is answered 401/403, and only a caller it allows is told
+ * what was wrong with the request (400, 415, …) — so nothing about a route's
+ * schema reaches a caller who may not act on that target.
  */
 export function authorizeHandler(
   config: Pick<
@@ -258,16 +291,19 @@ export function authorizeHandler(
   return async (req, _res, next) => {
     tagRequestAction(req, action);
     let failure = options?.pending?.(req);
-    let target: AuthorizeTarget = {};
-    if (failure === undefined && options?.target) {
+    let target: AuthorizeTarget | undefined;
+    if (failure === undefined) {
       try {
-        target = pickTarget(options.target(req));
+        target = options?.target ? pickTarget(options.target(req)) : {};
       } catch (error) {
         failure = error;
       }
     }
+    if (target === undefined) {
+      target = await readPathTarget(req, options);
+    }
     const decision = await decide(config, req, {
-      ...(failure === undefined ? target : {}),
+      ...target,
       action,
       transport: "http",
       ...(options?.route ? { route: options.route } : {}),

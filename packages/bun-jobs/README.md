@@ -1956,6 +1956,16 @@ open is how an admin API becomes public. `readOnly: true` and an `actions`
 allow-list are *static* limits applied before `authorize`, so no hook can
 re-enable what configuration removed.
 
+A request that fails a check — a body or query that does not validate,
+malformed JSON, a missing CSRF token — is still authorized first, once, and
+only a caller `authorize` allows is told what was wrong. When the path is
+valid, `authorize` is asked with the target the path names (`queue`, `jobId`,
+`runner`, and `route`), just as for a well-formed request; a bulk route's
+`jobIds` come from the body, so they are absent. A host that refuses one queue
+therefore answers 403 there, and one that refuses untargeted requests still
+lets its caller see the 400. Only a request whose path is itself invalid is
+asked about with no target.
+
 | Action | Kind | |
 |---|---|---|
 | `meta.read` | read | |
@@ -2191,6 +2201,18 @@ Every failure is RFC 9457 `application/problem+json`:
 A 5xx never carries the underlying message — `detail` is the generic title —
 and nothing is matched on message text. Validation failures add `issues`
 (`{ target, path, message }`).
+
+Every time a request gives — a job's `runAt`, a schedule's `anchor` or `at` —
+is epoch milliseconds a `Date` can hold (0 to `MAX_DATE_MS`, 8.64e15, exported
+from the contract) or an RFC 3339 date-time; anything else is 400 `VALIDATION`
+at that field.
+
+`PUT /runners/:runner/schedule` refuses a schedule in two steps. A malformed
+field — an interval below 1, a time a `Date` cannot hold (epoch ms above
+8.64e15, or a string that is not an RFC 3339 date-time) — is 400 `VALIDATION`
+at that field. A cron expression or time zone the scheduler refuses is 400
+`INVALID_SCHEDULE` with one issue, whose `path` is `schedule.cron`,
+`schedule.tz`, or `schedule` for a bare cron string.
 
 | Code | Status | | Code | Status |
 |---|---|---|---|---|

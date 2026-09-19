@@ -1,6 +1,6 @@
 import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s } from "../schema/builder";
-import { ErrorDtoSchema } from "./common";
+import { ErrorDtoSchema, TimeInputSchema } from "./common";
 
 /**
  * Schemas for the runner routes.
@@ -247,12 +247,6 @@ export const KillBodySchema = s.object({
 /** `POST /runners/:runner/kill` response. */
 export const KillResultSchema = s.object({ runIds: s.array(s.string()) });
 
-/** A time: epoch milliseconds, or an RFC 3339 date-time. */
-const TimeInput = s.union(
-  s.integer({ minimum: 0 }),
-  s.string({ format: "date-time" }),
-);
-
 /** `PUT /runners/:runner/schedule` body. Mirrors `ScheduleInput`, minus `Date`. */
 export const ScheduleBodySchema = s.object({
   schedule: s.nullable(
@@ -269,9 +263,9 @@ export const ScheduleBodySchema = s.object({
       }),
       s.object({
         every: s.integer({ minimum: 1 }),
-        anchor: s.optional(TimeInput),
+        anchor: s.optional(TimeInputSchema),
       }),
-      s.object({ at: TimeInput }),
+      s.object({ at: TimeInputSchema }),
     ),
   ),
 });

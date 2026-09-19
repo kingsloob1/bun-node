@@ -144,6 +144,15 @@ export interface RouteDef<P, Q, B, R extends RouteResponses> {
   errors?: readonly ApiErrorCode[];
   /** Reads the authorization target out of the validated inputs. */
   target?: (input: { params: P; query: Q; body: B }) => AuthorizeTarget;
+  /**
+   * The part of the target the path alone decides, for a request whose query
+   * or body failed (or whose `target` threw): `authorize` is asked with it
+   * before the client is told what was wrong. Defaults to `target` called with
+   * the params only — so a route whose `target` reads `query` or `body` (a
+   * bulk route's `jobIds`) must set this, or such a request is authorized with
+   * no target at all.
+   */
+  pathTarget?: (params: P) => AuthorizeTarget;
   /** Answers the request. */
   handler: (
     ctx: RouteContext<P, Q, B>,
@@ -294,6 +303,56 @@ async function responseMismatch(
     .join("; ");
 }
 
+/** Thrown by {@link targetFromPath} when a route's `target` reads more than the path. */
+class NotFromPath extends Error {}
+
+/** An input a `target` can read `params` from, and nothing else. */
+function pathOnlyInput<P>(params: P): {
+  params: P;
+  query: never;
+  body: never;
+} {
+  return {
+    params,
+    get query(): never {
+      throw new NotFromPath("query");
+    },
+    get body(): never {
+      throw new NotFromPath("body");
+    },
+  };
+}
+
+/**
+ * Reads the target a request's **path** decides: validates `req.params` on its
+ * own (whatever the query and body did) and hands the result to the route's
+ * `pathTarget`, or to its `target` with nothing but the params. `undefined`
+ * when the params are invalid or the route has no target — `authorize` is then
+ * asked without one.
+ */
+function targetFromPath(
+  def: AnyRouteDef,
+): ((req: BunRequest) => Promise<AuthorizeTarget | undefined>) | undefined {
+  const { target, pathTarget } = def;
+  const read =
+    pathTarget ??
+    (target ? (params: unknown) => target(pathOnlyInput(params)) : undefined);
+  if (!read) {
+    return undefined;
+  }
+  return async (req) => {
+    let params: unknown = req.params;
+    if (def.params) {
+      const result = await def.params["~standard"].validate(req.params);
+      if (result.issues) {
+        return undefined;
+      }
+      params = result.value;
+    }
+    return read(params);
+  };
+}
+
 /** Joins `basePath` and a route path. */
 export function joinPath(basePath: string, path: string): string {
   return `${basePath}${path}`;
@@ -311,9 +370,10 @@ export function joinPath(basePath: string, path: string): string {
  * 6. the handler.
  *
  * Steps 2–4 are deferred ({@link deferFailure}): a failure is recorded, not
- * answered, and step 5 asks `authorize` once — without a target — before the
- * client learns what was wrong. Only the declared-size 413 is answered before
- * `authorize`. bun-common parses a body before the router runs, so this cap
+ * answered, and step 5 asks `authorize` once before the client learns what was
+ * wrong — with the target the path decides when the path is valid
+ * ({@link RouteDef.pathTarget}), without one when it is not. Only the
+ * declared-size 413 is answered before `authorize`. bun-common parses a body before the router runs, so this cap
  * cannot stop bun-common buffering one: its own `maxContentLength` bounds that.
  *
  * Refuses (with `ConfigError`) two routes on one method and path, and two
@@ -388,10 +448,12 @@ export function registerRoutes(
       handlers.push(deferred(validate(schemas)));
     }
     const target = def.target;
+    const pathTarget = targetFromPath(def);
     handlers.push(
       authorizeHandler(config, def.action, {
         route: { method: def.method, path: def.path },
         pending: (req) => failures.get(req),
+        ...(pathTarget ? { pathTarget } : {}),
         ...(target
           ? {
               target: (req: BunRequest) =>

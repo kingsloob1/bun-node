@@ -245,6 +245,14 @@ export const MAX_JOB_ID_LENGTH = 191;
  */
 export const MAX_JOB_REF_LENGTH = 1024;
 
+/**
+ * The latest instant a `Date` can hold, in epoch milliseconds (ECMAScript's
+ * range is ±8.64e15). Every time the API accepts as epoch milliseconds — a
+ * job's `runAt`, a schedule's `anchor` or `at` — is capped at this, so a later
+ * one is 400 `VALIDATION` instead of an invalid `Date` further in.
+ */
+export const MAX_DATE_MS = 8_640_000_000_000_000;
+
 /* ------------------------------------------------------------------ *
  * Channel names
  * ------------------------------------------------------------------ */

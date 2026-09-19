@@ -1,5 +1,6 @@
 import type { BunJobs } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { MAX_DATE_MS } from "../../lib/api/contract/constants";
 import { BunQueue, ConfigError, MemoryDriver } from "../../lib/index";
 import { waitFor } from "../helpers";
 import { harness, jobsContext, openContexts, openHarnesses } from "./fixtures";
@@ -594,6 +595,59 @@ describe("jobs", () => {
     ).toBe(400);
   });
 
+  it("refuses a reason that is only whitespace, and keeps one that is not exactly as sent", async () => {
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await queue.add("send", {}, { jobId: "doomed" });
+
+    for (const reason of ["   ", "\t\n", " \u00A0 "]) {
+      const blank = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+        reason,
+      });
+      expect({ reason, status: blank.status }).toEqual({ reason, status: 400 });
+      expect(blank.body).toMatchObject({ code: "VALIDATION" });
+      expect(blank.body.issues).toEqual([
+        expect.objectContaining({ target: "body", path: "reason" }),
+      ]);
+    }
+    expect((await queue.getJob("doomed"))?.state).toBe("waiting");
+
+    // Not trimmed: what was sent is what is stored.
+    const padded = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+      reason: "  bad address\n",
+    });
+    expect(padded.status).toBe(200);
+    expect((await queue.getJob("doomed"))?.failedReason?.message).toBe(
+      "  bad address\n",
+    );
+  });
+
+  it("documents the non-blank reason in the spec", () => {
+    /** The slice of a body schema this test reads. */
+    interface BodySchema {
+      /** A component reference, when the schema is named. */
+      $ref?: string;
+      /** The object's properties. */
+      properties?: Record<string, { pattern?: string }>;
+    }
+    const document = harness().api.openapi() as unknown as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          { requestBody: { content: Record<string, { schema: BodySchema }> } }
+        >
+      >;
+      components?: { schemas?: Record<string, BodySchema> };
+    };
+    const body =
+      document.paths["/queues/{queue}/jobs/{id}/fail"]?.post?.requestBody;
+    const schema = body?.content["application/json"]?.schema;
+    const name = schema?.$ref?.split("/").pop();
+    const resolved = name ? document.components?.schemas?.[name] : schema;
+    expect(resolved?.properties?.reason?.pattern).toBe("\\S");
+  });
+
   it("retries, removes and promotes in bulk, reporting what went", async () => {
     const h = harness();
     const queue = h.jobs.queue("mail");
@@ -682,6 +736,49 @@ describe("jobs", () => {
       (await h.call("POST", "/queues/mail/jobs/retry-all", { state: "dead" }))
         .status,
     ).toBe(200);
+  });
+
+  it("refuses a runAt a Date cannot hold as VALIDATION, and takes the last one it can", async () => {
+    const h = await withJobs();
+    h.jobs.define("send", async () => {});
+
+    const added = await h.call("POST", "/queues/mail/jobs", {
+      name: "send",
+      data: {},
+      opts: { runAt: Number.MAX_SAFE_INTEGER },
+    });
+    expect(added.status).toBe(400);
+    expect(added.body).toMatchObject({ code: "VALIDATION" });
+    expect(added.body.issues).toEqual([
+      expect.objectContaining({ target: "body", path: "opts.runAt" }),
+    ]);
+
+    const updated = await h.call("PATCH", "/queues/mail/jobs/a", {
+      runAt: Number.MAX_SAFE_INTEGER,
+    });
+    expect(updated.status).toBe(400);
+    expect(updated.body).toMatchObject({ code: "VALIDATION" });
+    expect(updated.body.issues).toEqual([
+      expect.objectContaining({ target: "body", path: "runAt" }),
+    ]);
+    expect((await h.queue.getJob("a"))?.state).toBe("waiting");
+
+    // The last instant a Date holds is still a time.
+    const last = await h.call("POST", "/queues/mail/jobs", {
+      name: "send",
+      data: {},
+      opts: { runAt: MAX_DATE_MS },
+    });
+    expect(last.status).toBe(201);
+    expect(last.body.job).toMatchObject({
+      state: "delayed",
+      runAt: MAX_DATE_MS,
+    });
+    const moved = await h.call("PATCH", "/queues/mail/jobs/b", {
+      runAt: MAX_DATE_MS,
+    });
+    expect(moved.status).toBe(200);
+    expect(moved.body).toMatchObject({ state: "delayed", runAt: MAX_DATE_MS });
   });
 
   it("adds a job only when jobs.add is enabled, by an addable name, with safe options", async () => {
