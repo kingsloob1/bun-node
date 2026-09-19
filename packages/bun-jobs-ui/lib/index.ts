@@ -1,3 +1,9 @@
+export {
+  ASSET_CACHE_CONTROL,
+  DEFAULT_BASE_PATH,
+  DEFAULT_TITLE,
+  jobsUi,
+} from "./jobsUi";
 /**
  * `@kingsleyweb/bun-jobs-ui`: a management UI and API documentation viewer
  * for the `@kingsleyweb/bun-jobs` management API.
@@ -14,14 +20,8 @@
  * `JobsUiBaseOptions` stays public because both option interfaces extend it,
  * so it is part of the options' declared shape.
  */
-export type { UiConfig, UiSections, UiTheme } from "../shared/config";
-export { UI_CONFIG_ELEMENT_ID } from "../shared/config";
-export {
-  ASSET_CACHE_CONTROL,
-  DEFAULT_BASE_PATH,
-  DEFAULT_TITLE,
-  jobsUi,
-} from "./jobsUi";
+export type { UiConfig, UiSections, UiTheme } from "./shared/config";
+export { UI_CONFIG_ELEMENT_ID } from "./shared/config";
 export type {
   JobsUi,
   JobsUiApiOptions,

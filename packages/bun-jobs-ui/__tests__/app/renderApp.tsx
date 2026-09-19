@@ -1,6 +1,6 @@
 import type { FetchLike } from "../../app/api/client";
 import type { LiveOptions } from "../../app/live";
-import type { UiConfig } from "../../shared/config.ts";
+import type { UiConfig } from "../../lib/shared/config.ts";
 import type { MockHandler, MockReply } from "./mockFetch";
 import { createApiClient } from "../../app/api/client";
 import { App } from "../../app/App";

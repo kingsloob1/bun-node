@@ -7,7 +7,7 @@ import type {
   QueueThroughput,
   WorkerList,
 } from "../../app/api/types";
-import type { UiConfig } from "../../shared/config.ts";
+import type { UiConfig } from "../../lib/shared/config.ts";
 import { JOBS_API_ACTIONS } from "../../app/api/contract";
 
 /**

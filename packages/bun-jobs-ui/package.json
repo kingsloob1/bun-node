@@ -14,8 +14,7 @@
   },
   "files": [
     "dist",
-    "lib",
-    "shared"
+    "lib"
   ],
   "engines": {
     "bun": ">=1.4.2"

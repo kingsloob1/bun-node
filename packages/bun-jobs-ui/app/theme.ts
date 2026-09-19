@@ -1,4 +1,4 @@
-import type { UiTheme } from "../shared/config.ts";
+import type { UiTheme } from "../lib/shared/config.ts";
 
 /** `localStorage` key the chosen theme is remembered under. */
 export const THEME_STORAGE_KEY = "bun-jobs-ui:theme";

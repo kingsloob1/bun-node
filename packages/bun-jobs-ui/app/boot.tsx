@@ -1,5 +1,5 @@
 import type { Root } from "react-dom/client";
-import type { UiConfig } from "../shared/config.ts";
+import type { UiConfig } from "../lib/shared/config.ts";
 import type { ApiClientOptions } from "./api/client";
 import type { LiveOptions } from "./live";
 import { StrictMode } from "react";

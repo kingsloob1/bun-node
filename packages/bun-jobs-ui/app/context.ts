@@ -1,4 +1,4 @@
-import type { UiConfig } from "../shared/config.ts";
+import type { UiConfig } from "../lib/shared/config.ts";
 import type { ApiClient } from "./api/client";
 import { createContext, use } from "react";
 

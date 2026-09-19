@@ -5,7 +5,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi, JobsApiAuthorizeResult } from "@kingsleyweb/bun-jobs";
-import type { UiConfig, UiSections, UiTheme } from "../shared/config";
+import type { UiConfig, UiSections, UiTheme } from "./shared/config";
 
 /** What {@link JobsUiOptions.authorize} is told about the request being decided. */
 export interface JobsUiAuthorizeContext {

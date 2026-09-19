@@ -1,4 +1,4 @@
-import type { UiSections } from "../../shared/config.ts";
+import type { UiSections } from "../../lib/shared/config.ts";
 import type { JobsApiAction } from "../api/contract";
 import type { MetaDto } from "../api/types";
 

@@ -1,5 +1,5 @@
-import type { UiConfig } from "../shared/config.ts";
-import { UI_CONFIG_ELEMENT_ID } from "../shared/config.ts";
+import type { UiConfig } from "../lib/shared/config.ts";
+import { UI_CONFIG_ELEMENT_ID } from "../lib/shared/config.ts";
 
 /** The injected configuration was missing or malformed. */
 export class UiConfigError extends Error {

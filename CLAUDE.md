@@ -200,8 +200,10 @@ Two rules that keep it from doing harm:
   the hashed assets (`lib/assets.ts`).
 - **`app/`** — the browser: React 19, TanStack Query, bundled by `Bun.build`.
   Its own project (`app/tsconfig.json`, DOM libs).
-- **`shared/`** — `UiConfig` and friends, imported by both. Nothing else
-  crosses.
+- **`lib/shared/`** — `UiConfig` and friends, imported by both. It is the
+  only part of `lib/` the browser imports, so it must stay free of runtime
+  imports (the bundle-safety test catches anything else crossing). It lives
+  under `lib/` so the declarations build (`rootDir: lib`) covers it.
 
 **Mounting.** Beside the API, each at its own `basePath`; the UI's must not
 equal or sit under the API's (`jobsUi()` throws a `ConfigError`):

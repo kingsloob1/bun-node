@@ -13,7 +13,7 @@
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "types": ["bun"]
   },
-  "include": ["./**/*", "../shared/**/*", "../__tests__/app/**/*"],
+  "include": ["./**/*", "../lib/shared/**/*", "../__tests__/app/**/*"],
   // Tests that import the `@kingsleyweb/bun-jobs` package root (the real-API
   // and bundle-safety tests) cannot compile under the DOM lib: the package's
   // source graph conflicts with it. They are their own DOM-free project,

@@ -10,7 +10,6 @@
   },
   "include": [
     "./lib/**/*",
-    "./shared/**/*",
     "./scripts/**/*",
     "./__tests__/server/**/*",
     "./__tests__/e2e/**/*",

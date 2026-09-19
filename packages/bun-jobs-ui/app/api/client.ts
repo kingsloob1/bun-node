@@ -1,4 +1,4 @@
-import type { UiConfig } from "../../shared/config.ts";
+import type { UiConfig } from "../../lib/shared/config.ts";
 import type {
   MetaDto,
   Overview,

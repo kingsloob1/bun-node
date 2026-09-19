@@ -1,3 +1,4 @@
+import type { UiAssets } from "./assets";
 /**
  * The HTML shell: the one page every client route answers with, and the
  * Content-Security-Policy it is served under.
@@ -7,10 +8,9 @@
  * `<script type="application/json">`, escaped for a script context, so a title
  * containing `</script>` cannot end the element early.
  */
-import type { UiConfig, UiTheme } from "../shared/config";
-import type { UiAssets } from "./assets";
+import type { UiConfig, UiTheme } from "./shared/config";
 import { Buffer } from "node:buffer";
-import { UI_CONFIG_ELEMENT_ID } from "../shared/config";
+import { UI_CONFIG_ELEMENT_ID } from "./shared/config";
 
 /** A fresh CSP nonce: 128 random bits, base64. */
 export function createNonce(): string {

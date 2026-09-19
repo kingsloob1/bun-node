@@ -1,4 +1,4 @@
-import type { UiConfig } from "../../shared/config.ts";
+import type { UiConfig } from "../../lib/shared/config.ts";
 import { describe, expect, it } from "bun:test";
 import { parseUiConfig, readUiConfig, UiConfigError } from "../../app/config";
 import {
@@ -9,7 +9,7 @@ import {
   storeTheme,
   THEME_STORAGE_KEY,
 } from "../../app/theme";
-import { UI_CONFIG_ELEMENT_ID } from "../../shared/config.ts";
+import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config.ts";
 import { act, fireEvent, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
 import { mockFetch } from "./mockFetch";
