@@ -9,6 +9,7 @@ import {
 import { JSON_METHODS, MUTATING_METHODS } from "../../../api/contract";
 import { declaredTypes, deref, isSchemaObject } from "../schema/resolve";
 import { schemaSkeleton } from "../schema/skeleton";
+import { successStatuses } from "./model";
 
 /**
  * The try-it panel's logic: which input each parameter gets, the request a
@@ -431,4 +432,22 @@ export function tryItGate(
     };
   }
   return { enabled: true };
+}
+
+/**
+ * The note try-it shows when the status received is not one the operation
+ * documents, naming the documented success statuses (`2xx` when it documents
+ * none); `undefined` when the status is documented.
+ */
+export function documentedNote(
+  operation: DocOperation,
+  status: number,
+): string | undefined {
+  if (
+    operation.responses.some((response) => response.status === String(status))
+  ) {
+    return undefined;
+  }
+  const success = successStatuses(operation);
+  return `Not a documented status. Documented success: ${success.length > 0 ? success.join(" / ") : "2xx"}.`;
 }

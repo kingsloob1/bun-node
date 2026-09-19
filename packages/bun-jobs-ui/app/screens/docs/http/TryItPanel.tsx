@@ -1,3 +1,4 @@
+import type { RawResponse } from "../../../api/client";
 import type { JobsApiAction } from "../../../api/contract";
 import type { JsonEditorState } from "../../../components/jsonParse";
 import type { SchemaRoot } from "../schema/resolve";
@@ -20,11 +21,11 @@ import { ProblemBanner } from "../../../components/ProblemBanner";
 import { Tabs } from "../../../components/Tabs";
 import { useApiClient, useUiConfig } from "../../../context";
 import { useCanFn, useMeta } from "../../../meta/hooks";
-import { successStatuses } from "./model";
 import {
   bodySchema,
   buildRequest,
   curlSnippet,
+  documentedNote,
   fetchSnippet,
   formParameters,
   initialBodyText,
@@ -37,15 +38,13 @@ import {
 /** What one send produced. */
 type TryItResult =
   | {
-      /** It succeeded (2xx). */
+      /** A response arrived, whatever its status. */
       ok: true;
-      /** The parsed body, `undefined` for none. */
-      value: unknown;
-      /** Milliseconds from send to parsed answer. */
-      ms: number;
+      /** The response: real status, visible headers, body and timing. */
+      response: RawResponse;
     }
   | {
-      /** It failed: an `ApiError` (problem, HTTP, network or parse). */
+      /** No response: a network failure (an `ApiError` of kind `network`) or anything else thrown. */
       ok: false;
       /** What was thrown. */
       error: unknown;
@@ -161,24 +160,92 @@ function ParameterInput({
   }
 }
 
-/** The documented success statuses, e.g. `"200"`, for a result whose own status the client does not expose. */
-function documentedSuccess(operation: DocOperation): string {
-  const statuses = successStatuses(operation);
-  return statuses.length > 0 ? statuses.join(" / ") : "2xx";
+/** The response headers the browser let the page see. */
+function HeadersView({
+  headers,
+}: {
+  /** Lower-cased names to values, in order. */
+  headers: Record<string, string>;
+}) {
+  const entries = Object.entries(headers);
+  return (
+    <details
+      className="http-tryit-headers"
+      data-testid="tryit-headers"
+    >
+      <summary>{`Headers (${entries.length})`}</summary>
+      {entries.length === 0 ? (
+        <p className="http-muted">No headers visible to the page.</p>
+      ) : (
+        <dl>
+          {entries.map(([name, value]) => (
+            <div
+              key={name}
+              data-header={name}
+            >
+              <dt>
+                <code>{name}</code>
+              </dt>
+              <dd>
+                <code>{value}</code>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </details>
+  );
 }
 
-/** The status, timing, headers note and body of the last send. */
+/** A response body: a JSON tree, text, or "No body." */
+function BodyView({
+  body,
+  label,
+}: {
+  /** The parsed JSON, the text, or `undefined`. */
+  body: unknown;
+  /** The tree's accessible label. */
+  label: string;
+}) {
+  if (body === undefined) {
+    return <p className="http-muted">No body.</p>;
+  }
+  if (typeof body === "string") {
+    return (
+      <pre
+        className="http-tryit-text"
+        aria-label={label}
+      >
+        <code>{body}</code>
+      </pre>
+    );
+  }
+  return (
+    <JsonView
+      value={body}
+      label={label}
+      expandDepth={2}
+    />
+  );
+}
+
+/** The real status, timing, headers and body of the last send. */
 function ResultView({
   result,
   operation,
 }: {
   /** The outcome. */
   result: TryItResult;
-  /** The operation, for its documented success status. */
+  /** The operation, for its documented statuses. */
   operation: DocOperation;
 }) {
-  const error = result.ok ? undefined : result.error;
+  const response = result.ok ? result.response : undefined;
+  const error = result.ok ? result.response.error : result.error;
   const problem = isApiError(error) ? error : undefined;
+  const note = response
+    ? documentedNote(operation, response.status)
+    : undefined;
+  const ms = response ? response.durationMs : result.ok ? 0 : result.ms;
   return (
     <section
       className="http-tryit-result"
@@ -186,69 +253,49 @@ function ResultView({
       data-testid="tryit-result"
     >
       <div className="http-tryit-status">
-        {result.ok ? (
-          <Badge tone="success">
-            <span data-testid="tryit-status">
-              {documentedSuccess(operation)}
-            </span>
-          </Badge>
-        ) : (
-          <Badge tone="danger">
-            <span data-testid="tryit-status">
-              {problem
-                ? problem.status === 0
-                  ? "No response"
-                  : String(problem.status)
+        <Badge tone={response?.ok ? "success" : "danger"}>
+          <span data-testid="tryit-status">
+            {response
+              ? String(response.status)
+              : problem?.status === 0
+                ? "No response"
                 : "Error"}
-            </span>
-          </Badge>
+          </span>
+        </Badge>
+        {response?.statusText && (
+          <span className="http-muted">{response.statusText}</span>
         )}
         {problem && <code>{problem.code}</code>}
         <span
           className="http-tryit-timing"
           data-testid="tryit-timing"
         >
-          {`${Math.round(result.ms)} ms`}
+          {`${Math.round(ms)} ms`}
         </span>
       </div>
-      <p className="http-muted">
-        {result.ok
-          ? "Succeeded. The status shown is the documented one: the app's client returns the parsed body, not the response's status or headers."
-          : "Response headers are not exposed by the app's client; the problem it parsed is shown below."}
-      </p>
-      {result.ok ? (
-        result.value === undefined ? (
-          <p className="http-muted">No body.</p>
-        ) : (
-          <JsonView
-            value={result.value}
-            label="Response body"
-            expandDepth={2}
-          />
-        )
-      ) : (
+      {note && (
+        <p
+          className="http-muted"
+          data-testid="tryit-documented"
+        >
+          {note}
+        </p>
+      )}
+      {!response && <ProblemBanner error={error} />}
+      {response && (
         <>
-          <ProblemBanner error={error} />
-          {problem && problem.kind === "problem" && (
-            <JsonView
-              value={{
-                type: problem.type,
-                title: problem.title,
-                status: problem.status,
-                code: problem.code,
-                detail: problem.detail,
-                instance: problem.instance,
-                ...(problem.issues.length > 0
-                  ? { issues: problem.issues }
-                  : {}),
-                ...(Object.keys(problem.context).length > 0
-                  ? { context: problem.context }
-                  : {}),
-              }}
-              label="Problem body"
-              expandDepth={1}
-            />
-          )}
+          {!response.ok && <ProblemBanner error={error} />}
+          <HeadersView headers={response.headers} />
+          <BodyView
+            body={response.body}
+            label={
+              response.ok
+                ? "Response body"
+                : problem?.kind === "problem"
+                  ? "Problem body"
+                  : "Response body"
+            }
+          />
         </>
       )}
     </section>
@@ -360,12 +407,12 @@ export function TryItPanel({ operation, root }: TryItPanelProps) {
     setPending(true);
     const started = performance.now();
     try {
-      const value = await api.request<unknown>(request.method, request.path, {
+      const response = await api.requestRaw(request.method, request.path, {
         query: request.query,
         body: request.body,
       });
-      setResult({ ok: true, value, ms: performance.now() - started });
-      if (operation.mutation) {
+      setResult({ ok: true, response });
+      if (operation.mutation && response.ok) {
         // The rest of the app shows what this changed.
         void queryClient.invalidateQueries({
           predicate: (query) => query.queryKey[0] !== docsKeys.all[0],

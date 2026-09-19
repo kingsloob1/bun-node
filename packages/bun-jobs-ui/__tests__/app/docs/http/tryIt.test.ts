@@ -8,6 +8,7 @@ import {
   buildRequest,
   clientHeaders,
   curlSnippet,
+  documentedNote,
   fetchSnippet,
   initialBodyText,
   inputKind,
@@ -247,5 +248,22 @@ describe("gating", () => {
       enabled: false,
       reason: "You do not have the meta.read permission.",
     });
+  });
+});
+
+describe("documentedNote", () => {
+  it("is silent for a documented status, success or error", () => {
+    expect(documentedNote(op("getMeta"), 200)).toBeUndefined();
+    expect(documentedNote(op("removeJob"), 204)).toBeUndefined();
+    expect(documentedNote(op("getQueue"), 404)).toBeUndefined();
+  });
+
+  it("names the documented success statuses for one the operation does not document", () => {
+    expect(documentedNote(op("removeJob"), 200)).toBe(
+      "Not a documented status. Documented success: 204.",
+    );
+    expect(documentedNote(op("getMeta"), 203)).toBe(
+      "Not a documented status. Documented success: 200.",
+    );
   });
 });

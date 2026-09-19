@@ -303,16 +303,22 @@ read only the untargeted map, since an operation has no one queue or runner:
   enum array is checkboxes, an array is a comma list sent as repeated keys, a
   path parameter is percent-encoded as one segment); header parameters are
   the client's to send. A JSON body starts from the schema's required fields
-  (a default, `const` or first enum value where there is one). The client
-  exposes only the parsed body, not the response's status or headers, so on
-  success the panel shows the **documented** success status, not the one
-  received. A mutation's panel on a read-only API is disabled with "This API
-  is read-only: it refuses every change." That shows only for a stale or
-  foreign OpenAPI document: a read-only `createJobsApi` neither routes nor
-  documents its mutations, so its own document lists none. On failure the status and problem `code` are real, with the
-  problem body below; a network failure shows "No response". The time taken
-  is shown either way. A successful mutation refetches every query outside
-  the docs, so the rest of the app shows what it changed.
+  (a default, `const` or first enum value where there is one). A mutation's
+  panel on a read-only API is disabled with "This API is read-only: it
+  refuses every change." That shows only for a stale or foreign OpenAPI
+  document: a read-only `createJobsApi` neither routes nor documents its
+  mutations, so its own document lists none.
+- **The result is the real response.** Try-it sends through the client's
+  `requestRaw`, which applies the same header, credential and problem+json
+  rules as `request` but resolves the whole response: the status received
+  (`201` for an added job, `204` for a removed one), its status text, the
+  headers the browser lets the page see (`Set-Cookie` never is), the body,
+  and the time from sending to the body having been read. An error status is
+  a response too: its problem `code` and banner show above its body. When
+  the status is not one the operation documents, a note names the documented
+  success status. A network failure shows "No response". A successful
+  mutation refetches every query outside the docs, so the rest of the app
+  shows what it changed.
 - **CSRF, stated per operation.** A mutation's `x-bun-jobs-csrf` is shown:
   the header it must carry and whether the app sends it, and, when the API
   requires it, `Content-Type: application/json` even with no body (415
@@ -483,7 +489,9 @@ These `data-testid` hooks are stable:
   `data-allowed`), `op-mutation`, `op-requires`, `op-csrf`, `op-parameters`,
   `op-body`, `op-responses`.
 - HTTP try-it: `tryit`, `tryit-disabled`, `tryit-csrf`, `snippet-curl`,
-  `snippet-fetch`, `tryit-result`, `tryit-status`, `tryit-timing`.
+  `snippet-fetch`, `tryit-result`, `tryit-status`, `tryit-timing`,
+  `tryit-documented`, `tryit-headers` (one `data-header="<name>"` row per
+  header).
 - Schema trees: `schema-closed` ("No other fields").
 - WebSocket reference: `ws-docs`, `ws-server-url`, `ws-subprotocol`,
   `ws-subprotocol-source`,

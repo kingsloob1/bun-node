@@ -240,6 +240,133 @@ describe("createApiClient: responses", () => {
   });
 });
 
+describe("createApiClient: requestRaw", () => {
+  it("applies the same header rules as request: Content-Type on POST/PUT/PATCH, CSRF on every mutation", async () => {
+    const { client, calls } = clientWith({ body: {} });
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"] as const) {
+      await client.requestRaw(method, "/x", { query: { a: [1, 2] } });
+    }
+    const byMethod = Object.fromEntries(
+      calls.map((call) => [call.method, call]),
+    );
+    expect(byMethod.GET!.headers[CSRF]).toBeUndefined();
+    expect(byMethod.GET!.headers["content-type"]).toBeUndefined();
+    for (const method of ["POST", "PUT", "PATCH"]) {
+      expect(byMethod[method]!.headers["content-type"]).toBe(
+        "application/json",
+      );
+    }
+    expect(byMethod.DELETE!.headers["content-type"]).toBeUndefined();
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(byMethod[method]!.headers[CSRF]).toBe(CSRF_HEADER_VALUE);
+    }
+    for (const call of calls) {
+      expect(call.headers.accept).toBe("application/json");
+      expect(call.credentials).toBe("same-origin");
+      expect(call.url).toBe("/jobs-api/x?a=1&a=2");
+    }
+  });
+
+  it("sends the JSON body", async () => {
+    const { client, calls } = clientWith({ body: {} });
+    await client.requestRaw("POST", "/x", { body: { name: "send" } });
+    expect(calls[0]!.body).toBe(JSON.stringify({ name: "send" }));
+  });
+
+  it("returns the real status, status text, headers (lower-cased, sorted), parsed body and timing", async () => {
+    const { client } = clientWith(
+      new Response(JSON.stringify({ added: true }), {
+        status: 201,
+        statusText: "Created",
+        headers: {
+          "X-Request-Id": "abc",
+          "content-type": "application/json",
+          Location: "/jobs-api/queues/q/jobs/1",
+        },
+      }),
+    );
+    const raw = await client.requestRaw("POST", "/x", { body: {} });
+    expect(raw.ok).toBe(true);
+    expect(raw.status).toBe(201);
+    expect(raw.statusText).toBe("Created");
+    expect(raw.body).toEqual({ added: true });
+    expect(raw.error).toBeUndefined();
+    expect(Object.keys(raw.headers)).toEqual([
+      "content-type",
+      "location",
+      "x-request-id",
+    ]);
+    expect(raw.headers["x-request-id"]).toBe("abc");
+    expect(raw.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns a 204 with no body", async () => {
+    const { client } = clientWith({ status: 204 });
+    const raw = await client.requestRaw("DELETE", "/x");
+    expect(raw.ok).toBe(true);
+    expect(raw.status).toBe(204);
+    expect(raw.body).toBeUndefined();
+    expect(raw.error).toBeUndefined();
+  });
+
+  it("resolves a problem+json answer with its status, body and the ApiError request would throw", async () => {
+    const body = problem(404, "QUEUE_NOT_FOUND", "Queue not found", {
+      detail: "No queue q",
+    });
+    const { client } = clientWith({ status: 404, body });
+    const raw = await client.requestRaw("GET", "/x");
+    expect(raw.ok).toBe(false);
+    expect(raw.status).toBe(404);
+    expect(raw.headers["content-type"]).toBe("application/problem+json");
+    expect(raw.body).toEqual(body);
+    expect(raw.error).toBeInstanceOf(ApiError);
+    expect(raw.error!.kind).toBe("problem");
+    expect(raw.error!.code).toBe("QUEUE_NOT_FOUND");
+    expect(raw.error!.detail).toBe("No queue q");
+  });
+
+  it("keeps a non-JSON body as text, success or not", async () => {
+    const { client } = clientWith(
+      new Response("<h1>Bad gateway</h1>", {
+        status: 502,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    const raw = await client.requestRaw("GET", "/x");
+    expect(raw.body).toBe("<h1>Bad gateway</h1>");
+    expect(raw.error!.kind).toBe("http");
+    expect(raw.error!.code).toBe("HTTP_502");
+  });
+
+  it("rejects a network failure with a network ApiError, and lets an abort through", async () => {
+    const failing = createApiClient(
+      { apiBase: "/api", csrfHeader: null },
+      {
+        fetch: async () => {
+          throw new TypeError("Failed to fetch");
+        },
+      },
+    );
+    const error = await rejection(failing.requestRaw("GET", "/x"));
+    expect(error.kind).toBe("network");
+    const aborting = createApiClient(
+      { apiBase: "/api", csrfHeader: null },
+      {
+        fetch: async () => {
+          throw new DOMException("aborted", "AbortError");
+        },
+      },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = await aborting
+      .requestRaw("GET", "/x", { signal: controller.signal })
+      .catch((e) => e);
+    expect(isApiError(aborted)).toBe(false);
+    expect((aborted as Error).name).toBe("AbortError");
+  });
+});
+
 describe("createApiClient: endpoints", () => {
   it("builds each milestone-1 request", async () => {
     const mock = mockFetch({

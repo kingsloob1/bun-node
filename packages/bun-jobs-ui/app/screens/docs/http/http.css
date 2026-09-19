@@ -342,3 +342,36 @@
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
+
+.http-tryit-headers summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.http-tryit-headers dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+}
+
+.http-tryit-headers dl > div {
+  display: contents;
+}
+
+.http-tryit-headers dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.http-tryit-text {
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

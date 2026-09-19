@@ -1,6 +1,11 @@
 import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
-import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
+import {
+  BunJobs,
+  createJobsApi,
+  JOBS_API_ACTIONS,
+  MemoryDriver,
+} from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 /**
@@ -38,7 +43,12 @@ interface ScreenModule {
     operations: () => string[];
     openOperation: (operationId: string) => Promise<void>;
     fill: (name: string, value: string) => void;
-    send: () => Promise<{ status: string; text: string }>;
+    setBody: (text: string) => void;
+    send: () => Promise<{
+      status: string;
+      text: string;
+      headers: Record<string, string>;
+    }>;
   }>;
 }
 
@@ -58,6 +68,8 @@ const BASE = "/jobs-api";
 const QUEUE = "emails";
 
 let jobs: BunJobs;
+/** A waiting job for removeJob to remove. */
+let removable: string;
 let fetchShim: FetchLike;
 /** Every request the app sent, as the API received it. */
 const seen: { method: string; path: string; headers: Headers }[] = [];
@@ -85,6 +97,9 @@ beforeAll(async () => {
     jobs,
     basePath: BASE,
     authorize: () => true,
+    // Every action, so addJob (201) and removeJob (204) are routed.
+    actions: [...JOBS_API_ACTIONS],
+    addableNames: "any",
     logger: noopLogger,
     limits: { queueCacheMs: 0 },
     csrf: { header: CSRF },
@@ -113,6 +128,7 @@ beforeAll(async () => {
       });
     });
   await jobs.queue(QUEUE).add("send", { to: "a@example.com" });
+  removable = (await jobs.queue(QUEUE).add("send", { to: "b@example.com" })).id;
 });
 
 afterAll(async () => {
@@ -153,5 +169,30 @@ describe("the HTTP reference against a real API", () => {
     )!;
     expect(post.headers.get(CSRF)).toBe("1");
     expect(post.headers.get("content-type")).toBe("application/json");
+  });
+
+  it("shows the real status and headers: 201 for an added job, 204 for a removed one", async () => {
+    const screen = await load<ScreenModule>(
+      ["..", "docs", "http", "realApiScreen"].join("/"),
+    );
+    const ui = await screen.mountHttpDocs(fetchShim, CSRF);
+
+    await ui.openOperation("addJob");
+    ui.fill("queue", QUEUE);
+    ui.setBody(JSON.stringify({ name: "send", data: { to: "c@example.com" } }));
+    const added = await ui.send();
+    expect(added.status).toBe("201");
+    expect(added.text).toContain("added");
+    expect(added.headers["content-type"]).toContain("application/json");
+    expect((await jobs.queue(QUEUE).count()).waiting).toBe(3);
+
+    expect(await jobs.queue(QUEUE).getJob(removable)).toBeTruthy();
+    await ui.openOperation("removeJob");
+    ui.fill("queue", QUEUE);
+    ui.fill("id", removable);
+    const removed = await ui.send();
+    expect(removed.status).toBe("204");
+    expect(removed.text).toContain("No body.");
+    expect(await jobs.queue(QUEUE).getJob(removable)).toBeFalsy();
   });
 });
