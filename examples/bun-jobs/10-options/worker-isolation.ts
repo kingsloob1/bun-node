@@ -17,7 +17,11 @@
  * - The worker keeps the driver. In a child, `job.updateProgress`, `job.log`,
  *   `job.touch`/`extendLock`, `ctx.log` and `ctx.heartbeat` travel to the
  *   worker and are answered from there; every other operation that changes the
- *   stored job rejects with "not available in an isolated job".
+ *   stored job rejects with "not available in an isolated job" — `schedule`,
+ *   `update`, `disable` and `enable` included.
+ * - `job.fail(reason)` works in every mode: the child keeps the reason and
+ *   reports it as the attempt's error when the processor settles, so the job
+ *   goes to `dead` exactly as it would in-process.
  * - The worker owns the attempt's `timeout`: the job dies at the deadline.
  *   Under `"spawn"` the child is then asked to close, sent `SIGTERM`
  *   `closeTimeout` later, and `SIGKILL` `killTimeout` after that — the only
@@ -30,6 +34,7 @@ import type {
 } from "@kingsleyweb/bun-jobs";
 import type { FailData } from "./processors/isolation-fail";
 import type { HangData } from "./processors/isolation-hang";
+import type { JobFailData } from "./processors/isolation-job-fail";
 import type { Report, ReportData } from "./processors/isolation-report";
 import type {
   Unavailable,
@@ -334,6 +339,10 @@ const isolatedOnly = [
   "promote",
   "refresh",
   "getLogs",
+  "schedule",
+  "update",
+  "disable",
+  "enable",
 ];
 
 for (const mode of ["spawn", "worker", "in-process"] as const) {
@@ -391,7 +400,7 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("4. Errors cross the boundary and still decide retries");
+step("4. Errors cross the boundary and still decide retries; so does fail()");
 
 const failFile = join(processors, "isolation-fail.ts");
 
@@ -430,6 +439,80 @@ for (const mode of ["spawn", "worker"] as const) {
     `${mode}: a plain Error is retried to its attempts`,
     [flakyNow?.state, flakyNow?.attemptsMade, flakyNow?.failedReason?.message],
     ["dead", 2, "attempt 2 failed"],
+  );
+
+  await worker.close();
+  await queue.close();
+}
+
+// `job.fail()` needs no driver in the child: the reason is kept there and
+// reported as the attempt's error when the processor settles.
+const jobFailFile = join(processors, "isolation-job-fail.ts");
+
+for (const mode of ["spawn", "worker"] as const) {
+  const queueName = `job-fail-${mode}`;
+  const queue = new BunQueue<JobFailData>(queueName, { namespace, driver });
+  const worker = new BunQueueWorker<JobFailData>(queueName, jobFailFile, {
+    namespace,
+    driver,
+    isolation: mode,
+    isolationOptions: { closeTimeout: 2_000 },
+    ...fast,
+  });
+  /** Local `dead` events, by job id, with their error's message. */
+  const dead = new Map<string, string>();
+  worker.on("dead", (job, error) => {
+    dead.set(job.id, error.message);
+  });
+  void worker.run();
+
+  const options = { attempts: 3, backoff: 1 } as const;
+  const byString = await queue.add("fail", { how: "string" }, options);
+  const byError = await queue.add("fail", { how: "error" }, options);
+  await waitFor(`both ${mode} fail() jobs to die`, () => dead.size === 2, LONG);
+
+  const stringNow = await queue.getJob(byString.id);
+  const errorNow = await queue.getJob(byError.id);
+  checkEqual(
+    `${mode}: job.fail() answered true in the child`,
+    [stringNow?.progress, errorNow?.progress],
+    [{ answered: true }, { answered: true }],
+  );
+  checkEqual(
+    `${mode}: dead after one attempt of three, though the processor returned`,
+    [
+      stringNow?.state,
+      stringNow?.attemptsMade,
+      stringNow?.returnValue,
+      stringNow?.failedReason?.name,
+      stringNow?.failedReason?.message,
+      stringNow?.failedReason?.cause,
+    ],
+    [
+      "dead",
+      1,
+      null,
+      "UnrecoverableJobError",
+      "the input can never be processed",
+      undefined,
+    ],
+  );
+  const cause = errorNow?.failedReason?.cause as Error | undefined;
+  checkEqual(
+    `${mode}: an Error reason wins over the later throw, and keeps its cause`,
+    [
+      errorNow?.state,
+      errorNow?.attemptsMade,
+      errorNow?.failedReason?.message,
+      cause?.message,
+      (cause?.cause as Error | undefined)?.message,
+    ],
+    ["dead", 1, "card declined", "card declined", "gateway timeout"],
+  );
+  checkEqual(
+    `${mode}: the worker's dead events carry the reasons`,
+    [dead.get(byString.id), dead.get(byError.id)],
+    ["the input can never be processed", "card declined"],
   );
 
   await worker.close();
