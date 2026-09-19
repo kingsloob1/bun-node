@@ -1,5 +1,9 @@
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it } from "bun:test";
+import {
+  DATE_TIME_OUT_OF_RANGE,
+  DATE_TIME_UNREADABLE,
+} from "../../../app/components/inputValues";
 import { jsonEditorState } from "../../../app/components/jsonParse";
 import {
   updateBody,
@@ -7,6 +11,7 @@ import {
 } from "../../../app/screens/job/updateJobForm";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
+import { stubRawValue } from "../rawInput";
 import { jobApiPath, jobFixture, jobMeta, logPage } from "./fixtures";
 import { renderJobScreen, toastText } from "./render";
 
@@ -100,6 +105,50 @@ describe("the update dialog", () => {
       runAt: new Date("2026-10-01T09:30").getTime(),
       onlyIn: ["waiting", "delayed"],
     });
+  });
+
+  it("refuses a run time past MAX_DATE_MS in place, with Save disabled, until it is fixed", async () => {
+    const { dialog, patches } = await openEdit();
+    const saveButton = within(dialog).getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    const input = within(dialog).getByLabelText("Run at") as HTMLInputElement;
+    // Before, this read as empty ("keep the run time") and was dropped.
+    const raw = stubRawValue(input, "275760-12-31T00:00");
+    fireEvent.change(input);
+    raw.restore();
+    expect(errorOf(dialog, "Run at")).toBe(DATE_TIME_OUT_OF_RANGE);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(saveButton.disabled).toBe(true);
+    // Enter still submits a form whose button is disabled: nothing is sent.
+    await act(async () => {
+      fireEvent.submit(dialog.querySelector("form")!);
+    });
+    expect(patches()).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "2026-10-01T09:30" } });
+    expect(errorOf(dialog, "Run at")).toBe("");
+    expect(saveButton.disabled).toBe(false);
+    await save(dialog);
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    expect(JSON.parse(patches()[0]!.body!)).toEqual({
+      runAt: new Date("2026-10-01T09:30").getTime(),
+    });
+  });
+
+  it("refuses a run time the browser could not read", async () => {
+    const { dialog } = await openEdit();
+    const input = within(dialog).getByLabelText("Run at") as HTMLInputElement;
+    const raw = stubRawValue(input, "", true);
+    fireEvent.blur(input);
+    raw.restore();
+    expect(errorOf(dialog, "Run at")).toBe(DATE_TIME_UNREADABLE);
+    expect(
+      (
+        within(dialog).getByRole("button", {
+          name: "Save",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it("accepts null as the new data", async () => {

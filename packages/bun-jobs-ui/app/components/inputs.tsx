@@ -5,13 +5,13 @@ import type {
   Ref,
   SelectHTMLAttributes,
 } from "react";
-import { useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { cx } from "./classNames";
 import { joinIds, useField } from "./fieldContext";
 import {
-  fromDateTimeLocal,
   localTimeZone,
   parseNumberInput,
+  readDateTimeLocal,
   toDateTimeLocal,
 } from "./inputValues";
 
@@ -271,11 +271,26 @@ export interface DateTimeInputProps
   extends Omit<PassThroughInputProps, "min" | "max">, ControlWiring {
   /** The instant, epoch ms, or `undefined` for empty. */
   value: number | undefined;
-  /** Called with the instant (epoch ms) the user picked, or `undefined` when cleared. */
+  /**
+   * Called with the instant (epoch ms) the user picked, or `undefined` when
+   * cleared, or when the field holds something unusable (then `onProblem`
+   * says what).
+   */
   onChange: (
     value: number | undefined,
     event: ChangeEvent<HTMLInputElement>,
   ) => void;
+  /**
+   * Called with a message when the field holds something unusable — a time
+   * outside what the API accepts (0 to `MAX_DATE_MS`) or one the browser
+   * could not read — and with `undefined` once it holds a usable time, is
+   * cleared, or unmounts. Judged on each change and again on blur, since a
+   * half-typed entry into an empty field fires no change. The typed text is
+   * kept on screen meanwhile. Show the message as the field's error and hold
+   * the form back until it clears (`useFieldProblems`, in
+   * `hooks/useFieldProblems`).
+   */
+  onProblem?: (problem: string | undefined) => void;
   /** Earliest allowed instant, epoch ms (native validation only). */
   min?: number;
   /** Latest allowed instant, epoch ms (native validation only). */
@@ -294,15 +309,26 @@ export interface DateTimeInputProps
 export function DateTimeInput({
   value,
   onChange,
+  onProblem,
   min,
   max,
   withSeconds = false,
   showTimeZone = true,
   className,
+  onBlur,
   ...rest
 }: DateTimeInputProps) {
   const zoneId = useId();
   const wiring = useWiring(rest);
+  // What the user typed, kept on screen while it is unusable (the value is
+  // then `undefined`, which would otherwise blank the field).
+  const [draft, setDraft] = useState<string | null>(null);
+  const onProblemRef = useRef(onProblem);
+  useEffect(() => {
+    onProblemRef.current = onProblem;
+  });
+  // A field that goes away takes its problem with it.
+  useEffect(() => () => onProblemRef.current?.(undefined), []);
   return (
     <span className="input-group">
       <input
@@ -317,10 +343,36 @@ export function DateTimeInput({
         step={withSeconds ? 1 : 60}
         min={min === undefined ? undefined : toDateTimeLocal(min, withSeconds)}
         max={max === undefined ? undefined : toDateTimeLocal(max, withSeconds)}
-        value={toDateTimeLocal(value, withSeconds)}
-        onChange={(event) =>
-          onChange(fromDateTimeLocal(event.target.value), event)
+        value={
+          value === undefined
+            ? (draft ?? "")
+            : toDateTimeLocal(value, withSeconds)
         }
+        onChange={(event) => {
+          const reading = readDateTimeLocal(
+            event.target.value,
+            event.target.validity.badInput,
+          );
+          if (reading.kind === "problem") {
+            setDraft(event.target.value);
+            onChange(undefined, event);
+            onProblem?.(reading.problem);
+            return;
+          }
+          setDraft(null);
+          onChange(reading.kind === "time" ? reading.ms : undefined, event);
+          onProblem?.(undefined);
+        }}
+        // A half-typed entry into an empty field fires no change (its value
+        // stays ""), so it is judged again on leaving the field.
+        onBlur={(event) => {
+          onBlur?.(event);
+          const reading = readDateTimeLocal(
+            event.target.value,
+            event.target.validity.badInput,
+          );
+          onProblem?.(reading.kind === "problem" ? reading.problem : undefined);
+        }}
       />
       {showTimeZone && (
         <span

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { DATE_TIME_OUT_OF_RANGE } from "../../../../app/components/inputValues";
 import { fireEvent, setupDom, waitFor, within } from "../../dom";
 import { problem } from "../../fixtures";
+import { stubRawValue } from "../../rawInput";
 import {
   callTo,
   dialogButton,
@@ -230,6 +232,41 @@ describe("the schedule editor: validation", () => {
     expect(callTo(calls, "PUT", PATH)).toBeUndefined();
   });
 
+  it("refuses an anchor or a one-off time outside the API's range, with Save disabled", async () => {
+    const { calls } = await renderActions();
+    const dialog = await openAction("Reschedule…");
+    const saveButton = dialogButton(
+      dialog,
+      "Save schedule",
+    ) as HTMLButtonElement;
+    const fieldError = (label: string | RegExp) => {
+      const field = within(dialog).getByLabelText(label).closest(".field");
+      return field?.querySelector(".field-error")?.textContent ?? "";
+    };
+
+    fireEvent.click(within(dialog).getByLabelText("Every"));
+    fireEvent.change(within(dialog).getByLabelText(/^Interval/), {
+      target: { value: "5" },
+    });
+    const anchor = within(dialog).getByLabelText("Anchor") as HTMLInputElement;
+    const raw = stubRawValue(anchor, "275760-12-31T00:00:00");
+    fireEvent.change(anchor);
+    raw.restore();
+    expect(fieldError("Anchor")).toBe(DATE_TIME_OUT_OF_RANGE);
+    expect(saveButton.disabled).toBe(true);
+
+    fireEvent.click(within(dialog).getByLabelText("Once"));
+    // The anchor went with its mode.
+    expect(saveButton.disabled).toBe(false);
+    fireEvent.change(within(dialog).getByLabelText(/^Run at/), {
+      target: { value: "1969-06-01T00:00:00" },
+    });
+    expect(fieldError(/^Run at/)).toBe(DATE_TIME_OUT_OF_RANGE);
+    expect(saveButton.disabled).toBe(true);
+    fireEvent.submit(dialog.querySelector("form")!);
+    expect(callTo(calls, "PUT", PATH)).toBeUndefined();
+  });
+
   it("shows INVALID_SCHEDULE on the field its issue names", async () => {
     await renderActions({
       handlers: {
@@ -357,6 +394,43 @@ describe("the schedule editor: validation", () => {
     expect(
       within(dialog).getByLabelText("Time zone").getAttribute("aria-invalid"),
     ).toBe("true");
+  });
+
+  it("puts a VALIDATION issue at schedule.anchor on the anchor, as INVALID_SCHEDULE's are", async () => {
+    await renderActions({
+      handlers: {
+        [`PUT ${PATH}`]: {
+          status: 400,
+          body: problem(400, "VALIDATION", "Validation failed", {
+            issues: [
+              {
+                target: "body",
+                path: "schedule.anchor",
+                message: "Must be at most 8640000000000000",
+              },
+            ],
+          }),
+        },
+      },
+    });
+    const dialog = await openAction("Reschedule…");
+    fireEvent.click(within(dialog).getByLabelText("Every"));
+    fireEvent.change(within(dialog).getByLabelText(/^Interval/), {
+      target: { value: "5" },
+    });
+    fireEvent.click(dialogButton(dialog, "Save schedule"));
+    await waitFor(() =>
+      expect(dialog.textContent).toContain("Must be at most 8640000000000000"),
+    );
+    expect(
+      within(dialog).getByLabelText("Anchor").getAttribute("aria-invalid"),
+    ).toBe("true");
+    expect(
+      within(dialog)
+        .getByLabelText(/^Interval/)
+        .getAttribute("aria-invalid"),
+    ).not.toBe("true");
+    expect(within(dialog).queryByRole("alert")).toBeNull();
   });
 
   it("shows any other failure as a banner, explained", async () => {

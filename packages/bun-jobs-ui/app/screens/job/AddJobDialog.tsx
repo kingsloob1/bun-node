@@ -28,6 +28,7 @@ import { ProblemBanner } from "../../components/ProblemBanner";
 import { useToast } from "../../components/toast";
 import { useApiClient } from "../../context";
 import { useApiMutation } from "../../hooks/useApiMutation";
+import { useFieldProblems } from "../../hooks/useFieldProblems";
 import { useCan, useMeta } from "../../meta/hooks";
 import { useNavigate } from "../../routing";
 import { addBody, validateAddForm } from "./addJobForm";
@@ -200,6 +201,7 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
     timeout: undefined,
   }));
   const [submitted, setSubmitted] = useState(false);
+  const times = useFieldProblems<"opts.runAt">();
 
   const add = useApiMutation({
     mutationFn: (body: AddJobBody) => addJob(api, queue, body),
@@ -234,6 +236,7 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
       ? apiError.code
       : null;
   const fieldError = (key: AddJobField): string | undefined =>
+    (key === "opts.runAt" ? times.problems["opts.runAt"] : undefined) ??
     clientErrors[key] ??
     serverErrors[key] ??
     (key === "name" && inlineCode === "NAME_NOT_ADDABLE" && apiError
@@ -254,7 +257,11 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitted(true);
-    if (nothingAddable || Object.keys(validateAddForm(form)).length > 0) {
+    if (
+      nothingAddable ||
+      times.blocked ||
+      Object.keys(validateAddForm(form)).length > 0
+    ) {
       return;
     }
     add.mutate(addBody(form));
@@ -290,7 +297,7 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
             variant="primary"
             type="submit"
             form={formId}
-            disabled={add.isPending || nothingAddable}
+            disabled={add.isPending || nothingAddable || times.blocked}
             aria-busy={add.isPending || undefined}
           >
             {add.isPending ? "Adding…" : "Add job"}
@@ -384,6 +391,7 @@ function OpenAddJobDialog({ queue, onClose }: AddJobDialogProps) {
                 <DateTimeInput
                   value={form.runAt}
                   onChange={(runAt) => patch({ runAt })}
+                  onProblem={(problem) => times.report("opts.runAt", problem)}
                 />
               </Field>
             )}
