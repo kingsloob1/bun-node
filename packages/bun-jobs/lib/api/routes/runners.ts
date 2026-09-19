@@ -6,12 +6,14 @@ import type { Infer } from "../schema/builder";
 import type { AnyRouteDef } from "./define";
 import { validateCron } from "../../shared/cron";
 import { ConfigError, NotSupportedError } from "../../shared/errors";
+import { normalizeSchedule } from "../../shared/schedule";
 import { ApiError } from "../errors";
 import {
   historyQuerySchema,
   HistorySchema,
   KillBodySchema,
   KillResultSchema,
+  MAX_DATE_MS,
   ResumeBodySchema,
   RunnerInfoSchema,
   RunnerListSchema,
@@ -35,6 +37,11 @@ import {
 /** Errors every route naming a runner can answer with. */
 const RUNNER_ERRORS = ["INVALID_NAME", "RUNNER_NOT_FOUND"] as const;
 
+/** A time from a schedule body, as the `Date` `updateSchedule` is given. */
+function toScheduleTime(value: number | string): Date {
+  return new Date(toEpoch(value));
+}
+
 /** A schedule body turned into what `updateSchedule` takes: date-times become `Date`s. */
 function toScheduleInput(
   schedule: Infer<typeof ScheduleBodySchema>["schedule"],
@@ -43,25 +50,41 @@ function toScheduleInput(
     return schedule;
   }
   if ("at" in schedule) {
-    return { at: new Date(toEpoch(schedule.at)) };
+    return { at: toScheduleTime(schedule.at) };
   }
   if ("every" in schedule) {
     return {
       every: schedule.every,
       ...(schedule.anchor === undefined
         ? {}
-        : { anchor: new Date(toEpoch(schedule.anchor)) }),
+        : { anchor: toScheduleTime(schedule.anchor) }),
     };
   }
   return schedule;
 }
 
+/** Whether the schedule normaliser refuses `input` — the rule a part is re-checked with. */
+function normaliserRefuses(input: ScheduleInput): boolean {
+  try {
+    normalizeSchedule(input);
+    return false;
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      return true;
+    }
+    throw error;
+  }
+}
+
 /**
  * Which part of a schedule a refused `PUT /runners/:runner/schedule` body got
- * wrong, as a VALIDATION-style issue path: `schedule.cron`, `schedule.tz`,
- * `schedule.every`, `schedule.anchor`, `schedule.at`, or `schedule` itself
- * for a bare cron string or interval. Found by re-checking each part with the
- * same validators the schedule goes through, never by reading the message.
+ * wrong, as a VALIDATION-style issue path. Found by re-checking each part with
+ * the same validators the schedule goes through, never by reading the message.
+ *
+ * Over HTTP it answers `schedule.cron`, `schedule.tz`, or `schedule` for a bare
+ * cron string: the body schema refuses a bad interval, anchor or time with 400
+ * `VALIDATION` before the schedule is normalised. The other parts are still
+ * blamed correctly for a body that reaches this without that schema.
  */
 export function scheduleIssuePath(
   schedule: Infer<typeof ScheduleBodySchema>["schedule"],
@@ -81,7 +104,8 @@ export function scheduleIssuePath(
   if ("at" in schedule) {
     return "schedule.at";
   }
-  return schedule.anchor !== undefined && Number.isNaN(toEpoch(schedule.anchor))
+  return schedule.anchor !== undefined &&
+    normaliserRefuses({ every: 1, anchor: toScheduleTime(schedule.anchor) })
     ? "schedule.anchor"
     : "schedule.every";
 }
@@ -299,7 +323,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.reschedule",
       mode: "runner",
       summary: "Replace and persist the runner's schedule",
-      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. A malformed schedule is 400 \`INVALID_SCHEDULE\`, with one \`issues\` entry whose \`path\` names the part at fault (\`schedule.cron\`, \`schedule.tz\`, \`schedule.every\`, \`schedule.anchor\`, \`schedule.at\`, or \`schedule\` for a bare cron string or interval), and nothing is written. ${REMOTE_LATENCY_NOTE}`,
+      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. An interval below 1, or a time a \`Date\` cannot hold (epoch ms above ${MAX_DATE_MS}, or a string that is not an RFC 3339 date-time), is 400 \`VALIDATION\`. A cron expression or time zone the scheduler refuses is 400 \`INVALID_SCHEDULE\`, with one \`issues\` entry whose \`path\` names the part at fault — \`schedule.cron\`, \`schedule.tz\`, or \`schedule\` for a bare cron string — and nothing is written. ${REMOTE_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       body: ScheduleBodySchema,

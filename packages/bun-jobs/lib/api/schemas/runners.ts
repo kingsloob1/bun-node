@@ -247,9 +247,20 @@ export const KillBodySchema = s.object({
 /** `POST /runners/:runner/kill` response. */
 export const KillResultSchema = s.object({ runIds: s.array(s.string()) });
 
-/** A time: epoch milliseconds, or an RFC 3339 date-time. */
+/**
+ * The latest instant a `Date` can hold, in epoch milliseconds (ECMAScript's
+ * range is ±8.64e15). A later timestamp would reach the schedule normaliser as
+ * an invalid `Date`.
+ */
+export const MAX_DATE_MS = 8_640_000_000_000_000;
+
+/**
+ * A time: epoch milliseconds a `Date` can hold, or an RFC 3339 date-time (the
+ * format check already refuses one `Date.parse` cannot read). Either way a bad
+ * time is 400 `VALIDATION` here, never a schedule error later.
+ */
 const TimeInput = s.union(
-  s.integer({ minimum: 0 }),
+  s.integer({ minimum: 0, maximum: MAX_DATE_MS }),
   s.string({ format: "date-time" }),
 );
 

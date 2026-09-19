@@ -2195,6 +2195,13 @@ A 5xx never carries the underlying message — `detail` is the generic title —
 and nothing is matched on message text. Validation failures add `issues`
 (`{ target, path, message }`).
 
+`PUT /runners/:runner/schedule` refuses a schedule in two steps. A malformed
+field — an interval below 1, a time a `Date` cannot hold (epoch ms above
+8.64e15, or a string that is not an RFC 3339 date-time) — is 400 `VALIDATION`
+at that field. A cron expression or time zone the scheduler refuses is 400
+`INVALID_SCHEDULE` with one issue, whose `path` is `schedule.cron`,
+`schedule.tz`, or `schedule` for a bare cron string.
+
 | Code | Status | | Code | Status |
 |---|---|---|---|---|
 | `UNAUTHORIZED` | 401 | | `VALIDATION` | 400 |
