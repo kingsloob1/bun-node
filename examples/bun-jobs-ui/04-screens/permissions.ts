@@ -55,6 +55,10 @@
  *   its detail, which the screen reads only with `queues.read`, so Pause shows
  *   on a running queue and Resume on a paused one, never both. A runner's
  *   comes from the runner itself (`isPaused`).
+ * - **Fail… and Disable / Enable depend on state too.** Fail… is offered for a
+ *   job in any state but `completed` and `dead`, the two the API refuses with
+ *   409. A repeat series offers Disable while it is enabled and Enable while
+ *   it is `disabled`, never both.
  * - **Bulk Retry, Promote and Remove sit in the jobs table**, so they need
  *   `jobs.list` as well as their own action.
  * - **The job and runner screens wait for their own map.** The job is not
@@ -113,6 +117,7 @@ import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
   createJobsApi,
+  JOB_STATES,
   JOBS_API_ACTIONS,
   JOBS_API_MUTATIONS,
   MemoryDriver,
@@ -324,6 +329,9 @@ const FINISHED: ReadonlySet<JobState> = new Set([
   "dead",
 ]);
 
+/** The states a job is past failing in: the API answers 409 for these. */
+const UNFAILABLE: ReadonlySet<JobState> = new Set(["completed", "dead"]);
+
 /** A `/meta` feature flag. */
 type Feature = keyof MetaDto["features"];
 
@@ -353,8 +361,13 @@ interface ScreenInputs {
    * read it.
    */
   detail?: QueueDetailDto;
-  /** The job on the job screen, whose state picks Retry or Promote. */
+  /** The job on the job screen, whose state picks Retry, Promote and Fail…. */
   job?: { state: JobState };
+  /**
+   * One row of the repeatables panel (`GET /queues/<q>/repeatables`), whose
+   * `disabled` picks Disable or Enable. Absent off such a row.
+   */
+  repeatable?: { disabled: boolean };
   /**
    * `GET /meta/permissions?runner=<id>`: every element of that runner's
    * screen. Absent off a runner screen, which closes every runner gate.
@@ -430,7 +443,7 @@ const CLIENT_METHODS = ["DELETE", "GET", "PATCH", "POST", "PUT"] as const;
 const ACTION_NAMES: ReadonlySet<string> = new Set(JOBS_API_ACTIONS);
 
 /** Action verbs whose try-it needs the operationId typed. */
-const DESTRUCTIVE_VERBS = ["clean", "drain", "kill", "remove"] as const;
+const DESTRUCTIVE_VERBS = ["clean", "drain", "fail", "kill", "remove"] as const;
 
 /**
  * One element's rule, stated the way the README's table states it, so the
@@ -971,6 +984,31 @@ const GATES = [
     itemSchema: true,
     denied: "disabled",
   },
+  {
+    // Any state the API can bury: waiting, delayed, failed (retry pending),
+    // waiting-children, and active too (with a warning in the dialog).
+    name: "job: Fail…",
+    row: "Job Fail…",
+    map: "queue",
+    mutations: ["jobs.fail"],
+    when: ({ job }) => job !== undefined && !UNFAILABLE.has(job.state),
+  },
+  {
+    name: "panel=repeatables, Disable",
+    row: "Repeatables panel, Disable / Enable",
+    map: "queue",
+    reads: ["repeatables.list"],
+    mutations: ["repeatables.disable"],
+    when: ({ repeatable }) => repeatable?.disabled === false,
+  },
+  {
+    name: "panel=repeatables, Enable",
+    row: "Repeatables panel, Disable / Enable",
+    map: "queue",
+    reads: ["repeatables.list"],
+    mutations: ["repeatables.enable"],
+    when: ({ repeatable }) => repeatable?.disabled === true,
+  },
 ] as const satisfies readonly Gate[];
 
 /**
@@ -1260,9 +1298,11 @@ function needsOfCell(needs: string, element: string) {
     ].sort(),
     // Whether the element stays on screen when it is not allowed: disabled
     // with a reason, a note in its place, or a "You lack" marker. Every
-    // other row's element is absent.
+    // other row's element is absent. "disabled" alone is not enough: the
+    // Disable / Enable row names "a disabled one", a repeat series' state.
     shownWhenDenied:
-      /\bdisabled\b|\ba note\b/.test(needs) || element.includes("You lack"),
+      /\bdisabled, with the reason\b|\ba note\b/.test(needs) ||
+      element.includes("You lack"),
   };
 }
 
@@ -1851,6 +1891,21 @@ checkEqual(
   operationPage("removeJob"),
   ["lack", "disabled", "open", "open"],
 );
+// A POST, but failing a job is irreversible (it is dead for good), so its
+// verb asks for the operationId as a DELETE does.
+checkEqual(
+  "POST failJob: You lack, Send disabled, asks first and needs failJob typed",
+  operationPage("failJob"),
+  ["lack", "disabled", "open", "open"],
+);
+checkEqual(
+  "while POST disableRepeatable / enableRepeatable only ask first (idempotent)",
+  [operationPage("disableRepeatable"), operationPage("enableRepeatable")],
+  [
+    ["lack", "disabled", "open", "absent"],
+    ["lack", "disabled", "open", "absent"],
+  ],
+);
 
 /** The operationIds whose gate `name` is open, for `inputs`. */
 function operationsWhere(
@@ -1874,7 +1929,7 @@ checkEqual(
     .sort(),
 );
 checkEqual(
-  "a DELETE, or a remove / drain / clean / kill, needs its operationId typed",
+  "a DELETE, or a remove / drain / clean / kill / fail, needs its operationId typed",
   operationsWhere("docs http: try-it needs the operationId typed", {
     meta,
     sections,
@@ -1883,6 +1938,7 @@ checkEqual(
   [
     "cleanQueue",
     "drainQueue",
+    "failJob",
     "killRunner",
     "removeJob",
     "removeJobs",
@@ -2324,7 +2380,11 @@ for (const queue of ["mail", "audit", "payroll"]) {
 }
 
 /** The gates of one queue's screens, for this caller. */
-function queueGates(queue: string, job?: { state: JobState }): Gates {
+function queueGates(
+  queue: string,
+  job?: { state: JobState },
+  repeatable?: { disabled: boolean },
+): Gates {
   return screenGates({
     meta,
     sections,
@@ -2332,6 +2392,7 @@ function queueGates(queue: string, job?: { state: JobState }): Gates {
     queue: maps[queue]!,
     detail: details[queue],
     job,
+    repeatable,
   });
 }
 
@@ -2366,7 +2427,7 @@ const bootGates = allGates(true, "boot");
 
 // mail: everything the screens offer, for a running queue.
 checkEqual(
-  "mail (running): every gate is open but four",
+  "mail (running): every gate is open but seven",
   onMaps(gates.mail, "boot", "queue"),
   {
     ...allGates(true, "boot", "queue"),
@@ -2378,6 +2439,10 @@ checkEqual(
     // The job gates that depend on a job's state; asked below with one.
     "job: Retry": false,
     "job: Promote": false,
+    "job: Fail…": false,
+    // The series gates that depend on a series' state; likewise.
+    "panel=repeatables, Disable": false,
+    "panel=repeatables, Enable": false,
   },
 );
 
@@ -2456,6 +2521,197 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("Fail… and Disable / Enable: decided by the map, then by state");
+
+// The per-queue maps answer the three new actions like any other mutation:
+// yes on mail, no on audit (read-only) and payroll (nothing at all).
+checkEqual(
+  "?queue= maps: jobs.fail, repeatables.disable, repeatables.enable",
+  Object.fromEntries(
+    ["mail", "audit", "payroll"].map((queue) => [
+      queue,
+      [
+        can(maps[queue]!, "jobs.fail"),
+        can(maps[queue]!, "repeatables.disable"),
+        can(maps[queue]!, "repeatables.enable"),
+      ],
+    ]),
+  ),
+  {
+    mail: [true, true, true],
+    audit: [false, false, false],
+    payroll: [false, false, false],
+  },
+);
+checkEqual(
+  "and the untargeted map says no to all three (they always name a queue)",
+  [
+    can(boot, "jobs.fail"),
+    can(boot, "repeatables.disable"),
+    can(boot, "repeatables.enable"),
+  ],
+  [false, false, false],
+);
+
+/** The states in which mail's job screen offers Fail…, from the gate alone. */
+const failableStates = (JOB_STATES as readonly JobState[]).filter(
+  (state) => queueGates("mail", { state })["job: Fail…"],
+);
+checkEqual(
+  "mail: Fail… in every state but completed and dead, active included",
+  failableStates,
+  JOB_STATES.filter((state) => state !== "completed" && state !== "dead"),
+);
+checkEqual(
+  "audit: Fail… in no state (no jobs.fail on its map)",
+  JOB_STATES.filter((state) => queueGates("audit", { state })["job: Fail…"]),
+  [],
+);
+
+// The API agrees, state by state: a waiting job fails, a dead one does not.
+await jobs.queue("mail").add("send-email", {}, { jobId: "doomed-1" });
+const doomed = (await get<{ state: JobState }>("/queues/mail/jobs/doomed-1"))
+  .body;
+checkEqual(
+  "doomed-1 is waiting, so Fail… is offered",
+  [doomed.state, queueGates("mail", doomed)["job: Fail…"]],
+  ["waiting", true],
+);
+// The reason is required, 1 to 4,096 characters: the dialog holds it to the
+// document's own schema for the body.
+const failBody = objectOf(
+  objectOf(
+    objectOf(
+      objectOf(
+        objectOf(objectOf(openapi.paths)?.["/queues/{queue}/jobs/{id}/fail"])
+          ?.post,
+      )?.requestBody,
+    )?.content,
+  )?.["application/json"],
+)?.schema;
+checkEqual(
+  "failJob's body: reason required, 1 to 4,096 characters",
+  [
+    objectOf(failBody)?.required,
+    objectOf(objectOf(objectOf(failBody)?.properties)?.reason)?.minLength,
+    objectOf(objectOf(objectOf(failBody)?.properties)?.reason)?.maxLength,
+  ],
+  [["reason"], 1, 4_096],
+);
+const failedNow = await send("POST", "/queues/mail/jobs/doomed-1/fail", {
+  reason: "the address bounced",
+});
+const buried = (
+  await get<{ state: JobState; failedReason: { message: string } | null }>(
+    "/queues/mail/jobs/doomed-1",
+  )
+).body;
+checkEqual(
+  "POST /queues/mail/jobs/doomed-1/fail → 200; the job is dead, with the reason",
+  [failedNow.status, buried.state, buried.failedReason?.message],
+  [200, "dead", "the address bounced"],
+);
+checkEqual(
+  "so Fail… is gone from its screen",
+  queueGates("mail", buried)["job: Fail…"],
+  false,
+);
+const again = await send("POST", "/queues/mail/jobs/dead-1/fail", {
+  reason: "again",
+});
+checkEqual(
+  "a client that fails a dead job anyway: 409 JOB_STATE_CONFLICT",
+  [again.status, again.body.code],
+  [409, "JOB_STATE_CONFLICT"],
+);
+const ghostJob = await send("POST", "/queues/mail/jobs/no-such-job/fail", {
+  reason: "gone",
+});
+checkEqual(
+  "and a job that does not exist: 404 JOB_NOT_FOUND",
+  [ghostJob.status, ghostJob.body.code],
+  [404, "JOB_NOT_FOUND"],
+);
+
+// A repeat series on mail: stored as a series, its next occurrence delayed.
+await jobs
+  .queue("mail")
+  .add("send-email", {}, { repeat: { every: 3_600_000, key: "digest" } });
+
+/** Mail's series `digest`, as the panel lists it. */
+async function digest(): Promise<{
+  disabled: boolean;
+  nextRunAt: number | null;
+}> {
+  const { body } = await get<{
+    items: { key: string; disabled: boolean; nextRunAt: number | null }[];
+  }>("/queues/mail/repeatables");
+  return body.items.find((series) => series.key === "digest")!;
+}
+
+/** The two series gates on mail for `series`: [Disable, Enable]. */
+function seriesGates(queue: string, series: { disabled: boolean }): boolean[] {
+  const set = queueGates(queue, undefined, series);
+  return [set["panel=repeatables, Disable"], set["panel=repeatables, Enable"]];
+}
+
+const enabledSeries = await digest();
+checkEqual(
+  "digest is enabled, so the panel offers Disable, not Enable",
+  [enabledSeries.disabled, seriesGates("mail", enabledSeries)],
+  [false, [true, false]],
+);
+checkEqual(
+  "audit, with the same series: neither (read-only)",
+  [
+    seriesGates("audit", { disabled: false }),
+    seriesGates("audit", { disabled: true }),
+  ],
+  [
+    [false, false],
+    [false, false],
+  ],
+);
+const disabled = await send("POST", "/queues/mail/repeatables/digest/disable");
+const disabledSeries = await digest();
+checkEqual(
+  "POST …/digest/disable → 200 { disabled: true }; listed disabled",
+  [disabled.status, disabled.body, disabledSeries.disabled],
+  [200, { disabled: true }, true],
+);
+checkEqual("so Enable replaces Disable", seriesGates("mail", disabledSeries), [
+  false,
+  true,
+]);
+checkEqual(
+  "disabling it again changes nothing (idempotent: no confirmation asked)",
+  [
+    (await send("POST", "/queues/mail/repeatables/digest/disable")).status,
+    (await digest()).disabled,
+  ],
+  [200, true],
+);
+const enabled = await send("POST", "/queues/mail/repeatables/digest/enable");
+const enabledAgain = await digest();
+checkEqual(
+  "POST …/digest/enable → 200 { enabled: true }; enabled, a next run scheduled",
+  [
+    enabled.status,
+    enabled.body,
+    enabledAgain.disabled,
+    typeof enabledAgain.nextRunAt,
+    seriesGates("mail", enabledAgain),
+  ],
+  [200, { enabled: true }, false, "number", [true, false]],
+);
+const noSeries = await send("POST", "/queues/mail/repeatables/ghost/disable");
+checkEqual(
+  "a series that does not exist: 404 REPEATABLE_NOT_FOUND",
+  [noSeries.status, noSeries.body.code],
+  [404, "REPEATABLE_NOT_FOUND"],
+);
+
+/* ------------------------------------------------------------------ */
 step("The server's 403 is authoritative: a client that tries anyway");
 
 // mail: allowed, and it happens.
@@ -2502,6 +2758,9 @@ const denied: [string, string, unknown?][] = [
   ["POST", "/queues/audit/jobs", { name: "send-email", data: {} }],
   ["PATCH", "/queues/audit/jobs/later-1", { priority: 3 }],
   ["PUT", "/queues/audit/limits", { concurrency: 1 }],
+  ["POST", "/queues/audit/jobs/waiting-1/fail", { reason: "no" }],
+  ["POST", "/queues/audit/repeatables/digest/disable"],
+  ["POST", "/queues/audit/repeatables/digest/enable"],
 ];
 for (const [method, path, body] of denied) {
   const answer = await send(method, path, body);
@@ -2551,9 +2810,17 @@ checkEqual(
   [vip.status, vip.body.detail],
   [403, "vip jobs are managed by the on-call team"],
 );
+const vipFail = await send("POST", "/queues/mail/jobs/vip-1/fail", {
+  reason: "no",
+});
+checkEqual(
+  "POST /queues/mail/jobs/vip-1/fail → 403 too: the map's jobs.fail is advisory",
+  [vipFail.status, vipFail.body.detail],
+  [403, "vip jobs are managed by the on-call team"],
+);
 check(
-  "and the job is still there",
-  (await jobs.queue("mail").getJob("vip-1")) !== null,
+  "and the job is still there, still delayed",
+  (await jobs.queue("mail").getJob("vip-1"))?.state === "delayed",
 );
 
 /* ------------------------------------------------------------------ */
