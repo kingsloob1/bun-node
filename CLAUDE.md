@@ -4,7 +4,7 @@ Project knowledge for Claude Code and contributors. Auto-loaded each session.
 
 ## What this repo is
 
-`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with three
+`bun-node` is a Bun-first monorepo (Bun workspaces + lerna + nx) with four
 published packages under `packages/`:
 
 - **`@kingsleyweb/bun-common`** — an Express-like HTTP layer for `Bun.serve`:
@@ -20,6 +20,10 @@ published packages under `packages/`:
   job queue across processes and services) and the per-service `BunJobs`
   context, over pluggable drivers (memory, file, Redis, SQL). Being
   assembled in phases — see its `README.md` for what has landed.
+- **`@kingsleyweb/bun-jobs-ui`** — a React management UI and API docs
+  viewer for bun-jobs' management API (`createJobsApi`), prebuilt into
+  `dist/` and served by a `jobsUi()` router. See
+  [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
 typecheck, ESLint via `@antfu/eslint-config`. Source ships as raw `.ts`
@@ -183,6 +187,77 @@ Two rules that keep it from doing harm:
   so comparing the strings would propose a nonsense rewrite on every sync
   forever. The baseline test — a freshly created schema must report no drift —
   is what catches this class of bug.
+
+## bun-jobs-ui (phase 3 UI)
+
+`packages/bun-jobs-ui` is two programs in one package:
+
+- **`lib/`** — the server, Bun only: `jobsUi(options)` returns a bun-common
+  router serving the HTML shell (with the injected `UiConfig`, CSP, SRI) and
+  the hashed assets (`lib/assets.ts`).
+- **`app/`** — the browser: React 19, TanStack Query, bundled by `Bun.build`.
+  Its own project (`app/tsconfig.json`, DOM libs).
+- **`shared/`** — `UiConfig` and friends, imported by both. Nothing else
+  crosses.
+
+**Mounting.** Beside the API, each at its own `basePath`; the UI's must not
+equal or sit under the API's (`jobsUi()` throws a `ConfigError`):
+
+```ts
+const api = createJobsApi({ jobs, basePath: "/admin/jobs-api", authorize });
+const ui = jobsUi({ api, basePath: "/admin/jobs" });   // or apiUrl: "..."
+app.use(api.basePath, api.router);
+app.use(ui.basePath, ui.router);
+```
+
+**Browser safety.** `app/**` imports bun-jobs **only** from
+`@kingsleyweb/bun-jobs/api/contract`, the browser-safe entry. A value import
+from the package root would pull drivers, bun-common and `node:*` into the
+bundle. `__tests__/app/pkg/bundle-safety.test.ts` builds the real app and
+fails on any server marker, with a negative control.
+
+**Bundle and dev fallback.** `bun scripts/build.ts` (run on `prepack`) writes
+`dist/`. Without a `dist/` — the normal state in the repo — `jobsUi()` builds
+`app/main.tsx` in memory on the first request, once per process, and logs one
+`info` line saying so; `dev: true` always builds, `dev: false` requires
+`dist/`. `__tests__/server/budget.test.ts` caps the entry module and every
+lazy chunk (`BUNDLE_BUDGET`, raised only deliberately, per its comment).
+
+**DOM tests — rules learned the hard way.** `bun test` shares globals and
+modules across files, so order leaks are real:
+
+- Call `setupDom()` from `__tests__/app/dom.ts` at the top level of every
+  DOM test file, and take `render`/`fireEvent`/… from there. It registers
+  happy-dom for the file and unregisters it after, so its `fetch`/`Response`
+  never reach a server test.
+- Never import `react-dom`, `@testing-library/react` or `app/boot` statically
+  in a test: react-dom decides at evaluation whether a DOM exists, and loaded
+  before happy-dom its `onChange` never fires. `dom.ts` loads it dynamically.
+- `dom.ts` makes TanStack Query re-ask `isServer` per call. query-core
+  otherwise decides once, at load, and a DOM-less file loaded first leaves
+  every later polling test with no timers.
+- `__tests__/app/domLeak.test.ts` is the guard: every file reaching
+  `register-dom` calls `setupDom()`, none reaches react-dom statically.
+- `setupDom()` preloads every lazy screen named in `app/screens/lazy.tsx`,
+  so `React.lazy` resolves in microtasks and fake-timer tests do not depend
+  on which file ran first.
+- The suite must pass under `bun test --randomize`, not just in file order.
+- Tests importing the bun-jobs package root (real-API integration,
+  bundle-safety) live in `__tests__/app/pkg`, a DOM-free project typechecked
+  by its own `typecheck.test.ts`; they load the DOM side by dynamic import.
+
+**The README is parsed.** Its `### What each element needs` table is read
+by `examples/bun-jobs-ui/04-screens/permissions.ts`, which fails on any drift
+from the UI's rules. A change to a row is a change to that example: report
+it to the examples session before merging.
+
+**E2E.** `__tests__/e2e/*.e2e.test.ts` drive the real app in headless Chrome
+through `Bun.WebView`, against a real `createJobsApi`; they skip visibly when
+no Chrome is found (`BUN_CHROME_PATH` points at one).
+
+**Pre-merge gate:** `bun scripts/typecheck.ts`; `CI=1 bunx eslint .` in the
+package; `bun test` plus `bun test --randomize` with a couple of seeds; and
+`bun run-all.ts` in both `examples/bun-jobs-ui` and `examples/bun-nest`.
 
 ## Dependency policy
 
