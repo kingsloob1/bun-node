@@ -16,6 +16,7 @@ import type {
 } from "../shared/events";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
+import type { JobEvent, JobHooks } from "./Job";
 import type { QueueLimits, StoredLimits } from "./limits";
 import type {
   AdHocJobName,
@@ -391,7 +392,7 @@ export class BunQueue<
   ): Promise<Job<TData, TResult>> {
     const record = this.#buildRecord(name, data, options);
     const { job, added } = await this.driver.addJob(this.ref, record);
-    const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
+    const view = this.#view(job, added);
 
     if (!added) {
       this.safeEmitScoped("duplicate", job.name, view);
@@ -466,7 +467,7 @@ export class BunQueue<
     const results = await this.driver.addJobs(this.ref, records);
 
     return results.map(({ job, added }) => {
-      const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
+      const view = this.#view(job, added);
       this.safeEmit(added ? "added" : "duplicate", view);
       return view;
     });
@@ -487,9 +488,7 @@ export class BunQueue<
   async #getJob(id: string): Promise<Job<TData, TResult> | null> {
     await this.connect();
     const record = await this.driver.getJob(this.ref, id);
-    return record
-      ? new Job<TData, TResult>(this.driver, this.ref, record)
-      : null;
+    return record ? this.#view(record) : null;
   }
 
   /**
@@ -535,9 +534,7 @@ export class BunQueue<
             )
           ).jobs;
 
-    return records.map((record) =>
-      this.#typed(new Job<TData, TResult>(this.driver, this.ref, record)),
-    );
+    return records.map((record) => this.#typed(this.#view(record)));
   }
 
   /**
@@ -575,9 +572,7 @@ export class BunQueue<
       0;
 
     return {
-      jobs: page.jobs.map((record) =>
-        this.#typed(new Job<TData, TResult>(this.driver, this.ref, record)),
-      ),
+      jobs: page.jobs.map((record) => this.#typed(this.#view(record))),
       total,
     };
   }
@@ -609,9 +604,7 @@ export class BunQueue<
     const records = await getJobsByIds(this.driver, this.ref, ids);
 
     return records.map((record) =>
-      record
-        ? this.#typed(new Job<TData, TResult>(this.driver, this.ref, record))
-        : null,
+      record ? this.#typed(this.#view(record)) : null,
     );
   }
 
@@ -877,7 +870,13 @@ export class BunQueue<
     if (node.opts?.jobId !== undefined) {
       const existing = await this.driver.getJob(ref, id);
       if (existing) {
-        const view = new Job(this.driver, ref, existing, false);
+        const view = new Job(
+          this.driver,
+          ref,
+          existing,
+          false,
+          this.#hooksFor(ref.queue),
+        );
         await this.#announceAdded(view, false);
         return { job: view, children: [] };
       }
@@ -910,7 +909,13 @@ export class BunQueue<
     };
 
     const { job, added } = await this.driver.addJob(ref, record);
-    const view = new Job(this.driver, ref, job, added);
+    const view = new Job(
+      this.driver,
+      ref,
+      job,
+      added,
+      this.#hooksFor(ref.queue),
+    );
     await this.#announceAdded(view, added);
 
     return { job: view, children: added ? results : [] };
@@ -1096,11 +1101,7 @@ export class BunQueue<
       Date.now(),
     );
 
-    return record
-      ? this.#typed(
-          new Job<TData, TResult>(this.driver, this.ref, record, false),
-        )
-      : null;
+    return record ? this.#typed(this.#view(record, false)) : null;
   }
 
   /**
@@ -1493,12 +1494,7 @@ export class BunQueue<
         );
 
         if (updated) {
-          const view = new Job<TData, TResult>(
-            this.driver,
-            this.ref,
-            updated,
-            false,
-          );
+          const view = this.#view(updated, false);
           this.safeEmitScoped("debounced", name, view);
           await this.#publish("debounced", { id: updated.id });
           return view;
@@ -1533,12 +1529,7 @@ export class BunQueue<
         const existing = await this.driver.getJob(this.ref, current.jobId);
 
         if (existing) {
-          const view = new Job<TData, TResult>(
-            this.driver,
-            this.ref,
-            existing,
-            false,
-          );
+          const view = this.#view(existing, false);
           this.safeEmitScoped("throttled", name, view);
           await this.#publish("throttled", { id: existing.id });
           return view;
@@ -1671,9 +1662,67 @@ export class BunQueue<
       }
     }
 
-    return options.filter
-      ? options.filter(new Job<TData, TResult>(this.driver, this.ref, record))
-      : true;
+    return options.filter ? options.filter(this.#view(record)) : true;
+  }
+
+  /**
+   * A view of a job in this queue, which announces what it does to itself —
+   * `remove()`, `promote()`, `retry()`, an outside `fail()` — as this queue's
+   * methods of the same name do.
+   */
+  #view(record: JobRecord, wasAdded?: boolean): Job<TData, TResult> {
+    return new Job<TData, TResult>(
+      this.driver,
+      this.ref,
+      record,
+      wasAdded,
+      this.#hooksFor(this.name),
+    );
+  }
+
+  /**
+   * The hooks a view of a job in `queue` carries: announced as this queue
+   * announces its own, on `queue`. Local listeners hear only about jobs in
+   * this queue; other queues' hear through the published events.
+   */
+  #hooksFor(queue: string): JobHooks {
+    return {
+      onEvent: async (event) => await this.#onJobEvent(queue, event),
+    };
+  }
+
+  /** Emits and publishes what a job view in `queue` did to itself. */
+  async #onJobEvent(queue: string, event: JobEvent): Promise<void> {
+    const own = queue === this.name;
+
+    switch (event.type) {
+      case "removed":
+      case "promoted":
+        if (own) {
+          this.safeEmit(event.type, event.id);
+        }
+        await this.#publish(event.type, { id: event.id }, queue);
+        return;
+
+      case "retried":
+        if (own) {
+          this.safeEmit("retried", [event.id]);
+        }
+        await this.#publish("retried", { ids: [event.id] }, queue);
+        return;
+
+      case "buried": {
+        const { record, error } = event;
+        if (own) {
+          const job = this.#view(record);
+          const failure = deserializeError(error);
+          this.safeEmitScoped("failed", record.name, job, failure);
+          this.safeEmitScoped("dead", record.name, job, failure);
+        }
+        await this.#publish("failed", { id: record.id, error }, queue);
+        await this.#publish("dead", { id: record.id, error }, queue);
+      }
+    }
   }
 
   /** Emits and publishes one `retried` for a batch, when it retried anything. */
@@ -1824,7 +1873,7 @@ export class BunQueue<
       nextRunAt: firstRunAt,
     });
 
-    const view = new Job<TData, TResult>(this.driver, this.ref, job, added);
+    const view = this.#view(job, added);
     this.safeEmit(added ? "added" : "duplicate", view);
     return view;
   }
