@@ -592,7 +592,13 @@ gzipped) when M5 was built.
   render or a new tooltip.
 - **Recovery.** Each routed screen sits in an error boundary: a render
   crash, or a screen chunk that failed to load, shows "Reload this screen"
-  in its place while the header and nav keep working.
+  in its place while the header and nav keep working. Reloading re-reads
+  the screen's data rather than rendering the cached answer again, so a
+  crash caused by a bad response recovers once the API answers well;
+  `/meta` and the permissions are kept, so the rest of the app does not
+  flash. The job, queue and runner detail reads also check the response's
+  shape, so a body that is not a job, queue or runner shows the screen's
+  error state, with Retry, rather than an empty screen.
 - **Reduced motion.** With `prefers-reduced-motion: reduce`, no transition or
   animation runs, except the spinner, which keeps turning slowly so it still
   reads as busy.
