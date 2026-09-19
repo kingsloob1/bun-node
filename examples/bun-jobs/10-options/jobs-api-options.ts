@@ -31,6 +31,16 @@
  *   `POST /queues/:queue/jobs` with an addable name is 201 for a queue the
  *   backend has never seen. Only a configured `queues` list still makes an
  *   unknown queue a 404.
+ * - **`/meta/permissions` previews each action as its real request asks
+ *   it**: `ctx.route` is a route the action really has, so an `authorize`
+ *   that decides by route answers the map as it answers the request. It
+ *   costs N + 1 calls: the request's own `meta.read`, then one per action.
+ * - **`listQueues: "authorized"`** hides the queues `authorize` denies
+ *   `queues.read` on from `GET /queues` (paging counts only what is shown)
+ *   and `/overview`, at one call per queue.
+ * - **A runner's `status` is its lifecycle**, not a run in flight: `idle`
+ *   is not started, `running` is started with its schedule armed. Whether a
+ *   run is in flight is `isRunning`, on every list item, remote ones too.
  */
 import type {
   DriverEvent,
@@ -43,7 +53,10 @@ import type {
   EnableRepeatableResultDto,
   FailJobBody,
   FailJobResultDto,
+  PermissionsDto,
   RepeatableDto,
+  RunnerInfoDto,
+  RunnerListItemDto,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
 import {
@@ -175,6 +188,21 @@ function mount(
 
   return { api, jobs, root, call, calls, events };
 }
+
+/** `true` only when `A` and `B` are exactly the same type. */
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
+/** Compiles only when given `true`: a positive compile-time assertion. */
+type Expect<T extends true> = T;
+
+/**
+ * Holds code that exists for the typecheck alone, without running it: the
+ * `@ts-expect-error` lines inside are what prove a type refuses something.
+ */
+function compileOnly(_controls: () => unknown): void {}
 
 /** Operation ids of an API's routes. */
 const idsOf = (api: { routes: readonly { operationId: string }[] }) =>
@@ -1648,6 +1676,147 @@ checkEqual(
 checkEqual("and absent unless asked for", await preview(), undefined);
 
 /* ------------------------------------------------------------------ */
+step("/meta/permissions: N + 1 calls, each shaped like the real request");
+
+/** The routes the spy below denies, as `<METHOD> <pattern>`. */
+const DENIED_ROUTES = ["GET /overview", "GET /meta"];
+/** `<METHOD> <pattern>` of a call, or `undefined` when it carries no route. */
+const routeOf = (context: JobsApiAuthorizeContext) =>
+  context.route && `${context.route.method} ${context.route.path}`;
+/** Every context the spy was asked about. */
+const spied: JobsApiAuthorizeContext[] = [];
+// A spy that decides by `ctx.route` alone, the way a host with a route table
+// would: everything is allowed but two routes.
+const byRoute = mount({
+  authorize: (_req, authorizeContext) => {
+    spied.push(authorizeContext);
+    const route = routeOf(authorizeContext);
+    return route === undefined || !DENIED_ROUTES.includes(route);
+  },
+});
+await byRoute.jobs.queue("mail").add("send", {});
+
+spied.length = 0;
+const untargetedMap: PermissionsDto["actions"] = (
+  await byRoute.call("GET", "/meta/permissions")
+).body.actions;
+checkEqual(
+  "N + 1 authorize calls: the request's own, then one per action",
+  spied.length,
+  Object.keys(untargetedMap).length + 1,
+);
+checkEqual(
+  "the first is the request itself: meta.read on GET /meta/permissions",
+  [spied[0]!.action, routeOf(spied[0]!)],
+  ["meta.read", "GET /meta/permissions"],
+);
+checkEqual(
+  "then one per action, in the answer's order",
+  spied.slice(1).map((authorizeContext) => authorizeContext.action),
+  Object.keys(untargetedMap),
+);
+/** The preview call `authorize` received for `action`. */
+const previewed = (action: JobsApiAction) =>
+  spied
+    .slice(1)
+    .find((authorizeContext) => authorizeContext.action === action)!;
+checkEqual(
+  "untargeted, each previews a route naming neither queue nor runner",
+  [
+    routeOf(previewed("metrics.read")),
+    routeOf(previewed("meta.read")),
+    routeOf(previewed("queues.list")),
+  ],
+  ["GET /overview", "GET /meta", "GET /queues"],
+);
+checkEqual(
+  "an action with no such route previews its first one",
+  routeOf(previewed("jobs.read")),
+  "POST /queues/:queue/jobs/lookup",
+);
+checkEqual(
+  "the socket's two carry transport ws and no route, as the upgrade and a subscribe do",
+  [previewed("events.connect"), previewed("events.subscribe")].map(
+    (authorizeContext) => [authorizeContext.transport, authorizeContext.route],
+  ),
+  [
+    ["ws", undefined],
+    ["ws", undefined],
+  ],
+);
+check(
+  "every HTTP preview carries transport http and a route",
+  spied
+    .slice(1)
+    .filter(
+      (authorizeContext) => !authorizeContext.action.startsWith("events."),
+    )
+    .every(
+      (authorizeContext) =>
+        authorizeContext.transport === "http" &&
+        authorizeContext.route !== undefined,
+    ),
+);
+check(
+  "and none names a job: a rule on jobId cannot be previewed",
+  spied.every((authorizeContext) => authorizeContext.jobId === undefined),
+);
+
+spied.length = 0;
+const mailMap: PermissionsDto["actions"] = (
+  await byRoute.call("GET", "/meta/permissions?queue=mail")
+).body.actions;
+checkEqual(
+  "?queue= previews a route naming :queue, with the queue",
+  [routeOf(previewed("metrics.read")), previewed("metrics.read").queue],
+  ["GET /queues/:queue/throughput", "mail"],
+);
+checkEqual("still N + 1", spied.length, Object.keys(mailMap).length + 1);
+
+spied.length = 0;
+const channelMap: PermissionsDto["actions"] = (
+  await byRoute.call("GET", "/meta/permissions?channel=queue/mail")
+).body.actions;
+checkEqual(
+  "a channel that parses adds one more: N + 2",
+  spied.length,
+  Object.keys(channelMap).length + 2,
+);
+
+// Because each preview carries the real request's route, the map agrees with
+// what the request then gets, even where one action has several routes.
+/** The status one GET through the spied API answers. */
+const statusOf = async (path: string) =>
+  (await byRoute.call("GET", path)).status;
+checkEqual(
+  "metrics.read: false untargeted (GET /overview), and GET /overview is 403",
+  [untargetedMap["metrics.read"], await statusOf("/overview")],
+  [false, 403],
+);
+checkEqual(
+  "true for a queue (its throughput), and that answers 200",
+  [mailMap["metrics.read"], await statusOf("/queues/mail/throughput")],
+  [true, 200],
+);
+checkEqual(
+  "meta.read previews GET /meta, denied, though /meta/permissions itself was allowed",
+  [untargetedMap["meta.read"], await statusOf("/meta")],
+  [false, 403],
+);
+
+// `actions` is keyed by action, and every key is optional: a pruned action is
+// absent, not false. A misspelt action does not compile.
+type _PermissionsKeyedByAction = Expect<
+  Equal<PermissionsDto["actions"], Partial<Record<JobsApiAction, boolean>>>
+>;
+compileOnly(() => {
+  const canRetry: boolean | undefined = untargetedMap["jobs.retry"];
+  // @ts-expect-error "jobs.frobnicate" is not an action
+  const misspelt = untargetedMap["jobs.frobnicate"];
+  return [canRetry, misspelt];
+});
+
+/* ------------------------------------------------------------------ */
 step("POST /queues/:queue/jobs: the first job creates its queue");
 
 // Adding a queue's first job is what creates it, through the API as through
@@ -1867,6 +2036,157 @@ checkEqual(
     .map((item: { name: string }) => item.name)
     .toSorted(),
   ["Mail-us", "mail-eu"],
+);
+
+/* ------------------------------------------------------------------ */
+step('listQueues: "authorized" lists only the queues a caller may read');
+
+// By default (`"all"`) `GET /queues` shows every reachable queue to anyone
+// allowed `queues.list`, and asks `authorize` once per request. With
+// `"authorized"` it also asks `queues.read` per queue — with the context
+// `GET /queues/:queue` carries — and leaves out the ones denied.
+const visibleContext = context("visible");
+for (const name of ["billing", "mail", "payroll", "reports"]) {
+  await visibleContext.queue(name).add("send", {});
+}
+/** Every `queues.read` the filtering APIs asked about. */
+const perQueueAsks: JobsApiAuthorizeContext[] = [];
+/** Denies reading `payroll`; records each per-queue ask. */
+const payrollHidden: Parameters<typeof createJobsApi>[0]["authorize"] = (
+  _req,
+  authorizeContext,
+) => {
+  if (authorizeContext.action === "queues.read") {
+    perQueueAsks.push(authorizeContext);
+  }
+  return !(
+    authorizeContext.action === "queues.read" &&
+    authorizeContext.queue === "payroll"
+  );
+};
+const listingAll = mount(
+  { authorize: payrollHidden, limits: { queueCacheMs: 0, maxQueues: 2 } },
+  visibleContext,
+);
+const listingAuthorized = mount(
+  {
+    listQueues: "authorized",
+    authorize: payrollHidden,
+    limits: { queueCacheMs: 0, maxQueues: 2 },
+  },
+  visibleContext,
+);
+/** The names on a page of `GET /queues`. */
+const namesOf = (body: { items: { name: string }[] }) =>
+  body.items.map((item) => item.name);
+
+perQueueAsks.length = 0;
+const allPage = (await listingAll.call("GET", "/queues?offset=2")).body;
+checkEqual(
+  'the default, "all": payroll is listed, and no queue is asked about',
+  [namesOf(allPage), allPage.page.total, perQueueAsks.length],
+  [["payroll", "reports"], 4, 0],
+);
+
+perQueueAsks.length = 0;
+const authorizedFirst = (await listingAuthorized.call("GET", "/queues")).body;
+checkEqual(
+  '"authorized": payroll is gone, and the page counts only what is shown',
+  [namesOf(authorizedFirst), authorizedFirst.page, authorizedFirst.truncated],
+  [["billing", "mail"], { offset: 0, limit: 2, total: 3, hasMore: true }, true],
+);
+checkEqual(
+  "one queues.read per queue, every one (the total needs them all), not only the page's",
+  perQueueAsks.map((authorizeContext) => authorizeContext.queue).toSorted(),
+  ["billing", "mail", "payroll", "reports"],
+);
+checkEqual(
+  "each asked as GET /queues/:queue asks it",
+  perQueueAsks.find((authorizeContext) => authorizeContext.queue === "mail"),
+  {
+    action: "queues.read",
+    mutation: false,
+    transport: "http",
+    queue: "mail",
+    route: { method: "GET", path: "/queues/:queue" },
+  },
+);
+const authorizedLast = (await listingAuthorized.call("GET", "/queues?offset=2"))
+  .body;
+checkEqual(
+  "the last page: offset skips shown queues only",
+  [namesOf(authorizedLast), authorizedLast.page, authorizedLast.truncated],
+  [["reports"], { offset: 2, limit: 2, total: 3, hasMore: false }, false],
+);
+
+// /overview sums only the queues shown, too.
+const overviewAll = mount(
+  { authorize: payrollHidden, limits: { queueCacheMs: 0 } },
+  visibleContext,
+);
+const overviewAuthorized = mount(
+  {
+    listQueues: "authorized",
+    authorize: payrollHidden,
+    limits: { queueCacheMs: 0 },
+  },
+  visibleContext,
+);
+checkEqual(
+  "/overview: four queues by default, three when authorized",
+  [
+    (await overviewAll.call("GET", "/overview")).body.queues,
+    (await overviewAuthorized.call("GET", "/overview")).body.queues,
+  ],
+  [4, 3],
+);
+
+// An authorize that throws fails the request, as it does on any route.
+const throwingPerQueue = mount(
+  {
+    listQueues: "authorized",
+    limits: { queueCacheMs: 0 },
+    authorize: (_req, authorizeContext) => {
+      if (authorizeContext.action === "queues.read") {
+        throw new Error(SECRET);
+      }
+      return true;
+    },
+  },
+  visibleContext,
+);
+const thrownList = await throwingPerQueue.call("GET", "/queues");
+checkEqual(
+  "a throwing authorize is a 500, with the generic detail",
+  [thrownList.status, thrownList.body.code, thrownList.text.includes(SECRET)],
+  [500, "INTERNAL", false],
+);
+
+// Without `queues.read` every queue would be hidden, so it never starts.
+await checkRejects(
+  '"authorized" without the queues.read action is a ConfigError',
+  () =>
+    createJobsApi({
+      jobs: visibleContext,
+      basePath: "/admin/jobs",
+      listQueues: "authorized",
+      actions: ["queues.list", "meta.read"],
+      allowUnauthenticated: true,
+      logger: createTestLogger().logger,
+    }),
+  { name: "ConfigError", message: /every queue would be hidden/ },
+);
+await checkRejects(
+  "and so is a value that is neither",
+  () =>
+    createJobsApi({
+      jobs: visibleContext,
+      basePath: "/admin/jobs",
+      listQueues: "some" as "all",
+      allowUnauthenticated: true,
+      logger: createTestLogger().logger,
+    }),
+  { name: "ConfigError", message: /must be "all" or "authorized"/ },
 );
 
 /* ------------------------------------------------------------------ */
@@ -2329,6 +2649,200 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("GET /runners: lifecycle status, isPaused, isRunning and isLocal");
+
+// Five runners: three registered here — one never started, one started on a
+// schedule with nothing in flight, one with a run holding its lock — and two
+// registered by "another process" (a second context on the same backend and
+// namespace): one paused, one with a run in flight.
+const runnerContext = context("runner-list");
+const listing = mount({}, runnerContext);
+/** A handler that works until it is killed. */
+const WORK = new URL("./handlers/runner-work.ts", import.meta.url).pathname;
+/** Registers one in-process runner in `jobs`. */
+const workRunner = (jobs: BunJobs, id: string) =>
+  jobs.runner({
+    id,
+    file: WORK,
+    executionMode: "in-process",
+    schedule: { every: 3_600_000 },
+  });
+workRunner(runnerContext, "unstarted");
+await workRunner(runnerContext, "armed").start();
+const busyHere = workRunner(runnerContext, "busy-here");
+await busyHere.start();
+await busyHere.trigger({ args: { ms: 60_000 } });
+
+const elsewhere = new BunJobs({
+  namespace: runnerContext.namespace,
+  driver,
+  logger: createTestLogger().logger,
+});
+const pausedThere = workRunner(elsewhere, "paused-there");
+await pausedThere.start();
+await pausedThere.pause();
+const busyThere = workRunner(elsewhere, "busy-there");
+await busyThere.start();
+await busyThere.trigger({ args: { ms: 60_000 } });
+
+/** The list, by id. */
+const listedRunners = async () =>
+  new Map(
+    (
+      (await listing.call("GET", "/runners")).body.items as RunnerListItemDto[]
+    ).map((item) => [item.id, item] as const),
+  );
+await waitFor("both runs to hold their locks", async () => {
+  const items = await listedRunners();
+  return (
+    items.get("busy-here")?.isRunning === true &&
+    items.get("busy-there")?.isRunning === true
+  );
+});
+const listedById = await listedRunners();
+/** One item as `[isLocal, status, isPaused, isRunning]`. */
+const flagsOf = (id: string) => {
+  const item = listedById.get(id)!;
+  return [item.isLocal, item.status ?? null, item.isPaused, item.isRunning];
+};
+checkEqual(
+  "status is lifecycle, not a run in flight: idle = not started, running = started and armed",
+  [flagsOf("unstarted"), flagsOf("armed"), flagsOf("busy-here")],
+  [
+    [true, "idle", false, false],
+    [true, "running", false, false],
+    [true, "running", false, true],
+  ],
+);
+checkEqual(
+  "a remote runner has no status, but isPaused and isRunning from the backend",
+  [flagsOf("paused-there"), flagsOf("busy-there")],
+  [
+    [false, null, true, false],
+    [false, null, false, true],
+  ],
+);
+check(
+  "local, deprecated, is a copy of isLocal on every item",
+  [...listedById.values()].every((item) => item.local === item.isLocal),
+);
+/** What `GET /runners/:runner` says, for the same fields. */
+const details = await Promise.all(
+  [...listedById.keys()].map(async (id) => {
+    const info: RunnerInfoDto = (await listing.call("GET", `/runners/${id}`))
+      .body;
+    return [id, info.isLocal, info.isPaused, info.isRunning];
+  }),
+);
+checkEqual(
+  "isLocal, isPaused and isRunning match each runner's own GET /runners/:runner",
+  details,
+  [...listedById.values()].map((item) => [
+    item.id,
+    item.isLocal,
+    item.isPaused,
+    item.isRunning,
+  ]),
+);
+
+// `local` is still sent, and flagged deprecated: in the OpenAPI document...
+const listItemSchema = operationFor(listing.api, "runners.list").responses[
+  "200"
+].content["application/json"].schema.properties.items.items;
+checkEqual(
+  "OpenAPI: local is deprecated: true, isLocal is not",
+  [
+    listItemSchema.properties.local.deprecated,
+    listItemSchema.properties.isLocal.deprecated,
+  ],
+  [true, undefined],
+);
+// ...and in the contract, where `@deprecated` makes an editor strike it
+// through. A doc tag has no type, so the check reads the contract's source.
+const contractSource = await Bun.file(
+  new URL("types.ts", import.meta.resolve("@kingsleyweb/bun-jobs/api/contract"))
+    .pathname,
+).text();
+const listItemDeclaration =
+  /export interface RunnerListItemDto \{[\s\S]*?\n\}/.exec(
+    contractSource,
+  )?.[0] ?? "";
+check(
+  "contract: RunnerListItemDto.local carries @deprecated, isLocal does not",
+  /@deprecated[^/]*\*\/\s*local: boolean;/.test(listItemDeclaration) &&
+    /\*\/\s*isLocal: boolean;/.test(listItemDeclaration) &&
+    !/@deprecated[^/]*\*\/\s*isLocal: boolean;/.test(listItemDeclaration),
+  listItemDeclaration,
+);
+
+await busyHere.kill();
+await busyThere.kill();
+await elsewhere.close();
+
+/* ------------------------------------------------------------------ */
+step(
+  "PUT /runners/:runner/schedule: INVALID_SCHEDULE says which part is wrong",
+);
+
+/** The refusal of one schedule, as `[status, code, issues]`. */
+const refusedSchedule = async (schedule: unknown) => {
+  const answer = await listing.call("PUT", "/runners/armed/schedule", {
+    schedule,
+  });
+  return [
+    answer.status,
+    answer.body.code,
+    answer.body.issues,
+    answer.body.detail,
+  ] as const;
+};
+/** The issue path a refused schedule is blamed on, checking the rest of its shape. */
+const blamed = async (schedule: unknown) => {
+  const [status, code, issues, detail] = await refusedSchedule(schedule);
+  check(
+    `${JSON.stringify(schedule)}: 400 INVALID_SCHEDULE, one body issue carrying the detail`,
+    status === 400 &&
+      code === "INVALID_SCHEDULE" &&
+      issues?.length === 1 &&
+      issues[0].target === "body" &&
+      issues[0].message === detail,
+    { status, code, issues },
+  );
+  return issues?.[0]?.path;
+};
+checkEqual(
+  "a bare cron string is blamed on schedule",
+  await blamed("not a cron expression"),
+  "schedule",
+);
+checkEqual(
+  "{ cron } on schedule.cron",
+  await blamed({ cron: "99 * * * *" }),
+  "schedule.cron",
+);
+checkEqual(
+  "{ cron, tz } with a good expression on schedule.tz",
+  await blamed({ cron: "0 9 * * *", tz: "Nowhere/Land" }),
+  "schedule.tz",
+);
+checkEqual(
+  "a bad expression is blamed before a bad zone",
+  await blamed({ cron: "99 * * * *", tz: "Nowhere/Land" }),
+  "schedule.cron",
+);
+// The body's schema admits any safe integer, but a `Date` stops at ±8.64e15.
+checkEqual(
+  "{ at } beyond what a Date can hold on schedule.at",
+  await blamed({ at: Number.MAX_SAFE_INTEGER }),
+  "schedule.at",
+);
+checkEqual(
+  "and nothing was written",
+  (await listing.call("GET", "/runners/armed")).body.schedule,
+  { every: 3_600_000 },
+);
+
+/* ------------------------------------------------------------------ */
 step("The contract entry point is where the server's constants come from");
 
 check(
@@ -2404,6 +2918,13 @@ await Promise.all(
     uncounted,
     identified,
     failApi,
+    byRoute,
+    listingAll,
+    listingAuthorized,
+    overviewAll,
+    overviewAuthorized,
+    throwingPerQueue,
+    listing,
   ].map((mounted) => mounted.api.close()),
 );
 for (const jobs of contexts) {
