@@ -2492,6 +2492,11 @@ checkEqual(
   [true, null],
 );
 checkEqual(
+  "a disabled series has no next run: nextJobId and nextRunAt are null",
+  [(await daily())?.nextJobId, (await daily())?.nextRunAt],
+  [null, null],
+);
+checkEqual(
   "disabling again is idempotent: the same 200",
   [
     (await failApi.call("POST", "/queues/mail/repeatables/daily/disable"))
@@ -2519,6 +2524,12 @@ checkEqual(
     (await failQueue.getJob(enabledDaily!.nextJobId!))?.state,
   ],
   [false, "delayed"],
+);
+const nextDaily = await failQueue.getJob(enabledDaily!.nextJobId!);
+checkEqual(
+  "…and its next pointers are set again: nextRunAt is that occurrence's runAt",
+  enabledDaily?.nextRunAt,
+  nextDaily ? new Date(nextDaily.runAt).getTime() : null,
 );
 checkEqual(
   "enabling again is idempotent too",

@@ -21,8 +21,12 @@
  *   queue. No worker is involved, so no worker's `deadLetterQueue` is either.
  * - **Disabling a series keeps it and stops its future**: the pending
  *   occurrence is removed and nothing schedules another. Enabling schedules
- *   the next occurrence from now, and nothing missed is run. Adding the series
- *   again does not re-enable it; removing it does clear the flag.
+ *   the next occurrence from now, and nothing missed is run. While disabled
+ *   it lists `nextJobId` and `nextRunAt` as `null`. Adding the series again
+ *   does not re-enable it: it replaces the stored definition, so enabling
+ *   schedules from the new one, but adds no occurrence and announces nothing
+ *   — it answers the would-be occurrence, unstored, with `wasAdded: false`.
+ *   Removing a series does clear the flag.
  * - **A job view announces what it does to itself**: `remove()`, `promote()`
  *   and `retry()` emit on the queue the view came from and publish, exactly
  *   as the queue's own methods of those names do.
@@ -633,9 +637,14 @@ checkEqual(
   true,
 );
 checkEqual(
-  "listed disabled: true, and the pending occurrence is removed",
-  [(await weekly())?.disabled, await series.getJob(pending)],
-  [true, null],
+  "listed disabled: true, with nextJobId and nextRunAt null, and the pending occurrence is removed",
+  [
+    (await weekly())?.disabled,
+    (await weekly())?.nextJobId,
+    (await weekly())?.nextRunAt,
+    await series.getJob(pending),
+  ],
+  [true, null, null, null],
 );
 checkEqual(
   "idempotent: again answers false; an unknown key answers false",
@@ -652,55 +661,115 @@ checkEqual(
   [0, 0],
 );
 
-// Re-adding it with add({ repeat }) does not re-enable it.
-await series.add(
-  "digest",
-  { report: "weekly" },
-  { repeat: { every: 60_000, key: "weekly" } },
-);
-checkEqual(
-  "add({ repeat }) for a disabled series leaves it disabled",
-  (await weekly())?.disabled,
-  true,
-);
-// It does schedule an occurrence, which maintenance then removes: a disabled
-// series keeps nothing pending once a worker's maintenance has passed.
-const readded = (await weekly())!.nextJobId!;
-show("add({ repeat }) scheduled", {
-  readded,
-  state: (await series.getJob(readded))?.state,
+// Re-adding it with add({ repeat }) does not re-enable it, and schedules
+// nothing. It does replace the stored definition — here a new interval, a
+// time zone, a limit, a payload and a priority — so enabling it later
+// schedules from the new one.
+
+/** What `series` emits locally, by event name. */
+const seriesAnnounced: string[] = [];
+series.on("repeatScheduled", (key) => {
+  seriesAnnounced.push(`repeatScheduled ${key}`);
 });
-const healer = new BunQueueWorker<{ report: string }, unknown>(
-  "series",
-  async () => null,
+series.on("added", (job) => {
+  seriesAnnounced.push(`added ${job.id}`);
+});
+series.on("duplicate", (job) => {
+  seriesAnnounced.push(`duplicate ${job.id}`);
+});
+
+/** Ids of the marker jobs below, whose own events are not the series'. */
+const markers = new Set<string>();
+/**
+ * Adds a one-off job to `series` and waits until the notifier has heard it
+ * published — so everything published before it has arrived too — then
+ * removes it and waits for that, leaving nothing pending behind it.
+ */
+async function publishedMarker(): Promise<void> {
+  const marker = await series.add("marker", { report: "marker" });
+  markers.add(marker.id);
+  await heard(marker.id, "added");
+  await marker.remove();
+  await heard(marker.id, "removed");
+}
+/** Published `series` events since `from`, other than the markers'. */
+const seriesEvents = (from: number) =>
+  published
+    .slice(from)
+    .filter(
+      (event) =>
+        event.kind === "queue" &&
+        event.target === "series" &&
+        ![...markers].some((id) => isAbout(event, id)),
+    )
+    .map((event) => `${event.type} ${event.id ?? ""}`.trim());
+
+await publishedMarker();
+const quietFrom = published.length;
+seriesAnnounced.length = 0;
+
+const readdedAt = Date.now();
+const readded = await series.add(
+  "digest",
+  { report: "weekly, revised" },
   {
-    namespace,
-    driver,
-    logger: noopLogger,
-    maintenance: true,
-    stalledInterval: 50,
-    ...fast,
+    priority: 3,
+    repeat: {
+      every: 120_000,
+      tz: "Europe/Paris",
+      limit: 50,
+      key: "weekly",
+    },
   },
 );
-closers.push(() => healer.close({ force: true }));
-void healer.run();
-await waitFor(
-  "maintenance to remove the disabled series' pending occurrence",
-  async () => (await series.getJob(readded)) === null,
-  WAIT,
+checkEqual(
+  "add({ repeat }) for a disabled series answers wasAdded: false, and the occurrence is not stored",
+  [readded.wasAdded, readded.data, await series.getJob(readded.id)],
+  [false, { report: "weekly, revised" }, null],
 );
 checkEqual(
-  "maintenance removed it, and scheduled no replacement",
-  [
-    await series.count("waiting"),
-    await series.count("delayed"),
-    (await weekly())?.disabled,
-  ],
-  [0, 0, true],
+  "nothing is pending: no occurrence was added",
+  [await series.count("waiting"), await series.count("delayed")],
+  [0, 0],
 );
-await healer.close();
+const revised = (await weekly())!;
+checkEqual(
+  "the stored definition is replaced; the series stays disabled, with no next occurrence",
+  {
+    disabled: revised.disabled,
+    every: revised.every,
+    tz: revised.tz,
+    limit: revised.limit,
+    data: revised.data,
+    priority: revised.opts.priority,
+    nextJobId: revised.nextJobId,
+    nextRunAt: revised.nextRunAt,
+  },
+  {
+    disabled: true,
+    every: 120_000,
+    tz: "Europe/Paris",
+    limit: 50,
+    data: { report: "weekly, revised" },
+    priority: 3,
+    nextJobId: null,
+    nextRunAt: null,
+  },
+);
+checkEqual(
+  "nothing was seriesAnnounced locally: no repeatScheduled, added or duplicate",
+  seriesAnnounced,
+  [],
+);
+await publishedMarker();
+checkEqual(
+  "nor published: another process heard nothing about the series",
+  seriesEvents(quietFrom),
+  [],
+);
+seriesAnnounced.length = 0;
 
-// Enable schedules the next occurrence from now.
+// Enable schedules the next occurrence from now, from the new definition.
 /** `repeatScheduled` events, as `[key, at]`. */
 const scheduledEvents: [string, number][] = [];
 series.on("repeatScheduled", (key, nextRunAt) => {
@@ -715,12 +784,30 @@ checkEqual(
 const afterEnable = (await weekly())!;
 const next = await series.getJob(afterEnable.nextJobId!);
 check(
-  "the next occurrence is the series' next point after now",
+  "enabled, it has next pointers again, and they agree with the job",
+  afterEnable.disabled === false &&
+    afterEnable.nextJobId !== null &&
+    afterEnable.nextRunAt !== null &&
+    next?.runAt === afterEnable.nextRunAt,
+  {
+    nextJobId: afterEnable.nextJobId,
+    nextRunAt: afterEnable.nextRunAt,
+    runAt: next?.runAt,
+  },
+);
+check(
+  "the next occurrence is on the new 2-minute grid, the next point after now",
   next !== null &&
     next.state === "delayed" &&
     next.runAt > enabledAt &&
-    next.runAt <= Date.now() + 60_000,
-  { enabledAt, runAt: next?.runAt },
+    next.runAt <= Date.now() + 120_000 &&
+    (next.runAt - afterEnable.createdAt) % 120_000 === 0,
+  { enabledAt, readdedAt, runAt: next?.runAt },
+);
+checkEqual(
+  "and it carries the new payload and options",
+  [next?.data, next?.opts.priority],
+  [{ report: "weekly, revised" }, 3],
 );
 checkEqual(
   "exactly one occurrence is pending",
@@ -730,6 +817,13 @@ checkEqual(
 checkEqual("it announced repeatScheduled for it", scheduledEvents, [
   ["weekly", afterEnable.nextRunAt!],
 ]);
+// The control for the silence above: the same window does hear it now.
+await publishedMarker();
+check(
+  "and published it: the notifier heard this repeatScheduled",
+  seriesEvents(quietFrom).includes("repeatScheduled"),
+  seriesEvents(quietFrom),
+);
 checkEqual(
   "enabling again answers false",
   await series.enableRepeatable("weekly"),
