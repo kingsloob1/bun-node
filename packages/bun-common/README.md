@@ -10,8 +10,10 @@ the path literal and from the validator in front of them. `fetch()` sends a
 request through the production pipeline without opening a socket, so tests
 need no port.
 
-The package ships its TypeScript source (`main` and `types` both point at
-`lib/index.ts`). `@kingsleyweb/bun-nest` and `@kingsleyweb/bun-jobs` build on it.
+The package ships its TypeScript source, which Bun runs directly (`main` points
+at `lib/index.ts`), together with built declarations in `dts/` (`types` points at
+`dts/index.d.ts`), so a consumer's type checker never compiles our source.
+`@kingsleyweb/bun-nest` and `@kingsleyweb/bun-jobs` build on it.
 
 ## Contents
 
