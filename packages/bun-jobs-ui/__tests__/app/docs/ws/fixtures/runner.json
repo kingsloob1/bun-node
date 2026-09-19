@@ -1,0 +1,1438 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "bun-jobs management API (ui-docs-ws-fixture-runner)",
+    "version": "0.0.0-fixture",
+    "description": "Live events for bun-jobs queues and runners, over one WebSocket.\n\nConnect to the server, then `subscribe` by channel name: the channels other than `connection` have no transport address of their own and are multiplexed over the connection. Every event carries a `seq` within an `epoch`; resume after a reconnect with `resume`, and treat a `gap` as a reason to refetch.\n\nEvents are invalidation hints, not a log: the notifier hears only what producers publish, and HTTP stays the source of truth.\n\nAuthorization is enforced by the host application's `authorize` hook, on the upgrade and on each subscription; this document declares no security schemes."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "api": {
+      "host": "localhost",
+      "pathname": "/jobs-api/ws",
+      "protocol": "ws",
+      "description": "The host application's server.",
+      "x-bun-jobs-subprotocol": "bun-jobs.v1"
+    }
+  },
+  "channels": {
+    "connection": {
+      "address": "/jobs-api/ws",
+      "title": "Connection",
+      "description": "The WebSocket itself (subprotocol `bun-jobs.v1`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.\n\nOrdering: live events arrive in `seq` order. A subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A resume split over several subscribes replays each one's channels in full, so a later one can replay `seq`s below ones already received: resume again from the same position until every resuming subscribe is acked. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.\n\nSubscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.\n\nAn upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
+      "messages": {
+        "subscribe": { "$ref": "#/components/messages/subscribe" },
+        "unsubscribe": { "$ref": "#/components/messages/unsubscribe" },
+        "ping": { "$ref": "#/components/messages/ping" },
+        "hello": { "$ref": "#/components/messages/hello" },
+        "ack": { "$ref": "#/components/messages/ack" },
+        "gap": { "$ref": "#/components/messages/gap" },
+        "heartbeat": { "$ref": "#/components/messages/heartbeat" },
+        "pong": { "$ref": "#/components/messages/pong" },
+        "error": { "$ref": "#/components/messages/error" }
+      },
+      "bindings": { "ws": { "method": "GET", "bindingVersion": "0.1.0" } },
+      "x-bun-jobs-subprotocol": "bun-jobs.v1",
+      "x-bun-jobs-close-codes": [
+        {
+          "code": 1001,
+          "name": "GOING_AWAY",
+          "description": "The API is closing (`api.close()`). Reconnect and resume."
+        },
+        {
+          "code": 1003,
+          "name": "UNSUPPORTED_DATA",
+          "description": "The client sent a binary frame (an UNSUPPORTED_DATA error precedes it)."
+        },
+        {
+          "code": 1008,
+          "name": "POLICY",
+          "description": "The rate limit was breached a second time within 10 s (the first breach is a RATE_LIMITED error)."
+        },
+        {
+          "code": 1009,
+          "name": "TOO_BIG",
+          "description": "The client sent a frame over `maxMessageBytes` (a MESSAGE_TOO_LARGE error precedes it)."
+        },
+        {
+          "code": 4008,
+          "name": "SLOW_CONSUMER",
+          "description": "The client stayed behind for `slowConsumerTimeoutMs`. Reconnect and resume."
+        },
+        {
+          "code": 4401,
+          "name": "UNAUTHORIZED",
+          "description": "Reserved: the session is no longer authorized. Not sent in protocol 1."
+        }
+      ],
+      "x-bun-jobs-limits": {
+        "maxMessageBytes": 16384,
+        "messagesPerSecond": 20,
+        "rateLimitBurst": 40,
+        "rateLimitBreachWindowMs": 10000,
+        "maxSubscriptions": 50,
+        "maxChannelsPerFrame": 256,
+        "maxConnections": 1000,
+        "heartbeatMs": 25000,
+        "maxBufferedBytes": 1048576,
+        "slowConsumerTimeoutMs": 30000,
+        "coalesceProgressMs": 250,
+        "replay": { "size": 1000, "maxAgeMs": 300000 }
+      },
+      "x-bun-jobs-upgrade-refusals": [
+        {
+          "status": 400,
+          "code": "UNSUPPORTED_SUBPROTOCOL",
+          "description": "Sec-WebSocket-Protocol was sent without `bun-jobs.v1`. Offer it, or no subprotocol.",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 403,
+          "code": "ORIGIN_REJECTED",
+          "description": "The Origin header is not an allowed origin.",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 429,
+          "code": "CONNECTION_LIMIT",
+          "description": "`maxConnections` live-event connections are already open.",
+          "headers": { "Retry-After": "1" },
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "description": "`authorize` asked for authentication (`events.connect`).",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 403,
+          "code": "FORBIDDEN",
+          "description": "`authorize` refused the connection (`events.connect`).",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 404,
+          "code": "ROUTE_NOT_FOUND",
+          "description": "The API has been closed.",
+          "contentType": "application/problem+json"
+        }
+      ]
+    },
+    "runners": {
+      "address": "runners",
+      "title": "Runners",
+      "description": "Every runner event. A logical channel: subscribe with its name over the connection.",
+      "messages": {
+        "runner.control": { "$ref": "#/components/messages/runner.control" },
+        "runner.started": { "$ref": "#/components/messages/runner.started" },
+        "runner.succeeded": {
+          "$ref": "#/components/messages/runner.succeeded"
+        },
+        "runner.failed": { "$ref": "#/components/messages/runner.failed" },
+        "runner.queued": { "$ref": "#/components/messages/runner.queued" },
+        "runner.skipped": { "$ref": "#/components/messages/runner.skipped" },
+        "runner.timeout": { "$ref": "#/components/messages/runner.timeout" },
+        "runner.killed": { "$ref": "#/components/messages/runner.killed" }
+      }
+    },
+    "runner": {
+      "address": "runner/{runner}",
+      "title": "Runner",
+      "description": "Every event of one runner. A logical channel: subscribe with its name over the connection.",
+      "parameters": {
+        "runner": {
+          "description": "A runner id, matching `^(?!\\.\\.?$)[\\w.-]+$` (at most 200 characters).",
+          "x-bun-jobs-schema": {
+            "type": "string",
+            "pattern": "^(?!\\.\\.?$)[\\w.-]+$",
+            "maxLength": 200
+          }
+        }
+      },
+      "messages": {
+        "runner.control": { "$ref": "#/components/messages/runner.control" },
+        "runner.started": { "$ref": "#/components/messages/runner.started" },
+        "runner.succeeded": {
+          "$ref": "#/components/messages/runner.succeeded"
+        },
+        "runner.failed": { "$ref": "#/components/messages/runner.failed" },
+        "runner.queued": { "$ref": "#/components/messages/runner.queued" },
+        "runner.skipped": { "$ref": "#/components/messages/runner.skipped" },
+        "runner.timeout": { "$ref": "#/components/messages/runner.timeout" },
+        "runner.killed": { "$ref": "#/components/messages/runner.killed" }
+      }
+    }
+  },
+  "operations": {
+    "subscribe": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Subscribe",
+      "summary": "Subscribe to channels; each is authorized separately.",
+      "messages": [{ "$ref": "#/channels/connection/messages/subscribe" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [
+          { "$ref": "#/channels/connection/messages/ack" },
+          { "$ref": "#/channels/connection/messages/error" }
+        ]
+      },
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "unsubscribe": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Unsubscribe",
+      "summary": "Leave channels.",
+      "messages": [{ "$ref": "#/channels/connection/messages/unsubscribe" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [
+          { "$ref": "#/channels/connection/messages/ack" },
+          { "$ref": "#/channels/connection/messages/error" }
+        ]
+      },
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "ping": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Ping",
+      "summary": "Ask for a pong.",
+      "messages": [{ "$ref": "#/channels/connection/messages/ping" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [{ "$ref": "#/channels/connection/messages/pong" }]
+      },
+      "x-bun-jobs-action": "events.connect"
+    },
+    "receiveControl": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Receive control messages",
+      "summary": "Greeting, gaps, heartbeats and errors.",
+      "messages": [
+        { "$ref": "#/channels/connection/messages/hello" },
+        { "$ref": "#/channels/connection/messages/gap" },
+        { "$ref": "#/channels/connection/messages/heartbeat" },
+        { "$ref": "#/channels/connection/messages/error" }
+      ],
+      "x-bun-jobs-action": "events.connect"
+    },
+    "receiveRunnersEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/runners" },
+      "title": "Receive runners events",
+      "summary": "Every runner event.",
+      "messages": [
+        { "$ref": "#/channels/runners/messages/runner.control" },
+        { "$ref": "#/channels/runners/messages/runner.started" },
+        { "$ref": "#/channels/runners/messages/runner.succeeded" },
+        { "$ref": "#/channels/runners/messages/runner.failed" },
+        { "$ref": "#/channels/runners/messages/runner.queued" },
+        { "$ref": "#/channels/runners/messages/runner.skipped" },
+        { "$ref": "#/channels/runners/messages/runner.timeout" },
+        { "$ref": "#/channels/runners/messages/runner.killed" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveRunnerEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/runner" },
+      "title": "Receive runner events",
+      "summary": "Every event of one runner.",
+      "messages": [
+        { "$ref": "#/channels/runner/messages/runner.control" },
+        { "$ref": "#/channels/runner/messages/runner.started" },
+        { "$ref": "#/channels/runner/messages/runner.succeeded" },
+        { "$ref": "#/channels/runner/messages/runner.failed" },
+        { "$ref": "#/channels/runner/messages/runner.queued" },
+        { "$ref": "#/channels/runner/messages/runner.skipped" },
+        { "$ref": "#/channels/runner/messages/runner.timeout" },
+        { "$ref": "#/channels/runner/messages/runner.killed" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    }
+  },
+  "components": {
+    "schemas": {
+      "AckMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "ack" },
+          "id": { "type": "string" },
+          "op": { "type": "string", "enum": ["subscribe", "unsubscribe"] },
+          "channels": { "type": "array", "items": { "type": "string" } },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "description": "The channel exactly as the client sent it (not canonicalised)."
+                },
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "VALIDATION",
+                    "RATE_LIMITED",
+                    "MESSAGE_TOO_LARGE",
+                    "UNSUPPORTED_DATA",
+                    "INVALID_CHANNEL",
+                    "CHANNEL_NOT_AVAILABLE",
+                    "QUEUE_NOT_FOUND",
+                    "RUNNER_NOT_FOUND",
+                    "SUBSCRIPTION_LIMIT",
+                    "UNAUTHORIZED",
+                    "FORBIDDEN",
+                    "EVENTS_UNAVAILABLE",
+                    "INTERNAL"
+                  ]
+                },
+                "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+                "detail": { "type": "string" }
+              },
+              "required": ["channel", "code", "status"],
+              "additionalProperties": false
+            }
+          },
+          "resumed": { "type": "boolean" },
+          "seq": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["type", "id", "op", "channels", "seq"],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "message": { "type": "string" },
+          "code": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+          "stack": {
+            "type": "string",
+            "description": "The stack trace: present only when the API was created with `serialize.exposeStacks` (off by default)."
+          },
+          "data": { "type": "object", "additionalProperties": {} },
+          "cause": { "description": "The cause, shaped as an Error." }
+        },
+        "required": ["name", "message"],
+        "additionalProperties": false
+      },
+      "ErrorMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "error" },
+          "id": { "type": "string" },
+          "code": {
+            "type": "string",
+            "enum": [
+              "VALIDATION",
+              "RATE_LIMITED",
+              "MESSAGE_TOO_LARGE",
+              "UNSUPPORTED_DATA",
+              "INVALID_CHANNEL",
+              "CHANNEL_NOT_AVAILABLE",
+              "QUEUE_NOT_FOUND",
+              "RUNNER_NOT_FOUND",
+              "SUBSCRIPTION_LIMIT",
+              "UNAUTHORIZED",
+              "FORBIDDEN",
+              "EVENTS_UNAVAILABLE",
+              "INTERNAL"
+            ]
+          },
+          "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+          "detail": { "type": "string" }
+        },
+        "required": ["type", "code", "status", "detail"],
+        "additionalProperties": false
+      },
+      "GapMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "gap" },
+          "epoch": { "type": "string" },
+          "fromSeq": { "type": "integer", "minimum": 0 },
+          "toSeq": { "type": "integer", "minimum": 0 },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "resume-expired",
+              "epoch-changed",
+              "slow-consumer",
+              "coalesced"
+            ]
+          },
+          "channels": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["type", "epoch", "fromSeq", "toSeq", "reason"],
+        "additionalProperties": false,
+        "description": "Events in [fromSeq, toSeq] may have been missed; refetch the affected resources over HTTP."
+      },
+      "HeartbeatMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "heartbeat" },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The latest seq stamped, across every channel. seq is global, so a jump says nothing about missed events; rely on gap frames."
+          },
+          "at": { "type": "integer", "description": "Server time, epoch ms." }
+        },
+        "required": ["type", "seq", "at"],
+        "additionalProperties": false,
+        "description": "Liveness. Not sent while the connection is lagging."
+      },
+      "HelloMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "hello" },
+          "protocol": { "type": "integer", "const": 1 },
+          "sessionId": { "type": "string" },
+          "epoch": { "type": "string" },
+          "seq": { "type": "integer", "minimum": 0 },
+          "mode": { "type": "string", "enum": ["jobs", "runner", "both"] },
+          "heartbeatMs": { "type": "integer", "minimum": 0 },
+          "maxSubscriptions": { "type": "integer", "minimum": 1 },
+          "events": { "type": "string", "enum": ["push", "poll", "local"] }
+        },
+        "required": [
+          "type",
+          "protocol",
+          "sessionId",
+          "epoch",
+          "seq",
+          "mode",
+          "heartbeatMs",
+          "maxSubscriptions",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "PingMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "ping" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          }
+        },
+        "required": ["op", "id"],
+        "additionalProperties": false
+      },
+      "PongMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "pong" },
+          "id": { "type": "string" },
+          "at": { "type": "integer", "description": "Server time, epoch ms." }
+        },
+        "required": ["type", "id", "at"],
+        "additionalProperties": false
+      },
+      "RunnerControlEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "control" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerControlPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A controller changed the runner's state or queued a trigger."
+      },
+      "RunnerControlEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerControlEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A controller changed the runner's state or queued a trigger."
+      },
+      "RunnerControlPayload": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["pause", "resume", "schedule", "trigger"]
+          }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      },
+      "RunnerFailedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "failed" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerFailedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run failed."
+      },
+      "RunnerFailedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerFailedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run failed."
+      },
+      "RunnerFailedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "error": { "$ref": "#/components/schemas/Error" }
+        },
+        "required": ["runId", "error"],
+        "additionalProperties": false
+      },
+      "RunnerKilledEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "killed" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerKilledPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run was stopped on request."
+      },
+      "RunnerKilledEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerKilledEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run was stopped on request."
+      },
+      "RunnerKilledPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "reason": {
+            "type": "string",
+            "description": "The reason it was given."
+          }
+        },
+        "required": ["runId", "reason"],
+        "additionalProperties": false
+      },
+      "RunnerQueuedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "queued" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerQueuedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run was asked for while another held the lock."
+      },
+      "RunnerQueuedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerQueuedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run was asked for while another held the lock."
+      },
+      "RunnerQueuedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "RunnerSkippedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "skipped" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerSkippedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A scheduled run was skipped."
+      },
+      "RunnerSkippedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerSkippedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A scheduled run was skipped."
+      },
+      "RunnerSkippedPayload": {
+        "type": "object",
+        "properties": {
+          "reason": { "type": "string", "description": "Why it was skipped." }
+        },
+        "required": ["reason"],
+        "additionalProperties": false
+      },
+      "RunnerStartedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "started" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerStartedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run began."
+      },
+      "RunnerStartedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerStartedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run began."
+      },
+      "RunnerStartedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "RunnerSucceededEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "succeeded" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerSucceededPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run finished successfully."
+      },
+      "RunnerSucceededEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerSucceededEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run finished successfully."
+      },
+      "RunnerSucceededPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0,
+            "description": "How long it ran."
+          }
+        },
+        "required": ["runId", "durationMs"],
+        "additionalProperties": false
+      },
+      "RunnerTimeoutEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "timeout" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerTimeoutPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run outlived its timeout."
+      },
+      "RunnerTimeoutEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerTimeoutEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run outlived its timeout."
+      },
+      "RunnerTimeoutPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "SubscribeMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "subscribe" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeJobId(jobId)>`, `runners` or `runner/<runner>`. `encodeJobId` (in the contract) is `encodeURIComponent`, plus `%uXXXX` for a lone surrogate."
+            },
+            "minItems": 1,
+            "maxItems": 256
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "added",
+                "duplicate",
+                "waiting",
+                "delayed",
+                "active",
+                "progress",
+                "completed",
+                "failed",
+                "retrying",
+                "dead",
+                "stalled",
+                "removed",
+                "promoted",
+                "paused",
+                "resumed",
+                "drained",
+                "cleaned",
+                "retried",
+                "debounced",
+                "throttled",
+                "repeatScheduled",
+                "control",
+                "started",
+                "succeeded",
+                "queued",
+                "skipped",
+                "timeout",
+                "killed"
+              ]
+            },
+            "minItems": 1
+          },
+          "resume": {
+            "type": "object",
+            "properties": {
+              "epoch": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "afterSeq": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["epoch", "afterSeq"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["op", "id", "channels"],
+        "additionalProperties": false,
+        "description": "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket. Only as many channels not already held as the connection has free slots are authorized; the rest are refused SUBSCRIPTION_LIMIT. Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it. With `resume`, replayed events arrive before the ack; if they cannot be replayed the ack says `resumed: false` and a gap follows it. A resume split over several frames replays each frame's channels in full: an event an earlier frame (or live delivery) sent only for other channels is sent again, listing just this frame's channels it had not reached. No (seq, channel) pair is sent twice on one connection."
+      },
+      "UnsubscribeMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "unsubscribe" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeJobId(jobId)>`, `runners` or `runner/<runner>`. `encodeJobId` (in the contract) is `encodeURIComponent`, plus `%uXXXX` for a lone surrogate."
+            },
+            "minItems": 1,
+            "maxItems": 256
+          }
+        },
+        "required": ["op", "id", "channels"],
+        "additionalProperties": false,
+        "description": "Leaves channels. One unsubscribe removes a channel however many times it was subscribed; leaving a channel not held is not an error."
+      }
+    },
+    "messages": {
+      "subscribe": {
+        "name": "subscribe",
+        "title": "Subscribe",
+        "summary": "Subscribe to channels, optionally resuming.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/SubscribeMessage" },
+        "examples": [
+          {
+            "name": "subscribe",
+            "summary": "Subscribe to a queue, one of its jobs and a runner, resuming after a reconnect.",
+            "payload": {
+              "op": "subscribe",
+              "id": "sub-1",
+              "channels": [
+                "queue/mail",
+                "queue/mail/job/welcome%3Aada%40example.com",
+                "runner/nightly-report"
+              ],
+              "events": [
+                "added",
+                "progress",
+                "completed",
+                "failed",
+                "succeeded"
+              ],
+              "resume": {
+                "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+                "afterSeq": 41
+              }
+            }
+          }
+        ]
+      },
+      "unsubscribe": {
+        "name": "unsubscribe",
+        "title": "Unsubscribe",
+        "summary": "Leave channels.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/UnsubscribeMessage" },
+        "examples": [
+          {
+            "name": "unsubscribe",
+            "summary": "Leave a job's channel.",
+            "payload": {
+              "op": "unsubscribe",
+              "id": "unsub-1",
+              "channels": ["queue/mail/job/welcome%3Aada%40example.com"]
+            }
+          }
+        ]
+      },
+      "ping": {
+        "name": "ping",
+        "title": "Ping",
+        "summary": "Ask for a pong.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/PingMessage" },
+        "examples": [
+          {
+            "name": "ping",
+            "summary": "Ask for a pong.",
+            "payload": { "op": "ping", "id": "ping-7" }
+          }
+        ]
+      },
+      "hello": {
+        "name": "hello",
+        "title": "Hello",
+        "summary": "Sent once, when the connection opens.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/HelloMessage" },
+        "examples": [
+          {
+            "name": "hello",
+            "summary": "The greeting a connection opens with.",
+            "payload": {
+              "type": "hello",
+              "protocol": 1,
+              "sessionId": "0b7e6d1a-3f24-4c9e-8d2b-6a1f5e9c7b30",
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "seq": 42,
+              "mode": "both",
+              "heartbeatMs": 30000,
+              "maxSubscriptions": 50,
+              "events": "push"
+            }
+          }
+        ]
+      },
+      "ack": {
+        "name": "ack",
+        "title": "Ack",
+        "summary": "Answers a subscribe or unsubscribe, listing refused channels. Replayed events precede it; a gap may follow it.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/AckMessage" },
+        "examples": [
+          {
+            "name": "ack",
+            "summary": "A subscribe answered with one channel refused.",
+            "payload": {
+              "type": "ack",
+              "id": "sub-1",
+              "op": "subscribe",
+              "channels": [
+                "queue/mail",
+                "queue/mail/job/welcome%3Aada%40example.com"
+              ],
+              "rejected": [
+                {
+                  "channel": "runner/nightly-report",
+                  "code": "FORBIDDEN",
+                  "status": 403,
+                  "detail": "events.subscribe was refused for this runner."
+                }
+              ],
+              "resumed": true,
+              "seq": 44
+            }
+          }
+        ]
+      },
+      "gap": {
+        "name": "gap",
+        "title": "Gap",
+        "summary": "Events may have been missed; refetch over HTTP.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/GapMessage" },
+        "examples": [
+          {
+            "name": "gap",
+            "summary": "Events a resume could no longer replay.",
+            "payload": {
+              "type": "gap",
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "fromSeq": 42,
+              "toSeq": 57,
+              "reason": "resume-expired",
+              "channels": ["queue/mail"]
+            }
+          }
+        ]
+      },
+      "heartbeat": {
+        "name": "heartbeat",
+        "title": "Heartbeat",
+        "summary": "Liveness, carrying the latest global seq. seq spans every channel, so it cannot detect misses: rely on gap.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/HeartbeatMessage" },
+        "examples": [
+          {
+            "name": "heartbeat",
+            "summary": "Liveness, with the latest global seq.",
+            "payload": { "type": "heartbeat", "seq": 57, "at": 1789808430000 }
+          }
+        ]
+      },
+      "pong": {
+        "name": "pong",
+        "title": "Pong",
+        "summary": "Answers a ping.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/PongMessage" },
+        "examples": [
+          {
+            "name": "pong",
+            "summary": "The answer to a ping.",
+            "payload": { "type": "pong", "id": "ping-7", "at": 1789808431250 }
+          }
+        ]
+      },
+      "error": {
+        "name": "error",
+        "title": "Error",
+        "summary": "A frame could not be handled, or a limit was hit.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/ErrorMessage" },
+        "examples": [
+          {
+            "name": "error",
+            "summary": "A frame that failed validation.",
+            "payload": {
+              "type": "error",
+              "id": "sub-2",
+              "code": "VALIDATION",
+              "status": 400,
+              "detail": "channels must contain at least 1 item."
+            }
+          }
+        ]
+      },
+      "runner.control": {
+        "name": "runner.control",
+        "title": "Runner control",
+        "summary": "A controller changed the runner's state or queued a trigger.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerControlEventMessage" },
+        "examples": [
+          {
+            "name": "runner.control",
+            "summary": "A controller changed the runner's state or queued a trigger.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "control",
+                "at": 1789808400000,
+                "payload": { "action": "trigger" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.started": {
+        "name": "runner.started",
+        "title": "Runner started",
+        "summary": "A run began.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerStartedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.started",
+            "summary": "A run began.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "started",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808400010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.succeeded": {
+        "name": "runner.succeeded",
+        "title": "Runner succeeded",
+        "summary": "A run finished successfully.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/RunnerSucceededEventMessage"
+        },
+        "examples": [
+          {
+            "name": "runner.succeeded",
+            "summary": "A run finished successfully.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "succeeded",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808442010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V", "durationMs": 42000 }
+              }
+            }
+          }
+        ]
+      },
+      "runner.failed": {
+        "name": "runner.failed",
+        "title": "Runner failed",
+        "summary": "A run failed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerFailedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.failed",
+            "summary": "A run failed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "failed",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808405010,
+                "payload": {
+                  "runId": "run-01J8ZQ4K7N3V",
+                  "error": {
+                    "name": "TypeError",
+                    "message": "Cannot read properties of undefined (reading 'rows')"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "runner.queued": {
+        "name": "runner.queued",
+        "title": "Runner queued",
+        "summary": "A run was asked for while another held the lock.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerQueuedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.queued",
+            "summary": "A run was asked for while another held the lock.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "queued",
+                "id": "run-01J8ZQ5B2D9X",
+                "at": 1789808400020,
+                "payload": { "runId": "run-01J8ZQ5B2D9X" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.skipped": {
+        "name": "runner.skipped",
+        "title": "Runner skipped",
+        "summary": "A scheduled run was skipped.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerSkippedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.skipped",
+            "summary": "A scheduled run was skipped.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "skipped",
+                "at": 1789808400030,
+                "payload": { "reason": "lock-held" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.timeout": {
+        "name": "runner.timeout",
+        "title": "Runner timeout",
+        "summary": "A run outlived its timeout.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerTimeoutEventMessage" },
+        "examples": [
+          {
+            "name": "runner.timeout",
+            "summary": "A run outlived its timeout.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "timeout",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808700010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.killed": {
+        "name": "runner.killed",
+        "title": "Runner killed",
+        "summary": "A run was stopped on request.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerKilledEventMessage" },
+        "examples": [
+          {
+            "name": "runner.killed",
+            "summary": "A run was stopped on request.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "killed",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808460010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V", "reason": "killed" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

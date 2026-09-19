@@ -1,6 +1,5 @@
 import type { UiConfig } from "../../shared/config.ts";
 import { describe, expect, it } from "bun:test";
-import { boot } from "../../app/boot";
 import { parseUiConfig, readUiConfig, UiConfigError } from "../../app/config";
 import {
   applyTheme,
@@ -17,6 +16,15 @@ import { mockFetch } from "./mockFetch";
 import { defaultHandlers } from "./renderApp";
 
 setupDom();
+
+/**
+ * `app/boot` imports `react-dom/client`, and react-dom decides at module
+ * evaluation whether it runs in a DOM. Imported statically, it would evaluate
+ * ahead of `./dom`'s registration whenever this is the first DOM file of the
+ * run (`bun test --randomize`), and every later file's `onChange` would stop
+ * firing. So it is loaded here, after the DOM exists (see `dom.ts`).
+ */
+const { boot } = await import("../../app/boot");
 
 /** Writes a shell like jobsUi() serves: the config script and #root. */
 function writeShell(config: unknown): void {

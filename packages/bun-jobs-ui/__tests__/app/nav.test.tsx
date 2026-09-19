@@ -129,7 +129,7 @@ describe("the rendered layout", () => {
     );
   });
 
-  it("routes a pruned section to the 404, and a gated one to its placeholder", async () => {
+  it("routes a pruned section to the 404, and a gated one to its screen", async () => {
     visit("/jobs/runners");
     const first = renderApp({
       handlers: { "GET /meta": { body: metaFixture({ mode: "jobs" }) } },
@@ -139,9 +139,7 @@ describe("the rendered layout", () => {
 
     visit("/jobs/docs");
     renderApp();
-    const placeholder = await page().findByTestId("placeholder");
-    expect(placeholder.textContent).toContain("API docs");
-    expect(placeholder.textContent).toContain("milestone 5");
+    expect(await page().findByTestId("docs-home")).toBeTruthy();
   });
 
   it("redirects the start page to the first section when Overview is not available", async () => {

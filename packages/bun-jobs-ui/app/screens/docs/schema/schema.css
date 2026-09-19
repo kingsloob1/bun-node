@@ -1,0 +1,137 @@
+/* The shared JSON Schema tree of the docs viewers. */
+
+.schema-tree {
+  font-size: var(--text-sm);
+  overflow-x: auto;
+}
+
+.schema-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.schema-list .schema-list {
+  margin-left: var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
+}
+
+.schema-node {
+  padding: var(--space-1) 0;
+}
+
+.schema-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+}
+
+.schema-toggle,
+.schema-toggle-spacer {
+  flex: none;
+  width: 1.25rem;
+  text-align: center;
+}
+
+.schema-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.schema-toggle:focus-visible,
+.schema-ref-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
+.schema-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.schema-required {
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.schema-type {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.schema-ref {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.schema-ref-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.schema-note-inline {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.schema-unresolved {
+  color: var(--danger-text);
+}
+
+.schema-fact {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.schema-fact-label {
+  color: var(--text-muted);
+}
+
+.schema-description,
+.schema-closed,
+.schema-open {
+  margin: 0 0 0 calc(1.25rem + var(--space-2));
+  color: var(--text-muted);
+}
+
+.schema-description p {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.schema-closed,
+.schema-open {
+  font-size: var(--text-xs);
+}
+
+.schema-closed {
+  color: var(--warning-text);
+}
+
+.schema-composition {
+  padding-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}

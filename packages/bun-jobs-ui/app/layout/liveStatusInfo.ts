@@ -19,6 +19,12 @@ const EVENTS_EXPLAINED = {
   local: "events are only seen from the API's own process",
 } as const;
 
+/** Options of {@link liveStatusInfo}. */
+export interface LiveStatusInfoOptions {
+  /** The UI shows documentation only (`sections.manage` off): the badge says "Live off". Defaults to `false`. */
+  docsOnly?: boolean;
+}
+
 /**
  * The badge's content, from the live client's status: `Live`,
  * `Connecting…`, `Reconnecting…`, or `Polling Ns` when there is no socket
@@ -26,7 +32,20 @@ const EVENTS_EXPLAINED = {
  * process's (`events: "local"`), or whose producers do not publish
  * (`publishing: false`), is a warning in every state, and the text says why.
  */
-export function liveStatusInfo(status: LiveStatus): LiveStatusInfo {
+export function liveStatusInfo(
+  status: LiveStatus,
+  options: LiveStatusInfoOptions = {},
+): LiveStatusInfo {
+  if (options.docsOnly) {
+    // No screen here uses live updates or polls, so neither the poll period
+    // nor the backend's event warnings mean anything.
+    return {
+      text: "Live off",
+      title:
+        "Live updates are off: this UI shows documentation only, and nothing on it refreshes.",
+      tone: "neutral",
+    };
+  }
   const seconds = Math.round(POLL_INTERVAL_MS / 1000);
   const { events, publishing } = status;
   const publishingText =

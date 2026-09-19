@@ -104,7 +104,31 @@ describe("liveStatusInfo", () => {
   });
 });
 
+describe("liveStatusInfo in a documentation-only UI", () => {
+  it("says Live off, neutral, whatever the backend reports", () => {
+    const info = liveStatusInfo(
+      status({ state: "off", events: "local", publishing: false }),
+      { docsOnly: true },
+    );
+    expect(info.text).toBe("Live off");
+    expect(info.tone).toBe("neutral");
+    expect(info.title).toContain("documentation only");
+    expect(info.text).not.toContain("Polling");
+  });
+});
+
 describe("the header badge", () => {
+  it("says Live off when the UI shows documentation only", async () => {
+    live.install(status({ state: "off", detail: "docs only" }));
+    renderApp({ config: { sections: { manage: false, docs: true } } });
+    await page().findByTestId("live-status");
+    expect(badge()).toMatchObject({
+      text: "Live off",
+      tone: "badge-neutral",
+      state: "off",
+    });
+  });
+
   it("follows the live status as it changes", async () => {
     live.install(status({ state: "connecting" }));
     renderApp();
