@@ -409,8 +409,9 @@ export function toRepeatableDto(
     name: record.name,
     opts: record.opts,
     count: record.count,
-    nextRunAt: record.nextRunAt,
-    nextJobId: record.nextJobId,
+    // A disabled series has no next occurrence, whatever a stale pointer says.
+    nextRunAt: record.disabled ? null : record.nextRunAt,
+    nextJobId: record.disabled ? null : record.nextJobId,
     disabled: record.disabled ?? false,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

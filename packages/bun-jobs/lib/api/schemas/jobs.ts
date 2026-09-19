@@ -391,8 +391,16 @@ export const RepeatableSchema = s.named(
     limit: s.optional(s.integer({ minimum: 0 })),
     catchUp: s.optional(s.boolean()),
     count: s.integer({ minimum: 0 }),
-    nextRunAt: s.nullable(s.integer()),
-    nextJobId: s.nullable(s.string()),
+    nextRunAt: s.nullable(
+      s.integer({
+        description: "Next occurrence, epoch ms; `null` while disabled.",
+      }),
+    ),
+    nextJobId: s.nullable(
+      s.string({
+        description: "Id of the scheduled occurrence; `null` while disabled.",
+      }),
+    ),
     disabled: s.boolean({
       description:
         "Whether the series is disabled: it schedules nothing until enabled.",

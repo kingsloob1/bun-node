@@ -107,8 +107,8 @@ export async function findRepeat(
 
 /**
  * Disables the series stored as `storedKey`, removing its pending
- * occurrence. Answers whether this call disabled it: `false` for a series
- * that is gone or already disabled.
+ * occurrence and clearing its `nextRunAt`/`nextJobId`. Answers whether this
+ * call disabled it: `false` for a series that is gone or already disabled.
  */
 export async function disableRepeatSeries(
   driver: JobsDriver,
@@ -137,7 +137,25 @@ export async function disableRepeatSeries(
     return false;
   }
 
-  await removePendingOccurrence(driver, q, definition);
+  // Read again now the flag is set, so the occurrence removed is the one
+  // pointed to at this moment, not before.
+  const current = (await driver.getRepeat(q, storedKey)) ?? definition;
+  await removePendingOccurrence(driver, q, current);
+
+  // A disabled series has no next occurrence, and its record says so. Only
+  // while it still points where it did: a worker that scheduled one past the
+  // flag in the last instant has moved the pointer, and keeping it lets
+  // maintenance find and remove that occurrence.
+  const latest = await driver.getRepeat(q, storedKey);
+  if (latest && latest.nextJobId === current.nextJobId) {
+    await driver.upsertRepeat(q, {
+      ...latest,
+      nextRunAt: null,
+      nextJobId: null,
+      updatedAt: now,
+    });
+  }
+
   return true;
 }
 

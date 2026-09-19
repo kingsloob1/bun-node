@@ -41,13 +41,17 @@ const STORAGE_BACKENDS = [
 for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
   describe.skipIf(!available)(`disabling a series: ${backendName}`, () => {
     /** A queue on a fresh driver for this backend, purged when the suite ends. */
-    async function openQueue() {
+    async function openQueue(options?: {
+      /** Whether the queue publishes its events for other instances; off by default, as on a queue. */
+      publish?: boolean;
+    }) {
       const driver = createDriver(config);
       const namespace = testNamespace("disable");
       const queue = new BunQueue("repeats", {
         namespace,
         driver,
         logger: noopLogger,
+        publish: options?.publish ?? false,
       });
       backendCleanups.push(async () => {
         await queue.close();
@@ -104,6 +108,137 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
 
       await expect(plain.disable()).rejects.toThrow(ConfigError);
       await expect(plain.enable()).rejects.toThrow(ConfigError);
+    });
+
+    for (const immediately of [false, true]) {
+      it(`keeps a disabled series silent when it is added again${immediately ? ", immediately" : ""}`, async () => {
+        const { driver, queue } = await openQueue({ publish: true });
+        const repeat = { every: 60_000, key: "silent", immediately };
+        await queue.add("tick", { v: 1 }, { repeat });
+        expect(await queue.disableRepeatable("silent")).toBe(true);
+
+        // Everything this queue announces from here, locally and on the wire.
+        const local: string[] = [];
+        queue.on("repeatScheduled", () => local.push("repeatScheduled"));
+        queue.on("added", () => local.push("added"));
+        queue.on("duplicate", () => local.push("duplicate"));
+        const published: string[] = [];
+        const publish = driver.publish.bind(driver);
+        driver.publish = async (event) => {
+          published.push(event.type);
+          await publish(event);
+        };
+
+        const again = await queue.add("tick", { v: 2 }, { repeat });
+
+        expect(again.wasAdded).toBe(false);
+        expect(again.repeatKey).toBe("silent");
+        expect(await queue.getJob(again.id)).toBeNull();
+        expect(await queue.count("waiting")).toBe(0);
+        expect(await queue.count("delayed")).toBe(0);
+        expect(local).toEqual([]);
+        expect(published).toEqual([]);
+
+        const [series] = await queue.listRepeatables();
+        expect(series?.disabled).toBe(true);
+        // The definition took the update all the same.
+        expect(series?.data).toEqual({ v: 2 });
+
+        const enabledAt = Date.now();
+        expect(await queue.enableRepeatable("silent")).toBe(true);
+        const [after] = await queue.listRepeatables();
+        expect(after?.disabled).toBe(false);
+        const next = await queue.getJob(after!.nextJobId!);
+        expect(next?.state).toBe("delayed");
+        expect(next?.data).toEqual({ v: 2 });
+        expect(next!.runAt).toBeGreaterThan(enabledAt);
+        expect(next!.runAt).toBeLessThanOrEqual(Date.now() + 60_000);
+      });
+    }
+
+    it("takes a disabled series' new schedule when it is added again, and enables it on that schedule", async () => {
+      const { queue } = await openQueue();
+      await queue.add("tick", {}, { repeat: { every: 60_000, key: "moved" } });
+      expect(await queue.disableRepeatable("moved")).toBe(true);
+
+      const hourly = { every: 3_600_000, key: "moved" };
+      const again = await queue.add("tick", {}, { repeat: hourly });
+      expect(again.wasAdded).toBe(false);
+      const [series] = await queue.listRepeatables();
+      expect(series?.disabled).toBe(true);
+      expect(series?.every).toBe(3_600_000);
+
+      const enabledAt = Date.now();
+      expect(await queue.enableRepeatable("moved")).toBe(true);
+      const [after] = await queue.listRepeatables();
+      const next = await queue.getJob(after!.nextJobId!);
+      // The hour it was given while disabled, not the minute it had before.
+      expect(next!.runAt).toBeGreaterThan(enabledAt + 120_000);
+      expect(next!.runAt).toBeLessThanOrEqual(Date.now() + 3_600_000);
+    });
+
+    it("announces a disabled series added again nowhere: not locally, not to another instance", async () => {
+      const { driver, queue } = await openQueue({ publish: true });
+      await queue.add("tick", {}, { repeat: { every: 60_000, key: "hushed" } });
+      expect(await queue.disableRepeatable("hushed")).toBe(true);
+
+      // A second instance on the same queue, on its own connection where the
+      // backend has one, hears only what is published.
+      const remoteDriver =
+        backendName === "memory" ? driver : createDriver(config);
+      const remote = new BunQueue("repeats", {
+        namespace: queue.namespace,
+        driver: remoteDriver,
+        logger: noopLogger,
+        subscribe: true,
+      });
+      backendCleanups.push(async () => {
+        await remote.close();
+        if (remoteDriver !== driver) {
+          await remoteDriver.close();
+        }
+      });
+      await remote.connect();
+
+      const local: number[] = [];
+      const heard: number[] = [];
+      queue.on("repeatScheduled", (_key, nextRunAt) => local.push(nextRunAt));
+      remote.on("repeatScheduled", (_key, nextRunAt) => heard.push(nextRunAt));
+
+      await queue.add("tick", {}, { repeat: { every: 60_000, key: "hushed" } });
+
+      // Enabling does announce, everywhere; it is the control that proves the
+      // listeners work, and — events arriving in order — that nothing from
+      // the add is still on its way.
+      expect(await queue.enableRepeatable("hushed")).toBe(true);
+      const [after] = await queue.listRepeatables();
+      await waitFor(() => heard.length > 0, { timeout: 5_000 });
+      await Bun.sleep(50);
+
+      expect(local).toEqual([after!.nextRunAt!]);
+      expect(heard).toEqual([after!.nextRunAt!]);
+    });
+
+    it("clears a disabled series' next occurrence, in the stored record and as listed, and sets it again on enable", async () => {
+      const { driver, queue } = await openQueue();
+      await queue.add("tick", {}, { repeat: { every: 60_000, key: "ptr" } });
+      expect(await queue.disableRepeatable("ptr")).toBe(true);
+
+      const [listed] = await queue.listRepeatables();
+      expect([listed?.nextRunAt, listed?.nextJobId]).toEqual([null, null]);
+      const stored = await driver.getRepeat(queue.ref, "k:ptr");
+      expect([stored?.nextRunAt, stored?.nextJobId]).toEqual([null, null]);
+
+      // Added again while disabled: still nothing next.
+      await queue.add("tick", {}, { repeat: { every: 60_000, key: "ptr" } });
+      const [readded] = await queue.listRepeatables();
+      expect([readded?.nextRunAt, readded?.nextJobId]).toEqual([null, null]);
+
+      expect(await queue.enableRepeatable("ptr")).toBe(true);
+      const [after] = await queue.listRepeatables();
+      const next = await queue.getJob(after!.nextJobId!);
+      expect(next?.state).toBe("delayed");
+      expect(after?.nextRunAt).toBe(next!.runAt);
     });
 
     it("clears the flag when the series is removed, so one added again starts enabled", async () => {
@@ -193,6 +328,9 @@ describe("workers and a disabled series", () => {
     const series = await driver.getRepeat(queue.ref, "k:raced");
     // Still pointing at the occurrence that ran: nothing new was scheduled.
     expect(series?.nextJobId).toBe(raced);
+    // Which is not reported as the series' next: it is disabled.
+    const [listed] = await queue.listRepeatables();
+    expect([listed?.nextRunAt, listed?.nextJobId]).toEqual([null, null]);
     expect(await queue.count("delayed")).toBe(0);
     expect(await queue.count("waiting")).toBe(0);
   });

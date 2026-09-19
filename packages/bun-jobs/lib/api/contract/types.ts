@@ -500,9 +500,9 @@ export interface RepeatableDto {
   catchUp?: boolean;
   /** Occurrences so far. */
   count: number;
-  /** Next occurrence, epoch ms, or `null`. */
+  /** Next occurrence, epoch ms, or `null` — always `null` while disabled. */
   nextRunAt: number | null;
-  /** Id of the scheduled occurrence, or `null`. */
+  /** Id of the scheduled occurrence, or `null` — always `null` while disabled. */
   nextJobId: string | null;
   /** Whether the series is disabled: it schedules nothing until enabled. */
   disabled: boolean;

@@ -959,9 +959,16 @@ describe("repeatables and definitions", () => {
     expect(disabled.status).toBe(200);
     expect(disabled.body).toEqual({ disabled: true });
     expect(await queue.getJob(pending)).toBeNull();
+    // No next occurrence while disabled: the pointers are null, not the
+    // deleted job's.
     expect(
       (await h.call("GET", "/queues/mail/repeatables")).body.items[0],
-    ).toMatchObject({ key: "daily", disabled: true });
+    ).toMatchObject({
+      key: "daily",
+      disabled: true,
+      nextRunAt: null,
+      nextJobId: null,
+    });
     // Already disabled: nothing changes, and nothing is wrong.
     expect(
       (await h.call("POST", "/queues/mail/repeatables/daily/disable")).body,
@@ -974,7 +981,16 @@ describe("repeatables and definitions", () => {
     expect(enabled.body).toEqual({ enabled: true });
     const series = (await queue.listRepeatables())[0]!;
     expect(series.disabled).toBe(false);
-    expect((await queue.getJob(series.nextJobId!))?.state).toBe("delayed");
+    const next = await queue.getJob(series.nextJobId!);
+    expect(next?.state).toBe("delayed");
+    expect(series.nextRunAt).toBe(next!.runAt);
+    expect(
+      (await h.call("GET", "/queues/mail/repeatables")).body.items[0],
+    ).toMatchObject({
+      disabled: false,
+      nextRunAt: next!.runAt,
+      nextJobId: next!.id,
+    });
     expect(
       (await h.call("POST", "/queues/mail/repeatables/daily/enable")).body,
     ).toEqual({ enabled: true });
