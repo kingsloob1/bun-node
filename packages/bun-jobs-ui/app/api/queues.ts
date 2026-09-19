@@ -26,6 +26,7 @@ import type {
 } from "./types";
 import { segment } from "./client";
 import { queryKeys } from "./queryKeys";
+import { assertShape, hasStrings } from "./shape";
 
 /**
  * The queue screens' calls and query keys.
@@ -128,13 +129,27 @@ export function listQueuesPage(
   });
 }
 
-/** `GET /queues/:queue`. */
-export function getQueue(
+/**
+ * `GET /queues/:queue`. A body without a string `name`, a boolean `paused`
+ * and a number `total` rejects with an `UNEXPECTED_RESPONSE` `ApiError`, so
+ * the screen shows its error state rather than a queue with nothing in it.
+ */
+export async function getQueue(
   api: ApiClient,
   queue: string,
   signal?: AbortSignal,
 ): Promise<QueueDetailDto> {
-  return api.request<QueueDetailDto>("GET", base(queue), { signal });
+  const path = base(queue);
+  const body = await api.request<unknown>("GET", path, { signal });
+  return assertShape<QueueDetailDto>(
+    body,
+    (fields) =>
+      hasStrings(fields, "name") &&
+      typeof fields.paused === "boolean" &&
+      typeof fields.total === "number",
+    "a queue",
+    path,
+  );
 }
 
 /** `GET /queues/:queue/counts`. */

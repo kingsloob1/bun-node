@@ -57,6 +57,34 @@ function pagedJobs(total?: number) {
 }
 
 describe("the jobs table", () => {
+  it("shows a job whose name is not text as (invalid), instead of crashing", async () => {
+    renderQueue({
+      handlers: {
+        "GET /queues/emails/jobs": {
+          body: jobPageFixture({
+            items: [jobFixture({ name: { first: "x" } as never })],
+          }),
+        },
+      },
+    });
+    const row = within(await jobsTable()).getByTestId("job-row-job-1");
+    expect(row.textContent).toContain("(invalid)");
+    expect(page().queryByTestId("screen-error")).toBeNull();
+  });
+
+  it("shows the queue's error state when its detail answers the wrong shape", async () => {
+    renderQueue({ handlers: { "GET /queues/emails": { body: [] } } });
+    expect(
+      await page().findByRole("heading", {
+        level: 1,
+        name: "Could not load the queue emails",
+      }),
+    ).toBeTruthy();
+    expect(page().getByRole("alert").textContent).toContain(
+      "UNEXPECTED_RESPONSE",
+    );
+  });
+
   it("renders the columns, with percent-encoded job links and a copy button", async () => {
     const { calls } = renderQueue();
     const table = await jobsTable();

@@ -21,7 +21,7 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { Spinner } from "../../components/Spinner";
 import { StateBadge } from "../../components/StateBadge";
 import { useApiClient } from "../../context";
-import { formatNumber } from "../../format";
+import { displayText, formatNumber } from "../../format";
 import { useCan, useFeature, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
@@ -273,7 +273,7 @@ function JobDetail({ job }: { job: JobDto }) {
       <header className="job-header">
         <div className="job-heading">
           <h1 className="screen-title job-title">
-            <span className="job-name">{job.name}</span>
+            <span className="job-name">{displayText(job.name)}</span>
             <StateBadge state={job.state} />
           </h1>
           <p className="job-id-line">

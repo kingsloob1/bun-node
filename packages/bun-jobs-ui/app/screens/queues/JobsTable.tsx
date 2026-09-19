@@ -34,7 +34,7 @@ import { Table } from "../../components/Table";
 import { UrlTabs } from "../../components/Tabs";
 import { useToast } from "../../components/toast";
 import { useApiClient } from "../../context";
-import { formatNumber, plural, STATE_LABELS } from "../../format";
+import { displayText, formatNumber, plural, STATE_LABELS } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";
 import { useUrlTab } from "../../hooks/useUrlTab";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
@@ -539,7 +539,7 @@ function JobRows({ queue, items }: JobRowsProps) {
                     ariaLabel={`Copy job id ${job.id}`}
                   />
                 </th>
-                <td>{job.name}</td>
+                <td>{displayText(job.name)}</td>
                 <td>
                   <StateBadge state={job.state} />
                 </td>
