@@ -210,7 +210,7 @@ authority, since the map is never asked about one particular job.
 | WebSocket channel's and operation's permission markers, "You have this" / "You lack this" | the operation's `x-bun-jobs-action`, looked up in the untargeted map; one the UI does not know shows "Not an action this UI knows" |
 | HTTP try-it Send | the method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `meta.readOnly` false for a mutation (`x-bun-jobs-mutation`); and the operation's `x-bun-jobs-action` (untargeted), reads included. Otherwise the panel is disabled, with the reason shown |
 | HTTP try-it confirmation | every mutation asks first; a `DELETE`, or an action whose verb is `remove`, `drain`, `clean` or `kill`, needs its operationId typed |
-| WebSocket try-it, "Open in the Events console" | the Events nav entry: `sections.manage`, `meta.websocket` and `events.connect` (untargeted); otherwise a note says the console is not available. A channel's link also needs each parameter filled (a queue or runner a valid name), and a channel `meta.mode` offers |
+| WebSocket try-it, "Open in the Events console" | the Events nav entry: `sections.manage`, `meta.websocket` and `events.connect` (untargeted); otherwise a note says the console is not available. A channel's link also needs each parameter filled and passing the document's `x-bun-jobs-schema` (for an older API without it, the client's name rule), and a channel `meta.mode` offers; a parameter that fails disables the link, with the reason shown. The connection channel has no try-it: there is nothing to subscribe to |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but
@@ -306,7 +306,10 @@ read only the untargeted map, since an operation has no one queue or runner:
   (a default, `const` or first enum value where there is one). The client
   exposes only the parsed body, not the response's status or headers, so on
   success the panel shows the **documented** success status, not the one
-  received. On failure the status and problem `code` are real, with the
+  received. A mutation's panel on a read-only API is disabled with "This API
+  is read-only: it refuses every change." That shows only for a stale or
+  foreign OpenAPI document: a read-only `createJobsApi` neither routes nor
+  documents its mutations, so its own document lists none. On failure the status and problem `code` are real, with the
   problem body below; a network failure shows "No response". The time taken
   is shown either way. A successful mutation refetches every query outside
   the docs, so the rest of the app shows what it changed.
@@ -348,12 +351,17 @@ read only the untargeted map, since an operation has no one queue or runner:
   links to `/events?channel=<address>`, adding `types` only when the channel
   carries a subset of the types the console offers for it. An event
   message's links to its kind's broad channel (`queues` or `runners`, else
-  `all`) with `types=<type>`.
+  `all`) with `types=<type>`. The connection channel has no try-it, nor does
+  any address that is a socket path rather than a channel name: there is
+  nothing to subscribe to.
 - **The subprotocol** is read from `x-bun-jobs-subprotocol` (on
   `servers.api`, else the connection channel). An older API that states it
   only in the connection channel's description is read from that prose, and
   a document saying nothing falls back to the client contract's
-  `bun-jobs.v1` (the panel says which).
+  `bun-jobs.v1`. The server panel names the source: "from servers.api
+  (x-bun-jobs-subprotocol)", "from the connection channel
+  (x-bun-jobs-subprotocol)", "from the connection channel's description" or
+  "not stated; the client default".
 - **Message examples.** Each message's `examples` are shown on its pane:
   name, summary and the frame as JSON, with a button copying it. An event
   example shows its `event.payload` first, highlighted, then the whole frame.
@@ -478,6 +486,7 @@ These `data-testid` hooks are stable:
   `snippet-fetch`, `tryit-result`, `tryit-status`, `tryit-timing`.
 - Schema trees: `schema-closed` ("No other fields").
 - WebSocket reference: `ws-docs`, `ws-server-url`, `ws-subprotocol`,
+  `ws-subprotocol-source`,
   `ws-security`, `ws-security-conjunctive`, `ws-scheme-<name>`,
   `ws-search-empty`, `ws-group-<title>`, `ws-nav-<slug>` (the shown item
   carries `data-selected`), `ws-main` (its `data-selected` is the shown
@@ -504,7 +513,11 @@ checks "Runner hidden" in Chrome. Live events have theirs in
 `examples/bun-jobs-ui/06-browser/live-events.ts`: the `live-status` badge,
 the Events console tailing a queue while a real worker completes a job, and
 the badge staying off, with its reason, on hosts that cannot or may not
-connect.
+connect. The API docs screens have theirs in
+`examples/bun-jobs-ui/06-browser/api-docs.ts`: both references in real
+Chrome, try-it on the HTTP and WebSocket sides (a disabled one with its
+reason, a destructive one that needs its id typed), the WebSocket panels and
+"Open in the Events console".
 `__tests__/app/pkg/runners.integration.test.ts` and
 `runner-actions.integration.test.ts` render them under happy-dom against a
 real `createJobsApi` in `runner` mode with a real local `BunRunner`.
