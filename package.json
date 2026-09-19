@@ -13,7 +13,12 @@
     "packages/bun-jobs-ui"
   ],
   "devDependencies": {
+    "@antfu/eslint-config": "^9.0.0",
     "@nx/eslint": "23.2.1",
+    "@types/bun": "^1.4.2",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.5.6",
     "lerna": "^10.0.1",
     "nx": "23.2.1"
   },

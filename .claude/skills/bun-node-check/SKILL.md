@@ -14,24 +14,31 @@ Everything runs with **Bun** (`bun` / `bunx`). Source ships as raw `.ts`.
 
 ## Steps
 
-For **each affected package** (`packages/bun-common`, `packages/bun-nest`,
-`packages/bun-jobs`), from that package's directory:
+1. **Typecheck** — from the repo root, `bun scripts/typecheck.ts`
+   Covers every project in the repo (the packages, their nested bench /
+   playground / app projects, `benchmarks/`, the examples and the root
+   `scripts/`); must end with "no type errors". Run `bun install` in the three
+   bench directories first. It already filters the known `TS2742`/`TS2883`
+   `eslint.config.mjs` noise.
 
-1. **Typecheck** — `bunx tsc --noEmit`
-   Must be clean. Ignore the single pre-existing `eslint.config.mjs` `TS2742`
-   portability hint — it is unrelated noise.
+Then, for **each affected package** (`packages/bun-common`, `packages/bun-nest`,
+`packages/bun-jobs`, `packages/bun-jobs-ui`), from that package's directory:
 
-2. **Lint** — `bunx eslint lib __tests__`
+2. **Lint** — `bunx eslint .` (the whole package, not `lib __tests__`)
    Must report **0 errors**. A small number of intentional `no-console`
    *warnings* (error logging in catch blocks with no logger in scope) are
    acceptable — warnings do not fail the gate. Auto-fix formatting with
-   `bunx eslint lib __tests__ --fix` when only style errors remain.
+   `bunx eslint . --fix` when only style errors remain.
 
 3. **Test** — `bun test`
    Every test must pass.
 
-If you changed **`bun-common`**, always run all three for **`bun-nest`** and
-**`bun-jobs`** too — both depend on bun-common at the source level.
+If you changed **`bun-common`**, always run steps 2 and 3 for **`bun-nest`**
+and **`bun-jobs`** too — both depend on bun-common at the source level.
+
+If you changed anything in the root **`scripts/`**, lint it from there:
+`cd scripts && bunx eslint .` (0 errors; its config turns `no-console` off, so
+0 warnings too). Step 1 already typechecks it.
 
 ## Conventions to uphold
 
@@ -50,5 +57,6 @@ If you changed **`bun-common`**, always run all three for **`bun-nest`** and
 
 ## Report
 
-Summarise per package: typecheck (clean / errors), lint (error count),
-tests (pass/fail counts). Call out any failure with the offending output.
+Summarise the repo typecheck (clean / errors), then per package: lint (error
+count) and tests (pass/fail counts), plus `scripts/` lint when it changed.
+Call out any failure with the offending output.
