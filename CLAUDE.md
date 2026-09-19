@@ -48,6 +48,13 @@ bun-common.
 bun scripts/typecheck.ts   # every project in the repo — must be clean
 ```
 
+**Manual playground:** `bun playground/index.ts` serves bun-jobs, its
+management API and the bun-jobs-ui app on one adapter at
+`http://localhost:4000/jobs`, with a simulation that keeps every screen
+moving (`playground/README.md`). It is a project of its own, like
+`benchmarks/`: typechecked by `scripts/typecheck.ts`, linted with
+`cd playground && bunx eslint .`, and outside the workspaces.
+
 Then, in each affected package directory:
 
 ```bash

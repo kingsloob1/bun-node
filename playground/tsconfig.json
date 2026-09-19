@@ -1,0 +1,12 @@
+{
+  // The manual playground is an unpublished project of its own, checked by
+  // `bun scripts/typecheck.ts` like every other project. It imports the
+  // packages by name, as a consumer would; they resolve to the workspace
+  // through the root `node_modules`.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "typeRoots": ["../node_modules/@types"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules", ".data"]
+}
