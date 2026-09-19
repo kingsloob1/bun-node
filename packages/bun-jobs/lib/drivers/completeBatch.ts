@@ -40,7 +40,11 @@ export class CompletionBatcher {
   readonly #token: string;
   /** Completions that have not been written yet. */
   #pending: PendingCompletion[] = [];
-  /** The write currently in flight, if any. */
+  /**
+   * The drain loop currently running, if any. Cleared by the loop itself, in
+   * the same synchronous step that finds nothing left pending — see
+   * {@link #drain} for why that matters.
+   */
   #flushing: Promise<void> | undefined;
 
   constructor(
@@ -61,9 +65,7 @@ export class CompletionBatcher {
     this.#pending.push(completion);
 
     if (!this.#flushing) {
-      this.#flushing = this.#drain().finally(() => {
-        this.#flushing = undefined;
-      });
+      this.#flushing = this.#drain();
     }
   }
 
@@ -74,12 +76,29 @@ export class CompletionBatcher {
     }
   }
 
-  /** Writes batches until nothing is left, taking each as it stands. */
+  /**
+   * Writes batches until nothing is left, taking each as it stands.
+   *
+   * `#flushing` is cleared here, not by a `.finally()` chained onto this
+   * promise. That callback ran a microtask or more after the loop had seen
+   * nothing pending, and a completion added in between found a drain still
+   * "in flight", joined its queue and was never written: its job stayed
+   * `active` under a live lock, with no event, until the lock lapsed — and
+   * `close()` waited on it. Clearing it in the `finally` below leaves no gap:
+   * the last `pending` check and the clear are one synchronous step.
+   *
+   * `add` pushes before calling this, so the loop always awaits at least one
+   * write and `#flushing` is assigned before the `finally` can run.
+   */
   async #drain(): Promise<void> {
-    while (this.#pending.length > 0) {
-      const batch = this.#pending;
-      this.#pending = [];
-      await this.#write(batch);
+    try {
+      while (this.#pending.length > 0) {
+        const batch = this.#pending;
+        this.#pending = [];
+        await this.#write(batch);
+      }
+    } finally {
+      this.#flushing = undefined;
     }
   }
 
