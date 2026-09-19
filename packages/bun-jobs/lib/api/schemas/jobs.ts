@@ -126,7 +126,14 @@ export const JobSchema = s.named(
     attemptsMade: s.integer({ minimum: 0 }),
     maxAttempts: s.integer({ minimum: 0 }),
     stalledCount: s.integer({ minimum: 0 }),
-    progress: s.unknown(),
+    progress: s.nullable(
+      s.union(
+        s.number({ description: "The progress value, as a number." }),
+        s.record(s.unknown(), {
+          description: "The progress value, as a record of fields.",
+        }),
+      ),
+    ),
     failedReason: s.nullable(ErrorDtoSchema),
     lockExpiresAt: MaybeTime,
     workerId: s.nullable(s.string()),
@@ -273,7 +280,6 @@ export const UpdateBodySchema = s.object({
   onlyIn: s.optional(s.array(JobStateSchema, { minItems: 1 })),
 });
 
-/** `POST /queues/:queue/jobs/:id/retry` body. */
 /** `POST /queues/:queue/jobs/:id/fail` body. */
 export const FailBodySchema = s.object({
   reason: s.string({
@@ -283,6 +289,7 @@ export const FailBodySchema = s.object({
   }),
 });
 
+/** `POST /queues/:queue/jobs/:id/retry` body. */
 export const RetryBodySchema = s.object({
   resetAttempts: s.optional(s.boolean({ default: true })),
 });
@@ -391,8 +398,16 @@ export const RepeatableSchema = s.named(
     limit: s.optional(s.integer({ minimum: 0 })),
     catchUp: s.optional(s.boolean()),
     count: s.integer({ minimum: 0 }),
-    nextRunAt: s.nullable(s.integer()),
-    nextJobId: s.nullable(s.string()),
+    nextRunAt: s.nullable(
+      s.integer({
+        description: "Next occurrence, epoch ms; `null` while disabled.",
+      }),
+    ),
+    nextJobId: s.nullable(
+      s.string({
+        description: "Id of the scheduled occurrence; `null` while disabled.",
+      }),
+    ),
     disabled: s.boolean({
       description:
         "Whether the series is disabled: it schedules nothing until enabled.",

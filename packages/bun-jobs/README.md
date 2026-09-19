@@ -1135,7 +1135,8 @@ Every worker's maintenance heals repeat series.
 
 `queue.disableRepeatable(key)`, or `job.disable()` on an occurrence, stops a
 series without removing it: its pending occurrence is removed and nothing
-schedules another. `listRepeatables()` reports it with `disabled: true`.
+schedules another. `listRepeatables()` reports it with `disabled: true`, and
+with `nextRunAt` and `nextJobId` both `null` — so does the management API.
 `enableRepeatable(key)`, or `job.enable()`, restarts it from now; occurrences
 it missed while disabled are not run. Both take either spelling of the key,
 and answer whether they changed anything.
@@ -1144,7 +1145,16 @@ An occurrence already running when its series is disabled finishes. A worker
 scheduling the next occurrence at that same moment may add one more, which
 maintenance removes. The flag lives in reserved queue state, so both need a
 driver with queue state (every built-in one), and removing a series clears
-it. Adding a disabled series again does not re-enable it.
+it.
+
+Adding a disabled series again does not re-enable it, and schedules nothing.
+`add(name, data, { repeat })` still replaces the series' stored definition —
+its `every` or `cron`, `tz`, `limit`, payload and options — so enabling it
+later schedules from the new definition. But it adds no occurrence, and
+announces nothing: no `repeatScheduled` is emitted locally or published to
+any other instance. It returns the occurrence that would have been scheduled,
+unstored, with `wasAdded: false` — so code that adds its series on every start
+keeps working after one is disabled, and `job.enable()` restarts it.
 
 ```ts
 await queue.disableRepeatable("nightly-report");

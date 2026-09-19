@@ -9,6 +9,7 @@ import type {
   RunRecord,
 } from "../drivers/index";
 import type { RemoteRunnerInfo, RunnerStatus } from "../runner/types";
+import type { RunProgress } from "../shared/progress";
 import type { ResolvedJobsApiSerializers } from "./config";
 import type { JobInclude } from "./contract/constants";
 import type { EventWire } from "./ws/events";
@@ -118,8 +119,8 @@ export interface JobDto {
   maxAttempts: number;
   /** Times the job stalled and was recovered. */
   stalledCount: number;
-  /** Latest progress value. */
-  progress: unknown;
+  /** Latest progress value, or `null` before any is reported. */
+  progress: RunProgress | null;
   /** The most recent failure. */
   failedReason: ErrorDto | null;
   /** When the holding worker's lock expires, epoch ms. */
@@ -368,7 +369,7 @@ export function toJobDto(
     attemptsMade: record.attemptsMade,
     maxAttempts: record.maxAttempts,
     stalledCount: record.stalledCount,
-    progress: record.progress,
+    progress: toProgress(record.progress),
     failedReason: record.failedReason
       ? toErrorDto(record.failedReason, options)
       : null,
@@ -394,6 +395,25 @@ export function toJobDto(
   return options.job ? options.job(dto, record, input.req) : dto;
 }
 
+/**
+ * A stored progress value as the wire types it: what `updateProgress()`
+ * accepts — a number, or a record of fields. The record keeps `unknown`
+ * progress because a driver stores whatever it was given; anything else (a
+ * value written outside this package) is reported as `null` rather than sent
+ * under a type it does not have.
+ */
+export function toProgress(value: unknown): RunProgress | null {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return null;
+}
+
 /** Shapes a repeat series, then applies `serialize.repeatable`. */
 export function toRepeatableDto(
   record: RepeatRecord & {
@@ -409,8 +429,9 @@ export function toRepeatableDto(
     name: record.name,
     opts: record.opts,
     count: record.count,
-    nextRunAt: record.nextRunAt,
-    nextJobId: record.nextJobId,
+    // A disabled series has no next occurrence, whatever a stale pointer says.
+    nextRunAt: record.disabled ? null : record.nextRunAt,
+    nextJobId: record.disabled ? null : record.nextJobId,
     disabled: record.disabled ?? false,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

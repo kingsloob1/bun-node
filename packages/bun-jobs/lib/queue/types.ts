@@ -989,7 +989,8 @@ export interface BunQueueWorkerOptions {
 export interface RepeatableInfo extends RepeatRecord {
   /**
    * Whether the series is disabled: it schedules nothing until it is enabled
-   * again. Always `false` on a driver without queue state.
+   * again, and its `nextRunAt` and `nextJobId` are `null`. Always `false` on
+   * a driver without queue state.
    */
   disabled: boolean;
 }

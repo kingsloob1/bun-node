@@ -93,6 +93,7 @@ import {
   enableRepeatSeries,
   findRepeat,
   isRepeatDisabled,
+  requireRepeatControl,
 } from "./repeatControl";
 import { retryJob } from "./retry";
 import {
@@ -292,6 +293,16 @@ export class BunQueue<
    * `jobId` doubles as an idempotency key: adding one that already exists
    * returns the stored job untouched with `wasAdded: false` and emits
    * `duplicate`, so a producer that retries cannot double-enqueue.
+   *
+   * With `repeat`, adding a series that is disabled (see
+   * {@link BunQueue.disableRepeatable}) keeps it disabled. Its stored
+   * definition is still replaced — schedule, time zone, limit, payload — so
+   * enabling it later schedules from the new one. But no occurrence is added,
+   * and nothing is announced: no `repeatScheduled` (nor `added`/`duplicate`)
+   * is emitted locally or published to other instances. The job returned is
+   * the occurrence that would have been scheduled, with `wasAdded: false`; it
+   * is not stored, so `getJob(job.id)` answers `null`, while `job.enable()`
+   * still restarts its series.
    */
   add<TAddName extends TypedJobName<TJobs>>(
     name: TAddName,
@@ -331,7 +342,8 @@ export class BunQueue<
   /**
    * Adds a job to a queue with no declared registry — the signature this
    * method has always had. `UntypedJobName` collapses to `never` once a map is
-   * declared, so a registry-bound queue cannot reach it.
+   * declared, so a registry-bound queue cannot reach it. Re-adding a
+   * disabled repeat series schedules nothing, as the first overload says.
    */
   add(
     name: UntypedJobName<TJobs> & TName,
@@ -1333,7 +1345,8 @@ export class BunQueue<
 
   /**
    * Every repeat definition in this queue, each with whether it is
-   * `disabled`.
+   * `disabled`. A disabled series reports `nextRunAt` and `nextJobId` as
+   * `null`: it has no next occurrence until it is enabled.
    */
   async listRepeatables(): Promise<RepeatableInfo[]> {
     await this.connect();
@@ -1342,11 +1355,22 @@ export class BunQueue<
     // Shown as the caller named it. `removeRepeatable` takes either spelling,
     // so a key from here can be handed straight back.
     return await Promise.all(
-      stored.map(async (record) => ({
-        ...record,
-        key: displayRepeatKey(record.key),
-        disabled: await isRepeatDisabled(this.driver, this.ref, record.key),
-      })),
+      stored.map(async (record) => {
+        const disabled = await isRepeatDisabled(
+          this.driver,
+          this.ref,
+          record.key,
+        );
+        return {
+          ...record,
+          key: displayRepeatKey(record.key),
+          // Disabling clears both in the stored record. Null here too, so an
+          // occurrence a worker raced past the flag — pointed to until
+          // maintenance removes it — is not reported as the series' next.
+          ...(disabled ? { nextRunAt: null, nextJobId: null } : {}),
+          disabled,
+        };
+      }),
     );
   }
 
@@ -1382,10 +1406,12 @@ export class BunQueue<
    *
    * Takes either spelling of the key, as `removeRepeatable` does. Answers
    * whether this call disabled it — `false` for an unknown key or a series
-   * already disabled. Needs a driver with queue state.
+   * already disabled. Needs a driver with queue state: without it this
+   * throws `NotSupportedError`, whatever the key.
    */
   async disableRepeatable(key: string): Promise<boolean> {
     await this.connect();
+    requireRepeatControl(this.driver, "disableRepeatable()");
     const definition = await findRepeat(this.driver, this.ref, key);
 
     return definition
@@ -1394,6 +1420,7 @@ export class BunQueue<
           this.ref,
           definition.key,
           Date.now(),
+          "disableRepeatable()",
         )
       : false;
   }
@@ -1402,10 +1429,12 @@ export class BunQueue<
    * Restarts a series {@link BunQueue.disableRepeatable} stopped, scheduling
    * its next occurrence from now: nothing it missed while disabled is run.
    * Answers whether this call enabled it — `false` for an unknown key or a
-   * series that was not disabled.
+   * series that was not disabled. Needs a driver with queue state: without
+   * it this throws `NotSupportedError`, whatever the key.
    */
   async enableRepeatable(key: string): Promise<boolean> {
     await this.connect();
+    requireRepeatControl(this.driver, "enableRepeatable()");
     const definition = await findRepeat(this.driver, this.ref, key);
 
     if (!definition) {
@@ -1417,6 +1446,7 @@ export class BunQueue<
       this.ref,
       definition.key,
       Date.now(),
+      "enableRepeatable()",
     );
 
     if (enabled) {
@@ -1914,6 +1944,24 @@ export class BunQueue<
       { ...options, jobId, runAt: firstRunAt },
       { repeatKey: merged.key },
     );
+
+    // A disabled series stays disabled when it is added again: the definition
+    // is updated, so a change to its schedule or options sticks and `enable()`
+    // schedules from it, but nothing is scheduled and nothing announced —
+    // neither emitted here nor published. The caller gets the occurrence that
+    // would have been added, unstored, with `wasAdded: false` — the shape a
+    // debounced or duplicate add answers with — so a producer that re-adds its
+    // series on every start does not break once one of them is disabled.
+    if (await isRepeatDisabled(this.driver, this.ref, merged.key)) {
+      await this.driver.upsertRepeat(this.ref, {
+        ...merged,
+        nextRunAt: null,
+        nextJobId: null,
+        updatedAt: now,
+      });
+
+      return this.#view(record, false);
+    }
 
     const { job, added } = await this.driver.addJob(this.ref, record);
 

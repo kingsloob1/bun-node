@@ -204,6 +204,29 @@ function storedResult(result: unknown): unknown {
 }
 
 /**
+ * Whether a stored failure is the one given: the same name, message and
+ * stack. The stack pins it to the one throw, so two failures that merely say
+ * the same thing are not mistaken for each other.
+ */
+function sameError(
+  stored: SerializedError | null,
+  error: SerializedError,
+): boolean {
+  return (
+    stored !== null &&
+    stored.name === error.name &&
+    stored.message === error.message &&
+    stored.stack === error.stack
+  );
+}
+
+/**
+ * How long a worker trusts a series' disabled flag as last read before
+ * reading it again.
+ */
+const REPEAT_FLAG_CACHE_MS = 1_000;
+
+/**
  * The consumer side of a queue.
  *
  * Any number of workers, in any number of processes on any number of hosts,
@@ -232,29 +255,6 @@ function storedResult(result: unknown): unknown {
  * and each declared name's scoped events carry that name's own types. The
  * default, `JobMap`, means none — the events are exactly as before.
  */
-/**
- * Whether a stored failure is the one given: the same name, message and
- * stack. The stack pins it to the one throw, so two failures that merely say
- * the same thing are not mistaken for each other.
- */
-function sameError(
-  stored: SerializedError | null,
-  error: SerializedError,
-): boolean {
-  return (
-    stored !== null &&
-    stored.name === error.name &&
-    stored.message === error.message &&
-    stored.stack === error.stack
-  );
-}
-
-/**
- * How long a worker trusts a series' disabled flag as last read before
- * reading it again.
- */
-const REPEAT_FLAG_CACHE_MS = 1_000;
-
 export class BunQueueWorker<
   TData = unknown,
   TResult = unknown,
