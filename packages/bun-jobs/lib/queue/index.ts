@@ -94,6 +94,7 @@ export type {
   RegistryQueueEvents,
   RegistryWorkerEvents,
   Repeatable,
+  RepeatableInfo,
   RepeatOptions,
   RetryAllOptions,
   RetryAllOptionsOf,

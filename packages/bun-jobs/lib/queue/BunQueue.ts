@@ -40,6 +40,7 @@ import type {
   QueueEventsOf,
   QueueJobOf,
   QueueThroughput,
+  RepeatableInfo,
   RetryAllOptions,
   RetryAllOptionsOf,
   TypedJob,
@@ -86,6 +87,13 @@ import {
   shortenJobId,
 } from "./options";
 import { nextOccurrence, repeatJobId, toRepeatRecord } from "./repeat";
+import {
+  clearRepeatDisabled,
+  disableRepeatSeries,
+  enableRepeatSeries,
+  findRepeat,
+  isRepeatDisabled,
+} from "./repeatControl";
 import { retryJob } from "./retry";
 import {
   DEBOUNCE_PREFIX,
@@ -1323,45 +1331,36 @@ export class BunQueue<
 
   /* --- repeats ---------------------------------------------------------- */
 
-  /** Every repeat definition in this queue. */
-  async listRepeatables(): Promise<RepeatRecord[]> {
+  /**
+   * Every repeat definition in this queue, each with whether it is
+   * `disabled`.
+   */
+  async listRepeatables(): Promise<RepeatableInfo[]> {
     await this.connect();
     const stored = await this.driver.listRepeats(this.ref);
 
     // Shown as the caller named it. `removeRepeatable` takes either spelling,
     // so a key from here can be handed straight back.
-    return stored.map((record) => ({
-      ...record,
-      key: displayRepeatKey(record.key),
-    }));
+    return await Promise.all(
+      stored.map(async (record) => ({
+        ...record,
+        key: displayRepeatKey(record.key),
+        disabled: await isRepeatDisabled(this.driver, this.ref, record.key),
+      })),
+    );
   }
 
-  /** Removes a repeat definition and the occurrence it had scheduled. */
+  /**
+   * Removes a repeat definition and the occurrence it had scheduled, and
+   * clears its disabled flag, so a series added again under the same key
+   * starts enabled.
+   *
+   * Takes either spelling of the key: as `listRepeatables()` reports it, or
+   * as the caller gave it to `repeat.key`.
+   */
   async removeRepeatable(key: string): Promise<boolean> {
     await this.connect();
-
-    // Either spelling: the key as `listRepeatables()` reports it, or the one
-    // the caller gave to `repeat.key`, which is stored namespaced.
-    //
-    // The listed spelling is matched first, and only a stored series that
-    // *displays* as `key` counts. Looking the raw key up first was wrong: a
-    // caller key of `k:nightly` is stored as `k:k:nightly` and listed as
-    // `k:nightly`, while `k:nightly` is also the stored spelling of the series
-    // keyed `nightly` — so removing the one listed removed the other.
-    const stored = [key, `${CALLER_REPEAT_KEY_PREFIX}${key}`];
-    let definition: RepeatRecord | null = null;
-
-    for (const candidate of stored) {
-      const found = await this.driver.getRepeat(this.ref, candidate);
-      if (found && displayRepeatKey(found.key) === key) {
-        definition = found;
-        break;
-      }
-    }
-
-    // Then the spelling the caller originally supplied, for a key containing
-    // `|`, whose prefix stays visible when listed.
-    definition ??= await this.driver.getRepeat(this.ref, stored[1]!);
+    const definition = await findRepeat(this.driver, this.ref, key);
 
     if (!definition) {
       return false;
@@ -1371,7 +1370,68 @@ export class BunQueue<
       await this.driver.removeJob(this.ref, definition.nextJobId);
     }
 
-    return await this.driver.removeRepeat(this.ref, definition.key);
+    const removed = await this.driver.removeRepeat(this.ref, definition.key);
+    await clearRepeatDisabled(this.driver, this.ref, definition.key);
+    return removed;
+  }
+
+  /**
+   * Stops a repeat series: its pending occurrence is removed and no further
+   * one is scheduled, until {@link BunQueue.enableRepeatable}. The series
+   * stays, listed as `disabled`. An occurrence already running finishes.
+   *
+   * Takes either spelling of the key, as `removeRepeatable` does. Answers
+   * whether this call disabled it — `false` for an unknown key or a series
+   * already disabled. Needs a driver with queue state.
+   */
+  async disableRepeatable(key: string): Promise<boolean> {
+    await this.connect();
+    const definition = await findRepeat(this.driver, this.ref, key);
+
+    return definition
+      ? await disableRepeatSeries(
+          this.driver,
+          this.ref,
+          definition.key,
+          Date.now(),
+        )
+      : false;
+  }
+
+  /**
+   * Restarts a series {@link BunQueue.disableRepeatable} stopped, scheduling
+   * its next occurrence from now: nothing it missed while disabled is run.
+   * Answers whether this call enabled it — `false` for an unknown key or a
+   * series that was not disabled.
+   */
+  async enableRepeatable(key: string): Promise<boolean> {
+    await this.connect();
+    const definition = await findRepeat(this.driver, this.ref, key);
+
+    if (!definition) {
+      return false;
+    }
+
+    const enabled = await enableRepeatSeries(
+      this.driver,
+      this.ref,
+      definition.key,
+      Date.now(),
+    );
+
+    if (enabled) {
+      const next = await this.driver.getRepeat(this.ref, definition.key);
+      if (next?.nextRunAt != null) {
+        const shown = displayRepeatKey(definition.key);
+        this.safeEmit("repeatScheduled", shown, next.nextRunAt);
+        await this.#publish("repeatScheduled", {
+          key: shown,
+          nextRunAt: next.nextRunAt,
+        });
+      }
+    }
+
+    return enabled;
   }
 
   /** Closes the subscription and, if this queue built the driver, the driver. */

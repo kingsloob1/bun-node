@@ -318,6 +318,7 @@ export {
   type RegistryQueueEvents,
   type RegistryWorkerEvents,
   type Repeatable,
+  type RepeatableInfo,
   type RepeatEveryOptions,
   repeatJobId,
   repeatKeyFor,

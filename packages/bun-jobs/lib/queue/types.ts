@@ -984,6 +984,15 @@ export interface BunQueueWorkerOptions {
   waitToExit?: boolean;
 }
 
+/** A repeat series as {@link BunQueue.listRepeatables} reports it. */
+export interface RepeatableInfo extends RepeatRecord {
+  /**
+   * Whether the series is disabled: it schedules nothing until it is enabled
+   * again. Always `false` on a driver without queue state.
+   */
+  disabled: boolean;
+}
+
 /**
  * What a dead-letter queue receives: the job that died, as it was.
  *

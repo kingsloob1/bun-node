@@ -67,6 +67,11 @@ import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
 import { displayRepeatKey, shortenJobId } from "./options";
 import { nextOccurrence, repeatJobId } from "./repeat";
+import {
+  isRepeatDisabled,
+  occurrenceRecord,
+  removePendingOccurrence,
+} from "./repeatControl";
 import { supportsWindowSweep, sweepWindows } from "./windows";
 
 /** How many jobs one maintenance sweep touches. */
@@ -227,6 +232,12 @@ function storedResult(result: unknown): unknown {
  * and each declared name's scoped events carry that name's own types. The
  * default, `JobMap`, means none — the events are exactly as before.
  */
+/**
+ * How long a worker trusts a series' disabled flag as last read before
+ * reading it again.
+ */
+const REPEAT_FLAG_CACHE_MS = 1_000;
+
 export class BunQueueWorker<
   TData = unknown,
   TResult = unknown,
@@ -321,6 +332,8 @@ export class BunQueueWorker<
   #limitedFor: number | undefined;
   /** The dead-letter queue for jobs that do not name their own. */
   readonly #deadLetterQueue: string | undefined;
+  /** When each series was last read as enabled; see `#repeatDisabled`. */
+  readonly #enabledRepeats = new Map<string, number>();
   /** Dead-letter queues opened so far, by name, closed with the worker. */
   readonly #deadLetters = new Map<
     string,
@@ -2147,6 +2160,12 @@ export class BunQueueWorker<
         return;
       }
 
+      // Disabled: this occurrence runs — it was claimed before anyone could
+      // stop it — but it schedules nothing after it.
+      if (await this.#repeatDisabled(definition.key)) {
+        return;
+      }
+
       const count = definition.count + 1;
       const now = Date.now();
       const scheduled = { ...definition, count };
@@ -2212,6 +2231,42 @@ export class BunQueueWorker<
     } catch (error) {
       this.#emitError(error, "scheduleNextRepeat");
     }
+  }
+
+  /**
+   * Whether the series stored as `key` is disabled.
+   *
+   * Every claimed occurrence asks, and a busy series should not cost a read
+   * per job to answer a question whose answer changes by hand, so an
+   * enabled* answer is trusted for {@link REPEAT_FLAG_CACHE_MS}. A series
+   * disabled in that window gets at most one more occurrence, which the next
+   * maintenance pass removes.
+   *
+   * A *disabled* answer is never cached. Trusting it would outlive an
+   * `enable()`: the occurrence `enable()` scheduled would then schedule
+   * nothing after it, and the series would stop for good.
+   */
+  async #repeatDisabled(key: string): Promise<boolean> {
+    const now = Date.now();
+    const enabledAt = this.#enabledRepeats.get(key);
+
+    if (enabledAt !== undefined && now - enabledAt < REPEAT_FLAG_CACHE_MS) {
+      return false;
+    }
+
+    const disabled = await isRepeatDisabled(this.driver, this.ref, key);
+
+    if (disabled) {
+      this.#enabledRepeats.delete(key);
+    } else {
+      // Bounded: a queue with many series forgets the lot rather than growing.
+      if (this.#enabledRepeats.size >= 1_000) {
+        this.#enabledRepeats.clear();
+      }
+      this.#enabledRepeats.set(key, now);
+    }
+
+    return disabled;
   }
 
   /* --- worker inventory ------------------------------------------------------- */
@@ -2465,6 +2520,15 @@ export class BunQueueWorker<
         continue;
       }
 
+      // Read fresh, never cached: this is the pass that repairs what a stale
+      // answer let through. A disabled series keeps no pending occurrence —
+      // one a worker scheduled just as it was disabled is removed here — and
+      // gets no replacement for one that has gone.
+      if (await isRepeatDisabled(this.driver, this.ref, definition.key)) {
+        await removePendingOccurrence(this.driver, this.ref, definition);
+        continue;
+      }
+
       if (await this.driver.getJob(this.ref, definition.nextJobId)) {
         continue;
       }
@@ -2475,39 +2539,13 @@ export class BunQueueWorker<
         continue;
       }
 
-      const jobId = shortenJobId(
-        repeatJobId(displayRepeatKey(definition.key), next),
-      );
-      await this.driver.addJob(this.ref, {
-        id: jobId,
-        name: definition.name,
-        data: definition.data,
-        opts: definition.opts,
-        state: next > now ? "delayed" : "waiting",
-        priority: definition.opts.priority,
-        runAt: next,
-        createdAt: now,
-        processedOn: null,
-        finishedOn: null,
-        expiresAt: null,
-        attemptsMade: 0,
-        maxAttempts: definition.opts.attempts,
-        stalledCount: 0,
-        progress: null,
-        returnValue: null,
-        failedReason: null,
-        stacktrace: [],
-        lockToken: null,
-        lockExpiresAt: null,
-        workerId: null,
-        repeatKey: definition.key,
-        flow: null,
-      });
+      const record = occurrenceRecord(definition, next, now);
+      await this.driver.addJob(this.ref, record);
 
       await this.driver.upsertRepeat(this.ref, {
         ...definition,
         nextRunAt: next,
-        nextJobId: jobId,
+        nextJobId: record.id,
         updatedAt: now,
       });
     }
