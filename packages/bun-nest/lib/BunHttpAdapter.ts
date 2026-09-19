@@ -1378,6 +1378,17 @@ export class BunHttpAdapter<
     return this.httpServer;
   }
 
+  /**
+   * The {@link BunRouter} this adapter routes through — the same object as
+   * {@link instance}. NestJS's `AbstractHttpAdapter` declares
+   * `getInstance<T = any>()`, which left every call typed `any`: a
+   * comparison or call on the result was never checked. Here the default is
+   * the router; pass `T` to assert another type, as before.
+   */
+  public override getInstance<T = BunRouter>(): T {
+    return this.instance as T;
+  }
+
   public getHttpServer() {
     return this.defineHttpServer();
   }

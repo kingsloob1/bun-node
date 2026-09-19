@@ -65,7 +65,7 @@ let base: string;
 beforeAll(async () => {
   httpAdapter = new BunHttpAdapter(30000);
   httpAdapter.registerParserMiddleware(undefined, true);
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
 
@@ -73,7 +73,7 @@ beforeAll(async () => {
   // `httpAdapter.webSocketAdapter`. It rides on the HTTP adapter's shared
   // server/router but is its own instance with its own emitter + route table.
   const customAdapter = new BunWebSocketAdapter({ httpAdapter });
-  app.useWebSocketAdapter(customAdapter as never);
+  app.useWebSocketAdapter(customAdapter);
 
   await app.listen(0);
   base = `ws://127.0.0.1:${httpAdapter.listeningPort}`;

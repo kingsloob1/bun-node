@@ -54,7 +54,7 @@ beforeAll(async () => {
       "X-Trace": "trace-1",
     })
     .setWebSocketUpgradeData({ hash: "#router", custom: "router" });
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
   app.useWebSocketAdapter(
@@ -68,7 +68,7 @@ beforeAll(async () => {
           headers: { "Sec-WebSocket-Protocol": PROTOCOL },
         }),
       },
-    }) as never,
+    }),
   );
   await app.listen(0);
   port = Number(httpAdapter.listeningPort);

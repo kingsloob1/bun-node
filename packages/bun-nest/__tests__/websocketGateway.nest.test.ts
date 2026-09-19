@@ -100,10 +100,10 @@ let base: string;
 beforeAll(async () => {
   httpAdapter = new BunHttpAdapter(30000);
   httpAdapter.registerParserMiddleware(undefined, true);
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
-  app.useWebSocketAdapter(httpAdapter.webSocketAdapter as never);
+  app.useWebSocketAdapter(httpAdapter.webSocketAdapter);
   await app.listen(0);
   base = `ws://127.0.0.1:${httpAdapter.listeningPort}`;
 });

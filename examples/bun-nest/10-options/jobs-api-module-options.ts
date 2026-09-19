@@ -214,9 +214,9 @@ async function start(
   // Attached before `init()` when asked, so a gateway binds afterwards.
   options.attach?.websocket?.attach(adapter.getInstance());
   app.useWebSocketAdapter(
-    (options.swapAdapter
+    options.swapAdapter
       ? new BunWebSocketAdapter({ httpAdapter: adapter })
-      : adapter.webSocketAdapter) as never,
+      : adapter.webSocketAdapter,
   );
 
   if (options.listen === false) {
@@ -530,7 +530,7 @@ step("sharing the server with a catch-all gateway");
   })) as INestApplication;
   adapter.use(api.basePath, api.router);
   api.websocket!.attach(adapter.getInstance());
-  app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+  app.useWebSocketAdapter(adapter.webSocketAdapter);
   await app.init();
   await app.listen(0);
   const base = `ws://127.0.0.1:${adapter.listeningPort}`;
@@ -679,10 +679,10 @@ step("attaching before useWebSocketAdapter() swaps the adapter");
   api.websocket!.attach(adapter.getInstance());
   // …then replaced by another, which is what useWebSocketAdapter() installs.
   const swapped = new BunWebSocketAdapter({ httpAdapter: adapter });
-  app.useWebSocketAdapter(swapped as never);
+  app.useWebSocketAdapter(swapped);
   check(
     "the router's BunWebSocket really was replaced",
-    adapter.getInstance().getBunWebsocket() === (swapped as never),
+    adapter.getInstance().getBunWebsocket() === swapped,
   );
 
   await app.init();
