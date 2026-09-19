@@ -294,6 +294,7 @@ export function OperationView({ operation, root, onRef }: OperationViewProps) {
             {operation.mutation ? "Mutation" : "Read"}
           </span>
         </Badge>
+        {/* Only for a stale or foreign document: a read-only API documents no mutation (see tryItGate). */}
         {operation.mutation && meta.readOnly && (
           <Badge tone="danger">Refused: the API is read-only</Badge>
         )}

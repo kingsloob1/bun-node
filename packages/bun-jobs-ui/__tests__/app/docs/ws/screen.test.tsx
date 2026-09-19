@@ -1,3 +1,4 @@
+import type { SpecDocument } from "../../../../app/api/docs";
 import type { MetaDto, Permissions } from "../../../../app/api/types";
 import type { WsFixtureName } from "./fixtures";
 import { afterEach, describe, expect, it, mock } from "bun:test";
@@ -25,6 +26,8 @@ interface RenderWsOptions {
   meta?: Partial<MetaDto>;
   /** Permission overrides. */
   actions?: Permissions["actions"];
+  /** A document served instead of the recorded `fixture` (its mode still sets `/meta`'s). */
+  document?: SpecDocument;
 }
 
 /** Renders `/docs/ws<rest>` over a real recorded document, and waits for the reference. */
@@ -42,7 +45,9 @@ async function renderWs(rest = "", options: RenderWsOptions = {}) {
       "GET /meta/permissions": {
         body: permissionsFixture(options.actions),
       },
-      "GET /asyncapi.json": { body: wsFixture(options.fixture ?? "both") },
+      "GET /asyncapi.json": {
+        body: options.document ?? wsFixture(options.fixture ?? "both"),
+      },
     },
   });
   await page().findByTestId("ws-main", {}, { timeout: 5_000 });
@@ -52,6 +57,23 @@ async function renderWs(rest = "", options: RenderWsOptions = {}) {
 /** The main pane. */
 function main(): HTMLElement {
   return page().getByTestId("ws-main");
+}
+
+/** A recorded document with its raw `servers` / `channels` loosely typed, edited by `mutate`. */
+function editedFixture(
+  mutate: (document: {
+    servers: Record<string, Record<string, unknown>>;
+    channels: Record<string, Record<string, unknown>>;
+  }) => void,
+): SpecDocument {
+  const document = wsFixture("both");
+  mutate(
+    document as unknown as {
+      servers: Record<string, Record<string, unknown>>;
+      channels: Record<string, Record<string, unknown>>;
+    },
+  );
+  return document;
 }
 
 /** Sets a text field (inside `scope`) by its label. */
@@ -99,6 +121,43 @@ describe("WsDocsScreen", () => {
     );
     // No item: the connection channel.
     expect(main().dataset.selected).toBe("channel-connection");
+  });
+
+  it("names where the subprotocol was read from", async () => {
+    const source = () =>
+      page().getByTestId("ws-subprotocol-source").textContent;
+    const cases: [string, SpecDocument][] = [
+      ["from servers.api (x-bun-jobs-subprotocol)", wsFixture("both")],
+      [
+        "from the connection channel (x-bun-jobs-subprotocol)",
+        editedFixture((document) => {
+          delete document.servers.api!["x-bun-jobs-subprotocol"];
+        }),
+      ],
+      [
+        "from the connection channel's description",
+        editedFixture((document) => {
+          delete document.servers.api!["x-bun-jobs-subprotocol"];
+          delete document.channels.connection!["x-bun-jobs-subprotocol"];
+        }),
+      ],
+      [
+        "not stated; the client default",
+        editedFixture((document) => {
+          delete document.servers.api!["x-bun-jobs-subprotocol"];
+          delete document.channels.connection!["x-bun-jobs-subprotocol"];
+          document.channels.connection!.description = "The socket.";
+        }),
+      ],
+    ];
+    for (const [expected, document] of cases) {
+      const { unmount } = await renderWs("", { document });
+      expect(source()).toBe(expected);
+      expect(page().getByTestId("ws-subprotocol").textContent).toBe(
+        "bun-jobs.v1",
+      );
+      unmount();
+    }
   });
 
   it("an error loading the document offers a retry", async () => {
@@ -592,6 +651,49 @@ describe("WsDocsScreen try it", () => {
     const link = within(main()).getByTestId("ws-try-link");
     expect(link.getAttribute("href")).toBe(
       "/jobs/events?channel=runners&types=killed",
+    );
+  });
+
+  it("the connection channel has no try-it at all: nothing to subscribe to", async () => {
+    await renderWs("/channel-connection");
+    expect(within(main()).queryByText("Try it")).toBeNull();
+    for (const id of [
+      "ws-try-channel",
+      "ws-try-link",
+      "ws-try-disabled",
+      "ws-try-reason",
+      "ws-try-unavailable",
+    ]) {
+      expect(within(main()).queryByTestId(id)).toBeNull();
+    }
+  });
+
+  it("nor does a connection under another key, or a socket path", async () => {
+    const document = editedFixture((raw) => {
+      // The connection, keyed otherwise: known by its upgrade binding.
+      raw.channels.socket = raw.channels.connection!;
+      delete raw.channels.connection;
+      // A second socket path is not a channel name either.
+      raw.channels.legacy = { address: "/jobs-api/ws-legacy", messages: {} };
+    });
+    for (const slug of ["channel-socket", "channel-legacy"]) {
+      const { unmount } = await renderWs(`/${slug}`, { document });
+      expect(main().dataset.selected).toBe(slug);
+      expect(within(main()).queryByText("Try it")).toBeNull();
+      expect(within(main()).queryByTestId("ws-try-disabled")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("names the channel and mode when the console has no such channel", async () => {
+    const document = editedFixture((raw) => {
+      raw.channels.system = { address: "system", messages: {} };
+    });
+    await renderWs("/channel-system", { document });
+    const tryIt = within(main()).getByTestId("ws-try-channel");
+    expect(within(tryIt).getByTestId("ws-try-disabled")).toBeTruthy();
+    expect(within(tryIt).getByTestId("ws-try-reason").textContent).toBe(
+      "The Events console has no channel system in mode both.",
     );
   });
 

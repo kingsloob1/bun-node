@@ -12,6 +12,7 @@ import { formatNumber } from "../../../format";
 import { Prose } from "../schema";
 import { formatLimit, formatMs, LIMIT_INFO } from "./format";
 import { InlineText } from "./InlineText";
+import { subprotocolSource } from "./model";
 
 /** The server: its URL, host, path, protocol and subprotocol. */
 export function ServerPanel({ doc }: { doc: WsDoc }) {
@@ -50,9 +51,16 @@ export function ServerPanel({ doc }: { doc: WsDoc }) {
               value: (
                 <code data-testid="ws-subprotocol">{subprotocol.value}</code>
               ),
-              hint: subprotocol.fromDocument
-                ? "Optional: offer it in Sec-WebSocket-Protocol, or offer none. Offering others without it is refused 400."
-                : "Not stated by the document; this is the client contract's.",
+              hint: (
+                <>
+                  <span data-testid="ws-subprotocol-source">
+                    {subprotocolSource(doc)}
+                  </span>
+                  {subprotocol.fromDocument
+                    ? ". Optional: offer it in Sec-WebSocket-Protocol, or offer none. Offering others without it is refused 400."
+                    : ": the document does not say, so this is the client contract's."}
+                </>
+              ),
             },
             server.description !== undefined && {
               label: "About",

@@ -22,6 +22,7 @@ import {
   channelEventTypes,
   channelPermissions,
   channelsCarrying,
+  channelSubscribable,
   channelTryLink,
   eventPayloadSchema,
   exampleEventPayload,
@@ -207,7 +208,10 @@ function ChannelTryIt({ doc, channel, consoleAvailable }: ChannelTryItProps) {
               {problems.length > 0 ? (
                 problems.map((problem) => <li key={problem}>{problem}</li>)
               ) : (
-                <li>The Events console cannot open this channel here.</li>
+                <li>
+                  The Events console has no channel <code>{address}</code> in
+                  mode <code>{meta.mode}</code>.
+                </li>
               )}
             </ul>
           </>
@@ -343,7 +347,8 @@ export function ChannelPane({
       <Card title={`Messages (${messages.length})`}>
         <ItemLinks items={messages} />
       </Card>
-      {!channel.isConnection && (
+      {/* Only a channel there is something to subscribe to: the connection has no try-it. */}
+      {channelSubscribable(channel) && (
         <ChannelTryIt
           key={channel.key}
           doc={doc}
