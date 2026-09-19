@@ -43,8 +43,11 @@ function OpenFailJobDialog({ job, onClose }: FailJobDialogProps) {
     // The confirm dialog shows the failure in place.
     toastErrors: false,
   });
-  const trimmed = reason.trim();
-  const tooLong = trimmed.length > FAIL_REASON_MAX_LENGTH;
+  // The API stores the reason exactly as sent, so it is sent as typed: it
+  // needs a character other than whitespace (the schema's `\S`) and at
+  // most FAIL_REASON_MAX_LENGTH characters, spaces counted.
+  const blank = !/\S/.test(reason);
+  const tooLong = reason.length > FAIL_REASON_MAX_LENGTH;
   const confirmation = failConfirmation(job.id);
   return (
     <ConfirmDialog
@@ -71,8 +74,8 @@ function OpenFailJobDialog({ job, onClose }: FailJobDialogProps) {
           </>
         )
       }
-      confirmDisabled={trimmed.length === 0 || tooLong}
-      onConfirm={() => fail.mutateAsync(trimmed)}
+      confirmDisabled={blank || tooLong}
+      onConfirm={() => fail.mutateAsync(reason)}
     >
       {job.state === "active" && (
         <p
@@ -88,12 +91,14 @@ function OpenFailJobDialog({ job, onClose }: FailJobDialogProps) {
       <Field
         label="Reason"
         required
-        hint={`Recorded as the job's failure. At most ${formatNumber(FAIL_REASON_MAX_LENGTH)} characters.`}
+        hint={`Recorded as the job's failure, exactly as typed. At most ${formatNumber(FAIL_REASON_MAX_LENGTH)} characters.`}
         error={
           fail.fieldErrors.reason ??
           (tooLong
             ? `At most ${formatNumber(FAIL_REASON_MAX_LENGTH)} characters.`
-            : undefined)
+            : reason !== "" && blank
+              ? "Spaces alone are not a reason: type some text."
+              : undefined)
         }
       >
         <TextInput

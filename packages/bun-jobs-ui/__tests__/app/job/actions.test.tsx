@@ -262,17 +262,25 @@ describe("fail", () => {
     });
     // The id alone is not enough: a reason is required.
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(reason, { target: { value: "   " } });
-    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    // Whitespace alone is refused in place: the API requires a \S.
+    for (const blank of ["   ", " \t "]) {
+      fireEvent.change(reason, { target: { value: blank } });
+      expect((confirm as HTMLButtonElement).disabled).toBe(true);
+      expect(dialog.textContent).toContain(
+        "Spaces alone are not a reason: type some text.",
+      );
+    }
     fireEvent.change(reason, { target: { value: "  customer cancelled " } });
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    expect(dialog.textContent).not.toContain("Spaces alone");
     await act(async () => {
       fireEvent.click(confirm);
     });
     await waitFor(() => expect(page().queryByRole("alertdialog")).toBeNull());
     const call = callTo(calls, "POST", "/fail")!;
     expect(call.path).toBe(`/queues/emails/jobs/${AWKWARD_ID_ENCODED}/fail`);
-    expect(JSON.parse(call.body!)).toEqual({ reason: "customer cancelled" });
+    // Sent as typed: the API records the reason exactly as sent.
+    expect(JSON.parse(call.body!)).toEqual({ reason: "  customer cancelled " });
     await waitFor(() => expect(toastText().polite).toContain("Job failed"));
     expectInvalidated(invalidate);
   });
@@ -296,6 +304,39 @@ describe("fail", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+  });
+
+  it("counts leading and trailing spaces toward the 4096 characters, as the API does", async () => {
+    const { calls } = await renderActions(jobFixture("waiting"), {
+      [`POST ${jobApiPath()}/fail`]: { body: { failed: true } },
+    });
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    const confirm = within(dialog).getByRole("button", {
+      name: "Fail job",
+    }) as HTMLButtonElement;
+    fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+      target: { value: AWKWARD_ID },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+      target: { value: ` ${"x".repeat(4095)} ` },
+    });
+    expect(confirm.disabled).toBe(true);
+    expect(dialog.textContent).toContain("At most 4,096 characters.");
+    const exact = ` ${"x".repeat(4094)} `;
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+      target: { value: exact },
+    });
+    expect(confirm.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    await waitFor(() => expect(callTo(calls, "POST", "/fail")).toBeTruthy());
+    expect(JSON.parse(callTo(calls, "POST", "/fail")!.body!)).toEqual({
+      reason: exact,
+    });
   });
 
   it("refuses a reason over 4096 characters in place", async () => {
