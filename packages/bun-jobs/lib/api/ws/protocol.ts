@@ -70,7 +70,7 @@ const ChannelSchema = s.string({
   minLength: 1,
   maxLength: 1024,
   description:
-    "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeURIComponent(jobId)>`, `runners` or `runner/<runner>`.",
+    "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeJobId(jobId)>`, `runners` or `runner/<runner>`. `encodeJobId` (in the contract) is `encodeURIComponent`, plus `%uXXXX` for a lone surrogate.",
 });
 
 /** Most channels one `subscribe` or `unsubscribe` may name: defined in the browser-safe contract. */

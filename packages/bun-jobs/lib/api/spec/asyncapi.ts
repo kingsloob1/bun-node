@@ -4,6 +4,7 @@ import type { Schema } from "../schema/builder";
 import type { JsonSchema } from "../schema/validate";
 import type { ChannelDef } from "../ws/channels";
 import type { EventDescriptor } from "../ws/events";
+import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s, toJsonSchema } from "../schema/builder";
 import {
   enabledChannels,
@@ -26,6 +27,11 @@ import {
   UnsubscribeMessageSchema,
 } from "../ws/protocol";
 import { RATE_BREACH_WINDOW_MS } from "../ws/session";
+import {
+  controlMessageExamples,
+  eventMessageExamples,
+  isControlMessageId,
+} from "./asyncapi-examples";
 import { pruneSchemaComponents } from "./refs";
 import { openApiSecurity, toAsyncApiSecurityScheme } from "./security";
 
@@ -256,10 +262,44 @@ const UPGRADE_REFUSALS: readonly {
 /** Descriptions of address parameters. */
 const PARAMETER_DESCRIPTIONS: Record<ChannelDef["parameters"][number], string> =
   {
-    queue: "A queue name, matching `^[\\w.-]+$` (at most 200 characters).",
-    jobId: "A job id, `encodeURIComponent`-escaped.",
-    runner: "A runner id, matching `^[\\w.-]+$` (at most 200 characters).",
+    queue: `A queue name, matching \`${NAME_PARAM_PATTERN}\` (at most ${MAX_NAME_LENGTH} characters).`,
+    jobId:
+      "A job id, escaped with `encodeJobId` (exported by `@kingsleyweb/bun-jobs/api/contract`): `encodeURIComponent`, except that a lone UTF-16 surrogate, which `encodeURIComponent` refuses, becomes `%uXXXX` (upper-case hex). `decodeJobId` reverses either form; the two cannot be confused, since `encodeURIComponent` escapes every `%`.",
+    runner: `A runner id, matching \`${NAME_PARAM_PATTERN}\` (at most ${MAX_NAME_LENGTH} characters).`,
   };
+
+/** The JSON Schema a queue name or runner id matches: the one the HTTP routes enforce. */
+const NAME_PARAMETER_SCHEMA = {
+  type: "string",
+  pattern: NAME_PARAM_PATTERN,
+  maxLength: MAX_NAME_LENGTH,
+} as const;
+
+/**
+ * Each address parameter's value schema, where it has one, emitted as the
+ * extension `x-bun-jobs-schema`. AsyncAPI 3.0's Parameter Object has no
+ * `schema` field (it was removed in 3.0, and the official JSON Schema forbids
+ * unknown fields there), so the schema the OpenAPI path parameters carry
+ * natively travels as an extension instead. A job id has none: it is escaped
+ * with `encodeJobId`, so any string escapes to a valid segment.
+ */
+const PARAMETER_SCHEMAS: Partial<
+  Record<ChannelDef["parameters"][number], typeof NAME_PARAMETER_SCHEMA>
+> = {
+  queue: NAME_PARAMETER_SCHEMA,
+  runner: NAME_PARAMETER_SCHEMA,
+};
+
+/** One address parameter, as the document describes it. */
+function parameterObject(
+  name: ChannelDef["parameters"][number],
+): Record<string, unknown> {
+  const schema = PARAMETER_SCHEMAS[name];
+  return {
+    description: PARAMETER_DESCRIPTIONS[name],
+    ...(schema ? { "x-bun-jobs-schema": { ...schema } } : {}),
+  };
+}
 
 /** `queue` → `Queue`, `runners` → `Runners`. */
 function pascal(name: string): string {
@@ -365,6 +405,9 @@ export function generateAsyncApi(
       summary: control.summary,
       contentType: "application/json",
       payload: emit(control.schema),
+      ...(isControlMessageId(control.id)
+        ? { examples: controlMessageExamples(control.id) }
+        : {}),
     };
   }
   const carried = new Set<EventDescriptor>(
@@ -380,6 +423,7 @@ export function generateAsyncApi(
       summary: descriptor.summary,
       contentType: "application/json",
       payload: emit(EVENT_ENVELOPES.get(descriptor)!),
+      examples: eventMessageExamples(descriptor),
     };
   }
 
@@ -403,6 +447,7 @@ export function generateAsyncApi(
         CONTROL_MESSAGES.map((control) => [control.id, messageRef(control.id)]),
       ),
       bindings: { ws: { method: "GET", bindingVersion: WS_BINDING_VERSION } },
+      "x-bun-jobs-subprotocol": JOBS_API_WS_SUBPROTOCOL,
       "x-bun-jobs-close-codes": CLOSE_CODES.map((entry) => ({ ...entry })),
       "x-bun-jobs-limits": {
         maxMessageBytes: websocket.maxMessageBytes,
@@ -489,10 +534,7 @@ export function generateAsyncApi(
       ...(def.parameters.length > 0
         ? {
             parameters: Object.fromEntries(
-              def.parameters.map((name) => [
-                name,
-                { description: PARAMETER_DESCRIPTIONS[name] },
-              ]),
+              def.parameters.map((name) => [name, parameterObject(name)]),
             ),
           }
         : {}),
@@ -536,6 +578,7 @@ export function generateAsyncApi(
             },
           },
         }),
+    "x-bun-jobs-subprotocol": JOBS_API_WS_SUBPROTOCOL,
     ...(nativeSecurity.length > 0 ? { security: nativeSecurity } : {}),
     ...(hasSecurity
       ? { "x-bun-jobs-security": structuredClone(requirements) }
