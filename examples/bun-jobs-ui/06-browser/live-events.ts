@@ -22,7 +22,7 @@
  * | `socketless`| `websocket: false`                      | `off`: no socket             |
  * | `refused`   | a socket, but `events.connect` refused  | `off`: may not connect       |
  * | `silent`    | a socket, but nothing publishes events  | `off`: nothing publishes     |
- * | `docsOnly`  | as `live`, but the UI is `sections: { manage: false }` | `off`: documentation only |
+ * | `docsOnly`  | as `live`, but the UI is `sections: { manage: false }` | `off`, "Live off": documentation only |
  *
  * What makes it work:
  *
@@ -41,8 +41,10 @@
  *   its tooltip says why. No upgrade is attempted: this example counts them.
  * - **A docs-only UI opens no socket.** Mounted with `sections: { manage:
  *   false }` it has no screen that live events would refresh, so even over
- *   an API that could serve them the badge is `off`, "Live updates are off:
- *   this UI shows documentation only", and the host sees no upgrade.
+ *   an API that could serve them the badge is `off` and reads `Live off`, not
+ *   `Polling 5s`: nothing on a docs-only UI polls either. Its tooltip says
+ *   "Live updates are off: this UI shows documentation only", and the host
+ *   sees no upgrade.
  * - **`types` in the URL takes bare or prefixed names.** `queue.completed`
  *   and `runner.failed` name their family; the console rewrites the URL with
  *   the bare name (`completed`). A name that is no event type, or one the
@@ -52,7 +54,8 @@
  *   note ends "Showing every type."
  * - **The badge is `data-testid="live-status"`**, with `data-state` one of
  *   `off`, `connecting`, `live`, `reconnecting` or `refused`, and its text
- *   `Live`, `Connecting…`, `Reconnecting…` or `Polling 5s`. On the memory
+ *   `Live`, `Connecting…`, `Reconnecting…` or `Polling 5s` (`Live off` on a
+ *   docs-only UI). On the memory
  *   driver the events are `local`, so every host's badge also says
  *   `· events: local` and is a warning.
  * - **The Events console is `data-testid="events-screen"`**, its rows
@@ -645,6 +648,9 @@ try {
   );
   const docsBadge = await view.evaluate<Badge>(BADGE);
   show("badge", docsBadge);
+  // Not "Polling 5s": a docs-only UI neither listens nor polls, so the
+  // badge names neither, and carries no events warning either.
+  checkEqual('its text is "Live off"', docsBadge.text, "Live off");
   check(
     "its tooltip: Live updates are off: this UI shows documentation only",
     docsBadge.title?.includes(

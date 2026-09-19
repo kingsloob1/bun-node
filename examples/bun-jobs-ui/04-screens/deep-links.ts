@@ -1,13 +1,15 @@
 /**
- * Deep links to the queue, runner and Events screens — the queue list, one
- * queue, a filtered tab or panel, one job, the runner list, one runner, the
- * Events console on a chosen channel — checked without a socket.
+ * Deep links to the queue, runner, Events and API docs screens — the queue
+ * list, one queue, a filtered tab or panel, one job, the runner list, one
+ * runner, the Events console on a chosen channel, the docs landing page, one
+ * HTTP operation and one WebSocket message — checked without a socket.
  *
  * ```bash
  * bun 04-screens/deep-links.ts
  * ```
  *
- * The Queues, Runners and Events sections are routed in the browser, so a link
+ * The Queues, Runners, Events and API docs sections are routed in the
+ * browser, so a link
  * someone pastes or a reload on one of their screens asks the server for a
  * path it has no route for.
  * `jobsUi()` answers every path under its `basePath` with the same HTML shell
@@ -19,8 +21,9 @@
  *   JSON, so the page boots the same way whichever screen it opens on;
  * - the screen state lives in the query string (`state`, `panel`, `window`,
  *   `offset`, `limit`, `total`, `name`, `search`, `order`; `search` on the
- *   runner list, `history` on a runner; `channel` and `types` on `/events`),
- *   which the server ignores, so any combination can be bookmarked;
+ *   runner list, `history` on a runner; `channel` and `types` on `/events`;
+ *   `q` on both docs references), which the server ignores, so any
+ *   combination can be bookmarked;
  * - the shell links exactly one stylesheet and one module script. The queue,
  *   job and runner screens are split chunks the entry imports on demand,
  *   served from the same `assetsPath` with the same immutable caching, and
@@ -29,20 +32,24 @@
  *   `/jobs/queues/mail/jobs/a%2Fb`, and the UI and the API both accept the
  *   `%2F`;
  * - a request under the API's `basePath` still reaches the API, on the same
- *   host.
+ *   host: the UI's `/jobs/docs` is the app's own viewer of
+ *   `/jobs-api/openapi.json`, while `/jobs-api/docs`, the API's CDN-loaded
+ *   viewer, is off unless the API is built with `docs: { ui: true }`.
  *
  * The screens need the caller's permissions too. `04-screens/permissions.ts`
  * checks those.
  */
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { jobsUi, UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-jobs-ui";
 import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { fetchShell } from "../shared/shell";
 
-title("Deep links to the queue, runner and Events screens, without a socket");
+title(
+  "Deep links to the queue, runner, Events and API docs screens, without a socket",
+);
 
 const jobs = new BunJobs({
   namespace: "examples-ui-deep-links",
@@ -79,7 +86,26 @@ app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 
 /* ------------------------------------------------------------------ */
-step("Every queue, runner and Events screen's URL answers with the shell");
+/** The API's OpenAPI document, for an operationId that really exists. */
+const openapi = (await (await app.fetch("/jobs-api/openapi.json")).json()) as {
+  paths: Record<string, Record<string, { operationId?: string }>>;
+};
+/** Every documented operationId. */
+const operationIds = Object.values(openapi.paths).flatMap((item) =>
+  Object.values(item).flatMap((operation) =>
+    typeof operation?.operationId === "string" ? [operation.operationId] : [],
+  ),
+);
+check(
+  "the API documents getQueue, the operation linked below",
+  operationIds.includes("getQueue"),
+  operationIds,
+);
+
+/* ------------------------------------------------------------------ */
+step(
+  "Every queue, runner, Events and docs screen's URL answers with the shell",
+);
 
 // The routes the app defines under the Queues and Runners sections:
 //
@@ -88,6 +114,10 @@ step("Every queue, runner and Events screen's URL answers with the shell");
 //   /queues/:queue/jobs/:id     one job
 //   /runners                    the runner list
 //   /runners/:runner            one runner: status, actions, stats, history
+//   /events                     the Events console
+//   /docs                       the API docs landing page
+//   /docs/http[/:operationId]   the HTTP reference, or one operation
+//   /docs/ws[/:item]            the WebSocket reference, or one item
 //
 // Each is shown with the query parameters its screen reads.
 const SCREEN_URLS = [
@@ -134,6 +164,29 @@ const SCREEN_URLS = [
   // socket encodes it, then as a query value).
   "/jobs/events?channel=runner/nightly",
   `/jobs/events?channel=${encodeURIComponent(`queue/mail/job/${encodeJobId("a/b")}`)}`,
+  // The API docs (`data-testid="docs-home"`): an HTTP card, and a WebSocket
+  // card because this API has a socket (`meta.docs.asyncapi`).
+  "/jobs/docs",
+  // The HTTP reference, and one operation by its operationId, with its
+  // permission marker and try-it panel.
+  "/jobs/docs/http",
+  "/jobs/docs/http/getQueue",
+  // `q` filters the sidebar; operation links keep it.
+  "/jobs/docs/http?q=pause",
+  "/jobs/docs/http/getQueue?q=queue",
+  // An operationId the document lacks: the shell, then "No such operation".
+  "/jobs/docs/http/noSuchOperation",
+  // The WebSocket reference: with no item, the connection channel.
+  "/jobs/docs/ws",
+  // One item by slug: a message (its key holds a `.`), a channel, and the
+  // connection's panels.
+  "/jobs/docs/ws/message-queue.completed",
+  "/jobs/docs/ws/channel-queue",
+  "/jobs/docs/ws/operation-subscribe",
+  "/jobs/docs/ws/limits",
+  "/jobs/docs/ws/close-codes",
+  "/jobs/docs/ws/upgrade-refusals",
+  "/jobs/docs/ws?q=close",
 ];
 
 const first = await fetchShell(app, SCREEN_URLS[0]!);
@@ -253,6 +306,28 @@ checkEqual(
 
 /* ------------------------------------------------------------------ */
 step("The API still answers for itself on the same host");
+
+// Two docs, two paths: the UI's viewer under the UI's basePath, and the
+// documents under the API's. The API's own HTML viewers load Swagger UI and
+// the AsyncAPI viewer from a CDN, so they are opt-in (`docs: { ui: true }`)
+// and absent here; the UI's viewer needs no CDN at all.
+const docsScreen = await app.fetch("/jobs/docs");
+const apiDocsPage = await app.fetch("/jobs-api/docs");
+const apiDocsHtml = await apiDocsPage.text();
+const document = await app.fetch("/jobs-api/openapi.json");
+checkEqual(
+  "/jobs/docs is the shell; /jobs-api/docs 404 (docs.ui is off); /jobs-api/openapi.json JSON",
+  [
+    docsScreen.status,
+    (await docsScreen.text()).includes(`id="${UI_CONFIG_ELEMENT_ID}"`),
+    apiDocsPage.status,
+    apiDocsHtml.includes(`id="${UI_CONFIG_ELEMENT_ID}"`),
+    document.status,
+    document.headers.get("content-type")?.split(";")[0],
+  ],
+  [200, true, 404, false, 200, "application/json"],
+);
+await document.arrayBuffer();
 
 const runnerScreen = await app.fetch("/jobs/runners/nightly");
 const runner = await app.fetch("/jobs-api/runners/nightly");
