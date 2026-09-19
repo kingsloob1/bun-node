@@ -490,7 +490,9 @@ These `data-testid` hooks are stable:
 
 - App: `app-ready` (the frame, once `/meta` and the permissions loaded),
   `bootstrap-loading`, `bootstrap-error`, `live-status` (with `data-state`:
-  `off`, `connecting`, `live`, `reconnecting` or `refused`), `not-found`.
+  `off`, `connecting`, `live`, `reconnecting` or `refused`),
+  `live-status-announcer` (its polite live region), `not-found`,
+  `screen-error` (a screen that crashed), `shortcut-list` (the `?` dialog).
 - Overview: `overview`, `state-counts`, `queue-row-<queue>`,
   `queues-truncated`.
 - Queues: `queues-list`, `queue-screen`, `queue-total`, `job-row-<id>`,
@@ -574,6 +576,36 @@ stylesheet, which would repeat its rules (`entryStylesheets` in
 The API docs are one chunk for `/docs`, the HTTP reference and the WebSocket
 reference together, with the schema tree they share: 62.7 KiB (19.9 KiB
 gzipped) when M5 was built.
+
+### Accessibility
+
+- **Keyboard.** A "Skip to content" link leads to the main landmark. `/`
+  focuses the screen's search box (Overview, Queues, a queue's jobs,
+  Runners, both API references), and `?` lists the shortcuts. Neither fires
+  while you type in a field, with Ctrl, Meta or Alt held, or while a dialog
+  is open. Tabs move with ←/→/Home/End, the API docs sidebars with
+  ↑/↓/Home/End (↓ from their search box), and dialogs keep focus inside
+  until they close, then hand it back.
+- **Announcements.** Toasts speak through polite (errors: assertive) live
+  regions, loading states are `role="status"`, and the live badge's state
+  is announced politely on a change of state only, never on the first
+  render or a new tooltip.
+- **Recovery.** Each routed screen sits in an error boundary: a render
+  crash, or a screen chunk that failed to load, shows "Reload this screen"
+  in its place while the header and nav keep working.
+- **Reduced motion.** With `prefers-reduced-motion: reduce`, no transition or
+  animation runs, except the spinner, which keeps turning slowly so it still
+  reads as busy.
+- **Contrast.** Every colour pair in `app/styles/tokens.css` meets WCAG AA
+  in both themes: 4.5:1 for text, 3:1 for input outlines, the focus ring and
+  state colours. `__tests__/app/a11y/contrast.test.ts` reads the real file,
+  so a token that stops reading fails the tests.
+- **Checked.** `__tests__/app/pkg/a11y.integration.test.ts` renders every
+  screen against a real API and audits its structure: one `h1`, no skipped
+  heading level, the landmarks, a name on every control, button, link and
+  table. `__tests__/e2e/responsive.e2e.test.ts` loads the screens in Chrome
+  at 360px and fails if the page scrolls sideways. Wide tables scroll inside
+  their own region instead.
 
 ## Testing without a socket
 

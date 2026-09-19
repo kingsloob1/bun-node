@@ -543,10 +543,15 @@ describe("the runner screen's access gate", () => {
             : { body: runnerFixture() },
       },
     });
-    expect(await page().findByText("Could not load the runner")).toBeTruthy();
+    // The failure replaces the screen, so it is the screen's h1.
+    expect((await page().findByRole("heading", { level: 1 })).textContent).toBe(
+      "Could not load the runner",
+    );
     fail = false;
     fireEvent.click(page().getByRole("button", { name: "Retry" }));
-    expect(await heading()).toBe("Nightly report");
+    expect(
+      await page().findByRole("heading", { level: 1, name: "Nightly report" }),
+    ).toBeTruthy();
   });
 });
 

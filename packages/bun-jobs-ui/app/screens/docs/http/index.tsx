@@ -280,6 +280,7 @@ export function HttpDocsScreen() {
     return (
       <div className="screen">
         <EmptyState
+          headingLevel={1}
           title="No HTTP documentation"
           description="This API does not serve its OpenAPI document."
         />
@@ -300,6 +301,7 @@ export function HttpDocsScreen() {
     return (
       <div className="screen">
         <ErrorView
+          headingLevel={1}
           error={spec.error}
           title="Could not load the OpenAPI document"
           onRetry={() => void spec.refetch()}

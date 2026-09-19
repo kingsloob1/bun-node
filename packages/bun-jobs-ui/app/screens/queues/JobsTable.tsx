@@ -37,6 +37,7 @@ import { useApiClient } from "../../context";
 import { formatNumber, plural, STATE_LABELS } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";
 import { useUrlTab } from "../../hooks/useUrlTab";
+import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useMeta } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useCanMutate } from "./gating";
@@ -225,6 +226,7 @@ function JobFiltersBar({
           value={search}
           onChange={setSearch}
           placeholder="id or name contains"
+          {...SEARCH_SHORTCUT}
           maxLength={512}
           title={
             searchIndexed

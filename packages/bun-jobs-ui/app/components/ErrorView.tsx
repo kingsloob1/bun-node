@@ -9,10 +9,22 @@ export interface ErrorViewProps {
   title?: string;
   /** Offers a retry button when given. */
   onRetry?: () => void;
+  /**
+   * Render the heading as a heading of this level instead of a paragraph.
+   * Use `1` when the error replaces the whole screen, so it still has its
+   * `h1`. Defaults to none (a paragraph).
+   */
+  headingLevel?: 1 | 2 | 3;
 }
 
 /** Renders a failed request: title, detail, code/status, and validation issues. */
-export function ErrorView({ error, title, onRetry }: ErrorViewProps) {
+export function ErrorView({
+  error,
+  title,
+  onRetry,
+  headingLevel,
+}: ErrorViewProps) {
+  const Title = headingLevel ? (`h${headingLevel}` as const) : "p";
   const api = isApiError(error) ? error : null;
   const heading = title ?? api?.title ?? "Something went wrong";
   const detail =
@@ -22,7 +34,7 @@ export function ErrorView({ error, title, onRetry }: ErrorViewProps) {
       className="error-view"
       role="alert"
     >
-      <p className="error-view-title">{heading}</p>
+      <Title className="error-view-title">{heading}</Title>
       {detail && detail !== heading && (
         <p className="error-view-detail">{detail}</p>
       )}

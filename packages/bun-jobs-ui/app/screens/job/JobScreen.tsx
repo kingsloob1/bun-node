@@ -216,6 +216,7 @@ export function JobNotFound({ queue, id }: { queue: string; id: string }) {
       data-testid="job-not-found"
     >
       <EmptyState
+        headingLevel={1}
         title="Job not found"
         description={
           <>
@@ -245,6 +246,7 @@ export function JobHidden({ queue, detail }: JobHiddenProps) {
       data-testid="job-hidden"
     >
       <EmptyState
+        headingLevel={1}
         title="Job hidden"
         description={
           detail ?? (
@@ -438,6 +440,7 @@ export function JobScreen() {
       ) : job.isError ? (
         <ErrorView
           error={job.error}
+          headingLevel={1}
           title="Could not load the job"
           onRetry={() => void job.refetch()}
         />

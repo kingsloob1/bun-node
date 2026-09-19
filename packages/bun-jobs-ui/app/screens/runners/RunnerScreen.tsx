@@ -58,6 +58,7 @@ export function RunnerHidden({ detail }: RunnerHiddenProps) {
       data-testid="runner-hidden"
     >
       <EmptyState
+        headingLevel={1}
         title="Runner hidden"
         description={detail ?? "You may not read this runner."}
         action={<Link to="/runners">Back to runners</Link>}
@@ -74,6 +75,7 @@ export function RunnerNotFound({ id }: { id: string }) {
       data-testid="runner-not-found"
     >
       <EmptyState
+        headingLevel={1}
         title="Runner not found"
         description={
           <>
@@ -394,6 +396,7 @@ export function RunnerScreen() {
         </>
       ) : detail.isError ? (
         <ErrorView
+          headingLevel={1}
           error={detail.error}
           title="Could not load the runner"
           onRetry={() => void detail.refetch()}

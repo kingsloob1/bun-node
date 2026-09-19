@@ -404,7 +404,9 @@ describe("the Events console", () => {
     await emit(completed("before"));
     const pause = page().getByRole("button", { name: "Pause" });
     fireEvent.click(pause);
-    expect(pause.getAttribute("aria-pressed")).toBe("true");
+    // The same button now offers the opposite, by its label alone.
+    expect(pause.textContent).toBe("Resume");
+    expect(pause.hasAttribute("aria-pressed")).toBe(false);
     await emit(completed("p1"), completed("p2"));
     expect(rows()).toHaveLength(1);
     expect(page().getByTestId("events-held").textContent).toBe("2 held");

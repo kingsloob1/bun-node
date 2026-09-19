@@ -167,3 +167,40 @@ describe("the header badge", () => {
     });
   });
 });
+
+describe("the live-status announcer", () => {
+  /** The polite region beside the badge. */
+  const announcer = () => page().getByTestId("live-status-announcer");
+
+  it("is a polite live region outside the badge, silent on the first render", async () => {
+    live.install(status({ state: "connecting" }));
+    renderApp();
+    await page().findByTestId("live-status");
+    expect(announcer().getAttribute("aria-live")).toBe("polite");
+    expect(announcer().getAttribute("role")).toBeNull();
+    expect(announcer().textContent).toBe("");
+    // The badge's own text is unchanged by it.
+    expect(badge().text).toBe("Connecting…");
+  });
+
+  it("speaks once per state change, not for a new detail in the same state", async () => {
+    live.install(status({ state: "connecting" }));
+    renderApp();
+    await page().findByTestId("live-status");
+
+    await act(async () => live.setStatus({ state: "live", detail: null }));
+    expect(announcer().textContent).toBe("Live updates: Live");
+
+    await act(async () =>
+      live.setStatus({ state: "reconnecting", detail: "Heartbeat missed" }),
+    );
+    expect(announcer().textContent).toBe("Live updates: Reconnecting…");
+
+    // Same state, new detail: the tooltip changes, the region does not.
+    await act(async () =>
+      live.setStatus({ state: "reconnecting", detail: "Closed (1006)" }),
+    );
+    expect(badge().title).toContain("Closed (1006).");
+    expect(announcer().textContent).toBe("Live updates: Reconnecting…");
+  });
+});
