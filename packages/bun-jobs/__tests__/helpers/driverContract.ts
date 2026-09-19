@@ -307,6 +307,77 @@ export function driverContract(
 
         await driver.clearQueuedTriggers(ns, key);
       });
+
+      it("peeks at the head of the queued triggers without taking it", async () => {
+        const key = runnerKey("peeked");
+        const trigger = (id: string, force?: boolean) => ({
+          id,
+          source: "manual" as const,
+          requestedAt: Date.now(),
+          requestedBy: newToken(),
+          ...(force === undefined ? {} : { force }),
+        });
+
+        // Empty reads as `null`, the same convention as a pop.
+        expect(await driver.peekQueuedTrigger(ns, key)).toBeNull();
+
+        await driver.pushQueuedTrigger(ns, key, trigger("first", true), 10);
+        await driver.pushQueuedTrigger(ns, key, trigger("second"), 10);
+        await driver.pushQueuedTrigger(ns, key, trigger("third"), 10);
+
+        // The head, and the head again: looking consumes nothing.
+        const head = await driver.peekQueuedTrigger(ns, key);
+        expect(head).toMatchObject({ id: "first", source: "manual" });
+        expect(head?.force).toBe(true);
+        expect((await driver.peekQueuedTrigger(ns, key))?.id).toBe("first");
+        expect(await driver.countQueuedTriggers(ns, key)).toBe(3);
+
+        // A peek then a pop see the same trigger, whole.
+        expect(await driver.popQueuedTrigger(ns, key)).toEqual(head!);
+
+        // The next head, unforced; absent `force` still reads as absent.
+        const next = await driver.peekQueuedTrigger(ns, key);
+        expect(next?.id).toBe("second");
+        expect(next?.force).toBeUndefined();
+        expect((await driver.popQueuedTrigger(ns, key))?.id).toBe("second");
+
+        // A trigger pushed now lands behind the head, not in front of it.
+        await driver.pushQueuedTrigger(ns, key, trigger("fourth", false), 10);
+        expect((await driver.peekQueuedTrigger(ns, key))?.id).toBe("third");
+        expect((await driver.popQueuedTrigger(ns, key))?.id).toBe("third");
+
+        const last = await driver.peekQueuedTrigger(ns, key);
+        expect(last?.id).toBe("fourth");
+        expect(last?.force).toBe(false);
+        expect((await driver.popQueuedTrigger(ns, key))?.id).toBe("fourth");
+
+        expect(await driver.peekQueuedTrigger(ns, key)).toBeNull();
+        expect(await driver.countQueuedTriggers(ns, key)).toBe(0);
+      });
+
+      it("hands out a peeked head that cannot edit the stored one", async () => {
+        const key = runnerKey("peek-copy");
+
+        await driver.pushQueuedTrigger(
+          ns,
+          key,
+          {
+            id: "kept",
+            source: "manual",
+            requestedAt: Date.now(),
+            requestedBy: newToken(),
+          },
+          10,
+        );
+
+        const head = await driver.peekQueuedTrigger(ns, key);
+        head!.id = "edited";
+        head!.force = true;
+
+        const again = await driver.popQueuedTrigger(ns, key);
+        expect(again?.id).toBe("kept");
+        expect(again?.force).toBeUndefined();
+      });
     });
 
     /* --- jobs -------------------------------------------------------- */
@@ -3655,11 +3726,27 @@ export function driverContract(
         expect(await driver.listHistory(scope, key)).toEqual([]);
         expect(await driver.countQueuedTriggers(scope, key)).toBe(0);
         expect(await driver.popQueuedTrigger(scope, key)).toBeNull();
+        expect(await driver.peekQueuedTrigger(scope, key)).toBeNull();
 
         // Asking about a runner is not the same as having one. The memory
         // driver used to conjure one on any of the reads above, which put
         // every id anyone merely inspected into the listing for good.
         expect(await driver.listRunners(scope)).not.toContain("never-touched");
+        await driver.purge(scope);
+      });
+
+      it("peeks at an unknown runner without creating it", async () => {
+        const scope = testNamespace("peek-unknown");
+        const key = runnerKey("never-peeked");
+
+        // Nothing else touches this runner, so a record that appears can only
+        // have come from the peek.
+        const before = await driver.listRunners(scope);
+        expect(await driver.peekQueuedTrigger(scope, key)).toBeNull();
+        expect(await driver.peekQueuedTrigger(scope, key)).toBeNull();
+        expect(await driver.listRunners(scope)).toEqual(before);
+        expect(await driver.listRunners(scope)).not.toContain("never-peeked");
+        expect(await driver.getState(scope, key)).toEqual({});
         await driver.purge(scope);
       });
 

@@ -327,6 +327,76 @@ describe("repeatable jobs", () => {
   });
 });
 
+describe("a repeat's time zone", () => {
+  /** What `add()` rejected with, for a closer look than `toThrow` gives. */
+  async function refusal(promise: Promise<unknown>): Promise<ConfigError> {
+    try {
+      await promise;
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      return error as ConfigError;
+    }
+    throw new Error("expected a ConfigError");
+  }
+
+  // "Europe/Lagos" is not a zone (Lagos is in Africa/), which makes it the
+  // realistic mistake: close enough to pass a glance.
+  for (const [label, repeat] of [
+    ["an interval series", { every: "1 day", tz: "Europe/Lagos" }],
+    ["an interval in ms", { every: 60_000, tz: "Europe/Lagos" }],
+    ["a cron series", { cron: "0 9 * * *", tz: "Europe/Lagos" }],
+    ["a cron given as every", { every: "0 9 * * *", tz: "Europe/Lagos" }],
+  ] as const) {
+    it(`refuses an unknown zone on ${label}, writing nothing`, async () => {
+      const driver = new MemoryDriver();
+      const namespace = testNamespace();
+      const queue = makeQueue(driver, namespace);
+
+      const error = await refusal(queue.add("digest", {}, { repeat }));
+      expect(error.message).toBe(
+        `repeat.tz does not know the time zone "Europe/Lagos"`,
+      );
+      expect(error.context).toEqual({
+        option: "repeat.tz",
+        tz: "Europe/Lagos",
+      });
+
+      // Refused before the series or its occurrence reached the driver.
+      expect(await queue.listRepeatables()).toEqual([]);
+      expect(await queue.count("delayed")).toBe(0);
+      expect(await queue.count("waiting")).toBe(0);
+    });
+  }
+
+  it("refuses an empty zone rather than reading it as none", async () => {
+    const queue = makeQueue(new MemoryDriver(), testNamespace());
+
+    const error = await refusal(
+      queue.add("digest", {}, { repeat: { every: "1 day", tz: "" } }),
+    );
+    expect(error.message).toBe(`repeat.tz does not know the time zone ""`);
+    expect(await queue.listRepeatables()).toEqual([]);
+  });
+
+  it("keeps a real zone, on an interval series and a cron one", async () => {
+    const queue = makeQueue(new MemoryDriver(), testNamespace());
+
+    await queue.add(
+      "daily",
+      {},
+      { repeat: { every: "1 day", tz: "Africa/Lagos" } },
+    );
+    await queue.add(
+      "nine",
+      {},
+      { repeat: { cron: "0 9 * * *", tz: "Africa/Lagos" } },
+    );
+
+    const zones = (await queue.listRepeatables()).map((series) => series.tz);
+    expect(zones).toEqual(["Africa/Lagos", "Africa/Lagos"]);
+  });
+});
+
 describe("catchUp", () => {
   /**
    * What a series does about occurrences it missed while nothing consumed it.

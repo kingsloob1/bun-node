@@ -132,6 +132,44 @@ export function nextOccurrence(
   return next;
 }
 
+/**
+ * Whether `zone` names a time zone this runtime knows. `Intl` is the
+ * authority the schedule is later read with, so asking it now gives the same
+ * answer that an occurrence would.
+ */
+export function isTimeZone(zone: unknown): zone is string {
+  if (typeof zone !== "string" || zone.length === 0) {
+    return false;
+  }
+
+  try {
+    // eslint-disable-next-line no-new
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuses a time zone this runtime does not know, with a `ConfigError` that
+ * names it: `<where> does not know the time zone "<zone>"`, carrying the zone
+ * as `context.tz` alongside `context`. Every place a repeat's zone arrives
+ * checks it through here, so they all refuse it alike.
+ */
+export function assertTimeZone(
+  zone: unknown,
+  where: string,
+  context: Record<string, unknown> = {},
+): asserts zone is string {
+  if (!isTimeZone(zone)) {
+    throw new ConfigError(
+      `${where} does not know the time zone "${String(zone)}"`,
+      { ...context, tz: zone },
+    );
+  }
+}
+
 /** A repeat with every word read: intervals and instants as milliseconds. */
 export type ResolvedRepeat = Omit<
   RepeatOptions,
@@ -164,6 +202,16 @@ export function resolveRepeat(
   parser?: DateParser,
 ): ResolvedRepeat {
   const { every, startAt, endAt, ...rest } = repeat;
+
+  // Checked first, so a zone the runtime does not know is refused the same
+  // way however the repeat was given (`add()`'s `repeat`, a builder's
+  // `repeatEvery()` or `withOptions()`, a draft) and before anything is
+  // written. A cron series would otherwise fail later, through whatever the
+  // cron parser says, and an interval series would store the zone unread.
+  if (repeat.tz !== undefined) {
+    assertTimeZone(repeat.tz, `${what}.tz`, { option: `${what}.tz` });
+  }
+
   const resolved: ResolvedRepeat = { ...rest };
   let phraseStart: number | undefined;
   let phraseEnd: number | undefined;

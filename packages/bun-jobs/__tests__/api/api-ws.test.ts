@@ -1952,6 +1952,35 @@ describe("review fixes", () => {
     expect(cleaned.subscriptions).toEqual(["queue/q/job/y"]);
   });
 
+  it("#5 carries a single retry to the job's channel", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["queue/q/job/x"] });
+    await client.next("ack");
+    const queue = h.jobs.queue("q");
+    const worker = h.jobs.worker("q", async () => {
+      throw new Error("no");
+    });
+    cleanups.push(() => worker.close({ force: true }));
+    void worker.run();
+    await queue.add("n", {}, { jobId: "x", attempts: 1 });
+    await client.next(
+      "event",
+      (frame) => frame.event.id === "x" && frame.event.type === "failed",
+    );
+    await worker.close();
+    await Bun.sleep(5);
+
+    // `retry(id)`, not `retryJobs`: one job, and the same `retried` event.
+    expect(await queue.retry("x")).toBe(true);
+    const retried = await client.next(
+      "event",
+      (frame) => frame.event.type === "retried",
+    );
+    expect(retried.subscriptions).toEqual(["queue/q/job/x"]);
+    expect(retried.event.payload).toEqual({ ids: ["x"] });
+  });
+
   it("#5 documents on the job channel only the events a job channel carries", async () => {
     const h = await served();
     const doc = h.api.asyncapi() as unknown as {

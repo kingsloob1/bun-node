@@ -1072,7 +1072,7 @@ await queue.add("report", {}, { repeat: { every: "1 hour", startAt: "tomorrow at
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `cron` | `string` | | Five-field cron, or six-field with seconds first. |
-| `tz` | `string` | | The IANA time zone the cron expression is read in. |
+| `tz` | `string` | | The IANA time zone the cron expression is read in. It must be a zone `Intl` knows: `add()` throws `ConfigError` naming it otherwise (`repeat.tz does not know the time zone "…"`), before anything is written, and `repeatEvery(interval, { tz })` throws at the call. |
 | `every` | `number \| string` | | Milliseconds, a duration, a cron expression, or a phrase that may also name a start and end. Dates in the phrase fill `startAt` and `endAt` only when those are not given. |
 | `startAt` / `endAt` | `Date \| number \| string` | | The window, as a date, epoch ms, or words. |
 | `limit` | `number` | | Stop after this many occurrences. |
@@ -2444,6 +2444,14 @@ Each driver reports these figures as
 
 The file driver's `multiHost` is `false` on purpose: its guarantees rest on
 POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
+
+**Custom drivers.** A driver of your own implements `JobsDriver`. Its
+queued-trigger methods include **`peekQueuedTrigger(ns, key)`, which is
+required**: it returns the head of a runner's queued-trigger list, meaning the
+trigger `popQueuedTrigger` would take next, without taking it, or `null` when
+the list is empty. A paused runner uses it to see whether the head was forced
+before popping it. It must be read-only: nothing removed, reordered or
+created, and a runner nobody has written to stays out of `listRunners`.
 
 ### Driver configs
 

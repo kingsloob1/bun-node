@@ -1264,6 +1264,19 @@ export class MongoDriver implements JobsDriver {
     return head ? (JSON.parse(head) as QueuedTrigger) : null;
   }
 
+  async peekQueuedTrigger(
+    ns: string,
+    key: string,
+  ): Promise<QueuedTrigger | null> {
+    const kv = await this.#kv();
+
+    // A find, not an update: the head `$pop: -1` would take, left in place,
+    // and no document is created for a runner that has none.
+    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    const head = document?.queued?.[0];
+    return head ? (JSON.parse(head) as QueuedTrigger) : null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     const kv = await this.#kv();
     const document = await kv.findOne({ _id: this.#stateId(ns, key) });

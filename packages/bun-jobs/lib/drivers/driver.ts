@@ -232,6 +232,23 @@ export interface RunnerDriver {
   ) => Promise<boolean>;
   /** Takes the oldest queued trigger, or `null` when there is none. */
   popQueuedTrigger: (ns: string, key: string) => Promise<QueuedTrigger | null>;
+  /**
+   * The oldest queued trigger (the one {@link popQueuedTrigger} would take
+   * next) **without** taking it, or `null` when there is none.
+   *
+   * It exists so a paused runner can look at the head before committing to
+   * it: a forced trigger (`force === true`) runs despite the pause and is then
+   * popped, while an ordinary one stays where it is, in order, for when the
+   * runner resumes. Popping to look and pushing back would lose the head's
+   * place in the queue and race every other drainer.
+   *
+   * Head only, strict FIFO, and read-only: it never removes, reorders or
+   * creates anything. Asking about a runner the backend does not know returns
+   * `null` and leaves it unknown, so {@link DriverLifecycle.listRunners} does
+   * not change. Required rather than optional, because the runner calls it on
+   * every drain while paused and there is no correct fallback to degrade to.
+   */
+  peekQueuedTrigger: (ns: string, key: string) => Promise<QueuedTrigger | null>;
   /** How many triggers are queued. */
   countQueuedTriggers: (ns: string, key: string) => Promise<number>;
   /** Drops every queued trigger, returning how many were dropped. */

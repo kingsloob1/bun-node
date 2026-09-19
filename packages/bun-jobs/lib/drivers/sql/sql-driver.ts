@@ -1089,6 +1089,15 @@ export class SqlDriver implements JobsDriver {
     return trigger;
   }
 
+  async peekQueuedTrigger(
+    ns: string,
+    key: string,
+  ): Promise<QueuedTrigger | null> {
+    // A plain SELECT, the same on every dialect: nothing is taken, and an
+    // unknown runner gets no row.
+    return (await this.#readState(ns, key)).queued[0] ?? null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return (await this.#readState(ns, key)).queued.length;
   }
