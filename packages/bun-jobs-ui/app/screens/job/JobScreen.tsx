@@ -49,10 +49,56 @@ function isDenied(error: unknown): error is ApiError {
   return isApiError(error) && error.isAuth;
 }
 
-/** The job's progress: a JSON tree for an object, text otherwise. */
-function ProgressValue({ progress }: { progress: unknown }) {
+/** A progress number as text: up to two decimals, in the browser's locale. */
+const progressFormat = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 2,
+});
+
+/**
+ * The bar's fill for a progress number: a percentage clamped to 0–100, since
+ * a processor may report anything (and `NaN` fills nothing).
+ */
+function progressPercent(value: number): number {
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, value));
+}
+
+/**
+ * The job's progress, as `updateProgress()` reports it: a number is a
+ * percentage, shown as a bar with its value; a record is a JSON tree. A store
+ * may hold anything, so any other value is shown as text.
+ */
+export function ProgressValue({ progress }: { progress: unknown }) {
   if (progress === null || progress === undefined) {
     return null;
+  }
+  if (typeof progress === "number") {
+    const percent = progressPercent(progress);
+    const text = `${progressFormat.format(progress)}%`;
+    return (
+      <span
+        className="job-progress"
+        data-testid="job-progress"
+      >
+        <span
+          className="job-progress-bar"
+          role="progressbar"
+          aria-label="Progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          aria-valuetext={text}
+        >
+          <span
+            className="job-progress-fill"
+            style={{ width: `${percent}%` }}
+          />
+        </span>
+        <span className="job-progress-value">{text}</span>
+      </span>
+    );
   }
   if (typeof progress === "object") {
     return (

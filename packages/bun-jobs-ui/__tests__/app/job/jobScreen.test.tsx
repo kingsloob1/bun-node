@@ -136,14 +136,45 @@ describe("the job screen", () => {
     expect(
       page().getByRole("list", { name: "Progress" }).textContent,
     ).toContain("step");
+    expect(page().queryByRole("progressbar")).toBeNull();
   });
 
-  it("shows scalar progress as text", async () => {
-    await renderJobScreen(jobFixture("active", { progress: 42 }), {
+  it("shows number progress as a percentage bar with its value", async () => {
+    await renderJobScreen(jobFixture("active", { progress: 42.5 }), {
       handlers: sideHandlers(),
     });
     await heading();
-    expect(summaryValue("Progress")).toBe("42");
+    expect(summaryValue("Progress")).toBe("42.5%");
+    const bar = page().getByRole("progressbar", { name: "Progress" });
+    expect(bar.getAttribute("aria-valuenow")).toBe("42.5");
+    expect(bar.getAttribute("aria-valuemin")).toBe("0");
+    expect(bar.getAttribute("aria-valuemax")).toBe("100");
+    expect(bar.getAttribute("aria-valuetext")).toBe("42.5%");
+    expect(
+      bar.querySelector<HTMLElement>(".job-progress-fill")!.style.width,
+    ).toBe("42.5%");
+  });
+
+  it("clamps the bar, not the number, for progress outside 0 to 100", async () => {
+    await renderJobScreen(jobFixture("active", { progress: 140 }), {
+      handlers: sideHandlers(),
+    });
+    await heading();
+    expect(summaryValue("Progress")).toBe("140%");
+    expect(
+      page()
+        .getByRole("progressbar", { name: "Progress" })
+        .getAttribute("aria-valuenow"),
+    ).toBe("100");
+  });
+
+  it("shows no bar for object progress, and text for any other stored value", async () => {
+    await renderJobScreen(jobFixture("active", { progress: "half" }), {
+      handlers: sideHandlers(),
+    });
+    await heading();
+    expect(summaryValue("Progress")).toBe("half");
+    expect(page().queryByRole("progressbar")).toBeNull();
   });
 
   it("shows a friendly not-found panel linking back to the queue on 404 JOB_NOT_FOUND", async () => {

@@ -5,6 +5,7 @@ import type {
   AddJobResultDto,
   ChildrenDto,
   DefinitionListDto,
+  FailJobResultDto,
   JobDto,
   JobInclude,
   JobState,
@@ -185,6 +186,25 @@ export function promoteJob(
     "POST",
     `${jobPath(queue, id)}/promote`,
   );
+}
+
+/** Longest `reason` `POST /queues/:queue/jobs/:id/fail` accepts (its schema's `maxLength`). */
+export const FAIL_REASON_MAX_LENGTH = 4096;
+
+/**
+ * `POST /queues/:queue/jobs/:id/fail`: the job goes to `dead` with `reason`
+ * as its failure, whatever attempts it has left. 409 for a job already
+ * completed or dead.
+ */
+export function failJob(
+  api: ApiClient,
+  queue: string,
+  id: string,
+  reason: string,
+): Promise<FailJobResultDto> {
+  return api.request<FailJobResultDto>("POST", `${jobPath(queue, id)}/fail`, {
+    body: { reason },
+  });
 }
 
 /** `POST /queues/:queue/jobs`: 201 `added: true`, or 200 `added: false` when the `jobId` already existed. */
