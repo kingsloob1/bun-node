@@ -31,6 +31,7 @@ const PROJECTS = [
   "packages/bun-jobs-ui/tsconfig.json",
   "packages/bun-jobs-ui/app/tsconfig.json",
   "benchmarks/tsconfig.json",
+  "playground/tsconfig.json",
   "examples/bun-jobs/tsconfig.json",
   "examples/bun-common/tsconfig.json",
   "examples/bun-nest/tsconfig.json",

@@ -1,0 +1,11 @@
+{
+  "name": "bun-node-playground",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A manual playground: bun-jobs, its management API and the bun-jobs-ui app on one BunHttpAdapter, with a live simulation to click through",
+  "scripts": {
+    "start": "bun index.ts",
+    "dev": "bun --watch index.ts"
+  }
+}
