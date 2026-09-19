@@ -28,12 +28,13 @@ const CLIENT_METHODS: ReadonlySet<string> = new Set([
   "DELETE",
 ]);
 
-/** Action verbs whose try-it needs a typed confirmation: they delete or discard work. */
+/** Action verbs whose try-it needs a typed confirmation: they delete, discard or irreversibly end work. */
 const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   "remove",
   "drain",
   "clean",
   "kill",
+  "fail",
 ]);
 
 /** The input a parameter is edited with. */
@@ -377,8 +378,9 @@ export function fetchSnippet(
 
 /**
  * Whether sending an operation needs a TYPED confirmation: a DELETE, or an
- * action whose verb removes or discards work (`jobs.remove`, `queues.drain`,
- * `queues.clean`, `runners.kill`, `repeatables.remove`).
+ * action whose verb removes, discards or irreversibly ends work
+ * (`jobs.remove`, `queues.drain`, `queues.clean`, `runners.kill`,
+ * `repeatables.remove`, `jobs.fail`: a failed job is dead for good).
  */
 export function isDestructive(operation: DocOperation): boolean {
   if (operation.method === "DELETE") {

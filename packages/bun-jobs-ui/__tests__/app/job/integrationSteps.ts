@@ -41,6 +41,17 @@ export interface JobUiHarness {
   retry: () => Promise<void>;
   /** On the open job screen: Remove → confirm; resolves the path it navigated to. */
   remove: () => Promise<string>;
+  /** On the open job screen: Fail… → reason → the typed confirmation → confirm; resolves the success toast's text. */
+  fail: (reason: string, typed: string) => Promise<string>;
+  /**
+   * Renders the queue's repeatables panel and clicks the series' Disable or
+   * Enable; resolves once the list shows the series in its new state.
+   */
+  toggleRepeatable: (
+    queue: string,
+    key: string,
+    to: "disable" | "enable",
+  ) => Promise<void>;
   /** Unmounts whatever is rendered. */
   cleanup: () => void;
 }

@@ -195,4 +195,34 @@ describe("the HTTP reference against a real API", () => {
     expect(removed.text).toContain("No body.");
     expect(await jobs.queue(QUEUE).getJob(removable)).toBeFalsy();
   });
+
+  it("lists the 2.12 routes, and really fails a job from failJob's try-it", async () => {
+    const screen = await load<ScreenModule>(
+      ["..", "docs", "http", "realApiScreen"].join("/"),
+    );
+    const ui = await screen.mountHttpDocs(fetchShim, CSRF);
+    const ids = ui.operations();
+    expect(ids).toContain("failJob");
+    expect(ids).toContain("disableRepeatable");
+    expect(ids).toContain("enableRepeatable");
+
+    const doomed = (
+      await jobs.queue(QUEUE).add("send", { to: "d@example.com" })
+    ).id;
+    await ui.openOperation("failJob");
+    ui.fill("queue", QUEUE);
+    ui.fill("id", doomed);
+    ui.setBody(JSON.stringify({ reason: "from the docs" }));
+    const failed = await ui.send();
+    expect(failed.status).toBe("200");
+    expect(failed.text).toContain("failed");
+    const job = await jobs.queue(QUEUE).getJob(doomed);
+    expect(job?.state).toBe("dead");
+    expect(job?.failedReason?.message).toBe("from the docs");
+
+    // A finished job is refused, and the panel shows the real problem.
+    const again = await ui.send();
+    expect(again.status).toBe("409");
+    expect(again.text).toContain("JOB_STATE_CONFLICT");
+  });
 });

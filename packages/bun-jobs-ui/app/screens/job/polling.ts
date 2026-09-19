@@ -85,6 +85,21 @@ export const JOB_EVENTS: readonly QueueEventName[] = QUEUE_EVENT_TYPES.filter(
 );
 
 /**
+ * Whether a `progress` event's value is one the wire declares: a number, or
+ * a record of fields. Anything else (an array, `null`, a string from a
+ * producer on an older version) refetches the job instead of being written
+ * into it, so the screen shows what the store holds.
+ */
+export function isRunProgress(
+  value: unknown,
+): value is number | Record<string, unknown> {
+  return (
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (typeof value === "object" && value !== null && !Array.isArray(value))
+  );
+}
+
+/**
  * The job screen's live updates, on `queue/<q>/job/<id>`. A state change
  * (or a retry, clean, removal, debounce) invalidates the job's key, which is
  * the prefix of its logs, stack traces and children, so all of them refetch.
@@ -107,6 +122,13 @@ export function useJobLive(queue: string, id: string, enabled: boolean): void {
         return;
       }
       const { progress } = event.payload;
+      if (!isRunProgress(progress)) {
+        void queryClient.invalidateQueries({
+          queryKey: jobKeys.job(queue, id),
+          exact: true,
+        });
+        return;
+      }
       const patch = (job: JobDto | undefined) =>
         job ? { ...job, progress } : job;
       queryClient.setQueryData<JobDto>(jobKeys.job(queue, id), patch);

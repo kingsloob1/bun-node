@@ -9,7 +9,7 @@ import { queueKeys } from "../../app/api/queues";
 import { runnerKeys } from "../../app/api/runners";
 import { POLL_INTERVAL_MS } from "../../app/queryClient";
 import { COUNT_EVENTS, DETAIL_EVENTS } from "../../app/screens/queues/live";
-import { act, page, setupDom, waitFor } from "./dom";
+import { act, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
   AWKWARD_ID,
@@ -313,6 +313,77 @@ describe("live Job screen", () => {
         ?.progress,
     ).toBe(64);
     expect(gets(calls, path)).toBe(before);
+  });
+
+  it("writes object progress into the cached job, and the screen shows it", async () => {
+    const job = fullJobFixture("active", { progress: 10 });
+    const { calls, queryClient } = await renderJobScreen(job);
+    await waitFor(() => expect(live.channels()).toEqual([channel]));
+    await page().findByRole("progressbar", { name: "Progress" });
+    const path = `/queues/emails/jobs/${encodeURIComponent(AWKWARD_ID)}`;
+    const before = gets(calls, path);
+    await emit(
+      queueEvent({
+        type: "progress",
+        target: "emails",
+        id: AWKWARD_ID,
+        payload: { id: AWKWARD_ID, progress: { step: 3, of: 7 } },
+      }),
+    );
+    expect(
+      queryClient.getQueryData<JobDto>(jobKeys.job("emails", AWKWARD_ID))
+        ?.progress,
+    ).toEqual({ step: 3, of: 7 });
+    await waitFor(() =>
+      expect(
+        page().queryByRole("progressbar", { name: "Progress" }),
+      ).toBeNull(),
+    );
+    expect(
+      page().getByRole("list", { name: "Progress" }).textContent,
+    ).toContain("step");
+    expect(gets(calls, path)).toBe(before);
+  });
+
+  it("refetches the job instead of writing a progress value the wire does not declare", async () => {
+    const job = fullJobFixture("active", { progress: 10 });
+    const { calls, queryClient } = await renderJobScreen(job);
+    await waitFor(() => expect(live.channels()).toEqual([channel]));
+    const path = `/queues/emails/jobs/${encodeURIComponent(AWKWARD_ID)}`;
+    const before = gets(calls, path);
+    await emit(
+      queueEvent({
+        type: "progress",
+        target: "emails",
+        id: AWKWARD_ID,
+        payload: { id: AWKWARD_ID, progress: [1, 2] },
+      }),
+    );
+    await waitFor(() => expect(gets(calls, path)).toBe(before + 1));
+    expect(
+      queryClient.getQueryData<JobDto>(jobKeys.job("emails", AWKWARD_ID))
+        ?.progress,
+    ).toBe(10);
+  });
+
+  it("refreshes the screen on the dead event a fail sends", async () => {
+    let state: JobDto["state"] = "active";
+    const { calls } = await renderJobScreen(() => ({
+      body: fullJobFixture(state),
+    }));
+    await waitFor(() => expect(live.channels()).toEqual([channel]));
+    await page().findByRole("button", { name: "Fail…" });
+    const path = `/queues/emails/jobs/${encodeURIComponent(AWKWARD_ID)}`;
+    const before = gets(calls, path);
+    state = "dead";
+    await emit(queueEvent({ type: "dead", target: "emails", id: AWKWARD_ID }));
+    await waitFor(() => expect(gets(calls, path)).toBe(before + 1));
+    // Dead: the fail action is gone, and retry is offered.
+    await waitFor(() =>
+      expect(page().queryByRole("button", { name: "Fail…" })).toBeNull(),
+    );
+    const group = page().getByRole("group", { name: "Job actions" });
+    expect(within(group).getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
   it("relaxes an unfinished job's polling while live", async () => {

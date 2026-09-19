@@ -4,7 +4,13 @@ import { ApiError, isApiError } from "../../api/errors";
 import { STATE_LABELS } from "../../format";
 
 /** A job action whose failures get a plain-language explanation. */
-export type JobAction = "retry" | "promote" | "remove" | "update" | "add";
+export type JobAction =
+  | "retry"
+  | "promote"
+  | "remove"
+  | "update"
+  | "add"
+  | "fail";
 
 /** The past participle of each action, for "cannot be …". */
 const VERBS: Readonly<Record<JobAction, string>> = {
@@ -13,6 +19,7 @@ const VERBS: Readonly<Record<JobAction, string>> = {
   remove: "removed",
   update: "updated",
   add: "added",
+  fail: "failed",
 };
 
 /** What the action needs, said after a state conflict. */
@@ -23,6 +30,7 @@ const REQUIREMENTS: Readonly<Record<JobAction, string>> = {
   update:
     "A new run time applies only to a waiting or delayed job, and “only in” limits the change to the states you picked.",
   add: "",
+  fail: "Only a job that has not completed or died can be failed.",
 };
 
 /** The job's state from a problem's `context.state`, when it names one. */
@@ -47,6 +55,10 @@ export function explainJobError(
       return "It's running: a worker is processing this job right now, so it cannot be removed. Wait for it to finish, then try again.";
     case "JOB_STATE_CONFLICT": {
       const state = conflictState(error);
+      if (action === "fail" && state === "active") {
+        // The API buries an active job only under the lock it read it with.
+        return "A worker claimed the job again while it was being failed, so nothing changed. Refresh and try again.";
+      }
       const where = state
         ? `The job is ${STATE_LABELS[state].toLowerCase()} now`
         : "The job is in another state now";

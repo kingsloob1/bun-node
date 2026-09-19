@@ -7,7 +7,7 @@ import type {
 } from "./integrationSteps";
 import { expect } from "bun:test";
 import { createApiClient } from "../../../app/api/client";
-import { jobScreenPath } from "../../../app/api/jobs";
+import { jobScreenPath, queueScreenPath } from "../../../app/api/jobs";
 import { App } from "../../../app/App";
 import { AppProviders } from "../../../app/providers";
 import { createQueryClient } from "../../../app/queryClient";
@@ -177,6 +177,57 @@ export function createJobUiHarness({
         timeout: STEP_TIMEOUT_MS,
       });
       return window.location.pathname;
+    },
+
+    async fail(reason, typed) {
+      fireEvent.click(
+        within(page().getByRole("group", { name: "Job actions" })).getByRole(
+          "button",
+          { name: "Fail…" },
+        ),
+      );
+      const dialog = await page().findByRole("alertdialog", {
+        name: "Fail this job?",
+      });
+      fireEvent.change(within(dialog).getByLabelText(labelled("Reason")), {
+        target: { value: reason },
+      });
+      fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+        target: { value: typed },
+      });
+      await act(async () => {
+        fireEvent.click(
+          within(dialog).getByRole("button", { name: "Fail job" }),
+        );
+      });
+      await waitFor(
+        () => expect(page().queryByRole("alertdialog")).toBeNull(),
+        { timeout: STEP_TIMEOUT_MS },
+      );
+      const toasts = document.querySelector(
+        '.toast-viewport [aria-live="polite"]',
+      );
+      return toasts?.textContent ?? "";
+    },
+
+    async toggleRepeatable(queue, key, to) {
+      visit(`/jobs${queueScreenPath(queue)}?panel=repeatables`);
+      mount(<App />);
+      const label = to === "disable" ? "Disable" : "Enable";
+      const button = await page().findByRole(
+        "button",
+        { name: `${label} repeatable ${key}` },
+        { timeout: STEP_TIMEOUT_MS },
+      );
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      const other = to === "disable" ? "Enable" : "Disable";
+      await page().findByRole(
+        "button",
+        { name: `${other} repeatable ${key}` },
+        { timeout: STEP_TIMEOUT_MS },
+      );
     },
 
     cleanup: () => cleanup(),

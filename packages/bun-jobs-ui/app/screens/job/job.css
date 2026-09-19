@@ -230,3 +230,41 @@
     grid-column: 1 / -1;
   }
 }
+
+.job-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}
+
+.job-note-warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.job-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.job-progress-bar {
+  display: inline-block;
+  width: 8rem;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.job-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.job-progress-value {
+  font-variant-numeric: tabular-nums;
+}

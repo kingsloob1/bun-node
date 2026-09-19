@@ -103,7 +103,7 @@ API docs in M5.
 | `/` | The Overview: namespace-wide counts per state (`GET /overview`) and a filterable queue table, with a 60-minute throughput sparkline per row. When the caller has no Overview entry, `/` redirects to the first nav entry, or says there is nothing to show. |
 | `/queues` | Every queue, searchable by name (case-insensitive) and paged. Each row links to its queue. |
 | `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions) and the detail panels: limits, workers, throughput and repeatables. |
-| `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Remove and Edit. |
+| `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Fail…, Remove and Edit. |
 | `/runners` | Every runner in the namespace (`GET /runners`): local ones first, with their name and status, then remote ones by id. Filtered by id or name in the browser, with no paging. Each row links to its runner. |
 | `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. |
 | `/events` | The Events console: a live tail of the API's socket. Pick a channel (`all` in mode `both`, `queues`, one queue from the queue list, one job by queue and id, `runners`, or one runner from the runner list) and filter by event type. Rows show the time, kind and type, the target (linked to its queue or runner), the id (a job links to its screen) and the payload. The log keeps the latest 500 rows, newest first; Pause holds up to 500 more (the rest are counted as dropped) until Resume, and Clear empties it. A channel the server refuses shows its code and reason, and a `gap` shows inline as `gap: <reason>`. When the log is empty it says why: producers not publishing, `events: "local"`, or live updates off. |
@@ -112,6 +112,34 @@ API docs in M5.
 | `/docs/http/:operationId` | One operation: method, path and operationId, the permission marker, whether it is a mutation, its CSRF rules and the driver methods it needs, its parameters, body and responses as schema trees, and its try-it panel. An operationId the document lacks shows "No such operation" (the API prunes operations by its mode, read-only setting and actions). |
 | `/docs/ws` | The WebSocket reference, from the API's AsyncAPI 3.0 document: the title and version, the server (URL, host, path, protocol, subprotocol) and security panels, then a searchable sidebar of the connection's panels, channels, operations, control messages and event messages. With no item, the connection channel is shown. |
 | `/docs/ws/:item` | One item, by slug: `channel-<key>`, `operation-<key>` or `message-<key>` (e.g. `message-queue.completed`), or one of the connection's panels, `limits`, `close-codes` and `upgrade-refusals`. A slug the document has nothing for shows "No such item". |
+
+### Failing a job, and disabling a repeat series
+
+**Fail…** on the job screen sends the job to `dead` for good
+(`POST /queues/:queue/jobs/:id/fail`), whatever attempts it has left. It is
+offered for a job in any state but `completed` and `dead`, the two the API
+refuses, and it is a danger dialog: a **Reason** is required (1 to 4,096
+characters, trimmed, recorded as the job's failure), and the job's id must be
+typed to confirm. An id longer than 40 characters is confirmed by typing its
+last 8 instead, since ids run to 1,024. For an `active` job the dialog warns
+that failing it does not stop its code: the worker loses the job's lock at its
+next heartbeat and the attempt's signal is aborted, but the processor runs on
+until it returns, and whatever it returns or throws is discarded. A 409 says
+what state the job is in now, and a 404 that it no longer exists; the job
+screen refreshes on the `dead` event that follows, and on the success itself.
+
+The **Repeatables** panel marks a disabled series with a **Disabled** badge,
+and its next run reads "paused (disabled)" instead of a time. **Disable**
+(`POST /queues/:queue/repeatables/:key/disable`) removes the series' pending
+occurrence and schedules nothing more until **Enable**
+(`POST …/enable`) schedules the next one from now; occurrences missed
+meanwhile are not run. Both are idempotent, so neither asks for a
+confirmation. A 404 means the series no longer exists.
+
+Progress is shown as the job reported it: a number as a percentage bar with
+its value (the bar clamped to 0–100, the number not), a record of fields as
+a JSON tree. Live, a `progress` event writes the new value into the job
+screen without a refetch.
 
 ### URL parameters
 
@@ -209,8 +237,10 @@ authority, since the map is never asked about one particular job.
 | HTTP operation's permission marker, "You have" / "You lack" | the operation's `x-bun-jobs-action`, looked up in the untargeted map |
 | WebSocket channel's and operation's permission markers, "You have this" / "You lack this" | the operation's `x-bun-jobs-action`, looked up in the untargeted map; one the UI does not know shows "Not an action this UI knows" |
 | HTTP try-it Send | the method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `meta.readOnly` false for a mutation (`x-bun-jobs-mutation`); and the operation's `x-bun-jobs-action` (untargeted), reads included. Otherwise the panel is disabled, with the reason shown |
-| HTTP try-it confirmation | every mutation asks first; a `DELETE`, or an action whose verb is `remove`, `drain`, `clean` or `kill`, needs its operationId typed |
+| HTTP try-it confirmation | every mutation asks first; a `DELETE`, or an action whose verb is `remove`, `drain`, `clean`, `kill` or `fail`, needs its operationId typed |
 | WebSocket try-it, "Open in the Events console" | the Events nav entry: `sections.manage`, `meta.websocket` and `events.connect` (untargeted); otherwise a note says the console is not available. A channel's link also needs each parameter filled and passing the document's `x-bun-jobs-schema` (for an older API without it, the client's name rule), and a channel `meta.mode` offers; a parameter that fails disables the link, with the reason shown. The connection channel has no try-it: there is nothing to subscribe to |
+| Job Fail… | mutation `jobs.fail`, and the job is not `completed` or `dead` |
+| Repeatables panel, Disable / Enable | `repeatables.list`, and mutation `repeatables.disable` / `repeatables.enable`: Disable shows on an enabled series, Enable on a disabled one |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but

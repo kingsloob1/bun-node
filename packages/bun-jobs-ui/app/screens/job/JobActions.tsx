@@ -15,12 +15,13 @@ import { Checkbox } from "../../components/inputs";
 import { useApiClient } from "../../context";
 import { useApiMutation } from "../../hooks/useApiMutation";
 import { useNavigate } from "../../routing";
+import { FailJobDialog } from "./FailJobDialog";
 import { withFriendlyErrors } from "./jobErrors";
 import { useJobActionGates } from "./jobGates";
 import { UpdateJobDialog } from "./UpdateJobDialog";
 
 /** The dialog currently open, if any. */
-type OpenDialog = "retry" | "remove" | "update" | null;
+type OpenDialog = "retry" | "remove" | "update" | "fail" | null;
 
 /** The job's action buttons and their dialogs. Renders nothing when no action is allowed. */
 export function JobActions({ job }: { job: JobDto }) {
@@ -66,7 +67,13 @@ export function JobActions({ job }: { job: JobDto }) {
     },
   });
 
-  if (!gates.retry && !gates.promote && !gates.remove && !gates.update) {
+  if (
+    !gates.retry &&
+    !gates.promote &&
+    !gates.remove &&
+    !gates.update &&
+    !gates.fail
+  ) {
     return null;
   }
   return (
@@ -95,6 +102,14 @@ export function JobActions({ job }: { job: JobDto }) {
         </Button>
       )}
       {gates.update && <Button onClick={() => setOpen("update")}>Edit</Button>}
+      {gates.fail && (
+        <Button
+          variant="danger"
+          onClick={() => setOpen("fail")}
+        >
+          Fail…
+        </Button>
+      )}
       {gates.remove && (
         <Button
           variant="danger"
@@ -135,6 +150,12 @@ export function JobActions({ job }: { job: JobDto }) {
         confirmLabel="Remove"
         pendingLabel="Removing…"
         onConfirm={() => remove.mutateAsync()}
+      />
+
+      <FailJobDialog
+        job={job}
+        open={open === "fail"}
+        onClose={() => setOpen(null)}
       />
 
       <UpdateJobDialog

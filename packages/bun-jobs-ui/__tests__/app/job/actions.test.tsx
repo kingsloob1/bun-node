@@ -2,10 +2,21 @@ import type { JobsApiAction } from "../../../app/api/contract";
 import type { JobDto } from "../../../app/api/types";
 import type { MockHandler, MockReply, RecordedCall } from "../mockFetch";
 import { describe, expect, it, spyOn } from "bun:test";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { JOB_STATES } from "../../../app/api/contract";
+import { failConfirmation } from "../../../app/screens/job/failConfirm";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  page,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { problem } from "../fixtures";
 import {
   allPermissions,
+  AWKWARD_ID,
   AWKWARD_ID_ENCODED,
   jobApiPath,
   jobFixture,
@@ -213,6 +224,204 @@ describe("remove", () => {
   });
 });
 
+/** Opens the fail dialog, fills the reason, types the confirmation and confirms. */
+async function failWith(reason: string, typed = AWKWARD_ID) {
+  clickAction("Fail…");
+  const dialog = await page().findByRole("alertdialog", {
+    name: "Fail this job?",
+  });
+  fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+    target: { value: reason },
+  });
+  fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+    target: { value: typed },
+  });
+  await act(async () => {
+    fireEvent.click(within(dialog).getByRole("button", { name: "Fail job" }));
+  });
+  return dialog;
+}
+
+describe("fail", () => {
+  it("needs a reason and the typed id, then POSTs the reason, toasts and invalidates", async () => {
+    const { calls, invalidate } = await renderActions(jobFixture("waiting"), {
+      [`POST ${jobApiPath()}/fail`]: { body: { failed: true } },
+    });
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    const confirm = within(dialog).getByRole("button", { name: "Fail job" });
+    const reason = within(dialog).getByLabelText(/Reason/) as HTMLInputElement;
+    expect(reason.required).toBe(true);
+    expect(within(dialog).getByText(/At most 4,096 characters/)).toBeTruthy();
+    // No running-code note for a job that is not active.
+    expect(within(dialog).queryByTestId("fail-active-note")).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+      target: { value: AWKWARD_ID },
+    });
+    // The id alone is not enough: a reason is required.
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(reason, { target: { value: "   " } });
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(reason, { target: { value: "  customer cancelled " } });
+    expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    await waitFor(() => expect(page().queryByRole("alertdialog")).toBeNull());
+    const call = callTo(calls, "POST", "/fail")!;
+    expect(call.path).toBe(`/queues/emails/jobs/${AWKWARD_ID_ENCODED}/fail`);
+    expect(JSON.parse(call.body!)).toEqual({ reason: "customer cancelled" });
+    await waitFor(() => expect(toastText().polite).toContain("Job failed"));
+    expectInvalidated(invalidate);
+  });
+
+  it("keeps confirm disabled while the typed id is wrong", async () => {
+    await renderActions(jobFixture("delayed"));
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+      target: { value: "no" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+      target: { value: "welcome/42" },
+    });
+    expect(
+      (
+        within(dialog).getByRole("button", {
+          name: "Fail job",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("refuses a reason over 4096 characters in place", async () => {
+    await renderActions(jobFixture("waiting"));
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+      target: { value: "x".repeat(4097) },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+      target: { value: AWKWARD_ID },
+    });
+    expect(
+      (
+        within(dialog).getByRole("button", {
+          name: "Fail job",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(dialog.textContent).toContain("At most 4,096 characters.");
+  });
+
+  it("warns that failing an active job does not stop its code", async () => {
+    await renderActions(jobFixture("active"));
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    expect(
+      within(dialog).getByTestId("fail-active-note").textContent,
+    ).toContain("does not stop its code");
+  });
+
+  it("explains a 409 JOB_STATE_CONFLICT with the job's state, and stays open", async () => {
+    await renderActions(jobFixture("waiting"), {
+      [`POST ${jobApiPath()}/fail`]: {
+        status: 409,
+        body: problem(409, "JOB_STATE_CONFLICT", "Job state conflict", {
+          context: { state: "completed" },
+        }),
+      },
+    });
+    const dialog = await failWith("stop");
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain(
+      "The job is completed now, so it cannot be failed. Only a job that has not completed or died can be failed.",
+    );
+  });
+
+  it("explains a 409 for an active job whose lock changed", async () => {
+    await renderActions(jobFixture("active"), {
+      [`POST ${jobApiPath()}/fail`]: {
+        status: 409,
+        body: problem(409, "JOB_STATE_CONFLICT", "Job state conflict", {
+          context: { state: "active" },
+        }),
+      },
+    });
+    const dialog = await failWith("stop");
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A worker claimed the job again while it was being failed",
+    );
+  });
+
+  it("explains a 404 JOB_NOT_FOUND", async () => {
+    await renderActions(jobFixture("waiting"), {
+      [`POST ${jobApiPath()}/fail`]: {
+        status: 404,
+        body: problem(404, "JOB_NOT_FOUND", "Job not found"),
+      },
+    });
+    const dialog = await failWith("stop");
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toContain("The job no longer exists");
+  });
+
+  it("asks for a long id's last characters instead of the whole id", async () => {
+    const id = `order/${"x".repeat(60)}-tail1234`;
+    expect(failConfirmation(id)).toEqual({ text: "tail1234", whole: false });
+    expect(failConfirmation(AWKWARD_ID)).toEqual({
+      text: AWKWARD_ID,
+      whole: true,
+    });
+    // Code points, not UTF-16 units: a surrogate pair is never split.
+    expect(failConfirmation(`${"a".repeat(41)}🙂bcdefgh`).text).toBe(
+      "🙂bcdefgh",
+    );
+    const path = jobApiPath(id);
+    const { calls } = await renderActions(
+      jobFixture("waiting", { id }),
+      {
+        [`GET ${path}`]: { body: jobFixture("waiting", { id }) },
+        [`GET ${path}/logs`]: { body: logPage(0, 100, "asc", 0) },
+        [`POST ${path}/fail`]: { body: { failed: true } },
+      },
+      { id },
+    );
+    clickAction("Fail…");
+    const dialog = await page().findByRole("alertdialog", {
+      name: "Fail this job?",
+    });
+    expect(dialog.textContent).toContain(
+      "Type the id's last 8 characters, tail1234, to confirm",
+    );
+    fireEvent.change(within(dialog).getByLabelText(/Reason/), {
+      target: { value: "stop" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/to confirm/), {
+      target: { value: "tail1234" },
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Fail job" }));
+    });
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (call) => call.method === "POST" && call.path === `${path}/fail`,
+        ),
+      ).toBe(true),
+    );
+  });
+});
+
 describe("gating", () => {
   /** The action buttons offered for a failed job with `actions` overridden. */
   async function offered(
@@ -243,32 +452,64 @@ describe("gating", () => {
   }
 
   it("offers every allowed action", async () => {
-    expect(await offered({})).toEqual(["Retry", "Edit", "Remove"]);
+    expect(await offered({})).toEqual(["Retry", "Edit", "Fail…", "Remove"]);
   });
 
   it("drops retry without jobs.retry", async () => {
-    expect(await offered({ "jobs.retry": false })).toEqual(["Edit", "Remove"]);
+    expect(await offered({ "jobs.retry": false })).toEqual([
+      "Edit",
+      "Fail…",
+      "Remove",
+    ]);
   });
 
   it("drops promote without jobs.promote", async () => {
     expect(
       await offered({ "jobs.promote": false }, { state: "delayed" }),
-    ).toEqual(["Edit", "Remove"]);
+    ).toEqual(["Edit", "Fail…", "Remove"]);
   });
 
   it("drops remove without jobs.remove", async () => {
-    expect(await offered({ "jobs.remove": false })).toEqual(["Retry", "Edit"]);
+    expect(await offered({ "jobs.remove": false })).toEqual([
+      "Retry",
+      "Edit",
+      "Fail…",
+    ]);
   });
 
   it("drops edit without jobs.update, or without features.update", async () => {
     expect(await offered({ "jobs.update": false })).toEqual([
       "Retry",
+      "Fail…",
       "Remove",
     ]);
   });
 
   it("drops edit without features.update", async () => {
-    expect(await offered({}, { update: false })).toEqual(["Retry", "Remove"]);
+    expect(await offered({}, { update: false })).toEqual([
+      "Retry",
+      "Fail…",
+      "Remove",
+    ]);
+  });
+
+  it("drops fail without jobs.fail", async () => {
+    expect(await offered({ "jobs.fail": false })).toEqual([
+      "Retry",
+      "Edit",
+      "Remove",
+    ]);
+  });
+
+  it("offers fail in every state but completed and dead", async () => {
+    for (const state of JOB_STATES) {
+      const names = await offered({}, { state });
+      expect({ state, fail: names.includes("Fail…") }).toEqual({
+        state,
+        fail: state !== "completed" && state !== "dead",
+      });
+      cleanup();
+    }
   });
 
   it("offers nothing when the API is read-only", async () => {
