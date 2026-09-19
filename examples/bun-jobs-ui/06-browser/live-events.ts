@@ -1,7 +1,8 @@
 /**
  * Live updates in a real browser: the header's live badge, the Events
- * console tailing a queue as a real worker completes a job, and the badge
- * staying off, with its reason, on hosts that cannot or may not connect.
+ * console tailing a queue as a real worker completes a job, its `types`
+ * filter read from the URL, and the badge staying off, with its reason, on
+ * hosts that cannot, may not, or need not connect.
  *
  * ```bash
  * bun 06-browser/live-events.ts
@@ -13,7 +14,7 @@
  * and **skips** (prints `skipped:` and exits 0) when there is no
  * `Bun.WebView`, no Chrome, or Chrome will not start.
  *
- * Four hosts over one set of jobs, each an API and the UI on its own port:
+ * Five hosts over one set of jobs, each an API and the UI on its own port:
  *
  * | Host        | API                                     | Badge                        |
  * |-------------|-----------------------------------------|------------------------------|
@@ -21,6 +22,7 @@
  * | `socketless`| `websocket: false`                      | `off`: no socket             |
  * | `refused`   | a socket, but `events.connect` refused  | `off`: may not connect       |
  * | `silent`    | a socket, but nothing publishes events  | `off`: nothing publishes     |
+ * | `docsOnly`  | as `live`, but the UI is `sections: { manage: false }` | `off`: documentation only |
  *
  * What makes it work:
  *
@@ -37,6 +39,17 @@
  *   events that are only this process's own (`events: "local"`, as on the
  *   memory driver used here) *and* nobody publishing, the badge is `off` and
  *   its tooltip says why. No upgrade is attempted: this example counts them.
+ * - **A docs-only UI opens no socket.** Mounted with `sections: { manage:
+ *   false }` it has no screen that live events would refresh, so even over
+ *   an API that could serve them the badge is `off`, "Live updates are off:
+ *   this UI shows documentation only", and the host sees no upgrade.
+ * - **`types` in the URL takes bare or prefixed names.** `queue.completed`
+ *   and `runner.failed` name their family; the console rewrites the URL with
+ *   the bare name (`completed`). A name that is no event type, or one the
+ *   channel does not carry, is ignored and named in
+ *   `data-testid="events-types-ignored"`, and stays in the URL so the note
+ *   survives a reload. With nothing valid left, every type shows, and the
+ *   note ends "Showing every type."
  * - **The badge is `data-testid="live-status"`**, with `data-state` one of
  *   `off`, `connecting`, `live`, `reconnecting` or `refused`, and its text
  *   `Live`, `Connecting…`, `Reconnecting…` or `Polling 5s`. On the memory
@@ -50,6 +63,7 @@
  *   what `authorize` was asked.
  */
 import type { JobsApiAuthorize } from "@kingsleyweb/bun-jobs";
+import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
@@ -120,7 +134,14 @@ interface Host {
  */
 async function serveHost(
   context: BunJobs,
-  options: { websocket?: false; refuse?: readonly string[] } = {},
+  options: {
+    /** `false` builds the API with no socket. */
+    websocket?: false;
+    /** Socket actions `authorize` refuses. */
+    refuse?: readonly string[];
+    /** The UI's sections; both on when absent. */
+    sections?: Partial<UiSections>;
+  } = {},
 ): Promise<Host> {
   const socketCalls: SocketCall[] = [];
   const upgrades: string[] = [];
@@ -143,7 +164,11 @@ async function serveHost(
     ...(options.websocket === false ? { websocket: false as const } : {}),
     logger: noopLogger,
   });
-  const ui = jobsUi({ api, logger: noopLogger });
+  const ui = jobsUi({
+    api,
+    logger: noopLogger,
+    ...(options.sections ? { sections: options.sections } : {}),
+  });
   const app = new BunHttpAdapter(0, { logger: noopLogger });
   // Ahead of everything, so it sees every upgrade whatever the answer.
   app.use((req, _res, next) => {
@@ -175,7 +200,11 @@ const live = await serveHost(jobs);
 const socketless = await serveHost(jobs, { websocket: false });
 const refused = await serveHost(jobs, { refuse: ["events.connect"] });
 const silent = await serveHost(silentJobs);
-const hosts = [live, socketless, refused, silent];
+// Everything `live` has, but the UI shows documentation only.
+const docsOnly = await serveHost(jobs, {
+  sections: { manage: false, docs: true },
+});
+const hosts = [live, socketless, refused, silent, docsOnly];
 
 /** Winds everything down. */
 async function shutdown(view?: Bun.WebView): Promise<void> {
@@ -287,6 +316,28 @@ function subscribes(host: Host, channel: string): number {
 function socketUpgrades(host: Host): string[] {
   return host.upgrades.filter((url) => url.startsWith("/jobs-api/ws"));
 }
+
+/**
+ * Page-side: resolves the value of `expression` once `accept(value)` holds,
+ * or the last value after `ms`, so a failed check shows what the page had.
+ */
+function until(expression: string, accept: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const value = ${expression};
+      if ((${accept})(value) || Date.now() > deadline) return resolve(value);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Page-side: the `types` URL parameter, as the page's location has it now. */
+const TYPES_PARAM = `new URLSearchParams(location.search).get("types")`;
+
+/** Page-side: the ignored-types note's text, or `null` while there is none. */
+const IGNORED_NOTE = `document.querySelector('[data-testid="events-types-ignored"]')?.textContent.trim() ?? null`;
 
 /** The Events console's actions (Pause, Resume, Clear). */
 const LOG_ACTIONS = ".events-actions";
@@ -432,6 +483,66 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
+  step("types= in the URL: prefixed names written bare, unknown ones named");
+
+  const eventsUrl = (types: string) =>
+    `${live.origin}${live.uiBase}/events?channel=${encodeURIComponent(CHANNEL)}&types=${encodeURIComponent(types)}`;
+
+  await view.navigate(eventsUrl("queue.completed,bogus"));
+  check(
+    "the Events console renders",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="events-screen"]'),
+    ),
+    pageConsole,
+  );
+  checkEqual(
+    "types=queue.completed,bogus is rewritten to completed,bogus: the prefix goes, bogus stays",
+    await view.evaluate<string | null>(
+      until(TYPES_PARAM, `(value) => value === "completed,bogus"`),
+    ),
+    "completed,bogus",
+  );
+  const mixedNote = await view.evaluate<string | null>(
+    until(IGNORED_NOTE, `(value) => value !== null`),
+  );
+  show("events-types-ignored", mixedNote);
+  check(
+    "the events-types-ignored note names bogus as no event type",
+    mixedNote?.includes("bogus (not an event type)") === true,
+    mixedNote,
+  );
+  check(
+    'completed is still a filter, so the note does not say "Showing every type."',
+    mixedNote !== null && !mixedNote.endsWith("Showing every type."),
+    mixedNote,
+  );
+
+  await view.navigate(eventsUrl("bogus,runner.failed"));
+  const allNote = await view.evaluate<string | null>(
+    until(
+      IGNORED_NOTE,
+      `(value) => value !== null && value.includes("runner.failed")`,
+    ),
+  );
+  show("events-types-ignored", allNote);
+  check(
+    `runner.failed is a type ${CHANNEL} does not carry`,
+    allNote?.includes(`runner.failed (${CHANNEL} does not carry it)`) === true,
+    allNote,
+  );
+  check(
+    'with nothing valid left, the note ends "Showing every type."',
+    allNote?.endsWith("Showing every type.") === true,
+    allNote,
+  );
+  checkEqual(
+    "and both names stay in the URL, so the note survives a reload",
+    await view.evaluate<string | null>(TYPES_PARAM),
+    "bogus,runner.failed",
+  );
+
+  /* ---------------------------------------------------------------- */
   step("websocket: false — no socket, so polling");
 
   await view.navigate(`${socketless.origin}${socketless.uiBase}/`);
@@ -518,10 +629,40 @@ try {
     silentBadge.title,
   );
 
+  /* ---------------------------------------------------------------- */
+  step("A docs-only UI — no live screen, so no socket");
+
+  await view.navigate(`${docsOnly.origin}${docsOnly.uiBase}/`);
+  check(
+    "the app is ready (data-testid=app-ready)",
+    await view.evaluate<boolean>(waitForSelector('[data-testid="app-ready"]')),
+    pageConsole,
+  );
+  check(
+    'the badge still renders, data-state="off"',
+    await view.evaluate<boolean>(waitForSelector(badgeIn("off"))),
+    pageConsole,
+  );
+  const docsBadge = await view.evaluate<Badge>(BADGE);
+  show("badge", docsBadge);
+  check(
+    "its tooltip: Live updates are off: this UI shows documentation only",
+    docsBadge.title?.includes(
+      "Live updates are off: this UI shows documentation only",
+    ) === true,
+    docsBadge.title,
+  );
+  check(
+    "no Events entry in the nav",
+    !(await view.evaluate<boolean>(
+      waitForSelector(`nav a[href="${docsOnly.uiBase}/events"]`, 0),
+    )),
+  );
+
   checkEqual(
-    "none of the three off hosts was ever asked to upgrade",
-    [socketless, refused, silent].map((host) => socketUpgrades(host)),
-    [[], [], []],
+    "none of the four off hosts was ever asked to upgrade, though docsOnly's API has a socket",
+    [socketless, refused, silent, docsOnly].map((host) => socketUpgrades(host)),
+    [[], [], [], []],
   );
 } catch (error) {
   console.log(`page console:\n${pageConsole.join("\n")}`);
