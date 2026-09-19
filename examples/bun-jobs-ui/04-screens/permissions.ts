@@ -86,7 +86,11 @@
  *   are there whatever the caller holds, and say so: the permission marker
  *   reads "You lack", a try-it the caller may not send is **disabled, with
  *   the reason**, and a WebSocket try-it without the Events console is a
- *   **note**. So a gate here also says what shows when it is closed
+ *   **note**. A channel's link is disabled, with the reason, until each
+ *   parameter is filled and passes the document's `x-bun-jobs-schema` (the
+ *   client's name rule for an older API). The connection channel (the one
+ *   carrying the upgrade binding, or a socket-path address) has no try-it at
+ *   all: there is nothing to subscribe to. So a gate here also says what shows when it is closed
  *   (`denied`), and the table check compares that as well. Those gates are
  *   decided per documented operation, always on the untargeted map
  *   (`map: "operation"`): an operation names no one queue or runner.
@@ -114,7 +118,11 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
-import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
+import {
+  encodeJobId,
+  MAX_NAME_LENGTH,
+  NAME_PARAM_PATTERN,
+} from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
@@ -381,11 +389,18 @@ interface DocItem {
   mutation?: boolean;
   /**
    * A WebSocket channel's address as try-it filled it, or `null` while a
-   * parameter is empty or refused by its `x-bun-jobs-schema` (and for the
-   * connection channel, which has no link). Absent for anything that is not
-   * a channel: an HTTP operation, or a WebSocket operation or message.
+   * parameter is empty or refused by its `x-bun-jobs-schema` (the client's
+   * name rule for an API older than the extension). Absent for anything that
+   * is not a channel: an HTTP operation, or a WebSocket operation or message.
    */
   address?: string | null;
+  /**
+   * The channel is the connection: it carries the WebSocket binding's upgrade
+   * `method`, or its address is a socket path (`/...`). There is nothing to
+   * subscribe to, so its page has no try-it at all, not even a disabled one.
+   * Absent (false) for every other item.
+   */
+  connection?: boolean;
 }
 
 /**
@@ -496,9 +511,16 @@ interface Gate {
   readonly inMode?: boolean;
   /**
    * The element exists only on a WebSocket channel's page (a channel's
-   * try-it): on any other item it is absent, whatever `denied` says.
+   * try-it), and not on the connection channel's: on any other item it is
+   * absent, whatever `denied` says.
    */
   readonly channelOnly?: boolean;
+  /**
+   * Every parameter of the channel filled and passing its
+   * `x-bun-jobs-schema` (the client's name rule without one): the item's
+   * `address` is a string, not `null`.
+   */
+  readonly itemSchema?: boolean;
   /**
    * With `itemAction`: an action outside the contract's list shows its own
    * marker, "Not an action this UI knows", instead of "You lack".
@@ -944,8 +966,9 @@ const GATES = [
     itemKind: "ws",
     channelOnly: true,
     inMode: true,
-    // Filled, and every value held to its x-bun-jobs-schema.
-    when: ({ item }) => typeof item?.address === "string",
+    // Filled, and every value held to its x-bun-jobs-schema; one that fails
+    // disables the link, with the reason shown.
+    itemSchema: true,
     denied: "disabled",
   },
 ] as const satisfies readonly Gate[];
@@ -1028,6 +1051,14 @@ function verbOf(action: string | undefined): string {
   return action?.split(".").pop() ?? "";
 }
 
+/**
+ * Whether `item` is a page a `channelOnly` gate can be on: a channel's, and
+ * not the connection's (which has no try-it).
+ */
+function hasTryIt(item: DocItem | undefined): boolean {
+  return item?.address !== undefined && item.connection !== true;
+}
+
 /** Whether a documented item passes the gate's item rules. */
 function itemAllows(
   gate: Gate,
@@ -1043,7 +1074,8 @@ function itemAllows(
   }
   const action = item.action;
   return (
-    (!gate.channelOnly || item.address !== undefined) &&
+    (!gate.channelOnly || hasTryIt(item)) &&
+    (!gate.itemSchema || typeof item.address === "string") &&
     (!gate.forMutation || item.mutation === true) &&
     (gate.methods === undefined || gate.methods.includes(item.method ?? "")) &&
     (!gate.itemMutation || !(item.mutation === true && meta.readOnly)) &&
@@ -1078,7 +1110,7 @@ function gateState(gate: Gate, inputs: ScreenInputs): GateState {
   const onScreen =
     (screen === undefined || isOpen(screen, inputs)) &&
     mapFor(gate, inputs) !== undefined &&
-    (!gate.channelOnly || inputs.item?.address !== undefined);
+    (!gate.channelOnly || hasTryIt(inputs.item));
   if (!onScreen) {
     return "absent";
   }
@@ -1273,6 +1305,7 @@ function needsOfGates(gates: readonly Gate[]) {
       gates.flatMap((gate) => [
         ...(gate.itemAction ? ["x-bun-jobs-action"] : []),
         ...(gate.itemMutation ? ["x-bun-jobs-mutation"] : []),
+        ...(gate.itemSchema ? ["x-bun-jobs-schema"] : []),
       ]),
     ),
     shownWhenDenied: gates.some(
@@ -1911,36 +1944,54 @@ checkEqual(
   ["absent", "absent", "absent", "absent"],
 );
 
+/** A channel parameter's `x-bun-jobs-schema`: the keywords try-it holds a value to. */
+interface ParameterSchema {
+  /** A pattern the value must match. */
+  pattern?: string;
+  /** The fewest characters (code points, as JSON Schema counts). */
+  minLength?: number;
+  /** The most characters (code points). */
+  maxLength?: number;
+}
+
+/** One AsyncAPI channel, as try-it reads it. */
+interface WsChannelInfo {
+  /** The address template, e.g. `queue/{queue}`. */
+  address: string;
+  /** Each parameter's `x-bun-jobs-schema`, `undefined` for one without it. */
+  schemas: Record<string, ParameterSchema | undefined>;
+  /**
+   * Whether it is the connection: it carries the WebSocket binding's upgrade
+   * `method`, or its address is a socket path. The UI gives it no try-it.
+   */
+  connection: boolean;
+}
+
 /** The AsyncAPI document's channels and operations, as {@link DocItem}s. */
 function wsItems(document: SpecDocument) {
-  const channels = new Map<
-    string,
-    {
-      /** The address template, e.g. `queue/{queue}`. */
-      address: string;
-      /** Each parameter's `x-bun-jobs-schema`, if any. */
-      schemas: Record<
-        string,
-        { pattern?: string; maxLength?: number } | undefined
-      >;
-    }
-  >();
+  const channels = new Map<string, WsChannelInfo>();
   for (const [key, value] of Object.entries(
     objectOf(document.channels) ?? {},
   )) {
     const channel = objectOf(value)!;
+    const address = String(channel.address ?? "");
+    const upgrade = objectOf(objectOf(channel.bindings)?.ws)?.method;
     channels.set(key, {
-      address: String(channel.address ?? ""),
+      address,
       schemas: Object.fromEntries(
         Object.entries(objectOf(channel.parameters) ?? {}).map(
           ([name, parameter]) => [
             name,
             objectOf(objectOf(parameter)?.["x-bun-jobs-schema"]) as
-              | { pattern?: string; maxLength?: number }
+              | ParameterSchema
               | undefined,
           ],
         ),
       ),
+      connection:
+        key === "connection" ||
+        typeof upgrade === "string" ||
+        address.startsWith("/"),
     });
   }
   const actions = Object.entries(objectOf(document.operations) ?? {}).map(
@@ -1962,43 +2013,82 @@ show(
 );
 
 /**
- * A channel's address filled the way try-it fills it: each value held to its
- * parameter's `x-bun-jobs-schema`, the job id escaped with `encodeJobId`.
- * `null` while a value is empty or refused; `null` for the connection
- * (`address` "/"), which has no link.
+ * Whether try-it refuses `value` for parameter `name`: its
+ * `x-bun-jobs-schema` when the document gives one, else (an API older than
+ * the extension) the client's rule, a job id anything and any other name
+ * held to the contract's `NAME_PARAM_PATTERN` and `MAX_NAME_LENGTH`.
  */
-function fillChannel(
-  key: string,
+function parameterRefused(
+  name: string,
+  value: string,
+  schema: ParameterSchema | undefined,
+): boolean {
+  if (value === "") {
+    return true;
+  }
+  const length = [...value].length;
+  if (schema === undefined) {
+    return (
+      name !== "jobId" &&
+      (value.length > MAX_NAME_LENGTH ||
+        !new RegExp(NAME_PARAM_PATTERN).test(value))
+    );
+  }
+  return (
+    (schema.maxLength !== undefined && length > schema.maxLength) ||
+    (schema.minLength !== undefined && length < schema.minLength) ||
+    (schema.pattern !== undefined && !new RegExp(schema.pattern).test(value))
+  );
+}
+
+/**
+ * A channel's address filled the way try-it fills it: each value held to
+ * {@link parameterRefused}, the job id escaped with `encodeJobId`. `null`
+ * while a value is empty or refused.
+ */
+function fillAddress(
+  channel: WsChannelInfo,
   values: Record<string, string>,
 ): string | null {
-  const channel = ws.channels.get(key)!;
-  if (!/\{/.test(channel.address) && key === "connection") {
-    return null;
-  }
   let complete = true;
   const filled = channel.address.replace(
     /\{([^}]+)\}/g,
     (_match, name: string) => {
       const value = values[name] ?? "";
-      const schema = channel.schemas[name];
-      const refused =
-        value === "" ||
-        (schema?.maxLength !== undefined && value.length > schema.maxLength) ||
-        (schema?.pattern !== undefined &&
-          !new RegExp(schema.pattern).test(value));
-      complete &&= !refused;
+      complete &&= !parameterRefused(name, value, channel.schemas[name]);
       return name === "jobId" ? encodeJobId(value) : value;
     },
   );
   return complete ? filled : null;
 }
 
+/** {@link fillAddress} for the document's channel `key`. */
+function fillChannel(
+  key: string,
+  values: Record<string, string>,
+): string | null {
+  return fillAddress(ws.channels.get(key)!, values);
+}
+
+/** Channel `key`'s page, as a {@link DocItem}: its address filled from `values`. */
+function channelItem(
+  key: string,
+  values: Record<string, string> = {},
+  channel: WsChannelInfo = ws.channels.get(key)!,
+): DocItem {
+  return {
+    kind: "ws",
+    address: fillAddress(channel, values),
+    connection: channel.connection,
+  };
+}
+
 /** A WebSocket channel's page: its try-it's two gates. */
 function channelPage(
-  address: string | null,
+  item: DocItem,
   inputs: Omit<ScreenInputs, "item"> = { meta, sections, boot },
 ): GateState[] {
-  const states = screenStates({ ...inputs, item: { kind: "ws", address } });
+  const states = screenStates({ ...inputs, item });
   return [
     states["docs ws: try-it opens the Events console"],
     states["docs ws: a channel's link"],
@@ -2044,7 +2134,7 @@ checkEqual(
   "queue/{queue} with mail → queue/mail, and the link opens",
   [
     fillChannel("queue", { queue: "mail" }),
-    channelPage(fillChannel("queue", { queue: "mail" })),
+    channelPage(channelItem("queue", { queue: "mail" })),
   ],
   ["queue/mail", ["open", "open"]],
 );
@@ -2054,24 +2144,73 @@ checkEqual(
   "queue/mail/job/a%2Fb",
 );
 checkEqual(
+  "every channel parameter carries its x-bun-jobs-schema but the job id, which is anything (escaped)",
+  [...ws.channels].flatMap(([key, channel]) =>
+    Object.entries(channel.schemas)
+      .filter(([, schema]) => schema === undefined)
+      .map(([name]) => `${key}.${name}`),
+  ),
+  ["job.jobId"],
+);
+checkEqual(
   "a name its x-bun-jobs-schema refuses (..), or none: the link is DISABLED, with the reason",
   [
-    channelPage(fillChannel("queue", { queue: ".." })),
-    channelPage(fillChannel("queue", {})),
+    channelPage(channelItem("queue", { queue: ".." })),
+    channelPage(channelItem("queue", {})),
   ],
   [
     ["open", "disabled"],
     ["open", "disabled"],
   ],
 );
+const olderQueue: WsChannelInfo = { ...ws.channels.get("queue")!, schemas: {} };
 checkEqual(
-  "the connection has no link: disabled too, as the page shows it",
-  channelPage(fillChannel("connection", {})),
-  ["open", "disabled"],
+  "an older API without x-bun-jobs-schema: the client's name rule decides (mail opens; .. and a/b are disabled)",
+  ["mail", "..", "a/b"].map((queue) =>
+    channelPage(channelItem("queue", { queue }, olderQueue)),
+  ),
+  [
+    ["open", "open"],
+    ["open", "disabled"],
+    ["open", "disabled"],
+  ],
+);
+checkEqual(
+  "the connection is the one channel carrying the ws upgrade binding or a socket path",
+  [...ws.channels]
+    .filter(([, channel]) => channel.connection)
+    .map(([key]) => key),
+  ["connection"],
+);
+checkEqual(
+  "the connection channel has no try-it: absent, not disabled (nothing to subscribe to)",
+  [
+    channelPage(channelItem("connection")),
+    channelPage(channelItem("connection"), {
+      meta,
+      sections: { manage: false, docs: true },
+      boot,
+    }),
+  ],
+  [
+    ["absent", "absent"],
+    ["absent", "absent"],
+  ],
+);
+checkEqual(
+  "and neither has any channel under another key that carries the upgrade binding or a socket path",
+  channelPage(
+    channelItem(
+      "socket",
+      {},
+      { address: "/socket", schemas: {}, connection: true },
+    ),
+  ),
+  ["absent", "absent"],
 );
 checkEqual(
   "a runner channel where meta.mode offers none (mode jobs): disabled",
-  channelPage(fillChannel("runner", { runner: "nightly" }), {
+  channelPage(channelItem("runner", { runner: "nightly" }), {
     meta: { ...meta, mode: "jobs" },
     sections,
     boot,
@@ -2081,12 +2220,12 @@ checkEqual(
 checkEqual(
   "without the Events console (docs-only, or events.connect refused): a note, and no link",
   [
-    channelPage(fillChannel("queue", { queue: "mail" }), {
+    channelPage(channelItem("queue", { queue: "mail" }), {
       meta,
       sections: { manage: false, docs: true },
       boot,
     }),
-    channelPage(fillChannel("queue", { queue: "mail" }), {
+    channelPage(channelItem("queue", { queue: "mail" }), {
       meta: refused.meta,
       sections,
       boot: refused.boot,
@@ -2099,7 +2238,7 @@ checkEqual(
 );
 checkEqual(
   "a WebSocket operation's page has no try-it at all",
-  channelPage(null, { meta, sections, boot }).length === 2 &&
+  channelPage({ kind: "ws", address: null }).length === 2 &&
     screenStates({
       meta,
       sections,
@@ -2123,7 +2262,7 @@ const scenarios: ScreenInputs[] = [
   ...[...operations.values()].map((item) => ({ ...inputs, item })),
   ...["queue", "connection"].map((key) => ({
     ...inputs,
-    item: { kind: "ws" as const, address: fillChannel(key, { queue: "mail" }) },
+    item: channelItem(key, { queue: "mail" }),
   })),
 ]);
 checkEqual(
@@ -2144,7 +2283,7 @@ checkEqual(
         const shown =
           (screen === undefined || isOpen(screen, inputs)) &&
           mapFor(gate, inputs) !== undefined &&
-          (!gate.channelOnly || inputs.item?.address !== undefined);
+          (!gate.channelOnly || hasTryIt(inputs.item));
         return shown && gateState(gate, inputs) === "absent";
       })
       .map((gate) => gate.name),

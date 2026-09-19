@@ -54,13 +54,17 @@
  *   extensions: `limits` (`ws-limit-<name>`), `close-codes`
  *   (`ws-close-<code>`), every code the document lists. A message's page
  *   shows its `examples` (`ws-example`) with a Copy JSON button, and the
- *   server panel names the subprotocol (`ws-subprotocol`).
+ *   server panel names the subprotocol (`ws-subprotocol`) and where the
+ *   document states it (`ws-subprotocol-source`: for `createJobsApi`,
+ *   "from servers.api (x-bun-jobs-subprotocol)", read from the AsyncAPI
+ *   document it serves).
  * - **WebSocket try-it opens the Events console.** On a channel's page each
  *   parameter is held to its `x-bun-jobs-schema` (`ws-parameter-schema-queue`
  *   draws it): `..` disables the link (`ws-try-disabled`, with the reason in
  *   `ws-try-reason`); `mail` makes it a link to
  *   `/events?channel=queue/mail`, and following it opens the console on that
- *   channel.
+ *   channel. The connection channel has no try-it at all, not even a
+ *   disabled one: there is nothing to subscribe to.
  * - **A docs-only UI** (`sections.manage` off) has the docs and nothing else:
  *   `/` lands on `/docs`, the badge reads `Live off` (`data-state="off"`),
  *   and a channel's try-it is a note (`ws-try-unavailable`), since there is
@@ -208,7 +212,34 @@ const openapi = await read<{
 }>(full, "/openapi.json");
 const asyncapi = await read<{
   channels: Record<string, Record<string, unknown>>;
+  servers?: Record<string, Record<string, unknown>>;
 }>(full, "/asyncapi.json");
+
+/**
+ * Where this API's document states its subprotocol, in the words the server
+ * panel's `ws-subprotocol-source` uses, found the way the UI looks: the
+ * `x-bun-jobs-subprotocol` extension on `servers.api` (else the first
+ * server), then on the connection channel, then the connection channel's
+ * description, else the client contract's default.
+ */
+function subprotocolSource(): string {
+  const servers = asyncapi.servers ?? {};
+  const serverKey = "api" in servers ? "api" : Object.keys(servers)[0];
+  const connection = asyncapi.channels.connection ?? {};
+  if (
+    serverKey !== undefined &&
+    typeof servers[serverKey]?.["x-bun-jobs-subprotocol"] === "string"
+  ) {
+    return `from servers.${serverKey} (x-bun-jobs-subprotocol)`;
+  }
+  if (typeof connection["x-bun-jobs-subprotocol"] === "string") {
+    return "from the connection channel (x-bun-jobs-subprotocol)";
+  }
+  if (/subprotocol `[^`]+`/.test(String(connection.description ?? ""))) {
+    return "from the connection channel's description";
+  }
+  return "not stated; the client default";
+}
 
 /** An operation's documented 2xx statuses, as try-it shows them (`200 / 202`). */
 function documentedSuccess(operationId: string): string {
@@ -587,6 +618,26 @@ try {
       textOf('[data-testid="ws-subprotocol"]'),
     ),
     "bun-jobs.v1",
+  );
+  const source = subprotocolSource();
+  show("the AsyncAPI document states it", source);
+  checkEqual(
+    "and ws-subprotocol-source names where the document states it",
+    await view.evaluate<string | null>(
+      textOf('[data-testid="ws-subprotocol-source"]'),
+    ),
+    source,
+  );
+  check(
+    "which, for createJobsApi, is servers.api's x-bun-jobs-subprotocol",
+    source === "from servers.api (x-bun-jobs-subprotocol)",
+    source,
+  );
+  check(
+    "the connection channel has no try-it: there is nothing to subscribe to",
+    !(await present('[data-testid="ws-try-channel"]', 0)) &&
+      !(await present('[data-testid="ws-try-disabled"]', 0)) &&
+      !(await present('[data-testid="ws-try-unavailable"]', 0)),
   );
   await open(full, "/docs/ws/limits");
   checkEqual(
