@@ -27,6 +27,14 @@
     "module": "ESNext",
     // Bundler mode
     "moduleResolution": "bundler",
+    // In-repo, a workspace package resolves to its `lib/` source, never to the
+    // built `dts/` declarations. Each published package's `exports` lists this
+    // condition ahead of `types`; consumers never set it, so they get `dts/`.
+    // Without it, the repo type-checks against whatever `dts/` a previous
+    // `build:types`/`prepack` left behind: a snapshot that goes stale on the
+    // next source edit (measured: a new export reads as TS2305 "has no
+    // exported member" until someone rebuilds).
+    "customConditions": ["@kingsleyweb/source"],
 
     "typeRoots": [
       "./node_modules/@types",
