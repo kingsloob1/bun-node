@@ -7,6 +7,7 @@ import type {
   RunnerStatsDto,
 } from "./types";
 import { segment } from "./client";
+import { assertShape, hasStrings } from "./shape";
 
 /**
  * The runner screens' reads and query keys.
@@ -58,13 +59,24 @@ export function listRunners(
   return api.request<RunnerListDto>("GET", "/runners", { signal });
 }
 
-/** `GET /runners/:runner`. */
-export function getRunner(
+/**
+ * `GET /runners/:runner`. A body without a string `id` and `name` rejects
+ * with an `UNEXPECTED_RESPONSE` `ApiError`, so the screen shows its error
+ * state rather than an empty runner.
+ */
+export async function getRunner(
   api: ApiClient,
   id: string,
   signal?: AbortSignal,
 ): Promise<RunnerInfoDto> {
-  return api.request<RunnerInfoDto>("GET", base(id), { signal });
+  const path = base(id);
+  const body = await api.request<unknown>("GET", path, { signal });
+  return assertShape<RunnerInfoDto>(
+    body,
+    (fields) => hasStrings(fields, "id", "name"),
+    "a runner",
+    path,
+  );
 }
 
 /** `GET /runners/:runner/history?limit=`, newest first. */

@@ -25,3 +25,23 @@ export const STATE_LABELS: Readonly<Record<JobState, string>> = {
 export function plural(count: number, one: string, many = `${one}s`): string {
   return `${formatNumber(count)} ${count === 1 ? one : many}`;
 }
+
+/** What {@link displayText} shows for a value that is not text. */
+export const INVALID_TEXT = "(invalid)";
+
+/**
+ * A field the API types as a string, made safe to render as text: a string
+ * as-is, a number or boolean stringified, anything else (an object, which
+ * React would refuse to render as a child, `null`, `undefined`)
+ * {@link INVALID_TEXT}. For names drawn from list responses the app does
+ * not shape-check.
+ */
+export function displayText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return INVALID_TEXT;
+}

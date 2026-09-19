@@ -10,7 +10,7 @@ import { ProblemBanner } from "../../components/ProblemBanner";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Spinner } from "../../components/Spinner";
 import { useApiClient } from "../../context";
-import { formatNumber } from "../../format";
+import { displayText, formatNumber } from "../../format";
 import { useCan, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
@@ -226,7 +226,9 @@ function RunnerDetail({
     <>
       <header className="runner-header">
         <div className="runner-heading">
-          <h1 className="screen-title runner-title">{runner.name}</h1>
+          <h1 className="screen-title runner-title">
+            {displayText(runner.name)}
+          </h1>
           <span
             className="runner-badges"
             data-testid="runner-status"

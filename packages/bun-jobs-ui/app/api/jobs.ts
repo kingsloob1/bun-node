@@ -17,6 +17,7 @@ import type {
 } from "./types";
 import { segment } from "./client";
 import { queryKeys } from "./queryKeys";
+import { assertShape, hasStrings, isJobState } from "./shape";
 
 /**
  * One job's reads and writes (`/queues/:queue/jobs/:id*`, adding a job, and
@@ -101,18 +102,29 @@ export function queueScreenPath(queue: string): string {
   return `/queues/${encodeURIComponent(queue)}`;
 }
 
-/** `GET /queues/:queue/jobs/:id`. */
-export function getJob(
+/** Whether a body has what a job screen cannot draw without: string `id`, `name` and `queue`, and a known `state`. */
+export function isJobShape(fields: Readonly<Record<string, unknown>>): boolean {
+  return hasStrings(fields, "id", "name", "queue") && isJobState(fields.state);
+}
+
+/**
+ * `GET /queues/:queue/jobs/:id`. A body that is not a job (see
+ * {@link isJobShape}) rejects with an `UNEXPECTED_RESPONSE` `ApiError`, so the
+ * screen shows its error state rather than an empty job.
+ */
+export async function getJob(
   api: ApiClient,
   queue: string,
   id: string,
   include: readonly JobInclude[] = DEFAULT_JOB_INCLUDE,
   signal?: AbortSignal,
 ): Promise<JobDto> {
-  return api.request<JobDto>("GET", jobPath(queue, id), {
+  const path = jobPath(queue, id);
+  const body = await api.request<unknown>("GET", path, {
     query: { include },
     signal,
   });
+  return assertShape<JobDto>(body, isJobShape, "a job", path);
 }
 
 /** `GET /queues/:queue/jobs/:id/logs`. */
