@@ -17,8 +17,9 @@ export interface LiveProviderProps {
 /**
  * Owns the one socket for the app (inside MetaProvider and the query client).
  *
- * A client is created when the API has a socket (`meta.websocket`) and the
- * caller may connect (`events.connect`), and nothing rules events out
+ * A client is created when the UI manages anything (`sections.manage`: a
+ * docs-only UI has no live screen), the API has a socket (`meta.websocket`),
+ * the caller may connect (`events.connect`), and nothing rules events out
  * (`events: "local"` with `publishing: false`); otherwise the status is `"off"`
  * with the reason. The client is built during render (it has no side
  * effects) and started and stopped in an effect, so StrictMode's
@@ -36,13 +37,15 @@ export function LiveProvider({ children, options }: LiveProviderProps) {
   const websocket = meta.websocket;
   const offDetail = disabled
     ? "Live updates are disabled"
-    : !websocket
-      ? "The API has no live-events socket"
-      : !canConnect
-        ? "You may not connect to live events (events.connect)"
-        : meta.events === "local" && meta.publishing === false
-          ? "Nothing publishes events to this API"
-          : null;
+    : !config.sections.manage
+      ? "Live updates are off: this UI shows documentation only"
+      : !websocket
+        ? "The API has no live-events socket"
+        : !canConnect
+          ? "You may not connect to live events (events.connect)"
+          : meta.events === "local" && meta.publishing === false
+            ? "Nothing publishes events to this API"
+            : null;
 
   const url =
     websocket && offDetail === null

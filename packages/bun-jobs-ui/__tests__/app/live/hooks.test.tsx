@@ -44,12 +44,14 @@ function renderLive(
     actions?: Permissions["actions"];
     /** Wrap in StrictMode. */
     strict?: boolean;
+    /** UI config overrides. */
+    config?: Parameters<typeof uiConfig>[0];
   } = {},
 ) {
   const queryClient = createQueryClient({ retry: false });
   const tree = (
     <QueryClientProvider client={queryClient}>
-      <UiConfigContext value={uiConfig()}>
+      <UiConfigContext value={uiConfig(options.config)}>
         <MetaContext
           value={{
             meta: metaFixture(options.meta),
@@ -117,6 +119,18 @@ describe("LiveProvider", () => {
     });
     expect(status(container).state).toBe("off");
     expect(status(container).detail).toMatch(/events\.connect/);
+    expect(FakeSocket.instances).toHaveLength(0);
+  });
+
+  it("is off, with why, when the UI shows documentation only (sections.manage false)", () => {
+    const { container } = renderLive(<StatusProbe />, {
+      config: { sections: { manage: false, docs: true } },
+    });
+    expect(status(container)).toMatchObject({
+      state: "off",
+      detail: "Live updates are off: this UI shows documentation only",
+      interval: 5_000,
+    });
     expect(FakeSocket.instances).toHaveLength(0);
   });
 
