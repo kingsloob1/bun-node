@@ -75,7 +75,9 @@
  *   the map answers `events.connect` from `authorize`, untargeted, like the
  *   nav entries. The console's queue and runner pickers list names only with
  *   the untargeted `queues.list` / `runners.list`; without them they are text
- *   boxes, which is why those rows are about the list, not the picker.
+ *   boxes, which is why those rows are about the list, not the picker. Each
+ *   exists only in the modes that have its channels: the queue list in
+ *   `jobs` and `both`, the runner list in `runner` and `both`.
  */
 import type {
   JobsApiAction,
@@ -723,17 +725,18 @@ const GATES = [
     row: "Events queue and job channel pickers' queue list",
     map: "boot",
     on: "Events: nav and /events",
+    // The queue and job channels exist only where queues do.
+    modes: ["jobs", "both"],
     reads: ["queues.list"],
-    // The queue and job scopes exist only where queues do.
-    when: ({ meta }) => meta.mode !== "runner",
   },
   {
     name: "events: runner list in the runner picker",
     row: "Events runner channel picker's runner list",
     map: "boot",
     on: "Events: nav and /events",
+    // The runner channel exists only where a runner does.
+    modes: ["runner", "both"],
     reads: ["runners.list"],
-    when: ({ meta }) => meta.mode !== "jobs",
   },
 ] as const satisfies readonly Gate[];
 
