@@ -50,7 +50,9 @@
  * - **Every mutation asks first.** Pause and Add ask with a plain
  *   confirmation; Drain (a `drain` verb) and Remove (a `DELETE`) also need
  *   their operationId typed before the confirm button enables. Sent, they
- *   change the queue for real, and the API is read back to show it.
+ *   change the queue for real, and the API is read back to show it. Fail (a
+ *   `POST`, but a `fail` verb: the job is dead for good) asks for `failJob`
+ *   typed too; that one is cancelled.
  * - **A try-it the caller may not send is disabled, with the reason**, not
  *   hidden: on `cleanQueue`, whose `queues.clean` this `authorize` refuses,
  *   `tryit-disabled` says "You do not have the queues.clean permission." and
@@ -855,6 +857,26 @@ try {
     (await read<{ counts: { waiting: number } }>(full, `/queues/${QUEUE}`))
       .counts.waiting,
     0,
+  );
+
+  // failJob is a POST, but a failed job is dead for good: its `fail` verb
+  // asks for the operationId typed, as a DELETE does. Cancelled, not sent.
+  await open(full, "/docs/http/failJob");
+  await typeIntoInput(0, QUEUE);
+  await typeIntoInput(1, "two");
+  await view.evaluate<boolean>(
+    button('[data-testid="tryit"]', "Send POST", true),
+  );
+  checkEqual(
+    'failJob (a fail verb) asks for "failJob" typed, its Send POST disabled until it is',
+    [
+      await view.evaluate<boolean>(
+        textIncludes(DIALOG, "Type failJob to confirm"),
+      ),
+      await view.evaluate<boolean | null>(disabledButton(DIALOG, "Send POST")),
+      await view.evaluate<boolean>(button(DIALOG, "Cancel", true)),
+    ],
+    [true, true, true],
   );
 
   /* ---------------------------------------------------------------- */
