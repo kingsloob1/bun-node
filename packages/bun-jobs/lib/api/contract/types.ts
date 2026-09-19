@@ -27,6 +27,14 @@ import type {
  * Shared shapes
  * ------------------------------------------------------------------ */
 
+/**
+ * What a job or a run reports as its progress: a percentage, or a record of
+ * whatever the work wants to say. The same type as the package's own
+ * `RunProgress`, restated here so the contract imports nothing from the
+ * server; `__tests__/api/api-contract.type-test.ts` asserts the two are equal.
+ */
+export type RunProgress = number | Record<string, unknown>;
+
 /** A validation issue inside a problem, as bun-common's `validate()` reports it. */
 export interface ProblemIssueDto {
   /** Which part of the request failed. */
@@ -203,8 +211,8 @@ export interface JobDto {
   maxAttempts: number;
   /** Times the job stalled and was recovered. */
   stalledCount: number;
-  /** Latest progress value. */
-  progress: unknown;
+  /** Latest progress value, or `null` before any is reported. */
+  progress: RunProgress | null;
   /** The most recent failure. */
   failedReason: ErrorDto | null;
   /** When the holding worker's lock expires, epoch ms. */

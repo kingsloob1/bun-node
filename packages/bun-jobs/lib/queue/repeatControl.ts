@@ -109,14 +109,19 @@ export async function findRepeat(
  * Disables the series stored as `storedKey`, removing its pending
  * occurrence and clearing its `nextRunAt`/`nextJobId`. Answers whether this
  * call disabled it: `false` for a series that is gone or already disabled.
+ *
+ * `needs` names the method the caller called — `disable()` on a job,
+ * `disableRepeatable()` on a queue — for the `NotSupportedError` a driver
+ * without queue state raises.
  */
 export async function disableRepeatSeries(
   driver: JobsDriver,
   q: QueueRef,
   storedKey: string,
   now: number,
+  needs: string,
 ): Promise<boolean> {
-  requireRepeatControl(driver, "disable()");
+  requireRepeatControl(driver, needs);
 
   const definition = await driver.getRepeat(q, storedKey);
   if (!definition) {
@@ -163,14 +168,18 @@ export async function disableRepeatSeries(
  * Enables the series stored as `storedKey`, scheduling its next occurrence
  * from `now` — nothing it missed while disabled is run. Answers whether this
  * call enabled it: `false` for a series that was not disabled.
+ *
+ * `needs` names the method the caller called, as for
+ * {@link disableRepeatSeries}.
  */
 export async function enableRepeatSeries(
   driver: JobsDriver,
   q: QueueRef,
   storedKey: string,
   now: number,
+  needs: string,
 ): Promise<boolean> {
-  requireRepeatControl(driver, "enable()");
+  requireRepeatControl(driver, needs);
 
   const name = repeatDisabledName(storedKey);
   const entry = await driver.getQueueState!(q, name);
@@ -326,8 +335,11 @@ async function scheduleFromNow(
   });
 }
 
-/** The driver, checked to have the queue state a disabled flag lives in. */
-function requireRepeatControl(driver: JobsDriver, what: string): void {
+/**
+ * The driver, checked to have the queue state a disabled flag lives in;
+ * otherwise a `NotSupportedError` whose `needs` is `what`, the method called.
+ */
+export function requireRepeatControl(driver: JobsDriver, what: string): void {
   if (!supportsRepeatControl(driver)) {
     throw new NotSupportedError(driver.name, "setQueueState", { needs: what });
   }

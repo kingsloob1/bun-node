@@ -168,6 +168,17 @@ export type JobFlowOk = Expect<
   Matches<Contract.JobFlowDto, Infer<typeof JobFlowSchema>>
 >;
 export type JobOk = Expect<Matches<Contract.JobDto, Infer<typeof JobSchema>>>;
+// Progress is typed on the wire, not `unknown`: the contract restates the
+// package's `RunProgress` rather than importing it, and the two must agree.
+export type RunProgressOk = Expect<
+  Equal<Contract.RunProgress, Root.RunProgress>
+>;
+export type JobProgressOk = Expect<
+  Equal<Contract.JobDto["progress"], Root.RunProgress | null>
+>;
+export type JobSchemaProgressOk = Expect<
+  Equal<Infer<typeof JobSchema>["progress"], Root.RunProgress | null>
+>;
 export type JobPageOk = Expect<
   Matches<Contract.JobPageDto, Infer<typeof JobPageSchema>>
 >;

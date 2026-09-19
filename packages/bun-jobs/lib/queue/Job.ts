@@ -476,6 +476,7 @@ export class Job<TData = unknown, TResult = unknown> {
       this.#ref,
       this.#seriesKey("disable()"),
       Date.now(),
+      "disable()",
     );
   }
 
@@ -491,6 +492,7 @@ export class Job<TData = unknown, TResult = unknown> {
       this.#ref,
       this.#seriesKey("enable()"),
       Date.now(),
+      "enable()",
     );
   }
 

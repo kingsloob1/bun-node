@@ -5,6 +5,7 @@ import type {
   QueueEventName,
   RunnerEventName,
 } from "./constants";
+import type { RunProgress } from "./types";
 
 /**
  * The live-events socket's wire protocol as named types: every frame a client
@@ -56,7 +57,7 @@ export interface QueueEventPayloadsWire {
   /** A worker claimed a job. */
   active: { id: string };
   /** A job reported progress. */
-  progress: { id: string; progress: number | Record<string, unknown> };
+  progress: { id: string; progress: RunProgress };
   /** A job completed. */
   completed: { id: string; returnValue: unknown };
   /** An attempt failed. */

@@ -7,6 +7,7 @@ import {
   ConfigError,
   createDriver,
   MemoryDriver,
+  NotSupportedError,
 } from "../lib/index";
 import { occurrenceRecord } from "../lib/queue/repeatControl";
 import { testNamespace, waitFor } from "./helpers";
@@ -255,6 +256,60 @@ for (const { name: backendName, config, available } of STORAGE_BACKENDS) {
     });
   });
 }
+
+describe("a driver without queue state", () => {
+  /** A memory driver with its queue state hidden, as an older driver would be. */
+  function stateless(): JobsDriver {
+    const hidden: (keyof JobsDriver)[] = ["getQueueState", "setQueueState"];
+    return new Proxy(new MemoryDriver(), {
+      get(target, property) {
+        if (hidden.includes(property as keyof JobsDriver)) {
+          return undefined;
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  /** The `needs` of the `NotSupportedError` `call` rejects with. */
+  async function needsOf(call: Promise<boolean>): Promise<unknown> {
+    const error: unknown = await call.catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(NotSupportedError);
+    return (error as NotSupportedError).context.needs;
+  }
+
+  it("names the method called, and refuses before looking the key up", async () => {
+    const queue = new BunQueue("repeats", {
+      namespace: testNamespace("stateless"),
+      driver: stateless(),
+      logger: noopLogger,
+    });
+    closers.push(() => queue.close());
+
+    // An unknown key is refused, not answered `false`.
+    expect(await needsOf(queue.disableRepeatable("missing"))).toBe(
+      "disableRepeatable()",
+    );
+    expect(await needsOf(queue.enableRepeatable("missing"))).toBe(
+      "enableRepeatable()",
+    );
+
+    const occurrence = await queue.add(
+      "tick",
+      {},
+      { repeat: { every: 60_000, key: "known" } },
+    );
+    expect(await needsOf(queue.disableRepeatable("known"))).toBe(
+      "disableRepeatable()",
+    );
+    expect(await needsOf(queue.enableRepeatable("known"))).toBe(
+      "enableRepeatable()",
+    );
+    expect(await needsOf(occurrence.disable())).toBe("disable()");
+    expect(await needsOf(occurrence.enable())).toBe("enable()");
+  });
+});
 
 describe("workers and a disabled series", () => {
   /** A queue and a worker on one memory driver; the worker is not started. */

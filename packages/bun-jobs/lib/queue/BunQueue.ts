@@ -93,6 +93,7 @@ import {
   enableRepeatSeries,
   findRepeat,
   isRepeatDisabled,
+  requireRepeatControl,
 } from "./repeatControl";
 import { retryJob } from "./retry";
 import {
@@ -1405,10 +1406,12 @@ export class BunQueue<
    *
    * Takes either spelling of the key, as `removeRepeatable` does. Answers
    * whether this call disabled it — `false` for an unknown key or a series
-   * already disabled. Needs a driver with queue state.
+   * already disabled. Needs a driver with queue state: without it this
+   * throws `NotSupportedError`, whatever the key.
    */
   async disableRepeatable(key: string): Promise<boolean> {
     await this.connect();
+    requireRepeatControl(this.driver, "disableRepeatable()");
     const definition = await findRepeat(this.driver, this.ref, key);
 
     return definition
@@ -1417,6 +1420,7 @@ export class BunQueue<
           this.ref,
           definition.key,
           Date.now(),
+          "disableRepeatable()",
         )
       : false;
   }
@@ -1425,10 +1429,12 @@ export class BunQueue<
    * Restarts a series {@link BunQueue.disableRepeatable} stopped, scheduling
    * its next occurrence from now: nothing it missed while disabled is run.
    * Answers whether this call enabled it — `false` for an unknown key or a
-   * series that was not disabled.
+   * series that was not disabled. Needs a driver with queue state: without
+   * it this throws `NotSupportedError`, whatever the key.
    */
   async enableRepeatable(key: string): Promise<boolean> {
     await this.connect();
+    requireRepeatControl(this.driver, "enableRepeatable()");
     const definition = await findRepeat(this.driver, this.ref, key);
 
     if (!definition) {
@@ -1440,6 +1446,7 @@ export class BunQueue<
       this.ref,
       definition.key,
       Date.now(),
+      "enableRepeatable()",
     );
 
     if (enabled) {
