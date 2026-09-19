@@ -55,6 +55,18 @@ bunx eslint .              # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
 
+The repo's own tooling in the root `scripts/` (`typecheck.ts`,
+`setup-databases.ts`, `consumer-check.ts`) belongs to no package, so it has its
+own lint config; after touching one, lint it from there:
+
+```bash
+cd scripts && bunx eslint .   # 0 errors, and 0 warnings
+```
+
+It is the packages' config except that `no-console` and
+`antfu/no-top-level-await` are off: every file there is a CLI entry point, whose
+output is its product and which nothing imports.
+
 **Lint the whole package, not `lib __tests__`.** That narrower scope was what
 the workflow said for a long time, and it had the same blind spot the
 `tsconfig` `include` did: it reported zero errors while `bunx eslint .` found
@@ -95,8 +107,8 @@ fail on missing modules.
 ## Typechecking
 
 **One base config, extended everywhere.** `tsconfig.base.json` at the repo
-root holds every compiler option; the nine `tsconfig.json`s below it add only
-`paths` and `include`. A file is therefore checked the same way wherever it is
+root holds every compiler option; the `tsconfig.json`s below it add only
+`paths`, `include` and, where a project needs them, `types`/`lib`. A file is therefore checked the same way wherever it is
 checked from.
 
 ```bash
@@ -108,7 +120,20 @@ Run that rather than `bunx tsc --noEmit` in one package — the packages are not
 the only projects. There are also `packages/bun-common/bench`,
 `packages/bun-common/playground`, `packages/bun-jobs/bench` and the standalone
 `benchmarks/`, each a nested project with its own config because it resolves
-third-party comparators from its own `node_modules`.
+third-party comparators from its own `node_modules`; the examples; and the root
+`scripts/` (`scripts/tsconfig.json`).
+
+The root `scripts/` were the last files no project claimed. The root
+`tsconfig.json` includes nothing, so an editor put them in an inferred project,
+where TypeScript 6 loads no `@types/*` and every `Bun`, `console` and `node:*`
+was an error; the CLI never looked at them at all. Their project names
+`types: ["bun"]` explicitly rather than relying on `setup-databases.ts`'s
+`import("bun")` dragging the Bun globals in for the whole program. The root
+`package.json` declares what the scripts' checks load (`@types/bun`, `eslint`,
+`@antfu/eslint-config`, `eslint-config-prettier`, `eslint-plugin-prettier`)
+instead of borrowing copies a package happens to hoist. bun-jobs-ui's
+`__tests__/app/pkg` project, which only its own `typecheck.test.ts` checked, is
+in the list too.
 
 This replaced an arrangement worth understanding, because it hid real bugs.
 Each package's `include` was `./lib/**/*` alone, so `tsc --noEmit` never saw
@@ -254,7 +279,8 @@ modules across files, so order leaks are real:
 - The suite must pass under `bun test --randomize`, not just in file order.
 - Tests importing the bun-jobs package root (real-API integration,
   bundle-safety) live in `__tests__/app/pkg`, a DOM-free project typechecked
-  by its own `typecheck.test.ts`; they load the DOM side by dynamic import.
+  by its own `typecheck.test.ts` and by `scripts/typecheck.ts`; they load the
+  DOM side by dynamic import.
 
 **The README is parsed.** Its `### What each element needs` table is read
 by `examples/bun-jobs-ui/04-screens/permissions.ts`, which fails on any drift
