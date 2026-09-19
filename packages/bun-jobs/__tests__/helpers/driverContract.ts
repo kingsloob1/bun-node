@@ -378,6 +378,159 @@ export function driverContract(
         expect(again?.id).toBe("kept");
         expect(again?.force).toBeUndefined();
       });
+
+      describe("popQueuedTriggerIf", () => {
+        const trigger = (id: string, force?: boolean) => ({
+          id,
+          source: "manual" as const,
+          requestedAt: Date.now(),
+          requestedBy: newToken(),
+          ...(force === undefined ? {} : { force }),
+        });
+
+        it("pops the head when its id matches", async () => {
+          const key = runnerKey("pop-if-match");
+          await driver.pushQueuedTrigger(ns, key, trigger("first"), 10);
+          await driver.pushQueuedTrigger(ns, key, trigger("second"), 10);
+
+          const head = await driver.peekQueuedTrigger(ns, key);
+          expect(await driver.popQueuedTriggerIf(ns, key, "first")).toEqual(
+            head!,
+          );
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(1);
+          expect((await driver.peekQueuedTrigger(ns, key))?.id).toBe("second");
+          expect((await driver.popQueuedTriggerIf(ns, key, "second"))?.id).toBe(
+            "second",
+          );
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(0);
+        });
+
+        it("returns null and leaves the queue untouched when the head's id differs", async () => {
+          const key = runnerKey("pop-if-mismatch");
+          await driver.pushQueuedTrigger(ns, key, trigger("first"), 10);
+          await driver.pushQueuedTrigger(ns, key, trigger("second"), 10);
+
+          // Neither an id further back nor one that was never queued: the
+          // check is against the head, not membership.
+          expect(await driver.popQueuedTriggerIf(ns, key, "second")).toBeNull();
+          expect(await driver.popQueuedTriggerIf(ns, key, "absent")).toBeNull();
+
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(2);
+          expect((await driver.popQueuedTrigger(ns, key))?.id).toBe("first");
+          expect((await driver.popQueuedTrigger(ns, key))?.id).toBe("second");
+        });
+
+        it("returns null on an empty queue", async () => {
+          const key = runnerKey("pop-if-empty");
+          await driver.pushQueuedTrigger(ns, key, trigger("only"), 10);
+          await driver.popQueuedTrigger(ns, key);
+
+          expect(await driver.popQueuedTriggerIf(ns, key, "only")).toBeNull();
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(0);
+        });
+
+        it("round-trips the force flag", async () => {
+          const key = runnerKey("pop-if-force");
+          await driver.pushQueuedTrigger(ns, key, trigger("forced", true), 10);
+          await driver.pushQueuedTrigger(ns, key, trigger("plain"), 10);
+          await driver.pushQueuedTrigger(
+            ns,
+            key,
+            trigger("unforced", false),
+            10,
+          );
+
+          const forced = await driver.popQueuedTriggerIf(ns, key, "forced");
+          expect(forced).toMatchObject({ id: "forced", source: "manual" });
+          expect(forced?.force).toBe(true);
+          const plain = await driver.popQueuedTriggerIf(ns, key, "plain");
+          expect(plain?.id).toBe("plain");
+          expect(plain?.force).toBeUndefined();
+          expect(
+            (await driver.popQueuedTriggerIf(ns, key, "unforced"))?.force,
+          ).toBe(false);
+        });
+
+        it("hands the peeked head to exactly one of many racing callers", async () => {
+          const key = runnerKey("pop-if-race");
+          await driver.pushQueuedTrigger(ns, key, trigger("contested"), 10);
+          await driver.pushQueuedTrigger(ns, key, trigger("behind"), 10);
+          await driver.pushQueuedTrigger(ns, key, trigger("further"), 10);
+
+          const head = await driver.peekQueuedTrigger(ns, key);
+          expect(head?.id).toBe("contested");
+
+          // Every caller inspected the same head. One takes it; the others
+          // must not take whatever the head became after it went.
+          const contend = async () =>
+            await driver.popQueuedTriggerIf(ns, key, head!.id);
+          const results = await Promise.all(Array.from({ length: 8 }, contend));
+
+          const winners = results.filter((result) => result !== null);
+          expect(winners).toHaveLength(1);
+          expect(winners[0]?.id).toBe("contested");
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(2);
+          expect((await driver.peekQueuedTrigger(ns, key))?.id).toBe("behind");
+
+          await driver.clearQueuedTriggers(ns, key);
+        });
+
+        it("never loses or duplicates a trigger when pops and conditional pops interleave", async () => {
+          const key = runnerKey("pop-if-interleave");
+          const pushed = Array.from({ length: 24 }, (_, i) => `t${i}`);
+          for (const id of pushed) {
+            await driver.pushQueuedTrigger(ns, key, trigger(id), 100);
+          }
+
+          const taken: string[] = [];
+          const mismatched: string[] = [];
+
+          // Half the drainers pop blindly, half peek and pop by id, all at
+          // once, until the queue is empty.
+          const drain = async (conditional: boolean): Promise<void> => {
+            for (let spins = 0; spins < 500; spins++) {
+              if (conditional) {
+                const head = await driver.peekQueuedTrigger(ns, key);
+                if (!head) {
+                  return;
+                }
+                const popped = await driver.popQueuedTriggerIf(
+                  ns,
+                  key,
+                  head.id,
+                );
+                if (popped) {
+                  // Whatever it returns must be the record it was asked for.
+                  if (popped.id !== head.id) {
+                    mismatched.push(`${head.id}->${popped.id}`);
+                  }
+                  taken.push(popped.id);
+                }
+              } else {
+                const popped = await driver.popQueuedTrigger(ns, key);
+                if (!popped) {
+                  return;
+                }
+                taken.push(popped.id);
+              }
+            }
+          };
+
+          await Promise.all([
+            drain(true),
+            drain(false),
+            drain(true),
+            drain(false),
+            drain(true),
+            drain(true),
+          ]);
+
+          expect(mismatched).toEqual([]);
+          expect(taken).toHaveLength(pushed.length);
+          expect([...taken].sort()).toEqual([...pushed].sort());
+          expect(await driver.countQueuedTriggers(ns, key)).toBe(0);
+        });
+      });
     });
 
     /* --- jobs -------------------------------------------------------- */
@@ -3747,6 +3900,20 @@ export function driverContract(
         expect(await driver.listRunners(scope)).toEqual(before);
         expect(await driver.listRunners(scope)).not.toContain("never-peeked");
         expect(await driver.getState(scope, key)).toEqual({});
+        await driver.purge(scope);
+      });
+
+      it("conditionally pops from an unknown runner without creating it", async () => {
+        const scope = testNamespace("pop-if-unknown");
+        const key = runnerKey("never-popped");
+
+        const before = await driver.listRunners(scope);
+        expect(await driver.popQueuedTriggerIf(scope, key, "any")).toBeNull();
+        expect(await driver.popQueuedTriggerIf(scope, key, "any")).toBeNull();
+        expect(await driver.listRunners(scope)).toEqual(before);
+        expect(await driver.listRunners(scope)).not.toContain("never-popped");
+        expect(await driver.getState(scope, key)).toEqual({});
+        expect(await driver.countQueuedTriggers(scope, key)).toBe(0);
         await driver.purge(scope);
       });
 

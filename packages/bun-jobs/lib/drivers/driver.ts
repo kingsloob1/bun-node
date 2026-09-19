@@ -249,6 +249,34 @@ export interface RunnerDriver {
    * every drain while paused and there is no correct fallback to degrade to.
    */
   peekQueuedTrigger: (ns: string, key: string) => Promise<QueuedTrigger | null>;
+  /**
+   * Compare-and-pop: takes the oldest queued trigger **only if** its `id` is
+   * `expectedId`, and returns it; otherwise returns `null` and changes
+   * nothing.
+   *
+   * It is the second half of a paused drain. The drainer
+   * {@link peekQueuedTrigger peeks} the head, decides whether it may run (is
+   * it forced?), then pops *that record, by id*. A plain
+   * {@link popQueuedTrigger} there would take whatever the head is by then:
+   * another process may have taken the peeked record meanwhile and exposed an
+   * ordinary one behind it, which would then run on a paused runner. With
+   * this, drainers in several processes never pop a record they did not
+   * inspect; on `null` a drainer peeks again and decides afresh.
+   *
+   * The check and the removal are **atomic** with respect to every other
+   * caller in every other process — of this method, of `popQueuedTrigger`
+   * and of `pushQueuedTrigger` — so of N callers racing with the same id,
+   * exactly one gets the record and the rest get `null`. An empty list, a
+   * different head, or a runner the backend does not know all answer `null`,
+   * and like a peek it never creates a runner, so
+   * {@link DriverLifecycle.listRunners} does not change. Required, for the
+   * same reason as `peekQueuedTrigger`: there is no correct fallback.
+   */
+  popQueuedTriggerIf: (
+    ns: string,
+    key: string,
+    expectedId: string,
+  ) => Promise<QueuedTrigger | null>;
   /** How many triggers are queued. */
   countQueuedTriggers: (ns: string, key: string) => Promise<number>;
   /** Drops every queued trigger, returning how many were dropped. */

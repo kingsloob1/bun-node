@@ -583,6 +583,26 @@ export class RedisDriver implements JobsDriver {
     return head ? safeJsonParse<QueuedTrigger | null>(head, null) : null;
   }
 
+  async popQueuedTriggerIf(
+    ns: string,
+    key: string,
+    expectedId: string,
+  ): Promise<QueuedTrigger | null> {
+    await this.connect();
+
+    // One script — `LINDEX 0`, compare the id, `LPOP` — so the head checked
+    // is the head taken, whatever other clients do meanwhile.
+    const head = await this.#run(
+      scripts.POP_QUEUED_IF,
+      [this.keys.runner(ns, this.#runnerId(key)).queued],
+      [expectedId],
+    );
+
+    return typeof head === "string"
+      ? safeJsonParse<QueuedTrigger | null>(head, null)
+      : null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     await this.connect();
     return Number(

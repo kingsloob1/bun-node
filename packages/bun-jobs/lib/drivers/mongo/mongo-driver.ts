@@ -1277,6 +1277,38 @@ export class MongoDriver implements JobsDriver {
     return head ? (JSON.parse(head) as QueuedTrigger) : null;
   }
 
+  async popQueuedTriggerIf(
+    ns: string,
+    key: string,
+    expectedId: string,
+  ): Promise<QueuedTrigger | null> {
+    const kv = await this.#kv();
+    const id = this.#stateId(ns, key);
+
+    // Queued triggers are stored as JSON *strings*, so the server cannot
+    // filter on `queued.0.id`. It can compare the head as a whole, though:
+    // read it, check the id here, then pop only if the head is still that
+    // exact string. That is a compare-and-swap in one document update — a
+    // pop or a push landing in between changes `queued.0` and the filter no
+    // longer matches. A stored record is never rewritten in place, so a head
+    // that no longer matches means the inspected record is gone from the
+    // front, and `null` is the answer rather than a retry.
+    const document = await kv.findOne({ _id: id });
+    const head = document?.queued?.[0];
+    if (!head || (JSON.parse(head) as QueuedTrigger).id !== expectedId) {
+      return null;
+    }
+
+    const previous = await kv.findOneAndUpdate(
+      { _id: id, "queued.0": head },
+      { $pop: { queued: -1 } },
+      { returnDocument: "before" },
+    );
+
+    const taken = previous?.queued?.[0];
+    return taken ? (JSON.parse(taken) as QueuedTrigger) : null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     const kv = await this.#kv();
     const document = await kv.findOne({ _id: this.#stateId(ns, key) });

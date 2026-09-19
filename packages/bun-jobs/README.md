@@ -2453,6 +2453,19 @@ the list is empty. A paused runner uses it to see whether the head was forced
 before popping it. It must be read-only: nothing removed, reordered or
 created, and a runner nobody has written to stays out of `listRunners`.
 
+**`popQueuedTriggerIf(ns, key, expectedId)` is required too.** It is a
+compare-and-pop: it removes and returns the head only if the head's `id` is
+`expectedId`, and otherwise returns `null` and changes nothing. That covers an
+empty list, a different head, and a runner the backend does not know, which it
+must not create. A paused drainer peeks at the head, decides whether it may run,
+then pops it by id and peeks again on `null`. That way drainers in several
+processes never pop a record they did not inspect. The check and the removal
+must be one atomic step against every other process: of N callers racing with
+the same id, exactly one gets the record. The built-in drivers do it with a
+synchronous check-and-shift (memory), the state lock file (file), a locked
+transaction (SQL), a Lua script (Redis) and a conditional `$pop` on the exact
+head (MongoDB).
+
 ### Driver configs
 
 A `DriverConfig` is plain JSON. That means a spawned child can receive it, and
