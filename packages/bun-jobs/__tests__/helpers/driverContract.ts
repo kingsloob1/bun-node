@@ -1445,6 +1445,273 @@ export function driverContract(
         await driver.drainQueue(uq, true);
       });
 
+      /* --- burying a job from outside its processor --------------------- */
+
+      /** What every `buryJob` below is given, unless it says otherwise. */
+      const buryOpts = { retention: false, keepStacktraces: 5 } as const;
+
+      it("buryJob buries a waiting, delayed, retry-pending or waiting-children job", async () => {
+        const bq: QueueRef = { ns, queue: "bury-pending" };
+        const now = Date.now();
+        const error = serializeError(new Error("given up on"));
+        const earlier = serializeError(new Error("an earlier attempt"));
+
+        const children: JobFlow = {
+          parent: null,
+          children: [{ queue: bq.queue, id: "absent-child" }],
+          pending: 1,
+          values: {},
+          failures: {},
+          recorded: false,
+        };
+        await driver.addJobs(bq, [
+          makeJob({ id: "b-waiting", runAt: now }),
+          makeJob({ id: "b-delayed", state: "delayed", runAt: now + 60_000 }),
+          makeJob({
+            id: "b-failed",
+            state: "failed",
+            runAt: now + 60_000,
+            attemptsMade: 1,
+            maxAttempts: 3,
+            failedReason: earlier,
+            stacktrace: [earlier],
+          }),
+          makeJob({
+            id: "b-parent",
+            state: "waiting-children",
+            runAt: now,
+            flow: children,
+          }),
+        ]);
+
+        for (const id of ["b-waiting", "b-delayed", "b-failed", "b-parent"]) {
+          const buried = await driver.buryJob!(bq, id, error, buryOpts, now);
+          expect(buried).toMatchObject({
+            id,
+            state: "dead",
+            finishedOn: now,
+            lockToken: null,
+            lockExpiresAt: null,
+            workerId: null,
+          });
+          expect(buried?.failedReason?.message).toBe("given up on");
+          expect(buried?.stacktrace[0]?.message).toBe("given up on");
+          expect(await driver.getJob(bq, id)).toMatchObject({
+            state: "dead",
+            finishedOn: now,
+          });
+        }
+
+        // No attempt ran, so none is counted; earlier failures stay behind
+        // the new one.
+        const failed = await driver.getJob(bq, "b-failed");
+        expect(failed?.attemptsMade).toBe(1);
+        expect(failed?.stacktrace.map((entry) => entry.message)).toEqual([
+          "given up on",
+          "an earlier attempt",
+        ]);
+
+        const counts = await driver.countJobs(bq);
+        expect(counts.dead).toBe(4);
+        expect(counts.waiting + counts.delayed + counts.failed).toBe(0);
+        expect(counts["waiting-children"]).toBe(0);
+
+        // Out of every index a claim or a promotion reads.
+        expect(await driver.promoteDelayed(bq, now + 120_000, 100)).toBe(0);
+        expect((await claimFrom(bq, now + 120_000)).job).toBeNull();
+        expect(
+          (
+            await driver.listJobs(bq, ["dead"], {
+              offset: 0,
+              limit: 10,
+              order: "asc",
+            })
+          ).map((job) => job.id),
+        ).toHaveLength(4);
+
+        await driver.cleanJobs(bq, "dead", 0, 100, now + 1);
+      });
+
+      it("buryJob buries an active job only under its lock, and its holder then loses it", async () => {
+        const bq: QueueRef = { ns, queue: "bury-active" };
+        const now = Date.now();
+        const error = serializeError(new Error("stop"));
+        await driver.addJob(bq, makeJob({ id: "running", runAt: now }));
+        const { job, token } = await claimFrom(bq, now);
+        expect(job?.state).toBe("active");
+
+        // Without the lock, or under another, an active job is left alone.
+        expect(await driver.buryJob!(bq, "running", error, buryOpts, now)).toBe(
+          null,
+        );
+        expect(
+          await driver.buryJob!(
+            bq,
+            "running",
+            error,
+            { ...buryOpts, token: newToken() },
+            now,
+          ),
+        ).toBeNull();
+        expect((await driver.getJob(bq, "running"))?.state).toBe("active");
+
+        const buried = await driver.buryJob!(
+          bq,
+          "running",
+          error,
+          { ...buryOpts, token },
+          now,
+        );
+        expect(buried).toMatchObject({
+          state: "dead",
+          attemptsMade: 1,
+          lockToken: null,
+        });
+
+        // The worker that held it can neither renew nor settle it now.
+        expect(
+          await driver.extendJobLock(bq, "running", token, 1_000, now),
+        ).toBe(false);
+        expect(
+          await driver.completeJob(bq, "running", token, "late", false, now),
+        ).toBe(false);
+        expect(
+          await driver.failJob(
+            bq,
+            "running",
+            token,
+            error,
+            { retry: true, runAt: now },
+            now,
+            5,
+          ),
+        ).toBe(false);
+        expect(await driver.getJob(bq, "running")).toMatchObject({
+          state: "dead",
+          returnValue: null,
+        });
+
+        // Nor does the stalled sweep see an active job to recover.
+        const swept = await driver.recoverStalled(bq, now + 60_000, 1, 10);
+        expect([...swept.requeued, ...swept.dead]).toEqual([]);
+
+        await driver.cleanJobs(bq, "dead", 0, 100, now + 1);
+      });
+
+      it("buryJob leaves a finished or missing job alone", async () => {
+        const bq: QueueRef = { ns, queue: "bury-finished" };
+        const now = Date.now();
+        const error = serializeError(new Error("too late"));
+        await driver.addJobs(bq, [
+          makeJob({ id: "done", state: "completed", finishedOn: now }),
+          makeJob({ id: "gone", state: "dead", finishedOn: now }),
+        ]);
+
+        for (const id of ["done", "gone", "never-added"]) {
+          expect(await driver.buryJob!(bq, id, error, buryOpts, now)).toBe(
+            null,
+          );
+        }
+        expect((await driver.getJob(bq, "done"))?.state).toBe("completed");
+        expect((await driver.getJob(bq, "gone"))?.failedReason).toBeNull();
+
+        await driver.cleanJobs(bq, "completed", 0, 100, now + 1);
+        await driver.cleanJobs(bq, "dead", 0, 100, now + 1);
+      });
+
+      it("buryJob applies retention and the stacktrace cap, and leaves a child's outcome undelivered", async () => {
+        const bq: QueueRef = { ns, queue: "bury-retention" };
+        const now = Date.now();
+        const error = serializeError(new Error("buried"));
+        const earlier = serializeError(new Error("earlier"));
+        await driver.addJobs(bq, [
+          makeJob({ id: "removed", runAt: now }),
+          makeJob({ id: "ttl", runAt: now }),
+          makeJob({
+            id: "capped",
+            state: "failed",
+            runAt: now + 60_000,
+            stacktrace: [earlier, earlier],
+          }),
+          makeJob({
+            id: "child",
+            runAt: now,
+            flow: {
+              parent: { queue: "elsewhere", id: "parent" },
+              children: [],
+              pending: 0,
+              values: {},
+              failures: {},
+              recorded: false,
+            },
+          }),
+        ]);
+
+        // Removed at once, and still answered with, as it was buried.
+        const removed = await driver.buryJob!(
+          bq,
+          "removed",
+          error,
+          { ...buryOpts, retention: true },
+          now,
+        );
+        expect(removed).toMatchObject({ id: "removed", state: "dead" });
+        expect(await driver.getJob(bq, "removed")).toBeNull();
+
+        const ttl = await driver.buryJob!(
+          bq,
+          "ttl",
+          error,
+          { ...buryOpts, retention: { ttl: 5_000 } },
+          now,
+        );
+        expect(ttl?.expiresAt).toBe(now + 5_000);
+        expect((await driver.getJob(bq, "ttl"))?.expiresAt).toBe(now + 5_000);
+
+        const capped = await driver.buryJob!(
+          bq,
+          "capped",
+          error,
+          { ...buryOpts, keepStacktraces: 2 },
+          now,
+        );
+        expect(capped?.stacktrace.map((entry) => entry.message)).toEqual([
+          "buried",
+          "earlier",
+        ]);
+
+        // A flow child's outcome still has to reach its parent, which is how
+        // maintenance finds it.
+        await driver.buryJob!(bq, "child", error, buryOpts, now);
+        expect((await driver.getJob(bq, "child"))?.flow?.recorded).toBe(false);
+
+        await driver.markChildRecorded?.(bq, "child", true, now);
+        await driver.cleanJobs(bq, "dead", 0, 100, now + 1);
+      });
+
+      it("buryJob counts one failure in the minute's throughput", async () => {
+        if (!driver.getThroughput) {
+          return;
+        }
+
+        const bq: QueueRef = { ns, queue: "bury-throughput" };
+        const minute = throughputBucket(Date.now()) - 7 * THROUGHPUT_BUCKET_MS;
+        const error = serializeError(new Error("counted"));
+        await driver.addJobs(bq, [
+          makeJob({ id: "t1", createdAt: minute, runAt: minute }),
+          makeJob({ id: "t2", createdAt: minute, runAt: minute }),
+        ]);
+
+        await driver.buryJob!(bq, "t1", error, buryOpts, minute + 10);
+        // Refused — already dead — and so not counted.
+        await driver.buryJob!(bq, "t1", error, buryOpts, minute + 20);
+        await driver.buryJob!(bq, "t2", error, buryOpts, minute + 30);
+
+        expect(
+          await driver.getThroughput(bq, { from: minute, to: minute }),
+        ).toEqual([{ at: minute, completed: 0, failed: 2 }]);
+      });
+
       it("keeps a job's log in order, capped, and paged", async () => {
         const lq: QueueRef = { ns, queue: "logs" };
         const now = Date.now();

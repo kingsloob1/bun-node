@@ -44,6 +44,7 @@ import { ConfigError, DriverError } from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
+import { BURIABLE_STATES, canBury } from "../bury";
 import { EventGaps } from "../eventGaps";
 import { flowKey, unsettledChildren } from "../flow";
 import {
@@ -1715,6 +1716,80 @@ export class MongoDriver implements JobsDriver {
     }
 
     return true;
+  }
+
+  async buryJob(
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: { retention: Retention; keepStacktraces: number; token?: string },
+    now: number,
+  ): Promise<JobRecord | null> {
+    const jobs = await this.#jobs();
+    const existing = await this.getJob(q, id);
+
+    if (!existing || !canBury(existing, opts.token)) {
+      return null;
+    }
+
+    // Built from the read, as `failJob` builds it; the filter is what decides
+    // whether the job is buried.
+    const stacktrace = [error, ...existing.stacktrace].slice(
+      0,
+      Math.max(0, opts.keepStacktraces),
+    );
+    const expiresAt =
+      typeof opts.retention === "object" &&
+      opts.retention?.ttl &&
+      opts.retention.ttl > 0
+        ? now + opts.retention.ttl
+        : null;
+
+    const updated = await jobs.updateOne(
+      {
+        _id: this.#jobId(q, id),
+        $or: [
+          { state: { $in: [...BURIABLE_STATES] } },
+          ...(opts.token === undefined
+            ? []
+            : [{ state: "active", lockToken: opts.token }]),
+        ],
+      },
+      {
+        $set: {
+          state: "dead",
+          finishedOn: now,
+          expiresAt,
+          failedReason: JSON.stringify(error),
+          stacktrace: JSON.stringify(stacktrace),
+          lockToken: null,
+          lockExpiresAt: null,
+          workerId: null,
+        },
+      },
+    );
+
+    if (updated.matchedCount === 0) {
+      return null;
+    }
+
+    this.#throughput.add(q, now, 0, 1);
+    await this.#applyRetention(q, id, "dead", opts.retention);
+
+    // Read back, unless retention removed it: then as it was buried.
+    return (
+      (await this.getJob(q, id)) ?? {
+        ...existing,
+        state: "dead",
+        finishedOn: now,
+        expiresAt,
+        failedReason: error,
+        stacktrace,
+        lockToken: null,
+        lockExpiresAt: null,
+        workerId: null,
+      }
+    );
   }
 
   async updateProgress(

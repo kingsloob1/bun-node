@@ -854,6 +854,61 @@ return 1
 `;
 
 /**
+ * Buries a job from outside its processor: `dead` for good, from any state
+ * it waits in, or from `active` while it is still under `token`. Counted as a
+ * failure in the minute's throughput, as {@link FAIL} counts one; attempts
+ * and the flow's `recorded` flag are left as they are.
+ *
+ * ARGV: prefix, id, token ('' for none), now, error, stacktrace, mode, count,
+ * ttl. Returns the job's fields as buried — read before retention, which may
+ * remove it, and again after when it is still there — or nothing when the job
+ * was not buried.
+ */
+export const BURY = `${QUEUE_PRELUDE}${THROUGHPUT_COUNT}
+local id, token, now = ARGV[2], ARGV[3], tonumber(ARGV[4])
+local err, stacktrace = ARGV[5], ARGV[6]
+local mode, count, ttl = ARGV[7], ARGV[8], ARGV[9]
+local current = state(id)
+
+if current == 'active' then
+  if token == '' or redis.call('HGET', job(id), 'lockToken') ~= token then
+    return nil
+  end
+  redis.call('ZREM', ACTIVE, id)
+elseif current == 'waiting' then
+  redis.call('ZREM', WAIT, member(id))
+elseif current == 'delayed' then
+  redis.call('ZREM', DELAYED, id)
+elseif current == 'failed' then
+  redis.call('ZREM', FAILED, id)
+elseif current == 'waiting-children' then
+  redis.call('ZREM', CHILDREN, id)
+else
+  return nil
+end
+
+countThroughput('failed', now)
+
+redis.call('ZADD', DEAD, now, id)
+redis.call('HSET', job(id),
+  'state', 'dead',
+  'finishedOn', tostring(now),
+  'failedReason', err,
+  'stacktrace', stacktrace,
+  'lockToken', '',
+  'lockExpiresAt', '',
+  'workerId', '')
+
+local buried = redis.call('HGETALL', job(id))
+retain(id, DEAD, mode, count, ttl, now)
+
+if redis.call('EXISTS', job(id)) == 1 then
+  return redis.call('HGETALL', job(id))
+end
+return buried
+`;
+
+/**
  * Moves whatever has come due into the wait set.
  *
  * ARGV: prefix, now, limit. Returns how many moved.

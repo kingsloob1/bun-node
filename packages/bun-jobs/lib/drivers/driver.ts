@@ -779,6 +779,41 @@ export interface QueueDriver {
     now: number,
     keepStacktraces: number,
   ) => Promise<boolean>;
+  /**
+   * Fails a job for good from outside its processor — `Job.fail()` — and
+   * answers with the job as it now is, or `null` when nothing changed.
+   *
+   * A `waiting`, `delayed`, `failed` (retry pending) or `waiting-children`
+   * job goes to `dead`, and so does an `active` one whose lock is still
+   * `opts.token`; an active job without the token, a `completed` or `dead`
+   * one, or no job at all is left alone and answers `null`. The write and the
+   * check are one atomic step.
+   *
+   * Burying is what `failJob` does with `retry: false`, minus the lock: the
+   * reason becomes `failedReason` and heads `stacktrace` (capped at
+   * `keepStacktraces`), `finishedOn` is `now`, the lock is cleared and
+   * `retention` applies, and a driver that counts throughput counts one
+   * failure. `attemptsMade` is untouched — no attempt ran — and so is
+   * `flow.recorded`: a buried child's outcome reaches its parent the way any
+   * dead child's does, through maintenance.
+   *
+   * Optional, so a driver written against an earlier contract still compiles;
+   * every built-in driver implements it.
+   */
+  buryJob?: (
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: {
+      /** Retention for the dead job, as `failJob` applies it. */
+      retention: Retention;
+      /** How many stack traces it keeps. */
+      keepStacktraces: number;
+      /** The lock an active job must still be under to be buried. */
+      token?: string;
+    },
+    now: number,
+  ) => Promise<JobRecord | null>;
   /** Records progress reported by a processor. */
   updateProgress: (
     q: QueueRef,

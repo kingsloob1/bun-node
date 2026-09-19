@@ -51,6 +51,7 @@ import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
 import { compareCodePoints } from "../shared/strings";
+import { canBury } from "./bury";
 import {
   decodeName,
   decodeSegment,
@@ -803,6 +804,49 @@ export class FileDriver implements JobsDriver {
         return false;
       }
     }
+  }
+
+  async buryJob(
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: { retention: Retention; keepStacktraces: number; token?: string },
+    now: number,
+  ): Promise<JobRecord | null> {
+    // Under the job's hold, like `updateJob`: judged against the record read
+    // once held, so a claim, a completion or a promotion cannot slip between
+    // the check and the write. An active job's marker is held like any other,
+    // which is what makes its worker's completion miss and give up.
+    const bury = (record: JobRecord): JobRecord | null => {
+      if (!canBury(record, opts.token)) {
+        return null;
+      }
+
+      return {
+        ...record,
+        state: "dead",
+        failedReason: jsonClone(error),
+        stacktrace: [jsonClone(error), ...record.stacktrace].slice(
+          0,
+          Math.max(0, opts.keepStacktraces),
+        ),
+        lockToken: null,
+        lockExpiresAt: null,
+        workerId: null,
+        finishedOn: now,
+        expiresAt: expiryFor(opts.retention, now, record.expiresAt),
+      };
+    };
+    const buried = await this.#mutateJob(q, id, bury);
+
+    if (!buried) {
+      return null;
+    }
+
+    // A failure, counted as `failJob` counts one; in memory, no I/O here.
+    this.#throughput.add(q, now, 0, 1);
+    await this.#applyRetention(q, buried, opts.retention);
+    return buried;
   }
 
   async updateProgress(

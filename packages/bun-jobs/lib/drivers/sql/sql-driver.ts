@@ -49,6 +49,7 @@ import { EventRetention } from "../../shared/eventRetention";
 import { fitName } from "../../shared/fit";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
+import { BURIABLE_STATES, canBury } from "../bury";
 import { claimByLoop } from "../claimBatch";
 import { EventGaps } from "../eventGaps";
 import {
@@ -2132,6 +2133,79 @@ export class SqlDriver implements JobsDriver {
     }
 
     return true;
+  }
+
+  async buryJob(
+    q: QueueRef,
+    id: string,
+    error: SerializedError,
+    opts: { retention: Retention; keepStacktraces: number; token?: string },
+    now: number,
+  ): Promise<JobRecord | null> {
+    await this.connect();
+
+    const existing = await this.getJob(q, id);
+    if (!existing || !canBury(existing, opts.token)) {
+      return null;
+    }
+
+    // Built from the read, as `failJob` builds it; the statement's own
+    // condition is what decides whether the job is buried.
+    const stacktrace = [error, ...existing.stacktrace].slice(
+      0,
+      Math.max(0, opts.keepStacktraces),
+    );
+    const ttl = this.#ttlOf(opts.retention);
+    const expiresAt = ttl === null ? null : now + ttl;
+
+    const { bind, values } = this.#binder();
+    const token = opts.token;
+    // Bound where they appear, after the `SET` list: a positional placeholder
+    // takes its value by order.
+    const waiting = () =>
+      BURIABLE_STATES.map((state) => bind(state)).join(", ");
+    const active = () =>
+      token === undefined
+        ? ""
+        : ` OR (state = 'active' AND lock_token = ${bind(token)})`;
+
+    const updated = await this.#settle(
+      q,
+      now,
+      "failed",
+      `UPDATE ${this.#tables.jobs}
+          SET state = 'dead',
+              finished_on = ${bind(now)},
+              expires_at = ${bind(expiresAt)},
+              failed_reason = ${bind(this.dialect.jsonIn(error))},
+              stacktrace = ${bind(this.dialect.jsonIn(stacktrace))},
+              lock_token = NULL, lock_expires_at = NULL, worker_id = NULL
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
+          AND (state IN (${waiting()})${active()})`,
+      bind,
+      values,
+    );
+
+    if (updated === 0) {
+      return null;
+    }
+
+    await this.#applyRetention(q, id, "dead", opts.retention, now);
+
+    // Read back, unless retention removed it: then as it was buried.
+    return (
+      (await this.getJob(q, id)) ?? {
+        ...existing,
+        state: "dead",
+        finishedOn: now,
+        expiresAt,
+        failedReason: error,
+        stacktrace,
+        lockToken: null,
+        lockExpiresAt: null,
+        workerId: null,
+      }
+    );
   }
 
   async updateProgress(
