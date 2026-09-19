@@ -27,9 +27,9 @@ published packages under `packages/`:
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
 typecheck, ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
-source directly (`main` is `lib/index.ts`; no JS is emitted). bun-common and
-bun-nest also ship built declarations in `dts/` and point `types` at them;
-bun-jobs and bun-jobs-ui still point `types` at `lib/index.ts` until they adopt
+source directly (`main` is `lib/index.ts`; no JS is emitted). bun-common,
+bun-nest and bun-jobs also ship built declarations in `dts/` and point `types`
+at them; bun-jobs-ui still points `types` at `lib/index.ts` until it adopts
 the same recipe — see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
 
 Runtime is **Bun ≥ 1.4.2**: `engines.bun` says so in the root and in every
@@ -293,9 +293,9 @@ A published package ships built `.d.ts` + `.d.ts.map` in `dts/` next to its
 `.ts` sources in `lib/`. Bun runs `lib/` (`main` and every `exports` `default`
 point there; no JS is emitted); the type checker reads `dts/` (`types` and
 every `exports` `types` condition). The maps point back into `lib/`, so
-go-to-definition lands on real source. bun-common and bun-nest do this today;
-bun-jobs and bun-jobs-ui adopt the same recipe next (until then their `types`
-is still `lib/index.ts`, so a consumer compiles their source). The recipe is
+go-to-definition lands on real source. bun-common, bun-nest and bun-jobs do
+this today; bun-jobs-ui adopts the same recipe next (until then its `types` is
+still `lib/index.ts`, so a consumer compiles its source). The recipe is
 four files — `tsconfig.build.json` and `scripts/build-declarations.ts` copied
 unchanged (keep the copies identical), a `consumer-check.json`, and
 `__tests__/packaging.test.ts` — plus the `package.json` fields below, `dts/`
@@ -329,9 +329,11 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   each named export is not `any`, scans the shipped declarations for leaked
   imports, and imports each spelling under Bun. Any NEW-BROKEN cell fails.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
-  bun-nest: 58/66 OK on TS 6.0, against 34/66 on raw `.ts`; the other 8 are
-  `./jobs` under `bun-init`/`node16`, every diagnostic inside bun-jobs' raw
-  `.ts`, so they clear when bun-jobs ships declarations.
+  bun-nest: 66/66 OK on TS 6.0, against 34/66 on raw `.ts` (its last 8, the
+  `./jobs` cells under `bun-init`/`node16`, cleared once bun-jobs shipped
+  declarations). bun-jobs: 96/96 OK, against 28/96 on raw `.ts`, with its
+  three `api/contract` spellings checked as `browser` entries (no Bun or Node
+  types in their graph).
 - **`@types/*` backing a type a shipped declaration imports stays a runtime
   `dependency`**, not a `devDependency` (`@types/accepts`, `@types/busboy`,
   `@types/type-is`). Measured: moved to devDependencies, 30 consumer cells
