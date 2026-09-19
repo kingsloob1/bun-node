@@ -707,7 +707,8 @@ kept as its `cause`). To have a job retried, throw from the processor instead.
 - **From anywhere else**, the job is buried at once: a waiting, delayed,
   retry-pending or `waiting-children` job, or an active one still under the
   lock the view was read with. The worker running an active one loses its lock
-  at the next heartbeat, and whatever the attempt returns is discarded. The
+  at the next heartbeat, and whatever the attempt returns or throws is
+  discarded: that worker emits `lockLost`, never a second `failed` or `dead`. The
   job gets `failed` and `dead`, and a copy in its own `deadLetter` queue. A
   flow child's failure reaches its parent on the next maintenance pass.
   `fail()` answers `false` for a job that is finished, gone, or active under

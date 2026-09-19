@@ -233,6 +233,23 @@ function storedResult(result: unknown): unknown {
  * default, `JobMap`, means none — the events are exactly as before.
  */
 /**
+ * Whether a stored failure is the one given: the same name, message and
+ * stack. The stack pins it to the one throw, so two failures that merely say
+ * the same thing are not mistaken for each other.
+ */
+function sameError(
+  stored: SerializedError | null,
+  error: SerializedError,
+): boolean {
+  return (
+    stored !== null &&
+    stored.name === error.name &&
+    stored.message === error.message &&
+    stored.stack === error.stack
+  );
+}
+
+/**
  * How long a worker trusts a series' disabled flag as last read before
  * reading it again.
  */
@@ -1984,7 +2001,7 @@ export class BunQueueWorker<
     try {
       if (delay !== false) {
         const runAt = now + delay;
-        await this.#persist(
+        const written = await this.#persist(
           async () =>
             await this.driver.failJob(
               this.ref,
@@ -1997,6 +2014,11 @@ export class BunQueueWorker<
             ),
         );
 
+        if (!written && !(await this.#failureLanded(record, serialized))) {
+          this.safeEmit("lockLost", job);
+          return;
+        }
+
         this.safeEmitScoped("failed", record.name, job, failure);
         this.safeEmitScoped("retrying", record.name, job, failure, runAt);
         void this.#publish("failed", { id: record.id, error: serialized });
@@ -2008,7 +2030,7 @@ export class BunQueueWorker<
         return;
       }
 
-      await this.#persist(
+      const written = await this.#persist(
         async () =>
           await this.driver.failJob(
             this.ref,
@@ -2023,6 +2045,16 @@ export class BunQueueWorker<
             record.opts.keepStacktraces,
           ),
       );
+
+      // Refused, and not because an earlier try of this very write landed:
+      // the job is someone else's now — most often buried from outside by
+      // `Job.fail()`, which announced `failed` and `dead` itself. Saying so
+      // again would deliver both twice; nor is its letter or its parent this
+      // worker's to see to.
+      if (!written && !(await this.#failureLanded(record, serialized))) {
+        this.safeEmit("lockLost", job);
+        return;
+      }
 
       this.safeEmitScoped("failed", record.name, job, failure);
       this.safeEmitScoped("dead", record.name, job, failure);
@@ -2053,6 +2085,36 @@ export class BunQueueWorker<
         now,
       );
     }
+  }
+
+  /**
+   * Whether a failure write this worker saw refused had in fact landed: an
+   * earlier try whose reply was lost wrote it, and the retry that followed
+   * found the lock already released. Told apart from a job someone else
+   * settled — buried from outside, recovered as stalled — by reading the job
+   * back: ours is `failed` or `dead` with exactly the failure this worker
+   * wrote.
+   *
+   * A job that is gone reads as ours: retention may have removed it the
+   * moment our write landed, and reporting a failure that happened beats
+   * losing it.
+   */
+  async #failureLanded(
+    record: JobRecord,
+    written: SerializedError,
+  ): Promise<boolean> {
+    const now = await this.driver
+      .getJob(this.ref, record.id)
+      .catch(() => undefined);
+
+    if (now === undefined || now === null) {
+      return true;
+    }
+
+    return (
+      (now.state === "failed" || now.state === "dead") &&
+      sameError(now.failedReason, written)
+    );
   }
 
   /**
