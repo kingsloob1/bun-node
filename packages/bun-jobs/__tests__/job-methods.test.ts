@@ -130,6 +130,187 @@ describe("changing a job", () => {
   });
 });
 
+describe("the 2.12 job methods", () => {
+  it("schedule moves a pending job as reschedule does", async () => {
+    const { queue } = setup();
+    const job = await queue.add("x", { v: 1 });
+
+    const before = Date.now();
+    const later = await job.schedule("in 10 minutes");
+    expect(later?.state).toBe("delayed");
+    expect(later?.runAt).toBeGreaterThanOrEqual(before + 600_000);
+    expect((await job.schedule(new Date(0)))?.state).toBe("waiting");
+  });
+
+  it("update changes data, priority and run time in one step, conditionally on state", async () => {
+    const { queue } = setup();
+    const job = await queue.add("x", { v: 1 }, { delay: 60_000 });
+
+    expect(
+      await job.update({ data: { v: 2 }, onlyIn: ["waiting"] }),
+    ).toBeNull();
+    expect((await queue.getJob(job.id))?.data).toEqual({ v: 1 });
+
+    const updated = await job.update({
+      data: { v: 3 },
+      priority: 4,
+      runAt: "in 1 hour",
+      onlyIn: ["delayed"],
+    });
+    expect(updated?.data).toEqual({ v: 3 });
+    expect(updated?.priority).toBe(4);
+    expect(updated?.runAt).toBeGreaterThan(Date.now() + 3_000_000);
+    expect(updated?.wasAdded).toBe(false);
+
+    await expect(job.update({ priority: Number.NaN })).rejects.toThrow(
+      ConfigError,
+    );
+    await queue.remove(job.id);
+    expect(await job.update({ priority: 1 })).toBeNull();
+  });
+
+  it("a refreshed or updated view is still the processor's own", async () => {
+    const { driver, namespace, queue } = setup();
+    const answers: boolean[] = [];
+
+    const worker = new BunQueueWorker<{ v: number }>(
+      "methods",
+      async (job) => {
+        const refreshed = await job.refresh();
+        answers.push(await refreshed!.touch(60_000));
+        const updated = await job.updateData({ v: 2 });
+        answers.push(await updated!.extendLock(60_000));
+        return null;
+      },
+      { namespace, driver, logger: noopLogger, pollInterval: 5 },
+    );
+    closers.push(() => worker.close({ force: true }));
+    void worker.run();
+
+    await queue.add("x", { v: 1 });
+    await waitFor(() => answers.length === 2, { timeout: 5_000 });
+    expect(answers).toEqual([true, true]);
+  });
+
+  it("extendLock and touch answer false from a view that is not the processor's", async () => {
+    const { driver, namespace, queue } = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+
+    const worker = new BunQueueWorker<{ v: number }>(
+      "methods",
+      async () => {
+        started = true;
+        await gate;
+        return null;
+      },
+      { namespace, driver, logger: noopLogger, pollInterval: 5 },
+    );
+    closers.push(() => worker.close({ force: true }));
+    void worker.run();
+
+    const job = await queue.add("x", { v: 1 });
+    await waitFor(() => started);
+
+    const outside = await queue.getJob(job.id);
+    expect(outside?.state).toBe("active");
+    expect(outside?.lockToken).not.toBeNull();
+    expect(await outside!.extendLock(600_000)).toBe(false);
+    expect(await outside!.touch(600_000)).toBe(false);
+    // The lock is where the worker put it, not ten minutes out.
+    const record = await driver.getJob(queue.ref, job.id);
+    expect(record!.lockExpiresAt!).toBeLessThan(Date.now() + 300_000);
+    release();
+  });
+
+  it("remove, promote and retry emit and publish what the queue's own methods do", async () => {
+    const { driver, namespace, queue } = setup();
+    const local: string[] = [];
+    queue.on("removed", (id) => {
+      local.push(`removed ${id}`);
+    });
+    queue.on("promoted", (id) => {
+      local.push(`promoted ${id}`);
+    });
+    queue.on("retried", (ids) => {
+      local.push(`retried ${ids.join(",")}`);
+    });
+
+    const listener = new BunQueue("methods", {
+      namespace,
+      driver,
+      logger: noopLogger,
+      subscribe: true,
+    });
+    closers.push(() => listener.close());
+    await listener.connect();
+    const remote: string[] = [];
+    listener.on("removed", (id) => {
+      remote.push(`removed ${id}`);
+    });
+    listener.on("promoted", (id) => {
+      remote.push(`promoted ${id}`);
+    });
+    listener.on("retried", (ids) => {
+      remote.push(`retried ${ids.join(",")}`);
+    });
+    const publisher = new BunQueue<{ v: number }>("methods", {
+      namespace,
+      driver,
+      logger: noopLogger,
+      publish: true,
+    });
+    closers.push(() => publisher.close());
+
+    const later = await queue.add("x", { v: 1 }, { delay: 60_000 });
+    const gone = await queue.add("x", { v: 2 });
+    const dead = await queue.add("x", { v: 3 });
+    await dead.fail("to retry");
+
+    expect(await later.promote()).toBe(true);
+    expect(await gone.remove()).toBe(true);
+    expect(await dead.retry()).toBe(true);
+    expect(local).toEqual([
+      `promoted ${later.id}`,
+      `removed ${gone.id}`,
+      `retried ${dead.id}`,
+    ]);
+
+    // A view from a publishing queue is heard in other processes.
+    const published = await publisher.add("x", { v: 4 }, { delay: 60_000 });
+    await published.promote();
+    await published.fail("stop");
+    await published.retry();
+    await waitFor(() => remote.length >= 2);
+    expect(remote).toEqual([
+      `promoted ${published.id}`,
+      `retried ${published.id}`,
+    ]);
+
+    // Nothing is announced for a change that did not happen.
+    expect(await gone.remove()).toBe(false);
+    expect(local).toHaveLength(3);
+  });
+
+  it("reads progress as a number, a record, or null", async () => {
+    const { driver, queue } = setup();
+    const job = await queue.add("x", { v: 1 });
+    expect(job.progress).toBeNull();
+
+    await job.updateProgress(40);
+    expect((await job.refresh())?.progress).toBe(40);
+    await job.updateProgress({ step: "b" });
+    expect((await job.refresh())?.progress).toEqual({ step: "b" });
+
+    // A value `updateProgress` would never have written reads as none.
+    await driver.updateProgress(queue.ref, job.id, ["not", "progress"]);
+    expect((await job.refresh())?.progress).toBeNull();
+  });
+});
+
 describe("a job's log", () => {
   it("is written from the processor and read from anywhere", async () => {
     const { driver, namespace, queue } = setup();
