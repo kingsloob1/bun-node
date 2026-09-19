@@ -237,6 +237,76 @@ describe("try it", () => {
     expect(call.headers["content-type"]).toBeUndefined();
   });
 
+  it("shows the real status, the visible headers, and no documented note when the status is documented", async () => {
+    open("/getMeta", {
+      handlers: {
+        // A fresh Response per call: the app reads /meta at boot too.
+        "GET /meta": () =>
+          new Response(JSON.stringify(metaFixture()), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-request-id": "req-1",
+            },
+          }),
+      },
+    });
+    await operation();
+    send("GET");
+    const result = await page().findByTestId("tryit-result");
+    await waitFor(() => expect(result.textContent).toContain("namespace"));
+    const headers = within(result).getByTestId("tryit-headers");
+    expect(headers.querySelector("summary")!.textContent).toBe("Headers (2)");
+    expect(
+      headers.querySelector('[data-header="x-request-id"] dd')!.textContent,
+    ).toBe("req-1");
+    expect(
+      headers.querySelector('[data-header="content-type"] dd')!.textContent,
+    ).toBe("application/json");
+    expect(within(result).queryByTestId("tryit-documented")).toBeNull();
+  });
+
+  it("shows a status the operation does not document, with the documented one as a note", async () => {
+    open("/getMeta", {
+      handlers: { "GET /meta": { status: 203, body: metaFixture() } },
+    });
+    await operation();
+    send("GET");
+    const result = await page().findByTestId("tryit-result");
+    await waitFor(() =>
+      expect(within(result).getByTestId("tryit-status").textContent).toBe(
+        "203",
+      ),
+    );
+    expect(within(result).getByTestId("tryit-documented").textContent).toBe(
+      "Not a documented status. Documented success: 200.",
+    );
+  });
+
+  it("shows a real 204 with no body", async () => {
+    open("/removeJob", {
+      handlers: { "DELETE /queues/q/jobs/7": { status: 204 } },
+    });
+    await operation();
+    fill("queue", "q");
+    fill("id", "7");
+    send("DELETE");
+    fireEvent.change(within(await dialog()).getByLabelText(/to confirm/), {
+      target: { value: "removeJob" },
+    });
+    fireEvent.click(
+      within(await dialog()).getByRole("button", { name: "Send DELETE" }),
+    );
+    const result = await page().findByTestId("tryit-result");
+    await waitFor(() =>
+      expect(within(result).getByTestId("tryit-status").textContent).toBe(
+        "204",
+      ),
+    );
+    expect(result.textContent).toContain("No body.");
+    expect(within(result).queryByTestId("tryit-documented")).toBeNull();
+  });
+
   it("builds query arrays as repeated keys, and percent-encodes path params", async () => {
     const { calls } = open("/listJobs", {
       handlers: {

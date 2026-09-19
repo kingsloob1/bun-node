@@ -41,6 +41,24 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** One response as {@link ApiClient.requestRaw} resolves it. */
+export interface RawResponse {
+  /** Whether the status is 2xx. */
+  ok: boolean;
+  /** The HTTP status received. */
+  status: number;
+  /** The status text received (often `""` over HTTP/2). */
+  statusText: string;
+  /** The response headers the caller can see, lower-cased names in alphabetical order. A browser hides `Set-Cookie`, and cross-origin ones not in `Access-Control-Expose-Headers`. */
+  headers: Record<string, string>;
+  /** The body: parsed JSON when the `Content-Type` is JSON and it parses, the text otherwise, `undefined` when empty. */
+  body: unknown;
+  /** For a non-2xx status, the {@link ApiError} `request` would have thrown (a problem's fields verbatim); `undefined` on success. */
+  error: ApiError | undefined;
+  /** Milliseconds from sending to the body having been read. */
+  durationMs: number;
+}
+
 /** The `fetch` the client calls; injectable for tests and non-browser hosts. */
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -68,6 +86,19 @@ export interface ApiClient {
     path: string,
     options?: RequestOptions,
   ) => Promise<T>;
+  /**
+   * Sends one request like {@link ApiClient.request}, with the same headers,
+   * credentials and problem+json parsing, and resolves the whole response
+   * instead of only its body. An error status **resolves** (with `ok: false`
+   * and the {@link ApiError} `request` would have thrown in `error`); only a
+   * network failure rejects (an {@link ApiError} of kind `network`), and an
+   * abort rejects with the fetch's own `AbortError`.
+   */
+  requestRaw: (
+    method: HttpMethod,
+    path: string,
+    options?: RequestOptions,
+  ) => Promise<RawResponse>;
   /** `GET /meta`. */
   getMeta: (signal?: AbortSignal) => Promise<MetaDto>;
   /** `GET /meta/permissions`. */
@@ -187,11 +218,12 @@ export function createApiClient(
 ): ApiClient {
   const base = config.apiBase.replace(/\/+$/, "");
 
-  async function request<T>(
+  /** Builds the URL and `RequestInit` of one request: every header rule lives here. */
+  function prepare(
     method: HttpMethod,
     path: string,
-    { query, body, signal }: RequestOptions = {},
-  ): Promise<T> {
+    { query, body, signal }: RequestOptions,
+  ): { url: string; init: RequestInit } {
     const url = `${base}${path}${serializeQuery(query)}`;
     const headers: Record<string, string> = { Accept: "application/json" };
     if (JSON_METHODS.has(method)) {
@@ -211,13 +243,20 @@ export function createApiClient(
     if (signal) {
       init.signal = signal;
     }
+    return { url, init };
+  }
 
+  /** Calls `fetch`; a failure other than an abort becomes a `network` {@link ApiError}. */
+  async function send(
+    url: string,
+    init: RequestInit,
+    path: string,
+  ): Promise<Response> {
     const fetcher = options.fetch ?? globalThis.fetch;
-    let response: Response;
     try {
-      response = await fetcher(url, init);
+      return await fetcher(url, init);
     } catch (error) {
-      if (isAbort(error, signal)) {
+      if (isAbort(error, init.signal ?? undefined)) {
         throw error;
       }
       throw new ApiError({
@@ -230,6 +269,15 @@ export function createApiClient(
         cause: error,
       });
     }
+  }
+
+  async function request<T>(
+    method: HttpMethod,
+    path: string,
+    requestOptions: RequestOptions = {},
+  ): Promise<T> {
+    const { url, init } = prepare(method, path, requestOptions);
+    const response = await send(url, init, path);
 
     if (response.status === 204 || response.status === 205) {
       return undefined as T;
@@ -257,9 +305,44 @@ export function createApiClient(
     return parsed.value as T;
   }
 
+  async function requestRaw(
+    method: HttpMethod,
+    path: string,
+    requestOptions: RequestOptions = {},
+  ): Promise<RawResponse> {
+    const { url, init } = prepare(method, path, requestOptions);
+    const started = performance.now();
+    const response = await send(url, init, path);
+    const text =
+      response.status === 204 || response.status === 205
+        ? ""
+        : await response.text();
+    const durationMs = performance.now() - started;
+    const parsed =
+      text !== "" && isJsonType(response.headers.get("content-type") ?? "")
+        ? tryParse(text)
+        : undefined;
+    const headers: Record<string, string> = {};
+    for (const [name, value] of [...response.headers.entries()].sort(
+      ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+    )) {
+      headers[name.toLowerCase()] = value;
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+      body: parsed ? parsed.value : text === "" ? undefined : text,
+      error: response.ok ? undefined : errorFromResponse(response, text, path),
+      durationMs,
+    };
+  }
+
   return {
     base,
     request,
+    requestRaw,
     getMeta: (signal) => request<MetaDto>("GET", "/meta", { signal }),
     getPermissions: (target, signal) =>
       request<Permissions>("GET", "/meta/permissions", {

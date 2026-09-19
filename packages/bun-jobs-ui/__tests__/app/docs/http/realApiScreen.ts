@@ -16,6 +16,8 @@ export interface TryItOutcome {
   status: string;
   /** The result section's whole text (body included). */
   text: string;
+  /** The response headers the panel lists, by lower-cased name. */
+  headers: Record<string, string>;
 }
 
 /** What the test can do with the rendered reference. */
@@ -26,6 +28,8 @@ export interface HttpDocsDriver {
   openOperation: (operationId: string) => Promise<void>;
   /** Fills a try-it field by parameter name. */
   fill: (name: string, value: string) => void;
+  /** Replaces the try-it body editor's text. */
+  setBody: (text: string) => void;
   /** Sends, confirming a mutation (and typing the id for a destructive one), and resolves the outcome. */
   send: () => Promise<TryItOutcome>;
 }
@@ -78,6 +82,11 @@ export async function mountHttpDocs(
         target: { value },
       });
     },
+    setBody: (text) => {
+      fireEvent.change(within(panel()).getByRole("textbox", { name: /Body/ }), {
+        target: { value: text },
+      });
+    },
     send: async () => {
       const button = within(panel()).getByRole("button", { name: /^Send / });
       const label = button.textContent ?? "";
@@ -106,9 +115,15 @@ export async function mountHttpDocs(
         {},
         { timeout: 5_000 },
       );
+      const headers: Record<string, string> = {};
+      for (const row of result.querySelectorAll<HTMLElement>("[data-header]")) {
+        headers[row.dataset.header ?? ""] =
+          row.querySelector("dd")?.textContent ?? "";
+      }
       return {
         status: within(result).getByTestId("tryit-status").textContent ?? "",
         text: result.textContent ?? "",
+        headers,
       };
     },
   };

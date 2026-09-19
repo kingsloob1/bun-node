@@ -457,7 +457,7 @@ export function methodTone(
   }
 }
 
-/** The success responses (2xx), for the status a successful try-it had. */
+/** The success responses (2xx): the note try-it shows when the status it received is not documented. */
 export function successStatuses(operation: DocOperation): string[] {
   return operation.responses
     .map((response) => response.status)
