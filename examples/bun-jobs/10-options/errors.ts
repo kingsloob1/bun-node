@@ -522,18 +522,34 @@ for (const [label, run, method, needs] of [
     "disable()",
   ],
   ["job.enable()", () => bareOccurrence.enable(), "setQueueState", "enable()"],
-  // The queue's methods name the same step as the job's.
+  // The queue's methods name themselves, not the job's step: `needs` is
+  // always the method the caller called.
   [
     "queue.disableRepeatable()",
     () => bareQueue.disableRepeatable("bare-series"),
     "setQueueState",
-    "disable()",
+    "disableRepeatable()",
   ],
   [
     "queue.enableRepeatable()",
     () => bareQueue.enableRepeatable("bare-series"),
     "setQueueState",
-    "enable()",
+    "enableRepeatable()",
+  ],
+  // They check for queue state before looking the key up, so a key no series
+  // has is refused the same way: it does not answer `false`, as it would on a
+  // driver with queue state.
+  [
+    "queue.disableRepeatable() of an unknown key",
+    () => bareQueue.disableRepeatable("no-such-series"),
+    "setQueueState",
+    "disableRepeatable()",
+  ],
+  [
+    "queue.enableRepeatable() of an unknown key",
+    () => bareQueue.enableRepeatable("no-such-series"),
+    "setQueueState",
+    "enableRepeatable()",
   ],
 ] as const) {
   const error = await checkRejects(label, run, {
