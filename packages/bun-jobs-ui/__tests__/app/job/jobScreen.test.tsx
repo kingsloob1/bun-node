@@ -1,7 +1,16 @@
 import type { JobState } from "../../../app/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { JOB_STATES } from "../../../app/api/contract";
-import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
+import { ProgressValue } from "../../../app/screens/job/JobScreen";
+import {
+  act,
+  fireEvent,
+  page,
+  render,
+  setupDom,
+  waitFor,
+  within,
+} from "../dom";
 import { problem } from "../fixtures";
 import {
   allPermissions,
@@ -168,12 +177,18 @@ describe("the job screen", () => {
     ).toBe("100");
   });
 
-  it("shows no bar for object progress, and text for any other stored value", async () => {
-    await renderJobScreen(jobFixture("active", { progress: "half" }), {
+  it("shows nothing for null progress (the API sends any non-number, non-object value as null)", async () => {
+    await renderJobScreen(jobFixture("active", { progress: null }), {
       handlers: sideHandlers(),
     });
     await heading();
-    expect(summaryValue("Progress")).toBe("half");
+    expect(page().queryByRole("progressbar")).toBeNull();
+    expect(page().queryByTestId("job-progress")).toBeNull();
+  });
+
+  it("still renders any other value as text, for an older API that passes it through", () => {
+    render(<ProgressValue progress="half" />);
+    expect(page().getByText("half")).toBeTruthy();
     expect(page().queryByRole("progressbar")).toBeNull();
   });
 
