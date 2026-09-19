@@ -15,8 +15,9 @@
  * - `publish` is independent of `subscribe` and defaults to it. A queue that
  *   only publishes is heard by subscribers but hears nothing itself; a
  *   subscriber never hears its own events echoed back.
- * - `retry()` emits nothing; `retryJobs()` and `retryAll()` emit one `retried`
- *   per batch. `retryAll`'s `reason` is matched against
+ * - A `retry()` that went emits one `retried` with `[id]`, and one that
+ *   changed nothing emits nothing; `retryJobs()` and `retryAll()` emit one
+ *   `retried` per batch. `retryAll`'s `reason` is matched against
  *   `"<error name>: <message>"`, so it never matches a completed job.
  * - `update()` answers `null` rather than throwing when the patch cannot
  *   apply, and `onlyIn` refuses the *whole* patch, not just `runAt`.
@@ -897,17 +898,24 @@ checkEqual(
 checkEqual("retry() resets attempts by default", await failing.retry(x2), true);
 checkEqual("…to zero", (await failing.getJob(x2))?.attemptsMade, 0);
 checkEqual(
+  "each retry() that went emitted one retried, with [id]",
+  heardSince(mark, "failing", "retried"),
+  [[[x1]], [[x2]]],
+);
+mark = heard.length;
+checkEqual(
   "retrying a job that is already waiting answers false",
   await failing.retry(x1),
   false,
 );
 checkEqual("…as does an unknown id", await failing.retry("no-such-job"), false);
 checkEqual(
-  "retry() emits no retried event",
+  "a retry() that changed nothing emits no retried",
   heardSince(mark, "failing", "retried").length,
   0,
 );
 
+mark = heard.length;
 const batch = await failing.retryJobs([x3, x4, x1, "no-such-job"], {
   resetAttempts: false,
 });
@@ -917,7 +925,7 @@ checkEqual(
   sorted([x3, x4]),
 );
 checkEqual(
-  "…emitting one retried for the batch",
+  "…emitting one retried for the batch, with just those ids",
   heardSince(mark, "failing", "retried").map(([ids]) =>
     sorted(ids as string[]),
   ),

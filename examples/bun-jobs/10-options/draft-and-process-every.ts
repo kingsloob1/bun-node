@@ -27,6 +27,10 @@
  *   `immediately()` — change one field of the series and leave the rest.
  *   Called before `repeatEvery()` they throw `ConfigError` at once; a later
  *   `repeatEvery()` replaces what they set.
+ * - **A time zone is checked however it is given**: `tz()` and
+ *   `repeatEvery(…, { tz })` at the call, `withOptions({ repeat })` at
+ *   `start()`, before anything is written. An empty zone is refused, not read
+ *   as "none".
  * - **Date phrases are read at `save()`**, so "in 1 hour" is an hour from the
  *   save, and an unreadable one fails there — naming `schedule()` or
  *   `endingAt()` and quoting the phrase.
@@ -1001,6 +1005,87 @@ step("Series setters: limit(), tz(), endingAt(), catchUp(), immediately()");
       { method: "tz()", tz: "Europe/Lagos" },
     );
   }
+
+  // A zone given to repeatEvery() is read at the call as well, as tz() reads
+  // it — and an empty one is refused, not taken as "no zone".
+  for (const [label, zone, call] of [
+    [
+      "draft repeatEvery(interval, { tz })",
+      "Europe/Lagos",
+      () =>
+        jobs.create<Mail>("mail").repeatEvery("1 hour", { tz: "Europe/Lagos" }),
+    ],
+    [
+      "builder repeatEvery(interval, { tz })",
+      "Europe/Lagos",
+      () =>
+        jobs
+          .schedule<Mail>("mail")
+          .repeatEvery("1 hour", { tz: "Europe/Lagos" }),
+    ],
+    [
+      "builder repeatEvery(cron, { tz })",
+      "Europe/Lagos",
+      () =>
+        jobs
+          .schedule<Mail>("mail")
+          .repeatEvery("0 9 * * *", { tz: "Europe/Lagos" }),
+    ],
+    [
+      'draft repeatEvery(interval, { tz: "" })',
+      "",
+      () => jobs.create<Mail>("mail").repeatEvery("1 hour", { tz: "" }),
+    ],
+  ] as const) {
+    const error = (await checkRejects(`${label}: refused at the call`, call, {
+      name: "ConfigError",
+      message: /^repeatEvery\(\) does not know the time zone /,
+    })) as ConfigError | undefined;
+    checkEqual(
+      `${label}: the message quotes the zone; context names repeatEvery() and it`,
+      [error?.message, error?.context],
+      [
+        `repeatEvery() does not know the time zone "${zone}"`,
+        { method: "repeatEvery()", tz: zone },
+      ],
+    );
+  }
+  await checkRejects(
+    'tz(""): refused too',
+    () => jobs.create<Mail>("mail").repeatEvery("1 hour").tz(""),
+    {
+      name: "ConfigError",
+      message: /^tz\(\) does not know the time zone ""$/,
+    },
+  );
+
+  // A whole repeat object handed to withOptions() is read at start(), where
+  // every repeat is normalised — the same check, under the option's name,
+  // before anything is written.
+  const seriesBefore = (await queue.listRepeatables()).length;
+  const totalBefore = await total(queue);
+  const viaOptions = await checkRejects(
+    "withOptions({ repeat: { every, tz } }).start(): an unknown zone is refused",
+    () =>
+      jobs
+        .schedule<Mail>("mail")
+        .withOptions({ repeat: { every: "1 hour", tz: "Europe/Lagos" } })
+        .start(),
+    {
+      name: "ConfigError",
+      message: /^repeat\.tz does not know the time zone "Europe\/Lagos"$/,
+    },
+  );
+  checkEqual(
+    "…its context names the option and the zone",
+    (viaOptions as ConfigError | undefined)?.context,
+    { option: "repeat.tz", tz: "Europe/Lagos" },
+  );
+  checkEqual(
+    "…and nothing was written",
+    [(await queue.listRepeatables()).length, await total(queue)],
+    [seriesBefore, totalBefore],
+  );
 
   for (const repeatable of await queue.listRepeatables()) {
     await queue.removeRepeatable(repeatable.key);

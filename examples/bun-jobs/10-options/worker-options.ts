@@ -674,11 +674,19 @@ checkEqual(
   (await stallJob.refresh())?.stalledCount,
   2,
 );
+// The sweeper emits `stalled` once the driver's recovery call has returned,
+// so a read here can see the job dead a moment before that event lands (seen
+// on MariaDB). Give it a short grace rather than reading one instant.
+const stalledSeen = (): number =>
+  stallSweeper.stalled.filter((id) => id === stallJob.id).length;
+for (let waited = 0; stalledSeen() < 2 && waited < 2_000; waited += 20) {
+  await Bun.sleep(20);
+}
 // On failure, print what the sweeper did see, so a missing recovery can be
 // told apart from a duplicate or an unrelated id.
 check(
   "stalled event, once per recovery (requeued and buried alike)",
-  stallSweeper.stalled.filter((id) => id === stallJob.id).length === 2,
+  stalledSeen() === 2,
   {
     job: stallJob.id,
     sweeperSawStalled: stallSweeper.stalled,

@@ -512,10 +512,16 @@ type _PageTyped = Expect<
   >
 >;
 type _PageJob = Expect<Equal<(typeof paged.jobs)[number], TypedJob<Jobs>>>;
-checkEqual(
+// The worker is still running, so a job may complete between two reads (seen
+// on MariaDB). The completed set only grows, so the page must hold everything
+// the list before it held, and nothing a list after it lacks.
+const listedAfter = (await registry.list("completed")).map(({ id }) => id);
+const pagedIds = paged.jobs.map(({ id }) => id);
+check(
   "page: the same completed jobs as list",
-  paged.jobs.map(({ id }) => id).sort(),
-  listed.map(({ id }) => id).sort(),
+  listed.every(({ id }) => pagedIds.includes(id)) &&
+    pagedIds.every((id) => listedAfter.includes(id)),
+  { listed: listed.map(({ id }) => id), paged: pagedIds, listedAfter },
 );
 
 const fetched = await registry.getJobs([invoice.id, "no-such-id"]);
