@@ -1,1 +1,6 @@
+# The prebuilt browser bundle (`bun scripts/build.ts`, also on `prepack`).
 dist/
+
+# Built declarations (`bun run build:types`, also on `prepack`). Published via
+# "files", never committed: derived from lib/.
+dts/
