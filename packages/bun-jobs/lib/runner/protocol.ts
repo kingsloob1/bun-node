@@ -118,6 +118,13 @@ export interface JobChannelRequest {
   seq: number;
   /** The line to log, for `"log"`. */
   line?: string;
+  /**
+   * For `"heartbeat"`: how long to extend the lock by, in milliseconds, as
+   * `job.extendLock(ms)` asked. Absent for `ctx.heartbeat()` — and from a
+   * child older than this field — in which case the worker renews for its own
+   * `lockDuration`, as its heartbeat always has.
+   */
+  ms?: number;
 }
 
 /** What every {@link JobChannelReply} carries, whatever the outcome. */

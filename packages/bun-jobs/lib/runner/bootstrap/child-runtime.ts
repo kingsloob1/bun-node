@@ -27,6 +27,8 @@ import {
   deserializeError,
   serializeError,
 } from "@kingsleyweb/bun-common/lib/utils/native";
+import { displayRepeatKey } from "../../queue/options";
+import { DEFAULT_LOCK_DURATION } from "../../shared/constants";
 import { ProtocolError } from "../../shared/errors";
 import { toHandler } from "../executors/executor";
 import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
@@ -279,7 +281,10 @@ function isolatedJob(
     operation: "log",
     fields: { line: string },
   ): Promise<JobChannelReplies["log"]>;
-  function ask(operation: "heartbeat"): Promise<JobChannelReplies["heartbeat"]>;
+  function ask(
+    operation: "heartbeat",
+    fields?: { ms: number },
+  ): Promise<JobChannelReplies["heartbeat"]>;
   function ask(
     operation: "childrenValues",
   ): Promise<JobChannelReplies["childrenValues"]>;
@@ -288,7 +293,7 @@ function isolatedJob(
   ): Promise<JobChannelReplies["childrenFailures"]>;
   async function ask(
     operation: JobChannelOperation,
-    fields: { line?: string } = {},
+    fields: { line?: string; ms?: number } = {},
   ): Promise<JobChannelReplies[JobChannelOperation]> {
     return await new Promise((resolve, reject) => {
       const id = ++seq;
@@ -314,7 +319,11 @@ function isolatedJob(
   };
 
   const log = async (line: string) => await ask("log", { line: String(line) });
-  const extendLock = async () => await ask("heartbeat");
+  // Exactly what `Job.extendLock(ms)` does: the duration asked for, or
+  // `DEFAULT_LOCK_DURATION` when none was, never the worker's `lockDuration`.
+  // It used to ask for a plain heartbeat and so ignored `ms` altogether.
+  const extendLock = async (ms?: number) =>
+    await ask("heartbeat", { ms: ms ?? DEFAULT_LOCK_DURATION });
 
   const job: IsolatedJob = {
     id: record.id,
@@ -332,13 +341,19 @@ function isolatedJob(
     maxAttempts: record.maxAttempts,
     stalledCount: record.stalledCount,
     progress: record.progress,
-    returnValue: record.returnValue,
+    // `?? null`, as `Job` has it: a record without one reads `null`, not
+    // `undefined`.
+    returnValue: record.returnValue ?? null,
     failedReason: record.failedReason
       ? deserializeError(record.failedReason)
       : null,
     stacktrace: record.stacktrace.map((entry) => deserializeError(entry)),
     workerId: record.workerId,
-    repeatKey: record.repeatKey,
+    // Shown as `Job` shows it: a caller's key without its stored `k:` prefix,
+    // unless the key contains `|` (see `displayRepeatKey`). The raw stored
+    // spelling made the same job report a different key once isolated.
+    repeatKey:
+      record.repeatKey === null ? null : displayRepeatKey(record.repeatKey),
     wasAdded: true,
     queue: { ns: ctx.namespace, queue: ctx.runnerId },
     isRepeat: record.repeatKey !== null,
@@ -377,8 +392,10 @@ function isolatedJob(
     logger: buildLogger(transport, ctx),
     workerId: ctx.runnerName,
     attempt: ctx.attempt,
+    // A plain heartbeat, no duration: the worker renews for its own
+    // `lockDuration`, exactly as the in-process `ctx.heartbeat()` does.
     heartbeat: async () => {
-      await extendLock();
+      await ask("heartbeat");
     },
     log,
   };

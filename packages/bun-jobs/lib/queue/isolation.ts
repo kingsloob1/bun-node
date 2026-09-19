@@ -309,8 +309,23 @@ async function valueFor(
     case "log":
       return await job.log(request.line ?? "");
     case "heartbeat":
-      await context.heartbeat();
-      return !controller.signal.aborted;
+      // No duration: `ctx.heartbeat()`, or a child that predates `ms` —
+      // renew for the worker's own lockDuration, as before.
+      if (request.ms === undefined) {
+        await context.heartbeat();
+        return !controller.signal.aborted;
+      }
+      // `job.extendLock(ms)` in the child. A given-up attempt keeps no lock.
+      if (controller.signal.aborted) {
+        return false;
+      }
+      return (
+        (await job.extendLock(
+          // A non-number (NaN arrives as null over JSON) falls back to
+          // extendLock's own default, as it would in-process.
+          typeof request.ms === "number" ? request.ms : undefined,
+        )) && !controller.signal.aborted
+      );
     case "childrenValues":
       return await job.getChildrenValues();
     case "childrenFailures":
