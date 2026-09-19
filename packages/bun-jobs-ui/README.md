@@ -131,7 +131,7 @@ default.
 | `/runners` | `search` | Filters by id or name (case-insensitive, trimmed), as you type. The list is filtered in the browser, so nothing is re-fetched. |
 | `/runners/:runner` | `history` | Runs shown in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The select offers `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter. |
 | `/events` | `channel` | The channel, as the socket names it: `all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encoded id>`, `runners` or `runner/<runner>`. One the API's mode lacks, or a malformed one, falls back to `all` in mode `both`, else `queues` or `runners`. |
-| `/events` | `types` | Event types as a comma list, e.g. `completed,failed`. Types the channel cannot carry are dropped. Absent means every type. |
+| `/events` | `types` | Event types as a comma list, e.g. `completed,failed`. A name may carry its family, `queue.completed` or `runner.failed`, and is rewritten bare in the URL; a prefixed name counts only on a channel carrying that family. An unknown name, or one the channel cannot carry, is ignored and named in a note above the log, and stays in the URL so the note survives a reload; if nothing is left, every type shows. Absent means every type. |
 
 On the queue screen, changing `state`, `name`, `search` or `order` resets
 `offset` and clears the selection.
@@ -193,8 +193,8 @@ authority, since the map is never asked about one particular job.
 | Runner Reset stats… | mutation `runners.resetStats`, and the runner is local (`isLocal`) |
 | Runner remote hint | mutation `runners.kill` or `runners.resetStats`, and the runner is not local |
 | Events nav entry and `/events` | `sections.manage`, `meta.websocket`, and `events.connect` (untargeted) |
-| Events queue and job channel pickers' queue list | `queues.list` (untargeted); without it, a text box |
-| Events runner channel picker's runner list | `runners.list` (untargeted); without it, a text box |
+| Events queue and job channel pickers' queue list | `meta.mode` `jobs` or `both` (the queue and job channels exist only there), and `queues.list` (untargeted); without it, a text box |
+| Events runner channel picker's runner list | `meta.mode` `runner` or `both` (the runner channel exists only there), and `runners.list` (untargeted); without it, a text box |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but
@@ -249,9 +249,12 @@ is in flight (see below).
   `Intl.DateTimeFormat`, so an alias such as `US/Eastern`, which the server's
   `Bun.cron` accepts, is accepted too. A UTC offset such as `+01:00` is
   refused: `Intl` would take it, `Bun.cron` does not. The API stays the
-  authority. Its 400 `INVALID_SCHEDULE` is shown on the time zone field when
-  its detail names a time zone, on the anchor when it names the anchor, and
-  on the schedule's main field otherwise.
+  authority. Its 400 `INVALID_SCHEDULE` names the part at fault in
+  `issues[].path`, and each issue is shown on that field: `schedule.cron`,
+  `schedule.tz`, `schedule.every`, `schedule.anchor` or `schedule.at`. An
+  issue on `schedule` itself goes to the form's main field (with None, which
+  has none, to a banner). An `INVALID_SCHEDULE` with no issues, from an older
+  API, is shown as a banner with its detail.
 - **Kill** stops one active run, or every one, after you type the runner's
   id. Force skips straight to the end of the kill escalation, and a reason
   (at most 200 characters) is recorded on the run. Without Wait the API
@@ -263,9 +266,13 @@ is in flight (see below).
 
 ### Refreshing
 
-When the API has a socket (`meta.websocket`) and the caller holds
-`events.connect`, the app keeps one WebSocket open (subprotocol
-`bun-jobs.v1`) and each screen subscribes to the channels it shows. Events
+When the UI manages anything (`sections.manage`), the API has a socket
+(`meta.websocket`), the caller holds `events.connect`, and something can
+publish events (not `events: "local"` with `publishing: false`), the app
+keeps one WebSocket open (subprotocol `bun-jobs.v1`) and each screen
+subscribes to the channels it shows. A docs-only UI (`sections.manage`
+false) has no live screen, so it opens no socket, and its status is off:
+"Live updates are off: this UI shows documentation only". Events
 are hints: they are coalesced (about 250 ms) into refetches of the narrowest
 queries, and a `gap` refetches everything on its channels. A screen
 subscribes only while its own read is allowed, and on the queue, job and
@@ -286,7 +293,12 @@ answered.
 
 Every read also polls, at the intervals below while live updates are off
 (no socket, refused, or reconnecting), and much slower while they are live,
-as a safety net: events are at-most-once. The reads no event announces keep
+as a safety net: events are at-most-once. While live, and only while
+`meta.publishing` is not `false`, a read's interval becomes
+`max(base × 6, 60 s)`, where `base` is its interval below: 5 s and 10 s
+become 60 s, 15 s becomes 90 s, 30 s becomes 180 s. A read that is not polling (a
+finished job) stays that way. With `publishing: false` the intervals stay at
+their base even while connected, since no event would announce a change. The reads no event announces keep
 their interval either way: the Overview sparklines, the workers and
 throughput panels, a job's logs (a log line publishes nothing) and its flow
 children (a child's events are on its own channel).
@@ -330,7 +342,8 @@ only when the API sends it. It does that only when you create it with
 These `data-testid` hooks are stable:
 
 - App: `app-ready` (the frame, once `/meta` and the permissions loaded),
-  `bootstrap-loading`, `bootstrap-error`, `live-status`, `not-found`,
+  `bootstrap-loading`, `bootstrap-error`, `live-status` (with `data-state`:
+  `off`, `connecting`, `live`, `reconnecting` or `refused`), `not-found`,
   `placeholder`.
 - Overview: `overview`, `state-counts`, `queue-row-<queue>`,
   `queues-truncated`.
@@ -345,6 +358,11 @@ These `data-testid` hooks are stable:
   from the id), `runner-schedule`, `runner-concurrency`, `runner-stats`,
   `no-active-runs`, `run-<runId>`, `history-row-<runId>`, `remote-note`,
   `runner-hidden`, `runner-not-found`.
+- Events: `events-screen`, `events-channel` (the channel watched, as the
+  socket names it), `events-types-summary`, `events-types-ignored` (the note
+  naming `types` it ignores), `events-rejected` (a channel the server
+  refused), `events-count`, `events-held` (while paused), and `event-row`,
+  one per row, with `data-type` the event's type, or `gap` on a gap row.
 - Runner actions: the buttons sit in a `role="group"` named
   `Runner actions`. Inside it or its dialogs: `runner-remote-hint`,
   `trigger-remote-note`, `kill-waiting`, and `schedule-next-run` in the
@@ -358,7 +376,11 @@ not found. Set `BUN_CHROME_PATH` to point it at one.
 
 The runner screens' Chrome flow is in the examples:
 `examples/bun-jobs-ui/06-browser/pause-and-retry.ts` pauses a runner and
-checks "Runner hidden" in Chrome.
+checks "Runner hidden" in Chrome. Live events have theirs in
+`examples/bun-jobs-ui/06-browser/live-events.ts`: the `live-status` badge,
+the Events console tailing a queue while a real worker completes a job, and
+the badge staying off, with its reason, on hosts that cannot or may not
+connect.
 `__tests__/app/pkg/runners.integration.test.ts` and
 `runner-actions.integration.test.ts` render them under happy-dom against a
 real `createJobsApi` in `runner` mode with a real local `BunRunner`.

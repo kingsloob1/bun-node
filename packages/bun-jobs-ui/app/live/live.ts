@@ -30,8 +30,9 @@ import { LiveContext } from "./context";
 
 /**
  * Where live updates stand:
- * - `"off"`: no socket (the API has none, `events.connect` is refused, or the
- *   events are only this process's (`events: "local"`) and nothing publishes);
+ * - `"off"`: no socket (the UI shows documentation only (`sections.manage`
+ *   false), the API has none, `events.connect` is refused, or the events are
+ *   only this process's (`events: "local"`) and nothing publishes);
  * - `"connecting"`: the first connection is being made;
  * - `"live"`: connected and subscribed;
  * - `"reconnecting"`: the connection dropped, a retry is scheduled;

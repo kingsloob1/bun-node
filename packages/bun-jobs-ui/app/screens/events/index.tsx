@@ -11,9 +11,14 @@ import type {
 } from "../../api/types";
 import type { BadgeTone } from "../../components/Badge";
 import type { LiveStatus } from "../../live";
-import type { ChannelChoice, ChannelScope, LogRow } from "./eventLog";
+import type {
+  ChannelChoice,
+  ChannelScope,
+  IgnoredType,
+  LogRow,
+} from "./eventLog";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { queryKeys } from "../../api/queryKeys";
 import { jobPath, queuePath } from "../../api/queues";
 import { listRunners, runnerKeys, runnerPath } from "../../api/runners";
@@ -38,8 +43,8 @@ import {
   MAX_PAUSED,
   MAX_ROWS,
   parseChannel,
-  parseTypes,
   prependRows,
+  readTypes,
   scopesFor,
   typesFor,
 } from "./eventLog";
@@ -290,6 +295,46 @@ function TypeFilter({ allowed, selected, onChange }: TypeFilterProps) {
   );
 }
 
+/** Props of {@link IgnoredTypesNote}. */
+interface IgnoredTypesNoteProps {
+  /** The names the filter left out. */
+  ignored: readonly IgnoredType[];
+  /** The channel, for the reason. */
+  channel: string;
+  /** Whether nothing was left to filter on, so every type shows. */
+  showingAll: boolean;
+}
+
+/** Says which names in the URL's `types` the filter ignores, so none is dropped silently. */
+function IgnoredTypesNote({
+  ignored,
+  channel,
+  showingAll,
+}: IgnoredTypesNoteProps) {
+  if (ignored.length === 0) {
+    return null;
+  }
+  return (
+    <p
+      className="events-types-ignored"
+      role="note"
+      data-testid="events-types-ignored"
+    >
+      Ignored in the link's types:{" "}
+      {ignored.map((entry, index) => (
+        <span key={entry.name}>
+          {index > 0 ? "; " : ""}
+          <code>{entry.name}</code>{" "}
+          {entry.reason === "unknown"
+            ? "(not an event type)"
+            : `(${channel} does not carry it)`}
+        </span>
+      ))}
+      {showingAll ? ". Showing every type." : "."}
+    </p>
+  );
+}
+
 /** `hh:mm:ss.mmm`, local time. */
 function clock(ms: number): string {
   const date = new Date(ms);
@@ -487,7 +532,16 @@ export function EventsScreen() {
     parseChannel(params.get("channel"), meta.mode) ?? defaultChoice(meta.mode);
   const channel = channelName(choice);
   const allowed = typesFor(choice);
-  const types = parseTypes(params.get("types"), allowed);
+  const rawTypes = params.get("types");
+  const typesParam = readTypes(rawTypes, allowed);
+  const { types } = typesParam;
+
+  // Prefixed names (`queue.completed`) are written back bare.
+  useEffect(() => {
+    if (rawTypes !== null && typesParam.normalized !== rawTypes) {
+      update({ types: typesParam.normalized });
+    }
+  }, [rawTypes, typesParam.normalized, update]);
 
   const [rows, setRows] = useState<LogRow[]>([]);
   const [paused, setPaused] = useState(false);
@@ -587,6 +641,11 @@ export function EventsScreen() {
           allowed={allowed}
           selected={types}
           onChange={(next) => update({ types: next.join(",") || null })}
+        />
+        <IgnoredTypesNote
+          ignored={typesParam.ignored}
+          channel={channel}
+          showingAll={types.length === 0}
         />
         <p className="muted events-channel">
           Watching <code data-testid="events-channel">{channel}</code>

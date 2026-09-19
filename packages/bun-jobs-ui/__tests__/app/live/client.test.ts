@@ -492,6 +492,151 @@ describe("reconnect and resume", () => {
     expect(job.gaps).toHaveLength(1);
   });
 
+  /** Two holders with different filters, so a resume takes two frames; returns the second socket after its hello. */
+  async function splitResumeAfterDrop(client: LiveClient, socket: FakeSocket) {
+    socket.ackAll();
+    socket.receive(queueEvent(5, ["queue/a"], "completed", { id: "5" }));
+    socket.drop(1006);
+    timers.advance(timers.pending()[0]!);
+    const next = FakeSocket.last;
+    next.open();
+    next.receive(hello({ sessionId: "s2", seq: 9 }));
+    const frames = next.ops("subscribe");
+    expect(frames).toHaveLength(2);
+    expect(frames.map((frame) => frame.resume)).toEqual([
+      { epoch: "e1", afterSeq: 5 },
+      { epoch: "e1", afterSeq: 5 },
+    ]);
+    return { next, frames };
+  }
+
+  it("after a drop mid-way through a split resume, resumes again from the same position", async () => {
+    const { client, socket } = await connected();
+    client.hold({ channels: ["queue/a"] });
+    client.hold({ channels: ["queue/b"], events: ["completed"] });
+    await settle();
+    const { next, frames } = await splitResumeAfterDrop(client, socket);
+
+    // Frame 1's replay runs ahead (8), then it is acked; frame 2 never is.
+    next.receive(queueEvent(8, ["queue/a"], "completed", { id: "8" }));
+    next.receive({
+      type: "ack",
+      id: frames[0]!.id,
+      op: "subscribe",
+      channels: frames[0]!.channels,
+      resumed: true,
+      seq: 9,
+    });
+    next.drop(1006);
+    timers.advance(timers.pending()[0]!);
+    const third = FakeSocket.last;
+    third.open();
+    third.receive(hello({ sessionId: "s3", seq: 9 }));
+    expect(third.ops("subscribe").map((frame) => frame.resume)).toEqual([
+      { epoch: "e1", afterSeq: 5 },
+      { epoch: "e1", afterSeq: 5 },
+    ]);
+
+    // Every resuming frame acked: the next resume advances to the highest seq.
+    third.ackAll({ resumed: true, seq: 9 });
+    third.drop(1006);
+    timers.advance(timers.pending()[0]!);
+    const fourth = FakeSocket.last;
+    fourth.open();
+    fourth.receive(hello({ sessionId: "s4", seq: 9 }));
+    expect(fourth.ops("subscribe")[0]!.resume).toEqual({
+      epoch: "e1",
+      afterSeq: 8,
+    });
+  });
+
+  it("a resuming frame answered with an error settles, with a gap for its holders (its retry cannot replay)", async () => {
+    const { client, socket } = await connected();
+    const a = recorder();
+    const b = recorder();
+    client.hold({ channels: ["queue/a"], ...a.callbacks });
+    client.hold({
+      channels: ["queue/b"],
+      events: ["completed"],
+      ...b.callbacks,
+    });
+    await settle();
+    const { next, frames } = await splitResumeAfterDrop(client, socket);
+    next.receive(queueEvent(8, ["queue/a"], "completed", { id: "8" }));
+    next.sent.length = 0;
+    next.receive({
+      type: "ack",
+      id: frames[0]!.id,
+      op: "subscribe",
+      channels: frames[0]!.channels,
+      resumed: true,
+      seq: 9,
+    });
+    next.receive({
+      type: "error",
+      id: frames[1]!.id,
+      code: "INTERNAL",
+      status: 500,
+      detail: "boom",
+    });
+    expect(a.gaps).toHaveLength(0);
+    expect(b.gaps).toEqual([
+      expect.objectContaining({
+        reason: "resume-expired",
+        channels: ["queue/b"],
+      }),
+    ]);
+    // The retry goes without resume; the resume is settled, so it advances.
+    timers.advance(timers.pending()[0]!);
+    const retried = next.ops("subscribe");
+    expect(retried).toHaveLength(1);
+    expect(retried[0]!.resume).toBeUndefined();
+    next.drop(1006);
+    timers.advance(timers.pending()[0]!);
+    FakeSocket.last.open();
+    FakeSocket.last.receive(hello({ sessionId: "s3", seq: 9 }));
+    expect(FakeSocket.last.ops("subscribe")[0]!.resume).toEqual({
+      epoch: "e1",
+      afterSeq: 8,
+    });
+  });
+
+  it("a seq replayed twice in a split resume reaches only the holders of the newly covered channels", async () => {
+    const { client, socket } = await connected();
+    const a = recorder();
+    const b = recorder();
+    const both = recorder();
+    client.hold({ channels: ["queue/a"], ...a.callbacks });
+    client.hold({
+      channels: ["queue/b"],
+      events: ["completed"],
+      ...b.callbacks,
+    });
+    client.hold({
+      channels: ["queue/a", "queue/b"],
+      events: ["completed"],
+      ...both.callbacks,
+    });
+    await settle();
+    const { next } = await splitResumeAfterDrop(client, socket);
+    const before = {
+      a: a.events.length,
+      b: b.events.length,
+      both: both.events.length,
+    };
+    // Frame 1 (queue/a) replays 7; frame 2 (queue/b) replays 7 again, listing
+    // only queue/b, the channel it had not reached. Both acks come after.
+    next.receive(queueEvent(7, ["queue/a"], "completed", { id: "7" }));
+    next.receive(queueEvent(7, ["queue/b"], "completed", { id: "7" }));
+    next.ackAll({ resumed: true, seq: 9 });
+    expect(a.events.length - before.a).toBe(1);
+    expect(b.events.length - before.b).toBe(1);
+    expect(both.events.length - before.both).toBe(1);
+    expect(a.events.at(-1)!.id).toBe("7");
+    expect(b.events.at(-1)!.id).toBe("7");
+    expect(both.events.at(-1)!.id).toBe("7");
+  });
+
   it("treats a new epoch as a gap for every holder and subscribes without resume", async () => {
     const { client, socket } = await connected();
     const holder = recorder();

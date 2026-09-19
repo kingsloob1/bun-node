@@ -180,13 +180,94 @@ export function typesFor(choice: ChannelChoice): readonly EventName[] {
   }
 }
 
-/** The `types` URL parameter read as a filter: the listed types `allowed` has, in its order. Empty means every type. */
+/** A name in the `types` URL parameter that the filter ignores, and why. */
+export interface IgnoredType {
+  /** The name as written in the URL. */
+  name: string;
+  /** `unknown`: no such event type; `channel`: a type the channel does not carry. */
+  reason: "unknown" | "channel";
+}
+
+/** The `types` URL parameter, read (see {@link readTypes}). */
+export interface TypesParam {
+  /** The filter: the listed types the channel carries, in `allowed`'s order. Empty means every type. */
+  types: EventName[];
+  /** Listed names left out of the filter, in the order written. */
+  ignored: IgnoredType[];
+  /**
+   * The parameter with every name the filter uses written bare
+   * (`queue.completed` → `completed`, de-duplicated, in `allowed`'s order),
+   * then the ignored names as written, so the note about them survives a
+   * reload; `null` for no names.
+   */
+  normalized: string | null;
+}
+
+/** The event names of each family, for `queue.` / `runner.` prefixes. */
+const FAMILY_TYPES: Readonly<Record<"queue" | "runner", readonly string[]>> = {
+  queue: QUEUE_EVENT_TYPES,
+  runner: RUNNER_EVENT_TYPES,
+};
+
+/**
+ * Reads the `types` URL parameter against the types a channel carries
+ * (`allowed`, from {@link typesFor}). A name is bare (`completed`) or
+ * prefixed with its family (`queue.completed`, `runner.failed`); a prefixed
+ * one counts only on a channel that carries that family. Unknown names and
+ * names the channel does not carry are reported in `ignored`, not dropped
+ * silently: the console shows them, rather than quietly showing every type.
+ */
+export function readTypes(
+  raw: string | null,
+  allowed: readonly EventName[],
+): TypesParam {
+  const allowedSet: ReadonlySet<string> = new Set(allowed);
+  const known: ReadonlySet<string> = new Set(EVENT_TYPES);
+  const listed = new Set<string>();
+  const ignored: IgnoredType[] = [];
+  const names = [
+    ...new Set(
+      (raw ?? "")
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean),
+    ),
+  ];
+  for (const name of names) {
+    const prefixed = /^(queue|runner)\.(.+)$/.exec(name);
+    if (prefixed) {
+      const family = FAMILY_TYPES[prefixed[1] as "queue" | "runner"];
+      const bare = prefixed[2]!;
+      if (!family.includes(bare)) {
+        ignored.push({ name, reason: "unknown" });
+      } else if (family.every((type) => allowedSet.has(type))) {
+        listed.add(bare);
+      } else {
+        ignored.push({ name, reason: "channel" });
+      }
+    } else if (!known.has(name)) {
+      ignored.push({ name, reason: "unknown" });
+    } else if (allowedSet.has(name)) {
+      listed.add(name);
+    } else {
+      ignored.push({ name, reason: "channel" });
+    }
+  }
+  const types = allowed.filter((type) => listed.has(type));
+  const written = [...types, ...ignored.map((entry) => entry.name)];
+  return {
+    types,
+    ignored,
+    normalized: written.length > 0 ? written.join(",") : null,
+  };
+}
+
+/** The `types` URL parameter read as a filter: {@link readTypes}'s `types`. Empty means every type. */
 export function parseTypes(
   raw: string | null,
   allowed: readonly EventName[],
 ): EventName[] {
-  const listed = new Set((raw ?? "").split(",").map((type) => type.trim()));
-  return allowed.filter((type) => listed.has(type));
+  return readTypes(raw, allowed).types;
 }
 
 /** Whether an event passes the type filter (empty: every type). */
