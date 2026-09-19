@@ -2,7 +2,8 @@
  * The queue, job and runner screens in a real browser: pause a queue by
  * clicking, check the Clean dialog's default, open a dead job and retry it,
  * open a job of a queue whose jobs this caller may not read, then pause a
- * runner and open one this caller may not read. Every step is read back from
+ * runner, read the runner list's badges (a remote runner's Paused or Active,
+ * and Run in flight) and open a runner this caller may not read. Every step is read back from
  * the API or the host, not from the page.
  *
  * ```bash
@@ -24,7 +25,7 @@
  * - **Hooks to drive the screens by.** They are stable on purpose:
  *   `data-testid` `queues-list`, `queue-screen`, `queue-total`,
  *   `job-row-<id>`, `job-screen`, `job-id`, `job-not-found`, `job-hidden`,
- *   `runner-screen` and `runner-hidden`. The queue's buttons are in
+ *   `runner-row-<id>`, `runner-screen` and `runner-hidden`. The queue's buttons are in
  *   `[role="group"][aria-label="Queue actions"]`, a runner's in
  *   `[role="group"][aria-label="Runner actions"]`, and a confirmation is the
  *   open `<dialog>` (`dialog[open]`).
@@ -44,7 +45,11 @@
  * - **The CSP holds.** The page raises no Content-Security-Policy violation
  *   along the way, checked with a `ReportingObserver`.
  */
-import type { JobsApiAuthorize, MetaDto } from "@kingsleyweb/bun-jobs";
+import type {
+  BunRunner,
+  JobsApiAuthorize,
+  MetaDto,
+} from "@kingsleyweb/bun-jobs";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
@@ -74,6 +79,10 @@ const VAULT_JOB = "payslip-1";
 const RUNNER = "nightly";
 /** A runner this caller may list but not read. */
 const SECRET_RUNNER = "payroll-export";
+/** A runner only another process registered, paused there. */
+const REMOTE_PAUSED = "partner-feed";
+/** A runner only another process registered, with a run in flight there. */
+const REMOTE_BUSY = "partner-sync";
 
 /* --- the server: a real API with CSRF on, and the UI --------------- */
 
@@ -152,11 +161,22 @@ app.use(ui.basePath, ui.router);
 await app.listen(0);
 const origin = app.url!.replace(/\/$/, "");
 
+/**
+ * "Another process", as far as the API can tell: a second context on the
+ * same driver and namespace, whose runners this one never registers.
+ */
+const elsewhere = new BunJobs({
+  namespace: jobs.namespace,
+  driver: jobs.driver,
+  logger: noopLogger,
+});
+
 /** Winds everything down; safe to call more than once. */
 async function shutdown(view?: Bun.WebView): Promise<void> {
   view?.close();
   await app.close();
   await api.close();
+  await elsewhere.close();
   await jobs.close();
 }
 
@@ -187,6 +207,23 @@ for (const id of [RUNNER, SECRET_RUNNER]) {
     })
     .start();
 }
+
+// Two runners registered only elsewhere: one paused, one with a run holding
+// its lock. The list shows each with the badges `isPaused` and `isRunning`
+// give it, though this process has no status for either.
+const [remotePaused, remoteBusy] = [REMOTE_PAUSED, REMOTE_BUSY].map((id) =>
+  elsewhere.runner({
+    id,
+    file: new URL("../shared/handlers/hold.ts", import.meta.url),
+    executionMode: "in-process",
+    waitToExit: false,
+  }),
+) as [BunRunner<any, any>, BunRunner<any, any>];
+await remotePaused.start();
+await remotePaused.pause();
+await remoteBusy.start();
+// Held until the context closes: `close()` stops the runner, which aborts it.
+await remoteBusy.trigger({ args: { ms: 3_600_000 } });
 
 // Build the bundle before the browser asks, so the first page load is not
 // the in-memory build.
@@ -267,6 +304,18 @@ const COLLECT_VIOLATIONS = `new Promise((resolve) => {
 const QUEUE_ACTIONS = '[role="group"][aria-label="Queue actions"]';
 /** A runner's action buttons. */
 const RUNNER_ACTIONS = '[role="group"][aria-label="Runner actions"]';
+
+/**
+ * Page-side: the badge texts in each runner row's Status column (the third
+ * cell of `runner-row-<id>`), as `[id, texts]` pairs.
+ */
+function statusBadges(ids: string[]): string {
+  return `${JSON.stringify(ids)}.map((id) => [
+    id,
+    [...document.querySelectorAll(\`[data-testid="runner-row-\${id}"] td:nth-child(3) .badge\`)]
+      .map((badge) => badge.textContent.trim()),
+  ])`;
+}
 
 /** A JSON read from the API, bypassing the page. */
 async function read<T>(path: string): Promise<T> {
@@ -469,6 +518,39 @@ try {
   check(
     "and the screen now offers Resume…",
     await view.evaluate<boolean>(button(RUNNER_ACTIONS, "Resume…", false)),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("The runner list: Paused, Active and Run in flight");
+
+  await waitFor(
+    `the API to report ${REMOTE_BUSY}'s run in flight`,
+    async () =>
+      (
+        await read<{ items: { id: string; isRunning: boolean }[] }>("/runners")
+      ).items.find((item) => item.id === REMOTE_BUSY)?.isRunning === true,
+  );
+  await view.navigate(`${origin}${ui.basePath}/runners`);
+  check(
+    `the list renders its rows (data-testid=runner-row-${REMOTE_BUSY})`,
+    await view.evaluate<boolean>(
+      waitForSelector(`[data-testid="runner-row-${REMOTE_BUSY}"]`),
+    ),
+    pageConsole,
+  );
+  checkEqual(
+    "each row's Status badges: a local lifecycle, or a remote Paused/Active, plus Run in flight",
+    await view.evaluate<[string, string[]][]>(
+      statusBadges([RUNNER, REMOTE_PAUSED, REMOTE_BUSY]),
+    ),
+    [
+      // Local: its lifecycle status, paused by the step above.
+      [RUNNER, ["Paused"]],
+      // Remote: no status here, so Paused from isPaused...
+      [REMOTE_PAUSED, ["Paused"]],
+      // ...or Active, and Run in flight from isRunning.
+      [REMOTE_BUSY, ["Active", "Run in flight"]],
+    ],
   );
 
   /* ---------------------------------------------------------------- */

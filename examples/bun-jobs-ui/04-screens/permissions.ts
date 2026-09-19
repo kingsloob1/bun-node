@@ -2826,13 +2826,14 @@ check(
 /* ------------------------------------------------------------------ */
 step("GET /runners: which runners are local");
 
-// The list says `local`, the runner itself `isLocal` plus a `local` block
-// (its instance's status and the runs in flight in this process). A runner
-// registered only by another process has neither.
+// The list says `isLocal`, as the runner itself does, beside which the runner
+// has a `local` block (its instance's status and the runs in flight in this
+// process). A runner registered only by another process has no block. The
+// list's own `local` is a deprecated copy of `isLocal`.
 const list = (await get<RunnerListDto>("/runners")).body;
 checkEqual(
   "the list: local runners first, then the ids only the driver knows",
-  list.items.map((item) => [item.id, item.local]),
+  list.items.map((item) => [item.id, item.isLocal]),
   [
     // `runners.list` is untargeted, so vault is listed too, and its row
     // links to a screen that says "Runner hidden".
