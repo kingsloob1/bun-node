@@ -141,3 +141,25 @@ describe("resolveServerUrl", () => {
     ).toBe("https://elsewhere.example/v1");
   });
 });
+
+describe("a read-only API's document", () => {
+  // The premise of try-it's "This API is read-only" reason: a real read-only
+  // createJobsApi neither routes nor documents a mutation, so that reason can
+  // only show for a stale or foreign document.
+  it("lists no mutation operation", async () => {
+    const readOnly = listOperations(await openApiFixture({ readOnly: true }));
+    expect(readOnly.length).toBeGreaterThan(0);
+    expect(
+      readOnly
+        .filter((operation) => operation.mutation)
+        .map((operation) => operation.id),
+    ).toEqual([]);
+    expect(readOnly.map((operation) => operation.id)).not.toContain(
+      "pauseQueue",
+    );
+    // The control: the same API, writable, documents its mutations.
+    expect(operations.filter((operation) => operation.mutation).length).toBe(
+      operations.length - readOnly.length,
+    );
+  });
+});

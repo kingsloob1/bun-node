@@ -7,6 +7,7 @@ import { liveChannels } from "../../../../app/live";
 import {
   channelEventTypes,
   channelPermissions,
+  channelSubscribable,
   channelTryLink,
   eventPayloadSchema,
   eventsLink,
@@ -21,6 +22,7 @@ import {
   parameterSchemas,
   readWsDoc,
   selectItem,
+  subprotocolSource,
   tryProblems,
 } from "../../../../app/screens/docs/ws/model";
 import { parseChannel } from "../../../../app/screens/events/eventLog";
@@ -65,7 +67,7 @@ describe("readWsDoc on a real document (mode both)", () => {
     expect(both.subprotocol).toEqual({
       value: "bun-jobs.v1",
       fromDocument: true,
-      source: "extension",
+      source: "server-extension",
     });
     expect(both.requirements).toEqual([]);
     expect(both.securitySchemes).toEqual([]);
@@ -450,6 +452,36 @@ describe("try it", () => {
     ).toBeNull();
   });
 
+  it("only a logical channel is subscribable: not the connection, under any key, nor a socket path", () => {
+    expect(
+      both.channels
+        .filter((entry) => !channelSubscribable(entry))
+        .map((entry) => entry.key),
+    ).toEqual(["connection"]);
+    expect(channelTryLink(both, channel(both, "connection"), {}, "both")).toBe(
+      null,
+    );
+
+    const document = wsFixture("both");
+    const channels = raw(document).channels;
+    channels.socket = channels.connection!;
+    delete channels.connection;
+    channels.legacy = { address: "/jobs-api/ws-legacy" };
+    const read = readWsDoc(document);
+    // Known as the connection by its upgrade binding, and still first.
+    expect(read.channels[0]).toMatchObject({
+      key: "socket",
+      isConnection: true,
+    });
+    expect(channelSubscribable(channel(read, "socket"))).toBe(false);
+    expect(channelSubscribable(channel(read, "legacy"))).toBe(false);
+    expect(channelTryLink(read, channel(read, "legacy"), {}, "both")).toBe(
+      null,
+    );
+    // It is still where the extensions are read from.
+    expect(read.limits).not.toBeNull();
+  });
+
   it("gives no link for a channel the console cannot open in the mode", () => {
     expect(eventsLink("all", [], "jobs")).toBeNull();
     expect(eventsLink("runner/x", [], "jobs")).toBeNull();
@@ -487,7 +519,7 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-server.v9",
       fromDocument: true,
-      source: "extension",
+      source: "server-extension",
     });
   });
 
@@ -501,7 +533,7 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-channel.v9",
       fromDocument: true,
-      source: "extension",
+      source: "connection-extension",
     });
   });
 
@@ -514,7 +546,7 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
     expect(readWsDoc(document).subprotocol).toEqual({
       value: "from-prose.v9",
       fromDocument: true,
-      source: "prose",
+      source: "connection-prose",
     });
   });
 
@@ -534,7 +566,40 @@ describe("the subprotocol (x-bun-jobs-subprotocol, then prose, then the contract
     const document = wsFixture("both");
     raw(document).servers.api!["x-bun-jobs-subprotocol"] = 1;
     raw(document).channels.connection!["x-bun-jobs-subprotocol"] = null;
-    expect(readWsDoc(document).subprotocol.source).not.toBe("extension");
+    expect(readWsDoc(document).subprotocol.source).toBe("connection-prose");
+  });
+
+  it("names each source in words, as the server panel shows it", () => {
+    const words = (mutate: (document: ReturnType<typeof raw>) => void) => {
+      const document = wsFixture("both");
+      mutate(raw(document));
+      return subprotocolSource(readWsDoc(document));
+    };
+    expect(words(() => {})).toBe("from servers.api (x-bun-jobs-subprotocol)");
+    expect(
+      words((document) => {
+        delete document.servers.api!["x-bun-jobs-subprotocol"];
+      }),
+    ).toBe("from the connection channel (x-bun-jobs-subprotocol)");
+    expect(
+      words((document) => {
+        delete document.servers.api!["x-bun-jobs-subprotocol"];
+        delete document.channels.connection!["x-bun-jobs-subprotocol"];
+      }),
+    ).toBe("from the connection channel's description");
+    expect(
+      words((document) => {
+        delete document.servers.api!["x-bun-jobs-subprotocol"];
+        delete document.channels.connection!["x-bun-jobs-subprotocol"];
+        document.channels.connection!.description = "The socket.";
+      }),
+    ).toBe("not stated; the client default");
+    // A server under another key is named by its own key.
+    expect(
+      words((document) => {
+        document.servers = { edge: document.servers.api! };
+      }),
+    ).toBe("from servers.edge (x-bun-jobs-subprotocol)");
   });
 });
 

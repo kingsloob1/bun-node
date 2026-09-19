@@ -413,6 +413,11 @@ export function tryItGate(
       reason: `The app's client does not send ${operation.method}.`,
     };
   }
+  // Kept although a read-only `createJobsApi` neither routes nor documents
+  // its mutations: this reason shows only for a document that lists one
+  // anyway, a stale or foreign OpenAPI document (a cached copy from before
+  // the API went read-only, or another API's). The API would refuse the
+  // send, so the panel says why instead of offering it.
   if (operation.mutation && inputs.readOnly) {
     return {
       enabled: false,

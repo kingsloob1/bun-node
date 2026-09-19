@@ -231,6 +231,8 @@ export type WsRequirement = {
 
 /** The document's server. */
 export interface WsServer {
+  /** Its key under `servers`: `api`, or the first server's when there is no `api`. */
+  key: string;
   /** The host, as served (the request's own when fetched over HTTP). */
   host: string;
   /** Whether the host is still the `{host}` template (the in-process document). */
@@ -264,12 +266,17 @@ export interface WsDoc {
     /** Whether it was read from the document rather than assumed. */
     fromDocument: boolean;
     /**
-     * Where it came from: the `x-bun-jobs-subprotocol` extension (on
-     * `servers.api`, else the connection channel), the connection channel's
-     * prose (an older API that stated it only there), or the client
-     * contract's constant when the document says nothing.
+     * Where it came from: the `x-bun-jobs-subprotocol` extension on the
+     * server (`servers.api`, see {@link WsServer.key}), else on the
+     * connection channel; the connection channel's description (an older
+     * API that stated it only there); or the client contract's constant when
+     * the document says nothing. {@link subprotocolSource} words it.
      */
-    source: "extension" | "prose" | "contract";
+    source:
+      | "server-extension"
+      | "connection-extension"
+      | "connection-prose"
+      | "contract";
   };
   /** Declared schemes that a requirement names. */
   securitySchemes: WsSecurityScheme[];
@@ -289,6 +296,25 @@ export interface WsDoc {
   closeCodes: WsCloseCode[];
   /** `x-bun-jobs-upgrade-refusals`. */
   refusals: WsUpgradeRefusal[];
+}
+
+/**
+ * Where the subprotocol shown was read from, in words: `from servers.api
+ * (x-bun-jobs-subprotocol)`, `from the connection channel
+ * (x-bun-jobs-subprotocol)`, `from the connection channel's description`, or
+ * `not stated; the client default`.
+ */
+export function subprotocolSource(doc: WsDoc): string {
+  switch (doc.subprotocol.source) {
+    case "server-extension":
+      return `from servers.${doc.server?.key ?? "api"} (x-bun-jobs-subprotocol)`;
+    case "connection-extension":
+      return "from the connection channel (x-bun-jobs-subprotocol)";
+    case "connection-prose":
+      return "from the connection channel's description";
+    case "contract":
+      return "not stated; the client default";
+  }
 }
 
 /** Reads the subprotocol from the connection channel's prose (`subprotocol \`bun-jobs.v1\``). */
@@ -424,9 +450,11 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
 
   // The server.
   const servers = isObject(doc.servers) ? doc.servers : {};
-  const rawServer = isObject(servers.api)
-    ? servers.api
-    : Object.values(servers).find(isObject);
+  const serverKey = isObject(servers.api)
+    ? "api"
+    : Object.keys(servers).find((key) => isObject(servers[key]));
+  const rawServer =
+    serverKey === undefined ? undefined : (servers[serverKey] as Json);
   let server: WsServer | null = null;
   let requirements: WsRequirement[] = [];
   let nativeCount = 0;
@@ -443,6 +471,7 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
         ? rawHost.replace(/\{host\}/, hostDefault)
         : rawHost;
     server = {
+      key: serverKey!,
       host: rawHost,
       hostIsTemplate,
       hostDefault,
@@ -524,7 +553,10 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
           }),
           messages: messageIds(channel.messages),
           bindingMethod: str(ws.method),
-          isConnection: key === "connection",
+          // The transport: keyed `connection`, or (under another key) the
+          // channel carrying the WebSocket binding's upgrade method, which
+          // only the socket itself has.
+          isConnection: key === "connection" || str(ws.method) !== undefined,
         },
       ];
     })
@@ -636,14 +668,16 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
       : [],
   );
 
-  const declared =
-    str(rawServer?.["x-bun-jobs-subprotocol"]) ??
-    str(rawConnection["x-bun-jobs-subprotocol"]);
+  const onServer = str(rawServer?.["x-bun-jobs-subprotocol"]);
+  const onConnection =
+    onServer === undefined
+      ? str(rawConnection["x-bun-jobs-subprotocol"])
+      : undefined;
   const prose =
-    declared === undefined
+    onServer === undefined && onConnection === undefined
       ? readSubprotocol(connection?.description)
       : undefined;
-  const stated = declared ?? prose;
+  const stated = onServer ?? onConnection ?? prose;
   return {
     title: str(info.title) ?? "WebSocket API",
     version: str(info.version),
@@ -653,11 +687,13 @@ export function readWsDoc(doc: SpecDocument): WsDoc {
       value: stated ?? JOBS_API_WS_SUBPROTOCOL,
       fromDocument: stated !== undefined,
       source:
-        declared !== undefined
-          ? "extension"
-          : prose !== undefined
-            ? "prose"
-            : "contract",
+        onServer !== undefined
+          ? "server-extension"
+          : onConnection !== undefined
+            ? "connection-extension"
+            : prose !== undefined
+              ? "connection-prose"
+              : "contract",
     },
     securitySchemes,
     requirements,
@@ -1012,9 +1048,19 @@ export function eventsLink(
 }
 
 /**
+ * Whether a channel is something to subscribe to, and so has a try-it at
+ * all: a logical channel name. The connection is the transport the others
+ * travel over, and an address that is a socket path (`/...`) is not a
+ * channel name either; neither gets a try-it, not even a disabled one.
+ */
+export function channelSubscribable(channel: WsChannel): boolean {
+  return !channel.isConnection && !channel.address.startsWith("/");
+}
+
+/**
  * The console link for a channel family: its address filled from `values`
  * and the types it carries. `null` while the address is incomplete, or for
- * the connection itself.
+ * a channel that is not {@link channelSubscribable}.
  */
 export function channelTryLink(
   doc: WsDoc,
@@ -1022,7 +1068,7 @@ export function channelTryLink(
   values: Readonly<Record<string, string>>,
   mode: JobsApiMode,
 ): string | null {
-  if (channel.isConnection) {
+  if (!channelSubscribable(channel)) {
     return null;
   }
   const address = fillAddress(
