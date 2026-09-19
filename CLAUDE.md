@@ -26,8 +26,11 @@ published packages under `packages/`:
   [bun-jobs-ui](#bun-jobs-ui-phase-3-ui) below.
 
 Each package: `lib/` source, `__tests__/` (bun:test), `tsc --noEmit`
-typecheck, ESLint via `@antfu/eslint-config`. Source ships as raw `.ts`
-(`main`/`types` point at `lib/index.ts`).
+typecheck, ESLint via `@antfu/eslint-config`. Bun runs the shipped `.ts`
+source directly (`main` is `lib/index.ts`; no JS is emitted). bun-common also
+ships built declarations in `dts/` and points `types` at them; bun-nest,
+bun-jobs and bun-jobs-ui still point `types` at `lib/index.ts` until they adopt
+the same recipe — see [Packaging types](#packaging-types-declarations-ship-sources-ship-alongside).
 
 Runtime is **Bun ≥ 1.4.2**: `engines.bun` says so in the root and in every
 package, `bun-types`/`@types/bun` devDeps are `^1.4.2`, and each package
@@ -282,27 +285,66 @@ keep the dependency surface small.
 Before adding any dependency, check whether a Bun API or `native.ts` already
 covers it; add new helpers to `native.ts` rather than new deps.
 
-### Packaging types (both packages ship raw `.ts`)
+### Packaging types (declarations ship; sources ship alongside)
 
-`main`/`types` point at `lib/index.ts`, so a **consumer compiles our source**.
-Two rules follow, and must hold for every dependency you add:
+A published package ships built `.d.ts` + `.d.ts.map` in `dts/` next to its
+`.ts` sources in `lib/`. Bun runs `lib/` (`main` and every `exports` `default`
+point there; no JS is emitted); the type checker reads `dts/` (`types` and
+every `exports` `types` condition). The maps point back into `lib/`, so
+go-to-definition lands on real source. bun-common does this today; bun-nest,
+bun-jobs and bun-jobs-ui adopt the same recipe next (until then their `types`
+is still `lib/index.ts`, so a consumer compiles their source).
 
-- **`@types/*` backing a shipped `lib/**` import must be a runtime
-  `dependency`, not a `devDependency`.** In devDependencies it is absent from
-  the consumer's tree, so the type collapses to `any`/error for them.
-  `@types/accepts`, `@types/busboy`, `@types/type-is` are therefore
-  `dependencies`. Exceptions: `@types/bun` stays a devDep (runtime-env types the
-  consumer already provides; pinning it risks a version clash) — the minimum
-  is expressed instead as an *optional* peer range,
-  `peerDependencies["@types/bun"] = ">=1.4.2"`, never a pin — and libs that
+- **Build**: `bun run build:types` (`scripts/build-declarations.ts`, also run
+  on `prepack`). It runs `tsc -p tsconfig.build.json` (`emitDeclarationOnly`,
+  `declarationMap`, `rootDir` `lib`, `outDir` `dts`), then rewrites every
+  relative specifier in the declarations to `.js`/`/index.js` — tsc copies our
+  extensionless specifiers verbatim, and `node16` consumers cannot follow
+  them — then verifies: explicit specifiers, map sources published, `exports`
+  targets exist, every `lib` module has a declaration, no import of a package a
+  consumer may not have. `dts/` is gitignored. Never run `tsc -p
+  tsconfig.build.json` by hand; the rewrite is not optional.
+- **`exports`**: every entry is `{ "@kingsleyweb/source": lib, "types": dts,
+  "default": lib }`, in that order. Keys: `.`, one explicit key per directory
+  with an `index.ts` (a `./lib/*` pattern would map `lib/multipart` to a
+  nonexistent `lib/multipart.ts`), `./lib/*.ts`, `./lib/*.js`, `./lib/*`,
+  `./package.json`. Never a fallback array: Bun does not fall through one at
+  runtime. `__tests__/packaging.test.ts` asserts the shape.
+- **In-repo resolution**: `tsconfig.base.json` sets `customConditions:
+  ["@kingsleyweb/source"]`, so the workspace always type-checks against `lib/`,
+  never a stale `dts/` a previous pack left behind (measured: without it, a new
+  export read as `TS2305` until someone rebuilt). Consumers never set it.
+  `scripts/typecheck.ts` passes with `dts/` present and absent.
+- **Acceptance**: `bun scripts/consumer-check.ts packages/<pkg> [--baseline
+  <file>]` packs the package, installs the tarball outside the repo and checks
+  every spelling in `<pkg>/consumer-check.json` under `bundler` / `bun-init` /
+  `node16` (+ `browser` for browser entries) × `skipLibCheck` on/off, asserts
+  each named export is not `any`, scans the shipped declarations for leaked
+  imports, and imports each spelling under Bun. Any NEW-BROKEN cell fails.
+  bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
+- **`@types/*` backing a type a shipped declaration imports stays a runtime
+  `dependency`**, not a `devDependency` (`@types/accepts`, `@types/busboy`,
+  `@types/type-is`). Measured: moved to devDependencies, 30 consumer cells
+  broke with `TS7016` in `dts/index.d.ts` with `skipLibCheck` off, and with it
+  on the root entry went silently `any`. Exceptions: `@types/bun` stays a devDep
+  (runtime-env types the consumer already provides; pinning it risks a version
+  clash), with the minimum expressed as an *optional* peer range,
+  `peerDependencies["@types/bun"] = ">=1.4.2"`, never a pin; and libs that
   bundle their own types (`file-type`, `mime`, `parse-domain`) need no `@types`.
 - **Re-export third-party types that appear in the public type surface.**
   `lib/index.ts` has `export type { BusboyConfig, FieldInfo, FileInfo } from
   "busboy"` because `MultiPartOptions`/`MultiPartFileRecord`/
-  `MultiPartFieldRecord`/`getMultiParts` are built from them. Without it a
-  consumer can *use* the composed types but cannot *name* the base types, and TS
-  declaration emit raises `TS2742` "cannot be named". bun-nest inherits
-  bun-common's types transitively, so fixing bun-common usually suffices.
+  `MultiPartFieldRecord`/`getMultiParts` are built from them. It is not about
+  our own emit (removing it causes no `TS2742`); it is the consumer's only way
+  to *name* the type. Measured under `bun install --linker isolated`: a
+  consumer re-exporting an inferred `getBusBoyConfig()` result gets `TS2883`
+  with or without it, the fix TS asks for is an annotation, and `import type {
+  BusboyConfig } from "@kingsleyweb/bun-common"` works only with the re-export
+  (`TS2724` without), while importing from `"busboy"` directly fails with
+  `TS2307` (not a direct dependency of theirs). bun-nest inherits bun-common's
+  types transitively, so fixing bun-common usually suffices.
+- **A declaration must never import an optional peer or an undeclared
+  package**: the build's verify step and the consumer check both fail on it.
 
 ## Logging (`packages/bun-common/lib/logging.ts`)
 
