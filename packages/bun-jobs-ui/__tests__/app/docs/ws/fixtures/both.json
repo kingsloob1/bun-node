@@ -1423,7 +1423,19 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "description": "The job's id." },
-          "progress": { "description": "The progress value, as reported." }
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number",
+                "description": "The progress value, as a number."
+              },
+              {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The progress value, as a record of fields."
+              }
+            ]
+          }
         },
         "required": ["id", "progress"],
         "additionalProperties": false
