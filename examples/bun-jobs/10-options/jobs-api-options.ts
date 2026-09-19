@@ -22,9 +22,12 @@
  *   and what the driver supports. A route that cannot work is not registered,
  *   so it answers the API's JSON 404 rather than a 403 or a 501.
  * - **`authorize` is asked exactly once per request.** When a check fails
- *   first — validation, CSRF, a malformed body — it is asked *without* a
- *   target, and only a caller it allows is told what was wrong. That is what
- *   keeps an unauthenticated caller from probing a route's schema.
+ *   first — validation, CSRF, a malformed body — it is still asked with the
+ *   target the path names (the queue, job or runner, and `ctx.route`), and
+ *   only a caller it allows is told what was wrong. That is what keeps a
+ *   caller from probing a route's schema, and why a host that refuses one
+ *   queue answers 403 there even to a bad body. Only an invalid *path* is
+ *   asked about with no target.
  * - **A 5xx never carries the underlying message.** Its `detail` is the
  *   generic title, always.
  * - **Adding a queue's first job creates it**, as `BunQueue.add` does: a
@@ -73,6 +76,7 @@ import {
 } from "@kingsleyweb/bun-jobs";
 import {
   JOBS_API_ACTIONS as CONTRACT_ACTIONS,
+  MAX_DATE_MS,
   MAX_JOB_ID_LENGTH,
   MAX_JOB_REF_LENGTH,
   MAX_NAME_LENGTH,
@@ -858,7 +862,7 @@ await once.call("POST", "/queues/mail/jobs/7/retry");
 checkEqual("a mutation says so", once.calls[0]!.mutation, true);
 
 /* ------------------------------------------------------------------ */
-step("A failed check asks authorize first, without a target");
+step("A failed check asks authorize first, against the target the path names");
 
 /** The ways a caller can get a request wrong before authorization. */
 const probes = [
@@ -894,12 +898,18 @@ for (const probe of probes) {
     allowed.calls.length,
     1,
   );
-  checkEqual(`${probe.name}: and without a target`, allowed.calls[0], {
-    action: "jobs.retry",
-    mutation: true,
-    transport: "http",
-    route: { method: "POST", path: "/queues/:queue/jobs/retry" },
-  });
+  // The body failed, so its ids are unknown; the queue comes from the path.
+  checkEqual(
+    `${probe.name}: and against the path's queue, without the body's ids`,
+    allowed.calls[0],
+    {
+      action: "jobs.retry",
+      mutation: true,
+      transport: "http",
+      queue: "mail",
+      route: { method: "POST", path: "/queues/:queue/jobs/retry" },
+    },
+  );
 
   // The same request from a caller it denies learns nothing about the schema.
   const denied = mount({
@@ -934,6 +944,145 @@ check(
   "and authorize saw no ids",
   capped.calls[0]!.jobIds === undefined,
   capped.calls[0],
+);
+
+/* ------------------------------------------------------------------ */
+step("A bad request is 400 or 403 by what authorize says about its target");
+
+// Three hosts, each asked about the same four bad requests. Only a caller
+// `authorize` allows *for that target* learns what was wrong with it.
+type Policy = (ctx: JobsApiAuthorizeContext) => boolean;
+/** Each host's rule, by name. */
+const policies: Record<string, Policy> = {
+  // Everything is allowed.
+  "allow-all": () => true,
+  // A request naming no queue or runner is refused.
+  "refusing untargeted": (ctx) =>
+    ctx.queue !== undefined || ctx.runner !== undefined,
+  // The queue "mail" and the runner "nightly" are refused; nothing else is.
+  "refusing that target": (ctx) =>
+    ctx.queue !== "mail" && ctx.runner !== "nightly",
+};
+
+/** One bad request per kind of route, and the target its path names. */
+const badRequests = [
+  {
+    kind: "a queue-body route (failJob, a reason of spaces)",
+    method: "POST",
+    path: "/queues/mail/jobs/doomed/fail",
+    body: { reason: "   " },
+    headers: {},
+    code: "VALIDATION",
+    context: {
+      action: "jobs.fail",
+      mutation: true,
+      transport: "http",
+      queue: "mail",
+      jobId: "doomed",
+      route: { method: "POST", path: "/queues/:queue/jobs/:id/fail" },
+    },
+  },
+  {
+    kind: "a query route (listJobs, limit=lots)",
+    method: "GET",
+    path: "/queues/mail/jobs?limit=lots",
+    body: undefined,
+    headers: {},
+    code: "VALIDATION",
+    context: {
+      action: "jobs.list",
+      mutation: false,
+      transport: "http",
+      queue: "mail",
+      route: { method: "GET", path: "/queues/:queue/jobs" },
+    },
+  },
+  {
+    kind: "a runner route (rescheduleRunner, an interval of 0)",
+    method: "PUT",
+    path: "/runners/nightly/schedule",
+    body: { schedule: { every: 0 } },
+    headers: {},
+    code: "VALIDATION",
+    context: {
+      action: "runners.reschedule",
+      mutation: true,
+      transport: "http",
+      runner: "nightly",
+      route: { method: "PUT", path: "/runners/:runner/schedule" },
+    },
+  },
+  {
+    // CSRF_REJECTED is itself a 403, so here the code tells the cases apart.
+    kind: "a CSRF failure (pauseQueue, cross-site)",
+    method: "POST",
+    path: "/queues/mail/pause",
+    body: {},
+    headers: { "sec-fetch-site": "cross-site" },
+    code: "CSRF_REJECTED",
+    context: {
+      action: "queues.pause",
+      mutation: true,
+      transport: "http",
+      queue: "mail",
+      route: { method: "POST", path: "/queues/:queue/pause" },
+    },
+  },
+] as const;
+
+/** Every host mounted for the matrix, closed at the end. */
+const matrixHosts: ReturnType<typeof mount>[] = [];
+for (const [name, policy] of Object.entries(policies)) {
+  /** What this host's `authorize` was asked. */
+  const asked: JobsApiAuthorizeContext[] = [];
+  const host = mount({
+    actions: [...JOBS_API_ACTIONS],
+    authorize: (_req, ctx) => {
+      asked.push(ctx);
+      return policy(ctx);
+    },
+  });
+  // `mount` records only its own `authorize`; this one replaces it.
+  host.calls = asked;
+  matrixHosts.push(host);
+  for (const bad of badRequests) {
+    const before = host.calls.length;
+    const answer = await host.call(bad.method, bad.path, bad.body, bad.headers);
+    // A caller refused for the target is told FORBIDDEN, never the check's code.
+    const expected =
+      name === "refusing that target"
+        ? [403, "FORBIDDEN"]
+        : [bad.code === "CSRF_REJECTED" ? 403 : 400, bad.code];
+    checkEqual(
+      `${name}, ${bad.kind}: ${expected.join(" ")}`,
+      [answer.status, answer.body?.code],
+      expected,
+    );
+    // The check failed, yet authorize was asked once, about the path's target.
+    checkEqual(
+      `${name}, ${bad.kind}: authorize asked once, with the target and ctx.route`,
+      host.calls.slice(before),
+      [bad.context],
+    );
+  }
+}
+
+// Only an invalid *path* leaves authorize nothing to target: a runner name
+// over MAX_NAME_LENGTH is refused by the path's own schema.
+const badPath = matrixHosts[1]!;
+const beforeBadPath = badPath.calls.length;
+const badPathAnswer = await badPath.call(
+  "PUT",
+  `/runners/${"n".repeat(MAX_NAME_LENGTH + 1)}/schedule`,
+  { schedule: { every: 0 } },
+);
+checkEqual(
+  "an invalid path is asked about untargeted, so refusing untargeted is 403",
+  [
+    badPathAnswer.status,
+    badPath.calls.slice(beforeBadPath).map((ctx) => ctx.runner),
+  ],
+  [403, [undefined]],
 );
 
 /* ------------------------------------------------------------------ */
@@ -2395,6 +2544,40 @@ checkEqual(
   [404, 400],
 );
 
+// A reason must say something: one of only whitespace is refused (the
+// schema's pattern is `\S`), but one that says something is kept verbatim.
+await failQueue.add("send", {}, { jobId: "padded" });
+const blankReasons = await Promise.all(
+  ["", "   ", "\n\t"].map(async (reason) => {
+    const answer = await failApi.call("POST", "/queues/mail/jobs/padded/fail", {
+      reason,
+    });
+    return [answer.status, answer.body.code, answer.body.issues?.[0]?.path];
+  }),
+);
+checkEqual(
+  "an empty or whitespace-only reason is 400 VALIDATION at reason",
+  blankReasons,
+  [
+    [400, "VALIDATION", "reason"],
+    [400, "VALIDATION", "reason"],
+    [400, "VALIDATION", "reason"],
+  ],
+);
+const paddedReason = "  bad address\n";
+checkEqual(
+  "a reason with leading and trailing spaces is stored exactly as sent",
+  [
+    (
+      await failApi.call("POST", "/queues/mail/jobs/padded/fail", {
+        reason: paddedReason,
+      })
+    ).status,
+    (await failQueue.getJob("padded"))?.failedReason?.message,
+  ],
+  [200, paddedReason],
+);
+
 // An active job: buried under the worker, whose processor then throws once
 // its heartbeat finds the lock gone. `failed` and `dead` exactly once.
 let apiStarted = false;
@@ -2841,11 +3024,100 @@ checkEqual(
   await blamed({ cron: "99 * * * *", tz: "Nowhere/Land" }),
   "schedule.cron",
 );
-// The body's schema admits any safe integer, but a `Date` stops at ±8.64e15.
+// A time a `Date` cannot hold never reaches the scheduler: the body's schema
+// caps epoch ms at MAX_DATE_MS (8.64e15), so it is VALIDATION at the field.
 checkEqual(
-  "{ at } beyond what a Date can hold on schedule.at",
-  await blamed({ at: Number.MAX_SAFE_INTEGER }),
-  "schedule.at",
+  "{ at } beyond what a Date can hold: 400 VALIDATION at schedule.at",
+  await refusedSchedule({ at: Number.MAX_SAFE_INTEGER }),
+  [
+    400,
+    "VALIDATION",
+    [
+      {
+        target: "body",
+        path: "schedule.at",
+        message: "Expected a value of at most 8640000000000000",
+      },
+    ],
+    "The request did not match the schema",
+  ],
+);
+
+// So over HTTP INVALID_SCHEDULE is only ever about a cron expression or a
+// zone: an interval, anchor or time the schema refuses is VALIDATION at the
+// field, before the scheduler sees it.
+/** A refused schedule as `[status, code, the issue paths]`. */
+const validatedAt = async (schedule: unknown) => {
+  const [status, code, issues] = await refusedSchedule(schedule);
+  return [
+    status,
+    code,
+    (issues as { path: string }[] | undefined)?.map((issue) => issue.path),
+  ];
+};
+check(
+  "MAX_DATE_MS is the latest instant a Date holds, from the contract",
+  MAX_DATE_MS === 8_640_000_000_000_000 &&
+    new Date(MAX_DATE_MS).getTime() === MAX_DATE_MS &&
+    Number.isNaN(new Date(MAX_DATE_MS + 1).getTime()),
+  MAX_DATE_MS,
+);
+checkEqual(
+  "{ at: MAX_DATE_MS + 1 }: 400 VALIDATION at schedule.at",
+  await validatedAt({ at: MAX_DATE_MS + 1 }),
+  [400, "VALIDATION", ["schedule.at"]],
+);
+checkEqual(
+  "{ every, anchor: MAX_DATE_MS + 1 }: 400 VALIDATION at schedule.anchor",
+  await validatedAt({ every: 60_000, anchor: MAX_DATE_MS + 1 }),
+  [400, "VALIDATION", ["schedule.anchor"]],
+);
+checkEqual(
+  "{ every, anchor } that is no date-time: 400 VALIDATION at schedule.anchor",
+  await validatedAt({ every: 60_000, anchor: "next tuesday" }),
+  [400, "VALIDATION", ["schedule.anchor"]],
+);
+checkEqual(
+  "{ every: 0 }: 400 VALIDATION at schedule.every",
+  await validatedAt({ every: 0 }),
+  [400, "VALIDATION", ["schedule.every"]],
+);
+checkEqual(
+  "a bare interval of 0: 400 VALIDATION at schedule",
+  await validatedAt(0),
+  [400, "VALIDATION", ["schedule"]],
+);
+
+// A job's runAt has the same cap, on both routes that take one (both opt-in
+// actions, so this API enables every action).
+const timed = mount({ actions: [...JOBS_API_ACTIONS] });
+await timed.jobs.queue("mail").add("send", {}, { jobId: "later" });
+/** A refused request as `[status, code, the issue paths]`. */
+const refusedAt = async (method: string, path: string, body: unknown) => {
+  const answer = await timed.call(method, path, body);
+  return [
+    answer.status,
+    answer.body.code,
+    (answer.body.issues as { path: string }[] | undefined)?.map(
+      (issue) => issue.path,
+    ),
+  ];
+};
+checkEqual(
+  "PATCH a job with runAt: MAX_DATE_MS + 1: 400 VALIDATION at runAt",
+  await refusedAt("PATCH", "/queues/mail/jobs/later", {
+    runAt: MAX_DATE_MS + 1,
+  }),
+  [400, "VALIDATION", ["runAt"]],
+);
+checkEqual(
+  "POST a job with opts.runAt: MAX_DATE_MS + 1: 400 VALIDATION at opts.runAt",
+  await refusedAt("POST", "/queues/mail/jobs", {
+    name: "send",
+    data: {},
+    opts: { runAt: MAX_DATE_MS + 1 },
+  }),
+  [400, "VALIDATION", ["opts.runAt"]],
 );
 checkEqual(
   "and nothing was written",
@@ -2936,6 +3208,8 @@ await Promise.all(
     overviewAuthorized,
     throwingPerQueue,
     listing,
+    timed,
+    ...matrixHosts,
   ].map((mounted) => mounted.api.close()),
 );
 for (const jobs of contexts) {
