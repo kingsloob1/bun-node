@@ -83,10 +83,10 @@ beforeAll(async () => {
   class AppModule {}
 
   httpAdapter = new BunHttpAdapter(30000);
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
-  app.useWebSocketAdapter(httpAdapter.webSocketAdapter as never);
+  app.useWebSocketAdapter(httpAdapter.webSocketAdapter);
   await app.listen(0);
 });
 

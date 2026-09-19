@@ -82,7 +82,7 @@ afterAll(async () => {
 /** A Nest app with Nest's own parser off, configured by `setup` before init. */
 async function makeApp(setup: (app: BodyParserApp) => void) {
   const adapter = new BunHttpAdapter();
-  const app = await NestFactory.create(AppModule, adapter as never, {
+  const app = await NestFactory.create(AppModule, adapter, {
     logger: false,
     bodyParser: false,
     rawBody: true,
@@ -190,13 +190,9 @@ describe("NestJS app.listen()", () => {
       hostname: "127.0.0.1",
       fetch: () => new Response("taken"),
     });
-    const app = await NestFactory.create(
-      AppModule,
-      new BunHttpAdapter() as never,
-      {
-        logger: false,
-      },
-    );
+    const app = await NestFactory.create(AppModule, new BunHttpAdapter(), {
+      logger: false,
+    });
     apps.push(app);
 
     try {

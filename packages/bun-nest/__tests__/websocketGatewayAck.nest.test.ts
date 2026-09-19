@@ -106,7 +106,7 @@ const flags = new Map<string, boolean>();
 
 beforeAll(async () => {
   const httpAdapter = new BunHttpAdapter(30000);
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
   const adapter = httpAdapter.webSocketAdapter;
@@ -117,7 +117,7 @@ beforeAll(async () => {
     });
     bind(client, handlers, transform);
   };
-  app.useWebSocketAdapter(adapter as never);
+  app.useWebSocketAdapter(adapter);
   await app.listen(0);
   base = `ws://127.0.0.1:${httpAdapter.listeningPort}`;
 });

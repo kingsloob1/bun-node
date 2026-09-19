@@ -62,10 +62,10 @@ describe("a BunWebSocket replaced after listen()", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
-    app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+    app.useWebSocketAdapter(adapter.webSocketAdapter);
     cleanups.push(() => app.close());
     await app.listen(0);
 
@@ -90,7 +90,7 @@ describe("a BunWebSocket replaced after listen()", () => {
     swapped.on("connect", (client: WebSocketClient<unknown>) => {
       seenBySwapped.push(String(client?.data?.path));
     });
-    expect(adapter.getInstance().getBunWebsocket()).toBe(swapped as never);
+    expect(adapter.getInstance().getBunWebsocket()).toBe(swapped);
 
     const after = await connectWs(`${base}/`);
     await until("the new adapter to see it", () => seenBySwapped.length === 1);

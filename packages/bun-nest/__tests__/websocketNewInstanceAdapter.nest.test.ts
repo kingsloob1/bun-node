@@ -73,7 +73,7 @@ beforeAll(async () => {
   ADAPTER_PORT = await getPort({ host: "127.0.0.1", port: 0 });
   httpAdapter = new BunHttpAdapter(30000);
   httpAdapter.registerParserMiddleware(undefined, true);
-  app = await NestFactory.create(AppModule, httpAdapter as never, {
+  app = await NestFactory.create(AppModule, httpAdapter, {
     logger: false,
   });
 
@@ -84,7 +84,7 @@ beforeAll(async () => {
     listen: { port: ADAPTER_PORT },
     httpAdapter,
   });
-  app.useWebSocketAdapter(customAdapter as never);
+  app.useWebSocketAdapter(customAdapter);
 
   await app.listen(0);
 });

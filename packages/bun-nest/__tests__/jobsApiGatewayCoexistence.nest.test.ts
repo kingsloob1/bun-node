@@ -173,10 +173,10 @@ describe("a catch-all gateway beside the jobs socket", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
-    app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+    app.useWebSocketAdapter(adapter.webSocketAdapter);
     cleanups.push(() => app.close());
 
     const api = app.get<JobsApi>(BUN_JOBS_API);
@@ -402,10 +402,10 @@ describe("registration order", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
-    app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+    app.useWebSocketAdapter(adapter.webSocketAdapter);
     cleanups.push(() => app.close());
     // The gateway binds here, so the catch-all route exists before `attach()`.
     await app.init();
@@ -454,10 +454,10 @@ describe("registration order", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
-    app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+    app.useWebSocketAdapter(adapter.webSocketAdapter);
     cleanups.push(() => app.close());
 
     const api = createJobsApi({
@@ -510,7 +510,7 @@ describe("attach() before useWebSocketAdapter()", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
     cleanups.push(() => app.close());
@@ -524,8 +524,8 @@ describe("attach() before useWebSocketAdapter()", () => {
     // at upgrade time, so the socket follows the swap; binding at `attach()`
     // produced a socket that connected and then went silent.
     const swapped = new BunWebSocketAdapter({ httpAdapter: adapter });
-    app.useWebSocketAdapter(swapped as never);
-    expect(adapter.getInstance().getBunWebsocket()).toBe(swapped as never);
+    app.useWebSocketAdapter(swapped);
+    expect(adapter.getInstance().getBunWebsocket()).toBe(swapped);
 
     await app.init();
     await app.listen(0);

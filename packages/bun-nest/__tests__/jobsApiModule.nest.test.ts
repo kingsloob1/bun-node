@@ -50,10 +50,10 @@ async function startApp(
   options: { listen?: boolean } = {},
 ) {
   const adapter = new BunHttpAdapter(30000);
-  const app = (await NestFactory.create(moduleClass, adapter as never, {
+  const app = (await NestFactory.create(moduleClass, adapter, {
     logger: false,
   })) as INestApplication;
-  app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+  app.useWebSocketAdapter(adapter.webSocketAdapter);
   cleanups.push(() => app.close());
   if (options.listen === false) {
     await app.init();
@@ -384,10 +384,10 @@ describe("sharing the server with gateways", () => {
     class AppModule {}
 
     const adapter = new BunHttpAdapter(30000);
-    const app = (await NestFactory.create(AppModule, adapter as never, {
+    const app = (await NestFactory.create(AppModule, adapter, {
       logger: false,
     })) as INestApplication;
-    app.useWebSocketAdapter(adapter.webSocketAdapter as never);
+    app.useWebSocketAdapter(adapter.webSocketAdapter);
     cleanups.push(() => app.close());
 
     // Gateways bind during `init()`, before the module's bootstrap hook
