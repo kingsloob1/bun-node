@@ -257,8 +257,11 @@ export function mainField(mode: ScheduleMode): ScheduleField | null {
 /**
  * A 400 `INVALID_SCHEDULE`'s issues as field errors (path → message, as
  * `useApiMutation` builds them for `VALIDATION`). The API names the part at
- * fault in `issues[].path`: `schedule.cron`, `schedule.tz`,
- * `schedule.every`, `schedule.anchor`, `schedule.at`, or `schedule` itself.
+ * fault in `issues[].path`: `schedule.cron`, `schedule.tz`, or `schedule`
+ * itself for a bare cron string. A bad interval, anchor or time
+ * (`schedule.every`, `schedule.anchor`, `schedule.at`) comes as `VALIDATION`
+ * instead; {@link scheduleFieldErrors} maps both the same way, and still
+ * accepts those paths here, from an API that sent them as `INVALID_SCHEDULE`.
  * `{}` for any other error, and for an `INVALID_SCHEDULE` without issues
  * (an older API), which the editor shows as a banner instead.
  */

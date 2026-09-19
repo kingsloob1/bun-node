@@ -25,6 +25,7 @@ import { RelativeTime } from "../../../components/RelativeTime";
 import { useToast } from "../../../components/toast";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";
+import { useFieldProblems } from "../../../hooks/useFieldProblems";
 import { useNow } from "../../../hooks/useNow";
 import { explained } from "./explain";
 import {
@@ -70,6 +71,9 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
     formFromSchedule(runner.schedule),
   );
   const [submitted, setSubmitted] = useState(false);
+  // A field's problem clears as the field unmounts, so only the shown mode's
+  // times can hold the form back.
+  const times = useFieldProblems<"anchor" | "at">();
   const patch = (next: Partial<ScheduleForm>) =>
     setForm((current) => ({ ...current, ...next }));
 
@@ -106,7 +110,11 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
     form.mode,
   );
   const fieldError = (field: ScheduleField): string | undefined =>
-    clientErrors[field] ?? server.fields[field];
+    (field === "anchor" || field === "at"
+      ? times.problems[field]
+      : undefined) ??
+    clientErrors[field] ??
+    server.fields[field];
   const hasServerFieldError = Object.keys(server.fields).length > 0;
   // An INVALID_SCHEDULE without issues (an API from before they were sent)
   // names no field, so it falls through to the banner.
@@ -118,7 +126,10 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitted(true);
-    if (Object.keys(validateScheduleForm(form, zones)).length > 0) {
+    if (
+      times.blocked ||
+      Object.keys(validateScheduleForm(form, zones)).length > 0
+    ) {
       return;
     }
     save.mutate(scheduleBody(form));
@@ -157,7 +168,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
             variant="primary"
             type="submit"
             form={formId}
-            disabled={save.isPending}
+            disabled={save.isPending || times.blocked}
             aria-busy={save.isPending || undefined}
           >
             {save.isPending ? "Saving…" : "Save schedule"}
@@ -265,6 +276,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
               <DateTimeInput
                 value={form.anchor}
                 onChange={(anchor) => patch({ anchor })}
+                onProblem={(problem) => times.report("anchor", problem)}
                 withSeconds
               />
             </Field>
@@ -285,6 +297,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
             <DateTimeInput
               value={form.at}
               onChange={(at) => patch({ at })}
+              onProblem={(problem) => times.report("at", problem)}
               withSeconds
             />
           </Field>

@@ -15,6 +15,7 @@ import { ProblemBanner } from "../../components/ProblemBanner";
 import { useApiClient } from "../../context";
 import { STATE_LABELS } from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";
+import { useFieldProblems } from "../../hooks/useFieldProblems";
 import { useMeta } from "../../meta/hooks";
 import { withFriendlyErrors } from "./jobErrors";
 import { updateBody, validateUpdateForm } from "./updateJobForm";
@@ -51,6 +52,7 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
     onlyIn: [job.state],
   }));
   const [submitted, setSubmitted] = useState(false);
+  const times = useFieldProblems<"runAt">();
   const update = useApiMutation({
     mutationFn: async (body: UpdateJobBody) => {
       const run = () => updateJob(api, job.queue, job.id, body);
@@ -65,7 +67,9 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
   const clientErrors = submitted ? validateUpdateForm(form) : {};
   const serverErrors = update.fieldErrors;
   const fieldError = (key: "data" | "priority" | "runAt" | "onlyIn") =>
-    clientErrors[key] ?? serverErrors[key];
+    (key === "runAt" ? times.problems.runAt : undefined) ??
+    clientErrors[key] ??
+    serverErrors[key];
   // A problem that is not a per-field VALIDATION issue is shown as a banner.
   const bannerError =
     update.error &&
@@ -80,7 +84,7 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitted(true);
-    if (Object.keys(validateUpdateForm(form)).length > 0) {
+    if (times.blocked || Object.keys(validateUpdateForm(form)).length > 0) {
       return;
     }
     update.mutate(updateBody(form));
@@ -124,7 +128,7 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
             variant="primary"
             type="submit"
             form={formId}
-            disabled={update.isPending}
+            disabled={update.isPending || times.blocked}
             aria-busy={update.isPending || undefined}
           >
             {update.isPending ? "Saving…" : "Save"}
@@ -177,6 +181,7 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
           <DateTimeInput
             value={form.runAt}
             onChange={(runAt) => patch({ runAt })}
+            onProblem={(problem) => times.report("runAt", problem)}
           />
         </Field>
         <Checkbox

@@ -2,6 +2,7 @@ import type { MetaDto } from "../../../app/api/types";
 import type { MockHandler, MockReply } from "../mockFetch";
 import { MAX_JOB_ID_LENGTH } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it, mock } from "bun:test";
+import { DATE_TIME_OUT_OF_RANGE } from "../../../app/components/inputValues";
 import { jsonEditorState } from "../../../app/components/jsonParse";
 import { AddJobDialog } from "../../../app/screens/job";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../../../app/screens/job/addJobForm";
 import { act, fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { problem } from "../fixtures";
+import { stubRawValue } from "../rawInput";
 import {
   allPermissions,
   definitionsFixture,
@@ -253,6 +255,34 @@ describe("the add-job dialog: data and options", () => {
     expect(JSON.parse(posts()[0]!.body!).opts).toEqual({
       runAt: new Date("2026-10-01T09:30").getTime(),
     });
+  });
+
+  it("refuses a run time before 1970 or past MAX_DATE_MS in place, with Add job disabled", async () => {
+    const { dialog, posts } = await openAdd({
+      meta: jobMeta({ addableNames: ["a"] }),
+    });
+    const addButton = within(dialog).getByRole("button", {
+      name: "Add job",
+    }) as HTMLButtonElement;
+    type(dialog, "Run", "runAt");
+    type(dialog, "Run at", "1969-06-01T00:00");
+    expect(errorOf(dialog, "Run at")).toBe(DATE_TIME_OUT_OF_RANGE);
+    expect(addButton.disabled).toBe(true);
+    const input = within(dialog).getByLabelText(
+      labelled("Run at"),
+    ) as HTMLInputElement;
+    const raw = stubRawValue(input, "275760-09-14T00:00");
+    fireEvent.change(input);
+    raw.restore();
+    expect(errorOf(dialog, "Run at")).toBe(DATE_TIME_OUT_OF_RANGE);
+    await submit(dialog);
+    expect(posts()).toHaveLength(0);
+    // The field goes with its timing, and takes its problem with it.
+    type(dialog, "Run", "now");
+    expect(addButton.disabled).toBe(false);
+    await submit(dialog);
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(posts()[0]!.body!).opts).toBeUndefined();
   });
 
   it("sends only the delay when a delay is chosen", async () => {

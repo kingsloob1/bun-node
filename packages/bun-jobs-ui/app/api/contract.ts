@@ -15,6 +15,7 @@ export {
   JOBS_API_MUTATIONS,
   JOBS_API_PROTOCOL_VERSION,
   JOBS_API_WS_SUBPROTOCOL,
+  MAX_DATE_MS,
 } from "@kingsleyweb/bun-jobs/api/contract";
 export type {
   JobsApiAction,

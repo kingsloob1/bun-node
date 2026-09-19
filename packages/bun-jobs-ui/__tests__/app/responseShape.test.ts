@@ -1,12 +1,12 @@
-import type { ApiError } from "../../app/api/errors";
 import { describe, expect, it } from "bun:test";
 import { createApiClient } from "../../app/api/client";
-import { isApiError } from "../../app/api/errors";
+import { ApiError, isApiError } from "../../app/api/errors";
 import { getJob } from "../../app/api/jobs";
 import { getQueue } from "../../app/api/queues";
 import { getRunner } from "../../app/api/runners";
 import { assertShape } from "../../app/api/shape";
 import { displayText, INVALID_TEXT } from "../../app/format";
+import { shouldRetry } from "../../app/queryClient";
 import { jobFixture } from "./job/fixtures";
 import { mockFetch } from "./mockFetch";
 
@@ -121,5 +121,24 @@ describe("displayText", () => {
     expect(displayText(["a"])).toBe(INVALID_TEXT);
     expect(displayText(null)).toBe(INVALID_TEXT);
     expect(displayText(undefined)).toBe(INVALID_TEXT);
+  });
+});
+
+describe("shouldRetry", () => {
+  const error = (kind: ApiError["kind"], status: number, code: string) =>
+    new ApiError({ kind, status, code, title: code });
+
+  it("never retries a malformed response: asking again gets the same body", () => {
+    expect(shouldRetry(0, error("parse", 200, "UNEXPECTED_RESPONSE"))).toBe(
+      false,
+    );
+    expect(shouldRetry(0, error("parse", 200, "INVALID_RESPONSE"))).toBe(false);
+  });
+
+  it("never retries a 4xx, and retries network failures and 5xx twice", () => {
+    expect(shouldRetry(0, error("problem", 404, "JOB_NOT_FOUND"))).toBe(false);
+    expect(shouldRetry(0, error("network", 0, "NETWORK_ERROR"))).toBe(true);
+    expect(shouldRetry(1, error("problem", 503, "DRIVER_ERROR"))).toBe(true);
+    expect(shouldRetry(2, error("problem", 503, "DRIVER_ERROR"))).toBe(false);
   });
 });
