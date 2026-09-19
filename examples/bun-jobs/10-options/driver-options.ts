@@ -41,7 +41,9 @@
  * - `capabilities.multiHost` is `false` for SQLite — a file, shareable by the
  *   processes of one host only — and `true` for every server engine;
  * - reading an unknown runner (`getLock`, `getState`, `listHistory`, queued
- *   triggers) registers nothing, on every driver;
+ *   triggers, `peekQueuedTrigger`) registers nothing, on every driver;
+ * - `peekQueuedTrigger` returns the head a pop would take next — `force`
+ *   included — without removing it, and `null` once the queue is empty;
  * - Redis: a wake token taken by an abandoned wait reaches the next wait.
  *
  * Every table and collection this creates starts with `bun_jobs_example_`,
@@ -180,6 +182,7 @@ async function checkContract(
     state: await driver.getState(here, ghost),
     history: await driver.listHistory(here, ghost, 5),
     queued: await driver.countQueuedTriggers(here, ghost),
+    peeked: await driver.peekQueuedTrigger(here, ghost),
     popped: await driver.popQueuedTrigger(here, ghost),
   };
   checkEqual(`${label}: reads of an unknown runner answer empty`, reads, {
@@ -187,6 +190,7 @@ async function checkContract(
     state: {},
     history: [],
     queued: 0,
+    peeked: null,
     popped: null,
   });
   checkEqual(
@@ -216,10 +220,41 @@ async function checkContract(
     { ...trigger, id: "older" },
     10,
   );
+  // `peekQueuedTrigger` reads the head — the trigger a pop would take next —
+  // without taking it: a paused runner looks before it commits, running a
+  // forced head and leaving an ordinary one in place, in order.
+  const peeked = [
+    await driver.peekQueuedTrigger(here, nightly),
+    await driver.peekQueuedTrigger(here, nightly),
+  ];
+  checkEqual(
+    `${label}: peekQueuedTrigger() returns the head, force and all, and removes nothing`,
+    {
+      peeked: peeked.map((head) => [head?.id, head?.force === true]),
+      queued: await driver.countQueuedTriggers(here, nightly),
+    },
+    {
+      peeked: [
+        ["forced", true],
+        ["forced", true],
+      ],
+      queued: 2,
+    },
+  );
   const drained = [
     await driver.popQueuedTrigger(here, nightly),
     await driver.popQueuedTrigger(here, nightly),
   ];
+  checkEqual(
+    `${label}: …the pop that follows takes that same record`,
+    drained[0],
+    peeked[0],
+  );
+  checkEqual(
+    `${label}: peekQueuedTrigger() of an emptied queue answers null`,
+    await driver.peekQueuedTrigger(here, nightly),
+    null,
+  );
   checkEqual(
     `${label}: a queued trigger keeps force: true; one without it reads as not forced`,
     drained.map((popped) => [popped?.id, popped?.force === true]),

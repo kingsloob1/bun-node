@@ -1523,6 +1523,43 @@ check(
     (job) => job.runAt > Date.now() && job.runAt - Date.now() <= 86_400_000,
   ),
 );
+
+// A zone Intl does not know is refused before anything is written, on an
+// interval series as well as a cron one — and an empty zone is refused rather
+// than read as "none". "Europe/Lagos" is the realistic slip: Lagos is in
+// Africa/.
+const repeatsBeforeZones = (await repeatQueue.listRepeatables()).length;
+for (const [label, zone, repeat] of [
+  [
+    "an interval series",
+    "Europe/Lagos",
+    { every: "1 day", tz: "Europe/Lagos" },
+  ],
+  ["a cron series", "Europe/Lagos", { cron: "0 9 * * *", tz: "Europe/Lagos" }],
+  ["an empty zone", "", { every: "1 day", tz: "" }],
+] as const) {
+  const error = await checkRejects(
+    `repeat.tz on ${label} is refused`,
+    () => repeatQueue.add("zoned", {}, { repeat }),
+    {
+      name: "ConfigError",
+      message: /^repeat\.tz does not know the time zone /,
+    },
+  );
+  checkEqual(
+    `repeat.tz on ${label}: the message quotes the zone; context names the option and it`,
+    [error?.message, (error as { context?: unknown } | undefined)?.context],
+    [
+      `repeat.tz does not know the time zone "${zone}"`,
+      { option: "repeat.tz", tz: zone },
+    ],
+  );
+}
+checkEqual(
+  "…and no series was written for any of them",
+  (await repeatQueue.listRepeatables()).length,
+  repeatsBeforeZones,
+);
 await checkRejects(
   "two different crons, in cron and every, are refused",
   () =>

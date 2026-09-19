@@ -26,6 +26,8 @@
  *   a queue before it is used — or name it in `queues` — to hear it from its
  *   first event. Queues and runners made by the notifier's own `BunJobs` are
  *   followed as they are created.
+ * - **A single `retry()` publishes `retried`** with `ids: [id]`, as
+ *   `retryJobs()` and `retryAll()` do for a batch.
  * - **Iterators share one buffer.** Two `for await` loops open at once split
  *   the events between them; iterate once and fan out from there.
  */
@@ -312,6 +314,40 @@ const retried = await queueEvent(heard, "retried", (e) => {
   return e.payload.ids.includes(doomed.id);
 });
 checkEqual("retried: payload.ids", retried.payload.ids, retriedIds);
+
+// A single retry() publishes `retried` too, with just its id — the same event
+// a batch sends. The retried job fails its two attempts again first.
+const deadEvents = (): DriverEvent[] =>
+  heard.filter(
+    (e) => e.kind === "queue" && e.type === "dead" && e.id === doomed.id,
+  );
+await waitFor(
+  "the retried job to die again",
+  () => deadEvents().length >= 2,
+  WAIT,
+);
+const retriedEvents = (): QueueEventOf<"retried">[] =>
+  heard.filter(
+    (e): e is QueueEventOf<"retried"> =>
+      e.kind === "queue" &&
+      e.type === "retried" &&
+      (e as QueueEventOf<"retried">).payload.ids.includes(doomed.id),
+  );
+checkEqual(
+  "retry() of a dead job answers true",
+  await orders.retry(doomed.id),
+  true,
+);
+await waitFor(
+  "a second retried event",
+  () => retriedEvents().length >= 2,
+  WAIT,
+);
+checkEqual(
+  "retried: a single retry() publishes payload.ids [id]",
+  retriedEvents()[1]?.payload.ids,
+  [doomed.id],
+);
 
 // Cleaned: remove the completed job that was kept.
 await waitFor(
