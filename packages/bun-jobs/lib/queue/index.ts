@@ -21,6 +21,7 @@ export {
   type IsolationOptions,
 } from "./isolation";
 export { Job } from "./Job";
+export type { JobEvent, JobHooks, JobUpdate } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
 export { JobDraft, type RepeatEveryOptions } from "./JobDraft";
 export {

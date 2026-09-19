@@ -9,6 +9,7 @@ import type {
 } from "../drivers/index";
 import type { QueueEventName, QueueEventPayloads } from "../shared/events";
 import type { Logger } from "../shared/logger";
+import type { JobEvent } from "./Job";
 import type { Reservation } from "./limits";
 import type {
   BunQueueWorkerEvents,
@@ -1163,18 +1164,31 @@ export class BunQueueWorker<
 
   /** Runs one job and records how it ended. */
   async #process(record: JobRecord): Promise<void> {
+    /** The reason the processor gave `job.fail()`, which settles the attempt. */
+    let failedWith: UnrecoverableJobError | undefined;
+    /** Whether the processor has returned or thrown, so `fail()` is too late. */
+    let attemptOver = false;
+
     // The progress hook is how `updateProgress` reaches an emitter: `Job` has
     // none of its own, and the worker is the only thing that sees the call.
-    const job = new Job<TData, TResult>(
-      this.driver,
-      this.ref,
-      record,
-      true,
-      (progress) => {
+    // `onFail` is what makes this view the job's owner.
+    const job = new Job<TData, TResult>(this.driver, this.ref, record, true, {
+      onProgress: (progress) => {
         this.safeEmitScoped("progress", record.name, job, progress);
         void this.#publish("progress", { id: record.id, progress });
       },
-    );
+      onFail: (error) => {
+        if (attemptOver) {
+          return false;
+        }
+
+        // The first reason stands: failing is final, and a second call is
+        // not a change of mind.
+        failedWith ??= error;
+        return true;
+      },
+      onEvent: async (event) => await this.#onJobEvent(event),
+    });
     const controller = new AbortController();
     this.#aborts.set(record.id, controller);
 
@@ -1231,6 +1245,14 @@ export class BunQueueWorker<
               onTimeout: () => controller.abort(),
             })
           : await running;
+      attemptOver = true;
+
+      // `job.fail()` was called: the attempt ends that way however the
+      // processor returned.
+      if (failedWith) {
+        await this.#recordFailure(job, record, failedWith);
+        return;
+      }
 
       // Not awaited, deliberately.
       //
@@ -1244,7 +1266,10 @@ export class BunQueueWorker<
       // shutdown never abandons one.
       this.#settle(job, record, result as TResult);
     } catch (error) {
-      await this.#recordFailure(job, record, error);
+      attemptOver = true;
+      // A reason given to `job.fail()` wins over whatever was thrown after it
+      // — very often the processor's own way of stopping once it had failed.
+      await this.#recordFailure(job, record, failedWith ?? error);
     } finally {
       clearInterval(heartbeat);
       this.#heartbeats.delete(record.id);
@@ -1505,6 +1530,36 @@ export class BunQueueWorker<
     }
 
     return result;
+  }
+
+  /**
+   * Announces what a job this worker handed out did to itself: `remove()`,
+   * `promote()` and `retry()` are published as the queue's own methods
+   * publish them — a worker has no local event for any of the three — and a
+   * job buried by `fail()` from outside its processor gets the `failed` and
+   * `dead` events a job that died here gets.
+   */
+  async #onJobEvent(event: JobEvent): Promise<void> {
+    switch (event.type) {
+      case "removed":
+      case "promoted":
+        await this.#publish(event.type, { id: event.id });
+        return;
+
+      case "retried":
+        await this.#publish("retried", { ids: [event.id] });
+        return;
+
+      case "buried": {
+        const { record, error } = event;
+        const job = new Job<TData, TResult>(this.driver, this.ref, record);
+        const failure = deserializeError(error);
+        this.safeEmitScoped("failed", record.name, job, failure);
+        this.safeEmitScoped("dead", record.name, job, failure);
+        await this.#publish("failed", { id: record.id, error });
+        await this.#publish("dead", { id: record.id, error });
+      }
+    }
   }
 
   /** Whether a buried parent's reason names `child` as what buried it. */
