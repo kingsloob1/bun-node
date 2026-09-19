@@ -60,6 +60,7 @@ import { createJobsLogger } from "../shared/logger";
 import { waitForAny } from "../shared/wait";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
+import { addDeadLetter, selfLetterError } from "./deadLetter";
 import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { QueueLimiter } from "./limits";
@@ -1987,13 +1988,8 @@ export class BunQueueWorker<
   }
 
   /**
-   * Adds a copy of a dead job to its dead-letter queue.
-   *
-   * After the job is marked dead, never before: a worker that crashes between
-   * the two leaves a dead job with no letter, which is visible and re-drivable,
-   * rather than a letter for a job that is about to be retried. The letter's id
-   * is derived from the job's, so a death noticed twice files one letter — and
-   * from its creation time too, so a later job reusing the id files its own.
+   * Adds a copy of a dead job to its dead-letter queue, through the shared
+   * {@link addDeadLetter}, reporting rather than throwing.
    *
    * `source` is the queue the dead job is in: this worker's, or another's for
    * a flow parent a child here buried. `job` is the view local listeners get,
@@ -2007,15 +2003,9 @@ export class BunQueueWorker<
     error: SerializedError,
     now: number,
   ): Promise<void> {
-    if (queueName === source) {
-      // A letter to itself would be claimed, fail, and file another.
-      this.#emitError(
-        new ConfigError(
-          `Job ${record.id} names its own queue "${queueName}" as its dead-letter queue`,
-          { jobId: record.id, queue: queueName },
-        ),
-        "deadLetter",
-      );
+    const refused = selfLetterError(queueName, source, record);
+    if (refused) {
+      this.#emitError(refused, "deadLetter");
       return;
     }
 
@@ -2031,22 +2021,7 @@ export class BunQueueWorker<
         this.#deadLetters.set(queueName, queue);
       }
 
-      const letter = await queue.add(
-        record.name,
-        {
-          queue: source,
-          id: record.id,
-          name: record.name,
-          data: record.data,
-          failedReason: error,
-          attemptsMade: record.attemptsMade,
-          diedAt: now,
-        },
-        // Shortened, never refused. This runs on the failure path, so a job
-        // whose own id is legal but near the limit must not throw here — that
-        // would lose the letter for the one job that most needed filing.
-        { jobId: shortenJobId(`${source}:${record.id}:${record.createdAt}`) },
-      );
+      const letter = await addDeadLetter(queue, source, record, error, now);
 
       if (job) {
         this.safeEmitScoped(
