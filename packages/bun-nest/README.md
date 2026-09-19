@@ -130,8 +130,11 @@ await app.close(); // force-closes the Bun server, keep-alive connections includ
 ## `BunHttpAdapter`
 
 `BunHttpAdapter` extends NestJS's `AbstractHttpAdapter`. Its `instance` is a
-bun-common `BunRouter`, and `listen()` binds `Bun.serve`. `BunNestHttpAdapter`
-is the same class under a second name. Its constructor is
+bun-common `BunRouter`, and `listen()` binds `Bun.serve`. `getInstance()`
+returns that router typed as `BunRouter` (NestJS's own signature defaults to
+`any`). The adapter goes to `NestFactory.create()`, and its `webSocketAdapter`
+to `app.useWebSocketAdapter()`, with no cast. `BunNestHttpAdapter` is the same
+class under a second name. Its constructor is
 `new BunHttpAdapter(requestTimeout?, options?)`.
 
 ### Adapter options

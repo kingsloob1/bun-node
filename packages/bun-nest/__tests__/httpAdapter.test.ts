@@ -1,7 +1,11 @@
 import type { App } from "supertest/types";
 import { Buffer } from "node:buffer";
 import { gzipSync } from "node:zlib";
-import { mergeBunRequestOptions, signCookie } from "@kingsleyweb/bun-common";
+import {
+  BunRouter,
+  mergeBunRequestOptions,
+  signCookie,
+} from "@kingsleyweb/bun-common";
 import { StreamableFile } from "@nestjs/common";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import request from "supertest";
@@ -761,6 +765,17 @@ describe("BunHttpAdapter: no error handler (finalhandler fallback)", () => {
     const fallback = await throwing.fetch("/boom");
     expect(fallback.status).toBe(502);
     expect(await fallback.text()).toContain("<pre>Bad Gateway</pre>");
+  });
+});
+
+describe("BunHttpAdapter: getInstance()", () => {
+  it("returns the adapter's BunRouter, the same object as `instance`", () => {
+    const adapter = new BunHttpAdapter();
+    const router = adapter.getInstance();
+    expect(router).toBe(adapter.instance);
+    expect(router).toBeInstanceOf(BunRouter);
+    // The router's installed BunWebSocket is the adapter's own until swapped.
+    expect(router.getBunWebsocket()).toBe(adapter.webSocketAdapter);
   });
 });
 
