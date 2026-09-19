@@ -238,3 +238,9 @@ tr[aria-selected="true"] {
 .repeatable-data {
   max-width: 24rem;
 }
+
+.repeatable-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

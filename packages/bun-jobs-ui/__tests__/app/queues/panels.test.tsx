@@ -9,10 +9,12 @@ import {
 } from "../fixtures";
 import {
   detailFixture,
+  errorToasts,
   findDialog,
   notifications,
   openDialog,
   renderQueue,
+  repeatablesFixture,
 } from "./fixtures";
 
 setupDom();
@@ -393,5 +395,215 @@ describe("the other panels", () => {
     });
     expect(await panelLabels()).toEqual([]);
     expect(page().queryByText("Details")).toBeNull();
+  });
+});
+
+describe("repeatables, disable and enable", () => {
+  /** The fixture list with the series disabled, and nothing scheduled. */
+  function disabledList() {
+    return {
+      items: [
+        {
+          ...repeatablesFixture.items[0]!,
+          disabled: true,
+          nextRunAt: null,
+          nextJobId: null,
+        },
+      ],
+    };
+  }
+
+  /** Opens the repeatables panel and returns the fixture series' row. */
+  async function row() {
+    return page().findByTestId("repeatable-row-digest:cron");
+  }
+
+  it("offers Disable on an enabled series, POSTs it, toasts and refetches the list", async () => {
+    let disabled = false;
+    const { calls } = renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /queues/emails/repeatables": () => ({
+          body: disabled ? disabledList() : repeatablesFixture,
+        }),
+        "POST /queues/emails/repeatables/digest%3Acron/disable": () => {
+          disabled = true;
+          return { body: { disabled: true } };
+        },
+      },
+    });
+    const enabledRow = await row();
+    expect(within(enabledRow).queryByText("Disabled")).toBeNull();
+    expect(
+      within(enabledRow).queryByRole("button", {
+        name: "Enable repeatable digest:cron",
+      }),
+    ).toBeNull();
+    const reads = callsTo(calls, "GET", "/queues/emails/repeatables").length;
+    fireEvent.click(
+      within(enabledRow).getByRole("button", {
+        name: "Disable repeatable digest:cron",
+      }),
+    );
+    await waitFor(() =>
+      expect(notifications().textContent).toContain(
+        "Disabled the repeat series digest:cron",
+      ),
+    );
+    const call = callsTo(
+      calls,
+      "POST",
+      "/queues/emails/repeatables/digest%3Acron/disable",
+    )[0]!;
+    expect(call.body).toBeUndefined();
+    await waitFor(() =>
+      expect(
+        callsTo(calls, "GET", "/queues/emails/repeatables").length,
+      ).toBeGreaterThan(reads),
+    );
+    await waitFor(async () =>
+      expect(within(await row()).getByText("Disabled")).toBeTruthy(),
+    );
+    expect(page().getByTestId("repeatable-next-digest:cron").textContent).toBe(
+      "paused (disabled)",
+    );
+    expect(
+      within(await row()).getByRole("button", {
+        name: "Enable repeatable digest:cron",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("shows a disabled series with its badge, a paused next run and Enable, and POSTs enable", async () => {
+    const { calls } = renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /queues/emails/repeatables": { body: disabledList() },
+        "POST /queues/emails/repeatables/digest%3Acron/enable": {
+          body: { enabled: true },
+        },
+      },
+    });
+    const disabledRow = await row();
+    expect(within(disabledRow).getByText("Disabled")).toBeTruthy();
+    expect(page().getByTestId("repeatable-next-digest:cron").textContent).toBe(
+      "paused (disabled)",
+    );
+    expect(
+      within(disabledRow).queryByRole("button", {
+        name: "Disable repeatable digest:cron",
+      }),
+    ).toBeNull();
+    fireEvent.click(
+      within(disabledRow).getByRole("button", {
+        name: "Enable repeatable digest:cron",
+      }),
+    );
+    await waitFor(() =>
+      expect(notifications().textContent).toContain(
+        "Enabled the repeat series digest:cron",
+      ),
+    );
+    expect(
+      callsTo(calls, "POST", "/queues/emails/repeatables/digest%3Acron/enable"),
+    ).toHaveLength(1);
+  });
+
+  it("explains a 404 REPEATABLE_NOT_FOUND", async () => {
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "POST /queues/emails/repeatables/digest%3Acron/disable": {
+          status: 404,
+          body: problem(404, "REPEATABLE_NOT_FOUND", "Repeatable not found", {
+            context: { queue: "emails", key: "digest:cron" },
+          }),
+        },
+      },
+    });
+    fireEvent.click(
+      within(await row()).getByRole("button", {
+        name: "Disable repeatable digest:cron",
+      }),
+    );
+    await waitFor(() =>
+      expect(errorToasts().textContent).toContain(
+        "The repeat series “digest:cron” no longer exists",
+      ),
+    );
+    expect(errorToasts().textContent).toContain(
+      "Could not change the repeat series",
+    );
+  });
+
+  it("drops Disable without repeatables.disable, and Enable without repeatables.enable", async () => {
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /meta/permissions": {
+          body: permissionsFixture({ "repeatables.disable": false }),
+        },
+      },
+    });
+    const enabledRow = await row();
+    // The per-queue answer can arrive after the row; wait for it to settle.
+    await waitFor(() =>
+      expect(
+        within(enabledRow).queryByRole("button", {
+          name: "Disable repeatable digest:cron",
+        }),
+      ).toBeNull(),
+    );
+    expect(
+      within(enabledRow).getByRole("button", {
+        name: "Remove repeatable digest:cron",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("drops Enable without repeatables.enable", async () => {
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /meta/permissions": {
+          body: permissionsFixture({
+            "repeatables.enable": false,
+            "repeatables.remove": false,
+          }),
+        },
+        "GET /queues/emails/repeatables": { body: disabledList() },
+      },
+    });
+    const disabledRow = await row();
+    await waitFor(() =>
+      expect(
+        within(disabledRow).queryAllByRole("button", { name: /repeatable/ }),
+      ).toHaveLength(0),
+    );
+    // The badge is not an action: it shows whatever the caller may do.
+    expect(within(disabledRow).getByText("Disabled")).toBeTruthy();
+    // No actions at all, so no actions column.
+    expect(
+      page()
+        .getByRole("table", { name: "Repeatables of emails" })
+        .querySelectorAll("thead th"),
+    ).toHaveLength(6);
+  });
+
+  it("offers neither when the API is read-only, but still shows the badge", async () => {
+    renderQueue({
+      path: "/queues/emails?panel=repeatables",
+      handlers: {
+        "GET /meta": {
+          body: metaFixture({ readOnly: true, addableNames: null }),
+        },
+        "GET /queues/emails/repeatables": { body: disabledList() },
+      },
+    });
+    const disabledRow = await row();
+    expect(within(disabledRow).getByText("Disabled")).toBeTruthy();
+    expect(
+      within(disabledRow).queryAllByRole("button", { name: /repeatable/ }),
+    ).toHaveLength(0);
   });
 });

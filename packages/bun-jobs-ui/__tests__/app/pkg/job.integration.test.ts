@@ -174,4 +174,44 @@ describe("the job UI against a real createJobsApi", () => {
     expect(await ui.remove()).toBe("/jobs/queues/emails");
     expect(await jobs.queue("emails").getJob(id)).toBeNull();
   });
+
+  it("fails a waiting job through the dialog: the API reads it back dead, with the reason", async () => {
+    const id = "welcome/fail 4";
+    await waitingJob("emails", id);
+    const view = await ui.openJob("emails", id);
+    expect(view.heading).toContain("Waiting");
+    const toast = await ui.fail("customer cancelled", id);
+    expect(toast).toContain("Job failed");
+    const after = await jobs.queue("emails").getJob(id);
+    expect(after?.state).toBe("dead");
+    expect(after?.failedReason?.message).toBe("customer cancelled");
+    // Read afresh, the screen shows it dead.
+    expect((await ui.openJob("emails", id)).heading).toContain("Dead");
+  });
+
+  it("disables then enables a real repeat series, reading `disabled` back", async () => {
+    const queue = jobs.queue("digests");
+    await queue.add(
+      "send-welcome",
+      {},
+      { repeat: { every: 60_000, key: "hourly" } },
+    );
+    const series = async () =>
+      (await queue.listRepeatables()).find((record) => record.key === "hourly");
+    expect((await series())?.disabled ?? false).toBe(false);
+    const pending = (await series())!.nextJobId!;
+    expect(await queue.getJob(pending)).not.toBeNull();
+
+    await ui.toggleRepeatable("digests", "hourly", "disable");
+    expect((await series())?.disabled).toBe(true);
+    // Its pending occurrence went with it.
+    expect(await queue.getJob(pending)).toBeNull();
+
+    ui.cleanup();
+    await ui.toggleRepeatable("digests", "hourly", "enable");
+    expect((await series())?.disabled ?? false).toBe(false);
+    const next = (await series())?.nextJobId;
+    expect(next).not.toBeNull();
+    expect((await queue.getJob(next!))?.state).toBe("delayed");
+  });
 });

@@ -8,6 +8,8 @@ import type {
   CleanQueueBody,
   CleanResultDto,
   CountResultDto,
+  DisableRepeatableResultDto,
+  EnableRepeatableResultDto,
   JobCountsDto,
   JobPageDto,
   QueueDetailDto,
@@ -281,5 +283,21 @@ export function removeRepeatable(api: ApiClient, queue: string, key: string) {
   return api.request<void>(
     "DELETE",
     base(queue, `/repeatables/${segment(key)}`),
+  );
+}
+
+/** `POST /queues/:queue/repeatables/:key/disable`: idempotent; 404 for an unknown series. */
+export function disableRepeatable(api: ApiClient, queue: string, key: string) {
+  return api.request<DisableRepeatableResultDto>(
+    "POST",
+    base(queue, `/repeatables/${segment(key)}/disable`),
+  );
+}
+
+/** `POST /queues/:queue/repeatables/:key/enable`: idempotent; 404 for an unknown series. */
+export function enableRepeatable(api: ApiClient, queue: string, key: string) {
+  return api.request<EnableRepeatableResultDto>(
+    "POST",
+    base(queue, `/repeatables/${segment(key)}/enable`),
   );
 }
