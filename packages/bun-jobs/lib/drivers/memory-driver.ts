@@ -391,6 +391,21 @@ export class MemoryDriver implements JobsDriver {
     return head ? jsonClone(head) : null;
   }
 
+  async popQueuedTriggerIf(
+    ns: string,
+    key: string,
+    expectedId: string,
+  ): Promise<QueuedTrigger | null> {
+    // The check and the shift are one synchronous step, with no `await`
+    // between them, so no other caller can run in the gap. An unknown runner
+    // is looked up, never created.
+    const queued = this.#existingRunner(ns, key)?.queued;
+    if (!queued || queued[0]?.id !== expectedId) {
+      return null;
+    }
+    return queued.shift() ?? null;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return this.#existingRunner(ns, key)?.queued.length ?? 0;
   }

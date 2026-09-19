@@ -1921,6 +1921,27 @@ return 1
 `;
 
 /**
+ * Takes the head of the queued triggers only if its id is the expected one.
+ *
+ * The read of the head, the comparison and the `LPOP` are one script, so no
+ * other client's pop or push can land between them. A head that does not
+ * decode is left alone, as is a missing key, which `LINDEX` does not create.
+ *
+ * KEYS: queued list. ARGV: expected id. Returns the popped element, or `nil`.
+ */
+export const POP_QUEUED_IF = `
+local head = redis.call('LINDEX', KEYS[1], 0)
+if not head then
+  return false
+end
+local ok, decoded = pcall(cjson.decode, head)
+if not ok or type(decoded) ~= 'table' or decoded.id ~= ARGV[1] then
+  return false
+end
+return redis.call('LPOP', KEYS[1])
+`;
+
+/**
  * Prepends a run record and trims the history in one step.
  *
  * KEYS: history list. ARGV: record, keep.

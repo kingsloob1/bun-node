@@ -1099,6 +1099,33 @@ export class SqlDriver implements JobsDriver {
     return (await this.#readState(ns, key)).queued[0] ?? null;
   }
 
+  async popQueuedTriggerIf(
+    ns: string,
+    key: string,
+    expectedId: string,
+  ): Promise<QueuedTrigger | null> {
+    // Read first, as a pop does: a mutation creates the runner's row, and a
+    // runner nobody pushed to must not come into being. This read is only a
+    // shortcut — the decision is the re-check inside the transaction below.
+    if ((await this.#readState(ns, key)).queued[0]?.id !== expectedId) {
+      return null;
+    }
+
+    let trigger: QueuedTrigger | null = null;
+
+    // The transaction every pop and push takes: `SELECT ... FOR UPDATE` on
+    // Postgres, MySQL and MariaDB, `BEGIN IMMEDIATE` on SQLite. The row is
+    // held from the read to the write, so the head checked is the head taken.
+    await this.#mutateState(ns, key, (state) => {
+      if (state.queued[0]?.id !== expectedId) {
+        return false;
+      }
+      trigger = state.queued.shift() ?? null;
+    });
+
+    return trigger;
+  }
+
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     return (await this.#readState(ns, key)).queued.length;
   }
@@ -4800,6 +4827,9 @@ export class SqlDriver implements JobsDriver {
   /**
    * Read-modify-writes a runner's state inside a transaction, so two
    * processes cannot both read, both modify, and both write.
+   *
+   * `mutate` returning `false` means it changed nothing: the transaction then
+   * ends without the UPDATE, so the row (and its `updated_at`) stays as it was.
    */
   async #mutateState(
     ns: string,
@@ -4808,7 +4838,7 @@ export class SqlDriver implements JobsDriver {
       fields: Record<string, string>;
       history: RunRecord[];
       queued: QueuedTrigger[];
-    }) => void,
+    }) => void | false,
   ): Promise<void> {
     await this.connect();
     const kvKey = `${key}:state`;
@@ -4861,7 +4891,9 @@ export class SqlDriver implements JobsDriver {
         queued: current?.queued ?? [],
       };
 
-      mutate(state);
+      if (mutate(state) === false) {
+        return;
+      }
 
       // A plain update: the row is known to exist, and inserting here is what
       // caused the deadlock this method now avoids.

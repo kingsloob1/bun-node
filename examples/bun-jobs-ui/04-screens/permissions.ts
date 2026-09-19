@@ -78,6 +78,18 @@
  *   boxes, which is why those rows are about the list, not the picker. Each
  *   exists only in the modes that have its channels: the queue list in
  *   `jobs` and `both`, the runner list in `runner` and `both`.
+ * - **The API docs are the one exception to "absent, not disabled".** The nav
+ *   entry and the two references come and go like any other screen, on
+ *   `sections.docs`, `meta.docs` and the untargeted `docs.read` (not
+ *   `sections.manage`: a docs-only UI has them). But a reference documents
+ *   every operation the API serves, so on one operation's page the elements
+ *   are there whatever the caller holds, and say so: the permission marker
+ *   reads "You lack", a try-it the caller may not send is **disabled, with
+ *   the reason**, and a WebSocket try-it without the Events console is a
+ *   **note**. So a gate here also says what shows when it is closed
+ *   (`denied`), and the table check compares that as well. Those gates are
+ *   decided per documented operation, always on the untargeted map
+ *   (`map: "operation"`): an operation names no one queue or runner.
  */
 import type {
   JobsApiAction,
@@ -102,6 +114,7 @@ import {
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
+import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
@@ -345,10 +358,64 @@ interface ScreenInputs {
    * `isLocal`, `local` and `isPaused` pick the actions.
    */
   runner?: RunnerInfoDto;
+  /**
+   * The operation or channel on screen in the API docs, as its document
+   * describes it. Absent off a docs item page, which closes every
+   * `map: "operation"` gate.
+   */
+  item?: DocItem;
 }
 
-/** Which permission map decides a gate. */
-type GateMap = "boot" | "queue" | "runner";
+/**
+ * One documented operation (OpenAPI) or channel (AsyncAPI), in the terms the
+ * docs screens gate on: the fields come from the document's own extensions.
+ */
+interface DocItem {
+  /** `http` for an OpenAPI operation, `ws` for an AsyncAPI channel or operation. */
+  kind: "http" | "ws";
+  /** The HTTP method, upper-case. Absent for `ws`. */
+  method?: string;
+  /** Its `x-bun-jobs-action`, the permission it needs. Absent for a channel naming none. */
+  action?: string;
+  /** Its `x-bun-jobs-mutation`. Absent (read) for `ws`. */
+  mutation?: boolean;
+  /**
+   * A WebSocket channel's address as try-it filled it, or `null` while a
+   * parameter is empty or refused by its `x-bun-jobs-schema` (and for the
+   * connection channel, which has no link). Absent for anything that is not
+   * a channel: an HTTP operation, or a WebSocket operation or message.
+   */
+  address?: string | null;
+}
+
+/**
+ * Which permission map decides a gate. `operation` is the untargeted map
+ * too, but the gate exists only on one documented operation's page.
+ */
+type GateMap = "boot" | "queue" | "runner" | "operation";
+
+/**
+ * What shows when a gate is closed but the screen it sits on is open:
+ * nothing (`absent`, the rule everywhere but the docs), the element
+ * `disabled` with its reason, a `note` in its place, or a permission marker
+ * reading "You lack".
+ */
+type Denied = "absent" | "disabled" | "note" | "lack";
+
+/** The `/meta` fields a README row may name as `` `meta.<field>` ``. */
+type MetaField = keyof MetaDto | "docs.openapi" | "docs.asyncapi";
+
+/** Methods the app's client sends (the HTTP try-it's `CLIENT_METHODS`). */
+const CLIENT_METHODS = ["DELETE", "GET", "PATCH", "POST", "PUT"] as const;
+
+/**
+ * Every routed action name: to pick actions out of the README's prose, and
+ * to tell an action the UI knows from one it does not.
+ */
+const ACTION_NAMES: ReadonlySet<string> = new Set(JOBS_API_ACTIONS);
+
+/** Action verbs whose try-it needs the operationId typed. */
+const DESTRUCTIVE_VERBS = ["clean", "drain", "kill", "remove"] as const;
 
 /**
  * One element's rule, stated the way the README's table states it, so the
@@ -395,9 +462,48 @@ interface Gate {
    * `` `meta.<field>` ``. `when` decides on them; listing them here lets the
    * table check notice a row that gains or loses one.
    */
-  readonly metaFields?: readonly (keyof MetaDto)[];
+  readonly metaFields?: readonly MetaField[];
   /** Whatever else it needs that no permission expresses. */
   readonly when?: (inputs: ScreenInputs) => boolean;
+  /**
+   * What shows when the gate is closed and its screen (`on`) is open.
+   * Defaults to `absent`.
+   */
+  readonly denied?: Denied;
+  /** UI sections the README row says are **not** needed ("`sections.x` is not needed"). */
+  readonly notNeeded?: readonly (keyof UiSections)[];
+  /** Which documented item it is about: an HTTP operation or a WebSocket one. */
+  readonly itemKind?: DocItem["kind"];
+  /** The item's `x-bun-jobs-action` must be granted, on the untargeted map. */
+  readonly itemAction?: boolean;
+  /** Closed for a mutation (`x-bun-jobs-mutation`) when `meta.readOnly`. */
+  readonly itemMutation?: boolean;
+  /** Open only for a mutation (`x-bun-jobs-mutation`): the confirmation. */
+  readonly forMutation?: boolean;
+  /** The item's method must be one of these. */
+  readonly methods?: readonly string[];
+  /**
+   * Open for an item whose method is one of `methods`, or whose action's verb
+   * (`queues.drain` → `drain`) is one of `verbs`: the typed confirmation.
+   */
+  readonly typed?: {
+    /** Methods that always need it. */
+    readonly methods: readonly string[];
+    /** Action verbs that need it. */
+    readonly verbs: readonly string[];
+  };
+  /** The item is a channel `meta.mode` offers (the row names `meta.mode`, not its values). */
+  readonly inMode?: boolean;
+  /**
+   * The element exists only on a WebSocket channel's page (a channel's
+   * try-it): on any other item it is absent, whatever `denied` says.
+   */
+  readonly channelOnly?: boolean;
+  /**
+   * With `itemAction`: an action outside the contract's list shows its own
+   * marker, "Not an action this UI knows", instead of "You lack".
+   */
+  readonly unknownAction?: boolean;
 }
 
 /** Whether the runner on screen has a run in flight in the API's process. */
@@ -738,7 +844,128 @@ const GATES = [
     modes: ["runner", "both"],
     reads: ["runners.list"],
   },
+  // The API docs. Not under sections.manage: a docs-only UI has them.
+  {
+    name: "Docs: nav and /docs*",
+    row: "API docs nav entry and every `/docs*` route",
+    map: "boot",
+    sections: ["docs"],
+    notNeeded: ["manage"],
+    reads: ["docs.read"],
+    metaFields: ["docs"],
+    when: ({ meta }) => meta.docs !== null,
+  },
+  {
+    name: "docs: HTTP reference and its card",
+    row: "HTTP reference (`/docs/http*`) and its card on `/docs`",
+    map: "boot",
+    on: "Docs: nav and /docs*",
+    // The row names `meta.docs` too: the API sends `openapi` whenever it
+    // sends `docs`, so the reference exists wherever the nav entry does.
+    metaFields: ["docs", "docs.openapi"],
+    when: ({ meta }) => meta.docs?.openapi !== undefined,
+  },
+  {
+    // Without it, /docs/ws is a screen saying so: the reference is absent.
+    name: "docs: WebSocket reference and its card",
+    row: "WebSocket reference (`/docs/ws*`) and its card on `/docs`",
+    map: "boot",
+    on: "Docs: nav and /docs*",
+    metaFields: ["docs.asyncapi"],
+    when: ({ meta }) => meta.docs?.asyncapi !== undefined,
+  },
+  {
+    name: "docs http: permission marker (You have)",
+    row: 'HTTP operation\'s permission marker, "You have" / "You lack"',
+    map: "operation",
+    on: "docs: HTTP reference and its card",
+    itemKind: "http",
+    itemAction: true,
+    denied: "lack",
+  },
+  {
+    name: "docs ws: permission marker (You have this)",
+    row: 'WebSocket channel\'s and operation\'s permission markers, "You have this" / "You lack this"',
+    map: "operation",
+    on: "docs: WebSocket reference and its card",
+    itemKind: "ws",
+    itemAction: true,
+    unknownAction: true,
+    denied: "lack",
+  },
+  {
+    name: "docs http: try-it Send",
+    row: "HTTP try-it Send",
+    map: "operation",
+    on: "docs: HTTP reference and its card",
+    itemKind: "http",
+    methods: CLIENT_METHODS,
+    itemMutation: true,
+    metaFields: ["readOnly"],
+    itemAction: true,
+    denied: "disabled",
+  },
+  {
+    // Every mutation asks first; a GET sends at once, with no dialog.
+    name: "docs http: try-it asks first",
+    row: "HTTP try-it confirmation",
+    map: "operation",
+    on: "docs: HTTP reference and its card",
+    itemKind: "http",
+    forMutation: true,
+  },
+  {
+    name: "docs http: try-it needs the operationId typed",
+    row: "HTTP try-it confirmation",
+    map: "operation",
+    on: "docs http: try-it asks first",
+    itemKind: "http",
+    typed: { methods: ["DELETE"], verbs: DESTRUCTIVE_VERBS },
+  },
+  {
+    name: "docs ws: try-it opens the Events console",
+    row: 'WebSocket try-it, "Open in the Events console"',
+    map: "operation",
+    on: "docs: WebSocket reference and its card",
+    itemKind: "ws",
+    channelOnly: true,
+    // The Events nav entry's own gate, restated.
+    sections: ["manage"],
+    reads: ["events.connect"],
+    metaFields: ["websocket"],
+    when: ({ meta }) => meta.websocket !== null,
+    denied: "note",
+  },
+  {
+    name: "docs ws: a channel's link",
+    row: 'WebSocket try-it, "Open in the Events console"',
+    map: "operation",
+    on: "docs ws: try-it opens the Events console",
+    itemKind: "ws",
+    channelOnly: true,
+    inMode: true,
+    // Filled, and every value held to its x-bun-jobs-schema.
+    when: ({ item }) => typeof item?.address === "string",
+    denied: "disabled",
+  },
 ] as const satisfies readonly Gate[];
+
+/**
+ * Whether the Events console can open `address` in `mode`: the UI's
+ * `parseChannel` scopes, `all` only in `both`.
+ */
+function channelInMode(address: string, mode: MetaDto["mode"]): boolean {
+  const scope = address.split("/")[0]!;
+  const queues = mode !== "runner";
+  const runners = mode !== "jobs";
+  if (scope === "all") {
+    return queues && runners;
+  }
+  if (scope === "queues" || scope === "queue") {
+    return queues;
+  }
+  return (scope === "runners" || scope === "runner") && runners;
+}
 
 /** The name of every gate. */
 type GateName = (typeof GATES)[number]["name"];
@@ -753,6 +980,13 @@ type Gates = Record<GateName, boolean>;
 function mapFor(gate: Gate, inputs: ScreenInputs): PermissionsBody | undefined {
   if (gate.map === "boot") {
     return inputs.boot;
+  }
+  if (gate.map === "operation") {
+    // The untargeted map, but only on a documented item of the gate's kind.
+    return inputs.item !== undefined &&
+      (gate.itemKind === undefined || gate.itemKind === inputs.item.kind)
+      ? inputs.boot
+      : undefined;
   }
   const targeted = gate.map === "queue" ? inputs.queue : inputs.runnerMap;
   if (targeted === "pending") {
@@ -784,8 +1018,82 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
     (gate.mutations ?? []).every(mutable) &&
     (gate.anyMutation === undefined || gate.anyMutation.some(mutable)) &&
     (gate.features ?? []).every((feature) => meta.features[feature]) &&
+    itemAllows(gate, inputs.item, meta, permissions) &&
     (gate.when?.(inputs) ?? true)
   );
+}
+
+/** The verb of an action: `queues.drain` → `drain`. */
+function verbOf(action: string | undefined): string {
+  return action?.split(".").pop() ?? "";
+}
+
+/** Whether a documented item passes the gate's item rules. */
+function itemAllows(
+  gate: Gate,
+  item: DocItem | undefined,
+  meta: MetaDto,
+  permissions: PermissionsBody,
+): boolean {
+  if (gate.map !== "operation") {
+    return true;
+  }
+  if (item === undefined) {
+    return false;
+  }
+  const action = item.action;
+  return (
+    (!gate.channelOnly || item.address !== undefined) &&
+    (!gate.forMutation || item.mutation === true) &&
+    (gate.methods === undefined || gate.methods.includes(item.method ?? "")) &&
+    (!gate.itemMutation || !(item.mutation === true && meta.readOnly)) &&
+    // Reads included: an action the map lacks, or refuses, closes it.
+    (!gate.itemAction ||
+      action === undefined ||
+      (ACTION_NAMES.has(action) &&
+        can(permissions, action as JobsApiAction))) &&
+    (gate.typed === undefined ||
+      gate.typed.methods.includes(item.method ?? "") ||
+      gate.typed.verbs.includes(verbOf(action))) &&
+    (!gate.inMode ||
+      (typeof item.address === "string" &&
+        channelInMode(item.address, meta.mode)))
+  );
+}
+
+/**
+ * What a gate shows: `open`, or when closed, what its `denied` says, but
+ * only while the screen it sits on (`on`, and its item) is itself shown;
+ * otherwise `absent`. A WebSocket marker for an action outside the
+ * contract's list is `unknown`.
+ */
+type GateState = "open" | Denied | "unknown";
+
+/** One gate's state, for one screen. */
+function gateState(gate: Gate, inputs: ScreenInputs): GateState {
+  if (isOpen(gate, inputs)) {
+    return "open";
+  }
+  const screen = GATES.find((other: Gate) => other.name === gate.on);
+  const onScreen =
+    (screen === undefined || isOpen(screen, inputs)) &&
+    mapFor(gate, inputs) !== undefined &&
+    (!gate.channelOnly || inputs.item?.address !== undefined);
+  if (!onScreen) {
+    return "absent";
+  }
+  const action = inputs.item?.action;
+  if (gate.unknownAction && action !== undefined && !ACTION_NAMES.has(action)) {
+    return "unknown";
+  }
+  return gate.denied ?? "absent";
+}
+
+/** Every gate's state, by name. */
+function screenStates(inputs: ScreenInputs): Record<GateName, GateState> {
+  return Object.fromEntries(
+    GATES.map((gate) => [gate.name, gateState(gate, inputs)]),
+  ) as Record<GateName, GateState>;
 }
 
 /**
@@ -855,15 +1163,29 @@ async function readmeGatingTable(): Promise<ReadmeRow[]> {
   return rows;
 }
 
-/** Every routed action name, to pick actions out of the README's prose. */
-const ACTION_NAMES: ReadonlySet<string> = new Set(JOBS_API_ACTIONS);
-
 /** The values `meta.mode` takes. */
 const MODES: ReadonlySet<string> = new Set(["jobs", "runner", "both"]);
 
-/** What a "Needs" cell (or a row's gates) asks for, as comparable lists. */
-function needsOfCell(needs: string) {
-  const codes = [...needs.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
+/** HTTP methods, to pick them out of the README's prose. */
+const METHOD_NAMES: ReadonlySet<string> = new Set(CLIENT_METHODS);
+
+/** Destructive verbs, likewise. */
+const VERB_NAMES: ReadonlySet<string> = new Set(DESTRUCTIVE_VERBS);
+
+/**
+ * What a row's cells ask for, as comparable lists. `element` is the
+ * "Element" cell, which is where a marker row names its "You lack".
+ */
+function needsOfCell(needs: string, element: string) {
+  // "`sections.manage` is not needed" names a section in order to exclude it.
+  const notNeeded = [...needs.matchAll(/`sections\.(\w+)` is not needed/g)].map(
+    (match) => match[1]!,
+  );
+  const codes = [...needs.matchAll(/`([^`]+)`/g)]
+    .map((match) => match[1]!)
+    .filter(
+      (code) => !notNeeded.some((section) => code === `sections.${section}`),
+    );
   const mode = codes.indexOf("meta.mode");
   return {
     // A cell may name an action twice ("`jobs.read` ... never without
@@ -894,6 +1216,21 @@ function needsOfCell(needs: string) {
       .sort(),
     mutation: /\bmutation\b/.test(needs),
     extendsAbove: needs.startsWith("the above"),
+    notNeeded: notNeeded.sort(),
+    // "`meta.mode` offers": the mode decides, without naming its values.
+    namesMode: mode !== -1,
+    methods: [
+      ...new Set(codes.filter((code) => METHOD_NAMES.has(code))),
+    ].sort(),
+    verbs: codes.filter((code) => VERB_NAMES.has(code)).sort(),
+    extensions: [
+      ...new Set(codes.filter((code) => code.startsWith("x-bun-jobs-"))),
+    ].sort(),
+    // Whether the element stays on screen when it is not allowed: disabled
+    // with a reason, a note in its place, or a "You lack" marker. Every
+    // other row's element is absent.
+    shownWhenDenied:
+      /\bdisabled\b|\ba note\b/.test(needs) || element.includes("You lack"),
   };
 }
 
@@ -916,9 +1253,31 @@ function needsOfGates(gates: readonly Gate[]) {
     mutation: gates.some(
       (gate) =>
         (gate.mutations ?? []).length > 0 ||
-        (gate.anyMutation ?? []).length > 0,
+        (gate.anyMutation ?? []).length > 0 ||
+        gate.itemMutation === true ||
+        gate.forMutation === true,
     ),
     extendsAbove: gates.some((gate) => gate.extends !== undefined),
+    notNeeded: unique(gates.flatMap((gate) => gate.notNeeded ?? [])),
+    namesMode: gates.some(
+      (gate) => gate.modes !== undefined || gate.inMode === true,
+    ),
+    methods: unique(
+      gates.flatMap((gate) => [
+        ...(gate.methods ?? []),
+        ...(gate.typed?.methods ?? []),
+      ]),
+    ),
+    verbs: unique(gates.flatMap((gate) => gate.typed?.verbs ?? [])),
+    extensions: unique(
+      gates.flatMap((gate) => [
+        ...(gate.itemAction ? ["x-bun-jobs-action"] : []),
+        ...(gate.itemMutation ? ["x-bun-jobs-mutation"] : []),
+      ]),
+    ),
+    shownWhenDenied: gates.some(
+      (gate) => (gate.denied ?? "absent") !== "absent",
+    ),
   };
 }
 
@@ -933,17 +1292,20 @@ for (const row of readme) {
   const gates: Gate[] = GATES.filter((gate: Gate) => gate.row === row.element);
   checkEqual(
     `README "${row.element}" needs what GATES says`,
-    needsOfCell(row.needs),
+    needsOfCell(row.needs, row.element),
     needsOfGates(gates),
   );
 }
 checkEqual(
-  'a row the README calls "(untargeted)" is decided on the boot map',
+  'a row the README calls "untargeted" is decided on the untargeted map',
   readme
-    .filter((row) => row.needs.includes("(untargeted)"))
+    .filter((row) => row.needs.includes("untargeted"))
     .filter((row) =>
       GATES.some(
-        (gate: Gate) => gate.row === row.element && gate.map !== "boot",
+        (gate: Gate) =>
+          gate.row === row.element &&
+          gate.map !== "boot" &&
+          gate.map !== "operation",
       ),
     )
     .map((row) => row.element),
@@ -1165,14 +1527,26 @@ checkEqual(
   [false, false, false],
 );
 
+/** What {@link otherHost} read from a second API. */
+interface OtherHost {
+  /** Its `GET /meta`. */
+  meta: MetaDto;
+  /** Its untargeted `GET /meta/permissions`. */
+  boot: PermissionsBody;
+  /** Its OpenAPI document, when `meta.docs` names one. */
+  openapi?: SpecDocument;
+  /** Its AsyncAPI document, when `meta.docs` names one. */
+  asyncapi?: SpecDocument;
+}
+
 /**
  * A second API over the same jobs, answered through the real pipeline: its
- * `/meta` and untargeted `/meta/permissions`.
+ * `/meta`, untargeted `/meta/permissions` and the docs `/meta` names.
  */
 async function otherHost(
   basePath: string,
   options: Partial<Parameters<typeof createJobsApi>[0]>,
-): Promise<{ meta: MetaDto; boot: PermissionsBody }> {
+): Promise<OtherHost> {
   const other = createJobsApi({
     jobs,
     basePath,
@@ -1185,10 +1559,22 @@ async function otherHost(
   otherApp.use(other.basePath, other.router);
   const read = async <T>(path: string) =>
     (await (await otherApp.fetch(`${basePath}${path}`)).json()) as T;
-  const answer = {
+  const answer: OtherHost = {
     meta: await read<MetaDto>("/meta"),
     boot: await read<PermissionsBody>("/meta/permissions"),
   };
+  // The documents' paths are full paths, basePath included.
+  const docs = answer.meta.docs;
+  if (docs !== null) {
+    answer.openapi = await read<SpecDocument>(
+      docs.openapi.slice(basePath.length),
+    );
+    if (docs.asyncapi !== undefined) {
+      answer.asyncapi = await read<SpecDocument>(
+        docs.asyncapi.slice(basePath.length),
+      );
+    }
+  }
   await other.close();
   return answer;
 }
@@ -1240,6 +1626,530 @@ checkEqual(
     screenGates({ meta: socketless.meta, sections, boot: socketless.boot }),
   ),
   [false, false, false],
+);
+
+/* ------------------------------------------------------------------ */
+step("The API docs: meta.docs, docs.read, and each operation's page");
+
+// The API serves both documents unless built with `docs: false`, and names
+// them in /meta by their full paths. `docs.read` guards them, and like the
+// nav entries it is asked untargeted.
+checkEqual("meta.docs names both documents, under the basePath", meta.docs, {
+  openapi: `${api.basePath}/openapi.json`,
+  asyncapi: `${api.basePath}/asyncapi.json`,
+});
+checkEqual(
+  "docs.read is in the untargeted map, and true; meta.readOnly is false",
+  [boot.actions["docs.read"], meta.readOnly],
+  [true, false],
+);
+
+/** The three docs screens' gates: the nav entry, the HTTP and the WebSocket reference. */
+const DOCS_GATES = [
+  "Docs: nav and /docs*",
+  "docs: HTTP reference and its card",
+  "docs: WebSocket reference and its card",
+] as const satisfies readonly GateName[];
+
+/** The docs screens' gates in `set`, in {@link DOCS_GATES}' order. */
+function docsGates(set: Gates): boolean[] {
+  return DOCS_GATES.map((name) => set[name]);
+}
+
+checkEqual(
+  "so the API docs entry and both references are on",
+  docsGates(screenGates({ meta, sections, boot })),
+  [true, true, true],
+);
+checkEqual(
+  "a docs-only UI (sections.manage off) keeps every one: manage is not needed",
+  docsGates(
+    screenGates({ meta, sections: { manage: false, docs: true }, boot }),
+  ),
+  [true, true, true],
+);
+checkEqual(
+  "sections.docs off removes them all",
+  docsGates(
+    screenGates({ meta, sections: { manage: true, docs: false }, boot }),
+  ),
+  [false, false, false],
+);
+// The socketless host above: no socket, so no AsyncAPI document, and /meta
+// leaves the key out rather than sending null.
+checkEqual(
+  "websocket: false → meta.docs has openapi only (asyncapi absent, not null)",
+  [
+    socketless.meta.docs?.openapi,
+    socketless.meta.docs !== null && "asyncapi" in socketless.meta.docs,
+  ],
+  ["/socketless-api/openapi.json", false],
+);
+checkEqual(
+  "so the HTTP reference stays, and /docs/ws has no reference, only its note",
+  docsGates(
+    screenGates({ meta: socketless.meta, sections, boot: socketless.boot }),
+  ),
+  [true, true, false],
+);
+const docless = await otherHost("/docless-api", { docs: false });
+checkEqual(
+  "docs: false → meta.docs null, and docs.read absent from the map, not false",
+  [docless.meta.docs, "docs.read" in docless.boot.actions],
+  [null, false],
+);
+checkEqual(
+  "so no API docs entry at all",
+  docsGates(screenGates({ meta: docless.meta, sections, boot: docless.boot })),
+  [false, false, false],
+);
+const docsRefused = await otherHost("/no-docs-api", {
+  authorize: (_req, ctx) =>
+    ctx.action === "docs.read"
+      ? { allow: false, reason: "no docs for you" }
+      : true,
+});
+checkEqual(
+  "authorize refuses docs.read: meta.docs is still set, docs.read false, no entry",
+  [
+    docsRefused.meta.docs !== null,
+    docsRefused.boot.actions["docs.read"],
+    docsGates(
+      screenGates({
+        meta: docsRefused.meta,
+        sections,
+        boot: docsRefused.boot,
+      }),
+    ),
+  ],
+  [true, false, [false, false, false]],
+);
+
+/** A spec document as JSON. */
+type SpecDocument = Record<string, unknown>;
+
+/** A value as a plain object, or `undefined`. */
+function objectOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Every operation of an OpenAPI document, by operationId, as a {@link DocItem}. */
+function httpItems(document: SpecDocument): Map<string, DocItem> {
+  const items = new Map<string, DocItem>();
+  for (const pathItem of Object.values(objectOf(document.paths) ?? {})) {
+    for (const [method, value] of Object.entries(objectOf(pathItem) ?? {})) {
+      const operation = objectOf(value);
+      if (typeof operation?.operationId !== "string") {
+        continue; // `parameters`, `summary`: not an operation.
+      }
+      items.set(operation.operationId, {
+        kind: "http",
+        method: method.toUpperCase(),
+        action: operation["x-bun-jobs-action"] as string | undefined,
+        mutation: operation["x-bun-jobs-mutation"] === true,
+      });
+    }
+  }
+  return items;
+}
+
+const openapi = (await (
+  await app.fetch(meta.docs!.openapi)
+).json()) as SpecDocument;
+const operations = httpItems(openapi);
+show(`GET ${meta.docs!.openapi}: operations`, operations.size);
+
+/** The four gates of an HTTP operation's page. */
+const HTTP_GATES = [
+  "docs http: permission marker (You have)",
+  "docs http: try-it Send",
+  "docs http: try-it asks first",
+  "docs http: try-it needs the operationId typed",
+] as const satisfies readonly GateName[];
+
+/** An HTTP operation's page, for one caller: marker, Send, asks first, typed. */
+function operationPage(
+  id: string,
+  inputs: Omit<ScreenInputs, "item"> = { meta, sections, boot },
+): GateState[] {
+  const states = screenStates({ ...inputs, item: operations.get(id)! });
+  return HTTP_GATES.map((name) => states[name]);
+}
+
+checkEqual(
+  "every operation names an action the contract knows, and a method the client sends",
+  [...operations]
+    .filter(
+      ([, item]) =>
+        !ACTION_NAMES.has(item.action ?? "") ||
+        !METHOD_NAMES.has(item.method ?? ""),
+    )
+    .map(([id]) => id),
+  [],
+);
+checkEqual(
+  "and x-bun-jobs-mutation is exactly the contract's JOBS_API_MUTATIONS",
+  [...operations]
+    .filter(
+      ([, item]) =>
+        item.mutation !== JOBS_API_MUTATIONS.has(item.action as JobsApiAction),
+    )
+    .map(([id]) => id),
+  [],
+);
+
+// This caller's untargeted map says no to every mutation (the per-queue
+// answer is what says yes), so the docs show every mutation's Send
+// disabled, with the reason: the one place a denied element is not absent.
+checkEqual(
+  "GET getQueue: You have, Send enabled, no confirmation",
+  operationPage("getQueue"),
+  ["open", "open", "absent", "absent"],
+);
+checkEqual(
+  "POST pauseQueue: You lack, Send DISABLED (not absent), asks first, nothing typed",
+  operationPage("pauseQueue"),
+  ["lack", "disabled", "open", "absent"],
+);
+checkEqual(
+  "DELETE removeJob: You lack, Send disabled, asks first and needs removeJob typed",
+  operationPage("removeJob"),
+  ["lack", "disabled", "open", "open"],
+);
+
+/** The operationIds whose gate `name` is open, for `inputs`. */
+function operationsWhere(
+  name: GateName,
+  inputs: Omit<ScreenInputs, "item">,
+): string[] {
+  return [...operations.keys()]
+    .filter(
+      (id) =>
+        screenStates({ ...inputs, item: operations.get(id)! })[name] === "open",
+    )
+    .sort();
+}
+
+checkEqual(
+  "every mutation asks first, and only mutations",
+  operationsWhere("docs http: try-it asks first", { meta, sections, boot }),
+  [...operations]
+    .filter(([, item]) => item.mutation)
+    .map(([id]) => id)
+    .sort(),
+);
+checkEqual(
+  "a DELETE, or a remove / drain / clean / kill, needs its operationId typed",
+  operationsWhere("docs http: try-it needs the operationId typed", {
+    meta,
+    sections,
+    boot,
+  }),
+  [
+    "cleanQueue",
+    "drainQueue",
+    "killRunner",
+    "removeJob",
+    "removeJobs",
+    "removeRepeatable",
+  ],
+);
+
+// A caller whose untargeted map says yes to everything can send every one.
+const permissive = await otherHost("/open-api", {
+  actions: [...JOBS_API_ACTIONS],
+});
+checkEqual(
+  "a caller holding every action: every Send enabled (reads and mutations)",
+  [...operations.keys()].filter(
+    (id) =>
+      operationPage(id, {
+        meta: permissive.meta,
+        sections,
+        boot: permissive.boot,
+      })[1] !== "open",
+  ),
+  [],
+);
+
+// A read-only API prunes its mutation routes, and its document describes
+// only the routes it registered: so no Send is ever disabled *for being
+// read-only* against a real API. The rule is still the UI's; shown here on
+// a mutation a document might carry (the package's own tests use a fixture).
+const readOnlyHost = await otherHost("/ro-docs-api", {
+  readOnly: true,
+  actions: [...JOBS_API_ACTIONS],
+});
+checkEqual(
+  "readOnly: meta.readOnly true, and its OpenAPI documents no mutation at all",
+  [
+    readOnlyHost.meta.readOnly,
+    [...httpItems(readOnlyHost.openapi!).values()].filter(
+      (item) => item.mutation,
+    ).length,
+  ],
+  [true, 0],
+);
+checkEqual(
+  "the rule: on a read-only API a mutation's Send is disabled, even with the action",
+  operationPage("removeJob", {
+    meta: readOnlyHost.meta,
+    sections,
+    boot: permissive.boot,
+  })[1],
+  "disabled",
+);
+checkEqual(
+  "with sections.docs off there is no page: Send is absent, not disabled",
+  operationPage("pauseQueue", {
+    meta,
+    sections: { manage: true, docs: false },
+    boot,
+  }),
+  ["absent", "absent", "absent", "absent"],
+);
+
+/** The AsyncAPI document's channels and operations, as {@link DocItem}s. */
+function wsItems(document: SpecDocument) {
+  const channels = new Map<
+    string,
+    {
+      /** The address template, e.g. `queue/{queue}`. */
+      address: string;
+      /** Each parameter's `x-bun-jobs-schema`, if any. */
+      schemas: Record<
+        string,
+        { pattern?: string; maxLength?: number } | undefined
+      >;
+    }
+  >();
+  for (const [key, value] of Object.entries(
+    objectOf(document.channels) ?? {},
+  )) {
+    const channel = objectOf(value)!;
+    channels.set(key, {
+      address: String(channel.address ?? ""),
+      schemas: Object.fromEntries(
+        Object.entries(objectOf(channel.parameters) ?? {}).map(
+          ([name, parameter]) => [
+            name,
+            objectOf(objectOf(parameter)?.["x-bun-jobs-schema"]) as
+              | { pattern?: string; maxLength?: number }
+              | undefined,
+          ],
+        ),
+      ),
+    });
+  }
+  const actions = Object.entries(objectOf(document.operations) ?? {}).map(
+    ([key, value]) => [key, objectOf(value)?.["x-bun-jobs-action"]] as const,
+  );
+  return { channels, actions };
+}
+
+const asyncapi = (await (
+  await app.fetch(meta.docs!.asyncapi!)
+).json()) as SpecDocument;
+const ws = wsItems(asyncapi);
+show(
+  `GET ${meta.docs!.asyncapi}: channels, and each operation's x-bun-jobs-action`,
+  {
+    channels: [...ws.channels.keys()],
+    operations: Object.fromEntries(ws.actions),
+  },
+);
+
+/**
+ * A channel's address filled the way try-it fills it: each value held to its
+ * parameter's `x-bun-jobs-schema`, the job id escaped with `encodeJobId`.
+ * `null` while a value is empty or refused; `null` for the connection
+ * (`address` "/"), which has no link.
+ */
+function fillChannel(
+  key: string,
+  values: Record<string, string>,
+): string | null {
+  const channel = ws.channels.get(key)!;
+  if (!/\{/.test(channel.address) && key === "connection") {
+    return null;
+  }
+  let complete = true;
+  const filled = channel.address.replace(
+    /\{([^}]+)\}/g,
+    (_match, name: string) => {
+      const value = values[name] ?? "";
+      const schema = channel.schemas[name];
+      const refused =
+        value === "" ||
+        (schema?.maxLength !== undefined && value.length > schema.maxLength) ||
+        (schema?.pattern !== undefined &&
+          !new RegExp(schema.pattern).test(value));
+      complete &&= !refused;
+      return name === "jobId" ? encodeJobId(value) : value;
+    },
+  );
+  return complete ? filled : null;
+}
+
+/** A WebSocket channel's page: its try-it's two gates. */
+function channelPage(
+  address: string | null,
+  inputs: Omit<ScreenInputs, "item"> = { meta, sections, boot },
+): GateState[] {
+  const states = screenStates({ ...inputs, item: { kind: "ws", address } });
+  return [
+    states["docs ws: try-it opens the Events console"],
+    states["docs ws: a channel's link"],
+  ];
+}
+
+checkEqual(
+  "every WebSocket operation's action is one the UI knows, and this caller has it",
+  ws.actions
+    .filter(
+      ([, action]) =>
+        screenStates({
+          meta,
+          sections,
+          boot,
+          item: { kind: "ws", action: String(action) },
+        })["docs ws: permission marker (You have this)"] !== "open",
+    )
+    .map(([key]) => key),
+  [],
+);
+checkEqual(
+  "an action the UI does not know: its own marker, not You lack this",
+  screenStates({
+    meta,
+    sections,
+    boot,
+    item: { kind: "ws", action: "events.teleport" },
+  })["docs ws: permission marker (You have this)"],
+  "unknown",
+);
+checkEqual(
+  "on the host refusing events.connect: the connect marker reads You lack this",
+  screenStates({
+    meta: refused.meta,
+    sections,
+    boot: refused.boot,
+    item: { kind: "ws", action: "events.connect" },
+  })["docs ws: permission marker (You have this)"],
+  "lack",
+);
+checkEqual(
+  "queue/{queue} with mail → queue/mail, and the link opens",
+  [
+    fillChannel("queue", { queue: "mail" }),
+    channelPage(fillChannel("queue", { queue: "mail" })),
+  ],
+  ["queue/mail", ["open", "open"]],
+);
+checkEqual(
+  "a job id is escaped with encodeJobId: a/b → a%2Fb",
+  fillChannel("job", { queue: "mail", jobId: "a/b" }),
+  "queue/mail/job/a%2Fb",
+);
+checkEqual(
+  "a name its x-bun-jobs-schema refuses (..), or none: the link is DISABLED, with the reason",
+  [
+    channelPage(fillChannel("queue", { queue: ".." })),
+    channelPage(fillChannel("queue", {})),
+  ],
+  [
+    ["open", "disabled"],
+    ["open", "disabled"],
+  ],
+);
+checkEqual(
+  "the connection has no link: disabled too, as the page shows it",
+  channelPage(fillChannel("connection", {})),
+  ["open", "disabled"],
+);
+checkEqual(
+  "a runner channel where meta.mode offers none (mode jobs): disabled",
+  channelPage(fillChannel("runner", { runner: "nightly" }), {
+    meta: { ...meta, mode: "jobs" },
+    sections,
+    boot,
+  }),
+  ["open", "disabled"],
+);
+checkEqual(
+  "without the Events console (docs-only, or events.connect refused): a note, and no link",
+  [
+    channelPage(fillChannel("queue", { queue: "mail" }), {
+      meta,
+      sections: { manage: false, docs: true },
+      boot,
+    }),
+    channelPage(fillChannel("queue", { queue: "mail" }), {
+      meta: refused.meta,
+      sections,
+      boot: refused.boot,
+    }),
+  ],
+  [
+    ["note", "absent"],
+    ["note", "absent"],
+  ],
+);
+checkEqual(
+  "a WebSocket operation's page has no try-it at all",
+  channelPage(null, { meta, sections, boot }).length === 2 &&
+    screenStates({
+      meta,
+      sections,
+      boot,
+      item: { kind: "ws", action: "events.subscribe" },
+    })["docs ws: try-it opens the Events console"],
+  "absent",
+);
+
+// Disabled against absent, both ways, over every screen this step built:
+// outside the docs a closed gate is always absent; inside, a denied docs
+// element on a shown page is always there, disabled, a note or a marker.
+const scenarios: ScreenInputs[] = [
+  { meta, sections, boot },
+  { meta, sections: { manage: false, docs: true }, boot },
+  { meta: refused.meta, sections, boot: refused.boot },
+  { meta: socketless.meta, sections, boot: socketless.boot },
+  { meta: docless.meta, sections, boot: docless.boot },
+].flatMap((inputs) => [
+  inputs,
+  ...[...operations.values()].map((item) => ({ ...inputs, item })),
+  ...["queue", "connection"].map((key) => ({
+    ...inputs,
+    item: { kind: "ws" as const, address: fillChannel(key, { queue: "mail" }) },
+  })),
+]);
+checkEqual(
+  `over ${scenarios.length} screens: a gate that is absent when denied is never shown disabled`,
+  scenarios.flatMap((inputs) =>
+    GATES.filter((gate: Gate) => (gate.denied ?? "absent") === "absent")
+      .filter((gate) => !["open", "absent"].includes(gateState(gate, inputs)))
+      .map((gate) => gate.name),
+  ),
+  [],
+);
+checkEqual(
+  "and a docs element denied on its shown page is never absent",
+  scenarios.flatMap((inputs) =>
+    GATES.filter((gate: Gate) => (gate.denied ?? "absent") !== "absent")
+      .filter((gate: Gate) => {
+        const screen = GATES.find((other: Gate) => other.name === gate.on);
+        const shown =
+          (screen === undefined || isOpen(screen, inputs)) &&
+          mapFor(gate, inputs) !== undefined &&
+          (!gate.channelOnly || inputs.item?.address !== undefined);
+        return shown && gateState(gate, inputs) === "absent";
+      })
+      .map((gate) => gate.name),
+  ),
+  [],
 );
 
 /* ------------------------------------------------------------------ */
