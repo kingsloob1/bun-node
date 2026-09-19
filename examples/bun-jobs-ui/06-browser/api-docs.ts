@@ -15,11 +15,11 @@
  *
  * Three hosts over one set of jobs, each an API and the UI on its own port:
  *
- * | Host         | API                                      | UI                   |
- * |--------------|------------------------------------------|----------------------|
- * | `full`       | a socket; `authorize` refuses `queues.clean` | every section    |
- * | `docsOnly`   | as `full`                                | `sections: { manage: false }` |
- * | `socketless` | `websocket: false`, so no AsyncAPI document | every section     |
+ * | Host         | API                                                   | UI                            |
+ * |--------------|-------------------------------------------------------|-------------------------------|
+ * | `full`       | a socket; `authorize` refuses `queues.clean` and rate-limits the queue `throttled`; `addableNames: ["send-email"]` | every section |
+ * | `docsOnly`   | as `full`                                             | `sections: { manage: false }` |
+ * | `socketless` | `websocket: false`, so no AsyncAPI document           | every section                 |
  *
  * What it shows:
  *
@@ -31,14 +31,26 @@
  * - **Every operation carries a permission marker** (`op-permission`, with
  *   `data-allowed`): "You have `queues.read`", "You lack `queues.clean`",
  *   from the untargeted `/meta/permissions`.
- * - **Try-it sends through the app's client.** A GET runs at once and shows
- *   the parsed body. The status it shows on success is the **documented**
- *   one (the client returns the body, not the response), while a failure's
- *   status and problem `code` are the real ones: a queue that does not exist
- *   shows `404` and `QUEUE_NOT_FOUND`.
- * - **Every mutation asks first.** Pause asks with a plain confirmation;
- *   Drain, a `drain` verb, also needs its operationId typed before its
- *   confirm button enables. Sent, it drains the queue for real.
+ * - **Try-it shows the real response**, sent through the app's client
+ *   (`requestRaw`): the status received and its status text, the timing, the
+ *   headers the browser lets the page see (`tryit-headers`, one
+ *   `data-header` row each, `content-type` among them whenever there is a
+ *   body), and the body. Every expected status is read from the OpenAPI
+ *   document the API serves, not assumed: `getQueue` answers `200`,
+ *   `addJob` `201` for a job it adds and `200` for a `jobId` it already has,
+ *   `removeJob` `204` with no body. An error status is a response too: a
+ *   queue that does not exist shows `404`, its problem code
+ *   `QUEUE_NOT_FOUND`, and the problem banner.
+ * - **An undocumented status gets a note** (`tryit-documented`: "Not a
+ *   documented status. Documented success: 200."), and a documented one,
+ *   error or not, gets none. The undocumented status is a real one: this
+ *   host's `authorize` rate-limits the queue `throttled` by throwing an error
+ *   with `status: 429`, and `createJobsApi` answers `429 RATE_LIMITED`,
+ *   which `getQueue` does not document.
+ * - **Every mutation asks first.** Pause and Add ask with a plain
+ *   confirmation; Drain (a `drain` verb) and Remove (a `DELETE`) also need
+ *   their operationId typed before the confirm button enables. Sent, they
+ *   change the queue for real, and the API is read back to show it.
  * - **A try-it the caller may not send is disabled, with the reason**, not
  *   hidden: on `cleanQueue`, whose `queues.clean` this `authorize` refuses,
  *   `tryit-disabled` says "You do not have the queues.clean permission." and
@@ -106,19 +118,41 @@ const jobs = new BunJobs({
   driver: new MemoryDriver(),
   logger: noopLogger,
 });
-// Three waiting jobs, for Drain to remove.
+/** The job name try-it adds, and the one name this API lets it add. */
+const JOB_NAME = "send-email";
+
+// Three waiting jobs: `removeJob` removes "one", and Drain the rest.
 for (const id of ["one", "two", "three"]) {
-  await jobs.queue(QUEUE).add("send-email", { id }, { jobId: id });
+  await jobs.queue(QUEUE).add(JOB_NAME, { id }, { jobId: id });
 }
+
+/**
+ * A queue name this host's `authorize` rate-limits, so a real request gets a
+ * status its operation does not document.
+ */
+const THROTTLED = "throttled";
 
 /**
  * Every read, and every mutation but `queues.clean`: so `cleanQueue`'s
  * try-it is disabled with its reason, and the rest can be sent.
+ *
+ * It also stands in for a rate limiter in the auth hook: an HTTP request
+ * about the queue `throttled` throws an error carrying `status: 429`. A
+ * throwing `authorize` propagates, and the API answers the status the error
+ * names (`429`, code `RATE_LIMITED`), which no operation documents. That is
+ * how a real `createJobsApi` answers an undocumented status here: nothing in
+ * the page or the response is altered.
  */
-const authorize: JobsApiAuthorize = (_req, ctx) =>
-  ctx.action === "queues.clean"
+const authorize: JobsApiAuthorize = (_req, ctx) => {
+  if (ctx.transport === "http" && ctx.queue === THROTTLED) {
+    throw Object.assign(new Error("Too many requests: try again shortly"), {
+      status: 429,
+    });
+  }
+  return ctx.action === "queues.clean"
     ? { allow: false, reason: "cleaning is for the on-call team" }
     : true;
+};
 
 /** A host: an API and the UI on an adapter of their own, listening. */
 interface Host {
@@ -149,6 +183,9 @@ async function serveHost(
     mode: "both",
     // Every action, the opt-ins included, so every operation is documented.
     actions: [...JOBS_API_ACTIONS],
+    // This context defines no jobs, so by default nothing may be added:
+    // name the one `addJob`'s try-it sends.
+    addableNames: [JOB_NAME],
     authorize,
     ...(options.websocket === false ? { websocket: false as const } : {}),
     logger: noopLogger,
@@ -241,19 +278,25 @@ function subprotocolSource(): string {
   return "not stated; the client default";
 }
 
-/** An operation's documented 2xx statuses, as try-it shows them (`200 / 202`). */
-function documentedSuccess(operationId: string): string {
+/** Every status an operation documents (`default` aside), from the served OpenAPI document. */
+function documentedStatuses(operationId: string): string[] {
   for (const item of Object.values(openapi.paths)) {
     for (const operation of Object.values(item)) {
       if (operation?.operationId === operationId) {
         return Object.keys(operation.responses ?? {})
-          .filter((status) => /^2\d\d$/.test(status))
-          .sort()
-          .join(" / ");
+          .filter((status) => /^\d{3}$/.test(status))
+          .sort();
       }
     }
   }
   throw new Error(`the document has no operation ${operationId}`);
+}
+
+/** An operation's documented 2xx statuses, as try-it's note names them (`200 / 201`). */
+function documentedSuccess(operationId: string): string {
+  return documentedStatuses(operationId)
+    .filter((status) => status.startsWith("2"))
+    .join(" / ");
 }
 
 /** The connection channel's `x-bun-jobs-close-codes`, by code. */
@@ -400,6 +443,78 @@ async function presentEach(selectors: readonly string[]): Promise<boolean[]> {
   return found;
 }
 
+/**
+ * Types `text` into try-it's `index`th input (0 is the first), focusing it
+ * page-side first: an operation with two path parameters has two inputs and
+ * no selector that tells them apart.
+ */
+async function typeIntoInput(index: number, text: string): Promise<void> {
+  await present('[data-testid="tryit"] input');
+  const focused = await view.evaluate<boolean>(`(() => {
+    const input = document.querySelectorAll('[data-testid="tryit"] input')[${index}];
+    if (!input) return false;
+    input.scrollIntoView({ block: "center" });
+    input.focus();
+    return document.activeElement === input;
+  })()`);
+  if (!focused) {
+    throw new Error(`try-it has no input ${index}`);
+  }
+  await view.type(text);
+}
+
+/**
+ * Replaces try-it's JSON body with `json`: the textarea is focused and its
+ * text selected page-side (a Ctrl+A chord is sent as raw key events, which
+ * headless Chrome does not turn into select-all), then `json` is typed over
+ * the selection.
+ */
+async function replaceBody(json: string): Promise<void> {
+  await present('[data-testid="tryit"] textarea');
+  const selected = await view.evaluate<boolean>(`(() => {
+    const area = document.querySelector('[data-testid="tryit"] textarea');
+    if (!area) return false;
+    area.scrollIntoView({ block: "center" });
+    area.focus();
+    area.select();
+    return document.activeElement === area;
+  })()`);
+  if (!selected) {
+    throw new Error("try-it has no body to replace");
+  }
+  await view.type(json);
+}
+
+/**
+ * Page-side: resolves `true` once `selector`'s trimmed text is exactly
+ * `text`, `false` after `ms`. For a status, where "200" must not match a
+ * "201" still showing from the send before.
+ */
+function textIs(selector: string, text: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (element && element.textContent.trim() === ${JSON.stringify(text)}) return resolve(true);
+      if (Date.now() > deadline) return resolve(false);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Try-it's status badge. */
+const STATUS = '[data-testid="tryit-status"]';
+/** Try-it's result. */
+const RESULT = '[data-testid="tryit-result"]';
+/** The problem banner inside the result, shown for an error status. */
+const BANNER = `${RESULT} [role="alert"]`;
+/** The note shown when the status received is not a documented one. */
+const DOCUMENTED = '[data-testid="tryit-documented"]';
+/** The `Content-Type` row of the result's headers. */
+const CONTENT_TYPE_ROW =
+  '[data-testid="tryit-headers"] [data-header="content-type"]';
+
 try {
   /* ---------------------------------------------------------------- */
   step("/docs: an HTTP card and a WebSocket card");
@@ -465,8 +580,11 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
-  step("Try-it on a GET: the body, and the documented status");
+  step("Try-it on a GET: the real response");
 
+  // What the served document says getQueue answers, read, not assumed.
+  const getQueueStatuses = documentedStatuses("getQueue");
+  show("getQueue documents", getQueueStatuses.join(", "));
   await open(full, "/docs/http/getQueue");
   await typeInto('[data-testid="tryit"] input', QUEUE);
   check(
@@ -475,30 +593,35 @@ try {
       button('[data-testid="tryit"]', "Send GET", true),
     ),
   );
+  check("a response arrives", await present(RESULT), pageConsole);
   check(
-    "a response arrives",
-    await present('[data-testid="tryit-result"]'),
-    pageConsole,
-  );
-  checkEqual(
-    `its status is the documented ${documentedSuccess("getQueue")}`,
-    await view.evaluate<string | null>(textOf('[data-testid="tryit-status"]')),
-    documentedSuccess("getQueue"),
+    "its status is the real 200, one getQueue documents",
+    (await view.evaluate<boolean>(textIs(STATUS, "200"))) &&
+      getQueueStatuses.includes("200"),
+    await view.evaluate<string | null>(textOf(STATUS)),
   );
   check(
-    "and the panel says so: the documented status, not the response's",
-    await view.evaluate<boolean>(
-      textIncludes(
-        '[data-testid="tryit-result"]',
-        "The status shown is the documented one",
+    'with its status text ("OK") and its timing',
+    (await view.evaluate<boolean>(textIncludes(RESULT, "OK"))) &&
+      /^\d+ ms$/.test(
+        (await view.evaluate<string | null>(
+          textOf('[data-testid="tryit-timing"]'),
+        )) ?? "",
       ),
-    ),
   );
   check(
     `the body is the queue: it names "${QUEUE}"`,
+    await view.evaluate<boolean>(textIncludes(RESULT, `"${QUEUE}"`)),
+  );
+  check(
+    "tryit-headers has the response's content-type row, application/json",
     await view.evaluate<boolean>(
-      textIncludes('[data-testid="tryit-result"]', `"${QUEUE}"`),
+      textIncludes(CONTENT_TYPE_ROW, "application/json"),
     ),
+  );
+  check(
+    "a documented status: no tryit-documented note, and no banner",
+    !(await present(DOCUMENTED, 0)) && !(await present(BANNER, 0)),
   );
   check(
     "and the snippets show the request, under the API's base",
@@ -510,21 +633,158 @@ try {
     ),
   );
 
-  // A failure's status and code are the real ones.
+  // An error status is a response too: shown, not thrown.
   await open(full, "/docs/http/getQueue");
   await typeInto('[data-testid="tryit"] input', "nope");
   await view.evaluate<boolean>(
     button('[data-testid="tryit"]', "Send GET", true),
   );
   check(
-    "a queue that does not exist: the real 404, and QUEUE_NOT_FOUND",
-    (await view.evaluate<boolean>(
-      textIncludes('[data-testid="tryit-status"]', "404"),
-    )) &&
-      (await view.evaluate<boolean>(
-        textIncludes('[data-testid="tryit-result"]', "QUEUE_NOT_FOUND"),
-      )),
+    "a queue that does not exist: the real 404",
+    await view.evaluate<boolean>(textIs(STATUS, "404")),
     pageConsole,
+  );
+  check(
+    "its problem code, QUEUE_NOT_FOUND, and the banner",
+    (await view.evaluate<boolean>(textIncludes(RESULT, "QUEUE_NOT_FOUND"))) &&
+      (await view.evaluate<boolean>(
+        textIncludes(BANNER, "QUEUE_NOT_FOUND · 404"),
+      )),
+  );
+  check(
+    "the problem body has a content-type row, application/problem+json",
+    await view.evaluate<boolean>(
+      textIncludes(CONTENT_TYPE_ROW, "application/problem+json"),
+    ),
+  );
+  check(
+    "404 is documented for getQueue: no tryit-documented note",
+    getQueueStatuses.includes("404") && !(await present(DOCUMENTED, 0)),
+  );
+
+  // A status getQueue does not document, from the real API: this host's
+  // `authorize` rate-limits the queue "throttled" (see `authorize` above).
+  await open(full, "/docs/http/getQueue");
+  await typeInto('[data-testid="tryit"] input', THROTTLED);
+  await view.evaluate<boolean>(
+    button('[data-testid="tryit"]', "Send GET", true),
+  );
+  check(
+    `"${THROTTLED}": the real 429, which getQueue does not document`,
+    (await view.evaluate<boolean>(textIs(STATUS, "429"))) &&
+      !getQueueStatuses.includes("429"),
+    pageConsole,
+  );
+  check(
+    "with its problem code, RATE_LIMITED, in the banner",
+    await view.evaluate<boolean>(textIncludes(BANNER, "RATE_LIMITED · 429")),
+  );
+  checkEqual(
+    "and tryit-documented names the documented success",
+    await view.evaluate<string | null>(textOf(DOCUMENTED)),
+    `Not a documented status. Documented success: ${documentedSuccess("getQueue")}.`,
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("addJob: the real 201, and 200 when the job already exists");
+
+  const addJobStatuses = documentedStatuses("addJob");
+  show("addJob documents", addJobStatuses.join(", "));
+  await open(full, "/docs/http/addJob");
+  await typeInto('[data-testid="tryit"] input', QUEUE);
+  await replaceBody(
+    JSON.stringify({
+      name: JOB_NAME,
+      data: { id: "four" },
+      opts: { jobId: "four" },
+    }),
+  );
+  await view.evaluate<boolean>(
+    button('[data-testid="tryit"]', "Send POST", true),
+  );
+  check("a confirmation opens", await present(DIALOG));
+  await view.evaluate<boolean>(button(DIALOG, "Send POST", true));
+  check(
+    "sent: the real 201, a job added",
+    (await view.evaluate<boolean>(textIs(STATUS, "201"))) &&
+      addJobStatuses.includes("201"),
+    await view.evaluate<string | null>(textOf(STATUS)),
+  );
+  check(
+    "with a content-type row, and no tryit-documented note",
+    (await present(CONTENT_TYPE_ROW)) && !(await present(DOCUMENTED, 0)),
+  );
+  check(
+    "the API has the job",
+    (await fetch(`${full.origin}${full.apiBase}/queues/${QUEUE}/jobs/four`))
+      .status === 200,
+  );
+  // The same jobId again: not added twice, and the API says so with a 200.
+  await view.evaluate<boolean>(
+    button('[data-testid="tryit"]', "Send POST", true),
+  );
+  await view.evaluate<boolean>(button(DIALOG, "Send POST", true));
+  check(
+    "sent again: the real 200, the existing job, also documented",
+    (await view.evaluate<boolean>(textIs(STATUS, "200"))) &&
+      addJobStatuses.includes("200") &&
+      !(await present(DOCUMENTED, 0)),
+    await view.evaluate<string | null>(textOf(STATUS)),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("removeJob: typed confirmation, then the real 204");
+
+  const removeJobStatuses = documentedStatuses("removeJob");
+  show("removeJob documents", removeJobStatuses.join(", "));
+  await open(full, "/docs/http/removeJob");
+  await typeIntoInput(0, QUEUE);
+  await typeIntoInput(1, "one");
+  check(
+    "the request is DELETE …/queues/mail/jobs/one",
+    await view.evaluate<boolean>(
+      textIncludes(
+        '[data-testid="snippet-curl"]',
+        `${full.apiBase}/queues/${QUEUE}/jobs/one`,
+      ),
+    ),
+  );
+  await view.evaluate<boolean>(
+    button('[data-testid="tryit"]', "Send DELETE", true),
+  );
+  check(
+    'a DELETE is destructive: it asks for "removeJob" typed',
+    await view.evaluate<boolean>(
+      textIncludes(DIALOG, "Type removeJob to confirm"),
+    ),
+  );
+  checkEqual(
+    "and its Send DELETE is disabled until it is",
+    await view.evaluate<boolean | null>(disabledButton(DIALOG, "Send DELETE")),
+    true,
+  );
+  await view.type("removeJob");
+  check(
+    "typed: Send DELETE enables, and is clicked",
+    await view.evaluate<boolean>(button(DIALOG, "Send DELETE", true)),
+  );
+  check(
+    "the real 204, one removeJob documents",
+    (await view.evaluate<boolean>(textIs(STATUS, "204"))) &&
+      removeJobStatuses.includes("204"),
+    pageConsole,
+  );
+  check(
+    'no body ("No body."), so no content-type row, and no note',
+    (await view.evaluate<boolean>(textIncludes(RESULT, "No body."))) &&
+      !(await present(CONTENT_TYPE_ROW, 0)) &&
+      !(await present(DOCUMENTED, 0)),
+  );
+  checkEqual(
+    "and the API no longer has the job",
+    (await fetch(`${full.origin}${full.apiBase}/queues/${QUEUE}/jobs/one`))
+      .status,
+    404,
   );
 
   /* ---------------------------------------------------------------- */
@@ -585,13 +845,9 @@ try {
     await view.evaluate<boolean>(button(DIALOG, "Send POST", true)),
   );
   check(
-    `the result shows the documented ${documentedSuccess("drainQueue")}`,
-    await view.evaluate<boolean>(
-      textIncludes(
-        '[data-testid="tryit-status"]',
-        documentedSuccess("drainQueue"),
-      ),
-    ),
+    "the result shows the real 200, one drainQueue documents",
+    (await view.evaluate<boolean>(textIs(STATUS, "200"))) &&
+      documentedStatuses("drainQueue").includes("200"),
     pageConsole,
   );
   checkEqual(
