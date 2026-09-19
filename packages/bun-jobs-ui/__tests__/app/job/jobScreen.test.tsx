@@ -218,6 +218,29 @@ describe("the job screen", () => {
     expect(page().getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
+  it("shows a malformed job body at once, without retrying it", async () => {
+    // The app's real retry policy: a 5xx would be retried twice, ~1 s then
+    // ~2 s apart, before the error showed. A body that is not a job would be
+    // the same body again, so it is not retried.
+    const { calls } = await renderJobScreen(
+      { body: {} },
+      { retry: true, wait: false },
+    );
+    await waitFor(
+      () => {
+        expect(page().getByText("Could not load the job")).toBeTruthy();
+      },
+      { timeout: 900 },
+    );
+    expect(page().getByText(/Expected a job/)).toBeTruthy();
+    // Past the first retry's delay, still the one request.
+    await settle(1_200);
+    const reads = calls.filter(
+      (call) => call.method === "GET" && call.path === jobApiPath(),
+    );
+    expect(reads).toHaveLength(1);
+  });
+
   it("percent-encodes an id with a slash and a space in every request path", async () => {
     const job = jobFixture("failed", {
       flow: {

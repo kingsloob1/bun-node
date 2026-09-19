@@ -46,6 +46,11 @@ export interface RenderAppOptions {
    * `{ WebSocket: FakeSocket }` (`live/fakes.ts`) to drive it.
    */
   live?: LiveOptions;
+  /**
+   * Retry failed reads with the app's real policy (`shouldRetry`). Defaults
+   * to `false`, so a failure shows at once.
+   */
+  retry?: boolean;
 }
 
 /** Live updates off: the default for {@link renderApp}. */
@@ -58,7 +63,7 @@ export function renderApp(options: RenderAppOptions = {}) {
   const client = createApiClient(config, {
     fetch: options.fetch ?? mock.fetch,
   });
-  const queryClient = createQueryClient({ retry: false });
+  const queryClient = createQueryClient({ retry: options.retry ?? false });
   const result = render(
     <LiveOptionsContext value={options.live ?? LIVE_OFF}>
       <AppProviders

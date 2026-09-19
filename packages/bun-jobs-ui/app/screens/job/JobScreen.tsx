@@ -273,6 +273,10 @@ function JobDetail({ job }: { job: JobDto }) {
       <header className="job-header">
         <div className="job-heading">
           <h1 className="screen-title job-title">
+            {/* Defence in depth: `getJob`'s shape guard already refuses a job
+                whose name is not a string, so the "(invalid)" fallback is
+                unreachable here. In practice only the unguarded list cells
+                show it. */}
             <span className="job-name">{displayText(job.name)}</span>
             <StateBadge state={job.state} />
           </h1>

@@ -42,6 +42,8 @@ export async function renderJobScreen(
     queue?: string;
     /** Wait for the screen to render. Defaults to `true`; turn off under fake timers. */
     wait?: boolean;
+    /** Retry failed reads with the app's real policy. Defaults to `false`. */
+    retry?: boolean;
   } = {},
 ) {
   const id = options.id ?? (isJob(job) ? job.id : "welcome/42 a");
@@ -53,6 +55,7 @@ export async function renderJobScreen(
       [`GET ${jobApiPath(id, queue)}`]: isJob(job) ? { body: job } : job,
       ...options.handlers,
     },
+    retry: options.retry,
   });
   if (options.wait !== false) {
     await page().findByTestId(/job-(screen|not-found)/);

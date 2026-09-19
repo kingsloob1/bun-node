@@ -227,6 +227,10 @@ function RunnerDetail({
       <header className="runner-header">
         <div className="runner-heading">
           <h1 className="screen-title runner-title">
+            {/* Defence in depth: `getRunner`'s shape guard already refuses a
+                runner whose name is not a string, so the "(invalid)" fallback
+                is unreachable here. In practice only the unguarded list cells
+                show it. */}
             {displayText(runner.name)}
           </h1>
           <span

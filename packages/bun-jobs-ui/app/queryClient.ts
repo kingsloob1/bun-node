@@ -11,9 +11,16 @@ const MAX_RETRIES = 2;
 /**
  * Retries network failures and 5xx, never a 4xx: a 401/403/404/400 will not
  * change by asking again, and retrying a 401 delays the sign-in message.
+ * Nor a malformed response (kind `parse`: a 2xx that was not JSON, or not
+ * the shape a detail read needs, `UNEXPECTED_RESPONSE`): the host answered,
+ * and answering the same again would only hold the error back for the
+ * retries' ~3 s of backoff.
  */
 export function shouldRetry(failureCount: number, error: unknown): boolean {
-  if (isApiError(error) && error.status >= 400 && error.status < 500) {
+  if (
+    isApiError(error) &&
+    (error.kind === "parse" || (error.status >= 400 && error.status < 500))
+  ) {
     return false;
   }
   return failureCount < MAX_RETRIES;
