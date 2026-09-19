@@ -95,7 +95,8 @@ through to the host):
 
 The app's routes sit under the UI's `basePath`. A path the caller has no
 route for shows a not-found screen. The queue and job screens arrived in M2,
-the runner screens in M3, live updates and the Events console in M4.
+the runner screens in M3, live updates and the Events console in M4, and the
+API docs in M5.
 
 | Route | What it shows |
 |---|---|
@@ -106,6 +107,11 @@ the runner screens in M3, live updates and the Events console in M4.
 | `/runners` | Every runner in the namespace (`GET /runners`): local ones first, with their name and status, then remote ones by id. Filtered by id or name in the browser, with no paging. Each row links to its runner. |
 | `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. |
 | `/events` | The Events console: a live tail of the API's socket. Pick a channel (`all` in mode `both`, `queues`, one queue from the queue list, one job by queue and id, `runners`, or one runner from the runner list) and filter by event type. Rows show the time, kind and type, the target (linked to its queue or runner), the id (a job links to its screen) and the payload. The log keeps the latest 500 rows, newest first; Pause holds up to 500 more (the rest are counted as dropped) until Resume, and Clear empties it. A channel the server refuses shows its code and reason, and a `gap` shows inline as `gap: <reason>`. When the log is empty it says why: producers not publishing, `events: "local"`, or live updates off. |
+| `/docs` | The API docs landing page: a card for the HTTP reference, and one for the WebSocket reference when the API serves its AsyncAPI document. |
+| `/docs/http` | The HTTP reference, from the API's OpenAPI 3.1 document: a sidebar of operations by tag, searchable, then the document's title, version, description and servers (each resolved against the origin the app talks to, next to the `apiBase` the app sends to), every tag with its operations, and the component schemas, each opening in a side panel. |
+| `/docs/http/:operationId` | One operation: method, path and operationId, the permission marker, whether it is a mutation, its CSRF rules and the driver methods it needs, its parameters, body and responses as schema trees, and its try-it panel. An operationId the document lacks shows "No such operation" (the API prunes operations by its mode, read-only setting and actions). |
+| `/docs/ws` | The WebSocket reference, from the API's AsyncAPI 3.0 document: the title and version, the server (URL, host, path, protocol, subprotocol) and security panels, then a searchable sidebar of the connection's panels, channels, operations, control messages and event messages. With no item, the connection channel is shown. |
+| `/docs/ws/:item` | One item, by slug: `channel-<key>`, `operation-<key>` or `message-<key>` (e.g. `message-queue.completed`), or one of the connection's panels, `limits`, `close-codes` and `upgrade-refusals`. A slug the document has nothing for shows "No such item". |
 
 ### URL parameters
 
@@ -132,6 +138,8 @@ default.
 | `/runners/:runner` | `history` | Runs shown in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The select offers `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter. |
 | `/events` | `channel` | The channel, as the socket names it: `all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encoded id>`, `runners` or `runner/<runner>`. One the API's mode lacks, or a malformed one, falls back to `all` in mode `both`, else `queues` or `runners`. |
 | `/events` | `types` | Event types as a comma list, e.g. `completed,failed`. A name may carry its family, `queue.completed` or `runner.failed`, and is rewritten bare in the URL; a prefixed name counts only on a channel carrying that family. An unknown name, or one the channel cannot carry, is ignored and named in a note above the log, and stays in the URL so the note survives a reload; if nothing is left, every type shows. Absent means every type. |
+| `/docs/http` | `q` | Filters the sidebar, as you type: every whitespace-separated word must appear, ignoring case, in an operation's method, path, operationId, summary or action. Operation links keep it. The tag overview is not filtered. |
+| `/docs/ws` | `q` | Filters the sidebar the same way, over each item's slug, label and hint and its keywords (a channel's address and parameters, an operation's permission, the limit names, the close codes, the refusal statuses and codes). The sidebar's links keep it. |
 
 On the queue screen, changing `state`, `name`, `search` or `order` resets
 `offset` and clears the selection.
@@ -195,6 +203,14 @@ authority, since the map is never asked about one particular job.
 | Events nav entry and `/events` | `sections.manage`, `meta.websocket`, and `events.connect` (untargeted) |
 | Events queue and job channel pickers' queue list | `meta.mode` `jobs` or `both` (the queue and job channels exist only there), and `queues.list` (untargeted); without it, a text box |
 | Events runner channel picker's runner list | `meta.mode` `runner` or `both` (the runner channel exists only there), and `runners.list` (untargeted); without it, a text box |
+| API docs nav entry and every `/docs*` route | `sections.docs`, `meta.docs` (the API routes its docs), and `docs.read` (untargeted); `sections.manage` is not needed |
+| HTTP reference (`/docs/http*`) and its card on `/docs` | `meta.docs.openapi`, which the API sends whenever `meta.docs` is set |
+| WebSocket reference (`/docs/ws*`) and its card on `/docs` | `meta.docs.asyncapi`; without it, `/docs/ws` shows "This API has no live-events socket" and `/docs` shows no WebSocket card |
+| HTTP operation's permission marker, "You have" / "You lack" | the operation's `x-bun-jobs-action`, looked up in the untargeted map |
+| WebSocket channel's and operation's permission markers, "You have this" / "You lack this" | the operation's `x-bun-jobs-action`, looked up in the untargeted map; one the UI does not know shows "Not an action this UI knows" |
+| HTTP try-it Send | the method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `meta.readOnly` false for a mutation (`x-bun-jobs-mutation`); and the operation's `x-bun-jobs-action` (untargeted), reads included. Otherwise the panel is disabled, with the reason shown |
+| HTTP try-it confirmation | every mutation asks first; a `DELETE`, or an action whose verb is `remove`, `drain`, `clean` or `kill`, needs its operationId typed |
+| WebSocket try-it, "Open in the Events console" | the Events nav entry: `sections.manage`, `meta.websocket` and `events.connect` (untargeted); otherwise a note says the console is not available. A channel's link also needs each parameter filled (a queue or runner a valid name), and a channel `meta.mode` offers |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but
@@ -211,6 +227,13 @@ true while a run holds the runner's lock in any process, and only the process
 executing a run can kill it: for a runner registered only elsewhere the API
 answers 409 `RUNNER_NOT_LOCAL`. Nor does `local.status` `running` mean a run
 is in flight (see below).
+
+The docs are the exception to "absent, not disabled": a reference documents
+every operation the API serves, so the try-it panel of one the caller may not
+send is shown disabled, with its reason ("This API is read-only…", "You do not
+have the `<action>` permission."). The permission markers and the try-it gate
+read only the untargeted map, since an operation has no one queue or runner:
+`authorize` may still decide per target, and the API's answer is final.
 
 ### Runners
 
@@ -264,6 +287,83 @@ is in flight (see below).
 - **Reset stats** sets every lifetime counter back to zero, for every
   process. The history is kept.
 
+### API docs
+
+- **Our own viewer.** The references are screens of this app, rendered from
+  the API's OpenAPI 3.1 and AsyncAPI 3.0 documents. No Swagger UI or AsyncAPI
+  bundle is loaded, and nothing comes from a CDN.
+- **The documents come through the app's client.** `meta.docs` gives full
+  paths, which include the API's `basePath`, so each is made relative to
+  `apiBase` (`/jobs-api/openapi.json` → `/openapi.json`) and requested like
+  any other read, with the same credentials and error handling
+  (`app/api/docs.ts`).
+- **Try-it sends through the app's client too**, so the CSRF header and the
+  `Content-Type` rules apply exactly as they do to the app's own buttons. The
+  form is built from the path and query parameters (an enum is a select, an
+  enum array is checkboxes, an array is a comma list sent as repeated keys, a
+  path parameter is percent-encoded as one segment); header parameters are
+  the client's to send. A JSON body starts from the schema's required fields
+  (a default, `const` or first enum value where there is one). The client
+  exposes only the parsed body, not the response's status or headers, so on
+  success the panel shows the **documented** success status, not the one
+  received. On failure the status and problem `code` are real, with the
+  problem body below; a network failure shows "No response". The time taken
+  is shown either way. A successful mutation refetches every query outside
+  the docs, so the rest of the app shows what it changed.
+- **CSRF, stated per operation.** A mutation's `x-bun-jobs-csrf` is shown:
+  the header it must carry and whether the app sends it, and, when the API
+  requires it, `Content-Type: application/json` even with no body (415
+  otherwise). When the UI's
+  `csrfHeader` differs from the one the API asks for, or is unset, try-it
+  says the API will refuse it with 403 `CSRF_REJECTED`.
+- **Snippets.** Beside the form, `curl` and `fetch()` tabs show the exact
+  request the form would send: the same URL under `apiBase`, the client's
+  headers (`Accept`, `Content-Type` on `POST`/`PUT`/`PATCH`, the CSRF header
+  on mutations) and the body. The `fetch()` call uses
+  `credentials: "same-origin"`; the `curl` one notes that the browser also
+  sends its cookies.
+- **Schema trees.** Parameters, bodies, responses and payloads are expandable
+  trees showing each field's name, required marker, type, constraints and
+  description. A `$ref` shows its name and expands in place; on the HTTP
+  reference the name also opens that schema in a side panel. A `$ref`
+  already open above a node is marked `recursive` and not expanded again, so
+  a cyclic schema renders finitely. `additionalProperties: false` reads "No
+  other fields: any field not listed is refused."
+- **The WebSocket reference's panels** come from the document's extensions:
+  Limits from `x-bun-jobs-limits` (with the replay setting in words), Close
+  codes from `x-bun-jobs-close-codes`, and Upgrade refusals from
+  `x-bun-jobs-upgrade-refusals`, each with its status, code, content type and
+  headers. The refusals panel notes that a browser never sees them: its
+  `WebSocket` reports only a close with code 1006.
+- **Security notes.** With no security scheme declared, the panel says the
+  host's `authorize` decides, on the upgrade (`events.connect`) and on each
+  subscription (`events.subscribe`), and that a browser sends its cookies
+  with the upgrade. Otherwise it lists the requirements (any one suffices)
+  and, per scheme, what a browser cannot send. A requirement naming several
+  schemes exists only in `x-bun-jobs-security`, since AsyncAPI 3 lists one
+  scheme per requirement; the panel shows that list and says so.
+- **Try-it on the socket** opens the Events console. A channel's panel fills
+  its address from the fields you type, the job id escaped with the
+  contract's `encodeJobId` (as the live client names job channels), and
+  links to `/events?channel=<address>`, adding `types` only when the channel
+  carries a subset of the types the console offers for it. An event
+  message's links to its kind's broad channel (`queues` or `runners`, else
+  `all`) with `types=<type>`.
+- **The subprotocol** is read from `x-bun-jobs-subprotocol` (on
+  `servers.api`, else the connection channel). An older API that states it
+  only in the connection channel's description is read from that prose, and
+  a document saying nothing falls back to the client contract's
+  `bun-jobs.v1` (the panel says which).
+- **Message examples.** Each message's `examples` are shown on its pane:
+  name, summary and the frame as JSON, with a button copying it. An event
+  example shows its `event.payload` first, highlighted, then the whole frame.
+- **Parameter schemas.** A channel parameter's `x-bun-jobs-schema` (AsyncAPI
+  3.0 parameters have no `schema` field) is drawn as a schema tree beside its
+  description, and try-it holds a queue or runner name to it: a name failing
+  its `pattern` or `maxLength` disables "Open in the Events console", with
+  the reason. An older API without the extension is held to the client
+  contract's name rule instead.
+
 ### Refreshing
 
 When the UI manages anything (`sections.manage`), the API has a socket
@@ -272,7 +372,8 @@ publish events (not `events: "local"` with `publishing: false`), the app
 keeps one WebSocket open (subprotocol `bun-jobs.v1`) and each screen
 subscribes to the channels it shows. A docs-only UI (`sections.manage`
 false) has no live screen, so it opens no socket, and its status is off:
-"Live updates are off: this UI shows documentation only". Events
+"Live updates are off: this UI shows documentation only", and the badge
+reads "Live off". Events
 are hints: they are coalesced (about 250 ms) into refetches of the narrowest
 queries, and a `gap` refetches everything on its channels. A screen
 subscribes only while its own read is allowed, and on the queue, job and
@@ -319,7 +420,9 @@ children (a child's events are on its own channel).
 | A runner's history | 15 s |
 
 Every read also refreshes when the window regains focus. `/meta` and the
-permission maps are not polled.
+permission maps are not polled. Nor are the OpenAPI and AsyncAPI documents:
+each is read once and kept for the session (it never goes stale, so focus
+does not refetch it either).
 
 The header badge says which it is: `Live`; `Connecting…`; `Reconnecting…`
 (a warning, with the reason in its tooltip); or `Polling 5s` when live
@@ -343,8 +446,7 @@ These `data-testid` hooks are stable:
 
 - App: `app-ready` (the frame, once `/meta` and the permissions loaded),
   `bootstrap-loading`, `bootstrap-error`, `live-status` (with `data-state`:
-  `off`, `connecting`, `live`, `reconnecting` or `refused`), `not-found`,
-  `placeholder`.
+  `off`, `connecting`, `live`, `reconnecting` or `refused`), `not-found`.
 - Overview: `overview`, `state-counts`, `queue-row-<queue>`,
   `queues-truncated`.
 - Queues: `queues-list`, `queue-screen`, `queue-total`, `job-row-<id>`,
@@ -367,6 +469,28 @@ These `data-testid` hooks are stable:
   `Runner actions`. Inside it or its dialogs: `runner-remote-hint`,
   `trigger-remote-note`, `kill-waiting`, and `schedule-next-run` in the
   reschedule's success toast.
+- API docs: `docs-home`.
+- HTTP reference: `http-docs`, `http-servers`, `http-server-url`,
+  `http-components`, `http-operation`, `op-path`, `op-permission` (with
+  `data-allowed`), `op-mutation`, `op-requires`, `op-csrf`, `op-parameters`,
+  `op-body`, `op-responses`.
+- HTTP try-it: `tryit`, `tryit-disabled`, `tryit-csrf`, `snippet-curl`,
+  `snippet-fetch`, `tryit-result`, `tryit-status`, `tryit-timing`.
+- Schema trees: `schema-closed` ("No other fields").
+- WebSocket reference: `ws-docs`, `ws-server-url`, `ws-subprotocol`,
+  `ws-security`, `ws-security-conjunctive`, `ws-scheme-<name>`,
+  `ws-search-empty`, `ws-group-<title>`, `ws-nav-<slug>` (the shown item
+  carries `data-selected`), `ws-main` (its `data-selected` is the shown
+  slug), `ws-pane-<slug>`, `ws-channel-address`, `ws-operation-action`,
+  `ws-operation-reply`, `ws-message-name`, `ws-event-payload`,
+  `ws-message-payload`, `ws-schema`, `ws-permission-<action>` (with
+  `data-has`: `true`, `false` or `unknown`), `ws-limit-<name>`,
+  `ws-limit-replay`, `ws-close-<code>`, `ws-refusal-<code>`,
+  `ws-refusal-1006`, `ws-example`, `ws-example-name`,
+  `ws-example-summary`, `ws-example-event-payload`, `ws-example-frame`,
+  `ws-parameter-schema-<name>`.
+- WebSocket try-it: `ws-try-channel`, `ws-try-address`, `ws-try-link`,
+  `ws-try-unavailable`, `ws-try-disabled`, `ws-try-reason`.
 
 `__tests__/e2e/m2-flow.e2e.test.ts` drives the real app in headless Chrome
 through `Bun.WebView`, against a real `createJobsApi` with CSRF on. It pauses a
@@ -387,13 +511,18 @@ real `createJobsApi` in `runner` mode with a real local `BunRunner`.
 
 ### Loaded on demand
 
-The Overview ships in the entry bundle. The queue, job and runner screens are
-split chunks, fetched the first time one is opened (a labelled spinner shows
-meanwhile) and served from the same assets path, which the CSP's
-`script-src 'self'` allows. Styles are not split the same way: Bun's entry
-stylesheet carries every rule, the lazily loaded screens' included, so the
-shell links only that one and never a chunk's stylesheet, which would repeat
-its rules (`entryStylesheets` in `lib/assets.ts`).
+The Overview ships in the entry bundle. The queue, job and runner screens, the
+Events console and the API docs are split chunks, fetched the first time one
+is opened (a labelled spinner shows meanwhile) and served from the same
+assets path, which the CSP's `script-src 'self'` allows. Styles are not split
+the same way: Bun's entry stylesheet carries every rule, the lazily loaded
+screens' included, so the shell links only that one and never a chunk's
+stylesheet, which would repeat its rules (`entryStylesheets` in
+`lib/assets.ts`).
+
+The API docs are one chunk for `/docs`, the HTTP reference and the WebSocket
+reference together, with the schema tree they share: 62.7 KiB (19.9 KiB
+gzipped) when M5 was built.
 
 ## Testing without a socket
 
