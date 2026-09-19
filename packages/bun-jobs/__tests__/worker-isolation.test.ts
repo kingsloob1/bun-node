@@ -7,6 +7,7 @@ import {
   BunQueue,
   BunQueueWorker,
   ConfigError,
+  DEFAULT_LOCK_DURATION,
   MemoryDriver,
 } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
@@ -32,7 +33,17 @@ afterEach(async () => {
 });
 
 /** A queue and a worker running `file` in `mode`. */
-function setup(mode: IsolationMode, file: string) {
+function setup(
+  mode: IsolationMode,
+  file: string,
+  /** Lock tuning for the worker; the worker's defaults when absent. */
+  lock: {
+    /** The worker's `lockDuration`. */
+    lockDuration?: number;
+    /** The worker's `heartbeatInterval`. */
+    heartbeatInterval?: number;
+  } = {},
+) {
   const driver = new MemoryDriver();
   const namespace = testNamespace();
   const queue = new BunQueue("isolated", {
@@ -48,13 +59,14 @@ function setup(mode: IsolationMode, file: string) {
     isolation: mode,
     isolationOptions: { closeTimeout: 200, killTimeout: 200 },
     waitToExit: false,
+    ...lock,
   });
   closers.push(
     () => queue.close(),
     () => worker.close({ force: true }),
   );
   void worker.run();
-  return { queue, worker };
+  return { queue, worker, driver };
 }
 
 /** Whether a process id is still alive. */
@@ -192,6 +204,163 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
           },
         },
       });
+    }, 30_000);
+
+    it("shows a caller's repeat key exactly as the worker's own Job does", async () => {
+      // A key without `|` is shown bare; one with `|` keeps its stored `k:`
+      // prefix (see `displayRepeatKey`). Isolated jobs used to report the raw
+      // stored spelling, so the same job named its series differently.
+      const { queue, worker } = setup(mode, "job-identity");
+      const seen = new Map<
+        string,
+        { child: Record<string, unknown>; worker: Record<string, unknown> }
+      >();
+      worker.on("progress", (job, value) => {
+        seen.set(job.name, {
+          child: value as Record<string, unknown>,
+          worker: {
+            ...job.toJSON(),
+            repeatKey: job.repeatKey,
+            isRepeat: job.isRepeat,
+          },
+        });
+      });
+
+      await queue.add(
+        "bare",
+        {},
+        { repeat: { every: 60_000, key: "nightly", immediately: true } },
+      );
+      await queue.add(
+        "piped",
+        {},
+        { repeat: { every: 60_000, key: "report|daily", immediately: true } },
+      );
+
+      await waitFor(() => seen.size === 2, {
+        timeout: 20_000,
+        message: `the ${mode} repeat occurrences never ran`,
+      });
+
+      expect(seen.get("bare")!.child.repeatKey).toBe("nightly");
+      expect(seen.get("bare")!.child.isRepeat).toBe(true);
+      expect(seen.get("piped")!.child.repeatKey).toBe("k:report|daily");
+      expect(seen.get("piped")!.child.isRepeat).toBe(true);
+      for (const { child, worker: own } of seen.values()) {
+        expect(child.repeatKey).toBe(own.repeatKey);
+      }
+    }, 30_000);
+
+    it("hands the processor the same job members the worker's Job has", async () => {
+      const { queue, worker } = setup(mode, "job-identity");
+      let seen:
+        | { child: Record<string, unknown>; worker: Record<string, unknown> }
+        | undefined;
+      worker.on("progress", (job, value) => {
+        seen = {
+          child: value as Record<string, unknown>,
+          worker: {
+            id: job.id,
+            name: job.name,
+            data: job.data,
+            opts: job.opts,
+            state: job.state,
+            priority: job.priority,
+            runAt: job.runAt,
+            createdAt: job.createdAt,
+            processedOn: job.processedOn,
+            finishedOn: job.finishedOn,
+            expiresAt: job.expiresAt,
+            attemptsMade: job.attemptsMade,
+            maxAttempts: job.maxAttempts,
+            stalledCount: job.stalledCount,
+            progress: job.progress,
+            returnValue: job.returnValue,
+            failedReason: job.failedReason?.message ?? null,
+            stacktrace: job.stacktrace.map((error) => error.message),
+            workerId: job.workerId,
+            repeatKey: job.repeatKey,
+            wasAdded: job.wasAdded,
+            queue: job.queue,
+            isRepeat: job.isRepeat,
+            lockToken: job.lockToken,
+            parent: job.parent,
+          },
+        };
+      });
+
+      // A repeat occurrence, so the derived members are exercised too.
+      await queue.add(
+        "plain",
+        { n: 1 },
+        {
+          priority: 3,
+          repeat: { every: 60_000, key: "members", immediately: true },
+        },
+      );
+      await waitFor(() => seen !== undefined, {
+        timeout: 20_000,
+        message: `the ${mode} job never reported`,
+      });
+
+      expect(seen!.child).toStrictEqual(
+        JSON.parse(JSON.stringify(seen!.worker)) as Record<string, unknown>,
+      );
+    }, 30_000);
+
+    it("extends the lock by what extendLock(ms) asks, and heartbeat by lockDuration", async () => {
+      // The worker's own renewal is pushed out of the way, and its
+      // lockDuration made distinct from both the default and the asked-for
+      // duration, so each of the three is visible in the lock's expiry.
+      const lockDuration = 10_000;
+      const { queue, worker, driver } = setup(mode, "job-extend-lock", {
+        lockDuration,
+        heartbeatInterval: 120_000,
+      });
+      const reads: Promise<{
+        step: string;
+        held: boolean;
+        ahead: number | null;
+      }>[] = [];
+      worker.on("progress", (job, value) => {
+        const { step, held, at } = value as {
+          step: string;
+          held: boolean;
+          at: number;
+        };
+        reads.push(
+          driver.getJob(worker.ref, job.id).then((record) => ({
+            step,
+            held,
+            ahead:
+              record?.lockExpiresAt == null ? null : record.lockExpiresAt - at,
+          })),
+        );
+      });
+
+      const job = await queue.add(
+        "extend",
+        { ms: 60_000, pause: 300 },
+        { removeOnComplete: false },
+      );
+      await waitFor(
+        async () => (await queue.getJob(job.id))?.state === "completed",
+        { timeout: 20_000, message: `the ${mode} job never completed` },
+      );
+
+      const byStep = Object.fromEntries(
+        (await Promise.all(reads)).map((read) => [read.step, read]),
+      );
+      // Each expiry is `now + duration` in the worker, a little before `at`
+      // in the processor: so a little under the duration, never over it.
+      const expectAhead = (step: string, duration: number) => {
+        expect(byStep[step]?.held).toBe(true);
+        expect(byStep[step]?.ahead).toBeLessThanOrEqual(duration);
+        expect(byStep[step]?.ahead).toBeGreaterThan(duration - 2_000);
+      };
+      expectAhead("heartbeat", lockDuration);
+      expectAhead("default", DEFAULT_LOCK_DURATION);
+      expectAhead("ms", 60_000);
     }, 30_000);
   });
 }
