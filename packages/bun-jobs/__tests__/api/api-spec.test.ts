@@ -675,7 +675,10 @@ describe("the generated AsyncAPI document", () => {
       false,
     );
     expect(runner.channels.runner.parameters).toEqual({
-      runner: { description: expect.any(String) },
+      runner: {
+        description: expect.any(String),
+        "x-bun-jobs-schema": expect.any(Object),
+      },
     });
 
     // readOnly removes mutations, and the socket has none.
@@ -956,6 +959,12 @@ describe.skipIf(!validateAsyncApi)(
       const badServer = asyncDocumentFor()!;
       delete badServer.servers.api.protocol;
       expect(validateAsyncApi!(badServer).valid).toBe(false);
+      // AsyncAPI 3.0's Parameter Object has no `schema`: a native one is
+      // refused, which is why the name rule travels as `x-bun-jobs-schema`.
+      const nativeSchema = asyncDocumentFor()!;
+      const queueParameter = nativeSchema.channels.queue.parameters.queue;
+      queueParameter.schema = queueParameter["x-bun-jobs-schema"];
+      expect(validateAsyncApi!(nativeSchema).valid).toBe(false);
     });
   },
 );
