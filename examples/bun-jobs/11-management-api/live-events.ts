@@ -21,7 +21,10 @@
  * - **`seq` is meaningful only within an `epoch`.** The epoch is random per
  *   API instance, so a `seq` from one process means nothing to another.
  * - **An event matching several of your channels arrives once**, listing every
- *   subscription it matched in `subscriptions`.
+ *   subscription it matched in `subscriptions`. That is live delivery; a
+ *   resume split over several `subscribe`s can replay it again for channels
+ *   it had not reached, so a client de-duplicates on `(seq, channel)` (see
+ *   `10-options/jobs-api-socket-options.ts`).
  * - **Events are invalidation hints, not a log.** They carry only what
  *   producers publish (`publishEvents: true` here), and a `gap` says "you may
  *   have missed something — refetch over HTTP". HTTP stays the source of

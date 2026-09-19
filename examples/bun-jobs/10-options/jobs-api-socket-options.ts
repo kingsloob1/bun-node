@@ -24,6 +24,11 @@
  * - **Backpressure is bounded, not buffered forever.** A client that cannot
  *   keep up stops receiving events, gets one `gap` when it drains, and is
  *   closed `4008` if it never does.
+ * - **No `(seq, channel)` pair is sent twice.** Live, an event arrives once
+ *   however many channels it matched. A resume split over several
+ *   `subscribe`s replays each frame's channels in full, so the same `seq` can
+ *   arrive again for a channel it had not reached: de-duplicate on the pair,
+ *   and until every resuming frame is acked, resume from the same position.
  *
  * The tour runs on the memory driver: events are process-local there, which is
  * all one process needs. Across processes, set `publishEvents` in *every*
@@ -1130,9 +1135,11 @@ checkEqual(
   ["epoch-changed", 0],
 );
 
-// A resume never re-sends a `seq` this connection already has. Here the
-// client holds `added` for r3 (its filter let nothing else through), then
-// resumes from 0 with every type: `waiting` is replayed, `added` is not.
+// A resume never re-sends an event for a channel it already reached. Here
+// the client holds `added` for r3 on queue/mail (its filter let nothing else
+// through), then resumes queue/mail with every type: `waiting` is replayed,
+// `added` is not. (Across several channels the rule is per channel: see the
+// split resume below.)
 const once = await connectJobsSocket(retaining.url);
 const onceHello = await once.next("hello");
 once.send({
@@ -1186,6 +1193,213 @@ checkEqual(
   (await forgotten.next("gap")).reason,
   "resume-expired",
 );
+
+/* ------------------------------------------------------------------ */
+step("A split resume: de-duplicate on (seq, channel), not on seq");
+
+// A resume may be split over several `subscribe` frames, each carrying the
+// same `resume` — a different `events` filter per group of channels, or more
+// channels than one frame may name. Each frame's replay covers its own
+// channels in full, so an event an earlier frame sent for *other* channels is
+// sent again, listing only the channels it had not reached yet.
+const splitting = await served(
+  { websocket: { replay: { size: 50 } } },
+  "split",
+);
+// A witness sees every event of queue/mail, so their seqs are known.
+const splitWitness = await connectJobsSocket(splitting.url);
+const splitHello = await splitWitness.next("hello");
+splitWitness.send({ op: "subscribe", id: "w", channels: ["queue/mail"] });
+await splitWitness.next("ack");
+await splitting.jobs.queue("mail").add("send", {}, { jobId: "s1" });
+await waitFor(
+  "the witness to see added and waiting",
+  () => splitWitness.all("event").length === 2,
+);
+const [splitAdded, splitWaiting] = splitWitness
+  .all("event")
+  .map((frame) => frame.seq) as [number, number];
+
+/** What one frame replayed: the events between its ack and the ack before. */
+function replayedBefore(
+  client: Awaited<ReturnType<typeof connectJobsSocket>>,
+  id: string,
+): [number, string[]][] {
+  const ackAt = client.frames.findIndex(
+    (frame) => frame.type === "ack" && frame.id === id,
+  );
+  const previousAck = client.frames.findLastIndex(
+    (frame, index) => index < ackAt && frame.type === "ack",
+  );
+  return client.frames
+    .slice(previousAck + 1, ackAt)
+    .filter((frame) => frame.type === "event")
+    .map((frame) => [frame.seq, [...frame.subscriptions].sort()]);
+}
+/** Every `(seq, channel)` pair a connection received, as `"<seq> <channel>"`. */
+const pairsOf = (client: Awaited<ReturnType<typeof connectJobsSocket>>) =>
+  client
+    .all("event")
+    .flatMap((frame) =>
+      frame.subscriptions.map((channel) => `${frame.seq} ${channel}`),
+    );
+
+// Two groups: queue/mail wants `waiting` only; `queues` wants every type.
+const splitClient = await connectJobsSocket(splitting.url);
+await splitClient.next("hello");
+const splitResume = { epoch: splitHello.epoch, afterSeq: 0 };
+splitClient.send({
+  op: "subscribe",
+  id: "a",
+  channels: ["queue/mail"],
+  events: ["waiting"],
+  resume: splitResume,
+});
+splitClient.send({
+  op: "subscribe",
+  id: "b",
+  channels: ["queues"],
+  resume: splitResume,
+});
+const splitAckA = await splitClient.next("ack", (frame) => frame.id === "a");
+const splitAckB = await splitClient.next("ack", (frame) => frame.id === "b");
+checkEqual(
+  "both frames resume, and no gap is announced",
+  [splitAckA.resumed, splitAckB.resumed, splitClient.all("gap").length],
+  [true, true, 0],
+);
+checkEqual(
+  "frame a replays waiting, for queue/mail",
+  replayedBefore(splitClient, "a"),
+  [[splitWaiting, ["queue/mail"]]],
+);
+checkEqual(
+  "frame b replays both, for queues alone: waiting arrives a second time",
+  replayedBefore(splitClient, "b"),
+  [
+    [splitAdded, ["queues"]],
+    [splitWaiting, ["queues"]],
+  ],
+);
+// So a client that dropped every `seq` it had seen would lose `queues`' copy
+// of `waiting`: the pair is what never repeats.
+const splitPairs = pairsOf(splitClient);
+const waitingFrames = splitClient
+  .all("event")
+  .filter((frame) => frame.seq === splitWaiting);
+checkEqual(
+  "the same seq twice, but never for the same channel",
+  [waitingFrames.length, new Set(splitPairs).size === splitPairs.length],
+  [2, true],
+);
+
+// Live, an event matching both groups arrives once, listing both.
+await splitting.jobs.queue("mail").add("send", {}, { jobId: "s2" });
+const splitLive = await splitClient.next(
+  "event",
+  (frame) => frame.event.id === "s2" && frame.event.type === "waiting",
+);
+checkEqual(
+  "live: one frame, both channels",
+  [...splitLive.subscriptions].sort(),
+  ["queue/mail", "queues"],
+);
+
+// The caveat. Frame b replayed `added` *after* frame a had delivered the
+// later `waiting`, so between the two acks the highest seq seen was not a safe
+// resume point. A connection that drops then must resume from the position
+// that resume used, until every resuming subscribe has been acked.
+const tooFar = await connectJobsSocket(splitting.url);
+await tooFar.next("hello");
+tooFar.send({
+  op: "subscribe",
+  id: "far",
+  channels: ["queues"],
+  resume: { epoch: splitHello.epoch, afterSeq: splitWaiting },
+});
+await tooFar.next("ack", (frame) => frame.id === "far");
+const sameAgain = await connectJobsSocket(splitting.url);
+await sameAgain.next("hello");
+sameAgain.send({
+  op: "subscribe",
+  id: "same",
+  channels: ["queues"],
+  resume: splitResume,
+});
+await sameAgain.next("ack", (frame) => frame.id === "same");
+checkEqual(
+  "resuming queues from the highest seq seen misses added; from the same position it does not",
+  [
+    tooFar.all("event").some((frame) => frame.seq === splitAdded),
+    sameAgain.all("event").some((frame) => frame.seq === splitAdded),
+  ],
+  [false, true],
+);
+
+// A replayed event can be held behind a per-target decision (`queues` asks
+// `authorize` about each queue on its first event). The replay settles those
+// first; one it cannot settle — here an `authorize` that throws for `boom`
+// every time, so it is asked again and again — holds the replay, and the ack
+// waits for it, so the replay still precedes the ack.
+/** How often `authorize` was asked about boom on `queues`, each time throwing. */
+let boomAsks = 0;
+const holding = await served(
+  {
+    websocket: { replay: { size: 50 } },
+    authorize: (_req, authorizeContext) => {
+      if (
+        authorizeContext.channel === "queues" &&
+        authorizeContext.queue === "boom"
+      ) {
+        boomAsks++;
+        throw new Error("the policy service is down");
+      }
+      return true;
+    },
+  },
+  "held-replay",
+);
+const holdWitness = await connectJobsSocket(holding.url);
+const holdHello = await holdWitness.next("hello");
+holdWitness.send({
+  op: "subscribe",
+  id: "w",
+  channels: ["queue/boom", "queue/mail"],
+});
+await holdWitness.next("ack");
+await holding.jobs.queue("boom").add("send", {}, { jobId: "b1" });
+await holding.jobs.queue("mail").add("send", {}, { jobId: "m1" });
+await waitFor(
+  "the witness to see both jobs' events",
+  () => holdWitness.all("event").length === 4,
+);
+const mailSeqs = holdWitness
+  .all("event")
+  .filter((frame) => frame.event.target === "mail")
+  .map((frame) => frame.seq);
+const holdClient = await connectJobsSocket(holding.url);
+await holdClient.next("hello");
+holdClient.send({
+  op: "subscribe",
+  id: "r",
+  channels: ["queues"],
+  resume: { epoch: holdHello.epoch, afterSeq: 0 },
+});
+const holdAck = await holdClient.next("ack", (frame) => frame.id === "r");
+// A ping answered after the ack: nothing more arrives in between.
+holdClient.send({ op: "ping", id: "after" });
+await holdClient.next("pong", (frame) => frame.id === "after");
+checkEqual(
+  "the ack says resumed, after mail's replayed events",
+  [holdAck.resumed, replayedBefore(holdClient, "r")],
+  [true, mailSeqs.map((seq) => [seq, ["queues"]])],
+);
+checkEqual(
+  "boom's are dropped as denied, and nothing arrives after the ack",
+  holdClient.all("event").length,
+  mailSeqs.length,
+);
+check("authorize was asked about boom more than once", boomAsks > 1, boomAsks);
 
 /* ------------------------------------------------------------------ */
 step("A resume while lagging is not resumed: the gap covers it");

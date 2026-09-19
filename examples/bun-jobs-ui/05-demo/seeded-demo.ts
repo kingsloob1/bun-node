@@ -394,16 +394,31 @@ checkEqual(
 step("/runners — local runners first, then remote ones");
 
 const runnerList = await read<RunnerListDto>("/runners");
+// Every item says `isLocal`, `isPaused` and `isRunning`, remote ones too. The
+// list's Status column shows a local runner's lifecycle `status` (Running is
+// "started, schedule armed", not a run in flight), a remote one's Paused or
+// Active from `isPaused`, and a "Run in flight" badge beside either whenever
+// `isRunning` is true: here, beside digest only.
 checkEqual(
-  "the list: the four local runners by name and status, then the remote id",
-  runnerList.items.map((item) => [item.id, item.local, item.status ?? null]),
+  "the list: the four local runners by status, then the remote one; isPaused and isRunning on each",
+  runnerList.items.map((item) => [
+    item.id,
+    item.isLocal,
+    item.status ?? null,
+    item.isPaused,
+    item.isRunning,
+  ]),
   [
-    [DEMO_RUNNERS.scheduled, true, "running"],
-    [DEMO_RUNNERS.paused, true, "paused"],
-    [DEMO_RUNNERS.busy, true, "running"],
-    [DEMO_RUNNERS.failing, true, "running"],
-    [DEMO_RUNNERS.remote, false, null],
+    [DEMO_RUNNERS.scheduled, true, "running", false, false],
+    [DEMO_RUNNERS.paused, true, "paused", true, false],
+    [DEMO_RUNNERS.busy, true, "running", false, true],
+    [DEMO_RUNNERS.failing, true, "running", false, false],
+    [DEMO_RUNNERS.remote, false, null, false, false],
   ],
+);
+check(
+  "local, deprecated, is still sent as a copy of isLocal",
+  runnerList.items.every((item) => item.local === item.isLocal),
 );
 
 /* ------------------------------------------------------------------ */
