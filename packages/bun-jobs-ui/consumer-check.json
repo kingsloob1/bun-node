@@ -1,0 +1,58 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-jobs-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-jobs-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. bun-jobs is a required peer whose types (JobsApi, ConfigError) the public surface uses, so it is packed alongside bun-common.",
+  "workspaceDependencies": ["packages/bun-common", "packages/bun-jobs"],
+  "entries": [
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui",
+      "values": [
+        "jobsUi",
+        "ASSET_CACHE_CONTROL",
+        "DEFAULT_BASE_PATH",
+        "DEFAULT_TITLE",
+        "UI_CONFIG_ELEMENT_ID"
+      ],
+      "types": [
+        "JobsUi",
+        "JobsUiOptions",
+        "JobsUiApiOptions",
+        "JobsUiUrlOptions",
+        "JobsUiBaseOptions",
+        "JobsUiAuthorize",
+        "JobsUiAuthorizeContext",
+        "JobsUiAuthorizeResult",
+        "UiConfig",
+        "UiSections",
+        "UiTheme"
+      ],
+      "snippet": "const ui = m.jobsUi({ apiUrl: \"/jobs-api\", basePath: \"/jobs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nexport type _api = Expect<IsAny<t.JobsUiApiOptions[\"api\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/index",
+      "values": ["jobsUi", "UI_CONFIG_ELEMENT_ID"],
+      "types": ["JobsUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/index.ts",
+      "values": ["jobsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/index.js",
+      "values": ["jobsUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/jobsUi",
+      "values": ["jobsUi", "DEFAULT_BASE_PATH"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/types",
+      "types": ["JobsUi", "JobsUiOptions"],
+      "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-jobs-ui/lib/shared/config",
+      "values": ["UI_CONFIG_ELEMENT_ID"],
+      "types": ["UiConfig", "UiTheme"],
+      "browser": true
+    }
+  ]
+}
