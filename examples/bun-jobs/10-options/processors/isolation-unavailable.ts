@@ -27,6 +27,10 @@ export default defineProcessor<UnavailableData, Unavailable>(async (job) => {
     promote: async () => await job.promote(),
     refresh: async () => await job.refresh(),
     getLogs: async () => await job.getLogs(),
+    schedule: async () => await job.schedule("in 10 minutes"),
+    update: async () => await job.update({ priority: 2 }),
+    disable: async () => await job.disable(),
+    enable: async () => await job.enable(),
   };
 
   const outcome: Unavailable = {};

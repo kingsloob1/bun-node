@@ -897,6 +897,10 @@ await waitFor(
   async () => (await steadyJob.refresh())?.state === "dead",
   LONG,
 );
+// The job is stored dead before the worker emits its last `failed` and its
+// `dead`, so the events are waited for too — on a slow server the check
+// otherwise lands between the two.
+await waitFor("the steady job's dead event", () => outcome.dead > 0, LONG);
 checkEqual(
   "the named strategy was called per failed attempt",
   steadyCalls,

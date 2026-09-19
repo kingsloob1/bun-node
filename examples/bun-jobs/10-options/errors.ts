@@ -429,9 +429,21 @@ const bare = without(driver, [
   "getJobLogs",
   "addJobLog",
   "updateJob",
+  "buryJob",
 ]);
 const bareQueue = new BunQueue("bare", { namespace, driver: bare });
 const plainJob = await bareQueue.add("x", {});
+// A series needs no queue state to exist, only to be disabled or enabled.
+const bareOccurrence = await bareQueue.add(
+  "tick",
+  {},
+  { repeat: { every: 60_000, key: "bare-series" } },
+);
+checkEqual(
+  "without queue state, listRepeatables() reports every series enabled",
+  (await bareQueue.listRepeatables()).map((series) => series.disabled),
+  [false],
+);
 
 for (const [label, run, method, needs] of [
   [
@@ -489,6 +501,39 @@ for (const [label, run, method, needs] of [
     () => plainJob.reschedule(Date.now() + 60_000),
     "updateJob",
     "reschedule()",
+  ],
+  [
+    "job.schedule()",
+    () => plainJob.schedule("in 1 hour"),
+    "updateJob",
+    "schedule()",
+  ],
+  [
+    "job.update()",
+    () => plainJob.update({ priority: 1 }),
+    "updateJob",
+    "update()",
+  ],
+  ["job.fail()", () => plainJob.fail("no buryJob"), "buryJob", "fail()"],
+  [
+    "job.disable()",
+    () => bareOccurrence.disable(),
+    "setQueueState",
+    "disable()",
+  ],
+  ["job.enable()", () => bareOccurrence.enable(), "setQueueState", "enable()"],
+  // The queue's methods name the same step as the job's.
+  [
+    "queue.disableRepeatable()",
+    () => bareQueue.disableRepeatable("bare-series"),
+    "setQueueState",
+    "disable()",
+  ],
+  [
+    "queue.enableRepeatable()",
+    () => bareQueue.enableRepeatable("bare-series"),
+    "setQueueState",
+    "enable()",
   ],
 ] as const) {
   const error = await checkRejects(label, run, {
@@ -887,6 +932,14 @@ const worker = new BunQueueWorker<unknown, unknown>(
         throw new PaymentDeclinedError(`declined on attempt ${ctx.attempt}`);
       case "unrecoverable":
         throw new UnrecoverableJobError("card expired", { orderId: "o-2" });
+      case "unrecoverable-caused":
+        // The third argument is the standard error options: `cause` is the
+        // error that decided it.
+        throw new UnrecoverableJobError(
+          "card expired",
+          { orderId: "o-4" },
+          { cause: new PaymentDeclinedError("the issuer said no") },
+        );
       default:
         return null;
     }
@@ -1030,6 +1083,27 @@ check(
   "in-process: the dead event has the class",
   deadEvents.get(unrecoverable.id) instanceof UnrecoverableJobError,
 );
+checkEqual(
+  "in-process: without a cause option, the stored failure has none",
+  unrecoverable.failedReason?.cause,
+  undefined,
+);
+
+const caused = await addAndWaitDead("unrecoverable-caused", {
+  attempts: 5,
+  backoff: 0,
+});
+checkEqual(
+  "in-process: with { cause }, it still stops retries",
+  [caused.attemptsMade, caused.failedReason?.name],
+  [1, "UnrecoverableJobError"],
+);
+const storedCause = caused.failedReason?.cause as Error | undefined;
+checkEqual(
+  "in-process: the cause survives storage, with its name, message and code",
+  [storedCause?.name, storedCause?.message, fields(storedCause).code],
+  ["PaymentDeclinedError", "the issuer said no", "DECLINED"],
+);
 
 await worker.close();
 
@@ -1091,6 +1165,29 @@ await isolatedQueue.close();
 check(
   "UnrecoverableJobError: instanceof",
   new UnrecoverableJobError("x") instanceof JobsError,
+);
+
+// `(message, context?, options?: { cause })`: the cause is the standard
+// `Error.cause`, and leaving the options out leaves no `cause` at all.
+const rootCause = new Error("gateway timeout");
+const withCause = new UnrecoverableJobError(
+  "card declined",
+  { orderId: "o-5" },
+  { cause: rootCause },
+);
+checkEqual(
+  "UnrecoverableJobError: options.cause is the Error's cause",
+  [withCause.cause === rootCause, withCause.context, withCause.code],
+  [true, { orderId: "o-5" }, "UNRECOVERABLE_JOB"],
+);
+checkEqual(
+  "UnrecoverableJobError: a cause without a context",
+  new UnrecoverableJobError("x", undefined, { cause: rootCause }).cause,
+  rootCause,
+);
+check(
+  "UnrecoverableJobError: no options, no cause property",
+  !("cause" in new UnrecoverableJobError("x", { orderId: "o-6" })),
 );
 
 /* ------------------------------------------------------------------ */

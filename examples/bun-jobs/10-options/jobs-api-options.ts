@@ -33,18 +33,29 @@
  *   unknown queue a 404.
  */
 import type {
+  DriverEvent,
+  JobsApiAction,
   JobsApiAuthorizeContext,
   JobsDriver,
 } from "@kingsleyweb/bun-jobs";
+import type {
+  DisableRepeatableResultDto,
+  EnableRepeatableResultDto,
+  FailJobBody,
+  FailJobResultDto,
+  RepeatableDto,
+} from "@kingsleyweb/bun-jobs/api/contract";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
+  BunQueueWorker,
   createDriver,
   createJobsApi,
   DEFAULT_JOBS_API_LIMITS,
   JOBS_API_ACTIONS,
   JOBS_API_MUTATIONS,
   JOBS_API_OPT_IN_ACTIONS,
+  JobsNotifier,
   runnerKey,
 } from "@kingsleyweb/bun-jobs";
 import {
@@ -168,6 +179,45 @@ function mount(
 /** Operation ids of an API's routes. */
 const idsOf = (api: { routes: readonly { operationId: string }[] }) =>
   api.routes.map((route) => route.operationId);
+
+/**
+ * The three routes the per-job methods added, as `api.routes` lists them:
+ * failing a job for good, and disabling or enabling a repeat series. All
+ * three are mutations in the jobs half, and all three are on by default.
+ */
+const JOB_METHOD_ROUTES = [
+  "POST /admin/jobs/queues/:queue/jobs/:id/fail failJob jobs.fail",
+  "POST /admin/jobs/queues/:queue/repeatables/:key/disable disableRepeatable repeatables.disable",
+  "POST /admin/jobs/queues/:queue/repeatables/:key/enable enableRepeatable repeatables.enable",
+];
+
+/**
+ * Which of {@link JOB_METHOD_ROUTES} an API registered, in the same one-line
+ * shape, with each marked `mutation` or not so a check names what is wrong.
+ */
+function jobMethodRoutes(api: {
+  routes: readonly {
+    method: string;
+    path: string;
+    operationId: string;
+    action: string;
+    mutation: boolean;
+  }[];
+}): string[] {
+  const ids = new Set(["failJob", "disableRepeatable", "enableRepeatable"]);
+  return api.routes
+    .filter((route) => ids.has(route.operationId))
+    .map((route) =>
+      [
+        route.method,
+        route.path,
+        route.operationId,
+        route.action,
+        ...(route.mutation ? [] : ["(not a mutation)"]),
+      ].join(" "),
+    )
+    .sort();
+}
 
 /* ------------------------------------------------------------------ */
 step("Construction: everything unusable is refused, with a ConfigError");
@@ -307,7 +357,25 @@ checkEqual(
   both.api.mode,
   "both",
 );
-checkEqual("every action, every route", both.api.routes.length, 44);
+checkEqual("every action, every route", both.api.routes.length, 47);
+checkEqual(
+  "fail, disable and enable are among them, each a mutation",
+  jobMethodRoutes(both.api),
+  [...JOB_METHOD_ROUTES].sort(),
+);
+/** The actions those three routes authorize; a rename fails to compile. */
+const jobMethodActions: JobsApiAction[] = [
+  "jobs.fail",
+  "repeatables.disable",
+  "repeatables.enable",
+];
+check(
+  "and each has its own action, listed and a mutation",
+  jobMethodActions.every(
+    (action) =>
+      JOBS_API_ACTIONS.includes(action) && JOBS_API_MUTATIONS.has(action),
+  ),
+);
 
 const noRunners = mount({ runners: false, actions: [...JOBS_API_ACTIONS] });
 checkEqual('runners: false leaves mode "jobs"', noRunners.api.mode, "jobs");
@@ -350,7 +418,12 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 34);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 37);
+checkEqual(
+  "fail, disable and enable belong to the jobs half",
+  [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
+  [[...JOB_METHOD_ROUTES].sort(), []],
+);
 checkEqual("mode: runner", runnerOnly.api.routes.length, 14);
 checkEqual(
   "the two halves plus the shared routes are the whole API",
@@ -399,7 +472,12 @@ const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  42,
+  45,
+);
+checkEqual(
+  "fail, disable and enable are on by default",
+  jobMethodRoutes(byDefault.api),
+  [...JOB_METHOD_ROUTES].sort(),
 );
 check(
   "jobs.add and jobs.update are the opt-ins",
@@ -1913,6 +1991,265 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("POST /jobs/:id/fail, and disabling or enabling a repeat series");
+
+// A publishing context, so what the API does is heard as another process
+// would hear it.
+const failNamespace = `${namespace}-fail`;
+const failJobs = new BunJobs({
+  namespace: failNamespace,
+  driver,
+  publishEvents: true,
+  logger: createTestLogger().logger,
+});
+contexts.push(failJobs);
+const failApi = mount({}, failJobs);
+const failQueue = failJobs.queue("mail");
+const failNotifier = new JobsNotifier(driver, failNamespace, {
+  queues: ["mail"],
+  runners: [],
+});
+await failNotifier.start();
+/** Every event the notifier heard. */
+const failHeard: DriverEvent[] = [];
+failNotifier.on("event", (event) => {
+  failHeard.push(event);
+});
+/** The published event types about job `id`, in order. */
+const heardAbout = (id: string) =>
+  failHeard
+    .filter((event) => event.kind === "queue" && event.id === id)
+    .map((event) => event.type);
+
+await failQueue.add("send", {}, { jobId: "doomed", attempts: 5 });
+const failBody: FailJobBody = { reason: "bad address" };
+const failAnswer = await failApi.call(
+  "POST",
+  "/queues/mail/jobs/doomed/fail",
+  failBody,
+);
+const failResult: FailJobResultDto = failAnswer.body;
+checkEqual(
+  "POST …/fail answers 200 { failed: true }",
+  [failAnswer.status, failResult],
+  [200, { failed: true }],
+);
+const doomed = await failQueue.getJob("doomed");
+checkEqual(
+  "the job is dead at once, with the reason, and no attempt made",
+  [
+    doomed?.state,
+    doomed?.failedReason?.name,
+    doomed?.failedReason?.message,
+    doomed?.attemptsMade,
+  ],
+  ["dead", "UnrecoverableJobError", "bad address", 0],
+);
+checkEqual(
+  "authorize was asked for jobs.fail, targeting the job",
+  failApi.calls
+    .filter((call) => call.action === "jobs.fail")
+    .map((call) => [call.queue, call.jobId, call.mutation]),
+  [["mail", "doomed", true]],
+);
+const failedTwice = await failApi.call(
+  "POST",
+  "/queues/mail/jobs/doomed/fail",
+  { reason: "twice" },
+);
+checkEqual(
+  "a job already finished is 409 JOB_STATE_CONFLICT",
+  [failedTwice.status, failedTwice.body.code],
+  [409, "JOB_STATE_CONFLICT"],
+);
+checkEqual(
+  "an unknown job is 404, and a missing reason 400",
+  [
+    (
+      await failApi.call("POST", "/queues/mail/jobs/ghost/fail", {
+        reason: "x",
+      })
+    ).status,
+    (await failApi.call("POST", "/queues/mail/jobs/doomed/fail", {})).status,
+  ],
+  [404, 400],
+);
+
+// An active job: buried under the worker, whose processor then throws once
+// its heartbeat finds the lock gone. `failed` and `dead` exactly once.
+let apiStarted = false;
+let apiRelease!: () => void;
+const apiGate = new Promise<void>((resolve) => {
+  apiRelease = resolve;
+});
+const apiWorker = new BunQueueWorker(
+  "mail",
+  async (job, ctx) => {
+    if (job.name !== "long") {
+      return null;
+    }
+    apiStarted = true;
+    await apiGate;
+    await ctx.heartbeat();
+    throw new Error(`stopped, aborted: ${ctx.signal.aborted}`);
+  },
+  {
+    namespace: failNamespace,
+    driver,
+    logger: createTestLogger().logger,
+    publish: true,
+    concurrency: 1,
+    lockDuration: 120_000,
+    heartbeatInterval: 60_000,
+    pollInterval: 10,
+    maxBlock: 50,
+  },
+);
+void apiWorker.run();
+await failQueue.add("long", {}, { jobId: "running", attempts: 3, backoff: 0 });
+await waitFor("the long job to start", () => apiStarted, { timeout: 30_000 });
+checkEqual(
+  "an active job fails through the API too",
+  (
+    await failApi.call("POST", "/queues/mail/jobs/running/fail", {
+      reason: "pulled by an operator",
+    })
+  ).status,
+  200,
+);
+apiRelease();
+await failQueue.add("marker", {}, { jobId: "after-running" });
+await waitFor(
+  "the worker to settle both",
+  () => heardAbout("after-running").includes("completed"),
+  { timeout: 30_000 },
+);
+checkEqual(
+  "failed and dead published exactly once, and never retrying",
+  heardAbout("running").filter((type) =>
+    ["failed", "dead", "retrying", "completed"].includes(type),
+  ),
+  ["failed", "dead"],
+);
+checkEqual(
+  "and the job is dead with the operator's reason",
+  [
+    (await failQueue.getJob("running"))?.state,
+    (await failQueue.getJob("running"))?.failedReason?.message,
+  ],
+  ["dead", "pulled by an operator"],
+);
+await apiWorker.close();
+await failNotifier.close();
+
+// A repeat series: RepeatableDto.disabled, and the two idempotent routes.
+await failQueue.add("digest", {}, { repeat: { every: 60_000, key: "daily" } });
+/** The listed `daily` series, as a client reads it. */
+const daily = async (): Promise<RepeatableDto | undefined> =>
+  (await failApi.call("GET", "/queues/mail/repeatables")).body.items.find(
+    (item: RepeatableDto) => item.key === "daily",
+  );
+const pendingDaily = (await daily())!.nextJobId!;
+checkEqual(
+  "RepeatableDto.disabled is always present: false to begin with",
+  (await daily())?.disabled,
+  false,
+);
+
+const disabledAnswer = await failApi.call(
+  "POST",
+  "/queues/mail/repeatables/daily/disable",
+);
+const disabledResult: DisableRepeatableResultDto = disabledAnswer.body;
+checkEqual(
+  "POST …/disable answers 200 { disabled: true }",
+  [disabledAnswer.status, disabledResult],
+  [200, { disabled: true }],
+);
+checkEqual(
+  "the series is listed disabled, and its pending occurrence is gone",
+  [(await daily())?.disabled, await failQueue.getJob(pendingDaily)],
+  [true, null],
+);
+checkEqual(
+  "disabling again is idempotent: the same 200",
+  [
+    (await failApi.call("POST", "/queues/mail/repeatables/daily/disable"))
+      .status,
+    (await daily())?.disabled,
+  ],
+  [200, true],
+);
+
+const enabledAnswer = await failApi.call(
+  "POST",
+  "/queues/mail/repeatables/daily/enable",
+);
+const enabledResult: EnableRepeatableResultDto = enabledAnswer.body;
+checkEqual(
+  "POST …/enable answers 200 { enabled: true }",
+  [enabledAnswer.status, enabledResult],
+  [200, { enabled: true }],
+);
+const enabledDaily = await daily();
+checkEqual(
+  "enabled, with a new occurrence scheduled",
+  [
+    enabledDaily?.disabled,
+    (await failQueue.getJob(enabledDaily!.nextJobId!))?.state,
+  ],
+  [false, "delayed"],
+);
+checkEqual(
+  "enabling again is idempotent too",
+  (await failApi.call("POST", "/queues/mail/repeatables/daily/enable")).status,
+  200,
+);
+for (const verb of ["disable", "enable"]) {
+  const missing = await failApi.call(
+    "POST",
+    `/queues/mail/repeatables/no-such-series/${verb}`,
+  );
+  checkEqual(
+    `${verb}: an unknown key is 404 REPEATABLE_NOT_FOUND`,
+    [missing.status, missing.body.code],
+    [404, "REPEATABLE_NOT_FOUND"],
+  );
+}
+checkEqual(
+  "authorize was asked for each action by name",
+  [
+    ...new Set(
+      failApi.calls
+        .map((call) => call.action)
+        .filter((action) => action.startsWith("repeatables.")),
+    ),
+  ].sort(),
+  ["repeatables.disable", "repeatables.enable", "repeatables.list"],
+);
+/** The OpenAPI document's `Repeatable` component, loosely typed. */
+const repeatableSchema = (
+  failApi.api.openapi() as unknown as {
+    components: {
+      schemas: Record<
+        string,
+        {
+          required?: string[];
+          properties: Record<string, { type?: string }>;
+        }
+      >;
+    };
+  }
+).components.schemas.Repeatable;
+const disabledProperty = repeatableSchema?.properties.disabled;
+check(
+  "the OpenAPI Repeatable schema requires disabled, a boolean",
+  (repeatableSchema?.required ?? []).includes("disabled") &&
+    disabledProperty?.type === "boolean",
+  repeatableSchema,
+);
+
+/* ------------------------------------------------------------------ */
 step("The OpenAPI document states what a client must send");
 
 /** Every operation in a document, with its path and method. */
@@ -2066,6 +2403,7 @@ await Promise.all(
     paging,
     uncounted,
     identified,
+    failApi,
   ].map((mounted) => mounted.api.close()),
 );
 for (const jobs of contexts) {
