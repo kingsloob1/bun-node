@@ -1,0 +1,3604 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "bun-jobs management API (ui-docs-ws-fixture-both)",
+    "version": "0.0.0-fixture",
+    "description": "Live events for bun-jobs queues and runners, over one WebSocket.\n\nConnect to the server, then `subscribe` by channel name: the channels other than `connection` have no transport address of their own and are multiplexed over the connection. Every event carries a `seq` within an `epoch`; resume after a reconnect with `resume`, and treat a `gap` as a reason to refetch.\n\nEvents are invalidation hints, not a log: the notifier hears only what producers publish, and HTTP stays the source of truth.\n\nAuthorization is enforced by the host application's `authorize` hook, on the upgrade and on each subscription; this document declares no security schemes."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "api": {
+      "host": "localhost",
+      "pathname": "/jobs-api/ws",
+      "protocol": "ws",
+      "description": "The host application's server.",
+      "x-bun-jobs-subprotocol": "bun-jobs.v1"
+    }
+  },
+  "channels": {
+    "connection": {
+      "address": "/jobs-api/ws",
+      "title": "Connection",
+      "description": "The WebSocket itself (subprotocol `bun-jobs.v1`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.\n\nOrdering: live events arrive in `seq` order. A subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A resume split over several subscribes replays each one's channels in full, so a later one can replay `seq`s below ones already received: resume again from the same position until every resuming subscribe is acked. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.\n\nSubscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.\n\nAn upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
+      "messages": {
+        "subscribe": { "$ref": "#/components/messages/subscribe" },
+        "unsubscribe": { "$ref": "#/components/messages/unsubscribe" },
+        "ping": { "$ref": "#/components/messages/ping" },
+        "hello": { "$ref": "#/components/messages/hello" },
+        "ack": { "$ref": "#/components/messages/ack" },
+        "gap": { "$ref": "#/components/messages/gap" },
+        "heartbeat": { "$ref": "#/components/messages/heartbeat" },
+        "pong": { "$ref": "#/components/messages/pong" },
+        "error": { "$ref": "#/components/messages/error" }
+      },
+      "bindings": { "ws": { "method": "GET", "bindingVersion": "0.1.0" } },
+      "x-bun-jobs-subprotocol": "bun-jobs.v1",
+      "x-bun-jobs-close-codes": [
+        {
+          "code": 1001,
+          "name": "GOING_AWAY",
+          "description": "The API is closing (`api.close()`). Reconnect and resume."
+        },
+        {
+          "code": 1003,
+          "name": "UNSUPPORTED_DATA",
+          "description": "The client sent a binary frame (an UNSUPPORTED_DATA error precedes it)."
+        },
+        {
+          "code": 1008,
+          "name": "POLICY",
+          "description": "The rate limit was breached a second time within 10 s (the first breach is a RATE_LIMITED error)."
+        },
+        {
+          "code": 1009,
+          "name": "TOO_BIG",
+          "description": "The client sent a frame over `maxMessageBytes` (a MESSAGE_TOO_LARGE error precedes it)."
+        },
+        {
+          "code": 4008,
+          "name": "SLOW_CONSUMER",
+          "description": "The client stayed behind for `slowConsumerTimeoutMs`. Reconnect and resume."
+        },
+        {
+          "code": 4401,
+          "name": "UNAUTHORIZED",
+          "description": "Reserved: the session is no longer authorized. Not sent in protocol 1."
+        }
+      ],
+      "x-bun-jobs-limits": {
+        "maxMessageBytes": 16384,
+        "messagesPerSecond": 20,
+        "rateLimitBurst": 40,
+        "rateLimitBreachWindowMs": 10000,
+        "maxSubscriptions": 50,
+        "maxChannelsPerFrame": 256,
+        "maxConnections": 1000,
+        "heartbeatMs": 25000,
+        "maxBufferedBytes": 1048576,
+        "slowConsumerTimeoutMs": 30000,
+        "coalesceProgressMs": 250,
+        "replay": { "size": 1000, "maxAgeMs": 300000 }
+      },
+      "x-bun-jobs-upgrade-refusals": [
+        {
+          "status": 400,
+          "code": "UNSUPPORTED_SUBPROTOCOL",
+          "description": "Sec-WebSocket-Protocol was sent without `bun-jobs.v1`. Offer it, or no subprotocol.",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 403,
+          "code": "ORIGIN_REJECTED",
+          "description": "The Origin header is not an allowed origin.",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 429,
+          "code": "CONNECTION_LIMIT",
+          "description": "`maxConnections` live-event connections are already open.",
+          "headers": { "Retry-After": "1" },
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "description": "`authorize` asked for authentication (`events.connect`).",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 403,
+          "code": "FORBIDDEN",
+          "description": "`authorize` refused the connection (`events.connect`).",
+          "contentType": "application/problem+json"
+        },
+        {
+          "status": 404,
+          "code": "ROUTE_NOT_FOUND",
+          "description": "The API has been closed.",
+          "contentType": "application/problem+json"
+        }
+      ]
+    },
+    "all": {
+      "address": "all",
+      "title": "All",
+      "description": "Every queue and runner event in the namespace. A logical channel: subscribe with its name over the connection.",
+      "messages": {
+        "queue.added": { "$ref": "#/components/messages/queue.added" },
+        "queue.duplicate": { "$ref": "#/components/messages/queue.duplicate" },
+        "queue.waiting": { "$ref": "#/components/messages/queue.waiting" },
+        "queue.delayed": { "$ref": "#/components/messages/queue.delayed" },
+        "queue.active": { "$ref": "#/components/messages/queue.active" },
+        "queue.progress": { "$ref": "#/components/messages/queue.progress" },
+        "queue.completed": { "$ref": "#/components/messages/queue.completed" },
+        "queue.failed": { "$ref": "#/components/messages/queue.failed" },
+        "queue.retrying": { "$ref": "#/components/messages/queue.retrying" },
+        "queue.dead": { "$ref": "#/components/messages/queue.dead" },
+        "queue.stalled": { "$ref": "#/components/messages/queue.stalled" },
+        "queue.removed": { "$ref": "#/components/messages/queue.removed" },
+        "queue.promoted": { "$ref": "#/components/messages/queue.promoted" },
+        "queue.paused": { "$ref": "#/components/messages/queue.paused" },
+        "queue.resumed": { "$ref": "#/components/messages/queue.resumed" },
+        "queue.drained": { "$ref": "#/components/messages/queue.drained" },
+        "queue.cleaned": { "$ref": "#/components/messages/queue.cleaned" },
+        "queue.retried": { "$ref": "#/components/messages/queue.retried" },
+        "queue.debounced": { "$ref": "#/components/messages/queue.debounced" },
+        "queue.throttled": { "$ref": "#/components/messages/queue.throttled" },
+        "queue.repeatScheduled": {
+          "$ref": "#/components/messages/queue.repeatScheduled"
+        },
+        "runner.control": { "$ref": "#/components/messages/runner.control" },
+        "runner.started": { "$ref": "#/components/messages/runner.started" },
+        "runner.succeeded": {
+          "$ref": "#/components/messages/runner.succeeded"
+        },
+        "runner.failed": { "$ref": "#/components/messages/runner.failed" },
+        "runner.queued": { "$ref": "#/components/messages/runner.queued" },
+        "runner.skipped": { "$ref": "#/components/messages/runner.skipped" },
+        "runner.timeout": { "$ref": "#/components/messages/runner.timeout" },
+        "runner.killed": { "$ref": "#/components/messages/runner.killed" }
+      }
+    },
+    "queues": {
+      "address": "queues",
+      "title": "Queues",
+      "description": "Every queue event. A logical channel: subscribe with its name over the connection.",
+      "messages": {
+        "queue.added": { "$ref": "#/components/messages/queue.added" },
+        "queue.duplicate": { "$ref": "#/components/messages/queue.duplicate" },
+        "queue.waiting": { "$ref": "#/components/messages/queue.waiting" },
+        "queue.delayed": { "$ref": "#/components/messages/queue.delayed" },
+        "queue.active": { "$ref": "#/components/messages/queue.active" },
+        "queue.progress": { "$ref": "#/components/messages/queue.progress" },
+        "queue.completed": { "$ref": "#/components/messages/queue.completed" },
+        "queue.failed": { "$ref": "#/components/messages/queue.failed" },
+        "queue.retrying": { "$ref": "#/components/messages/queue.retrying" },
+        "queue.dead": { "$ref": "#/components/messages/queue.dead" },
+        "queue.stalled": { "$ref": "#/components/messages/queue.stalled" },
+        "queue.removed": { "$ref": "#/components/messages/queue.removed" },
+        "queue.promoted": { "$ref": "#/components/messages/queue.promoted" },
+        "queue.paused": { "$ref": "#/components/messages/queue.paused" },
+        "queue.resumed": { "$ref": "#/components/messages/queue.resumed" },
+        "queue.drained": { "$ref": "#/components/messages/queue.drained" },
+        "queue.cleaned": { "$ref": "#/components/messages/queue.cleaned" },
+        "queue.retried": { "$ref": "#/components/messages/queue.retried" },
+        "queue.debounced": { "$ref": "#/components/messages/queue.debounced" },
+        "queue.throttled": { "$ref": "#/components/messages/queue.throttled" },
+        "queue.repeatScheduled": {
+          "$ref": "#/components/messages/queue.repeatScheduled"
+        }
+      }
+    },
+    "queue": {
+      "address": "queue/{queue}",
+      "title": "Queue",
+      "description": "Every event of one queue. A logical channel: subscribe with its name over the connection.",
+      "parameters": {
+        "queue": {
+          "description": "A queue name, matching `^(?!\\.\\.?$)[\\w.-]+$` (at most 200 characters).",
+          "x-bun-jobs-schema": {
+            "type": "string",
+            "pattern": "^(?!\\.\\.?$)[\\w.-]+$",
+            "maxLength": 200
+          }
+        }
+      },
+      "messages": {
+        "queue.added": { "$ref": "#/components/messages/queue.added" },
+        "queue.duplicate": { "$ref": "#/components/messages/queue.duplicate" },
+        "queue.waiting": { "$ref": "#/components/messages/queue.waiting" },
+        "queue.delayed": { "$ref": "#/components/messages/queue.delayed" },
+        "queue.active": { "$ref": "#/components/messages/queue.active" },
+        "queue.progress": { "$ref": "#/components/messages/queue.progress" },
+        "queue.completed": { "$ref": "#/components/messages/queue.completed" },
+        "queue.failed": { "$ref": "#/components/messages/queue.failed" },
+        "queue.retrying": { "$ref": "#/components/messages/queue.retrying" },
+        "queue.dead": { "$ref": "#/components/messages/queue.dead" },
+        "queue.stalled": { "$ref": "#/components/messages/queue.stalled" },
+        "queue.removed": { "$ref": "#/components/messages/queue.removed" },
+        "queue.promoted": { "$ref": "#/components/messages/queue.promoted" },
+        "queue.paused": { "$ref": "#/components/messages/queue.paused" },
+        "queue.resumed": { "$ref": "#/components/messages/queue.resumed" },
+        "queue.drained": { "$ref": "#/components/messages/queue.drained" },
+        "queue.cleaned": { "$ref": "#/components/messages/queue.cleaned" },
+        "queue.retried": { "$ref": "#/components/messages/queue.retried" },
+        "queue.debounced": { "$ref": "#/components/messages/queue.debounced" },
+        "queue.throttled": { "$ref": "#/components/messages/queue.throttled" },
+        "queue.repeatScheduled": {
+          "$ref": "#/components/messages/queue.repeatScheduled"
+        }
+      }
+    },
+    "job": {
+      "address": "queue/{queue}/job/{jobId}",
+      "title": "Job",
+      "description": "Every event about one job, including a `stalled`, `retried` or `cleaned` event listing it among several. The job id is `encodeURIComponent`-escaped; a lone UTF-16 surrogate, which `encodeURIComponent` cannot encode, is written `%uXXXX`. A logical channel: subscribe with its name over the connection.",
+      "parameters": {
+        "queue": {
+          "description": "A queue name, matching `^(?!\\.\\.?$)[\\w.-]+$` (at most 200 characters).",
+          "x-bun-jobs-schema": {
+            "type": "string",
+            "pattern": "^(?!\\.\\.?$)[\\w.-]+$",
+            "maxLength": 200
+          }
+        },
+        "jobId": {
+          "description": "A job id, escaped with `encodeJobId` (exported by `@kingsleyweb/bun-jobs/api/contract`): `encodeURIComponent`, except that a lone UTF-16 surrogate, which `encodeURIComponent` refuses, becomes `%uXXXX` (upper-case hex). `decodeJobId` reverses either form; the two cannot be confused, since `encodeURIComponent` escapes every `%`."
+        }
+      },
+      "messages": {
+        "queue.added": { "$ref": "#/components/messages/queue.added" },
+        "queue.duplicate": { "$ref": "#/components/messages/queue.duplicate" },
+        "queue.waiting": { "$ref": "#/components/messages/queue.waiting" },
+        "queue.delayed": { "$ref": "#/components/messages/queue.delayed" },
+        "queue.active": { "$ref": "#/components/messages/queue.active" },
+        "queue.progress": { "$ref": "#/components/messages/queue.progress" },
+        "queue.completed": { "$ref": "#/components/messages/queue.completed" },
+        "queue.failed": { "$ref": "#/components/messages/queue.failed" },
+        "queue.retrying": { "$ref": "#/components/messages/queue.retrying" },
+        "queue.dead": { "$ref": "#/components/messages/queue.dead" },
+        "queue.stalled": { "$ref": "#/components/messages/queue.stalled" },
+        "queue.removed": { "$ref": "#/components/messages/queue.removed" },
+        "queue.promoted": { "$ref": "#/components/messages/queue.promoted" },
+        "queue.cleaned": { "$ref": "#/components/messages/queue.cleaned" },
+        "queue.retried": { "$ref": "#/components/messages/queue.retried" },
+        "queue.debounced": { "$ref": "#/components/messages/queue.debounced" },
+        "queue.throttled": { "$ref": "#/components/messages/queue.throttled" }
+      }
+    },
+    "runners": {
+      "address": "runners",
+      "title": "Runners",
+      "description": "Every runner event. A logical channel: subscribe with its name over the connection.",
+      "messages": {
+        "runner.control": { "$ref": "#/components/messages/runner.control" },
+        "runner.started": { "$ref": "#/components/messages/runner.started" },
+        "runner.succeeded": {
+          "$ref": "#/components/messages/runner.succeeded"
+        },
+        "runner.failed": { "$ref": "#/components/messages/runner.failed" },
+        "runner.queued": { "$ref": "#/components/messages/runner.queued" },
+        "runner.skipped": { "$ref": "#/components/messages/runner.skipped" },
+        "runner.timeout": { "$ref": "#/components/messages/runner.timeout" },
+        "runner.killed": { "$ref": "#/components/messages/runner.killed" }
+      }
+    },
+    "runner": {
+      "address": "runner/{runner}",
+      "title": "Runner",
+      "description": "Every event of one runner. A logical channel: subscribe with its name over the connection.",
+      "parameters": {
+        "runner": {
+          "description": "A runner id, matching `^(?!\\.\\.?$)[\\w.-]+$` (at most 200 characters).",
+          "x-bun-jobs-schema": {
+            "type": "string",
+            "pattern": "^(?!\\.\\.?$)[\\w.-]+$",
+            "maxLength": 200
+          }
+        }
+      },
+      "messages": {
+        "runner.control": { "$ref": "#/components/messages/runner.control" },
+        "runner.started": { "$ref": "#/components/messages/runner.started" },
+        "runner.succeeded": {
+          "$ref": "#/components/messages/runner.succeeded"
+        },
+        "runner.failed": { "$ref": "#/components/messages/runner.failed" },
+        "runner.queued": { "$ref": "#/components/messages/runner.queued" },
+        "runner.skipped": { "$ref": "#/components/messages/runner.skipped" },
+        "runner.timeout": { "$ref": "#/components/messages/runner.timeout" },
+        "runner.killed": { "$ref": "#/components/messages/runner.killed" }
+      }
+    }
+  },
+  "operations": {
+    "subscribe": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Subscribe",
+      "summary": "Subscribe to channels; each is authorized separately.",
+      "messages": [{ "$ref": "#/channels/connection/messages/subscribe" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [
+          { "$ref": "#/channels/connection/messages/ack" },
+          { "$ref": "#/channels/connection/messages/error" }
+        ]
+      },
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "unsubscribe": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Unsubscribe",
+      "summary": "Leave channels.",
+      "messages": [{ "$ref": "#/channels/connection/messages/unsubscribe" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [
+          { "$ref": "#/channels/connection/messages/ack" },
+          { "$ref": "#/channels/connection/messages/error" }
+        ]
+      },
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "ping": {
+      "action": "send",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Ping",
+      "summary": "Ask for a pong.",
+      "messages": [{ "$ref": "#/channels/connection/messages/ping" }],
+      "reply": {
+        "channel": { "$ref": "#/channels/connection" },
+        "messages": [{ "$ref": "#/channels/connection/messages/pong" }]
+      },
+      "x-bun-jobs-action": "events.connect"
+    },
+    "receiveControl": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/connection" },
+      "title": "Receive control messages",
+      "summary": "Greeting, gaps, heartbeats and errors.",
+      "messages": [
+        { "$ref": "#/channels/connection/messages/hello" },
+        { "$ref": "#/channels/connection/messages/gap" },
+        { "$ref": "#/channels/connection/messages/heartbeat" },
+        { "$ref": "#/channels/connection/messages/error" }
+      ],
+      "x-bun-jobs-action": "events.connect"
+    },
+    "receiveAllEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/all" },
+      "title": "Receive all events",
+      "summary": "Every queue and runner event in the namespace.",
+      "messages": [
+        { "$ref": "#/channels/all/messages/queue.added" },
+        { "$ref": "#/channels/all/messages/queue.duplicate" },
+        { "$ref": "#/channels/all/messages/queue.waiting" },
+        { "$ref": "#/channels/all/messages/queue.delayed" },
+        { "$ref": "#/channels/all/messages/queue.active" },
+        { "$ref": "#/channels/all/messages/queue.progress" },
+        { "$ref": "#/channels/all/messages/queue.completed" },
+        { "$ref": "#/channels/all/messages/queue.failed" },
+        { "$ref": "#/channels/all/messages/queue.retrying" },
+        { "$ref": "#/channels/all/messages/queue.dead" },
+        { "$ref": "#/channels/all/messages/queue.stalled" },
+        { "$ref": "#/channels/all/messages/queue.removed" },
+        { "$ref": "#/channels/all/messages/queue.promoted" },
+        { "$ref": "#/channels/all/messages/queue.paused" },
+        { "$ref": "#/channels/all/messages/queue.resumed" },
+        { "$ref": "#/channels/all/messages/queue.drained" },
+        { "$ref": "#/channels/all/messages/queue.cleaned" },
+        { "$ref": "#/channels/all/messages/queue.retried" },
+        { "$ref": "#/channels/all/messages/queue.debounced" },
+        { "$ref": "#/channels/all/messages/queue.throttled" },
+        { "$ref": "#/channels/all/messages/queue.repeatScheduled" },
+        { "$ref": "#/channels/all/messages/runner.control" },
+        { "$ref": "#/channels/all/messages/runner.started" },
+        { "$ref": "#/channels/all/messages/runner.succeeded" },
+        { "$ref": "#/channels/all/messages/runner.failed" },
+        { "$ref": "#/channels/all/messages/runner.queued" },
+        { "$ref": "#/channels/all/messages/runner.skipped" },
+        { "$ref": "#/channels/all/messages/runner.timeout" },
+        { "$ref": "#/channels/all/messages/runner.killed" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveQueuesEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/queues" },
+      "title": "Receive queues events",
+      "summary": "Every queue event.",
+      "messages": [
+        { "$ref": "#/channels/queues/messages/queue.added" },
+        { "$ref": "#/channels/queues/messages/queue.duplicate" },
+        { "$ref": "#/channels/queues/messages/queue.waiting" },
+        { "$ref": "#/channels/queues/messages/queue.delayed" },
+        { "$ref": "#/channels/queues/messages/queue.active" },
+        { "$ref": "#/channels/queues/messages/queue.progress" },
+        { "$ref": "#/channels/queues/messages/queue.completed" },
+        { "$ref": "#/channels/queues/messages/queue.failed" },
+        { "$ref": "#/channels/queues/messages/queue.retrying" },
+        { "$ref": "#/channels/queues/messages/queue.dead" },
+        { "$ref": "#/channels/queues/messages/queue.stalled" },
+        { "$ref": "#/channels/queues/messages/queue.removed" },
+        { "$ref": "#/channels/queues/messages/queue.promoted" },
+        { "$ref": "#/channels/queues/messages/queue.paused" },
+        { "$ref": "#/channels/queues/messages/queue.resumed" },
+        { "$ref": "#/channels/queues/messages/queue.drained" },
+        { "$ref": "#/channels/queues/messages/queue.cleaned" },
+        { "$ref": "#/channels/queues/messages/queue.retried" },
+        { "$ref": "#/channels/queues/messages/queue.debounced" },
+        { "$ref": "#/channels/queues/messages/queue.throttled" },
+        { "$ref": "#/channels/queues/messages/queue.repeatScheduled" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveQueueEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/queue" },
+      "title": "Receive queue events",
+      "summary": "Every event of one queue.",
+      "messages": [
+        { "$ref": "#/channels/queue/messages/queue.added" },
+        { "$ref": "#/channels/queue/messages/queue.duplicate" },
+        { "$ref": "#/channels/queue/messages/queue.waiting" },
+        { "$ref": "#/channels/queue/messages/queue.delayed" },
+        { "$ref": "#/channels/queue/messages/queue.active" },
+        { "$ref": "#/channels/queue/messages/queue.progress" },
+        { "$ref": "#/channels/queue/messages/queue.completed" },
+        { "$ref": "#/channels/queue/messages/queue.failed" },
+        { "$ref": "#/channels/queue/messages/queue.retrying" },
+        { "$ref": "#/channels/queue/messages/queue.dead" },
+        { "$ref": "#/channels/queue/messages/queue.stalled" },
+        { "$ref": "#/channels/queue/messages/queue.removed" },
+        { "$ref": "#/channels/queue/messages/queue.promoted" },
+        { "$ref": "#/channels/queue/messages/queue.paused" },
+        { "$ref": "#/channels/queue/messages/queue.resumed" },
+        { "$ref": "#/channels/queue/messages/queue.drained" },
+        { "$ref": "#/channels/queue/messages/queue.cleaned" },
+        { "$ref": "#/channels/queue/messages/queue.retried" },
+        { "$ref": "#/channels/queue/messages/queue.debounced" },
+        { "$ref": "#/channels/queue/messages/queue.throttled" },
+        { "$ref": "#/channels/queue/messages/queue.repeatScheduled" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveJobEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/job" },
+      "title": "Receive job events",
+      "summary": "Every event about one job, including a `stalled`, `retried` or `cleaned` event listing it among several. The job id is `encodeURIComponent`-escaped; a lone UTF-16 surrogate, which `encodeURIComponent` cannot encode, is written `%uXXXX`.",
+      "messages": [
+        { "$ref": "#/channels/job/messages/queue.added" },
+        { "$ref": "#/channels/job/messages/queue.duplicate" },
+        { "$ref": "#/channels/job/messages/queue.waiting" },
+        { "$ref": "#/channels/job/messages/queue.delayed" },
+        { "$ref": "#/channels/job/messages/queue.active" },
+        { "$ref": "#/channels/job/messages/queue.progress" },
+        { "$ref": "#/channels/job/messages/queue.completed" },
+        { "$ref": "#/channels/job/messages/queue.failed" },
+        { "$ref": "#/channels/job/messages/queue.retrying" },
+        { "$ref": "#/channels/job/messages/queue.dead" },
+        { "$ref": "#/channels/job/messages/queue.stalled" },
+        { "$ref": "#/channels/job/messages/queue.removed" },
+        { "$ref": "#/channels/job/messages/queue.promoted" },
+        { "$ref": "#/channels/job/messages/queue.cleaned" },
+        { "$ref": "#/channels/job/messages/queue.retried" },
+        { "$ref": "#/channels/job/messages/queue.debounced" },
+        { "$ref": "#/channels/job/messages/queue.throttled" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveRunnersEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/runners" },
+      "title": "Receive runners events",
+      "summary": "Every runner event.",
+      "messages": [
+        { "$ref": "#/channels/runners/messages/runner.control" },
+        { "$ref": "#/channels/runners/messages/runner.started" },
+        { "$ref": "#/channels/runners/messages/runner.succeeded" },
+        { "$ref": "#/channels/runners/messages/runner.failed" },
+        { "$ref": "#/channels/runners/messages/runner.queued" },
+        { "$ref": "#/channels/runners/messages/runner.skipped" },
+        { "$ref": "#/channels/runners/messages/runner.timeout" },
+        { "$ref": "#/channels/runners/messages/runner.killed" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveRunnerEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/runner" },
+      "title": "Receive runner events",
+      "summary": "Every event of one runner.",
+      "messages": [
+        { "$ref": "#/channels/runner/messages/runner.control" },
+        { "$ref": "#/channels/runner/messages/runner.started" },
+        { "$ref": "#/channels/runner/messages/runner.succeeded" },
+        { "$ref": "#/channels/runner/messages/runner.failed" },
+        { "$ref": "#/channels/runner/messages/runner.queued" },
+        { "$ref": "#/channels/runner/messages/runner.skipped" },
+        { "$ref": "#/channels/runner/messages/runner.timeout" },
+        { "$ref": "#/channels/runner/messages/runner.killed" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    }
+  },
+  "components": {
+    "schemas": {
+      "AckMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "ack" },
+          "id": { "type": "string" },
+          "op": { "type": "string", "enum": ["subscribe", "unsubscribe"] },
+          "channels": { "type": "array", "items": { "type": "string" } },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "description": "The channel exactly as the client sent it (not canonicalised)."
+                },
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "VALIDATION",
+                    "RATE_LIMITED",
+                    "MESSAGE_TOO_LARGE",
+                    "UNSUPPORTED_DATA",
+                    "INVALID_CHANNEL",
+                    "CHANNEL_NOT_AVAILABLE",
+                    "QUEUE_NOT_FOUND",
+                    "RUNNER_NOT_FOUND",
+                    "SUBSCRIPTION_LIMIT",
+                    "UNAUTHORIZED",
+                    "FORBIDDEN",
+                    "EVENTS_UNAVAILABLE",
+                    "INTERNAL"
+                  ]
+                },
+                "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+                "detail": { "type": "string" }
+              },
+              "required": ["channel", "code", "status"],
+              "additionalProperties": false
+            }
+          },
+          "resumed": { "type": "boolean" },
+          "seq": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["type", "id", "op", "channels", "seq"],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "message": { "type": "string" },
+          "code": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+          "stack": {
+            "type": "string",
+            "description": "The stack trace: present only when the API was created with `serialize.exposeStacks` (off by default)."
+          },
+          "data": { "type": "object", "additionalProperties": {} },
+          "cause": { "description": "The cause, shaped as an Error." }
+        },
+        "required": ["name", "message"],
+        "additionalProperties": false
+      },
+      "ErrorMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "error" },
+          "id": { "type": "string" },
+          "code": {
+            "type": "string",
+            "enum": [
+              "VALIDATION",
+              "RATE_LIMITED",
+              "MESSAGE_TOO_LARGE",
+              "UNSUPPORTED_DATA",
+              "INVALID_CHANNEL",
+              "CHANNEL_NOT_AVAILABLE",
+              "QUEUE_NOT_FOUND",
+              "RUNNER_NOT_FOUND",
+              "SUBSCRIPTION_LIMIT",
+              "UNAUTHORIZED",
+              "FORBIDDEN",
+              "EVENTS_UNAVAILABLE",
+              "INTERNAL"
+            ]
+          },
+          "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+          "detail": { "type": "string" }
+        },
+        "required": ["type", "code", "status", "detail"],
+        "additionalProperties": false
+      },
+      "GapMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "gap" },
+          "epoch": { "type": "string" },
+          "fromSeq": { "type": "integer", "minimum": 0 },
+          "toSeq": { "type": "integer", "minimum": 0 },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "resume-expired",
+              "epoch-changed",
+              "slow-consumer",
+              "coalesced"
+            ]
+          },
+          "channels": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["type", "epoch", "fromSeq", "toSeq", "reason"],
+        "additionalProperties": false,
+        "description": "Events in [fromSeq, toSeq] may have been missed; refetch the affected resources over HTTP."
+      },
+      "HeartbeatMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "heartbeat" },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The latest seq stamped, across every channel. seq is global, so a jump says nothing about missed events; rely on gap frames."
+          },
+          "at": { "type": "integer", "description": "Server time, epoch ms." }
+        },
+        "required": ["type", "seq", "at"],
+        "additionalProperties": false,
+        "description": "Liveness. Not sent while the connection is lagging."
+      },
+      "HelloMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "hello" },
+          "protocol": { "type": "integer", "const": 1 },
+          "sessionId": { "type": "string" },
+          "epoch": { "type": "string" },
+          "seq": { "type": "integer", "minimum": 0 },
+          "mode": { "type": "string", "enum": ["jobs", "runner", "both"] },
+          "heartbeatMs": { "type": "integer", "minimum": 0 },
+          "maxSubscriptions": { "type": "integer", "minimum": 1 },
+          "events": { "type": "string", "enum": ["push", "poll", "local"] }
+        },
+        "required": [
+          "type",
+          "protocol",
+          "sessionId",
+          "epoch",
+          "seq",
+          "mode",
+          "heartbeatMs",
+          "maxSubscriptions",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "PingMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "ping" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          }
+        },
+        "required": ["op", "id"],
+        "additionalProperties": false
+      },
+      "PongMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "pong" },
+          "id": { "type": "string" },
+          "at": { "type": "integer", "description": "Server time, epoch ms." }
+        },
+        "required": ["type", "id", "at"],
+        "additionalProperties": false
+      },
+      "QueueActiveEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "active" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueActivePayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A worker claimed a job."
+      },
+      "QueueActiveEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueActiveEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A worker claimed a job."
+      },
+      "QueueActivePayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueAddedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "added" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueAddedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job was added."
+      },
+      "QueueAddedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueAddedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job was added."
+      },
+      "QueueAddedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueCleanedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "cleaned" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueCleanedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "Finished jobs were removed."
+      },
+      "QueueCleanedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueCleanedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "Finished jobs were removed."
+      },
+      "QueueCleanedPayload": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The jobs' ids."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "delayed",
+              "active",
+              "completed",
+              "failed",
+              "dead",
+              "waiting-children"
+            ]
+          }
+        },
+        "required": ["ids", "state"],
+        "additionalProperties": false
+      },
+      "QueueCompletedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "completed" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueCompletedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job completed."
+      },
+      "QueueCompletedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueCompletedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job completed."
+      },
+      "QueueCompletedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "returnValue": { "description": "The processor's return value." }
+        },
+        "required": ["id", "returnValue"],
+        "additionalProperties": false
+      },
+      "QueueDeadEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "dead" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueDeadPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job exhausted its attempts, or failed unrecoverably."
+      },
+      "QueueDeadEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueDeadEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job exhausted its attempts, or failed unrecoverably."
+      },
+      "QueueDeadPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "error": { "$ref": "#/components/schemas/Error" }
+        },
+        "required": ["id", "error"],
+        "additionalProperties": false
+      },
+      "QueueDebouncedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "debounced" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueDebouncedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "An add replaced a pending debounced job's data."
+      },
+      "QueueDebouncedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueDebouncedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "An add replaced a pending debounced job's data."
+      },
+      "QueueDebouncedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueDelayedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "delayed" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueDelayedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job was added for later."
+      },
+      "QueueDelayedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueDelayedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job was added for later."
+      },
+      "QueueDelayedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "runAt": {
+            "type": "integer",
+            "description": "When it becomes claimable, epoch ms."
+          }
+        },
+        "required": ["id", "runAt"],
+        "additionalProperties": false
+      },
+      "QueueDrainedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "drained" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueDrainedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "Pending jobs were dropped."
+      },
+      "QueueDrainedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueDrainedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "Pending jobs were dropped."
+      },
+      "QueueDrainedPayload": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Jobs dropped."
+          }
+        },
+        "required": ["count"],
+        "additionalProperties": false
+      },
+      "QueueDuplicateEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "duplicate" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueDuplicatePayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "An add matched an existing id, so nothing was added."
+      },
+      "QueueDuplicateEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueDuplicateEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "An add matched an existing id, so nothing was added."
+      },
+      "QueueDuplicatePayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueFailedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "failed" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueFailedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "An attempt failed."
+      },
+      "QueueFailedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueFailedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "An attempt failed."
+      },
+      "QueueFailedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "error": { "$ref": "#/components/schemas/Error" }
+        },
+        "required": ["id", "error"],
+        "additionalProperties": false
+      },
+      "QueuePausedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "paused" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueuePausedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "The queue was paused."
+      },
+      "QueuePausedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueuePausedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "The queue was paused."
+      },
+      "QueuePausedPayload": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "QueueProgressEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "progress" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueProgressPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job reported progress (coalesced per job)."
+      },
+      "QueueProgressEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueProgressEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job reported progress (coalesced per job)."
+      },
+      "QueueProgressPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "progress": { "description": "The progress value, as reported." }
+        },
+        "required": ["id", "progress"],
+        "additionalProperties": false
+      },
+      "QueuePromotedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "promoted" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueuePromotedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job was made claimable early."
+      },
+      "QueuePromotedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueuePromotedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job was made claimable early."
+      },
+      "QueuePromotedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueRemovedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "removed" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueRemovedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job was removed."
+      },
+      "QueueRemovedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueRemovedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job was removed."
+      },
+      "QueueRemovedPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueRepeatScheduledEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "repeatScheduled" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": {
+            "$ref": "#/components/schemas/QueueRepeatScheduledPayload"
+          }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A repeat series scheduled its next occurrence."
+      },
+      "QueueRepeatScheduledEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueRepeatScheduledEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A repeat series scheduled its next occurrence."
+      },
+      "QueueRepeatScheduledPayload": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string", "description": "The repeat series' key." },
+          "nextRunAt": {
+            "type": "integer",
+            "description": "When the next occurrence runs, epoch ms."
+          }
+        },
+        "required": ["key", "nextRunAt"],
+        "additionalProperties": false
+      },
+      "QueueResumedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "resumed" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueResumedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "The queue was resumed."
+      },
+      "QueueResumedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueResumedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "The queue was resumed."
+      },
+      "QueueResumedPayload": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "QueueRetriedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "retried" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueRetriedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "Finished jobs were returned to the queue together."
+      },
+      "QueueRetriedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueRetriedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "Finished jobs were returned to the queue together."
+      },
+      "QueueRetriedPayload": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The jobs' ids."
+          }
+        },
+        "required": ["ids"],
+        "additionalProperties": false
+      },
+      "QueueRetryingEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "retrying" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueRetryingPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "An attempt failed and another is due."
+      },
+      "QueueRetryingEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueRetryingEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "An attempt failed and another is due."
+      },
+      "QueueRetryingPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." },
+          "error": { "$ref": "#/components/schemas/Error" },
+          "runAt": {
+            "type": "integer",
+            "description": "When the next attempt is due, epoch ms."
+          }
+        },
+        "required": ["id", "error", "runAt"],
+        "additionalProperties": false
+      },
+      "QueueStalledEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "stalled" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueStalledPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "Jobs were recovered from workers that died holding them."
+      },
+      "QueueStalledEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueStalledEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "Jobs were recovered from workers that died holding them."
+      },
+      "QueueStalledPayload": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The jobs' ids."
+          }
+        },
+        "required": ["ids"],
+        "additionalProperties": false
+      },
+      "QueueThrottledEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "throttled" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueThrottledPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "An add fell inside a throttle window, so nothing was added."
+      },
+      "QueueThrottledEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueThrottledEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "An add fell inside a throttle window, so nothing was added."
+      },
+      "QueueThrottledPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "QueueWaitingEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "queue" },
+          "type": { "type": "string", "const": "waiting" },
+          "target": { "type": "string", "description": "The queue name." },
+          "id": {
+            "type": "string",
+            "description": "The job this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/QueueWaitingPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A job became claimable."
+      },
+      "QueueWaitingEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/QueueWaitingEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A job became claimable."
+      },
+      "QueueWaitingPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The job's id." }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "RunnerControlEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "control" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerControlPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A controller changed the runner's state or queued a trigger."
+      },
+      "RunnerControlEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerControlEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A controller changed the runner's state or queued a trigger."
+      },
+      "RunnerControlPayload": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["pause", "resume", "schedule", "trigger"]
+          }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      },
+      "RunnerFailedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "failed" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerFailedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run failed."
+      },
+      "RunnerFailedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerFailedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run failed."
+      },
+      "RunnerFailedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "error": { "$ref": "#/components/schemas/Error" }
+        },
+        "required": ["runId", "error"],
+        "additionalProperties": false
+      },
+      "RunnerKilledEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "killed" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerKilledPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run was stopped on request."
+      },
+      "RunnerKilledEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerKilledEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run was stopped on request."
+      },
+      "RunnerKilledPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "reason": {
+            "type": "string",
+            "description": "The reason it was given."
+          }
+        },
+        "required": ["runId", "reason"],
+        "additionalProperties": false
+      },
+      "RunnerQueuedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "queued" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerQueuedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run was asked for while another held the lock."
+      },
+      "RunnerQueuedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerQueuedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run was asked for while another held the lock."
+      },
+      "RunnerQueuedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "RunnerSkippedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "skipped" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerSkippedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A scheduled run was skipped."
+      },
+      "RunnerSkippedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerSkippedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A scheduled run was skipped."
+      },
+      "RunnerSkippedPayload": {
+        "type": "object",
+        "properties": {
+          "reason": { "type": "string", "description": "Why it was skipped." }
+        },
+        "required": ["reason"],
+        "additionalProperties": false
+      },
+      "RunnerStartedEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "started" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerStartedPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run began."
+      },
+      "RunnerStartedEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerStartedEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run began."
+      },
+      "RunnerStartedPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "RunnerSucceededEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "succeeded" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerSucceededPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run finished successfully."
+      },
+      "RunnerSucceededEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerSucceededEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run finished successfully."
+      },
+      "RunnerSucceededPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0,
+            "description": "How long it ran."
+          }
+        },
+        "required": ["runId", "durationMs"],
+        "additionalProperties": false
+      },
+      "RunnerTimeoutEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "runner" },
+          "type": { "type": "string", "const": "timeout" },
+          "target": { "type": "string", "description": "The runner id." },
+          "id": {
+            "type": "string",
+            "description": "The run this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/RunnerTimeoutPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A run outlived its timeout."
+      },
+      "RunnerTimeoutEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/RunnerTimeoutEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A run outlived its timeout."
+      },
+      "RunnerTimeoutPayload": {
+        "type": "object",
+        "properties": {
+          "runId": { "type": "string", "description": "The run's id." }
+        },
+        "required": ["runId"],
+        "additionalProperties": false
+      },
+      "SubscribeMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "subscribe" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeJobId(jobId)>`, `runners` or `runner/<runner>`. `encodeJobId` (in the contract) is `encodeURIComponent`, plus `%uXXXX` for a lone surrogate."
+            },
+            "minItems": 1,
+            "maxItems": 256
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "added",
+                "duplicate",
+                "waiting",
+                "delayed",
+                "active",
+                "progress",
+                "completed",
+                "failed",
+                "retrying",
+                "dead",
+                "stalled",
+                "removed",
+                "promoted",
+                "paused",
+                "resumed",
+                "drained",
+                "cleaned",
+                "retried",
+                "debounced",
+                "throttled",
+                "repeatScheduled",
+                "control",
+                "started",
+                "succeeded",
+                "queued",
+                "skipped",
+                "timeout",
+                "killed"
+              ]
+            },
+            "minItems": 1
+          },
+          "resume": {
+            "type": "object",
+            "properties": {
+              "epoch": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "afterSeq": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["epoch", "afterSeq"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["op", "id", "channels"],
+        "additionalProperties": false,
+        "description": "Subscribes to channels. Each channel is authorized separately (`events.subscribe`); refusals are listed in the ack without closing the socket. Only as many channels not already held as the connection has free slots are authorized; the rest are refused SUBSCRIPTION_LIMIT. Subscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it. With `resume`, replayed events arrive before the ack; if they cannot be replayed the ack says `resumed: false` and a gap follows it. A resume split over several frames replays each frame's channels in full: an event an earlier frame (or live delivery) sent only for other channels is sent again, listing just this frame's channels it had not reached. No (seq, channel) pair is sent twice on one connection."
+      },
+      "UnsubscribeMessage": {
+        "type": "object",
+        "properties": {
+          "op": { "type": "string", "const": "unsubscribe" },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Chosen by the client; echoed in the reply."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "`all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encodeJobId(jobId)>`, `runners` or `runner/<runner>`. `encodeJobId` (in the contract) is `encodeURIComponent`, plus `%uXXXX` for a lone surrogate."
+            },
+            "minItems": 1,
+            "maxItems": 256
+          }
+        },
+        "required": ["op", "id", "channels"],
+        "additionalProperties": false,
+        "description": "Leaves channels. One unsubscribe removes a channel however many times it was subscribed; leaving a channel not held is not an error."
+      }
+    },
+    "messages": {
+      "subscribe": {
+        "name": "subscribe",
+        "title": "Subscribe",
+        "summary": "Subscribe to channels, optionally resuming.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/SubscribeMessage" },
+        "examples": [
+          {
+            "name": "subscribe",
+            "summary": "Subscribe to a queue, one of its jobs and a runner, resuming after a reconnect.",
+            "payload": {
+              "op": "subscribe",
+              "id": "sub-1",
+              "channels": [
+                "queue/mail",
+                "queue/mail/job/welcome%3Aada%40example.com",
+                "runner/nightly-report"
+              ],
+              "events": [
+                "added",
+                "progress",
+                "completed",
+                "failed",
+                "succeeded"
+              ],
+              "resume": {
+                "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+                "afterSeq": 41
+              }
+            }
+          }
+        ]
+      },
+      "unsubscribe": {
+        "name": "unsubscribe",
+        "title": "Unsubscribe",
+        "summary": "Leave channels.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/UnsubscribeMessage" },
+        "examples": [
+          {
+            "name": "unsubscribe",
+            "summary": "Leave a job's channel.",
+            "payload": {
+              "op": "unsubscribe",
+              "id": "unsub-1",
+              "channels": ["queue/mail/job/welcome%3Aada%40example.com"]
+            }
+          }
+        ]
+      },
+      "ping": {
+        "name": "ping",
+        "title": "Ping",
+        "summary": "Ask for a pong.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/PingMessage" },
+        "examples": [
+          {
+            "name": "ping",
+            "summary": "Ask for a pong.",
+            "payload": { "op": "ping", "id": "ping-7" }
+          }
+        ]
+      },
+      "hello": {
+        "name": "hello",
+        "title": "Hello",
+        "summary": "Sent once, when the connection opens.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/HelloMessage" },
+        "examples": [
+          {
+            "name": "hello",
+            "summary": "The greeting a connection opens with.",
+            "payload": {
+              "type": "hello",
+              "protocol": 1,
+              "sessionId": "0b7e6d1a-3f24-4c9e-8d2b-6a1f5e9c7b30",
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "seq": 42,
+              "mode": "both",
+              "heartbeatMs": 30000,
+              "maxSubscriptions": 50,
+              "events": "push"
+            }
+          }
+        ]
+      },
+      "ack": {
+        "name": "ack",
+        "title": "Ack",
+        "summary": "Answers a subscribe or unsubscribe, listing refused channels. Replayed events precede it; a gap may follow it.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/AckMessage" },
+        "examples": [
+          {
+            "name": "ack",
+            "summary": "A subscribe answered with one channel refused.",
+            "payload": {
+              "type": "ack",
+              "id": "sub-1",
+              "op": "subscribe",
+              "channels": [
+                "queue/mail",
+                "queue/mail/job/welcome%3Aada%40example.com"
+              ],
+              "rejected": [
+                {
+                  "channel": "runner/nightly-report",
+                  "code": "FORBIDDEN",
+                  "status": 403,
+                  "detail": "events.subscribe was refused for this runner."
+                }
+              ],
+              "resumed": true,
+              "seq": 44
+            }
+          }
+        ]
+      },
+      "gap": {
+        "name": "gap",
+        "title": "Gap",
+        "summary": "Events may have been missed; refetch over HTTP.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/GapMessage" },
+        "examples": [
+          {
+            "name": "gap",
+            "summary": "Events a resume could no longer replay.",
+            "payload": {
+              "type": "gap",
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "fromSeq": 42,
+              "toSeq": 57,
+              "reason": "resume-expired",
+              "channels": ["queue/mail"]
+            }
+          }
+        ]
+      },
+      "heartbeat": {
+        "name": "heartbeat",
+        "title": "Heartbeat",
+        "summary": "Liveness, carrying the latest global seq. seq spans every channel, so it cannot detect misses: rely on gap.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/HeartbeatMessage" },
+        "examples": [
+          {
+            "name": "heartbeat",
+            "summary": "Liveness, with the latest global seq.",
+            "payload": { "type": "heartbeat", "seq": 57, "at": 1789808430000 }
+          }
+        ]
+      },
+      "pong": {
+        "name": "pong",
+        "title": "Pong",
+        "summary": "Answers a ping.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/PongMessage" },
+        "examples": [
+          {
+            "name": "pong",
+            "summary": "The answer to a ping.",
+            "payload": { "type": "pong", "id": "ping-7", "at": 1789808431250 }
+          }
+        ]
+      },
+      "error": {
+        "name": "error",
+        "title": "Error",
+        "summary": "A frame could not be handled, or a limit was hit.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/ErrorMessage" },
+        "examples": [
+          {
+            "name": "error",
+            "summary": "A frame that failed validation.",
+            "payload": {
+              "type": "error",
+              "id": "sub-2",
+              "code": "VALIDATION",
+              "status": 400,
+              "detail": "channels must contain at least 1 item."
+            }
+          }
+        ]
+      },
+      "queue.added": {
+        "name": "queue.added",
+        "title": "Queue added",
+        "summary": "A job was added.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueAddedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.added",
+            "summary": "A job was added.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "added",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400000,
+                "payload": { "id": "welcome:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.duplicate": {
+        "name": "queue.duplicate",
+        "title": "Queue duplicate",
+        "summary": "An add matched an existing id, so nothing was added.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/QueueDuplicateEventMessage"
+        },
+        "examples": [
+          {
+            "name": "queue.duplicate",
+            "summary": "An add matched an existing id, so nothing was added.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "duplicate",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400005,
+                "payload": { "id": "welcome:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.waiting": {
+        "name": "queue.waiting",
+        "title": "Queue waiting",
+        "summary": "A job became claimable.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueWaitingEventMessage" },
+        "examples": [
+          {
+            "name": "queue.waiting",
+            "summary": "A job became claimable.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "waiting",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400010,
+                "payload": { "id": "welcome:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.delayed": {
+        "name": "queue.delayed",
+        "title": "Queue delayed",
+        "summary": "A job was added for later.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueDelayedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.delayed",
+            "summary": "A job was added for later.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "delayed",
+                "id": "digest:2026-09-19",
+                "at": 1789808400015,
+                "payload": { "id": "digest:2026-09-19", "runAt": 1789812000000 }
+              }
+            }
+          }
+        ]
+      },
+      "queue.active": {
+        "name": "queue.active",
+        "title": "Queue active",
+        "summary": "A worker claimed a job.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueActiveEventMessage" },
+        "examples": [
+          {
+            "name": "queue.active",
+            "summary": "A worker claimed a job.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "active",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400020,
+                "payload": { "id": "welcome:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.progress": {
+        "name": "queue.progress",
+        "title": "Queue progress",
+        "summary": "A job reported progress (coalesced per job).",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueProgressEventMessage" },
+        "examples": [
+          {
+            "name": "queue.progress",
+            "summary": "A job reported progress (coalesced per job).",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "progress",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400120,
+                "payload": {
+                  "id": "welcome:ada@example.com",
+                  "progress": { "sent": 3, "total": 4 }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.completed": {
+        "name": "queue.completed",
+        "title": "Queue completed",
+        "summary": "A job completed.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/QueueCompletedEventMessage"
+        },
+        "examples": [
+          {
+            "name": "queue.completed",
+            "summary": "A job completed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "completed",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400240,
+                "payload": {
+                  "id": "welcome:ada@example.com",
+                  "returnValue": { "messageId": "<0192f1c4@mail.example.com>" }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.failed": {
+        "name": "queue.failed",
+        "title": "Queue failed",
+        "summary": "An attempt failed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueFailedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.failed",
+            "summary": "An attempt failed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "failed",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400240,
+                "payload": {
+                  "id": "welcome:ada@example.com",
+                  "error": {
+                    "name": "Error",
+                    "message": "connect ECONNREFUSED 10.0.0.25:587",
+                    "code": "ECONNREFUSED"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.retrying": {
+        "name": "queue.retrying",
+        "title": "Queue retrying",
+        "summary": "An attempt failed and another is due.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueRetryingEventMessage" },
+        "examples": [
+          {
+            "name": "queue.retrying",
+            "summary": "An attempt failed and another is due.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "retrying",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400240,
+                "payload": {
+                  "id": "welcome:ada@example.com",
+                  "error": {
+                    "name": "Error",
+                    "message": "connect ECONNREFUSED 10.0.0.25:587",
+                    "code": "ECONNREFUSED"
+                  },
+                  "runAt": 1789808402240
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.dead": {
+        "name": "queue.dead",
+        "title": "Queue dead",
+        "summary": "A job exhausted its attempts, or failed unrecoverably.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueDeadEventMessage" },
+        "examples": [
+          {
+            "name": "queue.dead",
+            "summary": "A job exhausted its attempts, or failed unrecoverably.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "dead",
+                "id": "welcome:ada@example.com",
+                "at": 1789808430240,
+                "payload": {
+                  "id": "welcome:ada@example.com",
+                  "error": {
+                    "name": "SmtpError",
+                    "message": "550 5.1.1 mailbox unavailable",
+                    "code": 550,
+                    "data": { "recipient": "ada@example.com" }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.stalled": {
+        "name": "queue.stalled",
+        "title": "Queue stalled",
+        "summary": "Jobs were recovered from workers that died holding them.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueStalledEventMessage" },
+        "examples": [
+          {
+            "name": "queue.stalled",
+            "summary": "Jobs were recovered from workers that died holding them.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "stalled",
+                "at": 1789808460000,
+                "payload": {
+                  "ids": [
+                    "welcome:ada@example.com",
+                    "welcome:grace@example.com"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.removed": {
+        "name": "queue.removed",
+        "title": "Queue removed",
+        "summary": "A job was removed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueRemovedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.removed",
+            "summary": "A job was removed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "removed",
+                "id": "welcome:ada@example.com",
+                "at": 1789808400300,
+                "payload": { "id": "welcome:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.promoted": {
+        "name": "queue.promoted",
+        "title": "Queue promoted",
+        "summary": "A job was made claimable early.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueuePromotedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.promoted",
+            "summary": "A job was made claimable early.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "promoted",
+                "id": "digest:2026-09-19",
+                "at": 1789808400400,
+                "payload": { "id": "digest:2026-09-19" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.paused": {
+        "name": "queue.paused",
+        "title": "Queue paused",
+        "summary": "The queue was paused.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueuePausedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.paused",
+            "summary": "The queue was paused.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "paused",
+                "at": 1789808400500,
+                "payload": {}
+              }
+            }
+          }
+        ]
+      },
+      "queue.resumed": {
+        "name": "queue.resumed",
+        "title": "Queue resumed",
+        "summary": "The queue was resumed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueResumedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.resumed",
+            "summary": "The queue was resumed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "resumed",
+                "at": 1789808400900,
+                "payload": {}
+              }
+            }
+          }
+        ]
+      },
+      "queue.drained": {
+        "name": "queue.drained",
+        "title": "Queue drained",
+        "summary": "Pending jobs were dropped.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueDrainedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.drained",
+            "summary": "Pending jobs were dropped.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "drained",
+                "at": 1789808401000,
+                "payload": { "count": 12 }
+              }
+            }
+          }
+        ]
+      },
+      "queue.cleaned": {
+        "name": "queue.cleaned",
+        "title": "Queue cleaned",
+        "summary": "Finished jobs were removed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueCleanedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.cleaned",
+            "summary": "Finished jobs were removed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "cleaned",
+                "at": 1789808401100,
+                "payload": {
+                  "ids": [
+                    "welcome:alan@example.com",
+                    "welcome:edsger@example.com"
+                  ],
+                  "state": "completed"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.retried": {
+        "name": "queue.retried",
+        "title": "Queue retried",
+        "summary": "Finished jobs were returned to the queue together.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/QueueRetriedEventMessage" },
+        "examples": [
+          {
+            "name": "queue.retried",
+            "summary": "Finished jobs were returned to the queue together.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "retried",
+                "at": 1789808401200,
+                "payload": {
+                  "ids": [
+                    "welcome:ada@example.com",
+                    "welcome:grace@example.com"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "queue.debounced": {
+        "name": "queue.debounced",
+        "title": "Queue debounced",
+        "summary": "An add replaced a pending debounced job's data.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/QueueDebouncedEventMessage"
+        },
+        "examples": [
+          {
+            "name": "queue.debounced",
+            "summary": "An add replaced a pending debounced job's data.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "debounced",
+                "id": "digest:2026-09-19",
+                "at": 1789808401300,
+                "payload": { "id": "digest:2026-09-19" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.throttled": {
+        "name": "queue.throttled",
+        "title": "Queue throttled",
+        "summary": "An add fell inside a throttle window, so nothing was added.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/QueueThrottledEventMessage"
+        },
+        "examples": [
+          {
+            "name": "queue.throttled",
+            "summary": "An add fell inside a throttle window, so nothing was added.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "throttled",
+                "id": "reminder:ada@example.com",
+                "at": 1789808401400,
+                "payload": { "id": "reminder:ada@example.com" }
+              }
+            }
+          }
+        ]
+      },
+      "queue.repeatScheduled": {
+        "name": "queue.repeatScheduled",
+        "title": "Queue repeatScheduled",
+        "summary": "A repeat series scheduled its next occurrence.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/QueueRepeatScheduledEventMessage"
+        },
+        "examples": [
+          {
+            "name": "queue.repeatScheduled",
+            "summary": "A repeat series scheduled its next occurrence.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail"],
+              "event": {
+                "v": 1,
+                "kind": "queue",
+                "target": "mail",
+                "type": "repeatScheduled",
+                "at": 1789808401500,
+                "payload": { "key": "digest", "nextRunAt": 1789894800000 }
+              }
+            }
+          }
+        ]
+      },
+      "runner.control": {
+        "name": "runner.control",
+        "title": "Runner control",
+        "summary": "A controller changed the runner's state or queued a trigger.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerControlEventMessage" },
+        "examples": [
+          {
+            "name": "runner.control",
+            "summary": "A controller changed the runner's state or queued a trigger.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "control",
+                "at": 1789808400000,
+                "payload": { "action": "trigger" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.started": {
+        "name": "runner.started",
+        "title": "Runner started",
+        "summary": "A run began.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerStartedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.started",
+            "summary": "A run began.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "started",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808400010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.succeeded": {
+        "name": "runner.succeeded",
+        "title": "Runner succeeded",
+        "summary": "A run finished successfully.",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/RunnerSucceededEventMessage"
+        },
+        "examples": [
+          {
+            "name": "runner.succeeded",
+            "summary": "A run finished successfully.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "succeeded",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808442010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V", "durationMs": 42000 }
+              }
+            }
+          }
+        ]
+      },
+      "runner.failed": {
+        "name": "runner.failed",
+        "title": "Runner failed",
+        "summary": "A run failed.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerFailedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.failed",
+            "summary": "A run failed.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "failed",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808405010,
+                "payload": {
+                  "runId": "run-01J8ZQ4K7N3V",
+                  "error": {
+                    "name": "TypeError",
+                    "message": "Cannot read properties of undefined (reading 'rows')"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "runner.queued": {
+        "name": "runner.queued",
+        "title": "Runner queued",
+        "summary": "A run was asked for while another held the lock.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerQueuedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.queued",
+            "summary": "A run was asked for while another held the lock.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "queued",
+                "id": "run-01J8ZQ5B2D9X",
+                "at": 1789808400020,
+                "payload": { "runId": "run-01J8ZQ5B2D9X" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.skipped": {
+        "name": "runner.skipped",
+        "title": "Runner skipped",
+        "summary": "A scheduled run was skipped.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerSkippedEventMessage" },
+        "examples": [
+          {
+            "name": "runner.skipped",
+            "summary": "A scheduled run was skipped.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "skipped",
+                "at": 1789808400030,
+                "payload": { "reason": "lock-held" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.timeout": {
+        "name": "runner.timeout",
+        "title": "Runner timeout",
+        "summary": "A run outlived its timeout.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerTimeoutEventMessage" },
+        "examples": [
+          {
+            "name": "runner.timeout",
+            "summary": "A run outlived its timeout.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "timeout",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808700010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V" }
+              }
+            }
+          }
+        ]
+      },
+      "runner.killed": {
+        "name": "runner.killed",
+        "title": "Runner killed",
+        "summary": "A run was stopped on request.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/RunnerKilledEventMessage" },
+        "examples": [
+          {
+            "name": "runner.killed",
+            "summary": "A run was stopped on request.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["runner/nightly-report"],
+              "event": {
+                "v": 1,
+                "kind": "runner",
+                "target": "nightly-report",
+                "type": "killed",
+                "id": "run-01J8ZQ4K7N3V",
+                "at": 1789808460010,
+                "payload": { "runId": "run-01J8ZQ4K7N3V", "reason": "killed" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
