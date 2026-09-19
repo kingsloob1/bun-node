@@ -2063,26 +2063,18 @@ export class FileDriver implements JobsDriver {
   }
 
   async publish(event: DriverEvent): Promise<void> {
-    this.#pruneEvents(event.ns);
     const path = this.#eventsPath(event);
     await mkdir(join(path, ".."), { recursive: true });
     // One line, appended: writes below the pipe-buffer size are atomic on
     // POSIX, so concurrent publishers cannot interleave within a line.
     await writeFile(path, `${JSON.stringify(event)}\n`, { flag: "a" });
+    // Only once the line is down. A sweep started before the append judged
+    // this log by its state a moment earlier — stale, or not there yet — and
+    // could truncate it after the new line had landed, dropping an event
+    // milliseconds old.
+    this.#pruneEvents(event.ns);
   }
 
-  /**
-   * Drops event logs under `ns` that have nothing left worth keeping.
-   *
-   * **Whole files, never part of one.** A subscriber reads this log by byte
-   * offset and treats the file shrinking as a rotation, starting again from
-   * zero — so rewriting a log to keep its newer half would make every
-   * subscriber replay the events that survived. Truncating a log whose *last*
-   * write is already past the cutoff has nothing to replay.
-   *
-   * Modification time is the last append, which is exactly the question being
-   * asked, and reading it does not mean parsing the file.
-   */
   /**
    * Prunes this namespace's stored events, if it is time to.
    *
@@ -2101,18 +2093,43 @@ export class FileDriver implements JobsDriver {
     void this.cleanEvents(ns, before).catch(() => undefined);
   }
 
+  /**
+   * Drops event logs under `ns` that have nothing left worth keeping.
+   *
+   * **Whole files, never part of one.** A subscriber reads this log by byte
+   * offset and treats the file shrinking as a rotation, starting again from
+   * zero — so rewriting a log to keep its newer half would make every
+   * subscriber replay the events that survived. Truncating a log whose *last*
+   * write is already past the cutoff has nothing to replay.
+   *
+   * Modification time is the last append, which is exactly the question being
+   * asked, and reading it does not mean parsing the file.
+   *
+   * **One `stat` per log, and a missing log is skipped.** Age and size used to
+   * come from two separate calls, with a missing file reading as modified at
+   * the epoch — so a log whose directory existed but whose first line was
+   * still being appended read as ancient, then as non-empty, and was emptied
+   * of an event younger than the window. Both answers now describe the same
+   * moment. A publisher in another process can still append between that
+   * `stat` and the truncate; nothing short of a lock shared with every
+   * publisher closes that, and the window is two system calls wide.
+   */
   async cleanEvents(ns: string, before: number): Promise<number> {
     let dropped = 0;
 
     for (const path of await this.#eventLogs(ns)) {
-      if ((await this.#mtime(path)) >= before) {
+      const log = await stat(path).catch(() => null);
+
+      // Not written yet (its directory is made first), or written since the
+      // cutoff: either way, nothing in it has expired.
+      if (!log || log.mtimeMs >= before) {
         continue;
       }
 
       // Already empty: truncating it again would report work that did not
       // happen, and emptying a log updates its modification time, so every
       // later sweep would find it stale and count it afresh.
-      if ((await this.#size(path)) === 0) {
+      if (log.size === 0) {
         continue;
       }
 
