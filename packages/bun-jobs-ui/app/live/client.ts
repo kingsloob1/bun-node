@@ -29,7 +29,9 @@ import {
  * - de-duplicates by a bounded set of seen `seq`s, never a maximum, because a
  *   replay may deliver out of order; loss is learned from `gap` frames only;
  * - resumes with `{ epoch, afterSeq }` on reconnect, and turns
- *   `resumed: false` or a new epoch into a gap for the holders;
+ *   `resumed: false` or a new epoch into a gap for the holders; after a drop
+ *   mid-way through a resume split over several frames, resumes again from
+ *   that resume's position until every resuming frame is acked (bun-jobs #55);
  * - waits on acks without a timeout: broad channels may ack late.
  */
 
@@ -172,13 +174,17 @@ interface Pending {
   /** The filter key of a subscribe. */
   filter: string;
   /**
-   * A resuming subscribe that was not the resume's first frame: the server
-   * skips, in its replay, events it already replayed for an earlier frame,
-   * so an event matching channels of both reaches only the first frame's
-   * channels, and the ack still says `resumed: true`. Its holders are told
-   * of a gap instead of trusting it.
+   * A resuming subscribe that was not the resume's first frame. Servers
+   * before bun-jobs #55 skipped, in a replay, events an earlier frame's
+   * replay had sent, so an event matching channels of both reached only the
+   * first frame's channels while the ack still said `resumed: true`. The
+   * server now replays each frame's channels in full (#55); its holders are
+   * still told of a gap, as a belt-and-braces: a refetch costs little, and
+   * an older server may be on the other end.
    */
   splitResume?: true;
+  /** Whether it carried `resume` (see `LiveClient.#resuming`). */
+  resuming?: true;
 }
 
 /** Filter key meaning "every type". */
@@ -316,6 +322,22 @@ export class LiveClient {
   readonly #seen = new Map<number, Set<Holder>>();
   /** Resume to send with the first subscribes after `hello`. */
   #resume: { epoch: string; afterSeq: number } | undefined;
+  /**
+   * The resume last sent, while any of its subscribe frames is unacked. A
+   * later frame's replay can carry `seq`s below ones an earlier frame's
+   * replay already delivered, so the highest `seq` seen is not a safe
+   * position until every resuming frame is acked: a reconnect before then
+   * resumes from this same position (bun-jobs #55). Survives teardown.
+   */
+  #resuming:
+    | {
+        /** The position that resume used. */
+        resume: { epoch: string; afterSeq: number };
+        /** Ids of its subscribe frames not yet acked (this connection's). */
+        unacked: Set<string>;
+      }
+    | undefined;
+
   /** A gap to announce to every holder once live again (after a 4008 close). */
   #pendingGap: JobsApiGapMessage["reason"] | undefined;
   /** Set by `resumed: false`: the server's gap right after it was already announced. */
@@ -780,6 +802,7 @@ export class LiveClient {
     const resume = this.#resume;
     this.#resume = undefined;
     let resumeFrames = 0;
+    const resumeIds = new Set<string>();
     for (const [filter, channels] of groups) {
       for (const chunk of this.#chunks(channels)) {
         const id = this.#id();
@@ -791,7 +814,11 @@ export class LiveClient {
           channels: chunk,
           filter,
           ...(resume && resumeFrames++ > 0 ? { splitResume: true } : {}),
+          ...(resume ? { resuming: true } : {}),
         });
+        if (resume) {
+          resumeIds.add(id);
+        }
         this.#send({
           op: "subscribe",
           id,
@@ -802,6 +829,10 @@ export class LiveClient {
           ...(resume ? { resume } : {}),
         });
       }
+    }
+    if (resume) {
+      this.#resuming =
+        resumeIds.size > 0 ? { resume, unacked: resumeIds } : undefined;
     }
     for (const chunk of this.#chunks(leaving)) {
       const id = this.#id();
@@ -1004,6 +1035,7 @@ export class LiveClient {
       this.#epoch = hello.epoch;
       this.#lastSeq = hello.seq;
       this.#seen.clear();
+      this.#resuming = undefined;
       this.#pendingGap = undefined;
       this.#gap(this.#holders, {
         type: "gap",
@@ -1013,7 +1045,15 @@ export class LiveClient {
         reason: "epoch-changed",
       });
     } else if (this.#holders.size > 0) {
-      this.#resume = { epoch: this.#epoch, afterSeq: this.#lastSeq };
+      // An interrupted split resume is resumed from where it started.
+      const interrupted =
+        this.#resuming?.resume.epoch === this.#epoch
+          ? this.#resuming.resume.afterSeq
+          : undefined;
+      this.#resume = {
+        epoch: this.#epoch,
+        afterSeq: interrupted ?? this.#lastSeq,
+      };
     }
 
     this.#setSnapshot({ state: "live", detail: null });
@@ -1038,6 +1078,9 @@ export class LiveClient {
     this.#pending.delete(ack.id);
     if (!pending) {
       return;
+    }
+    if (pending.resuming) {
+      this.#settleResumeFrame(ack.id);
     }
     const rejected = ack.rejected ?? [];
     if (pending.op === "unsubscribe") {
@@ -1112,6 +1155,17 @@ export class LiveClient {
     }
   }
 
+  /** A resuming subscribe was answered; once all were, the position may advance. */
+  #settleResumeFrame(id: string): void {
+    const resuming = this.#resuming;
+    if (!resuming?.unacked.delete(id)) {
+      return;
+    }
+    if (resuming.unacked.size === 0) {
+      this.#resuming = undefined;
+    }
+  }
+
   /** An event: de-duplicated by `seq`, delivered once to each holder it concerns. */
   #onEvent(message: JobsApiEventMessage): void {
     if (this.#epoch !== undefined && message.epoch !== this.#epoch) {
@@ -1158,6 +1212,19 @@ export class LiveClient {
       this.#pausedUntil = this.#timers.now() + this.#options.rateLimitPauseMs;
     }
     if (pending) {
+      if (pending.resuming) {
+        // Asked again, it goes without `resume`: nothing will replay what
+        // its channels missed, so their holders refetch instead.
+        this.#settleResumeFrame(error.id!);
+        this.#gap(this.#holdersOf(pending.channels), {
+          type: "gap",
+          epoch: this.#epoch ?? "",
+          fromSeq: 0,
+          toSeq: this.#lastSeq,
+          reason: "resume-expired",
+          channels: pending.channels,
+        });
+      }
       // The frame had no effect: forget what it asked, so the next reconcile asks again.
       if (pending.op === "subscribe") {
         for (const channel of pending.channels) {
