@@ -16,8 +16,8 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
-import type { UiConfig, UiSections, UiTheme } from "../shared/config";
 import type { UiAsset, UiAssets } from "./assets";
+import type { UiConfig, UiSections, UiTheme } from "./shared/config";
 import type { ShellRenderer } from "./shell";
 import type {
   JobsUi,

@@ -4,14 +4,14 @@
  * depends on what `app/` renders.
  */
 import type { JobsUiInternals } from "../../lib/jobsUi";
+import type { UiConfig } from "../../lib/shared/config";
 import type { JobsUi, JobsUiOptions } from "../../lib/types";
-import type { UiConfig } from "../../shared/config";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { createJobsUi } from "../../lib/jobsUi";
-import { UI_CONFIG_ELEMENT_ID } from "../../shared/config";
+import { UI_CONFIG_ELEMENT_ID } from "../../lib/shared/config";
 
 /** The fixture app entry: one stylesheet, one split chunk. */
 export const FIXTURE_ENTRY = join(

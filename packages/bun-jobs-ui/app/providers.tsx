@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { UiConfig } from "../shared/config.ts";
+import type { UiConfig } from "../lib/shared/config.ts";
 import type { ApiClient } from "./api/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "./components/ToastProvider";

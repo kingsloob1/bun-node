@@ -1,4 +1,4 @@
-import type { UiTheme } from "../../shared/config.ts";
+import type { UiTheme } from "../../lib/shared/config.ts";
 import { useState } from "react";
 import { Button } from "../components/Button";
 import { useUiConfig } from "../context";
