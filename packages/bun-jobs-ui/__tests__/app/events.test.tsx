@@ -12,6 +12,7 @@ import {
   parseChannel,
   parseTypes,
   prependRows,
+  readTypes,
   scopesFor,
   typesFor,
 } from "../../app/screens/events/eventLog";
@@ -166,6 +167,39 @@ describe("eventLog", () => {
     expect(parseTypes(null, QUEUE_EVENT_TYPES)).toEqual([]);
   });
 
+  it("reads types bare or family-prefixed, reports what it ignores, and normalises to bare names", () => {
+    expect(
+      readTypes(
+        "queue.completed,runner.started,completed,bogus,queue.started",
+        typesFor({ scope: "all" }),
+      ),
+    ).toEqual({
+      types: ["completed", "started"],
+      ignored: [
+        { name: "bogus", reason: "unknown" },
+        { name: "queue.started", reason: "unknown" },
+      ],
+      normalized: "completed,started,bogus,queue.started",
+    });
+    // A family the channel does not carry: ignored, with why.
+    expect(readTypes("runner.failed,queue.failed", QUEUE_EVENT_TYPES)).toEqual({
+      types: ["failed"],
+      ignored: [{ name: "runner.failed", reason: "channel" }],
+      normalized: "failed,runner.failed",
+    });
+    expect(readTypes("started", QUEUE_EVENT_TYPES).ignored).toEqual([
+      { name: "started", reason: "channel" },
+    ]);
+    expect(readTypes(null, QUEUE_EVENT_TYPES)).toEqual({
+      types: [],
+      ignored: [],
+      normalized: null,
+    });
+    expect(parseTypes("queue.completed", QUEUE_EVENT_TYPES)).toEqual([
+      "completed",
+    ]);
+  });
+
   it("keeps the newest rows, up to the cap", () => {
     const row = (key: number) =>
       ({
@@ -242,6 +276,35 @@ describe("the Events console", () => {
     expect(page().getByTestId("events-types-summary").textContent).toBe(
       "Types: started",
     );
+    expect(page().getByTestId("events-types-ignored").textContent).toBe(
+      "Ignored in the link's types: completed (runner/nightly does not carry it); bogus (not an event type).",
+    );
+  });
+
+  it("accepts prefixed types in the URL and rewrites them bare", async () => {
+    await renderEvents("?channel=queues&types=queue.completed,failed");
+    await waitFor(() => expect(url().get("types")).toBe("completed,failed"));
+    expect(subscription().events).toEqual(["completed", "failed"]);
+    expect(page().getByTestId("events-types-summary").textContent).toBe(
+      "Types: completed, failed",
+    );
+    expect(page().queryByTestId("events-types-ignored")).toBeNull();
+  });
+
+  it("notes unknown types instead of silently showing every type", async () => {
+    await renderEvents("?channel=queues&types=bogus,runner.started");
+    const note = await page().findByTestId("events-types-ignored");
+    expect(note.textContent).toBe(
+      "Ignored in the link's types: bogus (not an event type); runner.started (queues does not carry it). Showing every type.",
+    );
+    expect(subscription().events).toBeUndefined();
+    // The names stay in the URL, so a reload shows the same note.
+    expect(url().get("types")).toBe("bogus,runner.started");
+
+    // Choosing a type from the filter replaces them.
+    fireEvent.click(page().getByLabelText("completed"));
+    await waitFor(() => expect(url().get("types")).toBe("completed"));
+    expect(page().queryByTestId("events-types-ignored")).toBeNull();
   });
 
   it("falls back to the default channel for one the mode lacks", async () => {
