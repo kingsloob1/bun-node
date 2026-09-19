@@ -1,5 +1,6 @@
 import type {
   JobsDriver,
+  QueuedTrigger,
   RunRecord,
   RunSource,
   RunStatus,
@@ -43,6 +44,12 @@ import { resolveRunnerOptions } from "./options";
 
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
+
+/**
+ * How many times a paused drain peeks again after losing a forced head to
+ * another drainer, before leaving the queue to that drainer.
+ */
+const TAKE_QUEUED_ATTEMPTS = 16;
 
 /**
  * Runs a JS/TS file on a schedule or on demand.
@@ -107,8 +114,12 @@ export class BunRunner<
 
   /** Runs in flight in this process. */
   readonly #active = new Map<string, RunHandle>();
-  /** Triggers parked locally (parallel mode only; single mode uses the driver). */
-  readonly #localQueue: { id: string; args?: TArgs }[] = [];
+  /**
+   * Triggers parked locally (parallel mode only; single mode uses the driver),
+   * oldest first. `force` is set when the request asked to run even while
+   * paused, so the drain can hold back the rest while the runner is paused.
+   */
+  readonly #localQueue: { id: string; args?: TArgs; force?: boolean }[] = [];
   /**
    * Bookkeeping still being written for runs that have already left
    * {@link #active}.
@@ -320,8 +331,16 @@ export class BunRunner<
     this.safeEmit("paused");
   }
 
-  /** Resumes the runner everywhere, optionally firing a run straight away. */
-  async resume(options?: { triggerNow?: boolean }): Promise<void> {
+  /**
+   * Resumes the runner everywhere, optionally firing a run straight away.
+   *
+   * Triggers the pause held back in the queue start first, oldest first, so
+   * a `triggerNow` run lines up behind them rather than jumping the queue.
+   */
+  async resume(options?: {
+    /** Also ask for a run once the queue has been drained. */
+    triggerNow?: boolean;
+  }): Promise<void> {
     this.#paused = false;
     if (this.#status !== "stopped") {
       this.#status = "running";
@@ -333,6 +352,8 @@ export class BunRunner<
       updatedAt: Date.now(),
     });
     this.safeEmit("resumed");
+
+    await this.#drainAll();
 
     if (options?.triggerNow) {
       await this.trigger({ source: "resume" as RunSource });
@@ -362,11 +383,28 @@ export class BunRunner<
    * run's id, `queued` with its position, or `skipped` with the reason —
    * paused, already busy, the lock is held elsewhere, the concurrency cap is
    * reached, or the queue is full.
+   *
+   * `force` runs it even while paused. A forced trigger that has to wait —
+   * behind a run in flight, the lock held elsewhere, or the concurrency cap —
+   * is queued with `force: true` recorded on it, and a drain while paused
+   * still runs it. The queue stays strict FIFO and the gate looks at the head
+   * only: while paused, a drain runs the head if it is forced and otherwise
+   * leaves the whole queue untouched, in order, until `resume()`. So a forced
+   * trigger queued behind an unforced one waits for the resume too. Unforced
+   * triggers are refused while paused, so an unforced head can only be one
+   * queued before the pause.
+   *
+   * A trigger queued by a version before `force` was recorded carries no
+   * `force` field, reads as unforced, and so waits for `resume()` — where
+   * those versions ran every queued trigger regardless of the pause.
    */
   async trigger(options?: {
     /** Arguments for this run; defaults to the runner's `args`. */
     args?: TArgs;
-    /** Run even while paused. */
+    /**
+     * Run even while paused — including later, from the queue, when it has to
+     * wait (see above for the head-only rule). Defaults to `false`.
+     */
     force?: boolean;
     /** What is asking. Defaults to `"manual"`. */
     source?: RunSource;
@@ -387,7 +425,11 @@ export class BunRunner<
 
     if (this.options.runMode === "parallel") {
       if (this.#active.size >= this.options.maxConcurrency) {
-        return await this.#queueLocally(args, "max-concurrency");
+        return await this.#queueLocally(
+          args,
+          "max-concurrency",
+          options?.force,
+        );
       }
       return { outcome: "started", runId: await this.#startRun(args, source) };
     }
@@ -648,7 +690,8 @@ export class BunRunner<
       this.#armTicker();
     }
 
-    await this.#drainQueued();
+    // A resume adopted from elsewhere releases what the pause held back.
+    await this.#drainAll();
   }
 
   /**
@@ -701,10 +744,13 @@ export class BunRunner<
    * `control` event.
    *
    * In `single` mode it takes the lock first, and leaves the queue to whoever
-   * holds it when it cannot. Queued triggers run whether or not the runner is
-   * paused, exactly as they do in the holder's drain: the pause is checked
-   * when a trigger is requested, because a queued trigger does not record
-   * whether it was forced.
+   * holds it when it cannot.
+   *
+   * While paused it applies the same gate as the holder's drain (see
+   * {@link #takeQueued}): it peeks at the head and goes on only when that
+   * trigger was forced, leaving the queue untouched otherwise. In `single`
+   * mode the peek comes before the lock, so a paused runner with nothing it
+   * may run never takes the lock at all.
    */
   async #drainQueued(): Promise<void> {
     if (this.#drainingQueued) {
@@ -735,10 +781,7 @@ export class BunRunner<
           this.#active.size < this.options.maxConcurrency &&
           (this.#status as RunnerStatus) !== "stopped"
         ) {
-          const trigger = await this.driver.popQueuedTrigger(
-            this.namespace,
-            this.#key,
-          );
+          const trigger = await this.#takeQueued();
           if (!trigger) {
             return;
           }
@@ -755,11 +798,19 @@ export class BunRunner<
         return;
       }
 
-      const queued = await this.driver.countQueuedTriggers(
-        this.namespace,
-        this.#key,
-      );
-      if (queued === 0) {
+      // Nothing this instance may run: leave the lock alone. While paused
+      // that means an empty queue or an unforced head.
+      if (this.#paused) {
+        const head = await this.driver.peekQueuedTrigger(
+          this.namespace,
+          this.#key,
+        );
+        if (head?.force !== true) {
+          return;
+        }
+      } else if (
+        (await this.driver.countQueuedTriggers(this.namespace, this.#key)) === 0
+      ) {
         return;
       }
 
@@ -797,10 +848,77 @@ export class BunRunner<
     return outcome;
   }
 
-  /** Parks a trigger in this process (parallel mode). */
+  /**
+   * Drains both queues after something that may have released them — a
+   * resume, here or adopted from elsewhere, and every sync: this process's
+   * local queue (parallel mode), then the driver's.
+   */
+  async #drainAll(): Promise<void> {
+    if (this.#status !== "running" && this.#status !== "paused") {
+      return;
+    }
+
+    // Single mode has no local queue, and its `#drain` pops without taking
+    // the lock, so it is reached only through `#drainQueued`.
+    if (this.options.runMode === "parallel") {
+      await this.#drain();
+    }
+    await this.#drainQueued();
+  }
+
+  /**
+   * Takes the next trigger from the driver's queue that may run now, or
+   * `null` when there is none.
+   *
+   * Not paused, it pops. Paused, it peeks and takes only a head that was
+   * forced (`force === true`); anything else — including a record from
+   * before `force` was recorded — stays where it is, and so does everything
+   * behind it, until the runner resumes. Strict FIFO, head only.
+   *
+   * The forced head is taken *by id* with
+   * {@link JobsDriver.popQueuedTriggerIf}, atomically against every other
+   * process, so a drainer never pops a record it did not inspect: drainers
+   * in several processes (parallel mode) racing for one forced head get it
+   * exactly once between them, and nothing behind it moves. A `null` there
+   * means the head changed under us — another drainer took it — so this
+   * peeks again and decides afresh, at most {@link TAKE_QUEUED_ATTEMPTS}
+   * times. Each miss means another drainer made progress, and that drainer
+   * goes on draining, so giving up after the cap strands nothing.
+   */
+  async #takeQueued(): Promise<QueuedTrigger | null> {
+    for (let attempt = 0; attempt < TAKE_QUEUED_ATTEMPTS; attempt++) {
+      if (!this.#paused) {
+        return await this.driver.popQueuedTrigger(this.namespace, this.#key);
+      }
+
+      const head = await this.driver.peekQueuedTrigger(
+        this.namespace,
+        this.#key,
+      );
+      if (head?.force !== true) {
+        return null;
+      }
+
+      const taken = await this.driver.popQueuedTriggerIf(
+        this.namespace,
+        this.#key,
+        head.id,
+      );
+      if (taken) {
+        return taken;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Parks a trigger in this process (parallel mode). `force` is whether the
+   * request asked to run even while paused, so the drain can tell.
+   */
   async #queueLocally(
     args: TArgs | undefined,
     reason: (TriggerOutcome & { outcome: "skipped" })["reason"],
+    force?: boolean,
   ): Promise<TriggerOutcome> {
     if (!this.options.queueRuns) {
       return await this.#skip(reason);
@@ -810,10 +928,10 @@ export class BunRunner<
       return await this.#skip("queue-full");
     }
 
-    const trigger = { id: newId(), args };
+    const trigger = { id: newId(), args, ...(force ? { force: true } : {}) };
     this.#localQueue.push(trigger);
     await this.#bump({ queued: 1 });
-    this.safeEmit("queued", trigger);
+    this.safeEmit("queued", { id: trigger.id, args });
     void this.#publish("queued", { runId: trigger.id });
 
     return { outcome: "queued", position: this.#localQueue.length };
@@ -1269,7 +1387,12 @@ export class BunRunner<
     }
   }
 
-  /** Runs whatever is queued, then releases the lock in single mode. */
+  /**
+   * Runs whatever is queued, then releases the lock in single mode.
+   *
+   * While paused only a forced head is taken, from either queue; an unforced
+   * head stops the drain and leaves the queue as it was for `resume()`.
+   */
   async #drain(): Promise<void> {
     if (this.#draining) {
       return;
@@ -1279,15 +1402,17 @@ export class BunRunner<
     try {
       if (this.options.runMode === "parallel") {
         while (
-          this.#localQueue.length > 0 &&
           this.#active.size < this.options.maxConcurrency &&
           this.#status !== "stopped"
         ) {
-          const trigger = this.#localQueue.shift();
-          if (!trigger) {
+          // The same gate as the driver's queue: while paused, only a forced
+          // head runs, and an unforced one holds everything behind it.
+          const trigger = this.#localQueue[0];
+          if (!trigger || (this.#paused && trigger.force !== true)) {
             break;
           }
-          this.safeEmit("dequeued", trigger);
+          this.#localQueue.shift();
+          this.safeEmit("dequeued", { id: trigger.id, args: trigger.args });
           await this.#startRun(trigger.args, "queued");
         }
         return;
@@ -1300,10 +1425,9 @@ export class BunRunner<
           return;
         }
 
-        const trigger = await this.driver.popQueuedTrigger(
-          this.namespace,
-          this.#key,
-        );
+        // While paused, only a forced head is taken; the lock is released
+        // below when nothing runs.
+        const trigger = await this.#takeQueued();
         if (!trigger) {
           break;
         }

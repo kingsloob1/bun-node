@@ -1479,6 +1479,28 @@ throwing. It resolves to one of these outcomes:
 `force` runs even while paused. A manual trigger on a stopped runner throws
 `RunnerStoppedError`.
 
+`pause()` also holds back what is already queued. While paused, a drain looks
+at the head of the queue and runs it only if it was forced; otherwise it
+leaves the queue exactly as it is, in order, until `resume()` drains it.
+
+- A forced trigger that has to wait — behind a run in flight, the lock held
+  elsewhere, or `maxConcurrency` in `parallel` mode — records `force: true`,
+  so it still runs while paused when it reaches the head.
+- It is strict FIFO and looks at the head only. A forced trigger queued
+  behind an unforced one waits for the resume too. Unforced triggers are
+  refused while paused, so an unforced head can only be one queued before the
+  pause.
+- A paused runner with nothing it may run does not take the lock.
+- The drainer goes by the paused flag as it last read it, the same one
+  `trigger()` checks. A pause set in another process applies at its next
+  sync, or at once with `remoteControl`.
+- `resume()` drains the held-back triggers, oldest first, before a
+  `triggerNow` run, which queues behind them.
+
+**Upgrading:** triggers queued by a version before `force` was recorded have
+no `force` field. They count as unforced, so they wait for `resume()`. Those
+versions ran every queued trigger, paused or not.
+
 In `single` mode, the lock lives in the driver, so one run happens at a time
 across every process sharing the backend. Queued triggers are also stored in
 the driver, so they survive the lock holder crashing, and whoever holds the
@@ -1624,9 +1646,10 @@ Limits:
 
 - **There is no remote kill.** Only the process executing a run can stop it,
   with `BunRunner.kill()`. `RemoteRunner` has no `kill` or `send`.
-- The pause is checked when a trigger is requested. A queued trigger does not
-  record `force`, so the owner runs whatever it drains, paused or not. The
-  lock holder's own drain has always done the same.
+- A remote `trigger({ force: true })` records `force` on the queued trigger,
+  so a paused owner drains it. The head-only rule in
+  [Triggers and run modes](#triggers-and-run-modes) applies: a forced trigger
+  behind an unforced one waits for the resume.
 - A remote controller cannot tell whether any owner is alive. `info().isRunning`
   comes from the lock.
 - For a runner registered in this process, `isLocal` is `true` and every call
