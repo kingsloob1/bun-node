@@ -1,0 +1,14 @@
+{
+  // The repo's own tooling scripts (`typecheck.ts`, `setup-databases.ts`,
+  // `consumer-check.ts`). They belong to no package, and the root
+  // `tsconfig.json` deliberately includes nothing, so until this project
+  // existed nothing type-checked them and errors accumulated unseen. It is
+  // listed in `scripts/typecheck.ts`, so it is checked with everything else.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // TypeScript 6 loads no `@types/*` package unless it is named. The scripts
+    // run under Bun, and `bun` brings in `node` with it.
+    "types": ["bun"]
+  },
+  "include": ["./**/*.ts", "eslint.config.mjs"]
+}

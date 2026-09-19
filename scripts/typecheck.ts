@@ -3,9 +3,10 @@
  * Type-checks every project in the repo.
  *
  * They are listed in `PROJECTS` below: the packages, their nested benchmark,
- * playground and app projects, the standalone `benchmarks/` package and the
- * example projects. Each has its own `tsconfig.json`, and all of them extend `tsconfig.base.json`, so a file
- * is checked the same way wherever it is checked from.
+ * playground and app projects, the standalone `benchmarks/` package, the
+ * example projects and these root scripts themselves. Each has its own
+ * `tsconfig.json`, and all of them extend `tsconfig.base.json`, so a file is
+ * checked the same way wherever it is checked from.
  *
  * This exists because the per-package `include` used to be `./lib/**\/*` alone.
  * The IDE checks whatever file you open, `tsc --noEmit` checked only `lib`, and
@@ -34,6 +35,8 @@ const PROJECTS = [
   "examples/bun-common/tsconfig.json",
   "examples/bun-nest/tsconfig.json",
   "examples/bun-jobs-ui/tsconfig.json",
+  "packages/bun-jobs-ui/__tests__/app/pkg/tsconfig.json",
+  "scripts/tsconfig.json",
 ] as const;
 
 /**
