@@ -18,6 +18,11 @@ bun add @kingsleyweb/bun-jobs-ui @kingsleyweb/bun-jobs
 Requires Bun >= 1.4.2. `@kingsleyweb/bun-jobs` is a peer dependency. React and
 the rest of the app are bundled into `dist/`, so you have no build step.
 
+Bun runs the shipped TypeScript server source (`main` is `lib/index.ts`). Your
+type checker reads the built declarations in `dts/` (`types`), so your compiler
+options never apply to this package's source, and they describe `lib/` only:
+no React, TanStack or other browser-app type reaches your project.
+
 ## Mounting
 
 ```ts
@@ -678,3 +683,8 @@ status, `429` or `500` included, gives a 403.
 `bun scripts/build.ts` writes `dist/assets/*` (content-hashed, minified, with
 source maps) and `dist/manifest.json`. `prepack` runs it for you. `dist/` is
 gitignored. In the repo, `jobsUi()` builds in memory when `dist/` is absent.
+
+`bun run build:types` (`scripts/build-declarations.ts`) writes the declarations
+for `lib/` into `dts/`, and verifies them. `prepack` runs it too, after the
+bundle, so a pack publishes both. `dts/` is gitignored as well: `dist/` is the
+browser bundle, `dts/` the server's types.

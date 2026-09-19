@@ -64,8 +64,11 @@ function staticallyReaches(
     return false;
   }
   seen.add(file);
+  // `scanImports` rejects a shebang, which a script a test imports may carry
+  // (`scripts/build-declarations.ts`, via the packaging test).
+  const source = readFileSync(file, "utf8").replace(/^#!.*/, "");
   return transpiler
-    .scanImports(readFileSync(file, "utf8"))
+    .scanImports(source)
     .filter((entry) => entry.kind === "import-statement")
     .some((entry) => {
       if (target(entry.path)) {

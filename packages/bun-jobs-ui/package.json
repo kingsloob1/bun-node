@@ -6,14 +6,43 @@
   "description": "A React management UI and API documentation viewer for the @kingsleyweb/bun-jobs management API, served by a jobsUi() handler that mounts beside createJobsApi",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
+  "exports": {
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./package.json": "./package.json"
+  },
   "main": "lib/index.ts",
-  "types": "lib/index.ts",
+  "types": "dts/index.d.ts",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "files": [
     "dist",
+    "dts",
     "lib"
   ],
   "engines": {
@@ -21,7 +50,8 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
-    "prepack": "bun scripts/build.ts",
+    "build:types": "bun scripts/build-declarations.ts",
+    "prepack": "bun scripts/build.ts && bun scripts/build-declarations.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app"
   },
