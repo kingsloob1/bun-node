@@ -29,7 +29,7 @@ import {
 } from "@kingsleyweb/bun-common/lib/utils/native";
 import { displayRepeatKey } from "../../queue/options";
 import { DEFAULT_LOCK_DURATION } from "../../shared/constants";
-import { ProtocolError } from "../../shared/errors";
+import { ProtocolError, UnrecoverableJobError } from "../../shared/errors";
 import { toHandler } from "../executors/executor";
 import { CLOSE_EXIT_CODE, JOB_CHANNEL } from "../protocol";
 
@@ -128,6 +128,38 @@ function readReply<TOperation extends JobChannelOperation>(
   return reply.value;
 }
 
+/**
+ * A stored progress value as a {@link RunProgress}, or `null`.
+ *
+ * Mirrors `Job`'s own narrowing (`queue/Job.ts`), which is not exported, and
+ * could not be imported here anyway: `Job.ts` pulls in the bun-common barrel
+ * this module deliberately avoids (see the imports above).
+ */
+function asProgress(value: unknown): RunProgress | null {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * What an isolated job's attempt has decided so far, shared between the job
+ * object the processor holds and the code that reports how the run ended.
+ */
+interface AttemptState {
+  /**
+   * The reason the processor gave `job.fail()`, when it called it: reported
+   * as the run's error however the processor then returned or threw.
+   * `undefined` until then.
+   */
+  failedWith: UnrecoverableJobError | undefined;
+  /** Whether the processor has returned or thrown, so `fail()` is too late. */
+  settled: boolean;
+}
+
 /** How long before `closeTimeout` the child stops waiting and exits itself. */
 const SELF_EXIT_MARGIN = 500;
 
@@ -168,7 +200,8 @@ async function execute(
   const pending: unknown[] = [];
   /** Replies awaited from the worker, by request number. */
   const replies = new Map<number, ReplyResolver>();
-  let settled = false;
+  /** How the attempt has gone, for an isolated job's `fail()`. */
+  const attempt: AttemptState = { failedWith: undefined, settled: false };
 
   transport.onMessage((message) => {
     if (message?.t === "message" && message.runId === ctx.runId) {
@@ -195,7 +228,7 @@ async function execute(
 
     if (message?.t === "close" && message.runId === ctx.runId) {
       controller.abort();
-      scheduleSelfExit(ctx, () => settled, transport);
+      scheduleSelfExit(ctx, () => attempt.settled, transport);
     }
   });
 
@@ -238,17 +271,30 @@ async function execute(
             module,
             ctx.file,
             "job",
-          )(...isolatedJob(transport, ctx, controller, replies))
+          )(...isolatedJob(transport, ctx, controller, replies, attempt))
         : await toHandler(module, ctx.file)(context);
-    settled = true;
+    attempt.settled = true;
+    // `job.fail()` was called: the attempt ends that way however the
+    // processor returned, exactly as the worker settles an in-process one.
+    if (attempt.failedWith) {
+      transport.send({
+        t: "error",
+        runId: ctx.runId,
+        error: serializeError(attempt.failedWith),
+      });
+      finish(transport, 1);
+      return;
+    }
+
     transport.send({ t: "done", runId: ctx.runId, result: result ?? null });
     finish(transport, 0);
   } catch (error) {
-    settled = true;
+    attempt.settled = true;
     transport.send({
       t: "error",
       runId: ctx.runId,
-      error: serializeError(error),
+      // The reason given to `job.fail()` wins over anything thrown after it.
+      error: serializeError(attempt.failedWith ?? error),
     });
     finish(transport, 1);
   }
@@ -262,12 +308,18 @@ async function execute(
  * worker and answered back, progress is forwarded, and the operations that
  * would change the stored job directly say plainly that they cannot be used
  * here rather than failing obscurely.
+ *
+ * `fail()` needs no round trip: like the worker's own `Job`, it only records
+ * the reason in `attempt`, and `execute` reports it as the run's error when
+ * the processor settles. The worker then reads it as the
+ * `UnrecoverableJobError` it is, by name, and the job goes dead.
  */
 function isolatedJob(
   transport: ChildTransport,
   ctx: SerializableContext,
   controller: AbortController,
   replies: Map<number, ReplyResolver>,
+  attempt: AttemptState,
 ): [job: IsolatedJob, context: ProcessorContext] {
   const record = ctx.job!;
   let seq = 0;
@@ -325,6 +377,27 @@ function isolatedJob(
   const extendLock = async (ms?: number) =>
     await ask("heartbeat", { ms: ms ?? DEFAULT_LOCK_DURATION });
 
+  // Built exactly as `Job.fail()` builds it — the message, the job's id, and
+  // the reason as `cause` when it is an `Error` — so the stored failure reads
+  // the same whichever mode ran the processor.
+  const fail = async (reason: string | Error): Promise<boolean> => {
+    if (attempt.settled) {
+      // Past the attempt, `Job.fail()` buries the job through the driver,
+      // which stays in the worker.
+      return await unavailable("fail")();
+    }
+
+    const message = reason instanceof Error ? reason.message : String(reason);
+    // The first reason stands: failing is final, and a second call is not a
+    // change of mind.
+    attempt.failedWith ??= new UnrecoverableJobError(
+      message,
+      { jobId: record.id },
+      reason instanceof Error ? { cause: reason } : undefined,
+    );
+    return true;
+  };
+
   const job: IsolatedJob = {
     id: record.id,
     name: record.name,
@@ -340,7 +413,9 @@ function isolatedJob(
     attemptsMade: record.attemptsMade,
     maxAttempts: record.maxAttempts,
     stalledCount: record.stalledCount,
-    progress: record.progress,
+    // Narrowed as `Job` narrows it: only the two shapes `updateProgress`
+    // accepts are shown, and a record from an older store may hold anything.
+    progress: asProgress(record.progress),
     // `?? null`, as `Job` has it: a record without one reads `null`, not
     // `undefined`.
     returnValue: record.returnValue ?? null,
@@ -372,6 +447,11 @@ function isolatedJob(
     retry: unavailable("retry"),
     promote: unavailable("promote"),
     refresh: unavailable("refresh"),
+    fail,
+    schedule: unavailable("schedule"),
+    update: unavailable("update"),
+    disable: unavailable("disable"),
+    enable: unavailable("enable"),
     // Read from the record, exactly as `Job`'s constructor does: the child has
     // it already, so there is nothing to ask the worker.
     parent: record.flow?.parent ?? null,
