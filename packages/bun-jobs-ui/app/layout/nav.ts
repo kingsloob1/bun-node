@@ -13,8 +13,6 @@ export interface NavItem {
   label: string;
   /** App path it links to. */
   to: string;
-  /** The milestone the screen arrives in, when it is still a placeholder; `null` when built. */
-  comingIn: number | null;
 }
 
 /** What {@link buildNav} decides from. */
@@ -49,7 +47,6 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "overview",
         label: "Overview",
         to: "/",
-        comingIn: null,
       });
     }
     if (jobsMode && can("queues.list")) {
@@ -57,7 +54,6 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "queues",
         label: "Queues",
         to: "/queues",
-        comingIn: null,
       });
     }
     if (runnerMode && can("runners.list")) {
@@ -65,7 +61,6 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "runners",
         label: "Runners",
         to: "/runners",
-        comingIn: null,
       });
     }
     if (meta.websocket && can("events.connect")) {
@@ -73,12 +68,11 @@ export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
         id: "events",
         label: "Events",
         to: "/events",
-        comingIn: null,
       });
     }
   }
   if (sections.docs && meta.docs && can("docs.read")) {
-    items.push({ id: "docs", label: "API docs", to: "/docs", comingIn: 5 });
+    items.push({ id: "docs", label: "API docs", to: "/docs" });
   }
   return items;
 }

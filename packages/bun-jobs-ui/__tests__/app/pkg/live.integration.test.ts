@@ -7,7 +7,7 @@ import type {
 import type { LiveSocketConstructor } from "../../../app/live/client";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { LiveClient, liveSocketUrl } from "../../../app/live/client";
 
 /**
@@ -16,6 +16,7 @@ import { LiveClient, liveSocketUrl } from "../../../app/live/client";
  * 0, the socket attached, and Bun's own `WebSocket` underneath. A real worker
  * completes real jobs; the client must see their events on the queue and job
  * channels, survive the server dropping it, and refcount its channels.
+ * Every test starts its own stack (`startStack`), so the order is free.
  */
 
 const BASE = "/jobs-api";
@@ -24,44 +25,44 @@ const QUEUE = "mail";
 /** Bun's WebSocket, captured before any DOM test could replace the global. */
 const NativeWebSocket = globalThis.WebSocket;
 
-/** Every frame sent by, and received by, the client's sockets. */
-const wire = {
+/** Every frame sent by, and received by, one stack's client sockets. */
+interface Wire {
   /** Frames the client sent. */
-  sent: [] as JobsApiClientMessage[],
+  sent: JobsApiClientMessage[];
   /** Frames the server sent. */
-  received: [] as JobsApiServerMessage[],
-};
-
-/** Bun's WebSocket, recording both directions. */
-class RecordingSocket extends NativeWebSocket {
-  constructor(url: string, protocols: string[]) {
-    super(url, protocols);
-    this.addEventListener("message", (event) => {
-      wire.received.push(
-        JSON.parse(String(event.data)) as JobsApiServerMessage,
-      );
-    });
-  }
-
-  override send(data: string): void {
-    wire.sent.push(JSON.parse(data) as JobsApiClientMessage);
-    super.send(data);
-  }
+  received: JobsApiServerMessage[];
 }
 
-let jobs: BunJobs;
-let api: ReturnType<typeof createJobsApi>;
-let adapter: BunHttpAdapter;
-let port: number;
-let client: LiveClient;
+/**
+ * One self-contained server and client. Each test builds its own, so no test
+ * depends on a job, a subscription or a stopped server another test left
+ * behind, and the file passes in any order (`bun test --randomize`).
+ */
+interface Stack {
+  /** The service whose queues the tests drive. */
+  jobs: BunJobs;
+  /** The API serving the live-events socket. */
+  api: ReturnType<typeof createJobsApi>;
+  /** The adapter currently serving the API (replaced by `serve`). */
+  adapter: BunHttpAdapter;
+  /** The port the first `serve` was given; later ones reuse it. */
+  port: number;
+  /** The client under test, started and live. */
+  client: LiveClient;
+  /** What that client's sockets sent and received. */
+  wire: Wire;
+}
 
 /** Serves the API and attaches its socket on a fresh adapter (port 0 the first time). */
-async function serve(on: number): Promise<number> {
-  adapter = new BunHttpAdapter(0, { logger: noopLogger });
+async function serve(
+  api: Stack["api"],
+  on: number,
+): Promise<{ adapter: BunHttpAdapter; port: number }> {
+  const adapter = new BunHttpAdapter(0, { logger: noopLogger });
   adapter.use(api.basePath, api.router);
   api.websocket!.attach(adapter);
   const server = await adapter.listen(on);
-  return server.port!;
+  return { adapter, port: server.port! };
 }
 
 /** Resolves once `check` holds. */
@@ -75,8 +76,9 @@ async function until(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   }
 }
 
-/** Frames of one op sent since `from`. */
+/** Frames of one op `wire` recorded as sent since `from`. */
 function sentOps<T extends JobsApiClientMessage["op"]>(
+  wire: Wire,
   op: T,
   from = 0,
 ): Extract<JobsApiClientMessage, { op: T }>[] {
@@ -89,7 +91,7 @@ function sentOps<T extends JobsApiClientMessage["op"]>(
 }
 
 /** Whether the server acked every subscribe/unsubscribe sent so far. */
-function allAcked(): boolean {
+function allAcked(wire: Wire): boolean {
   const acked = new Set(
     wire.received.flatMap((frame) => (frame.type === "ack" ? [frame.id] : [])),
   );
@@ -97,7 +99,7 @@ function allAcked(): boolean {
 }
 
 /** Adds a job with a known id and has a real worker complete it. */
-async function completeJob(id: string): Promise<void> {
+async function completeJob(jobs: BunJobs, id: string): Promise<void> {
   const queue = jobs.queue(QUEUE);
   await queue.add("send", { id }, { jobId: id });
   const worker = jobs.worker(QUEUE, async () => "sent");
@@ -115,21 +117,44 @@ async function completeJob(id: string): Promise<void> {
   }
 }
 
-beforeAll(async () => {
-  jobs = new BunJobs({
+/** Every stack started and not yet closed, closed by `afterEach`. */
+const open: Stack[] = [];
+
+/** Starts a fresh service, API, server (port 0) and client, and waits for it to be live. */
+async function startStack(): Promise<Stack> {
+  const wire: Wire = { sent: [], received: [] };
+
+  /** Bun's WebSocket, recording both directions into this stack's `wire`. */
+  class RecordingSocket extends NativeWebSocket {
+    constructor(url: string, protocols: string[]) {
+      super(url, protocols);
+      this.addEventListener("message", (event) => {
+        wire.received.push(
+          JSON.parse(String(event.data)) as JobsApiServerMessage,
+        );
+      });
+    }
+
+    override send(data: string): void {
+      wire.sent.push(JSON.parse(data) as JobsApiClientMessage);
+      super.send(data);
+    }
+  }
+
+  const jobs = new BunJobs({
     namespace: `ui-live-${crypto.randomUUID().slice(0, 8)}`,
     driver: new MemoryDriver(),
     logger: noopLogger,
     publishEvents: true,
   });
-  api = createJobsApi({
+  const api = createJobsApi({
     jobs,
     basePath: BASE,
     authorize: () => true,
     logger: noopLogger,
   });
-  port = await serve(0);
-  client = new LiveClient({
+  const { adapter, port } = await serve(api, 0);
+  const client = new LiveClient({
     url: () =>
       liveSocketUrl(
         { path: api.websocket!.path },
@@ -140,37 +165,47 @@ beforeAll(async () => {
     backoffInitialMs: 50,
     backoffMaxMs: 200,
   });
+  const stack: Stack = {
+    jobs,
+    api,
+    adapter,
+    port,
+    client,
+    wire,
+  };
+  open.push(stack);
   client.start();
   await until(() => client.getSnapshot().state === "live");
-});
+  return stack;
+}
 
-afterAll(async () => {
-  client.stop();
-  await api.close();
-  await adapter.close();
-  await jobs.close();
+afterEach(async () => {
+  for (const stack of open.splice(0)) {
+    stack.client.stop();
+    await stack.api.close();
+    await stack.adapter.close();
+    await stack.jobs.close();
+  }
 });
 
 describe("LiveClient against a real API socket", () => {
-  const queueEvents: EventWire[] = [];
-  const jobEvents: EventWire[] = [];
-  const gaps: JobsApiGapMessage[] = [];
-
   it("offers bun-jobs.v1, and receives a real job's events on its queue and job channels", async () => {
+    const { client, jobs, wire } = await startStack();
+    const queueEvents: EventWire[] = [];
+    const jobEvents: EventWire[] = [];
     expect(wire.received[0]).toMatchObject({ type: "hello", protocol: 1 });
 
     client.hold({
       channels: [`queue/${QUEUE}`],
       onEvent: (event) => queueEvents.push(event),
-      onGap: (gap) => gaps.push(gap),
     });
     client.hold({
       channels: [`queue/${QUEUE}/job/j-1`],
       onEvent: (event) => jobEvents.push(event),
     });
-    await until(() => sentOps("subscribe").length > 0 && allAcked());
+    await until(() => sentOps(wire, "subscribe").length > 0 && allAcked(wire));
 
-    await completeJob("j-1");
+    await completeJob(jobs, "j-1");
     await until(() => jobEvents.some((event) => event.type === "completed"));
     await until(() =>
       queueEvents.some(
@@ -183,22 +218,41 @@ describe("LiveClient against a real API socket", () => {
   });
 
   it("resumes (or reports a gap) after the server drops the connection", async () => {
+    const stack = await startStack();
+    const { client, jobs, wire } = stack;
+    const queueEvents: EventWire[] = [];
+    const gaps: JobsApiGapMessage[] = [];
+
+    // A subscription that has seen an event, so it has a position to resume from.
+    client.hold({
+      channels: [`queue/${QUEUE}`],
+      onEvent: (event) => queueEvents.push(event),
+      onGap: (gap) => gaps.push(gap),
+    });
+    await until(() => sentOps(wire, "subscribe").length > 0 && allAcked(wire));
+    await completeJob(jobs, "j-1");
+    await until(() =>
+      queueEvents.some(
+        (event) => event.type === "completed" && event.id === "j-1",
+      ),
+    );
+
     const helloCount = () =>
       wire.received.filter((frame) => frame.type === "hello").length;
     const before = helloCount();
     const sentBefore = wire.sent.length;
 
     // The server goes away with the socket (no close frame reaches the client).
-    await adapter.close();
+    await stack.adapter.close();
     await until(() => client.getSnapshot().state === "reconnecting");
 
     // Meanwhile a job completes: the API's replay ring keeps its events.
-    await completeJob("j-2");
+    await completeJob(jobs, "j-2");
 
-    await serve(port);
+    stack.adapter = (await serve(stack.api, stack.port)).adapter;
     await until(() => helloCount() > before);
     await until(() => client.getSnapshot().state === "live");
-    const resumed = sentOps("subscribe", sentBefore);
+    const resumed = sentOps(wire, "subscribe", sentBefore);
     expect(resumed.length).toBeGreaterThan(0);
     expect(resumed[0]!.resume?.epoch).toBeString();
     expect(resumed[0]!.resume?.afterSeq).toBeGreaterThan(0);
@@ -213,20 +267,25 @@ describe("LiveClient against a real API socket", () => {
   });
 
   it("refcounts: two holders of one channel, one unsubscribe after both release", async () => {
+    const { client, wire } = await startStack();
     const from = wire.sent.length;
     const channel = `queue/${QUEUE}-refcount`;
     const a = client.hold({ channels: [channel] });
     const b = client.hold({ channels: [channel] });
-    await until(() => sentOps("subscribe", from).length === 1 && allAcked());
+    await until(
+      () => sentOps(wire, "subscribe", from).length === 1 && allAcked(wire),
+    );
     a.release();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(sentOps("unsubscribe", from)).toHaveLength(0);
+    expect(sentOps(wire, "unsubscribe", from)).toHaveLength(0);
     b.release();
-    await until(() => sentOps("unsubscribe", from).length === 1 && allAcked());
+    await until(
+      () => sentOps(wire, "unsubscribe", from).length === 1 && allAcked(wire),
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const unsubscribes = sentOps("unsubscribe", from);
+    const unsubscribes = sentOps(wire, "unsubscribe", from);
     expect(unsubscribes).toHaveLength(1);
     expect(unsubscribes[0]!.channels).toEqual([channel]);
-    expect(sentOps("subscribe", from)).toHaveLength(1);
+    expect(sentOps(wire, "subscribe", from)).toHaveLength(1);
   });
 });

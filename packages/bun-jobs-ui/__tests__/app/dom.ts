@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { DOM_URL, registerDom } from "./register-dom";
@@ -63,6 +64,41 @@ async function settle(): Promise<void> {
   }
 }
 
+/** The module that declares the app's on-demand screens. */
+const LAZY_SCREENS = join(
+  import.meta.dir,
+  "..",
+  "..",
+  "app",
+  "screens",
+  "lazy.tsx",
+);
+
+/** Whether `loadScreenChunks` has run in this process. */
+let screenChunksLoaded = false;
+
+/**
+ * Loads every on-demand screen chunk `app/screens/lazy.tsx` names, once per
+ * process. A test's first render of a lazy screen otherwise waits on a real
+ * module load (resolve, transpile, evaluate), which fake timers and a
+ * microtask-only `advance()` cannot drive: a fake-timer test passed only if
+ * an earlier test, in whatever order the run chose, had already loaded that
+ * chunk. With the modules cached, `React.lazy` resolves within microtasks,
+ * whatever runs first. The list is read from `lazy.tsx` itself, so a new
+ * screen is covered without touching this file.
+ */
+async function loadScreenChunks(): Promise<void> {
+  if (screenChunksLoaded) {
+    return;
+  }
+  const specifiers = new Bun.Transpiler({ loader: "tsx" })
+    .scanImports(await Bun.file(LAZY_SCREENS).text())
+    .filter((entry) => entry.kind === "dynamic-import")
+    .map((entry) => join(dirname(LAZY_SCREENS), entry.path));
+  await Promise.all([...new Set(specifiers)].map((path) => import(path)));
+  screenChunksLoaded = true;
+}
+
 /**
  * Installs the DOM for the calling test file: registered before its tests,
  * cleaned between them (rendered trees, storage, URL, theme), unregistered
@@ -71,7 +107,10 @@ async function settle(): Promise<void> {
  * test file.
  */
 export function setupDom(): void {
-  beforeAll(() => registerDom());
+  beforeAll(async () => {
+    registerDom();
+    await loadScreenChunks();
+  });
   beforeEach(() => assertQueryEnvironment());
   afterEach(async () => {
     cleanup();

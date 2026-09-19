@@ -1,4 +1,4 @@
-import type { NavId, NavItem } from "./layout/nav";
+import type { NavItem } from "./layout/nav";
 import type { RouteDef } from "./routing";
 import { EmptyState } from "./components/EmptyState";
 import {
@@ -7,26 +7,17 @@ import {
 } from "./meta/PermissionScope";
 import { Navigate } from "./router";
 import {
+  DocsHomeScreen,
   EventsScreen,
+  HttpDocsScreen,
   JobScreen,
   QueueScreen,
   QueuesListScreen,
   RunnerScreen,
   RunnersListScreen,
+  WsDocsScreen,
 } from "./screens/lazy";
 import { OverviewScreen } from "./screens/Overview";
-import { PlaceholderScreen } from "./screens/Placeholder";
-
-/**
- * Route patterns of the sections still shown as placeholders; a section's
- * routes exist only when its entry does. Built sections register their own
- * routes in {@link buildRoutes}.
- */
-const PLACEHOLDER_ROUTES: Readonly<
-  Record<Exclude<NavId, "overview" | "queues" | "runners" | "events">, string[]>
-> = {
-  docs: ["/docs", "/docs/*"],
-};
 
 /** The routes this caller can reach, from its nav entries. */
 export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
@@ -93,17 +84,14 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
       );
       continue;
     }
-    for (const path of PLACEHOLDER_ROUTES[item.id]) {
-      routes.push({
-        path,
-        element: (
-          <PlaceholderScreen
-            title={item.label}
-            milestone={item.comingIn ?? 0}
-          />
-        ),
-      });
-    }
+    // docs: most specific first.
+    routes.push(
+      { path: "/docs/http/:operationId", element: <HttpDocsScreen /> },
+      { path: "/docs/http", element: <HttpDocsScreen /> },
+      { path: "/docs/ws/:item", element: <WsDocsScreen /> },
+      { path: "/docs/ws", element: <WsDocsScreen /> },
+      { path: "/docs", element: <DocsHomeScreen /> },
+    );
   }
   return routes;
 }
