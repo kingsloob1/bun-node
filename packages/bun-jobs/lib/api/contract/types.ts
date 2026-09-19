@@ -351,7 +351,11 @@ export interface RetryJobResultDto {
 
 /** `POST /queues/:queue/jobs/:id/fail` body. */
 export interface FailJobBody {
-  /** Why the job is failed; becomes its `failedReason` message. */
+  /**
+   * Why the job is failed; becomes its `failedReason` message exactly as sent.
+   * It must contain a character other than whitespace, or the request is 400
+   * `VALIDATION`.
+   */
   reason: string;
 }
 

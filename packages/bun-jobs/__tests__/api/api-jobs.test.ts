@@ -594,6 +594,59 @@ describe("jobs", () => {
     ).toBe(400);
   });
 
+  it("refuses a reason that is only whitespace, and keeps one that is not exactly as sent", async () => {
+    const h = harness();
+    const queue = h.jobs.queue("mail");
+    await queue.add("send", {}, { jobId: "doomed" });
+
+    for (const reason of ["   ", "\t\n", " \u00A0 "]) {
+      const blank = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+        reason,
+      });
+      expect({ reason, status: blank.status }).toEqual({ reason, status: 400 });
+      expect(blank.body).toMatchObject({ code: "VALIDATION" });
+      expect(blank.body.issues).toEqual([
+        expect.objectContaining({ target: "body", path: "reason" }),
+      ]);
+    }
+    expect((await queue.getJob("doomed"))?.state).toBe("waiting");
+
+    // Not trimmed: what was sent is what is stored.
+    const padded = await h.call("POST", "/queues/mail/jobs/doomed/fail", {
+      reason: "  bad address\n",
+    });
+    expect(padded.status).toBe(200);
+    expect((await queue.getJob("doomed"))?.failedReason?.message).toBe(
+      "  bad address\n",
+    );
+  });
+
+  it("documents the non-blank reason in the spec", () => {
+    /** The slice of a body schema this test reads. */
+    interface BodySchema {
+      /** A component reference, when the schema is named. */
+      $ref?: string;
+      /** The object's properties. */
+      properties?: Record<string, { pattern?: string }>;
+    }
+    const document = harness().api.openapi() as unknown as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          { requestBody: { content: Record<string, { schema: BodySchema }> } }
+        >
+      >;
+      components?: { schemas?: Record<string, BodySchema> };
+    };
+    const body =
+      document.paths["/queues/{queue}/jobs/{id}/fail"]?.post?.requestBody;
+    const schema = body?.content["application/json"]?.schema;
+    const name = schema?.$ref?.split("/").pop();
+    const resolved = name ? document.components?.schemas?.[name] : schema;
+    expect(resolved?.properties?.reason?.pattern).toBe("\\S");
+  });
+
   it("retries, removes and promotes in bulk, reporting what went", async () => {
     const h = harness();
     const queue = h.jobs.queue("mail");

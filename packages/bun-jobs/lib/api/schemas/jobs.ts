@@ -285,7 +285,9 @@ export const FailBodySchema = s.object({
   reason: s.string({
     minLength: 1,
     maxLength: 4096,
-    description: "Why the job is failed; becomes its `failedReason` message.",
+    pattern: "\\S",
+    description:
+      "Why the job is failed; becomes its `failedReason` message exactly as sent. It must contain a character other than whitespace.",
   }),
 });
 
