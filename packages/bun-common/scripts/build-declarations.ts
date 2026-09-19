@@ -19,9 +19,15 @@
  * verifies. A declaration names the runtime file, `.js`, and TypeScript
  * substitutes the neighbouring `.d.ts` under both `node16` and `bundler`.
  *
+ * An optional peer is the one import a declaration may carry that a consumer
+ * need not have, and only behind an entry that exists for it: an entry lists
+ * the optional peers it needs as `peers` in `consumer-check.json`, and the
+ * verify step fails when a declaration importing a peer is reachable from any
+ * entry (the root above all) that does not list it. See `checkPeerScopes`.
+ *
  * Nothing here is specific to this package: it reads the output directory from
- * `tsconfig.build.json` and the manifest from `package.json`, so another
- * package can copy it unchanged.
+ * `tsconfig.build.json`, the manifest from `package.json` and the entries'
+ * `peers` from `consumer-check.json`, so another package can copy it unchanged.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -46,7 +52,7 @@ const SPECIFIER =
 const REFERENCE_TYPES = /\/\/\/\s*<reference\s+types=(["'])([^"']+)\1/g;
 
 /** The subset of `package.json` this script reads. */
-interface Manifest {
+export interface Manifest {
   /** Package name. */
   name: string;
   /** Published paths. */
@@ -117,6 +123,139 @@ export async function rewrite(outDir: string): Promise<number> {
   return count;
 }
 
+/** The subset of `consumer-check.json` this script reads. */
+export interface CheckConfig {
+  /** The public import spellings. */
+  entries?: {
+    /** The specifier a consumer writes, e.g. `@scope/pkg/jobs`. */
+    spelling: string;
+    /** Optional peers this entry legitimately needs, and documents as needed. */
+    peers?: string[];
+  }[];
+}
+
+/**
+ * The absolute `types` target a subpath (`.`, `./jobs`, `./lib/x.js`) resolves
+ * to through `exports`, with Node's pattern precedence (the longest prefix
+ * before the `*`, then the longest key); `null` when nothing matches.
+ */
+export function typesTarget(
+  manifest: Manifest,
+  subpath: string,
+): string | null {
+  const exportsMap = manifest.exports ?? {};
+  const typesOf = (entry: string | Record<string, string>) =>
+    typeof entry === "string" ? entry : (entry.types ?? entry.default);
+  let target: string | undefined;
+  const exact = exportsMap[subpath];
+  if (exact !== undefined) {
+    target = typesOf(exact);
+  } else {
+    const patterns = Object.keys(exportsMap)
+      .filter((key) => key.includes("*"))
+      .sort((a, b) => b.indexOf("*") - a.indexOf("*") || b.length - a.length);
+    for (const key of patterns) {
+      const [prefix = "", suffix = ""] = key.split("*");
+      if (
+        subpath.length >= key.length - 1 &&
+        subpath.startsWith(prefix) &&
+        subpath.endsWith(suffix)
+      ) {
+        const match = subpath.slice(
+          prefix.length,
+          subpath.length - suffix.length,
+        );
+        target = typesOf(exportsMap[key]!)?.replaceAll("*", match);
+        break;
+      }
+    }
+  }
+  if (subpath === "." && target === undefined) target = manifest.types;
+  return target ? resolve(PACKAGE_ROOT, target) : null;
+}
+
+/**
+ * An optional peer may appear in a declaration only when every entry that can
+ * reach that declaration says, in `consumer-check.json` `peers`, that it needs
+ * the peer. A subpath like bun-nest's `./jobs` exists *for* its peer; the root
+ * entry must never reach it, or a consumer without the peer gets `TS2307` for
+ * importing nothing but the package.
+ *
+ * Roots are every literal `exports` key plus every spelling in
+ * `consumer-check.json`; a root's allowance is the union of the `peers` of the
+ * spellings that resolve to the same declaration. A declaration no root
+ * reaches (only a deep `./lib/*` import can) may import a peer some entry
+ * declares. Nothing here names a package, so any package can use it as is.
+ */
+export function checkPeerScopes(
+  manifest: Manifest,
+  config: CheckConfig,
+  edges: Map<string, Set<string>>,
+  peerImports: Map<string, Set<string>>,
+  exists: (path: string) => boolean = existsSync,
+): string[] {
+  if (peerImports.size === 0) return [];
+
+  /** Declaration -> the labels of the roots resolving to it, and their peers. */
+  const roots = new Map<string, { labels: Set<string>; peers: Set<string> }>();
+  const addRoot = (subpath: string, label: string, peers: string[] = []) => {
+    const target = typesTarget(manifest, subpath);
+    if (!target || !exists(target)) return;
+    const root = roots.get(target) ?? { labels: new Set(), peers: new Set() };
+    roots.set(target, root);
+    root.labels.add(label);
+    for (const peer of peers) root.peers.add(peer);
+  };
+  for (const key of Object.keys(manifest.exports ?? {})) {
+    if (!key.includes("*")) addRoot(key, `exports["${key}"]`);
+  }
+  if (manifest.types) addRoot(".", `"types"`);
+  const declared = new Set<string>();
+  for (const entry of config.entries ?? []) {
+    const subpath =
+      entry.spelling === manifest.name
+        ? "."
+        : `.${entry.spelling.slice(manifest.name.length)}`;
+    addRoot(subpath, `"${entry.spelling}"`, entry.peers);
+    for (const peer of entry.peers ?? []) declared.add(peer);
+  }
+
+  const problems = new Set<string>();
+  const reached = new Set<string>();
+  for (const [start, { labels, peers }] of roots) {
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length > 0) {
+      for (const next of edges.get(queue.pop()!) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    for (const file of seen) {
+      reached.add(file);
+      for (const peer of peerImports.get(file) ?? []) {
+        if (!peers.has(peer))
+          problems.add(
+            `${relative(PACKAGE_ROOT, file)}: imports "${peer}", an optional peer, ` +
+              `and is reachable from ${[...labels].join(", ")}, which does not ` +
+              `declare it in consumer-check.json "peers"`,
+          );
+      }
+    }
+  }
+  for (const [file, peers] of peerImports) {
+    if (reached.has(file)) continue;
+    for (const peer of peers) {
+      if (!declared.has(peer))
+        problems.add(
+          `${relative(PACKAGE_ROOT, file)}: imports "${peer}", an optional peer no consumer-check.json entry declares`,
+        );
+    }
+  }
+  return [...problems];
+}
+
 /**
  * Every way a built tree can be unpublishable without anything failing
  * loudly; one line per problem, empty when it is fine.
@@ -147,6 +286,10 @@ export async function verify(outDir: string): Promise<string[]> {
     s === "bun-types" ||
     builtinModules.includes(s);
 
+  /** Declaration -> the declarations it imports (relative, or by the package's own name). */
+  const edges = new Map<string, Set<string>>();
+  /** Declaration -> the optional peers it imports. */
+  const peerImports = new Map<string, Set<string>>();
   for (const file of listFiles(outDir, ".d.ts")) {
     const where = relative(PACKAGE_ROOT, file);
     const text = await readFile(file, "utf8");
@@ -154,17 +297,17 @@ export async function verify(outDir: string): Promise<string[]> {
       ...[...text.matchAll(SPECIFIER)].map((m) => m[3]!),
       ...[...text.matchAll(REFERENCE_TYPES)].map((m) => m[2]!),
     ];
+    const imported = new Set<string>();
+    edges.set(file, imported);
     for (const spec of specs) {
       if (spec.startsWith(".")) {
+        const target = resolve(dirname(file), spec.replace(/\.js$/, ".d.ts"));
         // An extensionless one resolves to nothing under node16, silently.
         if (!/\.(?:js|json)$/.test(spec))
           problems.push(`${where}: "${spec}" has no extension`);
-        else if (
-          !existsSync(resolve(dirname(file), spec.replace(/\.js$/, ".d.ts"))) &&
-          !spec.endsWith(".json")
-        ) {
+        else if (!existsSync(target) && !spec.endsWith(".json"))
           problems.push(`${where}: "${spec}" names no emitted declaration`);
-        }
+        else imported.add(target);
         continue;
       }
       if (environment(spec)) continue;
@@ -172,17 +315,36 @@ export async function verify(outDir: string): Promise<string[]> {
       const name = spec.startsWith("@")
         ? spec.split("/").slice(0, 2).join("/")
         : spec.split("/")[0]!;
+      if (name === manifest.name) {
+        // A self-reference: follow it, so a root cannot reach a peer through one.
+        const target = typesTarget(manifest, `.${spec.slice(name.length)}`);
+        if (target) imported.add(target);
+        continue;
+      }
       const typesName = name.startsWith("@")
         ? `@types/${name.slice(1).replace("/", "__")}`
         : `@types/${name}`;
-      if (!guaranteed.has(name) && !guaranteed.has(typesName)) {
-        const why = manifest.peerDependenciesMeta?.[name]?.optional
-          ? "an optional peer"
-          : "not a dependency";
-        problems.push(`${where}: imports "${spec}", which is ${why}`);
+      if (guaranteed.has(name) || guaranteed.has(typesName)) continue;
+      if (manifest.peerDependenciesMeta?.[name]?.optional) {
+        // Judged by which entries can reach this file; see `checkPeerScopes`.
+        if (!peerImports.has(file)) peerImports.set(file, new Set());
+        peerImports.get(file)!.add(name);
+      } else {
+        problems.push(`${where}: imports "${spec}", which is not a dependency`);
       }
     }
   }
+  const checkConfig = join(PACKAGE_ROOT, "consumer-check.json");
+  problems.push(
+    ...checkPeerScopes(
+      manifest,
+      existsSync(checkConfig)
+        ? ((await Bun.file(checkConfig).json()) as CheckConfig)
+        : {},
+      edges,
+      peerImports,
+    ),
+  );
 
   // Go-to-definition opens a map's sources: they must exist and be published.
   for (const map of listFiles(outDir, ".d.ts.map")) {
@@ -281,6 +443,6 @@ if (import.meta.main) {
     process.exit(1);
   }
   console.log(
-    `${outName}/ verified: explicit specifiers, published map sources, existing exports targets, no undeclared imports`,
+    `${outName}/ verified: explicit specifiers, published map sources, existing exports targets, no undeclared imports, optional peers only behind entries that declare them`,
   );
 }
