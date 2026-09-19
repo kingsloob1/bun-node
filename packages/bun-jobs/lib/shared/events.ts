@@ -1,5 +1,6 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { JobState } from "../drivers/driver";
+import type { RunProgress } from "./progress";
 
 /**
  * What crosses a process boundary, and what shape it has.
@@ -44,7 +45,7 @@ export interface QueueEventPayloads {
   /** A worker claimed a job. */
   active: { id: string };
   /** A job reported progress. */
-  progress: { id: string; progress: unknown };
+  progress: { id: string; progress: RunProgress };
   /** A job completed. */
   completed: { id: string; returnValue: unknown };
   /** An attempt failed. */

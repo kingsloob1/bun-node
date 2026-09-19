@@ -9,6 +9,7 @@ import type {
 } from "../drivers/index";
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
+import type { RunProgress } from "../shared/progress";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -1153,7 +1154,7 @@ type BunQueueBaseEvents<
   /** A worker claimed a job. */
   active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: TJob, value: unknown) => void;
+  progress: (job: TJob, value: RunProgress) => void;
   /** A job completed. */
   completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */
@@ -1227,7 +1228,7 @@ type BunQueueWorkerBaseEvents<
   /** A job was claimed. */
   active: (job: TJob) => void;
   /** A job reported progress. */
-  progress: (job: TJob, value: unknown) => void;
+  progress: (job: TJob, value: RunProgress) => void;
   /** A job completed. */
   completed: (job: TJob, result: TResult) => void;
   /** An attempt failed. */
