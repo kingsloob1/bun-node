@@ -1,6 +1,6 @@
 import type { JobState } from "../../drivers/index";
 import type { Schema } from "../schema/builder";
-import { JOB_STATES } from "../contract/constants";
+import { JOB_STATES, MAX_DATE_MS } from "../contract/constants";
 import { s } from "../schema/builder";
 
 /**
@@ -104,4 +104,15 @@ export function pageOf<T>(item: Schema<T>) {
 export const JobRefSchema = s.named(
   "JobRef",
   s.object({ queue: s.string(), id: s.string() }),
+);
+
+/**
+ * A time a request gives: epoch milliseconds a `Date` can hold (0 to
+ * {@link MAX_DATE_MS}), or an RFC 3339 date-time (the format check already
+ * refuses one `Date.parse` cannot read). Either way a bad time is 400
+ * `VALIDATION` at its field, never an invalid `Date` later.
+ */
+export const TimeInputSchema = s.union(
+  s.integer({ minimum: 0, maximum: MAX_DATE_MS }),
+  s.string({ format: "date-time" }),
 );

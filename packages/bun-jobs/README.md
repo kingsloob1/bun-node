@@ -2195,6 +2195,11 @@ A 5xx never carries the underlying message — `detail` is the generic title —
 and nothing is matched on message text. Validation failures add `issues`
 (`{ target, path, message }`).
 
+Every time a request gives — a job's `runAt`, a schedule's `anchor` or `at` —
+is epoch milliseconds a `Date` can hold (0 to `MAX_DATE_MS`, 8.64e15, exported
+from the contract) or an RFC 3339 date-time; anything else is 400 `VALIDATION`
+at that field.
+
 `PUT /runners/:runner/schedule` refuses a schedule in two steps. A malformed
 field — an interval below 1, a time a `Date` cannot hold (epoch ms above
 8.64e15, or a string that is not an RFC 3339 date-time) — is 400 `VALIDATION`

@@ -1,7 +1,7 @@
 import type { BunJobs } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { MAX_DATE_MS } from "../../lib/api/contract/constants";
 import { scheduleIssuePath } from "../../lib/api/routes/runners";
-import { MAX_DATE_MS } from "../../lib/api/schemas/runners";
 import { waitFor } from "../helpers";
 import {
   ECHO_HANDLER,

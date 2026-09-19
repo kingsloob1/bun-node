@@ -7,13 +7,13 @@ import type { AnyRouteDef } from "./define";
 import { validateCron } from "../../shared/cron";
 import { ConfigError, NotSupportedError } from "../../shared/errors";
 import { normalizeSchedule } from "../../shared/schedule";
+import { MAX_DATE_MS } from "../contract/constants";
 import { ApiError } from "../errors";
 import {
   historyQuerySchema,
   HistorySchema,
   KillBodySchema,
   KillResultSchema,
-  MAX_DATE_MS,
   ResumeBodySchema,
   RunnerInfoSchema,
   RunnerListSchema,

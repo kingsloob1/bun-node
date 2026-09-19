@@ -9,6 +9,7 @@ import {
   JobRefSchema,
   JobStateSchema,
   PageInfoSchema,
+  TimeInputSchema,
 } from "./common";
 
 /**
@@ -266,17 +267,11 @@ export const ChildrenSchema = s.object({
   truncated: s.boolean(),
 });
 
-/** A time: epoch milliseconds, or an RFC 3339 date-time. */
-const TimeInput = s.union(
-  s.integer({ minimum: 0 }),
-  s.string({ format: "date-time" }),
-);
-
 /** `PATCH /queues/:queue/jobs/:id` body. */
 export const UpdateBodySchema = s.object({
   data: s.optional(s.unknown({ description: "The new payload." })),
   priority: s.optional(s.number()),
-  runAt: s.optional(TimeInput),
+  runAt: s.optional(TimeInputSchema),
   onlyIn: s.optional(s.array(JobStateSchema, { minItems: 1 })),
 });
 
@@ -362,7 +357,7 @@ export const AddBodySchema = s.object({
         jobId: s.optional(NewJobIdSchema),
         priority: s.optional(s.number()),
         delay: s.optional(s.integer({ minimum: 0 })),
-        runAt: s.optional(TimeInput),
+        runAt: s.optional(TimeInputSchema),
         attempts: s.optional(s.integer({ minimum: 1 })),
         backoff: s.optional(s.integer({ minimum: 0 })),
         timeout: s.optional(s.integer({ minimum: 0 })),

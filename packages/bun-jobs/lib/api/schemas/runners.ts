@@ -1,6 +1,6 @@
 import { MAX_NAME_LENGTH, NAME_PARAM_PATTERN } from "../contract/constants";
 import { s } from "../schema/builder";
-import { ErrorDtoSchema } from "./common";
+import { ErrorDtoSchema, TimeInputSchema } from "./common";
 
 /**
  * Schemas for the runner routes.
@@ -247,23 +247,6 @@ export const KillBodySchema = s.object({
 /** `POST /runners/:runner/kill` response. */
 export const KillResultSchema = s.object({ runIds: s.array(s.string()) });
 
-/**
- * The latest instant a `Date` can hold, in epoch milliseconds (ECMAScript's
- * range is ±8.64e15). A later timestamp would reach the schedule normaliser as
- * an invalid `Date`.
- */
-export const MAX_DATE_MS = 8_640_000_000_000_000;
-
-/**
- * A time: epoch milliseconds a `Date` can hold, or an RFC 3339 date-time (the
- * format check already refuses one `Date.parse` cannot read). Either way a bad
- * time is 400 `VALIDATION` here, never a schedule error later.
- */
-const TimeInput = s.union(
-  s.integer({ minimum: 0, maximum: MAX_DATE_MS }),
-  s.string({ format: "date-time" }),
-);
-
 /** `PUT /runners/:runner/schedule` body. Mirrors `ScheduleInput`, minus `Date`. */
 export const ScheduleBodySchema = s.object({
   schedule: s.nullable(
@@ -280,9 +263,9 @@ export const ScheduleBodySchema = s.object({
       }),
       s.object({
         every: s.integer({ minimum: 1 }),
-        anchor: s.optional(TimeInput),
+        anchor: s.optional(TimeInputSchema),
       }),
-      s.object({ at: TimeInput }),
+      s.object({ at: TimeInputSchema }),
     ),
   ),
 });

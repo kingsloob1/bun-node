@@ -1,5 +1,6 @@
 import type { BunJobs } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { MAX_DATE_MS } from "../../lib/api/contract/constants";
 import { BunQueue, ConfigError, MemoryDriver } from "../../lib/index";
 import { waitFor } from "../helpers";
 import { harness, jobsContext, openContexts, openHarnesses } from "./fixtures";
@@ -735,6 +736,49 @@ describe("jobs", () => {
       (await h.call("POST", "/queues/mail/jobs/retry-all", { state: "dead" }))
         .status,
     ).toBe(200);
+  });
+
+  it("refuses a runAt a Date cannot hold as VALIDATION, and takes the last one it can", async () => {
+    const h = await withJobs();
+    h.jobs.define("send", async () => {});
+
+    const added = await h.call("POST", "/queues/mail/jobs", {
+      name: "send",
+      data: {},
+      opts: { runAt: Number.MAX_SAFE_INTEGER },
+    });
+    expect(added.status).toBe(400);
+    expect(added.body).toMatchObject({ code: "VALIDATION" });
+    expect(added.body.issues).toEqual([
+      expect.objectContaining({ target: "body", path: "opts.runAt" }),
+    ]);
+
+    const updated = await h.call("PATCH", "/queues/mail/jobs/a", {
+      runAt: Number.MAX_SAFE_INTEGER,
+    });
+    expect(updated.status).toBe(400);
+    expect(updated.body).toMatchObject({ code: "VALIDATION" });
+    expect(updated.body.issues).toEqual([
+      expect.objectContaining({ target: "body", path: "runAt" }),
+    ]);
+    expect((await h.queue.getJob("a"))?.state).toBe("waiting");
+
+    // The last instant a Date holds is still a time.
+    const last = await h.call("POST", "/queues/mail/jobs", {
+      name: "send",
+      data: {},
+      opts: { runAt: MAX_DATE_MS },
+    });
+    expect(last.status).toBe(201);
+    expect(last.body.job).toMatchObject({
+      state: "delayed",
+      runAt: MAX_DATE_MS,
+    });
+    const moved = await h.call("PATCH", "/queues/mail/jobs/b", {
+      runAt: MAX_DATE_MS,
+    });
+    expect(moved.status).toBe(200);
+    expect(moved.body).toMatchObject({ state: "delayed", runAt: MAX_DATE_MS });
   });
 
   it("adds a job only when jobs.add is enabled, by an addable name, with safe options", async () => {
