@@ -124,7 +124,8 @@ API docs in M5.
 (`POST /queues/:queue/jobs/:id/fail`), whatever attempts it has left. It is
 offered for a job in any state but `completed` and `dead`, the two the API
 refuses, and it is a danger dialog: a **Reason** is required (1 to 4,096
-characters, trimmed, recorded as the job's failure), and the job's id must be
+characters, at least one of them not whitespace), sent and recorded as the
+job's failure exactly as typed, spaces included, and the job's id must be
 typed to confirm. An id longer than 40 characters is confirmed by typing its
 last 8 instead, since ids run to 1,024. For an `active` job the dialog warns
 that failing it does not stop its code: the worker loses the job's lock at its
@@ -145,6 +146,17 @@ Progress is shown as the job reported it: a number as a percentage bar with
 its value (the bar clamped to 0–100, the number not), a record of fields as
 a JSON tree. Live, a `progress` event writes the new value into the job
 screen without a refetch.
+
+### Date-time fields
+
+Every date-time field (**Run at** when adding or editing a job, a runner
+schedule's **Anchor** and **Once** time) is checked as it changes, against
+the API's own rule for a time: epoch milliseconds from 0 up to
+`MAX_DATE_MS` (13 September 275760, the last instant a `Date` holds). A
+time outside that range, or one the browser could not read, is refused on
+the field and the dialog's submit button is disabled until it is fixed or
+cleared, rather than being sent for a 400 `VALIDATION`, or dropped as if the
+field were empty.
 
 ### URL parameters
 
@@ -307,12 +319,17 @@ read only the untargeted map, since an operation has no one queue or runner:
   `Intl.DateTimeFormat`, so an alias such as `US/Eastern`, which the server's
   `Bun.cron` accepts, is accepted too. A UTC offset such as `+01:00` is
   refused: `Intl` would take it, `Bun.cron` does not. The API stays the
-  authority. Its 400 `INVALID_SCHEDULE` names the part at fault in
-  `issues[].path`, and each issue is shown on that field: `schedule.cron`,
-  `schedule.tz`, `schedule.every`, `schedule.anchor` or `schedule.at`. An
-  issue on `schedule` itself goes to the form's main field (with None, which
-  has none, to a banner). An `INVALID_SCHEDULE` with no issues, from an older
-  API, is shown as a banner with its detail.
+  authority, and names the part at fault in `issues[].path` in one of two
+  errors. A cron expression or time zone the scheduler refuses is 400
+  `INVALID_SCHEDULE`, at `schedule.cron`, `schedule.tz`, or `schedule` for a
+  bare cron string. An interval below one millisecond, or an anchor or time a
+  `Date` cannot hold, is 400 `VALIDATION`, at `schedule.every`,
+  `schedule.anchor` or `schedule.at`. The editor treats both alike: each issue
+  is shown on the field its path names, and one on `schedule` itself goes to
+  the form's main field (with None, which has none, to a banner). An
+  `INVALID_SCHEDULE` with no issues, from an older API, is shown as a banner
+  with its detail. The anchor and the one-off time are also checked before
+  sending, like every [date-time field](#date-time-fields).
 - **Kill** stops one active run, or every one, after you type the runner's
   id. Force skips straight to the end of the kill escalation, and a reason
   (at most 200 characters) is recorded on the run. Without Wait the API
