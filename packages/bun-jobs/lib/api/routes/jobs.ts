@@ -211,6 +211,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         ...queueTarget(params.queue),
         jobIds: bulkIds(body.ids, limits.maxBulkIds),
       }),
+      pathTarget: (params) => queueTarget(params.queue),
       handler: async (ctx) => {
         const { params, body, services } = ctx;
         const queue = await services.queues.get(params.queue);
@@ -555,6 +556,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         ...queueTarget(params.queue),
         jobIds: bulkIds(body.ids, limits.maxBulkIds),
       }),
+      pathTarget: (params) => queueTarget(params.queue),
       handler: async ({ params, body, services }) => {
         const queue = await services.queues.get(params.queue);
         const ids = bulkIds(body.ids, limits.maxBulkIds);
@@ -584,6 +586,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         ...queueTarget(params.queue),
         jobIds: bulkIds(body.ids, limits.maxBulkIds),
       }),
+      pathTarget: (params) => queueTarget(params.queue),
       handler: async ({ params, body, services }) => {
         const queue = await services.queues.get(params.queue);
         const ids = bulkIds(body.ids, limits.maxBulkIds);
@@ -614,6 +617,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         ...queueTarget(params.queue),
         jobIds: bulkIds(body.ids, limits.maxBulkIds),
       }),
+      pathTarget: (params) => queueTarget(params.queue),
       handler: async ({ params, body, services }) => {
         const queue = await services.queues.get(params.queue);
         const ids = bulkIds(body.ids, limits.maxBulkIds);

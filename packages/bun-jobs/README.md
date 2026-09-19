@@ -1949,6 +1949,16 @@ open is how an admin API becomes public. `readOnly: true` and an `actions`
 allow-list are *static* limits applied before `authorize`, so no hook can
 re-enable what configuration removed.
 
+A request that fails a check — a body or query that does not validate,
+malformed JSON, a missing CSRF token — is still authorized first, once, and
+only a caller `authorize` allows is told what was wrong. When the path is
+valid, `authorize` is asked with the target the path names (`queue`, `jobId`,
+`runner`, and `route`), just as for a well-formed request; a bulk route's
+`jobIds` come from the body, so they are absent. A host that refuses one queue
+therefore answers 403 there, and one that refuses untargeted requests still
+lets its caller see the 400. Only a request whose path is itself invalid is
+asked about with no target.
+
 | Action | Kind | |
 |---|---|---|
 | `meta.read` | read | |

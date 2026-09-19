@@ -17,8 +17,16 @@ import {
   requestProtocol,
 } from "../../lib/api/auth";
 import { declaredBodySizeGuard } from "../../lib/api/body";
-import { resolveConfig } from "../../lib/api/config";
-import { buildJobsApi, createJobsApi } from "../../lib/api/createJobsApi";
+import {
+  isMutation,
+  JOBS_API_ACTIONS,
+  resolveConfig,
+} from "../../lib/api/config";
+import {
+  buildJobsApi,
+  builtInRoutes,
+  createJobsApi,
+} from "../../lib/api/createJobsApi";
 import { toProblem } from "../../lib/api/errors";
 import { defineRoute } from "../../lib/api/routes/define";
 import { s } from "../../lib/api/schema/builder";
@@ -31,6 +39,7 @@ import {
 } from "../../lib/index";
 import {
   apiConfig,
+  ECHO_HANDLER,
   harness,
   jobsContext,
   openContexts,
@@ -42,8 +51,9 @@ import {
  * tells anyone.
  *
  * The rule the pre-authorization tests hold: `authorize` is asked exactly once
- * per request. When a check fails it is asked **without** a target, and only a
- * caller it allows learns what was wrong with the request.
+ * per request. When a check fails it is asked with the target the **path**
+ * names (without one when the path itself is invalid), and only a caller it
+ * allows learns what was wrong with the request.
  */
 
 afterEach(() => {
@@ -86,6 +96,7 @@ describe("failures before authorization", () => {
       headers: { "content-type": "text/plain" },
       code: "UNSUPPORTED_MEDIA_TYPE",
       status: 415,
+      target: { queue: "mail" },
     },
     {
       name: "a malformed JSON body",
@@ -93,6 +104,7 @@ describe("failures before authorization", () => {
       body: '{"ids": [',
       code: "INVALID_JSON",
       status: 400,
+      target: { queue: "mail" },
     },
     {
       name: "a body of the wrong shape",
@@ -100,6 +112,7 @@ describe("failures before authorization", () => {
       body: { ids: "not-an-array" },
       code: "VALIDATION",
       status: 400,
+      target: { queue: "mail" },
     },
     {
       name: "an unusable queue name",
@@ -107,10 +120,11 @@ describe("failures before authorization", () => {
       body: { ids: ["a"] },
       code: "INVALID_NAME",
       status: 400,
+      target: {},
     },
   ] as const;
 
-  it("answers each one only to a caller authorize allows, asking it once without a target", async () => {
+  it("answers each one only to a caller authorize allows, asking it once with the path's target", async () => {
     for (const probe of probes) {
       const h = await setup(true);
       const response = await h.call("POST", probe.path, probe.body, {
@@ -126,11 +140,17 @@ describe("failures before authorization", () => {
         probe: probe.name,
         calls: 1,
       });
-      expect(h.calls[0]).toEqual({
-        action: "jobs.retry",
-        mutation: true,
-        transport: "http",
-        route: { method: "POST", path: "/queues/:queue/jobs/retry" },
+      // The path's target, never the body's: no `jobIds` from a body that
+      // failed, and nothing at all from a path that did.
+      expect({ probe: probe.name, context: h.calls[0] }).toEqual({
+        probe: probe.name,
+        context: {
+          action: "jobs.retry",
+          mutation: true,
+          transport: "http",
+          route: { method: "POST", path: "/queues/:queue/jobs/retry" },
+          ...probe.target,
+        },
       });
     }
   });
@@ -163,6 +183,8 @@ describe("failures before authorization", () => {
       context: { max: 1 },
     });
     expect(allowed.calls[0]).not.toHaveProperty("jobIds");
+    // The ids are not the path's, but the queue is.
+    expect(allowed.calls[0]).toMatchObject({ queue: "mail" });
 
     const denied = await setup(false, overrides);
     const refused = await denied.call("POST", "/queues/mail/jobs/lookup", {
@@ -217,6 +239,284 @@ describe("failures before authorization", () => {
       data: { blob: "x".repeat(500) },
     });
     expect(huge.status).toBe(403);
+  });
+});
+
+describe("an invalid query or body is authorized against the path's target", () => {
+  /** Three hosts: one allowing everything, and two refusing different things. */
+  const policies = {
+    /** Allows every request. */
+    allowAll: () => true,
+    /** Refuses a request that names no queue or runner. */
+    refuseUntargeted: (context: JobsApiAuthorizeContext) =>
+      context.queue !== undefined || context.runner !== undefined,
+    /** Refuses the queue `mail` and the runner `nightly`, and nothing else. */
+    refuseThatTarget: (context: JobsApiAuthorizeContext) =>
+      context.queue !== "mail" && context.runner !== "nightly",
+  } as const;
+
+  /** A mounted API over `mail` (with job `a`) and runner `nightly`, deciding by `policy`. */
+  async function setup(policy: (context: JobsApiAuthorizeContext) => boolean) {
+    const calls: JobsApiAuthorizeContext[] = [];
+    const jobs = jobsContext();
+    await jobs.queue("mail").add("send", {}, { jobId: "a" });
+    jobs.runner({
+      id: "nightly",
+      file: ECHO_HANDLER,
+      executionMode: "in-process",
+    });
+    const h = harness({
+      jobs,
+      mode: "both",
+      authorize: (_req, context) => {
+        calls.push(context);
+        return policy(context) ? true : { allow: false, status: 403 };
+      },
+    });
+    return { ...h, calls };
+  }
+
+  /** One route, with a request it accepts and one whose query or body it refuses. */
+  interface Case {
+    /** What the case exercises. */
+    name: string;
+    /** The HTTP method. */
+    method: string;
+    /** Path and query of a request the route accepts. */
+    validPath: string;
+    /** Path and query of the invalid request; defaults to `validPath`. */
+    invalidPath?: string;
+    /** Body of the accepted request. */
+    valid?: unknown;
+    /** Body of the invalid request. */
+    invalid?: unknown;
+    /** Context fields the accepted request carries that a failed body cannot (a bulk route's ids). */
+    bodyOnly?: readonly (keyof JobsApiAuthorizeContext)[];
+  }
+
+  const cases: Case[] = [
+    {
+      name: "fail, empty reason",
+      method: "POST",
+      validPath: "/queues/mail/jobs/a/fail",
+      valid: { reason: "stuck" },
+      invalid: { reason: "" },
+    },
+    {
+      name: "fail, reason over 4096 characters",
+      method: "POST",
+      validPath: "/queues/mail/jobs/a/fail",
+      valid: { reason: "stuck" },
+      invalid: { reason: "x".repeat(4097) },
+    },
+    {
+      name: "retry",
+      method: "POST",
+      validPath: "/queues/mail/jobs/a/retry",
+      valid: {},
+      invalid: { resetAttempts: "maybe" },
+    },
+    {
+      name: "add",
+      method: "POST",
+      validPath: "/queues/mail/jobs",
+      valid: { name: "send", data: {} },
+      invalid: { name: "" },
+    },
+    {
+      name: "update",
+      method: "PATCH",
+      validPath: "/queues/mail/jobs/a",
+      valid: { priority: 1 },
+      invalid: { priority: "high" },
+    },
+    {
+      name: "a runner route (resume)",
+      method: "POST",
+      validPath: "/runners/nightly/resume",
+      valid: {},
+      invalid: { triggerNow: "maybe" },
+    },
+    {
+      name: "a queue route (drain)",
+      method: "POST",
+      validPath: "/queues/mail/drain",
+      valid: {},
+      invalid: { delayed: "maybe" },
+    },
+    {
+      name: "a query (list jobs)",
+      method: "GET",
+      validPath: "/queues/mail/jobs?state=waiting",
+      invalidPath: "/queues/mail/jobs?state=nonsense",
+    },
+    {
+      name: "a bulk route (retry many)",
+      method: "POST",
+      validPath: "/queues/mail/jobs/retry",
+      valid: { ids: ["a"] },
+      invalid: { ids: "not-an-array" },
+      bodyOnly: ["jobIds"],
+    },
+  ];
+
+  /** The context the accepted request is authorized with, minus what only its body could say. */
+  async function successContext(item: Case) {
+    const h = await setup(policies.allowAll);
+    await h.call(item.method, item.validPath, item.valid);
+    expect(h.calls).toHaveLength(1);
+    const context: Record<string, unknown> = { ...h.calls[0] };
+    for (const key of item.bodyOnly ?? []) {
+      expect(context).toHaveProperty(key);
+      delete context[key];
+    }
+    return context;
+  }
+
+  /** Sends the invalid request under a policy: the answer and what authorize was asked. */
+  async function refuse(
+    item: Case,
+    policy: (context: JobsApiAuthorizeContext) => boolean,
+  ) {
+    const h = await setup(policy);
+    const response = await h.call(
+      item.method,
+      item.invalidPath ?? item.validPath,
+      item.invalid,
+    );
+    return { response, calls: h.calls };
+  }
+
+  it("asks authorize with the context the accepted request would carry", async () => {
+    for (const item of cases) {
+      const expected = await successContext(item);
+      expect(expected.queue ?? expected.runner).toBeDefined();
+      const { response, calls } = await refuse(item, policies.allowAll);
+      expect({ case: item.name, status: response.status }).toEqual({
+        case: item.name,
+        status: 400,
+      });
+      // Compared as plain records: `expected` lacks what only a body could say.
+      const asked: Record<string, unknown>[] = calls.map((call) => ({
+        ...call,
+      }));
+      expect({ case: item.name, calls: asked }).toEqual({
+        case: item.name,
+        calls: [expected],
+      });
+    }
+  });
+
+  it("allow-all: tells the caller what was wrong", async () => {
+    for (const item of cases) {
+      const { response } = await refuse(item, policies.allowAll);
+      expect({
+        case: item.name,
+        status: response.status,
+        code: response.body?.code,
+      }).toEqual({
+        case: item.name,
+        status: 400,
+        code: "VALIDATION",
+      });
+    }
+  });
+
+  it("refusing untargeted requests: still 400, not the untargeted 403", async () => {
+    for (const item of cases) {
+      const { response } = await refuse(item, policies.refuseUntargeted);
+      expect({
+        case: item.name,
+        status: response.status,
+        code: response.body?.code,
+      }).toEqual({
+        case: item.name,
+        status: 400,
+        code: "VALIDATION",
+      });
+    }
+  });
+
+  it("refusing that queue or runner: 403, telling it nothing about the schema", async () => {
+    for (const item of cases) {
+      const { response } = await refuse(item, policies.refuseThatTarget);
+      expect({
+        case: item.name,
+        status: response.status,
+        code: response.body?.code,
+      }).toEqual({
+        case: item.name,
+        status: 403,
+        code: "FORBIDDEN",
+      });
+      expect(response.text).not.toContain("VALIDATION");
+      expect(response.body).not.toHaveProperty("issues");
+    }
+  });
+
+  it("every targeted route that reads a body names its target when the body is broken", async () => {
+    const probe = await setup(policies.allowAll);
+    const registered = new Set(
+      probe.api.routes.map((route) => route.operationId),
+    );
+    const config = resolveConfig(
+      apiConfig({
+        jobs: probe.jobs,
+        mode: "both",
+        actions: [...JOBS_API_ACTIONS],
+      }),
+    );
+    const defs = builtInRoutes(config).filter(
+      (def) =>
+        registered.has(def.operationId) &&
+        def.target &&
+        (def.body !== undefined || isMutation(def.action)),
+    );
+    expect(defs.length).toBeGreaterThan(20);
+    for (const def of defs) {
+      const h = await setup(policies.allowAll);
+      const path = def.path
+        .replace(":queue", "mail")
+        .replace(":id", "a")
+        .replace(":runner", "nightly")
+        .replace(":key", "k");
+      const response = await h.call(def.method, path, '{"broken": [');
+      expect({ route: def.operationId, status: response.status }).toEqual({
+        route: def.operationId,
+        status: 400,
+      });
+      // A route whose `target` reads the body needs a `pathTarget`, or this
+      // request would be asked about with no target at all.
+      const [context] = h.calls;
+      expect({
+        route: def.operationId,
+        target: context?.queue ?? context?.runner,
+      }).toEqual({
+        route: def.operationId,
+        target: path.startsWith("/runners/") ? "nightly" : "mail",
+      });
+    }
+  });
+
+  it("an invalid path is still authorized without a target", async () => {
+    const path = "/queues/a%20b/jobs/a/fail";
+    const allowed = await setup(policies.allowAll);
+    const told = await allowed.call("POST", path, { reason: "" });
+    expect(told.status).toBe(400);
+    expect(told.body).toMatchObject({ code: "VALIDATION" });
+    expect(allowed.calls).toEqual([
+      {
+        action: "jobs.fail",
+        mutation: true,
+        transport: "http",
+        route: { method: "POST", path: "/queues/:queue/jobs/:id/fail" },
+      },
+    ]);
+
+    const refused = await setup(policies.refuseUntargeted);
+    const answer = await refused.call("POST", path, { reason: "" });
+    expect(answer.status).toBe(403);
+    expect(answer.text).not.toContain("VALIDATION");
   });
 });
 
