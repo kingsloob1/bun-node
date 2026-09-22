@@ -1,12 +1,14 @@
-import type { BunJobs, Job } from "@kingsleyweb/bun-jobs";
+import type { Job } from "@kingsleyweb/bun-jobs";
+import { noopLogger } from "@kingsleyweb/bun-common";
+import { BunJobs } from "@kingsleyweb/bun-jobs";
 import { waitFor } from "../../shared/console";
 
 /**
  * Seeds a `BunJobs` context with something for every part of the queue
  * screens to show: jobs in every state, failures with causes and several
  * stack traces, logs, a flow, a repeatable, queue limits, a paused queue with
- * enough jobs to page through, running workers, and throughput for this
- * minute.
+ * enough jobs to page through, running workers with stable keys in two
+ * services, stored job defaults, and throughput for this minute.
  *
  * It waits on conditions, never on a guessed duration, so the result is the
  * same on every backend: {@link EXPECTED_COUNTS} is what `/counts` must say
@@ -15,8 +17,8 @@ import { waitFor } from "../../shared/console";
  * | Queue      | What is in it                                              |
  * |------------|------------------------------------------------------------|
  * | `mail`     | every state; logs; a failure with a `cause`; limits; a repeatable; a flow's parent; a job id with a `/` |
- * | `webhooks` | a second worker, completed deliveries, one dead after two attempts |
- * | `reports`  | paused, with 45 waiting jobs: three pages at the default 20 |
+ * | `webhooks` | a second worker, completed deliveries, one dead after two attempts; a paused worker of a second service |
+ * | `reports`  | paused, with 45 waiting jobs: three pages at the default 20; stored job defaults they predate |
  * | `render`   | the flow's two children, waiting (no worker consumes it)   |
  */
 
@@ -39,6 +41,27 @@ export const DEMO_IDS = {
   /** Dead after two attempts, so it has two stack traces. */
   webhookDead: "hook-acme",
 } as const;
+
+/**
+ * The services the workers run under, and each worker's stable key
+ * (`service.queue.name`): what the Workers pages group by and link to, and
+ * what a job's "Processed by" names.
+ */
+export const DEMO_WORKERS = {
+  /** The service of the demo's own context. */
+  service: "api",
+  /** A second service over the same backend, as another deployment would be. */
+  otherService: "mailer",
+  /** The mail worker. */
+  mail: "api.mail.send",
+  /** The webhooks worker. */
+  webhooks: "api.webhooks.deliver",
+  /** The second service's webhooks worker: paused, so it claims nothing. */
+  pausedWebhooks: "mailer.webhooks.deliver",
+} as const;
+
+/** The job defaults stored for `reports` after its jobs were added. */
+export const DEMO_JOB_DEFAULTS = { attempts: 5, timeout: 120_000 } as const;
 
 /** What each queue's `/counts` must say once {@link seedDemo} resolves. */
 export const EXPECTED_COUNTS = {
@@ -92,7 +115,7 @@ export interface SeededDemo {
    * screens poll. Returns a function that stops it.
    */
   trickle: (ms: number) => () => void;
-  /** Lets the active job finish and closes both workers. */
+  /** Lets the active job finish, and closes every worker and the second service. */
   stop: () => Promise<void>;
 }
 
@@ -177,7 +200,9 @@ export async function seedDemo(
           return null;
       }
     },
-    { concurrency: 1 },
+    // Its stable key is `api.mail.send`: the context's service, the queue,
+    // this name.
+    { concurrency: 1, name: "send" },
   );
   void mailWorker.run();
 
@@ -238,7 +263,7 @@ export async function seedDemo(
       }
       return { status: 204 };
     },
-    { concurrency: 2 },
+    { concurrency: 2, name: "deliver" },
   );
   void webhookWorker.run();
   for (let index = 1; index <= 5; index++) {
@@ -254,6 +279,25 @@ export async function seedDemo(
     return counts.completed === 5 && counts.dead === 1;
   });
 
+  // A second service over the same driver and namespace, the way a
+  // separate deployment would be: its worker on webhooks has a key of its
+  // own, `mailer.webhooks.deliver`. Started once the deliveries settled and
+  // paused at once, so it claims none of them; the Workers page offers it
+  // Resume.
+  const mailer = new BunJobs({
+    namespace: jobs.namespace,
+    driver: jobs.driver,
+    service: DEMO_WORKERS.otherService,
+    logger: noopLogger,
+  });
+  const pausedWorker = mailer.worker(
+    "webhooks",
+    async () => ({ status: 204 }),
+    { concurrency: 1, name: "deliver" },
+  );
+  void pausedWorker.run();
+  await pausedWorker.pause();
+
   /* --- reports: paused, and long enough to page --- */
 
   await reports.pause();
@@ -263,6 +307,9 @@ export async function seedDemo(
       data: { day: index + 1 },
     })),
   );
+  // Stored after the jobs were added, so all 45 keep the code's values: the
+  // Job defaults panel offers "Apply to 45 pending jobs…".
+  await reports.setJobDefaults({ ...DEMO_JOB_DEFAULTS });
 
   return {
     trickle: (ms) => {
@@ -280,7 +327,9 @@ export async function seedDemo(
       await Promise.all([
         mailWorker.close({ timeout: 2_000 }),
         webhookWorker.close({ timeout: 2_000 }),
+        pausedWorker.close({ timeout: 2_000 }),
       ]);
+      await mailer.close();
     },
   };
 }

@@ -1,15 +1,17 @@
 /**
- * Deep links to the queue, runner, Events and API docs screens — the queue
- * list, one queue, a filtered tab or panel, one job, the runner list, one
- * runner, the Events console on a chosen channel, the docs landing page, one
- * HTTP operation and one WebSocket message — checked without a socket.
+ * Deep links to the Overview, queue, worker, runner, Events and API docs
+ * screens — the Overview over a range, the queue list, one queue, a filtered
+ * tab or panel, one job, the worker list, one worker, the runner list, one
+ * runner and one run's log, the Events console on a chosen channel, the docs
+ * landing page, one HTTP operation and one WebSocket message — checked
+ * without a socket.
  *
  * ```bash
  * bun 04-screens/deep-links.ts
  * ```
  *
- * The Queues, Runners, Events and API docs sections are routed in the
- * browser, so a link
+ * The Overview, Queues, Workers, Runners, Events and API docs sections are
+ * routed in the browser, so a link
  * someone pastes or a reload on one of their screens asks the server for a
  * path it has no route for.
  * `jobsUi()` answers every path under its `basePath` with the same HTML shell
@@ -20,10 +22,13 @@
  * - every screen URL gets the shell: `200`, `text/html` and the same config
  *   JSON, so the page boots the same way whichever screen it opens on;
  * - the screen state lives in the query string (`state`, `panel`, `window`,
- *   `offset`, `limit`, `total`, `name`, `search`, `order`; `search` on the
- *   runner list, `history` on a runner; `channel` and `types` on `/events`;
- *   `q` on both docs references), which the server ignores, so any
- *   combination can be bookmarked;
+ *   `offset`, `limit`, `total`, `name`, `search`, `order`; `queue`,
+ *   `service`, `host`, `state` and `search` on the worker list; `range` and
+ *   the `job`-prefixed list parameters plus `finished` on a worker; `range`,
+ *   `rangeScope` and the per-section ranges on the Overview; `search` on the
+ *   runner list, `history` and `logs` on a runner; `channel` and `types` on
+ *   `/events`; `q` on both docs references), which the server ignores, so
+ *   any combination can be bookmarked;
  * - the shell links exactly one stylesheet and one module script. The queue,
  *   job and runner screens are split chunks the entry imports on demand,
  *   served from the same `assetsPath` with the same immutable caching, and
@@ -48,7 +53,7 @@ import { show, step, title } from "../shared/console";
 import { fetchShell } from "../shared/shell";
 
 title(
-  "Deep links to the queue, runner, Events and API docs screens, without a socket",
+  "Deep links to the Overview, queue, worker, runner, Events and API docs screens, without a socket",
 );
 
 const jobs = new BunJobs({
@@ -104,14 +109,16 @@ check(
 
 /* ------------------------------------------------------------------ */
 step(
-  "Every queue, runner, Events and docs screen's URL answers with the shell",
+  "Every Overview, queue, worker, runner, Events and docs screen's URL answers with the shell",
 );
 
-// The routes the app defines under the Queues and Runners sections:
+// The routes the app defines under its sections:
 //
 //   /queues                     the queue list
 //   /queues/:queue              one queue: header, actions, jobs, panels
 //   /queues/:queue/jobs/:id     one job
+//   /workers                    the worker list
+//   /workers/:queue/:key        one worker: instances, settings, analytics, jobs
 //   /runners                    the runner list
 //   /runners/:runner            one runner: status, actions, stats, history
 //   /events                     the Events console
@@ -127,11 +134,18 @@ const SCREEN_URLS = [
   "/jobs/queues?search=MA&offset=20&limit=10",
   // A queue screen, as it opens: the "All" tab and the first panel.
   "/jobs/queues/mail",
-  // The Failed tab, with the Workers panel open.
+  // The Retrying tab (the `failed` state: the label changed, the value did
+  // not), with the Workers panel open.
   "/jobs/queues/mail?state=failed&panel=workers",
   // Every filter of the jobs table at once: a state tab, a page, the total
-  // counted, two exact names, a search and newest first.
-  "/jobs/queues/mail?state=dead&offset=40&limit=20&total=1&name=a,b&search=smtp&order=desc",
+  // counted, two exact names, a search and oldest first. Newest first is the
+  // default, so only `order=asc` is ever written into the URL (an
+  // `order=desc` in a pasted link still reads as newest first).
+  "/jobs/queues/mail?state=dead&offset=40&limit=20&total=1&name=a,b&search=smtp&order=asc",
+  "/jobs/queues/mail?state=dead&order=desc",
+  // The Job defaults panel: the defaults every job added to the queue
+  // starts from, with Settings… and Apply to N pending jobs….
+  "/jobs/queues/mail?panel=job-defaults",
   // The throughput panel over the last six hours.
   "/jobs/queues/mail?panel=throughput&window=360",
   // A job whose id holds a `/`: one encoded segment.
@@ -140,6 +154,31 @@ const SCREEN_URLS = [
   // from the API's 404, to show its "Job not found" screen
   // (`data-testid="job-not-found"`).
   "/jobs/queues/nope/jobs/missing",
+  // The worker list: every worker, grouped by service, then host:pid.
+  // `queue`, `service`, `host` and `state` are sent to the API; `search`
+  // filters in the browser.
+  "/jobs/workers",
+  "/jobs/workers?queue=mail&service=api&state=paused&search=send",
+  "/jobs/workers?host=web-1",
+  // One worker, by its queue and stable key (`service.queue.name`): its
+  // live instances, configuration, throughput and busyness over `range`, and
+  // the jobs whose last attempt it ran — by default those finished in the
+  // last 24 hours, with the job list's own parameters prefixed `job`.
+  "/jobs/workers/mail/api.mail.send",
+  "/jobs/workers/mail/api.mail.send?range=3600s",
+  "/jobs/workers/mail/api.mail.send?jobState=completed&finished=21600s&jobName=send-email&jobSearch=ada&jobOrder=asc&jobOffset=20&jobLimit=10",
+  // A custom `finished` range, as `<from>-<to>` in epoch milliseconds, and
+  // an Active tab, which drops the range (an active job has no finishedOn).
+  "/jobs/workers/mail/api.mail.send?finished=1758499200000-1758585600000",
+  "/jobs/workers/mail/api.mail.send?jobState=active",
+  // A key nothing reports: the shell, then the page says so.
+  "/jobs/workers/mail/ghost.mail.send",
+  // The Overview over the last hour, for the whole page; then with each
+  // section on its own range (`rangeScope=section`) — the Jobs, Queues,
+  // Runners and Workers sections each reading its own parameter.
+  "/jobs/?range=3600s",
+  "/jobs/?range=1758499200000-1758585600000",
+  "/jobs/?rangeScope=section&jobsRange=300s&queuesRange=3600s&runnersRange=21600s&workersRange=86400s",
   // The runner list, and filtered by id or name. The filter runs in the
   // browser, so nothing is re-fetched as you type.
   "/jobs/runners",
@@ -148,6 +187,8 @@ const SCREEN_URLS = [
   // as `GET /runners/:runner/history?limit=25`).
   "/jobs/runners/nightly",
   "/jobs/runners/nightly?history=25",
+  // One run's log open in its history row (`logs` names the run id).
+  "/jobs/runners/nightly?logs=00000000-0000-0000-0000-000000000000",
   // A runner nothing knows: the shell, then "Runner not found"
   // (`data-testid="runner-not-found"`) from the API's 404.
   "/jobs/runners/ghost",
@@ -163,6 +204,10 @@ const SCREEN_URLS = [
   // One runner's channel, and the channel of one job (its id encoded as the
   // socket encodes it, then as a query value).
   "/jobs/events?channel=runner/nightly",
+  // Every worker ("Every worker"), and one queue's workers ("One queue's
+  // workers"): workers starting, pausing, stopping and changing settings.
+  "/jobs/events?channel=workers",
+  "/jobs/events?channel=queue/mail/workers",
   `/jobs/events?channel=${encodeURIComponent(`queue/mail/job/${encodeJobId("a/b")}`)}`,
   // The API docs (`data-testid="docs-home"`): an HTTP card, and a WebSocket
   // card because this API has a socket (`meta.docs.asyncapi`).

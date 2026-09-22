@@ -72,7 +72,23 @@
  *   process running a run can kill it, so Kill needs a run in
  *   `local.activeRuns`, and Reset stats needs `isLocal`. For a remote runner
  *   the screen shows a hint instead, and the API answers 409
- *   `RUNNER_NOT_LOCAL`.
+ *   `RUNNER_NOT_LOCAL`. Clear history… is the exception: it works on what
+ *   the backend stores, so a remote runner gets it too.
+ * - **Worker controls follow the map of the screen listing the worker.** The
+ *   Workers page is outside any queue, so it reads the untargeted map (for
+ *   this host, a "no" to every mutation: no buttons there), while a queue's
+ *   Workers panel and a worker page (`/workers/:queue/:key`) read the queue's
+ *   own answer. A lifecycle action also needs the worker live (it reports
+ *   `control.enabled`, is not stale and not mid-transition) in a state that
+ *   takes it, and the backend's `features.workerControl`.
+ * - **Six actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
+ *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
+ *   `workers.configure` and `runners.configure` are not routed, and so absent
+ *   from the map, unless the host lists them in `actions`. This host lists
+ *   every action; a second host built with the default shows the difference.
+ * - **Where the code needs more than the README says**, the gate records it
+ *   under `unlisted`, and the table check names those rows, so a README fix
+ *   shows up here as a change to review.
  * - **The Events console needs a socket and `events.connect`.** `/meta`'s
  *   `websocket` is `null` when the API was built with `websocket: false`, and
  *   `events.connect` is then absent from the map, not `false`. With a socket,
@@ -107,10 +123,20 @@ import type {
 } from "@kingsleyweb/bun-jobs";
 import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
 import type {
+  AnalyticsSeriesDto,
+  JobDefaultsDto,
   PermissionsDto,
   QueueDetailDto,
   RunnerInfoDto,
   RunnerListDto,
+  RunnersAnalyticsDto,
+  RunRecordDto,
+  WorkerConfigOverrideDto,
+  WorkerControlResultDto,
+  WorkerDto,
+  WorkerListDto,
+  WorkersAnalyticsDto,
+  WorkerState,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { join } from "node:path";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
@@ -120,6 +146,7 @@ import {
   JOB_STATES,
   JOBS_API_ACTIONS,
   JOBS_API_MUTATIONS,
+  JOBS_API_OPT_IN_ACTIONS,
   MemoryDriver,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
@@ -286,11 +313,14 @@ async function get<T>(path: string): Promise<{ status: number; body: T }> {
 }
 
 /** A mutation, sent the way the app sends one: JSON, from the same origin. */
-async function send(
+async function send<T extends object = object>(
   method: string,
   path: string,
   body: unknown = {},
-): Promise<{ status: number; body: { code?: string; detail?: string } }> {
+): Promise<{
+  status: number;
+  body: Partial<T> & { code?: string; detail?: string };
+}> {
   const response = await app.fetch(`${api.basePath}${path}`, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -299,7 +329,9 @@ async function send(
   const text = await response.text();
   return {
     status: response.status,
-    body: text ? (JSON.parse(text) as { code?: string; detail?: string }) : {},
+    body: text
+      ? (JSON.parse(text) as Partial<T> & { code?: string; detail?: string })
+      : {},
   };
 }
 
@@ -342,6 +374,19 @@ type Feature = keyof MetaDto["features"];
  */
 type TargetedMap = PermissionsBody | "pending";
 
+/** The Overview's analytics sections: the Jobs card, Runners and Workers. */
+type AnalyticsSection = "jobs" | "runners" | "workers";
+
+/** How one Overview section's analytics read answered. */
+interface SectionRead {
+  /** The response's `range.clamped`: not exactly the range asked for. */
+  clamped?: boolean;
+  /** The read answered 400 `RANGE_NOT_RETAINED`: the whole range is older than the API keeps. */
+  notRetained?: boolean;
+  /** The roll-up's `truncated` (Runners and Workers only): more rows exist than it returned. */
+  truncated?: boolean;
+}
+
 /** Everything a screen decides from. */
 interface ScreenInputs {
   /** `GET /meta`. */
@@ -361,8 +406,31 @@ interface ScreenInputs {
    * read it.
    */
   detail?: QueueDetailDto;
-  /** The job on the job screen, whose state picks Retry, Promote and Fail…. */
-  job?: { state: JobState };
+  /**
+   * The job on the job screen, or one row of the jobs table: its state picks
+   * Retry, Promote and Fail…, its `processedBy` the worker link.
+   */
+  job?: {
+    /** The job's state. */
+    state: JobState;
+    /** `JobDto.processedBy`: the worker that ran the last attempt, `null` for none. */
+    processedBy?: { key?: string } | null;
+  };
+  /**
+   * Whether the jobs table counts its total (`?total=1`): such a page keeps
+   * each tab's natural order, so no `sort` is sent.
+   */
+  countTotal?: boolean;
+  /**
+   * `GET /queues/<q>/job-defaults`, which the Job defaults panel reads:
+   * whether an override is stored, and how many jobs are pending.
+   */
+  jobDefaults?: Pick<JobDefaultsDto, "overridden" | "pending">;
+  /**
+   * How each Overview section's analytics read answered: `jobs` for the Jobs
+   * card, `runners` and `workers` for their sections. Absent before a read.
+   */
+  reads?: Partial<Record<AnalyticsSection, SectionRead>>;
   /**
    * One row of the repeatables panel (`GET /queues/<q>/repeatables`), whose
    * `disabled` picks Disable or Enable. Absent off such a row.
@@ -379,6 +447,36 @@ interface ScreenInputs {
    * `isLocal`, `local` and `isPaused` pick the actions.
    */
   runner?: RunnerInfoDto;
+  /** One run of the runner's history, as `GET /runners/<id>/history` lists it. */
+  run?: Pick<RunRecordDto, "status" | "logLines" | "logsDropped">;
+  /**
+   * The map a worker table decides its controls on: the untargeted one on
+   * `/workers`, the queue's own answer on its Workers panel and on a worker
+   * page. Absent off a worker table, which closes every `map: "worker"` gate.
+   */
+  workerMap?: PermissionsBody;
+  /** One row of a worker table. */
+  worker?: WorkerDto;
+  /** Every worker in the table on screen: the columns depend on them all. */
+  workerTable?: readonly WorkerDto[];
+  /** The unfiltered `GET /workers`, which the Workers page's filters offer from. */
+  workerList?: readonly WorkerDto[];
+  /** The answer to the last worker instruction sent (`?wait=2000`). */
+  controlResult?: Pick<WorkerControlResultDto, "applied">;
+  /**
+   * A worker page's one read, `GET /workers?queue=&key=&includeOffline=true`:
+   * the key's live instances, and the override stored for it (`null` when
+   * the listing's `offline` says none; `undefined` when it sent no
+   * `offline`). Absent off a worker page.
+   */
+  workerPage?: {
+    /** The stable key the page is for (`:key`). */
+    key: string;
+    /** The key's live instances. */
+    instances: readonly WorkerDto[];
+    /** The stored override, `null` for none, `undefined` when not reported. */
+    stored?: WorkerConfigOverrideDto | null;
+  };
   /**
    * The operation or channel on screen in the API docs, as its document
    * describes it. Absent off a docs item page, which closes every
@@ -419,8 +517,10 @@ interface DocItem {
 /**
  * Which permission map decides a gate. `operation` is the untargeted map
  * too, but the gate exists only on one documented operation's page.
+ * `worker` is whichever map the worker table on screen decides on
+ * (`ScreenInputs.workerMap`).
  */
-type GateMap = "boot" | "queue" | "runner" | "operation";
+type GateMap = "boot" | "queue" | "runner" | "operation" | "worker";
 
 /**
  * What shows when a gate is closed but the screen it sits on is open:
@@ -431,7 +531,12 @@ type GateMap = "boot" | "queue" | "runner" | "operation";
 type Denied = "absent" | "disabled" | "note" | "lack";
 
 /** The `/meta` fields a README row may name as `` `meta.<field>` ``. */
-type MetaField = keyof MetaDto | "docs.openapi" | "docs.asyncapi";
+type MetaField =
+  | keyof MetaDto
+  | "docs.openapi"
+  | "docs.asyncapi"
+  | "analytics.recording.runners"
+  | "analytics.recording.workers";
 
 /** Methods the app's client sends (the HTTP try-it's `CLIENT_METHODS`). */
 const CLIENT_METHODS = ["DELETE", "GET", "PATCH", "POST", "PUT"] as const;
@@ -485,6 +590,29 @@ interface Gate {
    * Unlike `extends`, the README row does not restate it.
    */
   readonly on?: string;
+  /**
+   * Gates whose needs this one has, each decided on its own map: the README
+   * row says so ("the Workers nav entry's needs"), and the table check
+   * compares the rows named.
+   */
+  readonly needsOf?: readonly string[];
+  /**
+   * A gate whose needs this one restates on its own map ("the Overview
+   * Workers section's needs", on a worker page's queue map). Not evaluated:
+   * the gate lists them itself, and a check holds the two lists equal.
+   */
+  readonly sameAs?: string;
+  /**
+   * What the app's code needs that the README row does not say. `features`
+   * are evaluated like `features`; anything else lives in `when`. Left out
+   * of the table comparison, and listed by the step that makes it.
+   */
+  readonly unlisted?: {
+    /** `/meta` features the code also requires. */
+    readonly features?: readonly Feature[];
+    /** What the README leaves out, in a sentence, with the code it comes from. */
+    readonly why: string;
+  };
   /**
    * The `/meta` fields other than `mode` that the README row names as
    * `` `meta.<field>` ``. `when` decides on them; listing them here lets the
@@ -547,6 +675,88 @@ function hasLocalRuns(runner: RunnerInfoDto | undefined): boolean {
 }
 
 /**
+ * Whether a run offers its Log button: it reports lines, is still running
+ * (a live run's record has no `logLines` until it settles), or reports no
+ * `logLines` at all. Only a finished run that logged `0` lines offers none.
+ */
+function runHasLog(run: ScreenInputs["run"]): boolean {
+  return (
+    run !== undefined &&
+    (run.logLines === undefined || run.logLines > 0 || run.status === "running")
+  );
+}
+
+/** A worker's state; an older worker reports only `paused`. */
+function workerStateOf(worker: WorkerDto): WorkerState {
+  return worker.state ?? (worker.paused ? "paused" : "running");
+}
+
+/**
+ * Whether a worker can take a lifecycle instruction at all: it listens
+ * (`control.enabled`), still reports (not `stale`, not expired) and is not
+ * between states (`stopping`, `restarting`).
+ */
+function workerLive(worker: WorkerDto): boolean {
+  const state = workerStateOf(worker);
+  return (
+    worker.control?.enabled === true &&
+    !(worker.stale ?? worker.expiresAt <= Date.now()) &&
+    state !== "stopping" &&
+    state !== "restarting"
+  );
+}
+
+/** The worker actions a row offers, and the states each takes. */
+const WORKER_LIFECYCLE = {
+  "workers.pause": ["running"],
+  "workers.resume": ["paused"],
+  "workers.stop": ["running", "paused"],
+  "workers.start": ["stopped"],
+} as const satisfies Partial<Record<JobsApiAction, readonly WorkerState[]>>;
+
+/** Whether `worker` is live and in a state `action` takes. */
+function workerTakes(
+  worker: WorkerDto | undefined,
+  action: keyof typeof WORKER_LIFECYCLE,
+): boolean {
+  return (
+    worker !== undefined &&
+    workerLive(worker) &&
+    (WORKER_LIFECYCLE[action] as readonly WorkerState[]).includes(
+      workerStateOf(worker),
+    )
+  );
+}
+
+/**
+ * Whether Settings… is offered on `worker`: it listens (`control.enabled`)
+ * and reports the stable `key` an override is stored against. Stale or
+ * mid-transition does not matter: the override waits for the next replica.
+ */
+function workerConfigurable(worker: WorkerDto | undefined): boolean {
+  return worker?.control?.enabled === true && worker.key !== undefined;
+}
+
+/**
+ * Whether a row offers any worker action, on `permissions`: what decides the
+ * table's Actions column. The same rules as the five worker gates.
+ */
+function workerOffersAny(
+  worker: WorkerDto,
+  permissions: PermissionsBody,
+  meta: MetaDto,
+): boolean {
+  const mutable = (action: JobsApiAction) =>
+    meta.features.workerControl && !meta.readOnly && can(permissions, action);
+  return (
+    (Object.keys(WORKER_LIFECYCLE) as (keyof typeof WORKER_LIFECYCLE)[]).some(
+      (action) => mutable(action) && workerTakes(worker, action),
+    ) ||
+    (mutable("workers.configure") && workerConfigurable(worker))
+  );
+}
+
+/**
  * Every element of the queue, job and runner screens, in the README table's
  * order. A row that names several elements (Pause / Resume, the bulk
  * buttons) has one entry per element, sharing its `row`.
@@ -576,8 +786,105 @@ const GATES = [
     name: "Overview: sparklines",
     row: "Overview sparklines",
     map: "boot",
+    // A column of the queue table.
+    on: "Overview: queue table",
     reads: ["metrics.read"],
     features: ["throughput"],
+    // Every analytics route is pruned when the backend records nothing.
+    metaFields: ["analytics"],
+    when: ({ meta }) => meta.analytics !== null,
+  },
+  {
+    // The Jobs card's band: the analytics series' own total.
+    name: "overview: Over the range figure",
+    row: 'Overview "Over the range" figure',
+    map: "boot",
+    reads: ["metrics.read"],
+    metaFields: ["analytics"],
+    when: ({ meta }) => meta.analytics !== null,
+  },
+  {
+    name: "overview: Over the range, added by state",
+    row: 'Overview "Over the range" added-by-state group ("Added in range, where they are now (still stored)")',
+    map: "boot",
+    reads: ["metrics.read"],
+    features: ["addedByState"],
+  },
+  {
+    // useAnalyticsGate("runners").
+    name: "overview: Runners section",
+    row: "Overview Runners section",
+    map: "boot",
+    reads: ["metrics.read"],
+    features: ["runnerMetrics"],
+    metaFields: ["analytics", "analytics.recording.runners"],
+    when: ({ meta }) => meta.analytics?.recording.runners === true,
+  },
+  {
+    name: "overview: Workers section",
+    row: "Overview Workers section",
+    map: "boot",
+    reads: ["metrics.read"],
+    features: ["workerMetrics"],
+    metaFields: ["analytics", "analytics.recording.workers"],
+    when: ({ meta }) => meta.analytics?.recording.workers === true,
+  },
+  {
+    name: "overview: Runners busiest note",
+    row: 'Overview Runners / Workers note "Showing the N busiest … of M"',
+    map: "boot",
+    on: "overview: Runners section",
+    when: ({ reads }) => reads?.runners?.truncated === true,
+  },
+  {
+    name: "overview: Workers busiest note",
+    row: 'Overview Runners / Workers note "Showing the N busiest … of M"',
+    map: "boot",
+    on: "overview: Workers section",
+    when: ({ reads }) => reads?.workers?.truncated === true,
+  },
+  // The Jobs card is the "Overview counts" row's: metrics.read.
+  {
+    name: "overview: Jobs range caption",
+    row: 'Overview range caption ("This is not exactly the range asked for: …")',
+    map: "boot",
+    on: "Overview: counts",
+    when: ({ reads }) => reads?.jobs?.clamped === true,
+  },
+  {
+    name: "overview: Runners range caption",
+    row: 'Overview range caption ("This is not exactly the range asked for: …")',
+    map: "boot",
+    on: "overview: Runners section",
+    when: ({ reads }) => reads?.runners?.clamped === true,
+  },
+  {
+    name: "overview: Workers range caption",
+    row: 'Overview range caption ("This is not exactly the range asked for: …")',
+    map: "boot",
+    on: "overview: Workers section",
+    when: ({ reads }) => reads?.workers?.clamped === true,
+  },
+  {
+    name: "overview: Jobs not kept",
+    row: 'Overview "No numbers are kept for this range"',
+    map: "boot",
+    on: "Overview: counts",
+    when: ({ reads }) => reads?.jobs?.notRetained === true,
+  },
+  {
+    name: "overview: Runners not kept",
+    row: 'Overview "No numbers are kept for this range"',
+    map: "boot",
+    on: "overview: Runners section",
+    when: ({ reads }) => reads?.runners?.notRetained === true,
+  },
+  {
+    name: "overview: Workers not kept",
+    row: 'Overview "No numbers are kept for this range"',
+    map: "boot",
+    on: "overview: Workers section",
+    when: ({ reads }) => reads?.workers?.notRetained === true,
   },
   {
     name: "Queues: nav and /queues*",
@@ -598,6 +905,39 @@ const GATES = [
     row: "Jobs table, and the job links in it",
     map: "queue",
     reads: ["jobs.list"],
+  },
+  {
+    name: "queue: Processed by column",
+    row: 'Jobs table "Processed by" column',
+    map: "queue",
+    reads: ["jobs.list"],
+    features: ["jobAttribution"],
+  },
+  {
+    // useWorkerPagesRouted(): the Workers nav entry, on the untargeted map.
+    name: "queue: Processed by worker link",
+    row: 'Jobs table "Processed by" worker link',
+    map: "boot",
+    on: "queue: Processed by column",
+    needsOf: ["Workers: nav and /workers"],
+    when: ({ job }) => job?.processedBy?.key !== undefined,
+  },
+  {
+    name: "queue: jobs newest added first (sort=createdAt)",
+    row: "Jobs table and worker page jobs, newest added first on every tab (`sort=createdAt`)",
+    map: "queue",
+    on: "queue: jobs table",
+    features: ["addedByState"],
+    // A page counting its total keeps the natural order.
+    when: ({ countTotal }) => countTotal !== true,
+  },
+  {
+    // The worker page's jobs never count a total.
+    name: "worker page: jobs newest added first (sort=createdAt)",
+    row: "Jobs table and worker page jobs, newest added first on every tab (`sort=createdAt`)",
+    map: "queue",
+    on: "worker page: jobs",
+    features: ["addedByState"],
   },
   {
     name: "queue: Pause",
@@ -691,6 +1031,35 @@ const GATES = [
     mutations: ["queues.limits"],
   },
   {
+    // useJobDefaultsGate(): nothing is read without the feature.
+    name: "panel=job-defaults",
+    row: "Job defaults panel",
+    map: "queue",
+    reads: ["queues.read"],
+    features: ["jobDefaults"],
+  },
+  {
+    name: "panel=job-defaults, Settings…",
+    row: "Job defaults Settings…",
+    map: "queue",
+    extends: "panel=job-defaults",
+    mutations: ["queues.defaults"],
+  },
+  {
+    // Separate from Settings…: editing does not grant rewriting the backlog.
+    name: "panel=job-defaults, Apply to N pending jobs…",
+    row: "Job defaults Apply to N pending jobs…",
+    map: "queue",
+    on: "panel=job-defaults",
+    features: ["jobDefaultsApply"],
+    mutations: ["queues.applyDefaults"],
+    // Otherwise the panel says why, in place of the button.
+    when: ({ jobDefaults }) =>
+      jobDefaults !== undefined &&
+      jobDefaults.overridden.length > 0 &&
+      jobDefaults.pending.total > 0,
+  },
+  {
     name: "panel=workers",
     row: "Workers panel",
     map: "queue",
@@ -734,6 +1103,15 @@ const GATES = [
     features: ["logs"],
   },
   {
+    // Shown in any state; only its clickability depends on the job (not
+    // while `active`, nor while the log is empty), with the reason beside it.
+    name: "job: Clear logs…",
+    row: "Job Clear logs…",
+    map: "queue",
+    on: "job: logs",
+    mutations: ["jobs.clearLogs"],
+  },
+  {
     name: "job: Retry",
     row: "Job Retry",
     map: "queue",
@@ -759,6 +1137,24 @@ const GATES = [
     map: "queue",
     mutations: ["jobs.update"],
     features: ["update"],
+  },
+  {
+    // A line of the job's summary, so it waits for the queue's map too.
+    name: "job: Processed by",
+    row: 'Job "Processed by"',
+    map: "queue",
+    waits: true,
+    on: "job: screen",
+    reads: ["jobs.read"],
+    features: ["jobAttribution"],
+  },
+  {
+    name: "job: Processed by worker link",
+    row: 'Job "Processed by" worker link',
+    map: "boot",
+    on: "job: Processed by",
+    needsOf: ["Workers: nav and /workers"],
+    when: ({ job }) => job?.processedBy?.key !== undefined,
   },
   {
     name: "Runners: nav and /runners*",
@@ -791,6 +1187,33 @@ const GATES = [
     row: "Runner active runs",
     map: "runner",
     when: ({ runner }) => runner?.local !== undefined,
+  },
+  {
+    // useCanReadRunLogs(): the history's Log column, and every log view.
+    name: "runner: run log and Log column",
+    row: "Runner run log, and the history's Log column",
+    map: "runner",
+    waits: true,
+    on: "runner: stats and history",
+    reads: ["runners.logs"],
+    features: ["runnerLogs"],
+  },
+  {
+    name: "runner: a run's Log button",
+    row: "A run's Log button (in the history row, and Show log in its expanded details)",
+    map: "runner",
+    extends: "runner: run log and Log column",
+    when: ({ run }) => runHasLog(run),
+  },
+  {
+    name: "runner: N lines dropped",
+    row: 'A history row\'s "N lines dropped" badge',
+    map: "runner",
+    // It sits in the Log column: the run log's needs, restated by the row.
+    on: "runner: run log and Log column",
+    reads: ["runners.logs"],
+    features: ["runnerLogs"],
+    when: ({ run }) => (run?.logsDropped ?? 0) > 0,
   },
   // The actions sit in the runner's header, so each needs the runner.
   {
@@ -845,11 +1268,231 @@ const GATES = [
     when: ({ runner }) => runner?.isLocal === true,
   },
   {
+    // Local or not: it works on what the backend stores. It sits in the
+    // History card's header, so it needs the history; disabled ("No runs to
+    // clear.") while the history is empty, which is a state, not a gate.
+    name: "runner: Clear history…",
+    row: "Runner Clear history…",
+    map: "runner",
+    on: "runner: stats and history",
+    mutations: ["runners.clearHistory"],
+    when: ({ runner }) => runner !== undefined,
+  },
+  {
     name: "runner: remote hint",
     row: "Runner remote hint",
     map: "runner",
     anyMutation: ["runners.kill", "runners.resetStats"],
     when: ({ runner }) => runner?.isLocal === false,
+  },
+  // Workers: /workers reads the untargeted map; a worker page sits in the
+  // queue's PermissionScope and does not wait for it.
+  {
+    name: "Workers: nav and /workers",
+    row: "Workers nav entry and `/workers`",
+    map: "boot",
+    sections: ["manage"],
+    modes: ["jobs", "both"],
+    features: ["workers"],
+    reads: ["workers.list"],
+  },
+  {
+    name: "workers page: queue links",
+    row: "Workers page queue links",
+    map: "boot",
+    on: "Workers: nav and /workers",
+    reads: ["queues.list"],
+  },
+  {
+    name: "workers page: Queue, Service and State filters",
+    row: "Workers page Queue, Service and State filters",
+    map: "boot",
+    on: "Workers: nav and /workers",
+    reads: ["workers.list"],
+  },
+  {
+    // hostsExposed(): some worker of the unfiltered list carries a host.
+    name: "workers page: Host filter",
+    row: "Workers page Host filter",
+    map: "boot",
+    on: "Workers: nav and /workers",
+    reads: ["workers.list"],
+    when: ({ workerList }) =>
+      workerList?.some((worker) => worker.host !== undefined) === true,
+  },
+  {
+    name: "worker table: key links",
+    row: "Workers table key links (the Workers page and a queue's Workers panel)",
+    map: "boot",
+    needsOf: ["Workers: nav and /workers"],
+    when: ({ worker }) => worker?.key !== undefined,
+  },
+  {
+    // Routed with the Workers nav entry.
+    name: "worker page: route",
+    row: "Worker page (`/workers/:queue/:key`)",
+    map: "boot",
+    needsOf: ["Workers: nav and /workers"],
+  },
+  {
+    // Without it: "Instances hidden", and neither the configuration nor the
+    // numbers; the jobs card stays.
+    name: "worker page: instances",
+    row: "Worker page (`/workers/:queue/:key`)",
+    map: "queue",
+    on: "worker page: route",
+    reads: ["workers.list"],
+  },
+  {
+    name: "worker page: queue link",
+    row: "Worker page queue link",
+    map: "boot",
+    on: "worker page: route",
+    reads: ["queues.list"],
+  },
+  {
+    // The configure gate of the first instance reporting a config.
+    name: "worker page: Edit settings…",
+    row: "Worker page Edit settings…",
+    map: "queue",
+    on: "worker page: instances",
+    mutations: ["workers.configure"],
+    features: ["workerControl"],
+    when: ({ workerPage }) =>
+      workerConfigurable(
+        workerPage?.instances.find((worker) => worker.config !== undefined),
+      ),
+  },
+  {
+    name: "worker page: Reset to code values…",
+    row: "Worker page Reset to code values… (no live instance)",
+    map: "queue",
+    on: "worker page: instances",
+    mutations: ["workers.configure"],
+    features: ["workerControl"],
+    // `stored` is already `null` for an emptied entry (storedOverride()).
+    when: ({ workerPage }) =>
+      workerPage !== undefined &&
+      workerPage.instances.length === 0 &&
+      workerPage.stored !== null,
+  },
+  {
+    name: "worker page: Change pending",
+    row: 'Worker page "Change pending" badge',
+    map: "queue",
+    on: "worker page: instances",
+    when: ({ workerPage }) =>
+      workerPage?.instances.some((worker) => worker.control?.pending) === true,
+  },
+  {
+    // useAnalyticsGate("workers"), asked on the queue's answer. Shown in the
+    // "Instances hidden" branch too: it never needed workers.list.
+    name: "worker page: throughput and busyness",
+    row: "Worker page throughput and busyness",
+    map: "queue",
+    on: "worker page: route",
+    sameAs: "overview: Workers section",
+    reads: ["metrics.read"],
+    features: ["workerMetrics"],
+    metaFields: ["analytics", "analytics.recording.workers"],
+    when: ({ meta }) => meta.analytics?.recording.workers === true,
+  },
+  {
+    name: "worker page: jobs",
+    row: 'Worker page jobs ("Jobs whose last attempt this key ran")',
+    map: "queue",
+    on: "worker page: route",
+    reads: ["jobs.list"],
+    features: ["jobAttribution"],
+    // A key holding a comma cannot be sent as one filter value.
+    when: ({ workerPage }) => workerPage?.key.includes(",") !== true,
+  },
+  {
+    name: "worker page: jobs' job links",
+    row: "Worker page jobs' job links",
+    map: "boot",
+    on: "worker page: jobs",
+    reads: ["queues.list"],
+  },
+  // A worker table, on /workers, a queue's Workers panel or a worker page.
+  {
+    name: "worker table: Completed / Failed columns",
+    row: "Workers table Completed / Failed columns (the Workers page and a queue's Workers panel)",
+    map: "worker",
+    when: ({ workerTable }) =>
+      workerTable?.some(
+        (worker) =>
+          worker.completed !== undefined || worker.failed !== undefined,
+      ) === true,
+  },
+  {
+    name: "worker: instruction says done (applied)",
+    row: 'Worker instruction wording ("Paused X" vs "Asked X to pause")',
+    map: "worker",
+    when: ({ controlResult }) => controlResult?.applied === true,
+  },
+  {
+    name: "worker: Pause",
+    row: "Worker Pause",
+    map: "worker",
+    mutations: ["workers.pause"],
+    features: ["workerControl"],
+    when: ({ worker }) => workerTakes(worker, "workers.pause"),
+  },
+  {
+    name: "worker: Resume",
+    row: "Worker Resume",
+    map: "worker",
+    mutations: ["workers.resume"],
+    features: ["workerControl"],
+    when: ({ worker }) => workerTakes(worker, "workers.resume"),
+  },
+  {
+    name: "worker: Stop…",
+    row: "Worker Stop…",
+    map: "worker",
+    mutations: ["workers.stop"],
+    features: ["workerControl"],
+    when: ({ worker }) => workerTakes(worker, "workers.stop"),
+  },
+  {
+    name: "worker: Start",
+    row: "Worker Start",
+    map: "worker",
+    mutations: ["workers.start"],
+    features: ["workerControl"],
+    when: ({ worker }) => workerTakes(worker, "workers.start"),
+  },
+  {
+    name: "worker: Stop… persistence choice",
+    row: "Worker Stop… persistence choice",
+    map: "worker",
+    on: "worker: Stop…",
+    when: ({ worker }) => worker?.control?.stopPersistenceOverridable === true,
+  },
+  {
+    name: "worker: Settings…",
+    row: "Worker Settings…",
+    map: "worker",
+    mutations: ["workers.configure"],
+    features: ["workerControl"],
+    when: ({ worker }) => workerConfigurable(worker),
+  },
+  {
+    name: "worker: Change pending",
+    row: 'Worker "Change pending" badge and the Settings dialog\'s pending note',
+    map: "worker",
+    when: ({ worker }) => worker?.control?.pending === true,
+  },
+  {
+    name: "worker table: Actions column",
+    row: "Worker actions column",
+    map: "worker",
+    when: ({ workerTable, workerMap, meta }) =>
+      workerMap !== undefined &&
+      workerTable?.some((worker) =>
+        workerOffersAny(worker, workerMap, meta),
+      ) === true,
   },
   {
     // In every mode: the console offers the mode's own channels.
@@ -891,8 +1534,8 @@ const GATES = [
     when: ({ meta }) => meta.docs !== null,
   },
   {
-    name: "docs: HTTP reference and its card",
-    row: "HTTP reference (`/docs/http*`) and its card on `/docs`",
+    name: "docs: HTTP API entry, reference and card",
+    row: "HTTP API nav entry (under API docs), the HTTP reference (`/docs/http*`) and its card on `/docs`",
     map: "boot",
     on: "Docs: nav and /docs*",
     // The row names `meta.docs` too: the API sends `openapi` whenever it
@@ -901,9 +1544,10 @@ const GATES = [
     when: ({ meta }) => meta.docs?.openapi !== undefined,
   },
   {
-    // Without it, /docs/ws is a screen saying so: the reference is absent.
-    name: "docs: WebSocket reference and its card",
-    row: "WebSocket reference (`/docs/ws*`) and its card on `/docs`",
+    // Without it there is no WebSocket API nav entry, and /docs/ws is a
+    // screen saying so: the reference is absent.
+    name: "docs: WebSocket API entry, reference and card",
+    row: "WebSocket API nav entry (under API docs), the WebSocket reference (`/docs/ws*`) and its card on `/docs`",
     map: "boot",
     on: "Docs: nav and /docs*",
     metaFields: ["docs.asyncapi"],
@@ -913,7 +1557,7 @@ const GATES = [
     name: "docs http: permission marker (You have)",
     row: 'HTTP operation\'s permission marker, "You have" / "You lack"',
     map: "operation",
-    on: "docs: HTTP reference and its card",
+    on: "docs: HTTP API entry, reference and card",
     itemKind: "http",
     itemAction: true,
     denied: "lack",
@@ -922,7 +1566,7 @@ const GATES = [
     name: "docs ws: permission marker (You have this)",
     row: 'WebSocket channel\'s and operation\'s permission markers, "You have this" / "You lack this"',
     map: "operation",
-    on: "docs: WebSocket reference and its card",
+    on: "docs: WebSocket API entry, reference and card",
     itemKind: "ws",
     itemAction: true,
     unknownAction: true,
@@ -932,7 +1576,7 @@ const GATES = [
     name: "docs http: try-it Send",
     row: "HTTP try-it Send",
     map: "operation",
-    on: "docs: HTTP reference and its card",
+    on: "docs: HTTP API entry, reference and card",
     itemKind: "http",
     methods: CLIENT_METHODS,
     itemMutation: true,
@@ -945,7 +1589,7 @@ const GATES = [
     name: "docs http: try-it asks first",
     row: "HTTP try-it confirmation",
     map: "operation",
-    on: "docs: HTTP reference and its card",
+    on: "docs: HTTP API entry, reference and card",
     itemKind: "http",
     forMutation: true,
   },
@@ -961,7 +1605,7 @@ const GATES = [
     name: "docs ws: try-it opens the Events console",
     row: 'WebSocket try-it, "Open in the Events console"',
     map: "operation",
-    on: "docs: WebSocket reference and its card",
+    on: "docs: WebSocket API entry, reference and card",
     itemKind: "ws",
     channelOnly: true,
     // The Events nav entry's own gate, restated.
@@ -1009,6 +1653,22 @@ const GATES = [
     mutations: ["repeatables.enable"],
     when: ({ repeatable }) => repeatable?.disabled === true,
   },
+  {
+    // Opt-in; a runner without `config` predates remote configuration.
+    name: "runner: Settings…",
+    row: "Runner Settings…",
+    map: "runner",
+    mutations: ["runners.configure"],
+    when: ({ runner }) => runner?.config !== undefined,
+  },
+  {
+    name: "runner: summary's override rows",
+    row: "Runner summary's override rows",
+    map: "runner",
+    waits: true,
+    reads: ["runners.read"],
+    when: ({ runner }) => runner?.config !== undefined,
+  },
 ] as const satisfies readonly Gate[];
 
 /**
@@ -1042,6 +1702,9 @@ function mapFor(gate: Gate, inputs: ScreenInputs): PermissionsBody | undefined {
   if (gate.map === "boot") {
     return inputs.boot;
   }
+  if (gate.map === "worker") {
+    return inputs.workerMap;
+  }
   if (gate.map === "operation") {
     // The untargeted map, but only on a documented item of the gate's kind.
     return inputs.item !== undefined &&
@@ -1067,9 +1730,16 @@ function isOpen(gate: Gate, inputs: ScreenInputs): boolean {
     !meta.readOnly && can(permissions, action);
   const parent = GATES.find((other) => other.name === gate.extends);
   const screen = GATES.find((other) => other.name === gate.on);
+  const needed = (gate.needsOf ?? []).map(
+    (name) => GATES.find((other: Gate) => other.name === name)!,
+  );
   return (
     (parent === undefined || isOpen(parent, inputs)) &&
     (screen === undefined || isOpen(screen, inputs)) &&
+    needed.every((other) => isOpen(other, inputs)) &&
+    (gate.unlisted?.features ?? []).every(
+      (feature) => meta.features[feature],
+    ) &&
     (gate.sections ?? []).every((section) => inputs.sections[section]) &&
     (gate.modes === undefined ||
       (gate.modes as readonly string[]).includes(meta.mode)) &&
@@ -1244,18 +1914,36 @@ const VERB_NAMES: ReadonlySet<string> = new Set(DESTRUCTIVE_VERBS);
 
 /**
  * What a row's cells ask for, as comparable lists. `element` is the
- * "Element" cell, which is where a marker row names its "You lack".
+ * "Element" cell, which is where a marker row names its "You lack";
+ * `elements` is every row's, to resolve "the Workers nav entry's needs" to
+ * the row it names.
  */
-function needsOfCell(needs: string, element: string) {
+function needsOfCell(
+  needs: string,
+  element: string,
+  elements: readonly string[],
+) {
   // "`sections.manage` is not needed" names a section in order to exclude it.
   const notNeeded = [...needs.matchAll(/`sections\.(\w+)` is not needed/g)].map(
     (match) => match[1]!,
   );
+  // So do "separate from `queues.defaults`" and "even when that answer
+  // refuses `workers.list`", for any code.
+  const excluded = new Set([
+    ...notNeeded.map((section) => `sections.${section}`),
+    ...[...needs.matchAll(/(?:separate from|refuses) `([^`]+)`/g)].map(
+      (match) => match[1]!,
+    ),
+  ]);
   const codes = [...needs.matchAll(/`([^`]+)`/g)]
     .map((match) => match[1]!)
-    .filter(
-      (code) => !notNeeded.some((section) => code === `sections.${section}`),
-    );
+    .filter((code) => !excluded.has(code));
+  // "the Workers nav entry's needs": another row's needs, by the start of
+  // its element; one naming no row stays as written, and fails.
+  const refs = [...needs.matchAll(/\bthe ([A-Z][\w ]*)'s needs\b/g)].map(
+    (match) =>
+      elements.find((other) => other.startsWith(match[1]!)) ?? match[1]!,
+  );
   const mode = codes.indexOf("meta.mode");
   return {
     // A cell may name an action twice ("`jobs.read` ... never without
@@ -1263,7 +1951,9 @@ function needsOfCell(needs: string, element: string) {
     actions: [
       ...new Set(codes.filter((code) => ACTION_NAMES.has(code))),
     ].sort(),
+    // `features.workers`, or in full, `meta.features.workers`.
     features: codes
+      .map((code) => code.replace(/^meta\.features\./, "features."))
       .filter((code) => code.startsWith("features."))
       .map((code) => code.slice("features.".length))
       .sort(),
@@ -1281,9 +1971,15 @@ function needsOfCell(needs: string, element: string) {
             .sort(),
     // "`meta.websocket`": the /meta fields named, other than the mode.
     metaFields: codes
-      .filter((code) => code.startsWith("meta.") && code !== "meta.mode")
+      .filter(
+        (code) =>
+          code.startsWith("meta.") &&
+          code !== "meta.mode" &&
+          !code.startsWith("meta.features."),
+      )
       .map((code) => code.slice("meta.".length))
       .sort(),
+    refs: refs.sort(),
     mutation: /\bmutation\b/.test(needs),
     extendsAbove: needs.startsWith("the above"),
     notNeeded: notNeeded.sort(),
@@ -1299,9 +1995,10 @@ function needsOfCell(needs: string, element: string) {
     // Whether the element stays on screen when it is not allowed: disabled
     // with a reason, a note in its place, or a "You lack" marker. Every
     // other row's element is absent. "disabled" alone is not enough: the
-    // Disable / Enable row names "a disabled one", a repeat series' state.
+    // Disable / Enable row names "a disabled one", a repeat series' state;
+    // nor is "a note": the Host filter is absent, "ignored with a note".
     shownWhenDenied:
-      /\bdisabled, with the reason\b|\ba note\b/.test(needs) ||
+      /\bdisabled, with the reason\b|\ba note says\b/.test(needs) ||
       element.includes("You lack"),
   };
 }
@@ -1322,6 +2019,13 @@ function needsOfGates(gates: readonly Gate[]) {
     sections: unique(gates.flatMap((gate) => gate.sections ?? [])),
     modes: unique(gates.flatMap((gate) => gate.modes ?? [])),
     metaFields: unique(gates.flatMap((gate) => gate.metaFields ?? [])),
+    refs: unique(
+      gates.flatMap((gate) =>
+        [...(gate.needsOf ?? []), ...(gate.sameAs ? [gate.sameAs] : [])].map(
+          (name) => GATES.find((other: Gate) => other.name === name)!.row,
+        ),
+      ),
+    ),
     mutation: gates.some(
       (gate) =>
         (gate.mutations ?? []).length > 0 ||
@@ -1361,16 +2065,37 @@ checkEqual(
   readme.map((row) => row.element),
   gateRows,
 );
+/** The row just before's parsed needs, for "under the same conditions". */
+let previousNeeds: ReturnType<typeof needsOfCell> | undefined;
 for (const row of readme) {
   const gates: Gate[] = GATES.filter((gate: Gate) => gate.row === row.element);
+  const parsed = needsOfCell(
+    row.needs,
+    row.element,
+    readme.map((other) => other.element),
+  );
+  // "Worker Resume … under the same conditions" as Worker Pause, the row
+  // above: its features and /meta fields carry over (the actions do not).
+  if (
+    previousNeeds !== undefined &&
+    /under the same conditions/.test(row.needs)
+  ) {
+    parsed.features = [
+      ...new Set([...parsed.features, ...previousNeeds.features]),
+    ].sort();
+    parsed.metaFields = [
+      ...new Set([...parsed.metaFields, ...previousNeeds.metaFields]),
+    ].sort();
+  }
+  previousNeeds = parsed;
   checkEqual(
     `README "${row.element}" needs what GATES says`,
-    needsOfCell(row.needs, row.element),
+    parsed,
     needsOfGates(gates),
   );
 }
 checkEqual(
-  'a row the README calls "untargeted" is decided on the untargeted map',
+  'a row the README calls "untargeted" is decided on the untargeted map (or a worker table\'s, which is it on /workers)',
   readme
     .filter((row) => row.needs.includes("untargeted"))
     .filter((row) =>
@@ -1378,7 +2103,8 @@ checkEqual(
         (gate: Gate) =>
           gate.row === row.element &&
           gate.map !== "boot" &&
-          gate.map !== "operation",
+          gate.map !== "operation" &&
+          gate.map !== "worker",
       ),
     )
     .map((row) => row.element),
@@ -1430,7 +2156,73 @@ checkEqual(
     const parent = GATES.find((other: Gate) => other.name === gate.extends);
     return readme[index - 1]?.element === parent?.row;
   }),
-  [true, true],
+  [true, true, true, true],
+);
+checkEqual(
+  "a gate that restates another's needs (sameAs) lists exactly its reads, features and /meta fields",
+  GATES.filter((gate: Gate) => gate.sameAs !== undefined)
+    .filter((gate: Gate) => {
+      const other: Gate = GATES.find((one: Gate) => one.name === gate.sameAs)!;
+      const lists = (one: Gate) =>
+        JSON.stringify([one.reads, one.features, one.metaFields]);
+      return lists(gate) !== lists(other);
+    })
+    .map((gate) => gate.name),
+  [],
+);
+
+/** The rows gating on an opt-in action, and whether their cell says "opt-in". */
+const optInRows = readme
+  .map((row) => ({
+    element: row.element,
+    says: /\bopt-in\b/.test(row.needs),
+    gates: GATES.filter((gate: Gate) => gate.row === row.element).some(
+      (gate: Gate) =>
+        [...(gate.mutations ?? []), ...(gate.anyMutation ?? [])].some(
+          (action) => JOBS_API_OPT_IN_ACTIONS.has(action),
+        ),
+    ),
+  }))
+  .filter((row) => row.says || row.gates);
+checkEqual(
+  'a row that says "opt-in" gates on an opt-in action (JOBS_API_OPT_IN_ACTIONS)',
+  optInRows.filter((row) => row.says && !row.gates).map((row) => row.element),
+  [],
+);
+checkEqual(
+  "and every row gating on one says so (Add job and Job Edit included)",
+  optInRows.filter((row) => !row.says).map((row) => row.element),
+  [],
+);
+
+// What the code needs beyond its row: each is a README row to fix upstream.
+const unlistedRows = GATES.filter(
+  (gate: Gate) => gate.unlisted !== undefined,
+).map((gate: Gate) => ({
+  row: gate.row,
+  features: gate.unlisted!.features ?? [],
+  why: gate.unlisted!.why,
+}));
+show(
+  "where the app's code needs more than its README row says",
+  unlistedRows.map(({ row, why }) => `${row}: ${why}`),
+);
+checkEqual(
+  "those rows, by name: none left, every row states what its code needs",
+  [...new Set(unlistedRows.map(({ row }) => row))],
+  [],
+);
+checkEqual(
+  "and no README row names an unlisted feature (else it is listed, not unlisted)",
+  unlistedRows
+    .filter(({ row, features }) =>
+      features.some((feature) => {
+        const cell = readme.find((one) => one.element === row)?.needs ?? "";
+        return cell.includes(`features.${feature}`);
+      }),
+    )
+    .map(({ row }) => row),
+  [],
 );
 
 /* ------------------------------------------------------------------ */
@@ -1720,8 +2512,8 @@ checkEqual(
 /** The three docs screens' gates: the nav entry, the HTTP and the WebSocket reference. */
 const DOCS_GATES = [
   "Docs: nav and /docs*",
-  "docs: HTTP reference and its card",
-  "docs: WebSocket reference and its card",
+  "docs: HTTP API entry, reference and card",
+  "docs: WebSocket API entry, reference and card",
 ] as const satisfies readonly GateName[];
 
 /** The docs screens' gates in `set`, in {@link DOCS_GATES}' order. */
@@ -1928,8 +2720,11 @@ checkEqual(
     .map(([id]) => id)
     .sort(),
 );
+// Seven of them are DELETEs, and five of those only because they are: their
+// action's verb (clearLogs, clearHistory, defaults, configure) is not a
+// destructive one. The other five are POSTs named by their verb.
 checkEqual(
-  "a DELETE, or a remove / drain / clean / kill / fail, needs its operationId typed",
+  "every DELETE, and every remove / drain / clean / kill / fail, needs its operationId typed",
   operationsWhere("docs http: try-it needs the operationId typed", {
     meta,
     sections,
@@ -1937,12 +2732,33 @@ checkEqual(
   }),
   [
     "cleanQueue",
+    "clearJobLogs",
+    "clearRunnerHistory",
     "drainQueue",
     "failJob",
     "killRunner",
     "removeJob",
     "removeJobs",
     "removeRepeatable",
+    "resetJobDefaults",
+    "resetRunnerConfig",
+    "resetWorkerConfig",
+  ],
+);
+checkEqual(
+  "the DELETEs among them: two clears, three resets and two removals",
+  [...operations]
+    .filter(([, item]) => item.method === "DELETE")
+    .map(([id]) => id)
+    .sort(),
+  [
+    "clearJobLogs",
+    "clearRunnerHistory",
+    "removeJob",
+    "removeRepeatable",
+    "resetJobDefaults",
+    "resetRunnerConfig",
+    "resetWorkerConfig",
   ],
 );
 
@@ -2420,17 +3236,39 @@ function printGates(columns: Record<string, Gates>, ...maps: GateMap[]): void {
 printGates(gates, "boot", "queue");
 
 /**
- * The gates decided on the untargeted map: the same on every queue and
- * runner, and all open for this caller.
+ * The gates on the untargeted map that need something no queue or runner
+ * screen here passes: an analytics read's answer, a job with a worker, a
+ * worker row, the unfiltered worker list. Asked with them further down.
  */
-const bootGates = allGates(true, "boot");
+const BOOT_NEEDS_INPUT = {
+  "overview: Runners busiest note": false,
+  "overview: Workers busiest note": false,
+  "overview: Jobs range caption": false,
+  "overview: Runners range caption": false,
+  "overview: Workers range caption": false,
+  "overview: Jobs not kept": false,
+  "overview: Runners not kept": false,
+  "overview: Workers not kept": false,
+  "queue: Processed by worker link": false,
+  "job: Processed by worker link": false,
+  "workers page: Host filter": false,
+  "worker table: key links": false,
+} as const satisfies Partial<Gates>;
+
+/**
+ * The other gates decided on the untargeted map: the same on every queue and
+ * runner, and all open for this caller, but one: a worker page's job links
+ * sit in its jobs card, which the queue's own `jobs.list` decides.
+ */
+const bootGates = { ...allGates(true, "boot"), ...BOOT_NEEDS_INPUT };
 
 // mail: everything the screens offer, for a running queue.
 checkEqual(
-  "mail (running): every gate is open but seven",
+  "mail (running): every gate is open but those needing a state or data",
   onMaps(gates.mail, "boot", "queue"),
   {
     ...allGates(true, "boot", "queue"),
+    ...BOOT_NEEDS_INPUT,
     // A running queue offers Pause, not Resume; checked paused below.
     "queue: Resume": false,
     // addableNames is ["send-email"], so the dialog offers that name, not a
@@ -2443,6 +3281,12 @@ checkEqual(
     // The series gates that depend on a series' state; likewise.
     "panel=repeatables, Disable": false,
     "panel=repeatables, Enable": false,
+    // Apply needs an override and pending jobs: asked below with both.
+    "panel=job-defaults, Apply to N pending jobs…": false,
+    // A worker page's elements that depend on its instances; likewise.
+    "worker page: Edit settings…": false,
+    "worker page: Reset to code values…": false,
+    "worker page: Change pending": false,
   },
 );
 
@@ -2458,6 +3302,14 @@ checkEqual("audit: reads only", onMaps(gates.audit, "boot", "queue"), {
   "panel=repeatables": true,
   "job: screen": true,
   "job: logs": true,
+  "queue: Processed by column": true,
+  "queue: jobs newest added first (sort=createdAt)": true,
+  "worker page: jobs newest added first (sort=createdAt)": true,
+  "panel=job-defaults": true,
+  "job: Processed by": true,
+  "worker page: instances": true,
+  "worker page: throughput and busyness": true,
+  "worker page: jobs": true,
 });
 
 // payroll: authorize refuses every queue-side action, so the screen shows
@@ -2471,6 +3323,7 @@ checkEqual(
   {
     ...allGates(false, "queue"),
     ...bootGates,
+    "worker page: jobs' job links": false,
   },
 );
 checkEqual(
@@ -2974,10 +3827,16 @@ checkEqual(
   undefined,
 );
 checkEqual(
-  "nightly (local, running, nothing in flight): all but Resume…, Kill… and the remote hint",
+  "nightly (local, running, nothing in flight): all but Resume…, Kill…, the remote hint and a run's",
   onMaps(runnerColumns.nightly, "boot", "runner"),
   {
     ...allGates(true, "boot", "runner"),
+    ...BOOT_NEEDS_INPUT,
+    // No queue map on a runner screen, so no worker page jobs card.
+    "worker page: jobs' job links": false,
+    // A run's elements: asked below with the run.
+    "runner: a run's Log button": false,
+    "runner: N lines dropped": false,
     "runner: Resume…": false,
     "runner: Kill…": false,
     "runner: remote hint": false,
@@ -2989,21 +3848,32 @@ checkEqual(
   {
     ...allGates(false, "runner"),
     ...bootGates,
+    "worker page: jobs' job links": false,
     "runner: screen": true,
     "runner: stats and history": true,
     "runner: active runs": true,
+    "runner: run log and Log column": true,
+    "runner: summary's override rows": true,
   },
 );
 checkEqual(
   "vault: only what the untargeted map decides",
   onMaps(runnerColumns.vault, "boot", "runner"),
-  { ...allGates(false, "runner"), ...bootGates },
+  {
+    ...allGates(false, "runner"),
+    ...bootGates,
+    "worker page: jobs' job links": false,
+  },
 );
 checkEqual(
-  "remote-sync: no active runs, Kill… or Reset stats…, but the remote hint",
+  "remote-sync: no active runs, Kill… or Reset stats…, but the remote hint and Clear history…",
   onMaps(runnerColumns["remote-sync"], "boot", "runner"),
   {
     ...allGates(true, "boot", "runner"),
+    ...BOOT_NEEDS_INPUT,
+    "worker page: jobs' job links": false,
+    "runner: a run's Log button": false,
+    "runner: N lines dropped": false,
     "runner: active runs": false,
     "runner: Resume…": false,
     "runner: Kill…": false,
@@ -3318,6 +4188,1090 @@ checkEqual(
   400,
 );
 await smallApi.close();
+
+/* ------------------------------------------------------------------ */
+step("The new actions, on each map: per queue and per runner");
+
+/** The queue-side actions this round added, every one a mutation. */
+const NEW_QUEUE_MUTATIONS = [
+  "queues.defaults",
+  "queues.applyDefaults",
+  "workers.pause",
+  "workers.resume",
+  "workers.stop",
+  "workers.start",
+  "workers.configure",
+  "jobs.clearLogs",
+] as const satisfies readonly JobsApiAction[];
+
+/** The runner actions it added: two mutations and a read. */
+const NEW_RUNNER_ACTIONS = [
+  "runners.configure",
+  "runners.clearHistory",
+  "runners.logs",
+] as const satisfies readonly JobsApiAction[];
+
+checkEqual(
+  "they are mutations, but runners.logs, which is a read",
+  [...NEW_QUEUE_MUTATIONS, ...NEW_RUNNER_ACTIONS].filter(
+    (action) => !JOBS_API_MUTATIONS.has(action),
+  ),
+  ["runners.logs"],
+);
+checkEqual(
+  "?queue= maps: yes on mail, no on audit (read-only) and payroll, and no untargeted",
+  Object.fromEntries(
+    [
+      ...["mail", "audit", "payroll"].map(
+        (queue) => [queue, maps[queue]!] as const,
+      ),
+      ["untargeted", boot] as const,
+    ].map(([target, map]) => [
+      target,
+      NEW_QUEUE_MUTATIONS.map((action) => can(map, action)),
+    ]),
+  ),
+  {
+    mail: NEW_QUEUE_MUTATIONS.map(() => true),
+    audit: NEW_QUEUE_MUTATIONS.map(() => false),
+    payroll: NEW_QUEUE_MUTATIONS.map(() => false),
+    untargeted: NEW_QUEUE_MUTATIONS.map(() => false),
+  },
+);
+checkEqual(
+  "?runner= maps: configure, clearHistory, logs (logs is a read: ledger has it)",
+  Object.fromEntries(
+    RUNNERS.map((id) => [
+      id,
+      NEW_RUNNER_ACTIONS.map((action) => can(runnerMaps[id]!, action)),
+    ]),
+  ),
+  {
+    nightly: [true, true, true],
+    ledger: [false, false, true],
+    vault: [false, false, false],
+    "remote-sync": [true, true, true],
+  },
+);
+
+/* ------------------------------------------------------------------ */
+step("Worker controls: the queue's map decides, not the Workers page's");
+
+// Two workers with stable keys, reporting every second. The mailer logs a
+// line for each job, for the job screen's Clear logs… below.
+const mailWorker = jobs.worker(
+  "mail",
+  async (job) => {
+    await job.log("handed to the SMTP relay");
+    return "sent";
+  },
+  {
+    key: "mailer",
+    reportInterval: 1_000,
+    pollInterval: 10,
+    waitToExit: false,
+    logger: noopLogger,
+  },
+);
+void mailWorker.run();
+const auditWorker = jobs.worker("audit", async () => "filed", {
+  key: "auditor",
+  reportInterval: 1_000,
+  pollInterval: 10,
+  waitToExit: false,
+  logger: noopLogger,
+});
+void auditWorker.run();
+
+// One job each finished, so both report their counts.
+await jobs.queue("mail").add("send-email", {}, { jobId: "logged-1" });
+await waitFor(
+  "logged-1 to complete, and both workers to report a completed job",
+  async () => {
+    const items = (await get<WorkerListDto>("/workers")).body.items;
+    return (
+      items.length === 2 && items.every((worker) => (worker.completed ?? 0) > 0)
+    );
+  },
+);
+
+/** `GET /workers`, unfiltered: what the Workers page lists and filters from. */
+const workerList = (await get<WorkerListDto>("/workers")).body.items;
+const mailer = workerList.find((worker) => worker.key === "mailer")!;
+const auditor = workerList.find((worker) => worker.key === "auditor")!;
+show(
+  "GET /workers: key, queue, state, control, counts, host",
+  workerList.map((worker) => ({
+    key: worker.key,
+    queue: worker.queue,
+    state: worker.state,
+    control: worker.control,
+    completed: worker.completed,
+    host: worker.host !== undefined,
+  })),
+);
+
+/** The six gates of one worker row: its five actions and the table's column. */
+const WORKER_ROW_GATES = [
+  "worker: Pause",
+  "worker: Resume",
+  "worker: Stop…",
+  "worker: Start",
+  "worker: Settings…",
+  "worker table: Actions column",
+] as const satisfies readonly GateName[];
+
+/** One worker row's gates, decided on `workerMap`, in a table of `table`. */
+function workerRow(
+  worker: WorkerDto,
+  workerMap: PermissionsBody,
+  table: readonly WorkerDto[] = [worker],
+  extra: Partial<ScreenInputs> = {},
+): Gates {
+  return screenGates({
+    meta,
+    sections,
+    boot,
+    workerMap,
+    worker,
+    workerTable: table,
+    workerList,
+    ...extra,
+  });
+}
+
+/** {@link WORKER_ROW_GATES} in `set`, in order. */
+function rowView(set: Gates): boolean[] {
+  return WORKER_ROW_GATES.map((name) => set[name]);
+}
+
+checkEqual(
+  "both report a key, control.enabled, a host, and counts",
+  [mailer, auditor].map((worker) => [
+    worker.key,
+    worker.state,
+    worker.control?.enabled,
+    worker.host !== undefined,
+    worker.completed! > 0,
+  ]),
+  [
+    ["mailer", "running", true, true, true],
+    ["auditor", "running", true, true, true],
+  ],
+);
+checkEqual(
+  "/workers (the untargeted map, no mutation): no action on either row, and no Actions column",
+  [
+    rowView(workerRow(mailer, boot, workerList)),
+    rowView(workerRow(auditor, boot, workerList)),
+  ],
+  [
+    [false, false, false, false, false, false],
+    [false, false, false, false, false, false],
+  ],
+);
+const workersPage = workerRow(mailer, boot, workerList);
+checkEqual(
+  "but its own elements: queue links, filters, the Host filter (hosts exposed), key links, Completed / Failed",
+  [
+    workersPage["Workers: nav and /workers"],
+    workersPage["workers page: queue links"],
+    workersPage["workers page: Queue, Service and State filters"],
+    workersPage["workers page: Host filter"],
+    workersPage["worker table: key links"],
+    workersPage["worker table: Completed / Failed columns"],
+  ],
+  [true, true, true, true, true, true],
+);
+checkEqual(
+  "a worker list whose workers carry no host (serialize.exposeHosts off): no Host filter",
+  workerRow(mailer, boot, workerList, {
+    workerList: workerList.map(({ host: _host, ...rest }) => rest),
+  })["workers page: Host filter"],
+  false,
+);
+checkEqual(
+  "mail's Workers panel (mail's map): Pause, Stop… and Settings… on the running worker, and the column",
+  rowView(workerRow(mailer, maps.mail!)),
+  [true, false, true, false, true, true],
+);
+checkEqual(
+  "audit's Workers panel (audit's map): nothing, and no Actions column",
+  rowView(workerRow(auditor, maps.audit!)),
+  [false, false, false, false, false, false],
+);
+checkEqual(
+  "Stop…'s persistence: not overridable here, so the dialog states control.stopPersistence",
+  [
+    mailer.control?.stopPersistenceOverridable,
+    mailer.control?.stopPersistence,
+    workerRow(mailer, maps.mail!)["worker: Stop… persistence choice"],
+    workerRow(
+      {
+        ...mailer,
+        control: { ...mailer.control!, stopPersistenceOverridable: true },
+      },
+      maps.mail!,
+    )["worker: Stop… persistence choice"],
+  ],
+  [false, "process", false, true],
+);
+checkEqual(
+  "the rule on a worker that stopped reporting: no lifecycle action, but Settings… stays",
+  rowView(workerRow({ ...mailer, stale: true }, maps.mail!)),
+  [false, false, false, false, true, true],
+);
+checkEqual(
+  "and on one that does not listen (control.enabled false): nothing at all",
+  rowView(
+    workerRow(
+      { ...mailer, control: { ...mailer.control!, enabled: false } },
+      maps.mail!,
+    ),
+  ),
+  [false, false, false, false, false, false],
+);
+checkEqual(
+  "a worker reporting control.pending shows Change pending; mailer does not",
+  [
+    workerRow(mailer, maps.mail!)["worker: Change pending"],
+    workerRow(
+      { ...mailer, control: { ...mailer.control!, pending: true } },
+      maps.mail!,
+    )["worker: Change pending"],
+  ],
+  [false, true],
+);
+
+/** A worker instruction, as a row sends it: `?wait=2000` for the acknowledgement. */
+async function instruct(
+  queue: string,
+  worker: WorkerDto,
+  action: "pause" | "resume" | "stop" | "start",
+  wait = true,
+) {
+  return send<WorkerControlResultDto>(
+    "POST",
+    `/queues/${queue}/workers/${encodeURIComponent(worker.id)}/${action}${wait ? "?wait=2000" : ""}`,
+  );
+}
+
+const pausedWorker = await instruct("mail", mailer, "pause");
+checkEqual(
+  "POST …/workers/<mailer>/pause?wait=2000 → 200, applied: the toast says Paused, not Asked to pause",
+  [
+    pausedWorker.status,
+    pausedWorker.body.applied,
+    workerRow(mailer, maps.mail!, [mailer], {
+      controlResult: { applied: pausedWorker.body.applied === true },
+    })["worker: instruction says done (applied)"],
+  ],
+  [200, true, true],
+);
+const { body: mailWorkers } = await get<WorkerListDto>("/queues/mail/workers");
+const mailerPaused = mailWorkers.items[0]!;
+checkEqual(
+  "the listing reads paused: Resume and Stop… replace Pause",
+  [mailerPaused.state, rowView(workerRow(mailerPaused, maps.mail!))],
+  ["paused", [false, true, true, false, true, true]],
+);
+const resumedWorker = await instruct("mail", mailerPaused, "resume");
+checkEqual(
+  "POST …/resume?wait=2000 → 200, applied; running again",
+  [
+    resumedWorker.status,
+    resumedWorker.body.applied,
+    (await get<WorkerListDto>("/queues/mail/workers")).body.items[0]?.state,
+  ],
+  [200, true, "running"],
+);
+const refusedWorker = await instruct("audit", auditor, "pause");
+checkEqual(
+  "a client pausing audit's worker anyway: 403, and it keeps running",
+  [
+    refusedWorker.status,
+    refusedWorker.body.detail,
+    (await get<WorkerListDto>("/queues/audit/workers")).body.items[0]?.state,
+  ],
+  [403, "read-only on audit", "running"],
+);
+
+/* ------------------------------------------------------------------ */
+step("A worker page: /workers/:queue/:key, on the queue's own map");
+
+/** The gates of a worker page, in the order the README lists them. */
+const WORKER_PAGE_GATES = [
+  "worker page: route",
+  "worker page: instances",
+  "worker page: queue link",
+  "worker page: Edit settings…",
+  "worker page: Reset to code values…",
+  "worker page: Change pending",
+  "worker page: throughput and busyness",
+  "worker page: jobs",
+  "worker page: jobs' job links",
+] as const satisfies readonly GateName[];
+
+/**
+ * A worker page read the way the screen reads it: its one listing, only
+ * with `workers.list` on the queue's map.
+ */
+async function workerPageOf(
+  queue: string,
+  key: string,
+): Promise<ScreenInputs["workerPage"]> {
+  if (!can(maps[queue]!, "workers.list")) {
+    return undefined;
+  }
+  const { body } = await get<WorkerListDto>(
+    `/workers?queue=${queue}&key=${key}&includeOffline=true`,
+  );
+  const entry = body.offline?.find(
+    (override) => override.queue === queue && override.key === key,
+  );
+  return {
+    key,
+    instances: body.items,
+    // The page's storedOverride(): no entry, or one a reset emptied (no
+    // values), is nothing stored.
+    stored:
+      body.offline === undefined
+        ? undefined
+        : entry === undefined || Object.keys(entry.values).length === 0
+          ? null
+          : entry,
+  };
+}
+
+/** A worker page's gates, from {@link WORKER_PAGE_GATES}. */
+async function workerPage(queue: string, key: string): Promise<boolean[]> {
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    queue: maps[queue]!,
+    workerPage: await workerPageOf(queue, key),
+  });
+  return WORKER_PAGE_GATES.map((name) => set[name]);
+}
+
+checkEqual(
+  "mail/mailer: one live instance; Edit settings…, the numbers and the jobs; no Reset (it is live)",
+  [
+    (await workerPageOf("mail", "mailer"))?.instances.length,
+    await workerPage("mail", "mailer"),
+  ],
+  [1, [true, true, true, true, false, false, true, true, true]],
+);
+checkEqual(
+  "audit/auditor: the same reads, and no Edit settings… (read-only)",
+  await workerPage("audit", "auditor"),
+  [true, true, true, false, false, false, true, true, true],
+);
+checkEqual(
+  "payroll: the route exists, but Instances hidden (no read sent), and Jobs hidden",
+  [
+    await workerPageOf("payroll", "anyone"),
+    await workerPage("payroll", "anyone"),
+  ],
+  [undefined, [true, false, true, false, false, false, false, false, false]],
+);
+
+// An override stored for a key no worker carries now: a worker page with no
+// live instance offers to drop it.
+const stored = await send("PUT", "/queues/mail/worker-configs/retired", {
+  concurrency: 3,
+});
+const retired = await workerPageOf("mail", "retired");
+checkEqual(
+  "PUT …/worker-configs/retired → 200; its page: no instance, the override listed, Reset… offered",
+  [
+    stored.status,
+    retired?.instances.length,
+    retired?.stored?.values,
+    await workerPage("mail", "retired"),
+  ],
+  [
+    200,
+    0,
+    { concurrency: 3 },
+    [true, true, true, false, true, false, true, true, true],
+  ],
+);
+const dropped = await send("DELETE", "/queues/mail/worker-configs/retired");
+const { body: afterDropListing } = await get<WorkerListDto>(
+  "/workers?queue=mail&key=retired&includeOffline=true",
+);
+const emptied = afterDropListing.offline?.find(
+  (override) => override.key === "retired",
+);
+// The API empties the entry rather than deleting it, so its version never
+// restarts: `includeOffline` still lists it, with no values.
+checkEqual(
+  "DELETE …/worker-configs/retired → 200; the listing keeps the key, emptied (values {}, a new seq)",
+  [
+    dropped.status,
+    emptied?.values,
+    (emptied?.seq ?? 0) > (retired?.stored?.seq ?? 0),
+  ],
+  [200, {}, true],
+);
+// The page counts an emptied entry as nothing stored: "No override is
+// stored for this key", and no Reset… to offer again.
+checkEqual(
+  "so the page reads nothing stored, and offers no Reset…",
+  [
+    (await workerPageOf("mail", "retired"))?.stored,
+    (await workerPage("mail", "retired"))[4],
+  ],
+  [null, false],
+);
+checkEqual(
+  "audit may do neither: PUT and DELETE …/worker-configs/auditor → 403",
+  [
+    (
+      await send("PUT", "/queues/audit/worker-configs/auditor", {
+        concurrency: 2,
+      })
+    ).status,
+    (await send("DELETE", "/queues/audit/worker-configs/auditor")).status,
+  ],
+  [403, 403],
+);
+
+/* ------------------------------------------------------------------ */
+step("Opt-in actions: routed only when a host lists them");
+
+// The same jobs behind a host built with the default `actions`.
+const defaultApi = createJobsApi({
+  jobs,
+  basePath: "/default-api",
+  mode: "both",
+  authorize: () => true,
+  logger: noopLogger,
+});
+const defaultApp = new BunHttpAdapter();
+defaultApp.use(defaultApi.basePath, defaultApi.router);
+
+/** A request to the default host, answered through the real pipeline. */
+async function onDefault(method: string, path: string, body?: unknown) {
+  const response = await defaultApp.fetch(`/default-api${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: text ? (JSON.parse(text) as unknown) : null,
+  };
+}
+
+const defaultQueueMap = (await onDefault("GET", "/meta/permissions?queue=mail"))
+  .body as PermissionsBody;
+const defaultRunnerMap = (
+  await onDefault("GET", "/meta/permissions?runner=nightly")
+).body as PermissionsBody;
+checkEqual(
+  "JOBS_API_OPT_IN_ACTIONS: the six",
+  [...JOBS_API_OPT_IN_ACTIONS].sort(),
+  [
+    "jobs.add",
+    "jobs.update",
+    "queues.applyDefaults",
+    "queues.defaults",
+    "runners.configure",
+    "workers.configure",
+  ],
+);
+checkEqual(
+  "a default host routes every action but those: absent from the map, not false",
+  JOBS_API_ACTIONS.filter(
+    (action) =>
+      !(action in defaultQueueMap.actions) &&
+      !(action in defaultRunnerMap.actions),
+  ).sort(),
+  [...JOBS_API_OPT_IN_ACTIONS].sort(),
+);
+checkEqual(
+  "while the new default-on ones are routed, and true for an authorize saying yes",
+  [...NEW_QUEUE_MUTATIONS, ...NEW_RUNNER_ACTIONS]
+    .filter((action) => !JOBS_API_OPT_IN_ACTIONS.has(action))
+    .map((action) => [action, defaultQueueMap.actions[action]]),
+  [
+    ["workers.pause", true],
+    ["workers.resume", true],
+    ["workers.stop", true],
+    ["workers.start", true],
+    ["jobs.clearLogs", true],
+    ["runners.clearHistory", true],
+    ["runners.logs", true],
+  ],
+);
+/** The opt-in routes, one per operation: each is refused here. */
+const OPT_IN_ROUTES = [
+  ["PUT", "/queues/mail/job-defaults", { attempts: 2 }],
+  ["DELETE", "/queues/mail/job-defaults"],
+  ["POST", "/queues/mail/job-defaults/apply", { seq: 0, dryRun: true }],
+  ["PUT", "/queues/mail/worker-configs/mailer", { concurrency: 2 }],
+  ["DELETE", "/queues/mail/worker-configs/mailer"],
+  ["PUT", "/runners/nightly/config", { maxConcurrency: 2 }],
+  ["DELETE", "/runners/nightly/config"],
+] as const;
+const optInStatuses: string[] = [];
+for (const [method, path, body] of OPT_IN_ROUTES) {
+  const { status } = await onDefault(method, path, body);
+  optInStatuses.push(`${method} ${path} → ${status}`);
+}
+checkEqual(
+  "and its opt-in routes do not exist: 404, whatever authorize says",
+  optInStatuses,
+  OPT_IN_ROUTES.map(([method, path]) => `${method} ${path} → 404`),
+);
+const defaultRunner = (await onDefault("GET", "/runners/nightly"))
+  .body as RunnerInfoDto;
+const defaultMeta = (await onDefault("GET", "/meta")).body as MetaDto;
+/** A screen on the default host: its untargeted map, and `queue`'s or `runner`'s. */
+function onDefaultHost(inputs: Partial<ScreenInputs>): Gates {
+  return screenGates({
+    meta: defaultMeta,
+    sections,
+    boot: defaultQueueMap,
+    ...inputs,
+  });
+}
+const pendingDefaults = {
+  overridden: ["attempts"],
+  pending: { total: 2 },
+} as unknown as Pick<JobDefaultsDto, "overridden" | "pending">;
+const defaultQueue = onDefaultHost({
+  queue: defaultQueueMap,
+  jobDefaults: pendingDefaults,
+});
+const defaultRunnerScreen = onDefaultHost({
+  runnerMap: defaultRunnerMap,
+  runner: defaultRunner,
+});
+checkEqual(
+  "so the elements they gate are absent, while the panels and rows they sit in stay",
+  {
+    "panel=job-defaults": defaultQueue["panel=job-defaults"],
+    "panel=job-defaults, Settings…":
+      defaultQueue["panel=job-defaults, Settings…"],
+    "panel=job-defaults, Apply to N pending jobs…":
+      defaultQueue["panel=job-defaults, Apply to N pending jobs…"],
+    "queue: Add job": defaultQueue["queue: Add job"],
+    "job: Edit": defaultQueue["job: Edit"],
+    "runner: summary's override rows":
+      defaultRunnerScreen["runner: summary's override rows"],
+    "runner: Settings…": defaultRunnerScreen["runner: Settings…"],
+    "runner: Clear history…": defaultRunnerScreen["runner: Clear history…"],
+    "mailer's row": rowView(
+      screenGates({
+        meta: defaultMeta,
+        sections,
+        boot: defaultQueueMap,
+        workerMap: defaultQueueMap,
+        worker: mailer,
+        workerTable: [mailer],
+      }),
+    ),
+  },
+  {
+    "panel=job-defaults": true,
+    "panel=job-defaults, Settings…": false,
+    "panel=job-defaults, Apply to N pending jobs…": false,
+    "queue: Add job": false,
+    "job: Edit": false,
+    "runner: summary's override rows": true,
+    "runner: Settings…": false,
+    "runner: Clear history…": true,
+    // Pause and Stop…, not Settings…: the lifecycle actions are default-on.
+    "mailer's row": [true, false, true, false, false, true],
+  },
+);
+await defaultApi.close();
+
+/* ------------------------------------------------------------------ */
+step("Job defaults: the panel, Settings… and Apply to N pending jobs…");
+
+/** The Job defaults panel's read. */
+async function jobDefaultsOf(queue: string): Promise<JobDefaultsDto> {
+  return (await get<JobDefaultsDto>(`/queues/${queue}/job-defaults`)).body;
+}
+
+/** The panel's three gates on `queue`: [panel, Settings…, Apply…]. */
+function defaultsGates(queue: string, jobDefaults: JobDefaultsDto): boolean[] {
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    queue: maps[queue]!,
+    jobDefaults,
+  });
+  return [
+    set["panel=job-defaults"],
+    set["panel=job-defaults, Settings…"],
+    set["panel=job-defaults, Apply to N pending jobs…"],
+  ];
+}
+
+const codeDefaults = await jobDefaultsOf("mail");
+checkEqual(
+  "mail: nothing overridden, jobs pending: the panel and Settings…, no Apply (the panel says why)",
+  [
+    codeDefaults.overridden,
+    codeDefaults.pending.total > 0,
+    defaultsGates("mail", codeDefaults),
+  ],
+  [[], true, [true, true, false]],
+);
+const setDefaults = await send<JobDefaultsDto>(
+  "PUT",
+  "/queues/mail/job-defaults",
+  { attempts: 3 },
+);
+const overridden = await jobDefaultsOf("mail");
+checkEqual(
+  "PUT …/job-defaults { attempts: 3 } → 200: attempts overridden, so Apply to N pending jobs… is offered",
+  [
+    setDefaults.status,
+    overridden.overridden,
+    overridden.effective.attempts,
+    defaultsGates("mail", overridden),
+  ],
+  [200, ["attempts"], 3, [true, true, true]],
+);
+const dryRun = await send<{ dryRun: boolean; done: boolean; examined: number }>(
+  "POST",
+  "/queues/mail/job-defaults/apply",
+  { seq: overridden.seq, dryRun: true },
+);
+checkEqual(
+  "its dry run (POST …/job-defaults/apply { dryRun: true }) → 200, done, writing nothing",
+  [
+    dryRun.status,
+    dryRun.body.dryRun,
+    dryRun.body.done,
+    (await jobDefaultsOf("mail")).pending.total,
+  ],
+  [200, true, true, overridden.pending.total],
+);
+checkEqual(
+  "audit sees the same panel, with neither button: its PUT and apply → 403",
+  [
+    defaultsGates("audit", overridden),
+    (await send("PUT", "/queues/audit/job-defaults", { attempts: 3 })).status,
+    (
+      await send("POST", "/queues/audit/job-defaults/apply", {
+        seq: 0,
+        dryRun: true,
+      })
+    ).status,
+  ],
+  [[true, false, false], 403, 403],
+);
+const resetDefaults = await send<JobDefaultsDto>(
+  "DELETE",
+  "/queues/mail/job-defaults",
+);
+checkEqual(
+  "DELETE …/job-defaults → 200, a new seq, nothing overridden: no Apply again",
+  [
+    resetDefaults.status,
+    (resetDefaults.body.seq ?? 0) > overridden.seq,
+    (await jobDefaultsOf("mail")).overridden,
+    defaultsGates("mail", await jobDefaultsOf("mail")),
+  ],
+  [200, true, [], [true, true, false]],
+);
+
+/* ------------------------------------------------------------------ */
+step("Processed by, newest first, and Clear logs…");
+
+/** A job as its screen reads it: state, who ran it, and its logs' count. */
+async function jobOf(queue: string, id: string) {
+  return (
+    await get<{ state: JobState; processedBy: { key?: string } | null }>(
+      `/queues/${queue}/jobs/${id}`,
+    )
+  ).body;
+}
+
+const logged = await jobOf("mail", "logged-1");
+const neverRun = await jobOf("mail", "later-1");
+
+/** The four Processed by gates, for `job` on mail: column, its link, line, its link. */
+function processedByGates(job: ScreenInputs["job"], set = sections): boolean[] {
+  const gatesNow = screenGates({
+    meta,
+    sections: set,
+    boot,
+    queue: maps.mail!,
+    job,
+  });
+  return [
+    gatesNow["queue: Processed by column"],
+    gatesNow["queue: Processed by worker link"],
+    gatesNow["job: Processed by"],
+    gatesNow["job: Processed by worker link"],
+  ];
+}
+
+checkEqual(
+  "logged-1: completed, processed by the mailer key; column and line, both linked to its worker page",
+  [logged.state, logged.processedBy?.key, processedByGates(logged)],
+  ["completed", "mailer", [true, true, true, true]],
+);
+checkEqual(
+  'later-1 (never run): processedBy null, so "No worker recorded" and no link',
+  [neverRun.processedBy, processedByGates(neverRun)],
+  [null, [true, false, true, false]],
+);
+checkEqual(
+  "the links need the Workers nav entry: with sections.manage off they are plain text",
+  processedByGates(logged, { ...sections, manage: false }),
+  [true, false, true, false],
+);
+const newest = await get<{ items: { id: string }[] }>(
+  "/queues/mail/jobs?sort=createdAt&order=desc",
+);
+checkEqual(
+  "sort=createdAt (features.addedByState): 200, newest added first; not on a page counting its total",
+  [
+    newest.status,
+    newest.body.items[0]?.id,
+    screenGates({ meta, sections, boot, queue: maps.mail! })[
+      "queue: jobs newest added first (sort=createdAt)"
+    ],
+    screenGates({ meta, sections, boot, queue: maps.mail!, countTotal: true })[
+      "queue: jobs newest added first (sort=createdAt)"
+    ],
+  ],
+  [200, "logged-1", true, false],
+);
+
+/** A job's log, as the Logs card pages it. */
+interface LogPage {
+  items: string[];
+  page: { total: number };
+}
+const logsBefore = await get<LogPage>("/queues/mail/jobs/logged-1/logs");
+checkEqual(
+  "logged-1 logged one line; mail's job screen offers Clear logs…, audit's does not",
+  [
+    logsBefore.body.page.total,
+    queueGates("mail", logged)["job: Clear logs…"],
+    queueGates("audit", logged)["job: Clear logs…"],
+  ],
+  [1, true, false],
+);
+const clearedLogs = await send<{ removed: number }>(
+  "DELETE",
+  "/queues/mail/jobs/logged-1/logs",
+);
+checkEqual(
+  "DELETE …/logged-1/logs → 200, removed 1; the log is empty now",
+  [
+    clearedLogs.status,
+    clearedLogs.body.removed,
+    (await get<LogPage>("/queues/mail/jobs/logged-1/logs")).body.page.total,
+  ],
+  [200, 1, 0],
+);
+checkEqual(
+  "a client clearing an audit job's logs anyway: 403",
+  (await send("DELETE", "/queues/audit/jobs/waiting-1/logs")).status,
+  403,
+);
+
+/* ------------------------------------------------------------------ */
+step("Runners: run logs, Clear history… and Settings…");
+
+const nightlyRuns = (
+  await get<{ items: RunRecordDto[] }>("/runners/nightly/history")
+).body.items;
+const killedRun = nightlyRuns[0]!;
+
+/** The three run gates on `id`'s screen for `run`: [Log column, Log button, dropped]. */
+function runGates(id: string, run: ScreenInputs["run"]): boolean[] {
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    runnerMap: runnerMaps[id]!,
+    runner: runnerInfos[id],
+    run,
+  });
+  return [
+    set["runner: run log and Log column"],
+    set["runner: a run's Log button"],
+    set["runner: N lines dropped"],
+  ];
+}
+
+show("nightly's killed run: status, logLines, logsDropped", {
+  status: killedRun.status,
+  logLines: killedRun.logLines,
+  logsDropped: killedRun.logsDropped,
+});
+checkEqual(
+  "its Log button follows its logLines (a finished run that logged 0 offers none)",
+  runGates("nightly", killedRun)[1],
+  killedRun.logLines === undefined || killedRun.logLines > 0,
+);
+checkEqual(
+  "the rule: a running run offers it before it reports logLines; 0 lines finished does not; dropped lines show",
+  [
+    runGates("nightly", { status: "running" }),
+    runGates("nightly", { status: "success", logLines: 0 }),
+    runGates("nightly", { status: "success", logLines: 4, logsDropped: 2 }),
+  ],
+  [
+    [true, true, false],
+    [true, false, false],
+    [true, true, true],
+  ],
+);
+const runLog = await get<{ items: unknown[] }>(
+  `/runners/nightly/runs/${encodeURIComponent(killedRun.runId)}/logs`,
+);
+checkEqual(
+  "GET …/runs/<id>/logs → 200 (runners.logs, a read); ledger has the read too, vault not",
+  [
+    runLog.status,
+    runGates("ledger", { status: "running" })[0],
+    runGates("vault", { status: "running" })[0],
+  ],
+  [200, true, false],
+);
+
+/** The three new runner gates on `id`'s screen: [Clear history…, Settings…, override rows]. */
+function newRunnerGates(id: string): boolean[] {
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    runnerMap: runnerMaps[id]!,
+    runner: runnerInfos[id],
+  });
+  return [
+    set["runner: Clear history…"],
+    set["runner: Settings…"],
+    set["runner: summary's override rows"],
+  ];
+}
+
+checkEqual(
+  "every runner here reports a config; Clear history… and Settings… on nightly and remote-sync",
+  Object.fromEntries(
+    RUNNERS.map((id) => [
+      id,
+      [runnerInfos[id]?.config !== undefined, ...newRunnerGates(id)],
+    ]),
+  ),
+  {
+    nightly: [true, true, true, true],
+    ledger: [true, false, false, true],
+    // Never read: Runner hidden.
+    vault: [false, false, false, false],
+    "remote-sync": [true, true, true, true],
+  },
+);
+const remoteCleared = await send("DELETE", "/runners/remote-sync/history");
+checkEqual(
+  "DELETE /runners/remote-sync/history → 200: a remote runner's history clears too (no RUNNER_NOT_LOCAL)",
+  remoteCleared.status,
+  200,
+);
+const nightlyCleared = await send("DELETE", "/runners/nightly/history");
+checkEqual(
+  "DELETE /runners/nightly/history → 200, and its history is empty",
+  [
+    nightlyCleared.status,
+    (await get<{ items: unknown[] }>("/runners/nightly/history")).body.items,
+  ],
+  [200, []],
+);
+checkEqual(
+  "ledger may do neither: DELETE …/history and PUT …/config → 403",
+  [
+    (await send("DELETE", "/runners/ledger/history")).status,
+    (await send("PUT", "/runners/ledger/config", { maxConcurrency: 2 })).status,
+  ],
+  [403, 403],
+);
+
+/* ------------------------------------------------------------------ */
+step("The Overview's analytics: captions, 'not kept', and the busiest note");
+
+/** The Overview's analytics reads over `[from, to)`, as the three sections send them. */
+async function overviewReads(from: number, to: number) {
+  const range = `from=${from}&to=${to}`;
+  const jobsRead = await get<
+    AnalyticsSeriesDto<unknown, unknown> & { code?: string }
+  >(`/analytics/jobs?${range}`);
+  const runnersRead = await get<RunnersAnalyticsDto & { code?: string }>(
+    `/analytics/runners?${range}`,
+  );
+  const workersRead = await get<WorkersAnalyticsDto & { code?: string }>(
+    `/analytics/workers?${range}`,
+  );
+  const answer = (
+    status: number,
+    body: { code?: string },
+    range: { clamped: boolean } | undefined,
+    truncated?: boolean,
+  ): SectionRead => ({
+    clamped: status === 200 && range?.clamped === true,
+    notRetained: status === 400 && body.code === "RANGE_NOT_RETAINED",
+    truncated: truncated === true,
+  });
+  return {
+    jobs: answer(jobsRead.status, jobsRead.body, jobsRead.body.range),
+    runners: answer(
+      runnersRead.status,
+      runnersRead.body,
+      runnersRead.body.series?.range,
+      runnersRead.body.truncated,
+    ),
+    workers: answer(
+      workersRead.status,
+      workersRead.body,
+      workersRead.body.series?.range,
+      workersRead.body.truncated,
+    ),
+  };
+}
+
+/** The Overview gates that follow a read's answer, by section. */
+function readGates(reads: ScreenInputs["reads"]) {
+  const set = screenGates({ meta, sections, boot, reads });
+  return {
+    caption: [
+      set["overview: Jobs range caption"],
+      set["overview: Runners range caption"],
+      set["overview: Workers range caption"],
+    ],
+    notKept: [
+      set["overview: Jobs not kept"],
+      set["overview: Runners not kept"],
+      set["overview: Workers not kept"],
+    ],
+    busiest: [
+      set["overview: Runners busiest note"],
+      set["overview: Workers busiest note"],
+    ],
+  };
+}
+
+const now = Date.now();
+checkEqual(
+  "meta.analytics is set and records runners and workers: every section is on",
+  [
+    meta.analytics !== null,
+    meta.analytics?.recording.runners,
+    meta.analytics?.recording.workers,
+    screenGates({ meta, sections, boot })["overview: Runners section"],
+    screenGates({ meta, sections, boot })["overview: Workers section"],
+  ],
+  [true, true, true, true, true],
+);
+// The last hour, the picker's default. Per-second buckets are kept for five
+// minutes only, so each read is served per minute and says why: `retention`.
+const hourRead = await get<AnalyticsSeriesDto<unknown, unknown>>(
+  `/analytics/jobs?from=${now - 3_600_000}&to=${now}`,
+);
+show("GET /analytics/jobs, the last hour: range", hourRead.body.range);
+const wide = await overviewReads(now - 3_600_000, now);
+checkEqual(
+  "the last hour: every read is clamped (reason retention), so every section captions it",
+  [
+    meta.analytics!.recording.secondRetentionMs < 3_600_000,
+    hourRead.body.range.reason,
+    wide,
+    readGates(wide).caption,
+  ],
+  [
+    true,
+    "retention",
+    {
+      jobs: { clamped: true, notRetained: false, truncated: false },
+      runners: { clamped: true, notRetained: false, truncated: false },
+      workers: { clamped: true, notRetained: false, truncated: false },
+    },
+    [true, true, true],
+  ],
+);
+// A span beyond maxSpanMs is refused outright; the picker never offers one.
+const tooWide = await get<{ code?: string }>(
+  `/analytics/jobs?from=${now - 2 * 86_400_000}&to=${now}`,
+);
+checkEqual(
+  'two days, beyond meta.analytics.maxSpanMs: 400 INVALID_ARGUMENT, not a clamp and not "not kept"',
+  [
+    tooWide.status,
+    tooWide.body.code,
+    readGates(await overviewReads(now - 2 * 86_400_000, now)).notKept,
+  ],
+  [400, "INVALID_ARGUMENT", [false, false, false]],
+);
+// A range wholly older than anything kept.
+const stale = await overviewReads(now - 5 * 86_400_000, now - 4 * 86_400_000);
+checkEqual(
+  'a range wholly older than retention: 400 RANGE_NOT_RETAINED on each, so "No numbers are kept"',
+  [stale, readGates(stale).notKept, readGates(stale).caption],
+  [
+    {
+      jobs: { clamped: false, notRetained: true, truncated: false },
+      runners: { clamped: false, notRetained: true, truncated: false },
+      workers: { clamped: false, notRetained: true, truncated: false },
+    },
+    [true, true, true],
+    [false, false, false],
+  ],
+);
+checkEqual(
+  'four runners and two worker keys are far under 100 rows: no "Showing the N busiest" note',
+  readGates(wide).busiest,
+  [false, false],
+);
+checkEqual(
+  "the rule: a truncated roll-up shows the note; a caller without metrics.read sees no section",
+  [
+    readGates({ runners: { truncated: true }, workers: { truncated: true } })
+      .busiest,
+    screenGates({
+      meta,
+      sections,
+      boot: { ...boot, actions: { ...boot.actions, "metrics.read": false } },
+      reads: { runners: { truncated: true } },
+    })["overview: Runners busiest note"],
+  ],
+  [[true, true], false],
+);
+checkEqual(
+  "a backend recording no analytics (meta.analytics null): no sparklines, no figure, no sections",
+  (() => {
+    const set = screenGates({
+      meta: { ...meta, analytics: null },
+      sections,
+      boot,
+    });
+    return [
+      set["Overview: sparklines"],
+      set["overview: Over the range figure"],
+      set["overview: Over the range, added by state"],
+      set["overview: Runners section"],
+      set["overview: Workers section"],
+    ];
+  })(),
+  // The added-by-state group reads its own route, not the series.
+  [false, false, true, false, false],
+);
+
+await mailWorker.close({ timeout: 1_000 });
+await auditWorker.close({ timeout: 1_000 });
 
 summary();
 

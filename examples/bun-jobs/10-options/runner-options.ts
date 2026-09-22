@@ -259,7 +259,9 @@ step("Defaults, and what is rejected at construction");
       startPaused: options.startPaused,
       syncInterval: options.syncInterval,
       forwardLogs: options.forwardLogs,
+      captureLogs: options.captureLogs.enabled,
       publish: options.publish,
+      remoteControl: options.remoteControl,
       schedule: options.schedule,
       spawn: options.spawn,
     },
@@ -282,10 +284,38 @@ step("Defaults, and what is rejected at construction");
       startPaused: false,
       syncInterval: 30_000,
       forwardLogs: false,
+      // Run-log capture is on by default, and it reads a spawned run's
+      // output from its pipes — so the child's stdio defaults to "pipe"
+      // while it is. Each piped chunk is still written straight through to
+      // this process's stdout and stderr, so the terminal sees what it did.
+      captureLogs: true,
       publish: false,
+      // `"auto"`: on for a driver that pushes or delivers events locally
+      // (this one, the default in-memory driver), off for one that polls.
+      remoteControl: true,
       schedule: null,
-      spawn: { stdout: "inherit", stderr: "inherit", startTimeout: 10_000 },
+      spawn: { stdout: "pipe", stderr: "pipe", startTimeout: 10_000 },
     },
+  );
+  checkEqual(
+    "captureLogs: false puts the child's stdio back to inherit",
+    new BunRunner({
+      id: "no-capture",
+      namespace,
+      file: handler("runner-work"),
+      captureLogs: false,
+    }).options.spawn,
+    { stdout: "inherit", stderr: "inherit", startTimeout: 10_000 },
+  );
+  checkEqual(
+    "…and an explicit spawn stream wins over either default",
+    new BunRunner({
+      id: "explicit-stdio",
+      namespace,
+      file: handler("runner-work"),
+      spawn: { stderr: "ignore" },
+    }).options.spawn,
+    { stdout: "pipe", stderr: "ignore", startTimeout: 10_000 },
   );
 
   const named = new BunRunner({

@@ -45,6 +45,15 @@
  *   `Polling 5s`: nothing on a docs-only UI polls either. Its tooltip says
  *   "Live updates are off: this UI shows documentation only", and the host
  *   sees no upgrade.
+ * - **Workers have two scopes of their own.** "Every worker (workers)" is
+ *   the `workers` channel, "One queue's workers" is `queue/<queue>/workers`;
+ *   each carries a worker's `state`, `config` and `control` events (`kind`
+ *   `worker`, `target` the queue). A worker publishes a `state` event only
+ *   on a change (a pause, a resume, a stop, a restart, a config change),
+ *   never on its first `run()`: a new worker appears through its heartbeat
+ *   record in `GET /workers` within one `reportInterval`. The rows here come
+ *   from a real worker pausing and resuming, and a worker of another queue
+ *   never shows on one queue's scope.
  * - **`types` in the URL takes bare or prefixed names.** `queue.completed`
  *   and `runner.failed` name their family; the console rewrites the URL with
  *   the bare name (`completed`). A name that is no event type, or one the
@@ -345,6 +354,50 @@ const IGNORED_NOTE = `document.querySelector('[data-testid="events-types-ignored
 /** The Events console's actions (Pause, Resume, Clear). */
 const LOG_ACTIONS = ".events-actions";
 
+/** Page-side: the label of the Channel select's chosen scope, once it shows. */
+const SCOPE_LABEL = textOf(".events-picker select option:checked");
+
+/** Page-side: every scope the Channel select offers, by label. */
+const SCOPE_LABELS = `[...document.querySelectorAll(".events-picker select option")]
+  .map((option) => option.textContent.trim())`;
+
+/**
+ * Page-side: every worker event row as `[type, target, target href]`,
+ * resolving once there are at least `count` (or what there is after `ms`).
+ */
+function workerRows(count: number, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const read = () => [...document.querySelectorAll('[data-testid="event-row"]')]
+      .filter((row) => row.querySelector(".events-kind")?.textContent.trim().startsWith("worker"))
+      .map((row) => {
+        const link = row.querySelector(".events-target a");
+        return [row.dataset.type, row.querySelector(".events-target").textContent.trim(), link?.getAttribute("href") ?? null];
+      });
+    const poll = () => {
+      const rows = read();
+      if (rows.length >= ${count} || Date.now() > deadline) return resolve(rows);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/**
+ * The watched worker's `reportInterval`, shorter than the 10 s default so the
+ * wait stays short. Its record is written as it starts, so on a queue the API
+ * already knows it is listed at once. A queue new to the API can take up to
+ * `limits.queueCacheMs` (2 s by default) longer, and a loaded machine needs
+ * headroom as well, so this is 3 s rather than 1.
+ */
+const WORKER_REPORT_MS = 3_000;
+
+/** How long to watch for a state row that must not come, well under the run's budget. */
+const NO_EVENT_WINDOW_MS = 1_500;
+
+/** The queue whose worker must not show on mail's worker scope. */
+const OTHER_QUEUE = "reports";
+
 try {
   /* ---------------------------------------------------------------- */
   step("A host with a socket: the badge goes live");
@@ -484,6 +537,159 @@ try {
       })`,
     ),
   );
+
+  /* ---------------------------------------------------------------- */
+  step('"Every worker (workers)": a worker\'s state events appear');
+
+  const beforeWorkers = subscribes(live, "workers");
+  await view.navigate(`${live.origin}${live.uiBase}/events?channel=workers`);
+  checkEqual(
+    "watching the workers channel",
+    await view.evaluate<string | null>(
+      textOf('[data-testid="events-channel"]'),
+    ),
+    "workers",
+  );
+  checkEqual(
+    'the Channel select reads "Every worker (workers)"',
+    await view.evaluate<string | null>(SCOPE_LABEL),
+    "Every worker (workers)",
+  );
+  const scopes = await view.evaluate<string[]>(SCOPE_LABELS);
+  show("scopes offered", scopes);
+  check(
+    `and offers "One queue's workers" too`,
+    scopes.includes("One queue's workers"),
+    scopes,
+  );
+  await waitFor(
+    "the page to subscribe to workers",
+    () => subscribes(live, "workers") > beforeWorkers,
+  );
+
+  // A worker publishes a `state` event only on a change (paused, resumed,
+  // stopping/stopped, started again, restarting, a config change). Its first
+  // run() is not one: a new worker shows up through its heartbeat record in
+  // GET /workers instead, within one reportInterval.
+  const mailWorker = jobs.worker(QUEUE, async () => "sent", {
+    name: "watched",
+    reportInterval: WORKER_REPORT_MS,
+  });
+  const startedAt = Date.now();
+  void mailWorker.run();
+  // Polled from the moment it runs, alongside the watch for a state row.
+  const listed = (async () => {
+    await waitFor(
+      `${mailWorker.key} to be listed by GET /workers`,
+      async () => {
+        const response = await fetch(
+          `${live.origin}/jobs-api/workers?queue=${QUEUE}`,
+        );
+        const { items } = (await response.json()) as {
+          items: { key?: string }[];
+        };
+        return items.some((worker) => worker.key === mailWorker.key);
+      },
+    );
+    return Date.now() - startedAt;
+  })();
+  checkEqual(
+    `its first run() adds no state row (watched for ${NO_EVENT_WINDOW_MS} ms)`,
+    await view.evaluate<[string, string, string | null][]>(
+      workerRows(1, NO_EVENT_WINDOW_MS),
+    ),
+    [],
+  );
+  const listedAfter = await listed;
+  check(
+    `but GET /workers lists it within one reportInterval (${WORKER_REPORT_MS} ms)`,
+    listedAfter <= WORKER_REPORT_MS,
+    { listedAfter },
+  );
+  await mailWorker.pause();
+  const pausedRows = await view.evaluate<[string, string, string | null][]>(
+    workerRows(1),
+  );
+  show("worker rows", pausedRows);
+  checkEqual(
+    "the pause that follows does: one worker state row, its target the queue",
+    pausedRows.map(([type, target]) => [type, target]),
+    [["state", QUEUE]],
+  );
+  await mailWorker.resume();
+  checkEqual(
+    "resuming it adds another",
+    (await view.evaluate<[string, string, string | null][]>(workerRows(2))).map(
+      ([type, target]) => [type, target],
+    ),
+    [
+      ["state", QUEUE],
+      ["state", QUEUE],
+    ],
+  );
+  // A worker event's target is a queue, so its link should open the queue.
+  checkEqual(
+    "the row's target links to the queue, not to a runner",
+    pausedRows[0]?.[2],
+    `${live.uiBase}/queues/${QUEUE}`,
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(`"One queue's workers" (queue/${QUEUE}/workers): only mail's`);
+
+  const queueWorkers = `queue/${QUEUE}/workers`;
+  const beforeQueueWorkers = subscribes(live, queueWorkers);
+  await view.navigate(
+    `${live.origin}${live.uiBase}/events?channel=${encodeURIComponent(queueWorkers)}`,
+  );
+  checkEqual(
+    `watching ${queueWorkers}`,
+    await view.evaluate<string | null>(
+      textOf('[data-testid="events-channel"]'),
+    ),
+    queueWorkers,
+  );
+  checkEqual(
+    `the Channel select reads "One queue's workers", the Queue field ${QUEUE}`,
+    [
+      await view.evaluate<string | null>(SCOPE_LABEL),
+      await view.evaluate<string | null>(
+        until(
+          `[...document.querySelectorAll(".events-picker select, .events-picker input")][1]?.value ?? null`,
+          `(value) => value === ${JSON.stringify(QUEUE)}`,
+        ),
+      ),
+    ],
+    ["One queue's workers", QUEUE],
+  );
+  await waitFor(
+    `the page to subscribe to ${queueWorkers}`,
+    () => subscribes(live, queueWorkers) > beforeQueueWorkers,
+  );
+  // First a worker of another queue changes state, then mail's: once mail's
+  // row is there, the other's would have been too, had it been carried.
+  const otherWorker = jobs.worker(OTHER_QUEUE, async () => "done", {
+    name: "unwatched",
+  });
+  void otherWorker.run();
+  await otherWorker.pause();
+  await mailWorker.pause();
+  const queueRows = await view.evaluate<[string, string, string | null][]>(
+    workerRows(1),
+  );
+  show("worker rows", queueRows);
+  check(
+    "pausing mail's worker again shows its state row",
+    queueRows.some(([type, target]) => type === "state" && target === QUEUE),
+    queueRows,
+  );
+  checkEqual(
+    `and no row is about ${OTHER_QUEUE}'s worker`,
+    queueRows.filter(([, target]) => target !== QUEUE),
+    [],
+  );
+  await otherWorker.close({ timeout: 1_000 });
+  await mailWorker.close({ timeout: 1_000 });
 
   /* ---------------------------------------------------------------- */
   step("types= in the URL: prefixed names written bare, unknown ones named");

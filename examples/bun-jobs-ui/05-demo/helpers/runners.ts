@@ -4,7 +4,7 @@ import { BunJobs } from "@kingsleyweb/bun-jobs";
 import { waitFor } from "../../shared/console";
 
 /**
- * Seeds runners for the runner screens: four registered in the demo's own
+ * Seeds runners for the runner screens: five registered in the demo's own
  * process, and one registered by another `BunJobs` over the same driver and
  * namespace, which the API can only reach through the driver.
  *
@@ -14,6 +14,7 @@ import { waitFor } from "../../shared/console";
  * | `archive`      | local        | paused (Resume… instead of Pause)                    |
  * | `digest`       | local        | a finished run in its history, and a run in flight (Kill…) |
  * | `sync-crm`     | local        | a failed run, and the runner's `lastError`           |
+ * | `export`       | local        | a finished run with a log: `log`, `stdout` and `stderr` lines, one redacted |
  * | `partner-feed` | another one  | remote: no active runs, no Kill… or Reset stats…     |
  *
  * Every runner runs in-process, and no schedule fires while the demo runs:
@@ -30,6 +31,8 @@ export const DEMO_RUNNERS = {
   busy: "digest",
   /** Its only run failed. */
   failing: "sync-crm",
+  /** One finished run, which logged. */
+  logged: "export",
   /** Registered only by another process. */
   remote: "partner-feed",
 } as const;
@@ -38,6 +41,8 @@ export const DEMO_RUNNERS = {
 export interface SeededRunners {
   /** The local runners, by id. */
   local: Record<string, BunRunner<any, any>>;
+  /** The id of `export`'s run, whose log the runner screen opens (`?logs=`). */
+  loggedRunId: string;
   /** Kills the run in flight and closes the other process's context. */
   stop: () => Promise<void>;
 }
@@ -46,6 +51,8 @@ export interface SeededRunners {
 const HOLD = new URL("../../shared/handlers/hold.ts", import.meta.url);
 /** The handler that always fails. */
 const FAIL = new URL("../../shared/handlers/fail.ts", import.meta.url);
+/** The handler that logs as it works. */
+const EXPORT = new URL("./handlers/export.ts", import.meta.url);
 
 /** Seeds the runners into `jobs`, and a remote one beside it. */
 export async function seedRunners(jobs: BunJobs): Promise<SeededRunners> {
@@ -96,6 +103,16 @@ export async function seedRunners(jobs: BunJobs): Promise<SeededRunners> {
     async () => (await syncCrm.history())[0]?.status === "failed",
   );
 
+  const exporter = await start(DEMO_RUNNERS.logged, EXPORT);
+  await exporter.trigger({ args: { rows: 3 } });
+  await waitFor(
+    "export's run to finish",
+    async () =>
+      (await exporter.history())[0]?.status === "success" &&
+      exporter.activeRuns.size === 0,
+  );
+  const loggedRunId = (await exporter.history())[0]!.runId;
+
   // Another process, as far as the API can tell: the same driver and
   // namespace, a runner this context never registers.
   const elsewhere = new BunJobs({
@@ -119,7 +136,9 @@ export async function seedRunners(jobs: BunJobs): Promise<SeededRunners> {
       [archive.id]: archive,
       [digest.id]: digest,
       [syncCrm.id]: syncCrm,
+      [exporter.id]: exporter,
     },
+    loggedRunId,
     stop: async () => {
       await digest.kill();
       await elsewhere.close();

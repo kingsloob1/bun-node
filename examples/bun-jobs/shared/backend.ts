@@ -82,9 +82,10 @@ export function requireUrl(variable: string, example: string): string {
  * The prefix the examples give every table, collection and key on a server.
  *
  * A development server is shared — with the package's test suite, with other
- * projects — and tables created with the default names by any earlier version
- * keep that version's shape. A prefix of their own means the examples always
- * create tables in the current shape, and never touch anyone else's.
+ * projects — so the examples keep to a prefix of their own and never touch
+ * anyone else's tables. Their own tables outlive a release, though: one an
+ * earlier version created keeps that version's shape (`IF NOT EXISTS`), which
+ * is why the SQL servers below connect with `syncSchema: true`.
  */
 export const EXAMPLE_PREFIX = "bun_jobs_example_";
 
@@ -119,6 +120,10 @@ export function exampleDriver(): DriverConfig {
           `${backend}://user:pass@localhost/jobs`,
         ),
         tablePrefix: EXAMPLE_PREFIX,
+        // Brings tables an earlier version created up to date on connect, so
+        // a feature gated on the schema (job attribution, say) reports true.
+        // Only the safe, non-blocking changes; a column retype stays a plan.
+        syncSchema: true,
       };
     case "redis":
       return {
