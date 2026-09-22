@@ -86,14 +86,14 @@ from one codebase.
 
 ### Scenarios
 
-| Scenario       | What it measures                                                       |
-| -------------- | ---------------------------------------------------------------------- |
-| `enqueue`      | producer only, one job at a time, no consumer running                  |
-| `enqueue-bulk` | producer only, batched through each library's own batch API            |
-| `throughput`   | drain a pre-seeded backlog: worker start to last completion            |
-| `roundtrip`    | add one job, wait for it, repeat — dispatch latency on an *idle* queue |
-| `payload`      | the same drain with padded jobs, isolating serialization               |
-| `contention`   | several independent consumers on one queue, checked for exactly-once   |
+| Scenario       | What it measures                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| `enqueue`      | producer only, one job at a time, no consumer running                                       |
+| `enqueue-bulk` | producer only, batched through each library's own batch API                                 |
+| `throughput`   | drain a pre-seeded backlog: worker start to the last completion recorded                    |
+| `roundtrip`    | add one job, wait for its handler to run, repeat — dispatch latency on an *idle* queue      |
+| `payload`      | the same drain with padded jobs, isolating serialization                                    |
+| `contention`   | the same drain through several independent consumers on one queue, checked for exactly-once |
 
 `roundtrip` is the number that a request-driven workload feels: the queue is
 empty, so it is the cost of waking a consumer, not of chewing through a
@@ -118,6 +118,23 @@ cases where it does not.
   have measured the defaults.
 - **A batch API is used when there is one.** node-resque and Agenda have none,
   so their `enqueue-bulk` figure is a sequential loop and the row says so.
+- **Every drain stops at the same point: the last completion recorded.**
+  `throughput`, `payload` and `contention` are timed from the worker starting
+  to the moment the library has *recorded* the last job as completed, not to
+  the last handler call. Libraries that write completions off the critical
+  path (bun-jobs, graphile-worker) otherwise leave those writes outside the
+  clock — measured, up to 330ms of them, which inflated our own contention
+  figure 2.4×. Each contender is timed to its own completion signal where the
+  library fires one after the write lands: bun-jobs' and BullMQ's
+  `completed`, bee-queue's `succeeded`, node-resque's `success` (after its
+  processed counters are written; Resque removes a job when it claims it), and
+  Agenda's `complete` (after its finished state is saved; its
+  `removeOnComplete` delete comes after, and is not timed). graphile-worker
+  fires its events before the write and pg-boss has no completion event, so
+  those two are timed to the first read of the job table, issued once every
+  handler has run, that finds none of the run's jobs outstanding — late by at
+  most one round trip. `roundtrip` is dispatch latency, so it still stops when
+  the handler receives the job.
 - **Every contender is proved correct before it is timed.** `--verify` runs
   200 jobs through three competing consumers and requires each to arrive
   exactly once. A scenario that loses or repeats a job reports `FAILED`, never
@@ -200,9 +217,11 @@ take any longer.
   them to see the same queue. It is in the table for scale, not for comparison.
 - Worker maintenance (stalled-job recovery, delayed promotion) stays **on** for
   `bun-jobs`, as it is by default. Turning it off would flatter the figure.
-- A drain is timed from the worker starting to the **last job's arrival**, not
-  to the poll that noticed it. On the in-process backends the whole drain is a
-  few milliseconds and a poll interval would be a tenth of the figure.
+- A drain is timed from the worker starting to the **last completion
+  recorded** (see *Keeping it fair*), taken from the completion event itself,
+  not from the poll that noticed it. On the in-process backends the whole
+  drain is a few milliseconds and a poll interval would be a tenth of the
+  figure.
 - Agenda's `processEvery` must be given as a **number**. A string goes through
   `human-interval`, which returns `NaN` for `"50 ms"` — Agenda then silently
   falls back to its 5-second default, and every Agenda figure becomes that

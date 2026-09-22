@@ -1,3 +1,4 @@
+import type { JobWithId } from "agenda";
 import type {
   JobPayload,
   QueueContender,
@@ -100,11 +101,16 @@ export const bullmq: QueueContender = {
         worker = new Worker(
           ctx.name,
           async (job) => {
-            ctx.onComplete(job.data as JobPayload);
+            ctx.onReceive(job.data as JobPayload);
           },
           { connection, prefix, concurrency, autorun: false },
         );
         worker.on("error", ctx.onError);
+        // Emitted after `moveToCompleted` has run on Redis — the script that
+        // marks the job done (and, here, removes it).
+        worker.on("completed", (job) => {
+          ctx.onCompleted(job.data as JobPayload);
+        });
         worker.on("failed", (_job, error) => ctx.onError(error));
         void worker.run();
         await worker.waitUntilReady();
@@ -180,9 +186,12 @@ export const beeQueue: QueueContender = {
         consumer = make(true);
         consumer.on("error", ctx.onError);
         consumer.on("failed", (_job, error) => ctx.onError(error));
+        // Emitted once the MULTI that finishes the job (removes it from
+        // `active`, deletes it under `removeOnSuccess`) has been executed.
+        consumer.on("succeeded", (job) => ctx.onCompleted(job.data));
         await consumer.ready();
         consumer.process(concurrency, async (job) => {
-          ctx.onComplete(job.data);
+          ctx.onReceive(job.data);
         });
       },
 
@@ -234,7 +243,7 @@ export function nodeResque(pollIntervalMs: number): QueueContender {
       const jobs = {
         bench: {
           perform: async (payload: JobPayload) => {
-            ctx.onComplete(payload);
+            ctx.onReceive(payload);
           },
         },
       };
@@ -276,6 +285,13 @@ export function nodeResque(pollIntervalMs: number): QueueContender {
           );
           worker.on("error", (error) => ctx.onError(error));
           worker.on("failure", (_w, _q, _job, error) => ctx.onError(error));
+          // Emitted after the worker's `succeed` MULTI (the processed
+          // counters) has been executed. Resque pops a job off its list when
+          // it claims it, so there is no job record left to mark: the
+          // counters are all the completion there is to record.
+          worker.on("success", (_w, _q, job) => {
+            ctx.onCompleted(job.args[0] as JobPayload);
+          });
           await worker.start();
         },
 
@@ -301,6 +317,14 @@ export function nodeResque(pollIntervalMs: number): QueueContender {
  * Agenda on Redis
  * ------------------------------------------------------------------ */
 
+/**
+ * Where a drain's clock stops for Agenda, appended to each Agenda row's note.
+ * Its `complete` event follows the write of the job's finished state, but its
+ * `removeOnComplete` delete comes after the event.
+ */
+export const AGENDA_CLOCK =
+  "drains timed to `complete` (finished state saved); the removeOnComplete delete that follows is not";
+
 /** Agenda with its Redis backend, so it appears in the Redis group too. */
 export function agendaRedis(pollIntervalMs: number): QueueContender {
   return {
@@ -308,7 +332,7 @@ export function agendaRedis(pollIntervalMs: number): QueueContender {
     label: "Agenda (redis)",
     backend: "redis",
     nativeBulk: false,
-    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop`,
+    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop; ${AGENDA_CLOCK}`,
     setup: (ctx) => agendaHandle(ctx, pollIntervalMs, "redis"),
   };
 }
@@ -399,6 +423,20 @@ export async function agendaHandle(
   agenda.on("error", ctx.onError);
   agenda.on("fail", (error: unknown) => ctx.onError(error));
 
+  // Agenda emits `complete` after `saveJobState` has written the job's
+  // finished state — for a failed run as well as a successful one, so only a
+  // job that `success` saw first counts. `success` itself fires before that
+  // write. The `removeOnComplete` delete runs after `complete`, so its last
+  // round trip per concurrency slot falls outside the drain clock; the row's
+  // note says so.
+  const succeeded = new WeakSet<JobWithId>();
+  agenda.on("success:bench", (job: JobWithId) => {
+    succeeded.add(job);
+  });
+  agenda.on("complete:bench", (job: JobWithId) => {
+    if (succeeded.delete(job)) ctx.onCompleted(job.attrs.data as JobPayload);
+  });
+
   let started = false;
 
   return {
@@ -429,7 +467,7 @@ export async function agendaHandle(
       agenda.define(
         "bench",
         async (job: { attrs: { data: JobPayload } }) => {
-          ctx.onComplete(job.attrs.data);
+          ctx.onReceive(job.attrs.data);
         },
         { concurrency },
       );

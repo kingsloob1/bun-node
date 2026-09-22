@@ -5,7 +5,7 @@ import type {
   QueueSetupContext,
 } from "../../lib/types";
 import { padding } from "../../lib/harness";
-import { agendaHandle } from "./redis-group";
+import { AGENDA_CLOCK, agendaHandle } from "./redis-group";
 
 /**
  * The Postgres-backed competitors: pg-boss, graphile-worker and Agenda's
@@ -35,7 +35,9 @@ export function pgBoss(pollIntervalMs: number): QueueContender {
     note:
       "LISTEN/NOTIFY on (useListenNotify + notify), burst mode on " +
       `(burstWhenBatchFull), ${seconds}s poll as a backstop — pg-boss ships all ` +
-      "three off, and measuring the defaults would measure the defaults",
+      "three off, and measuring the defaults would measure the defaults; " +
+      "no completion event, so drains are timed to the first read of the job " +
+      "table that finds none of the run's jobs short of `completed`",
     async setup(ctx: QueueSetupContext): Promise<QueueHandle> {
       const { PgBoss } = await import("pg-boss");
       const pad = padding(ctx.payloadBytes);
@@ -84,10 +86,23 @@ export function pgBoss(pollIntervalMs: number): QueueContender {
               burstWhenBatchFull: true,
             },
             async (jobs) => {
-              for (const job of jobs) ctx.onComplete(job.data);
+              for (const job of jobs) ctx.onReceive(job.data);
             },
           );
           working = true;
+        },
+
+        // pg-boss completes a batch once its handler returns, but reports it
+        // nowhere outside its test-only spies, so the drain reads the job
+        // table instead: this run's jobs still short of `completed`.
+        async outstanding() {
+          const { rows } = await boss
+            .getDb()
+            .executeSql(
+              `select count(*)::int as left from bench_pgboss.job where name = $1 and state < 'completed'`,
+              [ctx.name],
+            );
+          return Number((rows[0] as { left?: number } | undefined)?.left ?? 0);
         },
 
         async stopWorker() {
@@ -121,7 +136,10 @@ export function graphileWorker(pollIntervalMs: number): QueueContender {
     label: "graphile-worker",
     backend: "postgres",
     nativeBulk: true,
-    note: `LISTEN/NOTIFY with a ${pollIntervalMs}ms poll as a backstop; completed jobs are deleted`,
+    note:
+      `LISTEN/NOTIFY with a ${pollIntervalMs}ms poll as a backstop; completed jobs are deleted; ` +
+      "its completion events fire before the write, so drains are timed to the " +
+      "first read of the job table that finds it empty",
     async setup(ctx: QueueSetupContext): Promise<QueueHandle> {
       const { run, makeWorkerUtils } = await import("graphile-worker");
       const pad = padding(ctx.payloadBytes);
@@ -157,11 +175,24 @@ export function graphileWorker(pollIntervalMs: number): QueueContender {
             noHandleSignals: true,
             taskList: {
               bench: async (payload) => {
-                ctx.onComplete(payload as JobPayload);
+                ctx.onReceive(payload as JobPayload);
               },
             },
           });
           runner.events.on("job:failed", ({ error }) => ctx.onError(error));
+        },
+
+        // graphile-worker issues `completeJob` without awaiting it and emits
+        // `job:success` / `job:complete` before it lands, so neither marks a
+        // recorded completion. It deletes a job's row on completion, so the
+        // drain reads the table instead: the same scope `reset()` clears.
+        async outstanding() {
+          return utils.withPgClient(async (client) => {
+            const { rows } = await client.query<{ left: number }>(
+              `select count(*)::int as left from ${schema}._private_jobs`,
+            );
+            return Number(rows[0]?.left ?? 0);
+          });
         },
 
         async stopWorker() {
@@ -196,7 +227,7 @@ export function agendaPostgres(pollIntervalMs: number): QueueContender {
     label: "Agenda (postgres)",
     backend: "postgres",
     nativeBulk: false,
-    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop`,
+    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop; ${AGENDA_CLOCK}`,
     setup: (ctx) => agendaHandle(ctx, pollIntervalMs, "postgres"),
   };
 }
@@ -212,7 +243,7 @@ export function agendaMongo(pollIntervalMs: number): QueueContender {
     label: "Agenda (mongodb)",
     backend: "mongodb",
     nativeBulk: false,
-    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop`,
+    note: `polls every ${pollIntervalMs}ms; no batch enqueue, so the bulk figure is a sequential loop; ${AGENDA_CLOCK}`,
     setup: (ctx) => agendaHandle(ctx, pollIntervalMs, "mongodb"),
   };
 }

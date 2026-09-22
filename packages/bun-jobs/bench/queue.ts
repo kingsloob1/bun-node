@@ -48,12 +48,14 @@ const ALL_SCENARIOS: QueueScenario[] = [
 const SCENARIO_BLURB: Record<QueueScenario, string> = {
   enqueue: "producer only — one job at a time, no consumer running",
   "enqueue-bulk": "producer only — batched, using each library's own batch API",
-  throughput: "drain a pre-seeded backlog: worker start to last completion",
+  throughput:
+    "drain a pre-seeded backlog: worker start to the last completion recorded",
   roundtrip:
-    "add one job, wait for it, repeat — dispatch latency on an idle queue",
-  payload: "drain a backlog of padded jobs, isolating serialization",
+    "add one job, wait for its handler to run, repeat — dispatch latency on an idle queue",
+  payload:
+    "drain a backlog of padded jobs, isolating serialization (to the last completion recorded)",
   contention:
-    "several independent consumers on one queue, checked for exactly-once",
+    "several independent consumers on one queue, checked for exactly-once (to the last completion recorded)",
 };
 
 /** Prints the usage banner. */

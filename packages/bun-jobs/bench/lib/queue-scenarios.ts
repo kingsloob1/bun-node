@@ -79,14 +79,25 @@ class Arrivals {
     this.distinct++;
   }
 
-  /** The problem with this run, or null when every job arrived exactly once. */
-  problem(expected: number): string | null {
+  /**
+   * The problem with this run, or null when every job arrived exactly once.
+   * `what` names the event counted, so a repeated completion reads as one.
+   */
+  problem(
+    expected: number,
+    what: "delivery" | "completion" = "delivery",
+  ): string | null {
+    const [came, repeated, never] =
+      what === "delivery"
+        ? ["arrived", "were delivered", "never arrived"]
+        : ["completed", "were completed", "were never reported completed"];
+
     if (this.strays > 0)
-      return `${this.strays} jobs arrived with an unknown id`;
+      return `${this.strays} jobs ${came} with an unknown id`;
     if (this.duplicates > 0)
-      return `${this.duplicates} jobs were delivered more than once`;
+      return `${this.duplicates} jobs ${repeated} more than once`;
     if (this.distinct !== expected) {
-      return `${expected - this.distinct} of ${expected} jobs never arrived`;
+      return `${expected - this.distinct} of ${expected} jobs ${never}`;
     }
     return null;
   }
@@ -106,6 +117,65 @@ async function seed(
   for (let index = 0; index < items.length; index += batch) {
     await handle.addBulk(items.slice(index, index + batch));
   }
+}
+
+/**
+ * Waits for a drain to finish and returns the instant it did: the moment the
+ * **last job's completion was recorded** by the library, not the moment its
+ * handler ran.
+ *
+ * The two differ by as much as the drain itself on a library that writes
+ * completions off the critical path — bun-jobs and graphile-worker both do —
+ * and a clock stopped at the last handler call left up to 330ms of
+ * completion writes outside the measurement. Every contender is timed to the
+ * same point: its own completion signal where the library fires one after the
+ * write lands (see {@link QueueSetupContext.onCompleted}), or else a read of
+ * the backend that finds nothing outstanding ({@link QueueHandle.outstanding}).
+ *
+ * Handler arrivals are still awaited first, both because the exactly-once
+ * check counts them and because a backend read issued mid-drain would compete
+ * with the drain it is timing.
+ */
+async function drainFinished(
+  received: Arrivals,
+  completed: Arrivals,
+  probe: QueueHandle,
+  config: ScenarioConfig,
+): Promise<number> {
+  const deadline = Date.now() + config.budgetSeconds * 1000;
+  const remaining = () => Math.max(1, deadline - Date.now());
+
+  await waitFor(() => received.distinct >= config.jobs, {
+    timeoutMs: remaining(),
+    message: `only ${received.distinct}/${config.jobs} jobs were processed`,
+  });
+
+  const outstanding = probe.outstanding;
+  if (outstanding) {
+    // A tight loop, no sleep: each read is one round trip, so the figure is
+    // late by at most one of them. The time is taken when the answer
+    // arrives, which is when "none outstanding" was known, never earlier.
+    for (;;) {
+      const left = await outstanding();
+      const at = performance.now();
+      if (left <= 0) return at;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `${left} of ${config.jobs} jobs were never recorded as completed ` +
+            `(waited ${config.budgetSeconds * 1000}ms)`,
+        );
+      }
+    }
+  }
+
+  await waitFor(() => completed.distinct >= config.jobs, {
+    timeoutMs: remaining(),
+    message: `only ${completed.distinct}/${config.jobs} completions were recorded`,
+  });
+  // The last completion, not the poll that noticed it: on the in-process
+  // backends the whole drain is a few milliseconds and the poll interval
+  // would be a tenth of the figure.
+  return completed.lastAt;
 }
 
 /** Runs one scenario against one contender and returns what it measured. */
@@ -128,16 +198,36 @@ export async function runQueueScenario(
   const errors: unknown[] = [];
   const handles: QueueHandle[] = [];
   let arrivals = new Arrivals(1);
+  let completions = new Arrivals(1);
   let onArrive: (payload: JobPayload) => void = () => {};
+  let onCompleted: (payload: JobPayload) => void = () => {};
 
   const makeHandle = (payloadBytes: number) =>
     contender.setup({
       name: config.name,
       url: config.url,
       payloadBytes,
-      onComplete: (payload) => onArrive(payload),
+      onReceive: (payload) => onArrive(payload),
+      onCompleted: (payload) => onCompleted(payload),
       onError: (error) => errors.push(error),
     });
+
+  /** Arms both counters for a drain of `config.jobs` jobs. */
+  const armDrain = () => {
+    arrivals = new Arrivals(config.jobs);
+    completions = new Arrivals(config.jobs);
+    onArrive = (payload) => arrivals.record(payload.seq);
+    onCompleted = (payload) => completions.record(payload.seq);
+  };
+
+  /**
+   * What went wrong with a drain, or null. A completion reported twice is as
+   * wrong as a delivery repeated; completions are only checked for contenders
+   * that report them.
+   */
+  const drainProblem = (probe: QueueHandle): string | null =>
+    arrivals.problem(config.jobs) ??
+    (probe.outstanding ? null : completions.problem(config.jobs, "completion"));
 
   try {
     switch (scenario) {
@@ -178,27 +268,20 @@ export async function runQueueScenario(
         handles.push(handle);
         await handle.reset();
 
-        arrivals = new Arrivals(config.jobs);
-        onArrive = (payload) => arrivals.record(payload.seq);
+        armDrain();
 
         await seed(handle, payloads(config.jobs));
 
         const started = performance.now();
         await handle.startWorker(config.concurrency);
-        await waitFor(() => arrivals.distinct >= config.jobs, {
-          timeoutMs: config.budgetSeconds * 1000,
-          message: `only ${arrivals.distinct}/${config.jobs} jobs were processed`,
-        });
-
-        // The last arrival, not the poll that noticed it: on the in-process
-        // backends the whole drain is a few milliseconds and the poll interval
-        // would be a tenth of the figure.
-        const elapsedMs = arrivals.lastAt - started;
+        const elapsedMs =
+          (await drainFinished(arrivals, completions, handle, config)) -
+          started;
 
         await handle.stopWorker();
         await handle.reset();
 
-        const problem = arrivals.problem(config.jobs);
+        const problem = drainProblem(handle);
         if (problem)
           return {
             ...identity,
@@ -220,6 +303,10 @@ export async function runQueueScenario(
         handles.push(handle);
         await handle.reset();
 
+        // Timed to the handler receiving the job, not to its completion being
+        // recorded: this scenario is dispatch latency on an idle queue, and
+        // the report's heading says so. The drains below are the ones timed
+        // to the last recorded completion.
         let pending: { seq: number; settle: () => void } | null = null;
         onArrive = (payload) => {
           if (pending && payload.seq === pending.seq) {
@@ -286,8 +373,7 @@ export async function runQueueScenario(
       }
 
       case "contention": {
-        arrivals = new Arrivals(config.jobs);
-        onArrive = (payload) => arrivals.record(payload.seq);
+        armDrain();
 
         for (let i = 0; i < config.consumers; i++) {
           handles.push(await makeHandle(0));
@@ -305,16 +391,16 @@ export async function runQueueScenario(
         for (const handle of handles) {
           await handle.startWorker(config.concurrency);
         }
-        await waitFor(() => arrivals.distinct >= config.jobs, {
-          timeoutMs: config.budgetSeconds * 1000,
-          message: `only ${arrivals.distinct}/${config.jobs} jobs were processed`,
-        });
-        const elapsedMs = arrivals.lastAt - started;
+        // Any consumer's view of the backend will do for the count: they all
+        // share the one queue.
+        const elapsedMs =
+          (await drainFinished(arrivals, completions, producer, config)) -
+          started;
 
         for (const handle of handles) await handle.stopWorker();
         await producer.reset();
 
-        const problem = arrivals.problem(config.jobs);
+        const problem = drainProblem(producer);
         if (problem)
           return {
             ...identity,
