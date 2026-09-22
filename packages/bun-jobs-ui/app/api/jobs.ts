@@ -4,6 +4,7 @@ import type {
   AddJobBody,
   AddJobResultDto,
   ChildrenDto,
+  ClearJobLogsResultDto,
   DefinitionListDto,
   FailJobResultDto,
   JobDto,
@@ -65,11 +66,13 @@ export const jobKeys = {
   /** The job with its stack traces (the lazy section). */
   stacktrace: (queue: string, id: string) =>
     [...jobKeys.job(queue, id), "stacktrace"] as const,
+  /** Every page of its logs, whatever the window: what clearing them invalidates. */
+  logsAll: (queue: string, id: string) =>
+    [...jobKeys.job(queue, id), "logs"] as const,
   /** One page of its logs. */
   logs: (queue: string, id: string, window: LogsWindow) =>
     [
-      ...jobKeys.job(queue, id),
-      "logs",
+      ...jobKeys.logsAll(queue, id),
       { offset: window.offset, limit: window.limit, order: window.order },
     ] as const,
   /** Its flow children. */
@@ -143,6 +146,22 @@ export function getJobLogs(
     },
     signal,
   });
+}
+
+/**
+ * `DELETE /queues/:queue/jobs/:id/logs`: empties the job's log for good, so
+ * its next line is its first again. `removed` is what the log held. 409
+ * `JOB_ACTIVE` while a worker runs the job; 404 `JOB_NOT_FOUND`.
+ */
+export function clearJobLogs(
+  api: ApiClient,
+  queue: string,
+  id: string,
+): Promise<ClearJobLogsResultDto> {
+  return api.request<ClearJobLogsResultDto>(
+    "DELETE",
+    `${jobPath(queue, id)}/logs`,
+  );
 }
 
 /** `GET /queues/:queue/jobs/:id/children`, with no include (the default). */

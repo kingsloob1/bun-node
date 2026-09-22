@@ -11,6 +11,23 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * The list's fixed-width columns. The Status cell gains a "Run in flight"
+ * pill while a run holds the lock, and a column sized by its content would
+ * widen then and shift every column as runs start and end. So Status reserves
+ * room for its widest content — a status and the pill side by side — up
+ * front, and neither column wraps: nothing moves when the pill appears.
+ */
+.runners-where {
+  width: 7rem;
+  white-space: nowrap;
+}
+
+.runners-status {
+  width: 16rem;
+  white-space: nowrap;
+}
+
 .runners-count {
   margin: var(--space-2) 0 0;
   font-size: var(--text-sm);
@@ -119,9 +136,25 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The History card's header: Clear history… then the page-size select. */
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .history-limit {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--text-sm);
+}
+
+/* The history table's Log column: a button and, when lines went, a badge. */
+.run-logs-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }

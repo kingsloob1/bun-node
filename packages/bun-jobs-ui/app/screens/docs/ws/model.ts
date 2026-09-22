@@ -160,8 +160,8 @@ export interface WsMessage {
   }[];
   /** For an event message: its kind and type (`queue`, `completed`); `null` for a control message. */
   event: {
-    /** `queue` or `runner`. */
-    kind: "queue" | "runner";
+    /** `queue`, `runner` or `worker`. */
+    kind: "queue" | "runner" | "worker";
     /** The event type. */
     type: EventName;
   } | null;
@@ -410,9 +410,12 @@ function messageIds(list: unknown): string[] {
 
 /** Reads the event kind and type from a message key (`queue.completed`). */
 function eventOf(key: string): WsMessage["event"] {
-  const match = /^(queue|runner)\.(.+)$/.exec(key);
+  const match = /^(queue|runner|worker)\.(.+)$/.exec(key);
   return match
-    ? { kind: match[1] as "queue" | "runner", type: match[2] as EventName }
+    ? {
+        kind: match[1] as NonNullable<WsMessage["event"]>["kind"],
+        type: match[2] as EventName,
+      }
     : null;
 }
 
@@ -1094,7 +1097,14 @@ export function messageTryLink(
   if (message.event === null) {
     return null;
   }
-  const broad = message.event.kind === "queue" ? "queues" : "runners";
+  // Each kind's broad channel. Worker events are off `all` and `queues`, so
+  // `workers` is the only one that carries them.
+  const broad =
+    message.event.kind === "queue"
+      ? "queues"
+      : message.event.kind === "worker"
+        ? "workers"
+        : "runners";
   const channel = [broad, "all"].find((key) =>
     doc.channels.some((candidate) => candidate.key === key),
   );

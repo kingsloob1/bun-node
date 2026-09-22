@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { runnerActionGates } from "../../../../app/screens/runners/actions/gating";
-import { page, setupDom } from "../../dom";
+import { fireEvent, page, setupDom, within } from "../../dom";
 import {
   actionGroup,
   actionNames,
+  clearHistoryButton,
+  finishedHistory,
+  historyCard,
+  openDialog,
   remoteRunner,
   renderActions,
   runnerFixture,
@@ -83,6 +87,7 @@ describe("which runner actions are offered", () => {
         "runners.reschedule": false,
         "runners.kill": false,
         "runners.resetStats": false,
+        "runners.clearHistory": false,
       },
     });
     expect(actionGroup()).toBeNull();
@@ -102,6 +107,120 @@ describe("which runner actions are offered", () => {
       scoped: { "runners.kill": false, "runners.resetStats": false },
     });
     expect(page().queryByTestId("runner-remote-hint")).toBeNull();
+  });
+
+  it("offers nothing in the header when clear history is the only write granted", async () => {
+    await renderActions({
+      history: finishedHistory(),
+      scoped: {
+        "runners.trigger": false,
+        "runners.pause": false,
+        "runners.resume": false,
+        "runners.reschedule": false,
+        "runners.kill": false,
+        "runners.resetStats": false,
+      },
+    });
+    expect(actionGroup()).toBeNull();
+    expect(clearHistoryButton()).not.toBeNull();
+  });
+});
+
+describe("clear history: in the History card, not the header", () => {
+  it("sits in the History card's header, ahead of the Runs shown select", async () => {
+    await renderActions({ history: finishedHistory() });
+    const button = clearHistoryButton()!;
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("");
+    // In the card's header, before the size select and above the runs.
+    const select = within(historyCard()).getByLabelText("Runs shown");
+    expect(
+      button.compareDocumentPosition(select) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const table = within(historyCard()).getByRole("table", {
+      name: "Run history",
+    });
+    expect(
+      button.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("is absent from the Runner actions group entirely", async () => {
+    await renderActions({
+      runner: runningRunner(),
+      history: finishedHistory(),
+    });
+    expect(clearHistoryButton()).not.toBeNull();
+    const group = actionGroup()!;
+    expect(group).not.toBeNull();
+    expect(
+      within(group).queryByRole("button", { name: "Clear history…" }),
+    ).toBeNull();
+    expect(actionNames()).not.toContain("Clear history…");
+    // One button on the page: the card's.
+    expect(
+      page().queryAllByRole("button", { name: "Clear history…" }),
+    ).toHaveLength(1);
+  });
+
+  it("is offered on a remote runner, and does not bring up the remote hint", async () => {
+    await renderActions({
+      runner: remoteRunner(),
+      history: finishedHistory(),
+      scoped: { "runners.kill": false, "runners.resetStats": false },
+    });
+    expect(clearHistoryButton()).not.toBeNull();
+    expect(page().queryByTestId("runner-remote-hint")).toBeNull();
+  });
+
+  it("is offered on a remote runner beside the remote hint for kill and reset stats", async () => {
+    await renderActions({ runner: remoteRunner(), history: finishedHistory() });
+    expect(clearHistoryButton()).not.toBeNull();
+    expect(page().getByTestId("runner-remote-hint").textContent).not.toMatch(
+      /clear|history/i,
+    );
+  });
+
+  it("is dropped without runners.clearHistory", async () => {
+    await renderActions({
+      history: finishedHistory(),
+      scoped: { "runners.clearHistory": false },
+    });
+    expect(clearHistoryButton()).toBeNull();
+    // The rest of the card is still there.
+    expect(within(historyCard()).getByLabelText("Runs shown")).not.toBeNull();
+  });
+
+  it("is dropped while the routes are not registered (absent from both maps)", async () => {
+    await renderActions({
+      history: finishedHistory(),
+      scoped: { "runners.clearHistory": undefined },
+      permissions: { "runners.clearHistory": undefined },
+    });
+    expect(clearHistoryButton()).toBeNull();
+  });
+
+  it("is dropped on a read-only API", async () => {
+    await renderActions({
+      history: finishedHistory(),
+      meta: { readOnly: true },
+    });
+    expect(clearHistoryButton()).toBeNull();
+    expect(page().queryByRole("button", { name: "Clear history…" })).toBeNull();
+  });
+
+  it("is disabled, saying so, when the history is empty", async () => {
+    const { calls } = await renderActions({ history: { items: [] } });
+    expect(within(historyCard()).getByText("No runs yet")).not.toBeNull();
+    const button = clearHistoryButton()!;
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("No runs to clear.");
+    fireEvent.click(button);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(openDialog()).toBeNull();
+    expect(calls.filter((call) => call.method === "DELETE")).toEqual([]);
   });
 });
 
@@ -125,5 +244,12 @@ describe("runnerActionGates", () => {
     expect(gates.kill).toBe(false);
     expect(gates.resetStats).toBe(false);
     expect(gates.remoteOnly).toBe(true);
+  });
+
+  it("opens clear history on a remote runner, without making it remote-only", () => {
+    const onlyClear = (action: string) => action === "runners.clearHistory";
+    const gates = runnerActionGates(remoteRunner(), onlyClear);
+    expect(gates.clearHistory).toBe(true);
+    expect(gates.remoteOnly).toBe(false);
   });
 });

@@ -9,6 +9,7 @@ import {
   EVENT_TYPES,
   QUEUE_EVENT_TYPES,
   RUNNER_EVENT_TYPES,
+  WORKER_EVENT_TYPES,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { liveChannels } from "../../live";
 
@@ -63,8 +64,8 @@ export function prependRows(
 /** What the channel picker chose. */
 export type ChannelChoice =
   | {
-      /** `all`, `queues` or `runners`. */
-      scope: "all" | "queues" | "runners";
+      /** `all`, `queues`, `runners` or `workers`. */
+      scope: "all" | "queues" | "runners" | "workers";
     }
   | {
       /** One queue's events. */
@@ -79,6 +80,12 @@ export type ChannelChoice =
       runner: string;
     }
   | {
+      /** One queue's worker events. */
+      scope: "queueWorkers";
+      /** The queue. */
+      queue: string;
+    }
+  | {
       /** One job's events. */
       scope: "job";
       /** The job's queue. */
@@ -90,13 +97,20 @@ export type ChannelChoice =
 /** The picker's scopes. */
 export type ChannelScope = ChannelChoice["scope"];
 
-/** The scopes a mode offers: `all` only in `both`, queue scopes with jobs, runner scopes with runners. */
+/**
+ * The scopes a mode offers: `all` only in `both`, queue and worker scopes
+ * with jobs, runner scopes with runners. Worker events travel on their own
+ * channels — never on `all` or `queues` — so watching them is a scope of its
+ * own rather than a filter over a queue channel.
+ */
 export function scopesFor(mode: JobsApiMode): ChannelScope[] {
   const queues = mode !== "runner";
   const runners = mode !== "jobs";
   return [
     ...(queues && runners ? (["all"] as const) : []),
-    ...(queues ? (["queues", "queue", "job"] as const) : []),
+    ...(queues
+      ? (["queues", "queue", "job", "workers", "queueWorkers"] as const)
+      : []),
     ...(runners ? (["runners", "runner"] as const) : []),
   ];
 }
@@ -115,7 +129,10 @@ export function channelName(choice: ChannelChoice): string {
     case "all":
     case "queues":
     case "runners":
+    case "workers":
       return liveChannels[choice.scope];
+    case "queueWorkers":
+      return liveChannels.queueWorkers(choice.queue);
     case "queue":
       return liveChannels.queue(choice.queue);
     case "runner":
@@ -143,8 +160,18 @@ export function parseChannel(
 
 /** {@link parseChannel} without the mode check. */
 function readChannel(raw: string): ChannelChoice | null {
-  if (raw === "all" || raw === "queues" || raw === "runners") {
+  if (
+    raw === "all" ||
+    raw === "queues" ||
+    raw === "runners" ||
+    raw === "workers"
+  ) {
     return { scope: raw };
+  }
+  // Before the one-queue pattern: `queue/<queue>/workers` is its own channel.
+  const queueWorkers = /^queue\/([^/]+)\/workers$/.exec(raw);
+  if (queueWorkers) {
+    return { scope: "queueWorkers", queue: queueWorkers[1]! };
   }
   const job = /^queue\/([^/]+)\/job\/(.+)$/.exec(raw);
   if (job) {
@@ -174,6 +201,9 @@ export function typesFor(choice: ChannelChoice): readonly EventName[] {
     case "queue":
     case "job":
       return QUEUE_EVENT_TYPES;
+    case "workers":
+    case "queueWorkers":
+      return WORKER_EVENT_TYPES;
     case "runners":
     case "runner":
       return RUNNER_EVENT_TYPES;
@@ -203,10 +233,13 @@ export interface TypesParam {
   normalized: string | null;
 }
 
-/** The event names of each family, for `queue.` / `runner.` prefixes. */
-const FAMILY_TYPES: Readonly<Record<"queue" | "runner", readonly string[]>> = {
+/** The event names of each family, for `queue.` / `runner.` / `worker.` prefixes. */
+const FAMILY_TYPES: Readonly<
+  Record<"queue" | "runner" | "worker", readonly string[]>
+> = {
   queue: QUEUE_EVENT_TYPES,
   runner: RUNNER_EVENT_TYPES,
+  worker: WORKER_EVENT_TYPES,
 };
 
 /**

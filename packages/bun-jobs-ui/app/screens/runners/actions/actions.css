@@ -76,3 +76,18 @@
 .run-id code {
   overflow-wrap: anywhere;
 }
+
+.runner-note-refused {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.config-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: calc(var(--space-2) * -1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}

@@ -80,21 +80,39 @@ interface LimitsRowFieldsProps {
   errors: Record<string, string>;
   /** Label prefix, e.g. "Queue" or the job name. */
   label: string;
+  /**
+   * What the row limits, as the hints put it: `"queue"` for the queue-wide
+   * row, or the job name a per-name row applies to (`""` while it is unnamed).
+   */
+  scope: { kind: "queue" } | { kind: "name"; name: string };
 }
 
-/** Rate max, rate window and concurrency inputs for one row. */
+/**
+ * Rate max, rate window and concurrency inputs for one row, each with a hint
+ * saying what it limits. The limits are the QUEUE's, enforced across every
+ * worker in every process — not a worker's own settings — so the hints say
+ * that, and that an empty field means no limit.
+ */
 function LimitsRowFields({
   row,
   onChange,
   prefix,
   errors,
   label,
+  scope,
 }: LimitsRowFieldsProps) {
   const error = (key: string) => errors[`${prefix}${key}`];
+  const which =
+    scope.kind === "queue"
+      ? "jobs on this queue"
+      : scope.name
+        ? `jobs named “${scope.name}”`
+        : "jobs with this name";
   return (
     <div className="field-row limits-row">
       <Field
         label={`${label}: rate max`}
+        hint={`The most ${which} that may START in one rate window, across every worker. Set it with the window beside it; leave both empty for no rate limit.`}
         error={error("rate.max") ?? error("rate")}
       >
         <NumberInput
@@ -105,7 +123,7 @@ function LimitsRowFields({
       </Field>
       <Field
         label={`${label}: rate window`}
-        hint="ms, or e.g. “1 minute”"
+        hint="The length of the rate window: milliseconds (60000), or a duration such as “1 minute” or “30 seconds”. Starts are counted over this window."
         error={error("rate.duration")}
       >
         <TextInput
@@ -116,6 +134,7 @@ function LimitsRowFields({
       </Field>
       <Field
         label={`${label}: concurrency`}
+        hint={`The most ${which} that may RUN at once, counted across every worker — on top of each worker's own concurrency, which still applies. A worker that dies holds its share until its lock expires. Empty means no limit.`}
         error={error("concurrency")}
       >
         <NumberInput
@@ -177,6 +196,7 @@ function LimitsEditor({
           prefix=""
           errors={save.fieldErrors}
           label="Queue"
+          scope={{ kind: "queue" }}
         />
         <fieldset className="limits-names">
           <legend>Per-name limits</legend>
@@ -186,7 +206,10 @@ function LimitsEditor({
               key={row.key}
               className="limits-name"
             >
-              <Field label={`Name ${index + 1}`}>
+              <Field
+                label={`Name ${index + 1}`}
+                hint="The job name these limits apply to, exactly as jobs are added with it (e.g. “send-email”). They apply on top of the queue's own. A name at its limit is skipped, not waited behind, so other names keep running."
+              >
                 <TextInput
                   value={row.name}
                   onChange={(name) =>
@@ -213,6 +236,7 @@ function LimitsEditor({
                 prefix={`names.${row.name.trim()}.`}
                 errors={save.fieldErrors}
                 label={row.name.trim() || `Name ${index + 1}`}
+                scope={{ kind: "name", name: row.name.trim() }}
               />
               <Button
                 size="sm"

@@ -39,7 +39,7 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
           <code className="runner-id muted">{item.id}</code>
         )}
       </td>
-      <td>
+      <td className="runners-where">
         {item.isLocal ? (
           <Badge tone="accent">Local</Badge>
         ) : (
@@ -51,7 +51,7 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
           </Badge>
         )}
       </td>
-      <td>
+      <td className="runners-status">
         {status ? (
           <Badge
             tone={status.tone}
@@ -177,8 +177,18 @@ export function RunnersListScreen() {
               <thead>
                 <tr>
                   <th scope="col">Runner</th>
-                  <th scope="col">Where</th>
-                  <th scope="col">Status</th>
+                  <th
+                    scope="col"
+                    className="runners-where"
+                  >
+                    Where
+                  </th>
+                  <th
+                    scope="col"
+                    className="runners-status"
+                  >
+                    Status
+                  </th>
                 </tr>
               </thead>
               <tbody>

@@ -205,6 +205,8 @@ describe("WsDocsScreen", () => {
       "queues",
       "queue/{queue}",
       "queue/{queue}/job/{jobId}",
+      "workers",
+      "queue/{queue}/workers",
       "runners",
       "runner/{runner}",
     ]);
@@ -247,6 +249,29 @@ describe("WsDocsScreen", () => {
     const marker = within(pane).getByTestId("ws-permission-events.subscribe");
     expect(marker.dataset.has).toBe("true");
     expect(marker.textContent).toContain("You have this");
+  });
+
+  it("a worker channel shows its address, its operation and only the worker messages", async () => {
+    await renderWs("/channel-queueWorkers");
+    const pane = page().getByTestId("ws-pane-channel-queueWorkers");
+    expect(within(pane).getByTestId("ws-channel-address").textContent).toBe(
+      "queue/{queue}/workers",
+    );
+    expect(
+      within(pane).getByRole("table", { name: "Parameters" }).textContent,
+    ).toContain("{queue}");
+    expect(
+      within(pane).getByRole("link", {
+        name: "receive receiveQueueWorkersEvents",
+      }),
+    ).toBeTruthy();
+    for (const name of ["worker.control", "worker.state", "worker.config"]) {
+      expect(within(pane).getByRole("link", { name })).toBeTruthy();
+    }
+    // Worker events travel on their own channels, and queue events do not.
+    expect(
+      within(pane).queryByRole("link", { name: "queue.completed" }),
+    ).toBeNull();
   });
 
   it("a channel parameter's x-bun-jobs-schema is drawn by the schema tree, beside its description", async () => {

@@ -15,6 +15,8 @@ import {
   QueuesListScreen,
   RunnerScreen,
   RunnersListScreen,
+  WorkerScreen,
+  WorkersListScreen,
   WsDocsScreen,
 } from "./screens/lazy";
 import { OverviewScreen } from "./screens/Overview";
@@ -64,6 +66,22 @@ export function buildRoutes(nav: readonly NavItem[]): RouteDef[] {
           ),
         },
         { path: "/queues", element: <QueuesListScreen /> },
+      );
+      continue;
+    }
+    if (item.id === "workers") {
+      routes.push(
+        {
+          // A key is unique only within its queue, so the page is addressed
+          // by the pair; worker actions authorize against the queue.
+          path: "/workers/:queue/:key",
+          element: (
+            <QueuePermissionScope>
+              <WorkerScreen />
+            </QueuePermissionScope>
+          ),
+        },
+        { path: "/workers", element: <WorkersListScreen /> },
       );
       continue;
     }

@@ -66,20 +66,45 @@ export function Sidebar({ nav }: { nav: readonly NavItem[] }) {
       className="app-nav"
       aria-label="Sections"
     >
-      <ul>
-        {nav.map((item) => (
-          <li key={item.id}>
-            <Link
-              to={item.to}
-              activeMatch="prefix"
-              className="app-nav-link"
-            >
-              {item.label}
-            </Link>
-          </li>
-        ))}
-      </ul>
+      <NavList items={nav} />
     </nav>
+  );
+}
+
+/**
+ * One level of the section nav. A parent entry (API docs) is current only on
+ * its own page, so exactly one link carries `aria-current="page"`; its
+ * children match their whole subtree.
+ */
+function NavList({
+  items,
+  nested = false,
+}: {
+  /** The entries at this level. */
+  items: readonly NavItem[];
+  /** Whether this list sits under a parent entry. */
+  nested?: boolean;
+}) {
+  return (
+    <ul className={nested ? "app-nav-sub" : undefined}>
+      {items.map((item) => (
+        <li key={item.id}>
+          <Link
+            to={item.to}
+            activeMatch={item.children?.length ? "exact" : "prefix"}
+            className="app-nav-link"
+          >
+            {item.label}
+          </Link>
+          {item.children?.length ? (
+            <NavList
+              items={item.children}
+              nested
+            />
+          ) : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 

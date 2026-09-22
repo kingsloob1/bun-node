@@ -57,6 +57,8 @@ export function jobFixture(overrides: Partial<JobDto> = {}): JobDto {
   return {
     queue: "emails",
     id: "job-1",
+    // Who ran the last attempt: none recorded, as on a backend without attribution.
+    processedBy: null,
     name: "send",
     state: "failed",
     priority: 0,

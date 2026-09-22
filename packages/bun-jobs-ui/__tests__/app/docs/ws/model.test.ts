@@ -1,6 +1,8 @@
 import {
+  EVENT_TYPES,
   QUEUE_EVENT_TYPES,
   RUNNER_EVENT_TYPES,
+  WORKER_EVENT_TYPES,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import { liveChannels } from "../../../../app/live";
@@ -81,6 +83,8 @@ describe("readWsDoc on a real document (mode both)", () => {
       ["queues", "queues"],
       ["queue", "queue/{queue}"],
       ["job", "queue/{queue}/job/{jobId}"],
+      ["workers", "workers"],
+      ["queueWorkers", "queue/{queue}/workers"],
       ["runners", "runners"],
       ["runner", "runner/{runner}"],
     ]);
@@ -90,6 +94,21 @@ describe("readWsDoc on a real document (mode both)", () => {
       "jobId",
     ]);
     expect(job.parameters[1]!.description).toContain("encodeURIComponent");
+    // The worker family: one namespace-wide channel and one per queue,
+    // both carrying exactly the worker event messages.
+    expect(channel(both, "workers").parameters).toEqual([]);
+    expect(
+      channel(both, "queueWorkers").parameters.map(
+        (parameter) => parameter.name,
+      ),
+    ).toEqual(["queue"]);
+    for (const key of ["workers", "queueWorkers"]) {
+      expect(channel(both, key).messages).toEqual([
+        "worker.control",
+        "worker.state",
+        "worker.config",
+      ]);
+    }
     expect(channel(both, "connection")).toMatchObject({
       isConnection: true,
       bindingMethod: "GET",
@@ -154,7 +173,9 @@ describe("readWsDoc on a real document (mode both)", () => {
     ]);
     const events = both.messages.filter((entry) => entry.event !== null);
     expect(events).toHaveLength(
-      QUEUE_EVENT_TYPES.length + RUNNER_EVENT_TYPES.length,
+      QUEUE_EVENT_TYPES.length +
+        RUNNER_EVENT_TYPES.length +
+        WORKER_EVENT_TYPES.length,
     );
     expect(both.messages.indexOf(events[0]!)).toBe(control.length);
     expect(message(both, "queue.completed")).toMatchObject({
@@ -168,6 +189,13 @@ describe("readWsDoc on a real document (mode both)", () => {
       kind: "runner",
       type: "succeeded",
     });
+    // A worker event is an event message, not a control one: `worker.control`
+    // is named after the worker event type, and shares that name with the
+    // runner's — the envelope's `kind` is what tells them apart.
+    expect(
+      WORKER_EVENT_TYPES.map((type) => message(both, `worker.${type}`).event),
+    ).toEqual(WORKER_EVENT_TYPES.map((type) => ({ kind: "worker", type })));
+    expect(control.map((entry) => entry.key)).not.toContain("worker.control");
   });
 
   it("reads x-bun-jobs-limits, -close-codes and -upgrade-refusals", () => {
@@ -229,6 +257,10 @@ describe("readWsDoc on other configurations", () => {
     expect(
       runner.messages.filter((entry) => entry.event?.kind === "queue"),
     ).toEqual([]);
+    // Workers belong to queues, so they go with them.
+    expect(
+      runner.messages.filter((entry) => entry.event?.kind === "worker"),
+    ).toEqual([]);
     expect(
       runner.messages.filter((entry) => entry.event?.kind === "runner"),
     ).toHaveLength(RUNNER_EVENT_TYPES.length);
@@ -249,6 +281,8 @@ describe("readWsDoc on other configurations", () => {
       "queues",
       "queue",
       "job",
+      "workers",
+      "queueWorkers",
     ]);
     expect(secured.requirements).toEqual([
       [{ scheme: "session", scopes: [] }],
@@ -424,11 +458,28 @@ describe("try it", () => {
     const values = { queue: "mail", jobId: "a/b", runner: "nightly" };
     const link = (key: string) =>
       channelTryLink(both, channel(both, key), values, "both");
-    expect(link("all")).toBe("/events?channel=all");
+    // `all` carries every type the document declares. The console offers
+    // EVENT_TYPES, which also holds the worker-only types (`state`, `config`)
+    // that travel on the worker channels rather than `all`, so the link
+    // narrows to the document's list; it drops the filter again once every
+    // offered type is on the channel.
+    const allLink = new URLSearchParams(link("all")!.split("?")[1]);
+    expect(allLink.get("channel")).toBe("all");
+    expect(allLink.get("types")?.split(",")).toEqual([
+      ...channelEventTypes(both, channel(both, "all")),
+    ]);
+    expect(eventsLink("all", EVENT_TYPES, "both")).toBe("/events?channel=all");
     expect(link("queues")).toBe("/events?channel=queues");
     expect(link("queue")).toBe("/events?channel=queue%2Fmail");
     expect(link("runner")).toBe("/events?channel=runner%2Fnightly");
     expect(link("connection")).toBeNull();
+    // The worker channels carry every worker type the console offers for
+    // them, so neither needs a filter; the per-queue one fills its {queue}.
+    expect(channelEventTypes(both, channel(both, "workers"))).toEqual([
+      ...WORKER_EVENT_TYPES,
+    ]);
+    expect(link("workers")).toBe("/events?channel=workers");
+    expect(link("queueWorkers")).toBe("/events?channel=queue%2Fmail%2Fworkers");
 
     const jobLink = new URLSearchParams(link("job")!.split("?")[1]);
     expect(jobLink.get("channel")).toBe(liveChannels.job("mail", "a/b"));
@@ -497,6 +548,10 @@ describe("try it", () => {
     expect(
       messageTryLink(runner, message(runner, "runner.killed"), "runner"),
     ).toBe("/events?channel=runners&types=killed");
+    // A worker event's broad channel is `workers`, not `all` or `queues`.
+    expect(messageTryLink(both, message(both, "worker.state"), "both")).toBe(
+      "/events?channel=workers&types=state",
+    );
     expect(messageTryLink(both, message(both, "hello"), "both")).toBeNull();
   });
 });
@@ -728,7 +783,11 @@ describe("message examples", () => {
     const control = both.messages.filter((entry) => entry.event === null);
     const events = both.messages.filter((entry) => entry.event !== null);
     expect(control).toHaveLength(9);
-    expect(events).toHaveLength(29);
+    expect(events).toHaveLength(
+      QUEUE_EVENT_TYPES.length +
+        RUNNER_EVENT_TYPES.length +
+        WORKER_EVENT_TYPES.length,
+    );
     for (const entry of both.messages) {
       expect(entry.examples).toHaveLength(1);
       expect(entry.examples[0]!.name).toBe(entry.key);

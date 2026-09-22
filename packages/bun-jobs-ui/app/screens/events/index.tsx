@@ -58,6 +58,8 @@ const SCOPE_LABELS: Readonly<Record<ChannelScope, string>> = {
   job: "One job",
   runners: "Every runner (runners)",
   runner: "One runner",
+  workers: "Every worker (workers)",
+  queueWorkers: "One queue's workers",
 };
 
 /** Scopes that name no target, applied as soon as they are picked. */
@@ -65,6 +67,7 @@ const BROAD_SCOPES: ReadonlySet<ChannelScope> = new Set<ChannelScope>([
   "all",
   "queues",
   "runners",
+  "workers",
 ]);
 
 /** What the picker is editing before it is applied. */
@@ -84,7 +87,11 @@ function draftOf(choice: ChannelChoice): Draft {
   return {
     scope: choice.scope,
     queue:
-      choice.scope === "queue" || choice.scope === "job" ? choice.queue : "",
+      choice.scope === "queue" ||
+      choice.scope === "job" ||
+      choice.scope === "queueWorkers"
+        ? choice.queue
+        : "",
     runner: choice.scope === "runner" ? choice.runner : "",
     id: choice.scope === "job" ? choice.id : "",
   };
@@ -96,7 +103,10 @@ function choiceOf(draft: Draft): ChannelChoice | null {
     case "all":
     case "queues":
     case "runners":
+    case "workers":
       return { scope: draft.scope };
+    case "queueWorkers":
+      return draft.queue ? { scope: "queueWorkers", queue: draft.queue } : null;
     case "queue":
       return draft.queue ? { scope: "queue", queue: draft.queue } : null;
     case "runner":
@@ -165,7 +175,10 @@ function ChannelPicker({ choice, onApply }: ChannelPickerProps) {
   const canQueues = useCan("queues.list");
   const canRunners = useCan("runners.list");
   const [draft, setDraft] = useState<Draft>(() => draftOf(choice));
-  const needsQueue = draft.scope === "queue" || draft.scope === "job";
+  const needsQueue =
+    draft.scope === "queue" ||
+    draft.scope === "job" ||
+    draft.scope === "queueWorkers";
   const queues = useQuery({
     queryKey: queryKeys.queues(""),
     queryFn: ({ signal }) => api.listQueues("", signal),
@@ -362,7 +375,7 @@ function toneOf(event: EventWire): BadgeTone {
   }
 }
 
-/** An event's id: a queue event's job, linked to its screen; a runner event's run, as text. */
+/** An event's id: a queue event's job, linked to its screen; a runner event's run or a worker event's worker incarnation, as text. */
 function EventId({ event }: { event: EventWire }) {
   if (event.id === undefined) {
     return <span className="muted">—</span>;
@@ -372,6 +385,17 @@ function EventId({ event }: { event: EventWire }) {
   }
   return <code>{event.id}</code>;
 }
+
+/**
+ * The kind badge's tone: one per kind, so a worker event does not pass for a
+ * runner's. `neutral` for workers, because the type badge beside it gives
+ * success, warning and danger their meaning.
+ */
+const KIND_TONE: Readonly<Record<EventWire["kind"], BadgeTone>> = {
+  queue: "info",
+  runner: "accent",
+  worker: "neutral",
+};
 
 /** One event row. */
 function EventRow({ row, event }: { row: LogRow; event: EventWire }) {
@@ -390,17 +414,16 @@ function EventRow({ row, event }: { row: LogRow; event: EventWire }) {
         </time>
       </td>
       <td className="events-kind">
-        <Badge tone={event.kind === "queue" ? "info" : "accent"}>
-          {event.kind}
-        </Badge>{" "}
+        <Badge tone={KIND_TONE[event.kind]}>{event.kind}</Badge>{" "}
         <Badge tone={toneOf(event)}>{event.type}</Badge>
       </td>
       <td className="events-target">
         <Link
           to={
-            event.kind === "queue"
-              ? queuePath(event.target)
-              : runnerPath(event.target)
+            // A worker event's target is the QUEUE the worker consumes.
+            event.kind === "runner"
+              ? runnerPath(event.target)
+              : queuePath(event.target)
           }
         >
           {event.target}

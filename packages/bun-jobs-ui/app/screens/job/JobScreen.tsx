@@ -1,6 +1,6 @@
 import type { SyntheticEvent } from "react";
 import type { ApiError } from "../../api/errors";
-import type { JobDto } from "../../api/types";
+import type { JobDto, JobWorkerDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { isApiError } from "../../api/errors";
@@ -10,6 +10,7 @@ import {
   jobKeys,
   queueScreenPath,
 } from "../../api/jobs";
+import { workerPath } from "../../api/workers";
 import { Card } from "../../components/Card";
 import { CopyButton } from "../../components/CopyButton";
 import { EmptyState } from "../../components/EmptyState";
@@ -25,6 +26,7 @@ import { displayText, formatNumber } from "../../format";
 import { useCan, useFeature, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
+import { useWorkerPagesRouted } from "../workers/routed";
 import { ErrorDetails } from "./ErrorDetails";
 import { JobActions } from "./JobActions";
 import { JobFlow } from "./JobFlow";
@@ -113,8 +115,58 @@ export function ProgressValue({ progress }: { progress: unknown }) {
   return <span>{String(progress)}</span>;
 }
 
+/** Props of {@link ProcessedBy}. */
+interface ProcessedByProps {
+  /** The job's queue: a worker page is addressed by it and the key. */
+  queue: string;
+  /** The worker that ran the job's last attempt. */
+  worker: JobWorkerDto;
+}
+
+/**
+ * Who ran a job's last attempt: the stable key (linked to its worker page
+ * when the Workers pages are routed), the incarnation id, and host and pid
+ * when the API exposes them.
+ */
+function ProcessedBy({ queue, worker }: ProcessedByProps) {
+  const routed = useWorkerPagesRouted();
+  const where =
+    worker.host !== undefined || worker.pid !== undefined
+      ? [
+          worker.host,
+          worker.pid === undefined ? undefined : `pid ${worker.pid}`,
+        ]
+          .filter((part) => part !== undefined)
+          .join(", ")
+      : null;
+  return (
+    <span
+      className="job-processed-by"
+      data-testid="job-processed-by"
+    >
+      {worker.key !== undefined &&
+        (routed ? (
+          <Link
+            to={workerPath(queue, worker.key)}
+            data-testid="job-processed-by-key"
+          >
+            {worker.key}
+          </Link>
+        ) : (
+          <span data-testid="job-processed-by-key">{worker.key}</span>
+        ))}
+      <span className="muted">
+        {worker.key !== undefined ? "incarnation " : "worker "}
+        <code>{worker.id}</code>
+      </span>
+      {where !== null && <span className="muted">{where}</span>}
+    </span>
+  );
+}
+
 /** The job's state, attempts and timings. */
 export function JobSummary({ job }: { job: JobDto }) {
+  const attribution = useFeature("jobAttribution");
   return (
     <KeyValue
       className="job-summary"
@@ -135,9 +187,25 @@ export function JobSummary({ job }: { job: JobDto }) {
           label: "Lock expires",
           value: <RelativeTime value={job.lockExpiresAt} />,
         },
-        {
-          label: "Worker",
+        // The holder, only while the attempt runs: not who ran a finished job.
+        job.state === "active" && {
+          label: "Held by",
           value: job.workerId ? <code>{job.workerId}</code> : null,
+        },
+        attribution && {
+          label: "Processed by",
+          key: "processedBy",
+          value: job.processedBy ? (
+            <ProcessedBy
+              queue={job.queue}
+              worker={job.processedBy}
+            />
+          ) : (
+            <span data-testid="job-processed-by-none">No worker recorded</span>
+          ),
+          hint: job.processedBy
+            ? "The worker that ran the last attempt; earlier attempts are not recorded."
+            : "The job was never claimed, or was claimed before this backend recorded who ran a job.",
         },
         {
           label: "Repeat key",

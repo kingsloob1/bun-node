@@ -1,0 +1,94 @@
+/* The shared log-line list (job logs and run logs), and the run log view. */
+
+.log-lines {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0;
+  max-height: 480px;
+  overflow: auto;
+  list-style: none;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.log-line {
+  display: flex;
+  gap: var(--space-3);
+  padding: 0 var(--space-3);
+}
+
+.log-number {
+  flex: none;
+  min-width: 4ch;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.log-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Run logs: each line carries its time, its stream and, on a `log` line, its level. */
+
+.run-log-line {
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.run-log-time,
+.run-log-stream {
+  flex: none;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.run-log-stream {
+  min-width: 6ch;
+  text-transform: uppercase;
+  font-size: calc(var(--text-xs) * 0.9);
+  letter-spacing: 0.04em;
+}
+
+.run-log-line-stderr .run-log-stream,
+.run-log-line-stderr .log-text {
+  color: var(--danger-text);
+}
+
+.run-log-level {
+  flex: none;
+  align-self: center;
+}
+
+.run-log-cut {
+  flex: none;
+  align-self: center;
+}
+
+.run-log-notes {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+}
+
+.run-log-notes p {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.run-log-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.run-log-toggle {
+  margin-top: var(--space-3);
+}
+
+.run-log-section {
+  margin-top: var(--space-3);
+}

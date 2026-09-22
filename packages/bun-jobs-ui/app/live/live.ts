@@ -88,6 +88,10 @@ export const liveChannels = {
   job: (queue: string, id: string) => `queue/${queue}/job/${encodeJobId(id)}`,
   /** One runner's events. */
   runner: (runner: string) => `runner/${runner}`,
+  /** Every worker event, in every queue. Worker events are deliberately off `all` and `queues`, so a dashboard does not receive control traffic. */
+  workers: "workers",
+  /** One queue's worker events. */
+  queueWorkers: (queue: string) => `queue/${queue}/workers`,
 } as const;
 
 /** How long events and gaps are gathered before one invalidation, in ms. */

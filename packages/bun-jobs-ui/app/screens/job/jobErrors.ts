@@ -10,7 +10,8 @@ export type JobAction =
   | "remove"
   | "update"
   | "add"
-  | "fail";
+  | "fail"
+  | "clearLogs";
 
 /** The past participle of each action, for "cannot be …". */
 const VERBS: Readonly<Record<JobAction, string>> = {
@@ -20,17 +21,19 @@ const VERBS: Readonly<Record<JobAction, string>> = {
   update: "updated",
   add: "added",
   fail: "failed",
+  clearLogs: "cleared of its logs",
 };
 
 /** What the action needs, said after a state conflict. */
 const REQUIREMENTS: Readonly<Record<JobAction, string>> = {
-  retry: "Only a completed, failed, dead or delayed job can be retried.",
+  retry: "Only a completed, retrying, dead or delayed job can be retried.",
   promote: "Only a delayed job can be promoted.",
   remove: "Refresh to see where it is now.",
   update:
     "A new run time applies only to a waiting or delayed job, and “only in” limits the change to the states you picked.",
   add: "",
   fail: "Only a job that has not completed or died can be failed.",
+  clearLogs: "Refresh to see where it is now.",
 };
 
 /** The job's state from a problem's `context.state`, when it names one. */
@@ -52,7 +55,9 @@ export function explainJobError(
 ): string | null {
   switch (error.code) {
     case "JOB_ACTIVE":
-      return "It's running: a worker is processing this job right now, so it cannot be removed. Wait for it to finish, then try again.";
+      return action === "clearLogs"
+        ? "It's running: a worker picked this job up and is still writing its log, so the log cannot be cleared now. Clear it once the job finishes."
+        : "It's running: a worker is processing this job right now, so it cannot be removed. Wait for it to finish, then try again.";
     case "JOB_STATE_CONFLICT": {
       const state = conflictState(error);
       if (action === "fail" && state === "active") {

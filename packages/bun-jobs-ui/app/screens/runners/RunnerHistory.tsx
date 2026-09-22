@@ -1,7 +1,10 @@
-import type { RunRecordDto } from "../../api/types";
+import type { RunnerInfoDto, RunRecordDto } from "../../api/types";
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useState } from "react";
+import { hasRunLogs } from "../../api/runnerLogs";
 import { getRunnerHistory, runnerKeys } from "../../api/runners";
+import { Badge } from "../../components/Badge";
+import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { Select } from "../../components/inputs";
@@ -10,10 +13,16 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
-import { formatNumber } from "../../format";
+import { formatNumber, plural } from "../../format";
 import { useMeta } from "../../meta/hooks";
+import { useCanMutate } from "../queues/gating";
 import { clampLimit, intParam, useUrlParams } from "../queues/urlState";
+import { runnerActionGates } from "./actions/gating";
+import { ClearHistoryDialog } from "./actions/RunnerDialogs";
 import { useHistoryRefetchInterval } from "./live";
+import { LOGS_PARAM } from "./runLogFormat";
+import { useCanReadRunLogs } from "./runLogGates";
+import { RunLogsSection } from "./RunLogsSection";
 import {
   defaultHistoryLimit,
   historyLimitOptions,
@@ -29,12 +38,42 @@ export interface RunnerHistoryProps {
   runner: string;
   /** Whether to read (and poll) the history. Defaults to `true`. */
   enabled?: boolean;
+  /**
+   * The runner as `GET /runners/:runner` returned it, which Clear history…
+   * needs (its gate and its confirmation read the runner's mode and whether
+   * it is local). Absent, the card shows no Clear history….
+   */
+  info?: RunnerInfoDto;
+}
+
+/** Props of {@link HistoryRow}. */
+interface HistoryRowProps {
+  /** The run this row shows. */
+  run: RunRecordDto;
+  /** Whether the table carries its Logs column (the caller may read run logs). */
+  showLogs: boolean;
 }
 
 /** One run, and its details once expanded. */
-function HistoryRow({ run }: { run: RunRecordDto }) {
-  const [open, setOpen] = useState(false);
+function HistoryRow({ run, showLogs }: HistoryRowProps) {
+  const [params, update] = useUrlParams();
+  const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
+  // A row whose log the URL opens is expanded, so the log is on screen; the
+  // disclosure closes both.
+  const logsOpen = showLogs && params.get(LOGS_PARAM) === run.runId;
+  const open = expanded || logsOpen;
+  const toggle = () => {
+    if (open) {
+      setExpanded(false);
+      if (logsOpen) {
+        update({ [LOGS_PARAM]: null });
+      }
+      return;
+    }
+    setExpanded(true);
+  };
+  const dropped = run.logsDropped ?? 0;
   return (
     <Fragment>
       <tr data-testid={`history-row-${run.runId}`}>
@@ -45,7 +84,7 @@ function HistoryRow({ run }: { run: RunRecordDto }) {
             aria-expanded={open}
             aria-controls={open ? detailsId : undefined}
             aria-label={`${open ? "Hide" : "Show"} run ${run.runId}`}
-            onClick={() => setOpen((value) => !value)}
+            onClick={toggle}
           >
             <span aria-hidden="true">{open ? "▾" : "▸"}</span>
           </button>
@@ -62,14 +101,43 @@ function HistoryRow({ run }: { run: RunRecordDto }) {
         <td>
           <code className="run-id">{run.runId}</code>
         </td>
+        {showLogs && (
+          <td className="run-logs-cell">
+            {hasRunLogs(run) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-expanded={logsOpen}
+                onClick={() =>
+                  update({ [LOGS_PARAM]: logsOpen ? null : run.runId })
+                }
+              >
+                {logsOpen ? "Hide log" : "Log"}
+              </Button>
+            )}
+            {dropped > 0 && (
+              <Badge
+                tone="warning"
+                title={`${plural(dropped, "line")} of this run's log went to the log's cap, oldest first.`}
+              >
+                {plural(dropped, "line")} dropped
+              </Badge>
+            )}
+          </td>
+        )}
       </tr>
       {open && (
         <tr
           id={detailsId}
           className="run-details-row"
         >
-          <td colSpan={7}>
+          <td colSpan={showLogs ? 8 : 7}>
             <RunRecordDetails run={run} />
+            {/* The one place a run's log is hosted: the runner screen shows
+                the run in flight and the last run again in their own cards,
+                and both are rows of this table too, so hosting it here keeps
+                one log per run on the screen. */}
+            <RunLogsSection run={run} />
           </td>
         </tr>
       )}
@@ -81,11 +149,24 @@ function HistoryRow({ run }: { run: RunRecordDto }) {
  * `GET /runners/:runner/history`: the recent runs, newest first, with a size
  * select capped at `limits.maxHistory` (kept in the URL as `history`).
  */
-export function RunnerHistory({ runner, enabled = true }: RunnerHistoryProps) {
+export function RunnerHistory({
+  runner,
+  enabled = true,
+  info,
+}: RunnerHistoryProps) {
   const api = useApiClient();
+  const canMutate = useCanMutate();
+  // Clear history… lives here, above the runs it clears, rather than with the
+  // runner's other actions in the page header.
+  const canClear =
+    info !== undefined && runnerActionGates(info, canMutate).clearHistory;
+  const [clearing, setClearing] = useState(false);
   const { limits } = useMeta();
   const [params, update] = useUrlParams();
   const selectId = useId();
+  // Like the workers table's actions column: a caller who cannot read run
+  // logs sees the table without the column, not a column of blanks.
+  const showLogs = useCanReadRunLogs();
   const fallback = defaultHistoryLimit(limits.maxHistory);
   const limit = clampLimit(
     intParam(params, "history", fallback),
@@ -105,21 +186,45 @@ export function RunnerHistory({ runner, enabled = true }: RunnerHistoryProps) {
     <Card
       title="History"
       actions={
-        <div className="history-limit">
-          <label htmlFor={selectId}>Runs shown</label>
-          <Select
-            id={selectId}
-            options={options.map((value) => ({ value: String(value) }))}
-            value={String(limit)}
-            onChange={(value) =>
-              update({
-                history: Number(value) === fallback ? null : value,
-              })
-            }
-          />
+        <div className="history-actions">
+          {canClear && (
+            <Button
+              size="sm"
+              variant="danger"
+              // Nothing to clear yet: say so rather than open an empty dialog.
+              disabled={history.data?.items.length === 0}
+              title={
+                history.data?.items.length === 0
+                  ? "No runs to clear."
+                  : undefined
+              }
+              onClick={() => setClearing(true)}
+            >
+              Clear history…
+            </Button>
+          )}
+          <div className="history-limit">
+            <label htmlFor={selectId}>Runs shown</label>
+            <Select
+              id={selectId}
+              options={options.map((value) => ({ value: String(value) }))}
+              value={String(limit)}
+              onChange={(value) =>
+                update({
+                  history: Number(value) === fallback ? null : value,
+                })
+              }
+            />
+          </div>
         </div>
       }
     >
+      {clearing && info && (
+        <ClearHistoryDialog
+          runner={info}
+          onClose={() => setClearing(false)}
+        />
+      )}
       {history.isPending ? (
         <Spinner
           label="Loading the history"
@@ -162,6 +267,7 @@ export function RunnerHistory({ runner, enabled = true }: RunnerHistoryProps) {
                 Duration
               </th>
               <th scope="col">Run id</th>
+              {showLogs && <th scope="col">Log</th>}
             </tr>
           </thead>
           <tbody>
@@ -169,6 +275,7 @@ export function RunnerHistory({ runner, enabled = true }: RunnerHistoryProps) {
               <HistoryRow
                 key={run.runId}
                 run={run}
+                showLogs={showLogs}
               />
             ))}
           </tbody>

@@ -3,12 +3,14 @@ import type { JobDto } from "../../app/api/types";
 import type { RecordedCall } from "./mockFetch";
 import { encodeJobId } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
+import { analyticsKeys, rangeKey } from "../../app/api/analytics";
 import { jobKeys } from "../../app/api/jobs";
 import { queryKeys } from "../../app/api/queryKeys";
 import { queueKeys } from "../../app/api/queues";
 import { runnerKeys } from "../../app/api/runners";
 import { POLL_INTERVAL_MS } from "../../app/queryClient";
 import { COUNT_EVENTS, DETAIL_EVENTS } from "../../app/screens/queues/live";
+import { RUNNER_STATE_EVENTS } from "../../app/screens/runners/live";
 import { act, page, setupDom, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
 import {
@@ -69,7 +71,7 @@ describe("live Overview", () => {
       expect.arrayContaining([
         {
           channels: ["queues"],
-          keys: [queryKeys.overview()],
+          keys: [queryKeys.overviewAll],
           events: COUNT_EVENTS,
         },
         {
@@ -84,7 +86,13 @@ describe("live Overview", () => {
     );
     // The sparklines: no event announces a bucket, so they keep polling.
     expect(
-      intervalOf(queryClient, queryKeys.queueThroughput("emails", 60)),
+      intervalOf(
+        queryClient,
+        analyticsKeys.queueJobs(
+          "emails",
+          rangeKey({ kind: "preset", seconds: 3600 }, 60),
+        ),
+      ),
     ).toBe(30_000);
 
     const before = [gets(calls, "/overview"), gets(calls, "/queues")];
@@ -410,11 +418,25 @@ describe("live Runners", () => {
     await page().findByTestId("runners-list");
     await waitFor(() => expect(live.channels()).toEqual(["runners"]));
     expect(invalidations()).toEqual([
-      { channels: ["runners"], keys: [runnerKeys.all], events: undefined },
+      {
+        channels: ["runners"],
+        keys: [runnerKeys.all],
+        events: RUNNER_STATE_EVENTS,
+      },
     ]);
     const before = gets(calls, "/runners");
     await emit(runnerEvent({ type: "started", target: "nightly", id: "r1" }));
     await waitFor(() => expect(gets(calls, "/runners")).toBe(before + 1));
+    // A log hint changes no runner list.
+    await emit(
+      runnerEvent({
+        type: "logs",
+        target: "nightly",
+        id: "r1",
+        payload: { runId: "r1", lastSeq: 4 },
+      }),
+    );
+    expect(gets(calls, "/runners")).toBe(before + 1);
   });
 
   it("a runner's screen invalidates its detail, stats and history on runner/<id>", async () => {
@@ -425,9 +447,11 @@ describe("live Runners", () => {
       {
         channels: ["runner/nightly"],
         keys: [runnerKeys.runner("nightly")],
-        events: undefined,
+        events: RUNNER_STATE_EVENTS,
       },
     ]);
+    expect(RUNNER_STATE_EVENTS).not.toContain("logs");
+    expect(RUNNER_STATE_EVENTS).toContain("succeeded");
     await waitFor(() =>
       expect(gets(calls, "/runners/nightly/history")).toBeGreaterThan(0),
     );
@@ -456,6 +480,18 @@ describe("live Runners", () => {
     // Another runner's event is not this screen's.
     await emit(runnerEvent({ type: "started", target: "other", id: "r2" }));
     expect(gets(calls, "/runners/nightly")).toBe(before.detail + 1);
+
+    // Nor is a log hint: it changes no detail, stat or history row.
+    await emit(
+      runnerEvent({
+        type: "logs",
+        target: "nightly",
+        id: "r1",
+        payload: { runId: "r1", lastSeq: 4 },
+      }),
+    );
+    expect(gets(calls, "/runners/nightly")).toBe(before.detail + 1);
+    expect(gets(calls, "/runners/nightly/history")).toBe(before.history + 1);
   });
 
   it("does not subscribe to a runner without runners.read", async () => {

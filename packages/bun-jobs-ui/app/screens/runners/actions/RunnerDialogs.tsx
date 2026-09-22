@@ -2,6 +2,7 @@ import type { KillRunnerBody } from "../../../api/types";
 import type { RunnerDialogProps } from "./TriggerDialog";
 import { useState } from "react";
 import {
+  clearRunnerHistory,
   killRunner,
   resetRunnerStats,
   resumeRunner,
@@ -14,7 +15,8 @@ import { useToast } from "../../../components/toast";
 import { useApiClient } from "../../../context";
 import { plural } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
-import { explained } from "./explain";
+import { clearHistoryMessage, explained } from "./explain";
+import { clearHistoryMayDropLiveRuns } from "./gating";
 
 /** The longest kill reason the API accepts (`KillBodySchema`). */
 const MAX_KILL_REASON = 200;
@@ -202,5 +204,63 @@ export function ResetStatsDialog({ runner, onClose }: RunnerDialogProps) {
         }
       }}
     />
+  );
+}
+
+/**
+ * `DELETE /runners/:runner/history`: finished runs and their logs go, runs in
+ * progress stay whole, the counters and charts are untouched. Offered for a
+ * remote runner too; the small print about long parallel runs shows only
+ * where it can apply.
+ */
+export function ClearHistoryDialog({ runner, onClose }: RunnerDialogProps) {
+  const api = useApiClient();
+  const toast = useToast();
+  const clear = useApiMutation({
+    mutationFn: () => clearRunnerHistory(api, runner.id),
+    onSuccess: (result) => {
+      toast.success(
+        clearHistoryMessage(result.removed, result.kept),
+        result.kept.length > 0
+          ? { description: `Kept: ${result.kept.join(", ")}` }
+          : undefined,
+      );
+    },
+    invalidate: runnerInvalidations(runner.id),
+    toastErrors: false,
+  });
+  return (
+    <ConfirmDialog
+      open
+      onClose={onClose}
+      title={`Clear the run history of ${runner.id}?`}
+      description="Removes every finished run and its log, for every process. Runs still in progress are kept, record and log whole. The lifetime counters and the charts are untouched: Reset stats… is separate. This cannot be undone."
+      variant="danger"
+      confirmLabel="Clear history"
+      pendingLabel="Clearing…"
+      onConfirm={async () => {
+        try {
+          await clear.mutateAsync();
+        } catch (error) {
+          throw explained(error, "clearHistory");
+        }
+      }}
+    >
+      <p className="runner-note muted">
+        A run whose record still says running but whose process has gone (no
+        lock names it, and it started over a day ago) counts as finished, and is
+        removed.
+      </p>
+      {clearHistoryMayDropLiveRuns(runner) && (
+        <p
+          className="runner-note muted"
+          data-testid="clear-history-parallel-note"
+        >
+          This runner is registered in another process and its runs may overlap,
+          so the API cannot ask the process running them: a parallel run still
+          going after a day is taken for crashed and removed too.
+        </p>
+      )}
+    </ConfirmDialog>
   );
 }

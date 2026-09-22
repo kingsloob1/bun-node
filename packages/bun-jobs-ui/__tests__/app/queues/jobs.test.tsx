@@ -128,9 +128,21 @@ describe("the jobs table", () => {
     const tabs = page().getByRole("tablist", { name: "Job states" });
     await waitFor(() =>
       expect(
-        within(tabs).getByRole("tab", { name: /Failed/ }).textContent,
+        within(tabs).getByRole("tab", { name: /Retrying/ }).textContent,
       ).toContain("2"),
     );
+    // The `failed` state reads "Retrying", with a tooltip for anyone looking
+    // for failed jobs: which it is, and where the ones that gave up went.
+    const retrying = within(tabs).getByRole("tab", { name: /Retrying/ });
+    expect(retrying.getAttribute("title")).toContain(
+      "Failed an attempt, waiting to retry",
+    );
+    expect(retrying.getAttribute("title")).toContain("Dead");
+    expect(within(tabs).queryByRole("tab", { name: /Failed/ })).toBeNull();
+    // Only the state that needs one carries a tooltip.
+    expect(
+      within(tabs).getByRole("tab", { name: /Dead/ }).hasAttribute("title"),
+    ).toBe(false);
     expect(
       within(tabs).getByRole("tab", { name: /All/ }).textContent,
     ).toContain("17");
@@ -148,7 +160,8 @@ describe("the jobs table", () => {
     });
     await jobsTable();
     expect(lastJobs(calls).query.get("offset")).toBe("40");
-    fireEvent.click(page().getByRole("tab", { name: /Failed/ }));
+    // The label is "Retrying"; the value sent and kept in the URL is still `failed`.
+    fireEvent.click(page().getByRole("tab", { name: /Retrying/ }));
     await waitFor(() =>
       expect(lastJobs(calls).query.getAll("state")).toEqual(["failed"]),
     );

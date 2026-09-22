@@ -146,7 +146,9 @@ export function useOverviewLive({
   search,
 }: OverviewLiveOptions): void {
   const keys = [
-    ...(overview ? [queryKeys.overview()] : []),
+    // The prefix, not one window's key: the Overview's range decides the
+    // window, and an event invalidates whichever one is on screen.
+    ...(overview ? [queryKeys.overviewAll] : []),
     ...(search !== null ? [queryKeys.queues(search)] : []),
   ];
   useLiveInvalidation([liveChannels.queues], keys, {

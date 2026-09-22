@@ -1,5 +1,6 @@
 import type { TriggerOutcomeDto } from "../../../api/types";
 import { ApiError, isApiError } from "../../../api/errors";
+import { formatNumber, plural } from "../../../format";
 
 /** Why a trigger was skipped. */
 export type SkipReason = Extract<
@@ -33,7 +34,9 @@ export type RunnerAction =
   | "resume"
   | "reschedule"
   | "kill"
-  | "resetStats";
+  | "resetStats"
+  | "clearHistory"
+  | "configure";
 
 /** What each local-only action does, for the `RUNNER_NOT_LOCAL` explanation. */
 const LOCAL_ONLY: Partial<Record<RunnerAction, string>> = {
@@ -58,8 +61,14 @@ export function explainRunnerError(
       return "The runner has stopped (its process is shutting down, or it was stopped), so it cannot be triggered.";
     case "ARGS_NOT_ALLOWED":
       return "This API does not accept run arguments (it was created without runnerTriggerArgs). Trigger without arguments.";
+    case "RUNNER_NOT_CONFIGURABLE":
+      return "This runner cannot be configured from the API yet: no process running it has started since remote configuration shipped, so a setting would be stored and never adopted. Restart the runner on the current version, or change its settings where the runner is defined.";
+    case "CONFIG_NOT_ALLOWED":
+      return "The runner's own code does not permit that setting — usually an execution mode outside its `remoteConfig.executionModes`. Choose one of the modes offered, or widen the list where the runner is defined.";
     case "RUNNER_NOT_FOUND":
-      return "The runner no longer exists in this namespace: it was unregistered, or its state was removed.";
+      return action === "clearHistory"
+        ? "The runner no longer exists in this namespace (it was unregistered, or its state was removed), so it has no history left to clear."
+        : "The runner no longer exists in this namespace: it was unregistered, or its state was removed.";
     default:
       return null;
   }
@@ -90,4 +99,11 @@ export function explained(error: unknown, action: RunnerAction): unknown {
     instance: error.instance,
     cause: error,
   });
+}
+
+/** The success toast of a history clear: how many runs went, and how many in progress were kept. */
+export function clearHistoryMessage(removed: number, kept: readonly string[]) {
+  const keptPart =
+    kept.length > 0 ? `, kept ${formatNumber(kept.length)} in progress` : "";
+  return `Cleared ${plural(removed, "run")}${keptPart}`;
 }

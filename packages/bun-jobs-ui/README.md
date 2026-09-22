@@ -103,15 +103,26 @@ route for shows a not-found screen. The queue and job screens arrived in M2,
 the runner screens in M3, live updates and the Events console in M4, and the
 API docs in M5.
 
+The `failed` job state is labelled **Retrying** on every screen (tabs,
+badges, counts, filters and dialogs): in bun-jobs it is a job that failed an
+attempt and is waiting for its retry, while a job that has used up its
+attempts is `dead`. Only the label changed: requests, URLs (`?state=failed`)
+and events still say `failed`. The state's badge and tab carry a tooltip
+saying so, and pointing to Dead for the jobs that gave up. Counts of failed
+*attempts* (the Overview's "Failed attempts", the throughput panel, a
+worker's Failed) and a runner's Failed runs keep their names.
+
 | Route | What it shows |
 |---|---|
-| `/` | The Overview: namespace-wide counts per state (`GET /overview`) and a filterable queue table, with a 60-minute throughput sparkline per row. When the caller has no Overview entry, `/` redirects to the first nav entry, or says there is nothing to show. |
+| `/` | The Overview: namespace-wide counts per state (`GET /overview`) and a filterable queue table, with a throughput sparkline per row, then a Runners and a Workers section (`GET /analytics/runners`, `GET /analytics/workers`), all read over a chosen time range (presets from 60 seconds to 24 hours, or a custom start/end span). Each of those two sections shows a summed series with its totals, then a table of rows paged at `meta.analytics.maxSeries`, with sparklines for the visible page only (one batch read per page, whatever the row count). A Workers row is a worker key that did work in the range or is live now — who did the work in this window, not a list of running workers — so a stopped worker with counts in range keeps its row, and a live idle one shows zeros. A runner's Failed counts runs that threw; timeouts and kills are counted apart (the "Timed out / killed" column), so it is not the runner's lifetime failed count. The range control and its "Apply date filter to page" toggle sit at the right of the title row; the toggle decides whether that one control drives every section or each section carries its own. Throughput belongs to the range, so there is no fixed-window figure: a backend recording no analytics shows none rather than one that contradicts the range on screen. The "Over the range" tile keeps two groups apart: "Finished in range", the analytics series' completed jobs and failed attempts, counted when they finished; and, where the backend can count by creation time (`features.addedByState`), "Added in range, where they are now (still stored)": of the jobs added in the range and still stored, how many are in each state now (`GET /overview/added`, polled every 20 s), with a total; its "Retrying" is the `failed` state, not the failed attempts above it. One counts by finish time and the other by creation time, and the second leaves out jobs already removed (a queue that removes finished jobs shows few completed there), so the two are not expected to agree. When the caller has no Overview entry, `/` redirects to the first nav entry, or says there is nothing to show. |
 | `/queues` | Every queue, searchable by name (case-insensitive) and paged. Each row links to its queue. |
-| `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions) and the detail panels: limits, workers, throughput and repeatables. |
-| `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Fail…, Remove and Edit. |
+| `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions; newest added first on every tab where the backend sorts by creation time, `features.addedByState`, and each tab's natural order otherwise; where the backend records it, `features.jobAttribution`, a "Processed by" column naming the worker that ran each job's **last** attempt, its stable key linked to its worker page, the incarnation id when no key was recorded, and "—" when no worker is) and the detail panels: limits, job defaults (every option a job gets when its `add()` does not pass it, what the code asks for and whether the queue's stored override replaces it, and the jobs pending in each state it can be applied to; with Settings… to edit them and Apply to N pending jobs… to rewrite pending jobs, a separate action that walks the queue in batches), workers (the same table and controls as the Workers page, for this queue alone), throughput and repeatables. |
+| `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Fail…, Remove and Edit, and Clear logs… in the logs section (`DELETE /queues/:queue/jobs/:id/logs`: the log is emptied for good and its line count starts again from zero; not while the job is `active`, since its worker is still writing the log). The summary's "Held by" names the worker holding the job, shown only while it is `active` (`workerId`). Where the backend records it (`features.jobAttribution`), "Processed by" names the worker that ran the job's **last** attempt (`processedBy`): its stable key, linked to its worker page (the job's queue and the key), its incarnation id, and host and pid when the API exposes them. Earlier attempts are not recorded. With no worker recorded (never claimed, or claimed before the backend recorded attribution) it says so. |
+| `/workers` | Every live worker in the namespace (`GET /workers`), grouped by the service that runs them (`service`, with processes that named none last) and then by the server hosting each (host and pid; one group named "Hosts hidden by the API" when `serialize.exposeHosts` is off). A row shows the worker's queue (linked to its screen with `queues.list`), whether it is running or paused, its active jobs against its concurrency, and when it started and last reported. Each row also carries its controls: Pause, Resume, Stop… and Start (one running worker, by its per-incarnation `id`) and Settings… (the settings of every worker sharing its stable `key`). Filtered on the server by queue, service, host (offered only when the API exposes hosts) and state, each a select over the values the unfiltered list has, and by id, key, service, queue, host or pid in the browser. A row's stable key links to its worker page; every instance of a key leads to the same page, and a worker reporting no key has no link. It follows the `workers` channel: a worker announces its state changes (paused, resumed, stopping/stopped, started again, restarting) and config changes, and each refreshes the list. A worker does **not** announce its first start: it is listed from its first heartbeat, written when it starts — at once on a queue the API already knows, and within `limits.queueCacheMs` (2 s by default) on a queue the API has not seen yet — and its row then refreshes every `reportInterval` (10 s by default). So the list also re-reads every 5 seconds, relaxed while live. |
+| `/workers/:queue/:key` | One stable worker key, addressed with its queue because a key is unique only within its queue: the key, its queue (linked with `queues.list`) and its service; its live instances (`GET /workers?queue=<queue>&key=<key>&includeOffline=true`) in the Workers page's table, with the same controls; its full configuration, every setting with the value it runs with, the value its code asks for and whether the key's override replaces it, with Edit settings… (the Settings dialog) and a "Change pending" badge; its throughput and busyness over a chosen range (`GET /queues/:queue/analytics/workers/:key`), each captioned from its own response's range, since busyness is served coarser; and the jobs whose last attempt this key ran (`GET /queues/:queue/jobs?workerKey=<key>`), where the backend records attribution (`features.jobAttribution`). A job that failed on another worker and then ran on this one is listed on this page only. The jobs list has the queue table's state tabs (without counts), name and search filters, order, rows, bulk actions and pager (without a total). It covers a range over `finishedOn`, the last 24 hours by default. A job with no finish time never matches a range, so All lists only completed and dead jobs. On the Waiting, Delayed, Active, Retrying and Waiting-children tabs the range is dropped, with a note saying so, and every job of that state the key last ran is listed. Which worker ran a job is kept only as long as the job is, so jobs removed on completion are not listed. A key containing a comma cannot be sent as one filter value (the API splits values at commas), so for such a key the section says the list cannot be filtered to it and reads nothing. With no live instance it says the configuration cannot be shown until one reports, lists the override stored for the key (the listing's `offline`), and still offers Reset to code values…. |
 | `/runners` | Every runner in the namespace (`GET /runners`): local ones first, with their name and status, then remote ones by id. Filtered by id or name in the browser, with no paging. Each row links to its runner. |
-| `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. |
-| `/events` | The Events console: a live tail of the API's socket. Pick a channel (`all` in mode `both`, `queues`, one queue from the queue list, one job by queue and id, `runners`, or one runner from the runner list) and filter by event type. Rows show the time, kind and type, the target (linked to its queue or runner), the id (a job links to its screen) and the payload. The log keeps the latest 500 rows, newest first; Pause holds up to 500 more (the rest are counted as dropped) until Resume, and Clear empties it. A channel the server refuses shows its code and reason, and a `gap` shows inline as `gap: <reason>`. When the log is empty it says why: producers not publishing, `events: "local"`, or live updates off. |
+| `/runners/:runner` | One runner: its status badges, its actions, a summary (schedule, next run, execution and run mode, queueing, concurrency, which of those are overridden and whether the owner has adopted the override, the run holding its lock, the last error), the lifetime counters, the runs in flight in this process, the last run and the run history. Clear history… sits in the History card's header, beside Runs shown and directly above the runs (not among the actions at the top), and is disabled with "No runs to clear." while the history is empty; it (`DELETE /runners/:runner/history`) removes every finished run and its log and keeps each run in progress whole, toasting how many went and how many were kept; the lifetime counters and charts are untouched, and unlike Kill… and Reset stats… it works on a runner registered in another process. Settings… edits the execution mode, the run mode and the max concurrency through `PUT /runners/:runner/config` (a merge patch, so only what changed is sent), with what the runner's own code asks for beside each one, a way back to it per setting and a Reset to code defaults (`DELETE`) for all of them. Each row of the history — which includes the run in flight — opens that run's captured output in its details (`GET /runners/:runner/runs/:runId/logs`): the lines with their sequence number, time, stream and level, a stream filter, and what the log is not showing (lines the cap dropped, a cap trimming it now, a line capture cut, and the output that escapes capture altogether). The history is the one place a log is hosted, since the run in flight and the last run are rows of it as well as cards of their own. A live run's log is followed by the runner's `logs` event on `runner/<runner>` — a hint carrying only the run id and its newest sequence number — each hint for that run triggering a read with `?since=<cursor>`, with a poll kept underneath as the fallback. |
+| `/events` | The Events console: a live tail of the API's socket. Pick a channel (`all` in mode `both`, `queues`, one queue from the queue list, one job by queue and id, every worker (`workers`), one queue's workers, `runners`, or one runner from the runner list) and filter by event type. Worker events travel only on the two worker channels, never on `all` or `queues`, and a worker announces its state and config changes but not its first start. Rows show the time, kind and type, the target (linked to its queue or runner; a worker event's target is its queue), the id (a job links to its screen) and the payload. The log keeps the latest 500 rows, newest first; Pause holds up to 500 more (the rest are counted as dropped) until Resume, and Clear empties it. A channel the server refuses shows its code and reason, and a `gap` shows inline as `gap: <reason>`. When the log is empty it says why: producers not publishing, `events: "local"`, or live updates off. |
 | `/docs` | The API docs landing page: a card for the HTTP reference, and one for the WebSocket reference when the API serves its AsyncAPI document. |
 | `/docs/http` | The HTTP reference, from the API's OpenAPI 3.1 document: a sidebar of operations by tag, searchable, then the document's title, version, description and servers (each resolved against the origin the app talks to, next to the `apiBase` the app sends to), every tag with its operations, and the component schemas, each opening in a side panel. |
 | `/docs/http/:operationId` | One operation: method, path and operationId, the permission marker, whether it is a mutation, its CSRF rules and the driver methods it needs, its parameters, body and responses as schema trees, and its try-it panel. An operationId the document lacks shows "No such operation" (the API prunes operations by its mode, read-only setting and actions). |
@@ -147,6 +158,52 @@ its value (the bar clamped to 0–100, the number not), a record of fields as
 a JSON tree. Live, a `progress` event writes the new value into the job
 screen without a refetch.
 
+### Queue job defaults
+
+The queue screen's **Job defaults** panel (`GET /queues/:queue/job-defaults`)
+lists every option a queue may store a default for, in the contract's order
+(`JOB_DEFAULT_KEYS`): what a job added now gets when its `add()` does not pass
+the option, what the code asks for, and whether the queue's stored override
+replaces it. The override beats the code's defaults and a `define()`
+definition's; only an option passed explicitly on `add()` wins. "Code" is what
+this API's own service is configured with (`codeSource: "api"`): a producer in
+another service may be configured differently, and the override replaces them
+all alike.
+
+**Settings…** edits them, each input bounded by `JOB_DEFAULTS_BOUNDS`, the
+backoff limited to `fixed` and `exponential` (`JOB_DEFAULT_BACKOFF_TYPES`).
+Each option shows its value now and the code's, with **Use code value** on an
+overridden one. Saving sends a merge patch (`PUT`): only the options that
+changed, `null` for one set back to the code's value, and the `seq` it read
+as `expectedSeq`. If someone changed the defaults meanwhile, the API answers
+409 and nothing is saved; the dialog asks to re-read them. **Reset to code
+values** (`DELETE`) clears every override. The note beside it says what a
+reset cannot do: jobs already rewritten by an apply keep the values written
+to them. A save or reset reaches producers within about `propagationMs`
+(about a second), which the confirmation says.
+
+Saving never touches jobs already waiting. **Apply to N pending jobs…** is a
+separate action, with its own permission. N is the jobs pending in the states
+it rewrites (waiting, delayed, retrying, waiting on children), an upper bound.
+Its confirmation lists the values it writes. It has a box for each state,
+all ticked, and **Include jobs added before this version**, unticked:
+without it, jobs added before bun-jobs recorded which options their `add()`
+passed are skipped and counted. When the stored `attempts` is below the
+code's, it warns that a job that has already used up the new number of
+attempts is not dropped: it gets one final attempt. **Preview (dry run)**
+walks the same jobs and writes nothing. The walk runs in batches of 1,000
+(`POST /queues/:queue/job-defaults/apply`, each call continuing from the
+previous one's `next`), showing how many jobs were examined and rewritten so
+far. **Cancel** stops it between batches, and **Continue from where it
+stopped** resumes from the cursor. At the end it reports what the walk did:
+jobs rewritten (or that would be, for a preview), unchanged, skipped as
+explicit, skipped as added before this version, moved, and exhausted, which
+is part of rewritten. Every call carries the `seq` confirmed, so if someone
+saves or resets the defaults during the walk, the API answers 409
+`DEFAULTS_CHANGED`. The walk then stops, says how many jobs had already been
+rewritten, and asks to re-read before applying again. The rewrite cannot be
+undone.
+
 ### Date-time fields
 
 Every date-time field (**Run at** when adding or editing a job, a runner
@@ -167,27 +224,42 @@ default.
 | Screen | Parameter | Meaning |
 |---|---|---|
 | `/` | `q` | Filters the queue table by name. |
+| `/` | `range` | The range every section is read over while the page-wide control is in force: `<seconds>s` for a preset (`60s`, `300s`, `600s`, `1800s`, `3600s`, `21600s`, `86400s`) or `<from>-<to>` in epoch ms for a custom span. Absent means the last hour. Anything malformed, a preset nobody offers, or a span that is backwards, under a second or over 31 days falls back to the default rather than being asked for. |
+| `/` | `rangeScope` | `section` gives each section its own range control; absent (the default) means one control for the page. |
+| `/` | `jobsRange`, `queuesRange`, `runnersRange`, `workersRange` | Each section's own range, in the same form as `range`, used while `rangeScope=section`. |
 | `/queues` | `search` | Filters by name, as you type. Changing it resets `offset`. |
 | `/queues` | `offset` | Rows skipped. Defaults to `0`. |
 | `/queues` | `limit` | Page size, `1` to `limits.maxQueues`. Defaults to the smaller of `limits.defaultPageSize` and `limits.maxQueues`. |
-| `/queues/:queue` | `state` | The state tab: `waiting`, `delayed`, `active`, `completed`, `failed`, `dead` or `waiting-children`. Absent means All. |
+| `/queues/:queue` | `state` | The state tab: `waiting`, `delayed`, `active`, `completed`, `failed` (the tab labelled Retrying), `dead` or `waiting-children`. Absent means All. |
 | `/queues/:queue` | `offset` | Jobs skipped. Defaults to `0`. |
 | `/queues/:queue` | `limit` | Page size, `1` to `limits.maxPageSize`. Defaults to `limits.defaultPageSize`. |
 | `/queues/:queue` | `total=1` | Asks the API to count `page.total` ("Count total"). |
 | `/queues/:queue` | `name` | Exact job names as a comma list. The request sends each name as its own `name` key. |
 | `/queues/:queue` | `search` | Id or name contains this text. `name` and `search` apply when you press Apply. |
-| `/queues/:queue` | `order=desc` | Newest first. Absent means oldest first. |
-| `/queues/:queue` | `panel` | The open detail panel: `limits`, `workers`, `throughput` or `repeatables`. Defaults to the first one shown. |
+| `/queues/:queue` | `order=asc` | Oldest first. Absent means **newest first**, sent as `order=desc` since the API's own default is oldest first. Where the backend sorts by creation time (`features.addedByState`), every tab is ordered by `createdAt` (sent as `sort=createdAt`, never written into the URL), except a page counting its total (`total=1`), which keeps the natural order below. Otherwise no `sort` is sent and the natural order applies: on the All tab by creation time (`createdAt`), the one key every state shares; a single-state tab by that state's own time — when a delayed or retrying (`failed`) job will run, when a completed or dead one finished, an active one's lock — so "newest" there means most recent by that time. |
+| `/queues/:queue` | `panel` | The open detail panel: `limits`, `job-defaults`, `workers`, `throughput` or `repeatables`. Defaults to the first one shown. |
 | `/queues/:queue` | `window` | The throughput window in minutes: `15`, `60`, `360` or `1440`. Defaults to `60`. |
+| `/workers` | `search` | Filters by worker id, stable key, service, queue, host or pid (case-insensitive; every whitespace-separated word must appear), as you type. Filtered in the browser, so nothing is re-fetched; it narrows what the filters below returned. |
+| `/workers` | `queue`, `service`, `host`, `state` | Server-side filters, each sent as the `GET /workers` parameter of the same name (exact, and ANDed together). Each select offers the values the unfiltered list has, plus the one in the link. `state` is `running`, `paused`, `stopping`, `stopped` or `restarting`; anything else is ignored. `host` is offered and sent only when the workers carry a host: with `serialize.exposeHosts` off the API refuses it, so one in a link is ignored, with a note. Clear filters removes all four and keeps `search`. |
+| `/workers/:queue/:key` | `range` | The range the key's throughput and busyness are read over, in the same form as the Overview's `range`. Absent means the last hour. |
+| `/workers/:queue/:key` | `jobState` | The jobs section's state tab, with the same values as the queue screen's `state`. Absent means All. |
+| `/workers/:queue/:key` | `finished` | The range the jobs section lists over, sent as `finishedFrom` (inclusive) and, for a custom span, `finishedTo` (exclusive). It uses the Overview `range` format, but absent means the **last 24 hours**, and a custom span may be any length where the end is after the start. Not sent for the Waiting, Delayed, Active, Retrying and Waiting-children tabs, since those jobs have no finish time. |
+| `/workers/:queue/:key` | `jobName`, `jobSearch` | The jobs section's name and search filters, as the queue screen's `name` and `search`. |
+| `/workers/:queue/:key` | `jobOrder=asc` | Oldest first. Absent means newest first. |
+| `/workers/:queue/:key` | `jobOffset`, `jobLimit` | The jobs section's paging, as the queue screen's `offset` and `limit`. There is no `total`: the section never counts. |
 | `/runners` | `search` | Filters by id or name (case-insensitive, trimmed), as you type. The list is filtered in the browser, so nothing is re-fetched. |
+| `/runners/:runner` | `logs` | The run id whose log is open, e.g. `logs=run-3`. The run's row in the history is expanded with it, and its log read; an id no run on the screen has opens nothing. Absent means no log is open, and nothing is read. |
+| `/runners/:runner` | `logStream` | Only lines from this stream, sent as `GET /runners/:runner/runs/:runId/logs?stream=`: `stdout`, `stderr` or `log` (the logger's own lines). Anything else, and absent, means every stream. Each stream keeps its own tail: `since` is a raw sequence number, so changing the filter re-reads from the start of what is kept. |
 | `/runners/:runner` | `history` | Runs shown in the history, sent as `GET /runners/:runner/history?limit=`. Defaults to the smaller of `50` and `limits.maxHistory`. A number outside `1` to `limits.maxHistory` is clamped to that range, not reset. The select offers `10`, `25`, `50`, `100` and `200` up to the cap, plus the default and the cap. Choosing the default removes the parameter. |
-| `/events` | `channel` | The channel, as the socket names it: `all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encoded id>`, `runners` or `runner/<runner>`. One the API's mode lacks, or a malformed one, falls back to `all` in mode `both`, else `queues` or `runners`. |
+| `/events` | `channel` | The channel, as the socket names it: `all`, `queues`, `queue/<queue>`, `queue/<queue>/job/<encoded id>`, `workers`, `queue/<queue>/workers`, `runners` or `runner/<runner>`. One the API's mode lacks, or a malformed one, falls back to `all` in mode `both`, else `queues` or `runners`. |
 | `/events` | `types` | Event types as a comma list, e.g. `completed,failed`. A name may carry its family, `queue.completed` or `runner.failed`, and is rewritten bare in the URL; a prefixed name counts only on a channel carrying that family. An unknown name, or one the channel cannot carry, is ignored and named in a note above the log, and stays in the URL so the note survives a reload; if nothing is left, every type shows. Absent means every type. |
 | `/docs/http` | `q` | Filters the sidebar, as you type: every whitespace-separated word must appear, ignoring case, in an operation's method, path, operationId, summary or action. Operation links keep it. The tag overview is not filtered. |
 | `/docs/ws` | `q` | Filters the sidebar the same way, over each item's slug, label and hint and its keywords (a channel's address and parameters, an operation's permission, the limit names, the close codes, the refusal statuses and codes). The sidebar's links keep it. |
 
 On the queue screen, changing `state`, `name`, `search` or `order` resets
-`offset` and clears the selection.
+`offset` and clears the selection. On a worker page, changing `jobState`,
+`jobName`, `jobSearch`, `jobOrder` or `finished` resets `jobOffset` the same
+way.
 
 ### What each element needs
 
@@ -201,7 +273,10 @@ instead, and falls back to the untargeted map only if it fails. Runners work
 the same way: the Runners nav entry and every `/runners*` route depend on the
 untargeted `runners.list`, and `/runners/:runner` asks
 `GET /meta/permissions?runner=<runner>` for its own reads and buttons; its
-read of the runner waits for that answer too. Because the lists depend on the
+read of the runner waits for that answer too. A worker page,
+`/workers/:queue/:key`, is routed with the Workers nav entry and asks
+`GET /meta/permissions?queue=<queue>` for its reads and buttons, since worker
+actions authorize against the queue; it does not wait for the answer. Because the lists depend on the
 untargeted map, `/queues` and `/runners` list every queue and runner, even one
 the host's `authorize` refuses entirely; its link then leads to "Jobs hidden",
 "Job hidden" or "Runner hidden". An action counts only when the map holds it and it is `true`.
@@ -214,43 +289,86 @@ authority, since the map is never asked about one particular job.
 | Overview nav entry and `/` | `sections.manage`, `meta.mode` `jobs` or `both`, and `metrics.read` or `queues.list` (untargeted) |
 | Overview counts | `metrics.read` |
 | Overview queue table | `queues.list` |
-| Overview sparklines | `metrics.read` and `features.throughput` |
+| Overview sparklines | `metrics.read`, `features.throughput` and `meta.analytics` (a backend that records analytics); without analytics there is no Throughput column |
+| Overview "Over the range" figure | `metrics.read` and `meta.analytics`: it is the analytics series' own total, labelled with the resolution the API served. Absent when the backend records no analytics; the whole tile is absent only when the added-by-state group is too |
+| Overview "Over the range" added-by-state group ("Added in range, where they are now (still stored)") | `metrics.read` and `features.addedByState`; without the feature nothing is read and the tile shows the analytics series alone. Read over the Jobs section's range, cut to its last 24 hours when longer |
+| Overview Runners section | `metrics.read`, `features.runnerMetrics`, `meta.analytics`, and `meta.analytics.recording.runners` |
+| Overview Workers section | `metrics.read`, `features.workerMetrics`, `meta.analytics`, and `meta.analytics.recording.workers` |
+| Overview Runners / Workers note "Showing the N busiest … of M" | the roll-up's `truncated`: N is the rows it returned (at most 100), M its `totalRows` — for workers every live key plus the stopped keys with counts in the range, for runners every runner the namespace lists |
+| Overview range caption ("This is not exactly the range asked for: …") | the Jobs, Runners or Workers read's response has `range.clamped`; worded by its `reason` (`retention`, `maxBuckets`, `resolution`, `driver`), naming the resolution served; an unknown reason says only what was served |
+| Overview "No numbers are kept for this range" | the Jobs, Runners or Workers read answered 400 `RANGE_NOT_RETAINED` (the whole range is older than the API keeps): it gives the oldest instant kept when the error carries one, and offers no Retry; a sparkline cell whose own read is answered that way reads "not kept" ("unavailable" for any other failure) |
 | Queues nav entry and every `/queues*` route | `sections.manage`, `meta.mode` `jobs` or `both`, and `queues.list` (untargeted) |
 | Queue header total and paused badge | `queues.read` |
 | Jobs table, and the job links in it | `jobs.list`; without it, "Jobs hidden" |
+| Jobs table "Processed by" column | `jobs.list`, and `features.jobAttribution`; without the feature there is no column. Not on a worker page's jobs, where every row is that key |
+| Jobs table "Processed by" worker link | the Workers nav entry's needs, read on the untargeted map, and the job's `processedBy` carries a `key`; without them the key is plain text |
+| Jobs table and worker page jobs, newest added first on every tab (`sort=createdAt`) | `features.addedByState`; without it no `sort` is sent and each tab keeps its natural order. A page counting its total keeps the natural order too, and "Count total" says so |
 | Pause / Resume | mutation `queues.pause` / `queues.resume`, and `queues.read`: Pause shows on a running queue, Resume on a paused one |
 | Drain…, Clean…, Retry all… | mutation `queues.drain`, `queues.clean`, `jobs.retryAll` |
-| Add job | mutation `jobs.add`, and `meta.addableNames` is `null` (any name) or non-empty |
+| Add job | mutation `jobs.add` (**opt-in**), and `meta.addableNames` is `null` (any name) or non-empty |
 | Add job's name suggestions | `definitions.list`, when `addableNames` is `null` |
 | Bulk Retry / Promote / Remove selected | `jobs.list`, and mutation `jobs.retry` / `jobs.promote` / `jobs.remove` |
 | Limits panel | `queues.read` and `features.limits`; shown with a spinner while the queue's detail loads, then only if the detail carries `limits` |
 | Limits panel, editable | the above, and mutation `queues.limits` |
+| Job defaults panel | `queues.read`, and `features.jobDefaults` (every built-in backend; false in `runner` mode); without the feature nothing is read |
+| Job defaults Settings… | the above, and mutation `queues.defaults` (opt-in) |
+| Job defaults Apply to N pending jobs… | the Job defaults panel, `features.jobDefaultsApply`, and mutation `queues.applyDefaults` (opt-in, separate from `queues.defaults`), and the queue has an override and pending jobs in the states it rewrites; otherwise the panel says why |
 | Workers panel | `workers.list` and `features.workers` |
 | Throughput panel | `metrics.read` and `features.throughput` |
 | Repeatables panel | `repeatables.list` |
 | Repeatables panel, Remove | the above, and mutation `repeatables.remove` |
 | Job screen | `jobs.read`, as the queue's own permissions answer it: the job is not fetched until they have loaded, and never without `jobs.read` ("Job hidden"). A 401/403 on the job itself shows the same panel with the API's detail. |
 | Job logs | `jobs.logs` and `features.logs` |
+| Job Clear logs… | mutation `jobs.clearLogs`, inside the Job logs card (so its needs too). Shown for a job in any state, but not clickable while the job is `active` (a worker is still writing the log) or while the log holds no lines; the reason sits beside the button |
 | Job Retry | mutation `jobs.retry`, and the job is `completed`, `failed` or `dead` |
 | Job Promote | mutation `jobs.promote`, and the job is `delayed` |
 | Job Remove | mutation `jobs.remove` |
-| Job Edit | mutation `jobs.update` and `features.update` |
+| Job Edit | mutation `jobs.update` (**opt-in**) and `features.update` |
+| Job "Processed by" | the job screen's `jobs.read`, and `features.jobAttribution`; without the feature the line is absent |
+| Job "Processed by" worker link | the Workers nav entry's needs, read on the untargeted map, and the job's `processedBy` carries a `key`; without them the key is plain text |
 | Runners nav entry and every `/runners*` route | `sections.manage`, `meta.mode` `runner` or `both`, and `runners.list` (untargeted) |
 | Runner screen | `runners.read`, as the runner's own permissions answer it: the runner is not fetched until they have loaded, and never without `runners.read` ("Runner hidden"). A 401/403 on the runner itself shows the same panel with the API's detail and stops the polling. A 404 (`RUNNER_NOT_FOUND`) shows "Runner not found". |
 | Runner stats and history | the runner screen's `runners.read`; the stats are read once the runner has loaded, and the tiles show the runner's own `stats` until then |
 | Runner active runs | the runner is registered in the API's process (`local` is present) |
+| Runner run log, and the history's Log column | `runners.logs` (a read, granted by default) and `features.runnerLogs`; without either, no column and no log anywhere on the screen |
+| A run's Log button (in the history row, and Show log in its expanded details) | the above, and `logLines > 0`, or the run's status is `running` (a live run's record carries no `logLines` until the run settles, so the status is what offers it), or the run reports no `logLines` at all (the field is optional; the read itself then answers). Only a finished run with `logLines` `0` offers none, and says it logged nothing |
+| A history row's "N lines dropped" badge | the run log's needs (it sits in the history's Log column: `runners.logs` and `features.runnerLogs`), and the run's `logsDropped` is above `0` |
 | Runner Trigger… | mutation `runners.trigger`; its Arguments field only when `meta.runnerTriggerArgs` |
 | Runner Pause / Resume… | mutation `runners.pause` / `runners.resume`: Pause shows while `isPaused` is false, Resume while it is true |
 | Runner Reschedule… | mutation `runners.reschedule` |
 | Runner Kill… | mutation `runners.kill`, and the runner is local with at least one run in `local.activeRuns` |
 | Runner Reset stats… | mutation `runners.resetStats`, and the runner is local (`isLocal`) |
+| Runner Clear history… | mutation `runners.clearHistory`, on any runner: unlike Kill… and Reset stats…, a runner registered only in another process gets it too, and it does not bring up the remote hint; it sits in the History card's header, and is disabled, with "No runs to clear.", while the history is empty |
 | Runner remote hint | mutation `runners.kill` or `runners.resetStats`, and the runner is not local |
+| Workers nav entry and `/workers` | `sections.manage`, `meta.mode` `jobs` or `both`, `meta.features.workers` (the backend keeps a worker registry), and `workers.list` (untargeted) |
+| Workers page queue links | `queues.list` (untargeted); without it the queue is plain text |
+| Workers page Queue, Service and State filters | `workers.list` (untargeted), as the page itself; each offers the values the unfiltered list returned, plus the one in the link |
+| Workers page Host filter | `workers.list` (untargeted), and the workers the unfiltered list returned carry a `host` (`serialize.exposeHosts` on); otherwise it is absent, and a `host` in the link is ignored with a note |
+| Workers table key links (the Workers page and a queue's Workers panel) | the Workers nav entry's needs, read on the untargeted map, and the worker reports a `key`; every instance of a key links to the same worker page |
+| Worker page (`/workers/:queue/:key`) | the Workers nav entry's needs; the page then asks `GET /meta/permissions?queue=<queue>`, since worker actions authorize against the queue, and its instances need `workers.list` on that answer |
+| Worker page queue link | `queues.list` (untargeted); without it the queue is plain text |
+| Worker page Edit settings… | `meta.features.workerControl` and mutation `workers.configure` (**opt-in**), and an instance reports `control.enabled`, its `config` and the stable `key`: the same gate as that instance's Settings…. It edits from the first instance that reports a config |
+| Worker page Reset to code values… (no live instance) | `meta.features.workerControl` and mutation `workers.configure` (**opt-in**), unless the listing's `offline` says nothing is stored for the key: no entry for it, or an entry with no values (a reset empties the entry and keeps its `seq` rather than deleting it), which counts as nothing stored |
+| Worker page "Change pending" badge | some instance of the key reports `control.pending` |
+| Worker page throughput and busyness | `metrics.read`, `features.workerMetrics`, `meta.analytics`, and `meta.analytics.recording.workers`: the Overview Workers section's needs |
+| Worker page jobs ("Jobs whose last attempt this key ran") | `features.jobAttribution`, and `jobs.list` on the queue's answer; without the feature it says the backend does not record which worker ran a job, and without `jobs.list` it shows "Jobs hidden". Neither case reads anything. Shown even when that answer refuses `workers.list`. A key containing a comma cannot be filtered to (the API splits filter values at commas), and the section says so and reads nothing |
+| Worker page jobs' job links | `queues.list` (untargeted), the Queues nav entry the job screen is routed with; without it the ids are plain text |
+| Workers table Completed / Failed columns (the Workers page and a queue's Workers panel) | some worker in that table reports `completed` or `failed`; a worker that reports neither shows "—", since absent is not zero. The counts are this incarnation's: a restart starts them again |
+| Worker instruction wording ("Paused X" vs "Asked X to pause") | `WorkerControlResultDto.applied`: the UI sends `?wait=2000`, so a driver that delivers instructions promptly (memory, Redis) answers acknowledged and the message says it is done; on a polling driver it says the instruction was recorded |
+| Worker Pause | `meta.features.workerControl` and mutation `workers.pause` — on `/workers` read on the untargeted map, in a queue's Workers panel and on the worker page on that queue's answer — on a worker whose state is `running`, that reports (`control.enabled`, not stale) and is not mid-transition |
+| Worker Resume | mutation `workers.resume`, on a worker whose state is `paused`, under the same conditions |
+| Worker Stop… | mutation `workers.stop`, on a worker whose state is `running` or `paused`, under the same conditions |
+| Worker Start | mutation `workers.start`, on a worker whose state is `stopped`, under the same conditions |
+| Worker Stop… persistence choice | `control.stopPersistenceOverridable`; without it the dialog states the deployment's `control.stopPersistence` instead of offering a choice |
+| Worker Settings… | `meta.features.workerControl` and mutation `workers.configure` (**opt-in**: a host must list it in `actions`), on the same map as Pause, and the worker reports `control.enabled` and the stable `key` an override is stored against; offered even while the worker is stale or mid-transition, since the override is stored for the next replica |
+| Worker "Change pending" badge and the Settings dialog's pending note | the worker reports `control.pending`: a recorded change it has not taken up yet, so the values shown are still the ones it runs with |
+| Worker actions column | any of the above on some worker in that table; a caller with none sees the table without it |
 | Events nav entry and `/events` | `sections.manage`, `meta.websocket`, and `events.connect` (untargeted) |
 | Events queue and job channel pickers' queue list | `meta.mode` `jobs` or `both` (the queue and job channels exist only there), and `queues.list` (untargeted); without it, a text box |
 | Events runner channel picker's runner list | `meta.mode` `runner` or `both` (the runner channel exists only there), and `runners.list` (untargeted); without it, a text box |
 | API docs nav entry and every `/docs*` route | `sections.docs`, `meta.docs` (the API routes its docs), and `docs.read` (untargeted); `sections.manage` is not needed |
-| HTTP reference (`/docs/http*`) and its card on `/docs` | `meta.docs.openapi`, which the API sends whenever `meta.docs` is set |
-| WebSocket reference (`/docs/ws*`) and its card on `/docs` | `meta.docs.asyncapi`; without it, `/docs/ws` shows "This API has no live-events socket" and `/docs` shows no WebSocket card |
+| HTTP API nav entry (under API docs), the HTTP reference (`/docs/http*`) and its card on `/docs` | `meta.docs.openapi`, which the API sends whenever `meta.docs` is set |
+| WebSocket API nav entry (under API docs), the WebSocket reference (`/docs/ws*`) and its card on `/docs` | `meta.docs.asyncapi`; without it, the nav has no WebSocket API entry, `/docs/ws` shows "This API has no live-events socket" and `/docs` shows no WebSocket card |
 | HTTP operation's permission marker, "You have" / "You lack" | the operation's `x-bun-jobs-action`, looked up in the untargeted map |
 | WebSocket channel's and operation's permission markers, "You have this" / "You lack this" | the operation's `x-bun-jobs-action`, looked up in the untargeted map; one the UI does not know shows "Not an action this UI knows" |
 | HTTP try-it Send | the method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `meta.readOnly` false for a mutation (`x-bun-jobs-mutation`); and the operation's `x-bun-jobs-action` (untargeted), reads included. Otherwise the panel is disabled, with the reason shown |
@@ -258,6 +376,8 @@ authority, since the map is never asked about one particular job.
 | WebSocket try-it, "Open in the Events console" | the Events nav entry: `sections.manage`, `meta.websocket` and `events.connect` (untargeted); otherwise a note says the console is not available. A channel's link also needs each parameter filled and passing the document's `x-bun-jobs-schema` (for an older API without it, the client's name rule), and a channel `meta.mode` offers; a parameter that fails disables the link, with the reason shown. The connection channel has no try-it: there is nothing to subscribe to |
 | Job Fail… | mutation `jobs.fail`, and the job is not `completed` or `dead` |
 | Repeatables panel, Disable / Enable | `repeatables.list`, and mutation `repeatables.disable` / `repeatables.enable`: Disable shows on an enabled series, Enable on a disabled one |
+| Runner Settings… | mutation `runners.configure`, which is opt-in (a host must list it in `actions`), and the runner reports a `config`; a runner without one predates remote configuration, and the API answers 409 `RUNNER_NOT_CONFIGURABLE` |
+| Runner summary's override rows | the runner screen's `runners.read`, and the runner reports a `config`: the summary then marks each overridden setting, names what the runner's code asks for, and says when an override is waiting to be adopted or was refused |
 
 The job screen waits for the queue's own permissions before its first read
 (a spinner shows meanwhile), so a host that grants `jobs.read` in general but
@@ -338,6 +458,88 @@ read only the untargeted map, since an operation has no one queue or runner:
   `closeTimeout` plus `killTimeout`, and the dialog says it is waiting.
 - **Reset stats** sets every lifetime counter back to zero, for every
   process. The history is kept.
+- **Clear history** removes every finished run, its record and its log,
+  and keeps each run still in progress whole; the toast says how many went
+  and names any kept ("Cleared 12 runs, kept 1 in progress"). A run counts as
+  in progress when this process is running it, when its record says
+  `running` and the runner's lock names it, or when its record says
+  `running` and it started under a day ago; a crashed run (stuck at
+  `running`, no lock, over a day old) is removed. The lifetime counters and
+  the charts are untouched: that is Reset stats. It works on a runner
+  registered in another process too, since it acts on what the backend
+  stores. On such a runner in parallel mode, a live run older than a day
+  holds no lock to vouch for it and is removed as well; the confirmation
+  says so for that case only.
+- **A run's log is a tail, and it says what it is not showing.** It is shown
+  in the history row's details, and nowhere else on the screen: the run in
+  flight and the last run have cards of their own, but both are rows of the
+  history too, so this keeps one log per run. Each read
+  asks for the lines above the last sequence number the view has
+  (`?since=`, an exclusive bound), and the page is folded into what was read
+  before. While the run is live, the view subscribes to `runner/<runner>`
+  and reads again whenever a `logs` event arrives for its run: a hint that
+  the stored log grew, carrying `{ runId, lastSeq }` and never a line
+  (the runner sends at most one per run every half second, plus one as the
+  run ends). A hint for another run of the same runner reads nothing, and
+  neither does one the view has already caught up with. A poll stays
+  underneath as the fallback — every 2 seconds with live updates off,
+  relaxed like every other poll while they are on — because a hint is at
+  most once: missing one only delays a line until the next read, which,
+  being `since` the cursor, still returns it. The hint does not refresh the
+  runner's detail, stats or history. A gap in the line numbers is
+  where a cap dropped lines, and the run's own `dropped` count is stated
+  above the log whatever the stream filter shows ("N earlier lines
+  dropped"); `capped` adds that a cap is trimming the log right now. A line
+  capture cut at its 8 KiB limit is marked "cut at 8 KiB". The defaults
+  behind all of that are 1,000 lines and 1 MiB per run, 8 KiB per line.
+  Four outcomes are told apart in the copy, because they mean different
+  things: a 409 `LOGS_NOT_RETAINED` ("Run logs are not retained" — this API
+  keeps no run logs at all, which is exactly `features.runnerLogs` false), a
+  404 `RUN_NOT_FOUND` ("No log for this run" — the runner has no record of
+  it: it never ran here, or it has aged out of the runs this runner keeps,
+  and the API cannot yet tell those two apart), a 200 with no lines ("This
+  run logged nothing"), and a finished run whose record already says
+  `logLines: 0`, which offers no log and says the same. Every log also states
+  what capture sees and what it never does. A run's console output is
+  captured whichever way it runs. A spawned run's piped `stdout` and
+  `stderr` are captured, unless a stream was explicitly set to `"inherit"`
+  or `"ignore"`. A `worker` or `in-process` run's `console.log`, `info` and
+  `debug` (as `stdout`) and `warn` and `error` (as `stderr`) are attributed
+  to the run that made them, even with two running at once; a listener the
+  run triggers synchronously (a `progress` listener that logs, say) counts
+  as the run's too. What escapes, in a worker or in-process run:
+  `process.stdout.write`/`process.stderr.write` and `Bun.write` to the
+  standard streams; native code writing to file descriptors 1 and 2; a
+  program the handler launched with its own stdio; console methods other
+  than those five (`console.trace`, `dir`, `table`, …); a console method
+  taken before the run began (`const log = console.log` at module load,
+  called later); and output from work that outlives the run (a timer
+  firing after it settled), which is dropped rather than attributed. The
+  note on screen names only the gaps a user will actually hit — native
+  code, a program the run launched, direct writes to `process.stdout` and
+  `process.stderr` — and ends "is not captured here".
+- **Some values are redacted.** Capture scrubs every line before storing
+  it, by default: the value of a key whose name contains `password`,
+  `passwd`, `pwd`, `secret`, `token`, `apikey`/`api_key`/`api-key`,
+  `authorization`, `auth`, `credential`, `cookie`, `session`,
+  `private_key` or `access_key`, a bearer token, a JSON Web Token, and the
+  password in a URL each become `[REDACTED]`. Matching a key by substring
+  deliberately over-hides a few harmless values (`max_tokens=100`,
+  `author=…`). The log view says only that some values may be redacted and
+  lists none of this: the backend owns those rules.
+- **One logical message is not one line.** A spawned run's pretty-printed
+  logger arrives as several `stdout` lines, and capture stores them as it
+  received them; the view shows them in order, monospaced and wrapped, and
+  never tries to join them back together. The same call can come out
+  differently by mode: `console.error("x", { n: 1 })` is one line in a
+  worker or in-process run, but several from a spawned child, because Bun
+  prints the object across lines there. The stream filter is what makes
+  such a log readable: `logger` alone is the handler's own narrative
+  (its `ctx.log()` lines), and `stdout`/`stderr` are what it printed,
+  whichever way it ran. A `log` line's fields are already rendered
+  into its text as `key=value`, so there is nothing structured to expand, and
+  a line may carry no level at all — a bare `ctx.log("x")` in an
+  `in-process` run has none.
 
 ### API docs
 
@@ -474,6 +676,8 @@ children (a child's events are on its own channel).
 |---|---|
 | Overview counts and queue table | 5 s |
 | Overview sparklines | 30 s, fetched only once a row scrolls into view |
+| Overview Runners and Workers sections | 5 s for the roll-up; 30 s for the visible page's sparklines |
+| Overview "Over the range" added-by-state group | 20 s (it counts job records) |
 | Queue list | 5 s |
 | Queue counts and the jobs page on screen | 5 s |
 | Queue detail (paused, limits) | 15 s |
@@ -516,7 +720,14 @@ These `data-testid` hooks are stable:
   `live-status-announcer` (its polite live region), `not-found`,
   `screen-error` (a screen that crashed), `shortcut-list` (the `?` dialog).
 - Overview: `overview`, `state-counts`, `queue-row-<queue>`,
-  `queues-truncated`.
+  `queues-truncated`, `jobs-series`, `runners-analytics`,
+  `runner-analytics-row-<runner>`, `runners-truncated`, `workers-analytics`,
+  `worker-analytics-row-<key>`, `workers-truncated`, `workers-rows-note`, the
+  range captions `jobs-range-caption`, `runners-range-caption` and
+  `workers-range-caption` (with `data-clamp-reason`), and the not-retained
+  notes `jobs-range-not-retained`, `runners-range-not-retained` and
+  `workers-range-not-retained`; the "Over the range" tile `range-stat` and
+  its added-by-state group `range-stat-added`.
 - Queues: `queues-list`, `queue-screen`, `queue-total`, `job-row-<id>`,
   `bulk-count`, `retry-all-in-progress`, `worker-row-<id>`,
   `repeatable-row-<key>`.
@@ -586,7 +797,13 @@ real `createJobsApi` in `runner` mode with a real local `BunRunner`.
 
 ### Loaded on demand
 
-The Overview ships in the entry bundle. The queue, job and runner screens, the
+The Overview ships in the entry bundle, except its Runners and Workers
+sections: they are one split chunk, fetched only when a section may render,
+so a deployment recording no runner or worker analytics never loads it. The
+"Over the range" tile's added-by-state group is a chunk of its own, fetched
+only where `features.addedByState` is true. The queue screen's Job defaults
+panel, with its two dialogs, is a chunk of its own too, fetched only when
+that tab is opened. The queue, job, runner and worker screens, the
 Events console and the API docs are split chunks, fetched the first time one
 is opened (a labelled spinner shows meanwhile) and served from the same
 assets path, which the CSP's `script-src 'self'` allows. Styles are not split

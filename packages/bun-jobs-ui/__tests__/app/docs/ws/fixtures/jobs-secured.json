@@ -227,6 +227,36 @@
         "queue.debounced": { "$ref": "#/components/messages/queue.debounced" },
         "queue.throttled": { "$ref": "#/components/messages/queue.throttled" }
       }
+    },
+    "workers": {
+      "address": "workers",
+      "title": "Workers",
+      "description": "Every worker event, on every queue: a controller's instruction, a worker changing state, and a worker adopting or refusing a configuration override. A logical channel: subscribe with its name over the connection.",
+      "messages": {
+        "worker.control": { "$ref": "#/components/messages/worker.control" },
+        "worker.state": { "$ref": "#/components/messages/worker.state" },
+        "worker.config": { "$ref": "#/components/messages/worker.config" }
+      }
+    },
+    "queueWorkers": {
+      "address": "queue/{queue}/workers",
+      "title": "Queue workers",
+      "description": "Every worker event of one queue. Worker events are grouped per queue, never per worker, so a process with several workers on a queue shares one subscription and none of them see the queue's job firehose. A logical channel: subscribe with its name over the connection.",
+      "parameters": {
+        "queue": {
+          "description": "A queue name, matching `^(?!\\.\\.?$)[\\w.-]+$` (at most 200 characters).",
+          "x-bun-jobs-schema": {
+            "type": "string",
+            "pattern": "^(?!\\.\\.?$)[\\w.-]+$",
+            "maxLength": 200
+          }
+        }
+      },
+      "messages": {
+        "worker.control": { "$ref": "#/components/messages/worker.control" },
+        "worker.state": { "$ref": "#/components/messages/worker.state" },
+        "worker.config": { "$ref": "#/components/messages/worker.config" }
+      }
     }
   },
   "operations": {
@@ -368,6 +398,30 @@
         { "$ref": "#/channels/job/messages/queue.retried" },
         { "$ref": "#/channels/job/messages/queue.debounced" },
         { "$ref": "#/channels/job/messages/queue.throttled" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveWorkersEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/workers" },
+      "title": "Receive workers events",
+      "summary": "Every worker event, on every queue: a controller's instruction, a worker changing state, and a worker adopting or refusing a configuration override.",
+      "messages": [
+        { "$ref": "#/channels/workers/messages/worker.control" },
+        { "$ref": "#/channels/workers/messages/worker.state" },
+        { "$ref": "#/channels/workers/messages/worker.config" }
+      ],
+      "x-bun-jobs-action": "events.subscribe"
+    },
+    "receiveQueueWorkersEvents": {
+      "action": "receive",
+      "channel": { "$ref": "#/channels/queueWorkers" },
+      "title": "Receive queue workers events",
+      "summary": "Every worker event of one queue. Worker events are grouped per queue, never per worker, so a process with several workers on a queue shares one subscription and none of them see the queue's job firehose.",
+      "messages": [
+        { "$ref": "#/channels/queueWorkers/messages/worker.control" },
+        { "$ref": "#/channels/queueWorkers/messages/worker.state" },
+        { "$ref": "#/channels/queueWorkers/messages/worker.config" }
       ],
       "x-bun-jobs-action": "events.subscribe"
     }
@@ -1877,7 +1931,10 @@
                 "queued",
                 "skipped",
                 "timeout",
-                "killed"
+                "killed",
+                "logs",
+                "state",
+                "config"
               ]
             },
             "minItems": 1
@@ -1921,6 +1978,263 @@
         "required": ["op", "id", "channels"],
         "additionalProperties": false,
         "description": "Leaves channels. One unsubscribe removes a channel however many times it was subscribed; leaving a channel not held is not an error."
+      },
+      "WorkerConfigEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "worker" },
+          "type": { "type": "string", "const": "config" },
+          "target": {
+            "type": "string",
+            "description": "The queue the worker consumes."
+          },
+          "id": {
+            "type": "string",
+            "description": "The worker this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/WorkerConfigPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A worker adopted, or refused part of, a configuration override."
+      },
+      "WorkerConfigEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/WorkerConfigEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A worker adopted, or refused part of, a configuration override."
+      },
+      "WorkerConfigPayload": {
+        "type": "object",
+        "properties": {
+          "worker": {
+            "type": "string",
+            "description": "The worker's incarnation id."
+          },
+          "key": {
+            "type": "string",
+            "description": "The worker's stable key."
+          },
+          "seq": {
+            "type": "integer",
+            "description": "The version of the override it applied."
+          },
+          "overridden": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "concurrency",
+                "pollInterval",
+                "maxBlock",
+                "lockDuration",
+                "heartbeatInterval",
+                "stalledInterval",
+                "maxStalledCount",
+                "reportInterval",
+                "drainDelay"
+              ]
+            },
+            "description": "Which settings the override replaces, after any refusal."
+          },
+          "error": {
+            "type": "string",
+            "description": "Why a field was refused, when one was."
+          }
+        },
+        "required": ["worker", "key", "seq", "overridden"],
+        "additionalProperties": false
+      },
+      "WorkerControlEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "worker" },
+          "type": { "type": "string", "const": "control" },
+          "target": {
+            "type": "string",
+            "description": "The queue the worker consumes."
+          },
+          "id": {
+            "type": "string",
+            "description": "The worker this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/WorkerControlPayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A controller recorded an instruction for a worker."
+      },
+      "WorkerControlEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/WorkerControlEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A controller recorded an instruction for a worker."
+      },
+      "WorkerControlPayload": {
+        "type": "object",
+        "properties": {
+          "worker": {
+            "type": "string",
+            "description": "The incarnation it is addressed to, when it is addressed to one."
+          },
+          "key": {
+            "type": "string",
+            "description": "The stable key it is addressed to, when it is addressed to one."
+          },
+          "action": {
+            "type": "string",
+            "enum": ["pause", "resume", "stop", "start", "config", "reset"],
+            "description": "What the controller asked for."
+          },
+          "seq": {
+            "type": "integer",
+            "description": "The version of the entry the controller wrote."
+          }
+        },
+        "required": ["action", "seq"],
+        "additionalProperties": false
+      },
+      "WorkerStateEvent": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "const": 1,
+            "description": "Envelope version."
+          },
+          "kind": { "type": "string", "const": "worker" },
+          "type": { "type": "string", "const": "state" },
+          "target": {
+            "type": "string",
+            "description": "The queue the worker consumes."
+          },
+          "id": {
+            "type": "string",
+            "description": "The worker this event is about, where it is about one."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it was emitted, epoch ms."
+          },
+          "payload": { "$ref": "#/components/schemas/WorkerStatePayload" }
+        },
+        "required": ["v", "kind", "type", "target", "at", "payload"],
+        "additionalProperties": false,
+        "description": "A worker changed what it is doing."
+      },
+      "WorkerStateEventMessage": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "const": "event" },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequence number within `epoch`."
+          },
+          "epoch": {
+            "type": "string",
+            "description": "The server instance's epoch."
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "The channels it is sent for. Live: every subscribed channel it matched, in one frame. In a resume's replay: the resuming subscribe's channels it matched and had not been sent for, so an event can arrive again for channels it had not reached. No (seq, channel) pair repeats: de-duplicate on that pair, not on seq alone."
+          },
+          "event": { "$ref": "#/components/schemas/WorkerStateEvent" }
+        },
+        "required": ["type", "seq", "epoch", "subscriptions", "event"],
+        "additionalProperties": false,
+        "description": "A worker changed what it is doing."
+      },
+      "WorkerStatePayload": {
+        "type": "object",
+        "properties": {
+          "worker": {
+            "type": "string",
+            "description": "The worker's incarnation id."
+          },
+          "key": {
+            "type": "string",
+            "description": "The worker's stable key."
+          },
+          "state": {
+            "type": "string",
+            "enum": ["running", "paused", "stopping", "stopped", "restarting"],
+            "description": "What it is now."
+          },
+          "previous": {
+            "type": "string",
+            "enum": ["running", "paused", "stopping", "stopped", "restarting"],
+            "description": "What it was."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, where there is anything to add."
+          },
+          "at": {
+            "type": "integer",
+            "description": "When it changed, epoch ms."
+          }
+        },
+        "required": ["worker", "key", "state", "previous", "at"],
+        "additionalProperties": false
       }
     },
     "messages": {
@@ -2745,6 +3059,105 @@
                 "type": "repeatScheduled",
                 "at": 1789808401500,
                 "payload": { "key": "digest", "nextRunAt": 1789894800000 }
+              }
+            }
+          }
+        ]
+      },
+      "worker.control": {
+        "name": "worker.control",
+        "title": "Worker control",
+        "summary": "A controller recorded an instruction for a worker.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/WorkerControlEventMessage" },
+        "examples": [
+          {
+            "name": "worker.control",
+            "summary": "A controller recorded an instruction for a worker.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail/workers"],
+              "event": {
+                "v": 1,
+                "kind": "worker",
+                "target": "mail",
+                "type": "control",
+                "at": 1789808400000,
+                "payload": {
+                  "worker": "billing.mail.7f3a1c",
+                  "action": "pause",
+                  "seq": 4
+                }
+              }
+            }
+          }
+        ]
+      },
+      "worker.state": {
+        "name": "worker.state",
+        "title": "Worker state",
+        "summary": "A worker changed what it is doing.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/WorkerStateEventMessage" },
+        "examples": [
+          {
+            "name": "worker.state",
+            "summary": "A worker changed what it is doing.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail/workers"],
+              "event": {
+                "v": 1,
+                "kind": "worker",
+                "target": "mail",
+                "type": "state",
+                "id": "billing.mail.7f3a1c",
+                "at": 1789808400030,
+                "payload": {
+                  "worker": "billing.mail.7f3a1c",
+                  "key": "billing.mail",
+                  "state": "paused",
+                  "previous": "running",
+                  "reason": "control",
+                  "at": 1789808400030
+                }
+              }
+            }
+          }
+        ]
+      },
+      "worker.config": {
+        "name": "worker.config",
+        "title": "Worker config",
+        "summary": "A worker adopted, or refused part of, a configuration override.",
+        "contentType": "application/json",
+        "payload": { "$ref": "#/components/schemas/WorkerConfigEventMessage" },
+        "examples": [
+          {
+            "name": "worker.config",
+            "summary": "A worker adopted, or refused part of, a configuration override.",
+            "payload": {
+              "type": "event",
+              "seq": 43,
+              "epoch": "5f0c3a52-8e1d-4c6b-9a57-2b8f1d0e6c43",
+              "subscriptions": ["queue/mail/workers"],
+              "event": {
+                "v": 1,
+                "kind": "worker",
+                "target": "mail",
+                "type": "config",
+                "id": "billing.mail.7f3a1c",
+                "at": 1789808400060,
+                "payload": {
+                  "worker": "billing.mail.7f3a1c",
+                  "key": "billing.mail",
+                  "seq": 9,
+                  "overridden": ["concurrency", "pollInterval"]
+                }
               }
             }
           }

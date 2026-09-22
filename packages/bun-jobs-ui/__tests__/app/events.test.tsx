@@ -2,6 +2,7 @@ import type { MetaDto } from "../../app/api/types";
 import {
   QUEUE_EVENT_TYPES,
   RUNNER_EVENT_TYPES,
+  WORKER_EVENT_TYPES,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { describe, expect, it } from "bun:test";
 import {
@@ -18,7 +19,12 @@ import {
 } from "../../app/screens/events/eventLog";
 import { act, fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
 import { metaFixture, queueListFixture } from "./fixtures";
-import { installLiveFake, queueEvent, runnerEvent } from "./liveFake";
+import {
+  installLiveFake,
+  queueEvent,
+  runnerEvent,
+  workerEvent,
+} from "./liveFake";
 import { renderApp } from "./renderApp";
 import { runnerListFixture } from "./runners/fixtures";
 
@@ -117,14 +123,37 @@ describe("eventLog", () => {
       "queues",
       "queue",
       "job",
+      "workers",
+      "queueWorkers",
       "runners",
       "runner",
     ]);
-    expect(scopesFor("jobs")).toEqual(["queues", "queue", "job"]);
+    expect(scopesFor("jobs")).toEqual([
+      "queues",
+      "queue",
+      "job",
+      "workers",
+      "queueWorkers",
+    ]);
     expect(scopesFor("runner")).toEqual(["runners", "runner"]);
     expect(channelName(defaultChoice("both"))).toBe("all");
     expect(channelName(defaultChoice("jobs"))).toBe("queues");
     expect(channelName(defaultChoice("runner"))).toBe("runners");
+  });
+
+  it("reads the worker channels back, and offers them only where queues exist", () => {
+    // Worker events are off `all` and `queues`, so these are their own
+    // channels; the one-queue pattern must not swallow `queue/x/workers`.
+    expect(parseChannel("workers", "both")).toEqual({ scope: "workers" });
+    expect(parseChannel("queue/emails/workers", "jobs")).toEqual({
+      scope: "queueWorkers",
+      queue: "emails",
+    });
+    expect(channelName({ scope: "queueWorkers", queue: "emails" })).toBe(
+      "queue/emails/workers",
+    );
+    expect(parseChannel("workers", "runner")).toBeNull();
+    expect(typesFor({ scope: "workers" })).toEqual(WORKER_EVENT_TYPES);
   });
 
   it("reads channels back, job ids decoded, and refuses what the mode lacks", () => {
@@ -260,6 +289,38 @@ describe("the Events console", () => {
     expect(queue!.querySelector("time")!.getAttribute("dateTime")).toMatch(
       /^\d{4}-\d\d-\d\dT/,
     );
+  });
+
+  it("links a worker event's target to its queue, under a kind badge of its own", async () => {
+    await renderEvents("?channel=workers");
+    expect(subscription().channels).toEqual(["workers"]);
+    await emit(
+      workerEvent({
+        type: "state",
+        target: "mail",
+        id: "api.mail.4f2a",
+        payload: {
+          worker: "api.mail.4f2a",
+          key: "api.mail",
+          state: "paused",
+          previous: "running",
+          at: Date.now(),
+        },
+      }),
+    );
+    const [worker] = rows();
+    expect(worker!.dataset.type).toBe("state");
+    // A worker event's target is the QUEUE the worker consumes.
+    expect(
+      within(worker!).getByRole("link", { name: "mail" }).getAttribute("href"),
+    ).toBe("/jobs/queues/mail");
+    const kind = worker!.querySelector(".events-kind .badge")!;
+    expect(kind.textContent).toBe("worker");
+    // Its own tone: neither the queue's (info) nor the runner's (accent).
+    expect(kind.className).toContain("badge-neutral");
+    expect(kind.className).not.toContain("badge-accent");
+    expect(kind.className).not.toContain("badge-info");
+    expect(worker!.textContent).toContain("api.mail.4f2a");
   });
 
   it("opens on `queues` in mode jobs", async () => {

@@ -84,17 +84,62 @@ describe("reading a real generated document", () => {
 
   it("groups by tag in the document's tags order", () => {
     const groups = groupByTag(doc, operations);
+    expect(groups.map((group) => group.name)).toEqual(
+      (doc.tags as { name: string }[]).map((tag) => tag.name),
+    );
+    // Named, so the order is an assertion and not a tautology: the worker
+    // surface sits between the queues it belongs to and the jobs they run.
     expect(groups.map((group) => group.name)).toEqual([
       "Meta",
       "Docs",
       "Queues",
+      "Workers",
       "Jobs",
       "Runners",
+      // The analytics routes (bun-jobs' `metrics.read` series), a tag of
+      // their own at the end of the document's list.
+      "Analytics",
     ]);
     expect(groups[0]!.operations.map((operation) => operation.id)).toContain(
       "getMeta",
     );
     expect(groups[0]!.description).toBeTruthy();
+    // Every operation lands in exactly one group.
+    expect(
+      groups.reduce((sum, group) => sum + group.operations.length, 0),
+    ).toBe(operations.length);
+  });
+
+  it("lists the worker routes under the Workers tag", () => {
+    const workers = groupByTag(doc, operations).find(
+      (group) => group.name === "Workers",
+    )!;
+    expect(
+      workers.operations.map((operation) => [
+        operation.method,
+        operation.path,
+        operation.id,
+      ]),
+    ).toEqual([
+      ["GET", "/queues/{queue}/workers", "listQueueWorkers"],
+      ["GET", "/workers", "listWorkers"],
+      ["GET", "/queues/{queue}/workers/{worker}", "getWorker"],
+      ["POST", "/queues/{queue}/workers/{worker}/pause", "pauseWorker"],
+      ["POST", "/queues/{queue}/workers/{worker}/resume", "resumeWorker"],
+      ["POST", "/queues/{queue}/workers/{worker}/stop", "stopWorker"],
+      ["POST", "/queues/{queue}/workers/{worker}/start", "startWorker"],
+      ["GET", "/queues/{queue}/worker-configs", "listWorkerConfigs"],
+    ]);
+    expect(op("pauseWorker")).toMatchObject({
+      action: "workers.pause",
+      mutation: true,
+    });
+    expect(op("listWorkers").mutation).toBe(false);
+    // The config *writes* are opt-in actions (`workers.configure`), so a
+    // default API neither routes nor documents them.
+    expect(operations.map((operation) => operation.id)).not.toContain(
+      "configureWorker",
+    );
   });
 
   it("filters by path, operation id and summary, every term required", () => {
@@ -105,7 +150,19 @@ describe("reading a real generated document", () => {
       );
     expect(ids("pausequeue")).toEqual(["pauseQueue"]);
     expect(ids("/runners/{runner}/kill")).toEqual(["killRunner"]);
-    expect(ids("post pause")).toEqual(["pauseQueue", "pauseRunner"]);
+    expect(ids("/queues/{queue}/workers/{worker}/stop")).toEqual([
+      "stopWorker",
+    ]);
+    // In tag order, and on the summary as well as the id: `resumeWorker`
+    // ("Let a paused worker claim again") and `startWorker` ("clearing any
+    // pause") match "pause" through their prose.
+    expect(ids("post pause")).toEqual([
+      "pauseQueue",
+      "pauseWorker",
+      "resumeWorker",
+      "startWorker",
+      "pauseRunner",
+    ]);
     expect(ids("no-such-thing")).toEqual([]);
   });
 

@@ -48,7 +48,16 @@ const LIMITS = { defaultPageSize: 20, maxPageSize: 100 };
 describe("the queue screens' pure helpers", () => {
   it("builds a jobs query of only non-defaults, names as repeated keys, never include", () => {
     const filters = readJobFilters(new URLSearchParams(""), "all", LIMITS);
-    expect(serializeQuery(jobListQuery(filters))).toBe("?limit=20");
+    // Newest first is the UI's default, but the API's default is oldest
+    // first, so it is always sent; only `asc` is left to the API's default.
+    expect(filters.order).toBe("desc");
+    expect(serializeQuery(jobListQuery(filters))).toBe("?limit=20&order=desc");
+    const oldest = readJobFilters(
+      new URLSearchParams("order=asc"),
+      "all",
+      LIMITS,
+    );
+    expect(serializeQuery(jobListQuery(oldest))).toBe("?limit=20");
     const full = readJobFilters(
       new URLSearchParams(
         "offset=40&limit=500&order=desc&name=a,b,a&search=x&total=1",

@@ -1,6 +1,6 @@
 import type { QueryKey } from "@tanstack/react-query";
 import type { ApiClient, QueryParams } from "./client";
-import type { JobState } from "./contract";
+import type { JobListSort, JobState } from "./contract";
 import type {
   BulkPromoteResultDto,
   BulkRemoveResultDto,
@@ -53,6 +53,97 @@ export interface JobListFilters {
   search: string;
   /** Whether to ask for `page.total`. */
   total: boolean;
+  /**
+   * The job-attribution filters, or absent for none. They reach the request
+   * only when {@link jobListQuery} is told `features.jobAttribution` is true:
+   * an API without it refuses all four parameters (400 `VALIDATION`).
+   */
+  attribution?: JobAttributionFilters;
+}
+
+/**
+ * The window a jobs page is read over, on `finishedOn`. Stored as what the
+ * user chose, never as instants a rolling window happened to resolve to, so a
+ * query key stays put while the clock moves; {@link jobListQuery} resolves it.
+ */
+export type FinishedWindow =
+  | {
+      /** A rolling window ending now. */
+      kind: "last";
+      /** Its length, in ms: `finishedFrom` is now minus this, with no `finishedTo`. */
+      ms: number;
+    }
+  | {
+      /** A fixed span. */
+      kind: "between";
+      /** `finishedFrom`, epoch ms, inclusive. */
+      from: number;
+      /** `finishedTo`, epoch ms, exclusive; after `from`, or the API answers 400. */
+      to: number;
+    };
+
+/**
+ * Which worker ran a job's last attempt (`processedBy`) and when it finished:
+ * `GET /queues/:queue/jobs`' `workerKey`, `workerId`, `finishedFrom` and
+ * `finishedTo`. ANDed with the other filters.
+ */
+export interface JobAttributionFilters {
+  /**
+   * Stable keys (`processedBy.key`), each sent as its own `workerKey`. The API
+   * splits every value at commas, so a key holding one cannot be sent: check
+   * {@link isSendableFilterValue} first.
+   */
+  workerKeys: readonly string[];
+  /** Incarnation ids (`processedBy.id`), each its own `workerId`; the same comma rule. */
+  workerIds: readonly string[];
+  /**
+   * The `finishedOn` window, or `null` for none. A job with no `finishedOn`
+   * (waiting, delayed, active, waiting on children, failed with a retry
+   * pending) never matches a window, from either end.
+   */
+  finished: FinishedWindow | null;
+}
+
+/**
+ * Whether a value can be sent as ONE job-list filter value: the API splits
+ * every value at commas, so a value holding one would become two filters.
+ */
+export function isSendableFilterValue(value: string): boolean {
+  return value !== "" && !value.includes(",");
+}
+
+/** Options of {@link jobListQuery} and {@link listJobs}. */
+export interface JobListQueryOptions {
+  /**
+   * `meta.features.jobAttribution`. Only when it is `true` are the
+   * attribution filters sent; otherwise they are dropped, since the API
+   * refuses them. Defaults to `false`.
+   */
+  attribution?: boolean;
+  /** The clock a rolling `finished` window resolves against, epoch ms. Defaults to `Date.now()`. */
+  now?: number;
+  /**
+   * `meta.features.addedByState`. When `true` the page is sorted by creation
+   * time on every tab (`sort=createdAt`), unless the filters count the total:
+   * see {@link sortsByCreation}. Otherwise no `sort` is sent and each tab
+   * keeps its natural order, since an API without the feature refuses
+   * `sort=createdAt` (400 `INVALID_ARGUMENT`). Defaults to `false`.
+   */
+  createdOrder?: boolean;
+}
+
+/**
+ * Whether a page is sorted by creation time (`sort=createdAt`): only where
+ * the backend serves it (`createdOrder`, `features.addedByState`) and never
+ * together with `total=true`. On SQL and MongoDB a `createdAt` page of one
+ * large state is a top-N sort over every job of that state, and counting it
+ * walks them all again; a counted page keeps the tab's natural order instead.
+ */
+export function sortsByCreation(
+  filters: Pick<JobListFilters, "total">,
+  createdOrder: boolean | undefined,
+): boolean {
+  return createdOrder === true && !filters.total;
 }
 
 /** Query keys of the queue screens. */
@@ -100,16 +191,53 @@ function base(queue: string, suffix = ""): string {
   return `/queues/${segment(queue)}${suffix}`;
 }
 
-/** Turns jobs-list filters into the request's query: only what differs from the API's defaults, arrays as repeated keys, never `include`. */
-export function jobListQuery(filters: JobListFilters): QueryParams {
+/**
+ * Turns jobs-list filters into the request's query: only what differs from
+ * the API's defaults, arrays as repeated keys, never `include`. The
+ * attribution filters are added only with `options.attribution` true, and
+ * `sort=createdAt` only as {@link sortsByCreation} allows.
+ */
+export function jobListQuery(
+  filters: JobListFilters,
+  options: JobListQueryOptions = {},
+): QueryParams {
+  const attribution =
+    options.attribution === true ? filters.attribution : undefined;
+  const finished = attribution?.finished ?? null;
+  const now = options.now ?? Date.now();
+  const sort: JobListSort | undefined = sortsByCreation(
+    filters,
+    options.createdOrder,
+  )
+    ? "createdAt"
+    : undefined;
   return {
     state: filters.state === null ? undefined : [filters.state],
     offset: filters.offset > 0 ? filters.offset : undefined,
     limit: filters.limit,
     order: filters.order === "desc" ? "desc" : undefined,
+    sort,
     name: filters.names.length > 0 ? filters.names : undefined,
     search: filters.search || undefined,
     total: filters.total ? true : undefined,
+    workerKey:
+      attribution && attribution.workerKeys.length > 0
+        ? attribution.workerKeys
+        : undefined,
+    workerId:
+      attribution && attribution.workerIds.length > 0
+        ? attribution.workerIds
+        : undefined,
+    finishedFrom:
+      finished === null
+        ? undefined
+        : finished.kind === "last"
+          ? now - finished.ms
+          : finished.from,
+    finishedTo:
+      finished !== null && finished.kind === "between"
+        ? finished.to
+        : undefined,
   };
 }
 
@@ -161,15 +289,21 @@ export function getQueueCounts(
   return api.request<JobCountsDto>("GET", base(queue, "/counts"), { signal });
 }
 
-/** `GET /queues/:queue/jobs`. */
+/**
+ * `GET /queues/:queue/jobs`. The attribution filters go out only with
+ * `options.attribution` (`features.jobAttribution`) true, and
+ * `sort=createdAt` only with `options.createdOrder`
+ * (`features.addedByState`) true.
+ */
 export function listJobs(
   api: ApiClient,
   queue: string,
   filters: JobListFilters,
   signal?: AbortSignal,
+  options: JobListQueryOptions = {},
 ): Promise<JobPageDto> {
   return api.request<JobPageDto>("GET", base(queue, "/jobs"), {
-    query: jobListQuery(filters),
+    query: jobListQuery(filters, options),
     signal,
   });
 }

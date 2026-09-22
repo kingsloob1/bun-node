@@ -1,0 +1,107 @@
+/* The queue screen's Job defaults panel and its two dialogs. */
+
+.job-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.job-defaults p {
+  margin: 0;
+}
+
+.job-defaults-heading {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.job-defaults-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.job-defaults-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.job-defaults-row > .field,
+.job-defaults-row > .field-row {
+  align-self: stretch;
+}
+
+.job-defaults-row legend {
+  font-weight: 600;
+}
+
+.job-defaults-values,
+.job-defaults-note,
+.job-defaults-uses-code {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.job-defaults-reset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.job-defaults-reset-note {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.job-defaults-conflict,
+.job-defaults-warning {
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.job-defaults-conflict {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.job-defaults-conflict p {
+  margin: 0;
+}
+
+.job-defaults-apply-states {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.job-defaults-apply-keys {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.job-defaults-preview h3 {
+  margin: var(--space-2) 0;
+  font-size: var(--text-md);
+}
+
+[data-testid="apply-progress"] progress {
+  width: 100%;
+}

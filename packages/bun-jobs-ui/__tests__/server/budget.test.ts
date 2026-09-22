@@ -8,9 +8,21 @@ import { describe, expect, it } from "bun:test";
 import { buildAssets } from "../../lib/assets";
 
 /**
- * Byte limits, each about 10% above what the build measured when it was set
- * (M6, Bun 1.4.3): entry 290.2 KiB (92.7 KiB gzipped), largest lazy chunk
- * the API docs at 66.2 KiB (20.9 KiB gzipped).
+ * Byte limits, each about 10% above what the build measured when it was set.
+ *
+ * - Entry, raised 2026-09-21 (Bun 1.4.3): measured 316.4 KiB (101.6 KiB
+ *   gzipped), leaving 0.4 KiB of gzipped room under the old 320 / 102 KiB.
+ *   Why it grew: the UI-updates round added the Workers screens, worker
+ *   control, the time-range model and picker, the analytics client and the
+ *   contract's new constants. Every new screen and section went into a lazy
+ *   chunk; what reached the entry is the shared code the Overview and the
+ *   layout need at first paint (nav entries, the range picker and its URL
+ *   state, the contract's constant arrays). The user decided to raise it
+ *   rather than move the Overview's range control and queue table out of the
+ *   entry.
+ * - Chunks, unchanged since M6 (entry then 290.2 KiB / 92.7 KiB gzipped): the
+ *   largest lazy chunk is the API docs, 66.7 KiB (21.2 KiB gzipped) on
+ *   2026-09-21, still under its limit.
  *
  * To raise one deliberately: run `bun scripts/build.ts --out <tmp dir>`,
  * which prints every file's size and gzipped size, set the limit about 10%
@@ -19,9 +31,9 @@ import { buildAssets } from "../../lib/assets";
  */
 export const BUNDLE_BUDGET = {
   /** The entry module (`manifest.entry.js`), minified, in bytes. */
-  entryBytes: 320 * 1024,
+  entryBytes: 348 * 1024,
   /** The entry module gzipped (`Bun.gzipSync`, default level), in bytes. */
-  entryGzipBytes: 102 * 1024,
+  entryGzipBytes: 112 * 1024,
   /** Any other JavaScript file of the build (a lazy screen or a shared chunk), minified, in bytes. */
   chunkBytes: 73 * 1024,
   /** Any other JavaScript file gzipped, in bytes. */
