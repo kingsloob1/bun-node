@@ -460,6 +460,16 @@ export interface SqlDialect {
    */
   affectedRows: (result: unknown, connection: SQL) => Promise<number>;
   /**
+   * Whether {@link affectedRows} counts rows *changed* rather than matched.
+   *
+   * MySQL and MariaDB: an `UPDATE` that writes the values a row already holds
+   * counts 0, and Bun's client cannot ask for `CLIENT_FOUND_ROWS`. A write that
+   * may legitimately change nothing — a lock renewed to the expiry it already
+   * has, the same progress twice — then needs a read to tell "matched" from
+   * "missed". Postgres and SQLite count matched rows.
+   */
+  readonly countsChangedRows: boolean;
+  /**
    * Whether the claim statement needs a transaction wrapped around it.
    *
    * Postgres does not: its data-modifying CTE is atomic on its own, and the
@@ -1355,6 +1365,7 @@ const postgres: SqlDialect = {
     `WITH written AS (${statement} RETURNING id)
      SELECT id, pg_notify('${channel}', '') FROM written`,
   rangedWritesNeedTransaction: false,
+  countsChangedRows: false,
 };
 
 /** MySQL: `?` placeholders, `INSERT IGNORE`, and a derived table for updates. */
@@ -1565,6 +1576,7 @@ const mysql: SqlDialect = {
   supportsListen: false,
   notifyingInsert: (statement) => statement,
   rangedWritesNeedTransaction: true,
+  countsChangedRows: true,
 };
 
 /**
@@ -1714,6 +1726,7 @@ const sqlite: SqlDialect = {
   supportsListen: false,
   notifyingInsert: (statement) => statement,
   rangedWritesNeedTransaction: false,
+  countsChangedRows: false,
   transaction: async (sql, fn) =>
     // The mutex serialises writers inside this process; the retry handles the
     // ones in other processes, which contend for the file's single write lock.
