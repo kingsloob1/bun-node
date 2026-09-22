@@ -635,7 +635,13 @@ export function toRunnerConfigDto(config: RunnerConfigInfo): RunnerConfigDto {
       ? {}
       : { appliedSeq: config.appliedSeq }),
     ...(config.error
-      ? { error: { at: config.error.at, message: config.error.message } }
+      ? {
+          error: {
+            at: config.error.at,
+            message: config.error.message,
+            keys: [...config.error.keys],
+          },
+        }
       : {}),
     ...(config.updatedAt === undefined ? {} : { updatedAt: config.updatedAt }),
   };

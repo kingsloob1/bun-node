@@ -175,10 +175,17 @@ export const RunnerConfigSchema = s.named(
     ),
     error: s.optional(
       s.object(
-        { at: s.integer(), message: s.string() },
+        {
+          at: s.integer(),
+          message: s.string(),
+          keys: s.array(s.enum(RUNNER_CONFIG_KEYS), {
+            description:
+              "The settings the owner refused, in `RUNNER_CONFIG_KEYS` order; every other overridden setting was adopted. A whole-override refusal names every overridden key. `[]` on an error an owner recorded before this field existed.",
+          }),
+        },
         {
           description:
-            "Why an owner refused part of the override; absent when the last one was adopted whole.",
+            "Why an owner refused the override, in whole or in part; absent when the last one was adopted entire. `keys` names the refused settings.",
         },
       ),
     ),

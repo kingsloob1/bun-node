@@ -231,7 +231,12 @@ export const WORKER_EVENT_PAYLOADS = {
     worker: WorkerId,
     key: WorkerKey,
     state: s.enum(WORKER_STATES, { description: "What it is now." }),
-    previous: s.enum(WORKER_STATES, { description: "What it was." }),
+    previous: s.optional(
+      s.enum(WORKER_STATES, {
+        description:
+          'What it was. Absent on the worker\'s first state announcement since it started: its first `run()`, announced as `running`; `paused` when it starts paused; or `stopped` (reason `"stopped persistently"`) when a stop recorded against its key holds it parked. A restart after a stop carries it.',
+      }),
+    ),
     reason: s.optional(
       s.string({ description: "Why, where there is anything to add." }),
     ),
@@ -335,7 +340,8 @@ const RUNNER_EVENT_SUMMARIES: Record<RunnerEventName, string> = {
 /** One line per worker event, for the documents. */
 const WORKER_EVENT_SUMMARIES: Record<WorkerEventName, string> = {
   control: "A controller recorded an instruction for a worker.",
-  state: "A worker changed what it is doing.",
+  state:
+    "A worker changed what it is doing — or, with no `previous`, announced its first start.",
   config: "A worker adopted, or refused part of, a configuration override.",
 };
 

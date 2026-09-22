@@ -178,8 +178,14 @@ export interface WorkerEventPayloads {
     key: string;
     /** What it is now. */
     state: WorkerState;
-    /** What it was. */
-    previous: WorkerState;
+    /**
+     * What it was. Absent on the worker's first state announcement since it
+     * started — a first `run()`, whose `state` is `running`; `paused` when it
+     * starts paused; or `stopped` (reason `"stopped persistently"`) when a stop
+     * recorded against its key holds it parked. A restart after a stop carries
+     * it.
+     */
+    previous?: WorkerState;
     /** Why, where there is anything to add. */
     reason?: string;
     /** When it changed, epoch ms. */

@@ -338,6 +338,13 @@ export interface RunnerConfigInfo {
     at: number;
     /** A safe message naming each refused setting. */
     message: string;
+    /**
+     * The settings the owner refused, in `executionMode, runMode,
+     * maxConcurrency` order; every other overridden setting was adopted. A
+     * whole-override refusal names every overridden key; `[]` on an error an
+     * owner stored before this field existed.
+     */
+    keys: RunnerConfigKey[];
   };
   /** When the override was last written, epoch ms; absent when there is none. */
   updatedAt?: number;

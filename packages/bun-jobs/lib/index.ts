@@ -441,6 +441,7 @@ export {
   JobsNotifier,
   type JobsNotifierEvents,
   type JobsNotifierOptions,
+  type NotifierFollowSource,
 } from "./notifier";
 
 export type { BackoffWarningFields } from "./queue/backoff";

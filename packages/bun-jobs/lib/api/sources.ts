@@ -97,6 +97,38 @@ class TtlSet {
     return reread ? (await reread).has(name) : false;
   }
 
+  /**
+   * Which of `names` are in the set, reading the backend afresh when any is
+   * missing from a cached read — **without** the one-per-window limit
+   * {@link has} keeps. For names that came from the backend itself (the queue
+   * a live worker record says it consumes), never from a client: such a name
+   * exists, so a miss means only that the cache predates it, and the fresh
+   * read replaces the cache for every later caller too. Concurrent callers
+   * share one read.
+   */
+  async confirm(names: Iterable<string>): Promise<ReadonlySet<string>> {
+    const wanted = [...new Set(names)];
+    const read = await this.#read();
+    if (!read.cached || wanted.every((name) => read.names.has(name))) {
+      return new Set(wanted.filter((name) => read.names.has(name)));
+    }
+    let reread = this.#rereading;
+    if (!reread) {
+      this.#rereadAt = this.now();
+      this.clear();
+      reread = this.get();
+      this.#rereading = reread;
+      const settle = () => {
+        if (this.#rereading === reread) {
+          this.#rereading = undefined;
+        }
+      };
+      reread.then(settle, settle);
+    }
+    const fresh = await reread;
+    return new Set(wanted.filter((name) => fresh.has(name)));
+  }
+
   /** Starts (or joins) the miss-driven re-read, unless one ran this window. */
   #reread(): Promise<ReadonlySet<string>> | undefined {
     if (this.#rereading) {
@@ -204,6 +236,22 @@ export class QueueSource {
       return await this.#known.has(name);
     }
     return (this.#config.queues as ReadonlyMap<string, unknown>).has(name);
+  }
+
+  /**
+   * Which of `names` are reachable, for names read from the backend — the
+   * queues live workers consume — never names a client sent. A name missing
+   * from a cached list is checked with a fresh read, not limited to one per
+   * `limits.queueCacheMs` as {@link has} is: a worker on a queue created a
+   * moment ago proves the queue exists, so it must not be hidden for the rest
+   * of the cache window. With a configured `queues` list, only its members.
+   */
+  async confirm(names: Iterable<string>): Promise<ReadonlySet<string>> {
+    if (this.#known) {
+      return await this.#known.confirm(names);
+    }
+    const configured = this.#config.queues as ReadonlyMap<string, unknown>;
+    return new Set([...names].filter((name) => configured.has(name)));
   }
 
   /**

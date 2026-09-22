@@ -105,8 +105,11 @@ export interface StoredRunnerConfig {
   appliedSeq?: number;
   /** When an owner last adopted, epoch ms. */
   appliedAt?: number;
-  /** Why an owner refused part of the override. */
-  error?: { at: number; message: string };
+  /**
+   * Why an owner refused part of the override, and which settings: `keys` is
+   * `[]` on an error an owner stored before it named them.
+   */
+  error?: RunnerConfigError;
   /** When the override was last written, epoch ms. */
   updatedAt?: number;
 }
@@ -119,8 +122,50 @@ export interface ResolvedRunnerConfig {
   overridden: RunnerConfigKey[];
   /** One message per setting whose override was dropped; empty when all were adopted. */
   refusals: string[];
+  /** The settings whose override was dropped, in `RUNNER_CONFIG_KEYS` order; empty when all were adopted. */
+  refusedKeys: RunnerConfigKey[];
   /** One message per adopted setting that needs care (a handler losing `ctx.driver`). */
   warnings: string[];
+}
+
+/**
+ * An owner's refusal of an override, as stored under `config:error` and
+ * reported on {@link RunnerConfigInfo.error}.
+ */
+export interface RunnerConfigError {
+  /** When it was refused, epoch ms. */
+  at: number;
+  /** A safe message naming each refused setting. */
+  message: string;
+  /** The refused settings, in `RUNNER_CONFIG_KEYS` order; `[]` when a stored error predates the field. */
+  keys: RunnerConfigKey[];
+}
+
+/**
+ * Reads a stored `config:error` value, sanitising what an older owner (no
+ * `keys`) or a hand edit left there: unknown keys are dropped, the rest put in
+ * `RUNNER_CONFIG_KEYS` order, and a missing list reads as `[]`. `undefined`
+ * when there is no usable error.
+ */
+export function parseRunnerConfigError(
+  raw: string | undefined,
+): RunnerConfigError | undefined {
+  const error = parseJson<{ at?: unknown; message?: unknown; keys?: unknown }>(
+    raw,
+  );
+  if (
+    !error ||
+    typeof error !== "object" ||
+    typeof error.message !== "string"
+  ) {
+    return undefined;
+  }
+  const listed = Array.isArray(error.keys) ? (error.keys as unknown[]) : [];
+  return {
+    at: Number(error.at) || 0,
+    message: error.message,
+    keys: RUNNER_CONFIG_KEYS.filter((key) => listed.includes(key)),
+  };
 }
 
 /** Whether a string names an execution mode. */
@@ -185,9 +230,7 @@ export function readStoredRunnerConfig(
     ?.filter((mode): mode is ExecutionMode => isExecutionMode(mode))
     .slice();
 
-  const error = parseJson<{ at?: number; message?: string }>(
-    state[RUNNER_CONFIG_STATE.error],
-  );
+  const error = parseRunnerConfigError(state[RUNNER_CONFIG_STATE.error]);
 
   return {
     override: {
@@ -215,9 +258,7 @@ export function readStoredRunnerConfig(
     ...(state[RUNNER_CONFIG_STATE.appliedAt] !== undefined
       ? { appliedAt: Number(state[RUNNER_CONFIG_STATE.appliedAt]) || 0 }
       : {}),
-    ...(error && typeof error.message === "string"
-      ? { error: { at: Number(error.at) || 0, message: error.message } }
-      : {}),
+    ...(error ? { error } : {}),
     ...(state[RUNNER_CONFIG_STATE.updatedAt] !== undefined
       ? { updatedAt: Number(state[RUNNER_CONFIG_STATE.updatedAt]) || 0 }
       : {}),
@@ -301,21 +342,31 @@ export function resolveRunnerConfig(
 ): ResolvedRunnerConfig {
   const { override, code, allowed, hasChildDriver } = input;
   const refusals: string[] = [];
+  const refused = new Set<RunnerConfigKey>();
   const warnings: string[] = [];
+  const refuse = (key: RunnerConfigKey, message: string): void => {
+    refusals.push(message);
+    refused.add(key);
+  };
 
   let executionMode = code.executionMode;
   const rawMode = override.executionMode;
   if (rawMode !== undefined) {
     if (!isExecutionMode(rawMode)) {
-      refusals.push(`executionMode "${rawMode}" is not an execution mode`);
+      refuse(
+        "executionMode",
+        `executionMode "${rawMode}" is not an execution mode`,
+      );
     } else if (!allowed.includes(rawMode)) {
-      refusals.push(
+      refuse(
+        "executionMode",
         `executionMode "${rawMode}" is not one this runner's code permits (${allowed.join(", ")})`,
       );
     } else if (!canSwitchTo(rawMode, code.executionMode, hasChildDriver)) {
       // A runner built from a driver *instance* has no config to hand a
       // child, so a handler moved out of this process reaches no backend.
-      refusals.push(
+      refuse(
+        "executionMode",
         `executionMode "${rawMode}" needs a driver config for the child, and this runner was built from a driver instance`,
       );
     } else {
@@ -338,7 +389,7 @@ export function resolveRunnerConfig(
     if (isRunMode(rawRunMode)) {
       runMode = rawRunMode;
     } else {
-      refusals.push(`runMode "${rawRunMode}" is not an overlap policy`);
+      refuse("runMode", `runMode "${rawRunMode}" is not an overlap policy`);
     }
   }
 
@@ -354,7 +405,8 @@ export function resolveRunnerConfig(
       parsed < bounds.min ||
       parsed > bounds.max
     ) {
-      refusals.push(
+      refuse(
+        "maxConcurrency",
         `maxConcurrency "${rawConcurrency}" is not a whole number between ${bounds.min} and ${bounds.max}`,
       );
     } else {
@@ -366,6 +418,7 @@ export function resolveRunnerConfig(
     effective: { executionMode, runMode, maxConcurrency },
     overridden: overriddenKeys(override),
     refusals,
+    refusedKeys: RUNNER_CONFIG_KEYS.filter((key) => refused.has(key)),
     warnings,
   };
 }

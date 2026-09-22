@@ -101,3 +101,29 @@ export const badAllowList: RunnerRemoteConfigOptions = {
   // @ts-expect-error — the allow-list holds execution modes, not any text.
   executionModes: ["in-process", "fork"],
 };
+
+/* --- a refusal names its settings -------------------------------------- */
+
+/** `error.keys` is required whenever there is an error, on both sides of the wire. */
+export type ErrorKeysPinned = Expect<
+  Equal<
+    NonNullable<RunnerConfigInfo["error"]>["keys"],
+    NonNullable<RunnerConfigDto["error"]>["keys"]
+  >
+>;
+export type ErrorKeysAreSettings = Expect<
+  Equal<NonNullable<RunnerConfigDto["error"]>["keys"], RunnerConfigKey[]>
+>;
+
+// @ts-expect-error — `keys` is always present on an error; `[]` when unknown.
+export const errorWithoutKeys: NonNullable<RunnerConfigDto["error"]> = {
+  at: 1,
+  message: "refused",
+};
+
+export const errorWithForeignKey: NonNullable<RunnerConfigInfo["error"]> = {
+  at: 1,
+  message: "refused",
+  // @ts-expect-error — only the three overridable settings.
+  keys: ["queueRuns"],
+};

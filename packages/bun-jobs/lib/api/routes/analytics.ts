@@ -931,14 +931,12 @@ async function visibleWorkerKeys(
   req: BunRequest,
 ): Promise<WorkerIdentity[]> {
   const workers: WorkerInfo[] = await services.config.jobs!.listWorkers();
-  const reachable = new Set(await services.queues.names());
-  const consumed = [
-    ...new Set(
-      workers
-        .map((worker) => worker.queue)
-        .filter((queue) => reachable.has(queue)),
-    ),
-  ].sort();
+  // Re-read when a worker's queue is newer than the cached list, as
+  // `GET /workers` does.
+  const reachable = await services.queues.confirm(
+    workers.map((worker) => worker.queue),
+  );
+  const consumed = [...reachable].sort();
   const allowed = new Set(await visibleQueueNames(services, req, consumed));
   return liveWorkerKeys(workers, allowed);
 }
@@ -1023,10 +1021,13 @@ async function groupedWorkersRollup(
   const { config } = services;
   const { driver, namespace } = config;
   const query = metricsQuery(range);
-  const [workers, queues] = await Promise.all([
-    listWorkers ? listWorkers() : config.jobs!.listWorkers(),
-    visibleQueues(services, req),
-  ]);
+  const workers = await (listWorkers
+    ? listWorkers()
+    : config.jobs!.listWorkers());
+  // Confirmed first, so a worker's queue newer than the cached list refreshes
+  // it before the visible queues are read from it.
+  await services.queues.confirm(workers.map((worker) => worker.queue));
+  const queues = await visibleQueues(services, req);
   const allowed = new Set(queues);
   const live = liveWorkerKeys(workers, allowed);
   const everyQueue = seesEveryQueue(config);

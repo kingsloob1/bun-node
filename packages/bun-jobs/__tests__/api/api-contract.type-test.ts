@@ -1501,6 +1501,25 @@ export type WorkerEventPayloadsOk = Expect<
   DeepEqual<Contract.WorkerEventPayloadsWire, WorkerEventPayloads>
 >;
 /**
+ * `previous` is optional on `state`: a worker's first announcement since it
+ * started has none, and a client must handle that rather than read `undefined`
+ * as a state.
+ */
+export type WorkerStatePreviousOptional = Expect<
+  Equal<
+    Contract.WorkerEventPayloadsWire["state"]["previous"],
+    Contract.WorkerState | undefined
+  >
+>;
+export type WorkerStatePreviousKeyOptional = Expect<
+  Omit<
+    Contract.WorkerEventPayloadsWire["state"],
+    "previous"
+  > extends Contract.WorkerEventPayloadsWire["state"]
+    ? true
+    : false
+>;
+/**
  * And the two blocks a worker record carries are the DTO's own, so
  * `toWorkerDto` copies them across rather than rebuilding them — the place
  * where a field silently stops being reported.

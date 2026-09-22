@@ -2357,12 +2357,23 @@ export interface RunnerConfigDto {
   seq: number;
   /** The version an owner has adopted; below `seq` means it has not been picked up yet. */
   appliedSeq?: number;
-  /** Why an owner refused the override; absent when the last one was adopted. */
+  /**
+   * Why an owner refused the override, in whole or in part; absent when the
+   * last one was adopted entire. A refusal is per setting: the owner adopts
+   * what it can and names the rest in `keys`.
+   */
   error?: {
     /** When it was refused, epoch ms. */
     at: number;
     /** A safe message. */
     message: string;
+    /**
+     * The settings the owner refused, in `RUNNER_CONFIG_KEYS` order; every
+     * other overridden setting was adopted. A whole-override refusal names
+     * every overridden key. `[]` on an error an owner recorded before this
+     * field existed — which settings it covered is not known.
+     */
+    keys: RunnerConfigKey[];
   };
   /** When the override was written, epoch ms; absent when there is none. */
   updatedAt?: number;

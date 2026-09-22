@@ -58,6 +58,12 @@ export interface JobsNotifierOptions {
   bufferSize?: number;
 }
 
+/**
+ * How a target came to be followed for good: found by a discovery pass (or in
+ * the configured lists it follows), or named to `follow()`.
+ */
+export type NotifierFollowSource = "discovery" | "follow";
+
 /** What a {@link JobsNotifier} emits. */
 // eslint-disable-next-line ts/consistent-type-definitions
 export type JobsNotifierEvents = {
@@ -65,6 +71,24 @@ export type JobsNotifierEvents = {
   event: (event: DriverEvent) => void;
   /** A queue or runner started being followed. */
   subscribed: (kind: EventKind, target: string) => void;
+  /**
+   * A target became followed **for good** — by discovery, the configured
+   * lists, a `BunJobs` creating it, or `follow()` — never by a `hold()`.
+   * Emitted once per target, before its subscription is live. For a queue, a
+   * `hold("worker", queue)` a listener starts here is live before the queue's
+   * own follow resolves, which is how the management API's broad `workers`
+   * channel picks up a new queue without missing its first worker event.
+   *
+   * `source` says how: `"discovery"` for a discovery pass (or the configured
+   * lists it follows), `"follow"` for `follow()` — which is what a `BunJobs`
+   * calls for a queue or runner it creates, before anything is published on
+   * it. A discovered target may already have published events nobody heard.
+   */
+  followed: (
+    kind: EventKind,
+    target: string,
+    source: NotifierFollowSource,
+  ) => void;
   /** Something failed while subscribing or discovering. */
   error: (error: Error, context: string) => void;
 };
@@ -133,6 +157,19 @@ export class JobsNotifier
   /** The queues and runners currently followed, as `<kind>:<target>`. */
   get following(): string[] {
     return [...this.#subscriptions.keys()].sort();
+  }
+
+  /**
+   * The targets of one kind followed for good — by discovery, the configured
+   * lists, a `BunJobs` creating them, or `follow()` — whether or not their
+   * subscription is live yet. A `hold()` alone does not count.
+   */
+  followedForGood(kind: EventKind): string[] {
+    const prefix = `${kind}:`;
+    return [...this.#permanent]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length))
+      .sort();
   }
 
   /**
@@ -241,9 +278,15 @@ export class JobsNotifier
     const workers = this.#workers === "all" ? queueNames : this.#workers;
 
     await Promise.all([
-      ...queues.map(async (queue) => await this.#follow("queue", queue)),
-      ...runners.map(async (runner) => await this.#follow("runner", runner)),
-      ...workers.map(async (queue) => await this.#follow("worker", queue)),
+      ...queues.map(
+        async (queue) => await this.#follow("queue", queue, "discovery"),
+      ),
+      ...runners.map(
+        async (runner) => await this.#follow("runner", runner, "discovery"),
+      ),
+      ...workers.map(
+        async (queue) => await this.#follow("worker", queue, "discovery"),
+      ),
     ]);
   }
 
@@ -278,7 +321,7 @@ export class JobsNotifier
     await this.#follow(
       kind,
       assertSegment(target, targetLabel(kind)),
-      "permanent",
+      "follow",
     );
   }
 
@@ -291,7 +334,7 @@ export class JobsNotifier
    * queue that does not exist yet, or never will.
    */
   async hold(kind: EventKind, target: string): Promise<void> {
-    await this.#follow(kind, assertSegment(target, targetLabel(kind)), "held");
+    await this.#follow(kind, assertSegment(target, targetLabel(kind)), "hold");
   }
 
   /**
@@ -336,37 +379,50 @@ export class JobsNotifier
     }
   }
 
-  /** Follows one queue or runner, for good or as one more holder; subscribes once. */
+  /**
+   * Follows one queue or runner — for good (`how` is the source: discovery or
+   * `follow()`) or as one more holder — and subscribes once.
+   */
   async #follow(
     kind: EventKind,
     target: string,
-    how: "permanent" | "held" = "permanent",
+    how: NotifierFollowSource | "hold",
   ): Promise<void> {
     const key = `${kind}:${target}`;
 
     if (this.#closed) {
       return;
     }
-    if (how === "permanent") {
-      this.#permanent.add(key);
-    } else {
+    const becamePermanent = how !== "hold" && !this.#permanent.has(key);
+    if (how === "hold") {
       this.#held.set(key, (this.#held.get(key) ?? 0) + 1);
+    } else {
+      this.#permanent.add(key);
     }
-    if (this.#subscriptions.has(key)) {
-      return;
+    if (becamePermanent) {
+      this.safeEmit("followed", kind, target, how);
     }
 
-    // One subscribe per key, shared: two overlapping discovery passes cannot
-    // both subscribe and deliver every event twice, and a follower joining
-    // one in flight waits until it is live rather than resolving early.
-    let inflight = this.#inflight.get(key);
-    if (!inflight) {
-      inflight = this.#subscribe(kind, target, key).finally(() => {
-        this.#inflight.delete(key);
-      });
-      this.#inflight.set(key, inflight);
+    if (!this.#subscriptions.has(key)) {
+      // One subscribe per key, shared: two overlapping discovery passes cannot
+      // both subscribe and deliver every event twice, and a follower joining
+      // one in flight waits until it is live rather than resolving early.
+      let inflight = this.#inflight.get(key);
+      if (!inflight) {
+        inflight = this.#subscribe(kind, target, key).finally(() => {
+          this.#inflight.delete(key);
+        });
+        this.#inflight.set(key, inflight);
+      }
+      await inflight;
     }
-    await inflight;
+
+    // A worker hold a `followed` listener started for this queue is live
+    // before the queue's follow resolves: a `BunJobs` gates its first publish
+    // on that follow, so the worker's first `state` event is heard.
+    if (becamePermanent && kind === "queue") {
+      await this.#inflight.get(`worker:${target}`);
+    }
   }
 
   /** Subscribes to one queue or runner through the driver. Never rejects. */
