@@ -16,19 +16,24 @@ import { ApiError } from "./errors";
  */
 
 /** Which kind of name a segment is. */
-export type SegmentKind = "queue" | "runner";
+export type SegmentKind = "queue" | "runner" | "worker" | "worker key";
+
+/** What each kind is called in the message a bad segment is refused with. */
+const SEGMENT_LABELS: Record<SegmentKind, string> = {
+  queue: "queue name",
+  runner: "runner id",
+  worker: "worker id",
+  "worker key": "worker key",
+};
 
 /**
- * Validates a path segment as a queue name or runner id, with exactly the rule
- * the drivers use for keys (`assertSegment`). A bad one is a 400
- * `INVALID_NAME`, raised before any backend is touched.
+ * Validates a path segment as a queue name, runner id, worker id or worker
+ * key, with exactly the rule the drivers use for keys (`assertSegment`). A bad
+ * one is a 400 `INVALID_NAME`, raised before any backend is touched.
  */
 export function parseSegment(value: unknown, kind: SegmentKind): string {
   try {
-    return assertSegment(
-      value as string,
-      kind === "queue" ? "queue name" : "runner id",
-    );
+    return assertSegment(value as string, SEGMENT_LABELS[kind]);
   } catch (error) {
     if (error instanceof ConfigError) {
       // The message states the rule; the offending value is not echoed back.

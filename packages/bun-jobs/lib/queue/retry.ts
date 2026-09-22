@@ -1,5 +1,6 @@
-import type { JobsDriver, QueueRef } from "../drivers/index";
-import { ConfigError } from "../shared/errors";
+import type { JobRecord, JobsDriver, QueueRef } from "../drivers/index";
+import { flowKey } from "../drivers/flow";
+import { ChildFailedError, ConfigError } from "../shared/errors";
 
 /**
  * Retries one job, the way every public retry does — `BunQueue.retry`,
@@ -34,8 +35,60 @@ export async function retryJob(
       );
     }
 
+    await markBuryDelivered(driver, ref, record, now);
     return await driver.requeueParent(ref, id, now);
   }
 
   return await driver.retryJob(ref, id, resetAttempts, now);
+}
+
+/**
+ * Marks the child whose failure buried `parent` as recorded, if its worker has
+ * not got that far yet, so the failure cannot bury the parent a second time
+ * once it is waiting again.
+ *
+ * Delivering a failure is two writes: the parent is buried, then the child is
+ * marked recorded. Between them the parent already reads `dead`, and a retry
+ * landing there used to put it back to waiting on a child that was still dead
+ * and unrecorded — exactly what maintenance takes for a failure never
+ * delivered. It delivered it again, the parent was buried again, and when the
+ * retried child then completed its result went to a dead parent, which never
+ * ran. The mark is repeat-safe, so the worker making it again afterwards
+ * changes nothing; it applies the child's `removeOnFail` as that worker would.
+ */
+async function markBuryDelivered(
+  driver: JobsDriver,
+  ref: QueueRef,
+  parent: JobRecord,
+  now: number,
+): Promise<void> {
+  const reason = parent.failedReason;
+  const burying = reason?.name === ChildFailedError.name && reason.data?.child;
+  const child =
+    typeof burying === "string"
+      ? parent.flow?.children.find((each) => flowKey(each) === burying)
+      : undefined;
+
+  if (!child || typeof driver.markChildRecorded !== "function") {
+    return;
+  }
+
+  const childRef: QueueRef = { ns: ref.ns, queue: child.queue };
+  const stored = await driver.getJob(childRef, child.id);
+
+  if (
+    stored?.state !== "dead" ||
+    stored.flow?.recorded === true ||
+    stored.flow?.parent?.queue !== ref.queue ||
+    stored.flow.parent.id !== parent.id
+  ) {
+    return;
+  }
+
+  await driver.markChildRecorded(
+    childRef,
+    child.id,
+    stored.opts.removeOnFail,
+    now,
+  );
 }

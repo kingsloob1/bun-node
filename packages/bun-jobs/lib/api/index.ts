@@ -91,6 +91,16 @@ export {
   type ToProblemOptions,
 } from "./errors";
 export {
+  ANALYTICS_METHODS,
+  analyticsMetaOf,
+  analyticsRoutes,
+  DEFAULT_BUSYNESS_INTERVAL_MS,
+  rangeDto,
+  requestedRange,
+  resolveRange,
+  servesAnalytics,
+} from "./routes/analytics";
+export {
   type AnyRouteDef,
   defaultStatus,
   defineRoute,
@@ -136,7 +146,18 @@ export {
   runnerTarget,
   stateConflict,
   toEpoch,
+  WorkerConfigParams,
+  workerKeyTarget,
+  WorkerNameSchema,
+  WorkerParams,
+  workerTarget,
 } from "./routes/support";
+export {
+  supportsRemoteWorkerControl,
+  WORKER_ACK_POLL_MS,
+  workerRoutes,
+  workerStateOf,
+} from "./routes/workers";
 export {
   type ArrayOptions,
   type BooleanOptions,
@@ -170,6 +191,19 @@ export {
   validateJson,
   type ValidateJsonOptions,
 } from "./schema/validate";
+export {
+  analyticsRangeQuerySchema,
+  AnalyticsRangeSchema,
+  JobsSeriesSchema,
+  OverviewAnalyticsSchema,
+  rangeQueryProperties,
+  RunnerAnalyticsSchema,
+  runnersAnalyticsQuerySchema,
+  RunnersAnalyticsSchema,
+  WorkerAnalyticsSchema,
+  workersAnalyticsQuerySchema,
+  WorkersAnalyticsSchema,
+} from "./schemas/analytics";
 export {
   ErrorDtoSchema,
   JOB_STATES,
@@ -248,8 +282,27 @@ export {
   TriggerOutcomeSchema,
 } from "./schemas/runners";
 export {
+  queueWorkerListQuerySchema,
+  WorkerConfigBodySchema,
+  WorkerConfigListSchema,
+  WorkerConfigOverrideSchema,
+  WorkerConfigPatchSchema,
+  WorkerConfigResultSchema,
+  WorkerConfigSchema,
+  WorkerConfigValuesSchema,
+  WorkerControlBodySchema,
+  WorkerControlResultSchema,
+  WorkerControlSchema,
+  workerListQuerySchema,
+  WorkerListSchema,
+  WorkerSchema,
+  WorkerStateSchema,
+  WorkerStopPersistenceSchema,
+} from "./schemas/workers";
+export {
   type ErrorDto,
   type EventDto,
+  isWorkerStale,
   JOB_INCLUDES,
   JOB_LIST_INCLUDE,
   JOB_READ_INCLUDE,
@@ -258,6 +311,7 @@ export {
   type JobFlowDto,
   type JobInclude,
   type JobPageDto,
+  type JobWorkerDto,
   type MetaDto,
   type PageDto,
   type PageInfoDto,
@@ -267,9 +321,11 @@ export {
   type RepeatableDto,
   type RunnerInfoDto,
   type RunRecordDto,
+  STALE_REPORTS,
   toErrorDto,
   toEventDto,
   toJobDto,
+  toJobWorkerDto,
   toRepeatableDto,
   toRunnerInfoDto,
   toRunRecordDto,

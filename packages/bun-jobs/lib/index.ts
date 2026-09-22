@@ -68,8 +68,93 @@ export {
 } from "./api/config";
 /** Job-id escaping for job channel names; also in the browser-safe contract. */
 export { decodeJobId, encodeJobId } from "./api/contract/constants";
+/**
+ * Reads by creation time: the job list's sorts (`ListJobsOptions.sort`, the
+ * API's `?sort=`) and the widest range the added-by-state routes count over.
+ * Also in the browser-safe contract.
+ */
+export {
+  JOB_LIST_SORTS,
+  type JobListSort,
+  MAX_ADDED_BY_STATE_SPAN_MS,
+} from "./api/contract/constants";
+/* ------------------------------------------------------------------ *
+ * Analytics — the bucket machinery every backend shares, the optional
+ * driver methods it serves, and the contract's range limits.
+ *
+ * Public because a driver written outside this package implements the same
+ * optional methods (`countRunnerRun`, `getQueueMetrics`, …) and must agree
+ * with the built-in five on what a bucket, a merge and a range mean: the
+ * types it answers with, the merge helpers that make several writers' rows
+ * one bucket, the buffers that batch a second's counts, and the resolver a
+ * route reads its answer through. The same precedent as the throughput
+ * helpers above (`ThroughputBuffer`, `sumBuckets`). That includes the four
+ * grouped reads (`getRunnerMetricsTotals`/`Many`,
+ * `getWorkerMetricsTotals`/`Many`) — their query and row types, and the
+ * helpers defining a row (`runnerTotalsOf`, `workerTotalsOf`,
+ * `hasMetricBuckets`, `workerMetricsEntity`, …) — which the analytics routes
+ * use only when a driver implements all four.
+ * ------------------------------------------------------------------ */
+export {
+  ANALYTICS_PRESETS,
+  ANALYTICS_RESOLUTIONS,
+  type AnalyticsPreset,
+  type AnalyticsResolution,
+  DEFAULT_ANALYTICS_PRESET,
+  DEFAULT_ANALYTICS_RESOLUTION,
+  DEFAULT_SECOND_RETENTION_MS,
+  DURATION_HISTOGRAM_BOUNDS,
+  MAX_ANALYTICS_BUCKETS,
+  MAX_ANALYTICS_ROWS,
+  MAX_ANALYTICS_SERIES,
+  MAX_ANALYTICS_SPAN_MS,
+  MAX_SECOND_RETENTION_MS,
+  MIN_ANALYTICS_SPAN_MS,
+  MINUTE_BUCKET_MS,
+  MINUTE_RETENTION_MS,
+  SECOND_BUCKET_MS,
+} from "./api/contract/constants";
+/* ------------------------------------------------------------------ *
+ * Queue job defaults: an override stored per queue, which every producer
+ * adds under within `jobDefaultsRefreshInterval`, and the bounded rewrite of
+ * jobs already pending (`BunQueue.getJobDefaults` / `setJobDefaults` /
+ * `resetJobDefaults` / `applyJobDefaults`). Public because a driver written
+ * outside this package implements `rewritePendingOptions` with the same
+ * per-job rule (`planPendingRewrite`), request check and cursor helpers.
+ *
+ * The keys, bounds and apply states are the browser-safe contract's, so a
+ * form is built from the very numbers the server enforces.
+ * ------------------------------------------------------------------ */
+export {
+  JOB_DEFAULT_BACKOFF_TYPES,
+  JOB_DEFAULT_KEYS,
+  JOB_DEFAULTS_APPLY_STATES,
+  JOB_DEFAULTS_BOUNDS,
+  type JobDefaultBackoffType,
+  type JobDefaultKey,
+  type JobDefaultsApplyState,
+} from "./api/contract/constants";
+/**
+ * Remote runner configuration: the execution modes, the settings an override
+ * may replace and the bounds on the numeric one — the browser-safe
+ * contract's, beside `WORKER_CONFIG_KEYS`/`WORKER_CONFIG_BOUNDS`, so a form is
+ * built from the very values an owner enforces. Their types are
+ * `ExecutionMode` and `RunnerConfigKey`, exported with the drivers and the
+ * runner.
+ */
+export {
+  EXECUTION_MODES,
+  RUNNER_CONFIG_BOUNDS,
+  RUNNER_CONFIG_KEYS,
+} from "./api/contract/constants";
+export type {
+  JobDefaultBackoff,
+  JobDefaultsValues,
+} from "./api/contract/types";
 export { createJobsApi } from "./api/createJobsApi";
+
 export { JOBS_API_PROTOCOL_VERSION } from "./api/routes/meta";
+
 export type {
   ErrorDto,
   EventDto,
@@ -88,6 +173,7 @@ export type {
   RunRecordDto,
   WorkerDto,
 } from "./api/serialize";
+
 export {
   JOBS_API_WS_CLOSE,
   JOBS_API_WS_SUBPROTOCOL,
@@ -107,7 +193,6 @@ export {
   type JobsApiUnsubscribeMessage,
   type JobsApiWsErrorCode,
 } from "./api/ws/protocol";
-
 /* ------------------------------------------------------------------ *
  * The per-service context — a namespace and a backend, set once, with
  * every runner, queue and worker derived from it.
@@ -128,11 +213,20 @@ export {
  * backends implementing it.
  * ------------------------------------------------------------------ */
 export {
+  type AddedRange,
+  type AttributionFilter,
+  attributionFilter,
+  attributionOf,
+  canMatchState,
   type ChildOutcome,
   type ChildRecordResult,
   type ClaimOptions,
+  type ClearJobLogsResult,
   type CollectionLike,
   type ColumnRow,
+  compareCreated,
+  countAdded,
+  countAddedByScan,
   countQueues,
   createDriver,
   type DbLike,
@@ -142,6 +236,8 @@ export {
   type DriverConfig,
   type DriverEvent,
   type DriverLifecycle,
+  type EditableJobOptionKey,
+  emptyAddedCounts,
   emptyCounts,
   escapeLike,
   escapeRegExp,
@@ -153,10 +249,15 @@ export {
   type FindCursorLike,
   findJobPage,
   findJobsByScan,
+  FINISHED_STATES,
   getJobsByIds,
   getJobsByLoop,
+  hasRange,
+  holderOf,
+  inAddedRange,
   type IndexDescriptionLike,
   type IndexRow,
+  inFinishedRange,
   JOB_STATES,
   type JobFilter,
   jobFilter,
@@ -168,9 +269,12 @@ export {
   type JobRef,
   type JobsDriver,
   type JobState,
+  type JobWorkerRef,
   listWorkerRecords,
   type LockInfo,
+  matchesAttribution,
   matchesFilter,
+  matchesNothing,
   MemoryDriver,
   MONGO_COLLECTIONS,
   type MongoClientConstructor,
@@ -181,11 +285,14 @@ export {
   type MongoDriverOptions,
   type ObjectIdLike,
   orderByIds,
+  type PendingOptionsRewrite,
+  type PendingOptionsRewriteResult,
   type PendingThroughput,
   type QueueDriver,
   type QueuedTrigger,
   type QueueRef,
   type QueueStateEntry,
+  rangeMatchesNothing,
   RedisDriver,
   type RedisDriverOptions,
   RedisKeys,
@@ -196,12 +303,20 @@ export {
   resolveDriver,
   type ResolvedSyncOptions,
   type Retention,
+  type RunLogAppendResult,
+  type RunLogCaps,
+  type RunLogInput,
+  type RunLogLine,
+  type RunLogPage,
+  type RunLogQuery,
   type RunnerDriver,
   type RunRecord,
   type RunSource,
   type RunStatus,
   type SchemaChange,
   type SchemaSyncOptions,
+  sortByCreated,
+  sortsByCreated,
   sortWorkers,
   SQL_TABLES,
   type SqlAdapter,
@@ -209,9 +324,12 @@ export {
   SqlDriver,
   type SqlDriverOptions,
   type SqlTable,
+  type StoredJobOptions,
   type StoredSchedule,
   sumBuckets,
   sumStates,
+  supportsAttributionQuery,
+  supportsCreatedSort,
   supportsWorkers,
   type SyncBackend,
   THROUGHPUT_BUCKET_MS,
@@ -223,10 +341,101 @@ export {
   type ThroughputWriteResult,
   type UpdateFilterLike,
   type UpdateResultLike,
+  usesAttribution,
   WORKER_STATE_PREFIX,
+  type WorkerConfigInfo,
+  type WorkerControlInfo,
   type WorkerInfo,
 } from "./drivers/index";
 
+export {
+  addBusynessSample,
+  addDuration,
+  alignBucketRange,
+  type AnalyticsRangeInput,
+  assertBucketCount,
+  bucketCount,
+  type BucketRange,
+  bucketStart,
+  type BufferWriteResult,
+  type BusynessSample,
+  type BusynessStats,
+  type BusynessSummary,
+  type CounterBucket,
+  type CounterSet,
+  DEFAULT_ANALYTICS_SPAN_MS,
+  DURATION_HISTOGRAM_SIZE,
+  durationBin,
+  type DurationStats,
+  type DurationSummary,
+  emptyBusynessBucket,
+  emptyBusynessStats,
+  emptyDurationBucket,
+  emptyDurationStats,
+  emptyHistogram,
+  fillBuckets,
+  hasMetricBuckets,
+  histogramQuantile,
+  JOB_COUNTERS,
+  type JobCounters,
+  mergeBusynessBuckets,
+  mergeBusynessStats,
+  mergeCounterBuckets,
+  mergeDurationBuckets,
+  mergeDurationStats,
+  METRICS_RESOLUTIONS,
+  MetricsBuffer,
+  type MetricsLimits,
+  type MetricsOptions,
+  MetricsPruneClock,
+  metricsPruneCutoff,
+  type MetricsQuery,
+  type MetricsRecording,
+  metricsRetentionFor,
+  type MetricsSupport,
+  metricsSupportOf,
+  MINUTE_INTERVALS,
+  NAMESPACE_ENTITY,
+  type NamespaceMetricKind,
+  type NamespaceMetricsQuery,
+  type NamespaceMetricsRead,
+  PendingBuffer,
+  type PendingMetric,
+  type RawBusynessBucket,
+  type RawDurationBucket,
+  readBusyness,
+  readDurations,
+  resolveAnalyticsRange,
+  type ResolvedAnalyticsRange,
+  type ResolvedMetricsOptions,
+  resolveMetricsOptions,
+  RUNNER_RUN_COUNTERS,
+  type RunnerMetricsQuery,
+  type RunnerMetricsRead,
+  type RunnerMetricsSeries,
+  type RunnerMetricsTotals,
+  type RunnerMetricsTotalsQuery,
+  type RunnerRunCounters,
+  type RunnerRunDelta,
+  type RunnerRunTotals,
+  runnerTotalsOf,
+  SECOND_INTERVALS,
+  splitWorkerMetricsEntity,
+  totalBusynessStats,
+  totalCounters,
+  totalDurationStats,
+  uniqueWorkerRefs,
+  type WorkerJobTotals,
+  workerMetricsEntity,
+  type WorkerMetricsQuery,
+  type WorkerMetricsRead,
+  type WorkerMetricsRef,
+  type WorkerMetricsSeries,
+  type WorkerMetricsTotals,
+  type WorkerMetricsTotalsQuery,
+  workerTotalsOf,
+  zeroCounters,
+} from "./drivers/index";
 // One stream of every event in a namespace.
 export {
   JobsNotifier,
@@ -341,9 +550,100 @@ export {
   type UpdateDataOf,
   type WhenDeclared,
   type WhenUndeclared,
+  type WorkerConfigResult,
+  type WorkerControlResult,
   type WorkerEventsOf,
+  type WorkerRemoteControlOptions,
+  type WorkerTarget,
+} from "./queue/index";
+/** Queue job defaults, the queue side: see the contract's keys and bounds above. */
+export {
+  ALL_JOB_OPTION_BITS,
+  type ApplyJobDefaultsOptions,
+  type ApplyJobDefaultsResult,
+  assertRewriteRequest,
+  decodeRewriteCursor,
+  DEFAULT_JOB_DEFAULTS_REFRESH_MS,
+  describeJobDefaults,
+  emptyRewriteResult,
+  encodeRewriteCursor,
+  explicitKeys,
+  explicitMaskOf,
+  isJobDefaultKey,
+  JOB_DEFAULTS_STATE,
+  JOB_OPTION_BITS,
+  jobDefaultIssue,
+  JobDefaultsCache,
+  JobDefaultsChangedError,
+  type JobDefaultsEntry,
+  type JobDefaultsInfo,
+  type JobDefaultsPatch,
+  type JobDefaultsStoredValues,
+  type JobDefaultsUpdate,
+  jobDefaultsValuesOf,
+  type JobDefaultsWriteOptions,
+  type JobDefaultsWriteResult,
+  type JobOptionLayers,
+  maskOfKeys,
+  overlayJobDefaults,
+  overriddenKeys,
+  type PendingRewritePlan,
+  planPendingRewrite,
+  readJobDefaults,
+  resetJobDefaults,
+  resolveLayeredJobOptions,
+  type RewritableJob,
+  sameOptionValue,
+  sanitizeJobDefaults,
+  type StoredJobDefaults,
+  supportsJobDefaults,
+  tallyMoved,
+  tallyRewrite,
+  writeJobDefaults,
 } from "./queue/index";
 
+/* ------------------------------------------------------------------ *
+ * Remote worker control: what a worker can be asked to be, what may be
+ * changed about it, and the controller that writes both.
+ *
+ * The constants are the single source the management API's browser-safe
+ * contract mirrors — a UI builds its form from `WORKER_CONFIG_BOUNDS` rather
+ * than from numbers typed a second time.
+ * ------------------------------------------------------------------ */
+export {
+  deriveWorkerKey,
+  incarnationTag,
+  listWorkerConfigs,
+  type LocalWorker,
+  readWorkerConfig,
+  readWorkerControl,
+  readWorkerStop,
+  RemoteWorker,
+  RemoteWorkerManager,
+  type RemoteWorkerOptions,
+  removeWorkerControl,
+  supportsWorkerControl,
+  sweepWorkerControls,
+  WORKER_CONFIG_PREFIX,
+  WORKER_CONTROL_GRACE_LIFETIMES,
+  WORKER_CONTROL_PREFIX,
+  WORKER_CONTROL_SWEEP_LIMIT,
+  WORKER_STOP_PREFIX,
+  WORKER_STOP_TIMEOUT_MAX,
+  type WorkerConfigEntry,
+  workerConfigName,
+  type WorkerConfigOverride,
+  type WorkerControlEntry,
+  workerControlName,
+  type WorkerControlSweep,
+  type WorkerStopEntry,
+  workerStopName,
+  workerStopTimeoutIssue,
+  writeWorkerConfig,
+  writeWorkerControl,
+  writeWorkerStop,
+} from "./queue/index";
+export { WorkerStateConflictError } from "./queue/RemoteWorker";
 export type {
   IsolatedJob,
   IsolatedJobProcessor,
@@ -360,30 +660,66 @@ export {
   type BunRunnerOptions,
   CHILD_ENV,
   type ChildToParent,
+  type ClearHistoryOptions,
+  type ClearHistoryResult,
+  clearRunnerHistory,
+  createRedactor,
+  DEFAULT_REDACT_KEYS,
+  DEFAULT_REDACT_REPLACEMENT,
+  DEFAULT_STALE_RUN_AFTER,
   defineHandler,
+  describeRunnerConfig,
   type Executor,
   type ExecutorHandle,
   type ExecutorStartOptions,
+  type HistoryClearInput,
+  type HistoryClearPlan,
   InProcessExecutor,
   type InProcessOptions,
+  isExecutionMode,
   isRunnerChild,
   type ParentToChild,
+  planHistoryClear,
   PROTOCOL_VERSION,
+  type ResolvedRunLogCaptureOptions,
+  type ResolvedRunnerConfig,
   type ResolvedRunnerOptions,
+  resolveRunnerConfig,
+  type ResolveRunnerConfigInput,
   resolveRunnerOptions,
   type RunContext,
   type RunHandle,
+  RunLogCapture,
+  type RunLogCaptureInit,
+  type RunLogCaptureOptions,
+  type RunLogOptions,
+  type RunLogRedactOptions,
+  type RunLogRedactor,
+  type RunLogTotals,
+  RUNNER_CONFIG_STATE,
+  runnerConfigFields,
+  type RunnerConfigFieldsOptions,
+  type RunnerConfigInfo,
+  type RunnerConfigKey,
+  type RunnerConfigPatch,
+  runnerConfigResetFields,
+  type RunnerConfigValues,
   type RunnerHandler,
   type RunnerInfo,
+  type RunnerRemoteConfigOptions,
   type RunnerStats,
   type RunnerStatus,
   type RunOutcome,
   type SerializableContext,
   SpawnExecutor,
   type SpawnOptions,
+  type StoredRunnerConfig,
+  type StoredRunnerOverride,
   type TriggerOutcome,
+  UNLIMITED_CONCURRENCY,
   WorkerExecutor,
   type WorkerOptions,
+  writeRunnerConfig,
 } from "./runner/index";
 
 // Remote runner control: a runner registered by any process sharing the
@@ -395,6 +731,7 @@ export {
   type RemoteRunRecord,
   type TruncatedRunResult,
 } from "./runner/index";
+
 export type {
   JobChannelErrorReply,
   JobChannelOperation,
@@ -456,7 +793,9 @@ export {
   ProtocolError,
 } from "./shared/errors";
 export { RunnerNotFoundError } from "./shared/errors";
-export { runnerEvent } from "./shared/events";
+export { runnerEvent, workerEvent } from "./shared/events";
+export type { WorkerDriverEvent, WorkerEventPayloads } from "./shared/events";
+export type { RunnerControlAction } from "./shared/events";
 
 // runner/shared types
 //
@@ -464,7 +803,6 @@ export { runnerEvent } from "./shared/events";
 // to the sections above. Sorting would scatter it among them by path, which is
 // the one thing this block exists to avoid.
 
-export type { RunnerControlAction } from "./shared/events";
 // Reading dates in phrases: the parser interface, and the chrono range.
 export {
   assertDateParser,
@@ -482,7 +820,6 @@ export {
   queueKey,
   runnerKey,
 } from "./shared/keys";
-
 export {
   createJobsLogger,
   type LogFields,
@@ -490,6 +827,7 @@ export {
   type LoggerLike,
   resolveLogger,
 } from "./shared/logger";
+
 export type { RunProgress } from "./shared/progress";
 export {
   createTicker,
@@ -500,3 +838,25 @@ export {
   type Ticker,
   type TickerOptions,
 } from "./shared/schedule";
+export {
+  isWorkerConfigKey,
+  isWorkerState,
+  WORKER_CONFIG_BOUNDS,
+  WORKER_CONFIG_KEYS,
+  WORKER_CONTROL_ACTIONS,
+  WORKER_EVENT_TYPES,
+  WORKER_STATES,
+  WORKER_STOP_PERSISTENCE,
+  type WorkerConfigBound,
+  workerConfigCrossFieldIssue,
+  workerConfigIssue,
+  type WorkerConfigKey,
+  type WorkerConfigPatch,
+  type WorkerConfigValues,
+  type WorkerControlAction,
+  type WorkerControlMode,
+  type WorkerDesiredState,
+  type WorkerEventName,
+  type WorkerState,
+  type WorkerStopPersistence,
+} from "./shared/workers";

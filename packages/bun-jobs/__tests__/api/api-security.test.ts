@@ -479,6 +479,7 @@ describe("an invalid query or body is authorized against the path's target", () 
         .replace(":queue", "mail")
         .replace(":id", "a")
         .replace(":runner", "nightly")
+        .replace(":worker", "w1")
         .replace(":key", "k");
       const response = await h.call(def.method, path, '{"broken": [');
       expect({ route: def.operationId, status: response.status }).toEqual({

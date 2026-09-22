@@ -3,9 +3,11 @@ import type {
   JobsDriver,
   QueueRef,
   RepeatRecord,
+  StoredJobOptions,
 } from "../drivers/index";
 import { NotSupportedError } from "../shared/errors";
 import { fitName } from "../shared/fit";
+import { overlayJobDefaults, readJobDefaults } from "./jobDefaults";
 import {
   CALLER_REPEAT_KEY_PREFIX,
   DERIVED_NAME_LIMITS,
@@ -325,7 +327,12 @@ async function scheduleFromNow(
     return;
   }
 
-  const record = occurrenceRecord(definition, next, now);
+  const record = await withJobDefaults(
+    driver,
+    q,
+    definition,
+    occurrenceRecord(definition, next, now),
+  );
   await driver.addJob(q, record);
   await driver.upsertRepeat(q, {
     ...definition,
@@ -333,6 +340,44 @@ async function scheduleFromNow(
     nextJobId: record.id,
     updatedAt: now,
   });
+}
+
+/**
+ * `record` with the queue's stored job defaults over every option the series'
+ * `add()` did not pass — what `BunQueueWorker#occurrenceOptions` does for the
+ * occurrence after a finished one, so a re-enabled series' first occurrence
+ * runs under the same override its later ones will.
+ *
+ * A series stored before the explicit mask existed has nothing to say which
+ * of its options were explicit, so it keeps its own options, as the worker
+ * does. A failed read of the stored defaults builds the occurrence without
+ * them rather than leaving the series enabled with nothing scheduled; the
+ * occurrence after it picks the override up again.
+ */
+async function withJobDefaults(
+  driver: JobsDriver,
+  q: QueueRef,
+  definition: RepeatRecord,
+  record: JobRecord,
+): Promise<JobRecord> {
+  const own = definition.opts as StoredJobOptions;
+
+  if (typeof own.explicit !== "number") {
+    return record;
+  }
+
+  const override = await readJobDefaults(driver, q).then(
+    (stored) => stored.values,
+    () => ({}),
+  );
+  const opts = overlayJobDefaults(own, override);
+
+  return {
+    ...record,
+    opts,
+    priority: opts.priority,
+    maxAttempts: opts.attempts,
+  };
 }
 
 /**

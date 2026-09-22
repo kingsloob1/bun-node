@@ -1,7 +1,31 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
+import type { JobDefaultKey, JobListSort } from "../api/contract/constants";
 import type { ConnectionOptions } from "../shared/connection";
+import type { RunLogStream } from "../shared/constants";
 import type { DriverEvent, EventKind, EventOfKind } from "../shared/events";
 import type { RunnerSchedule } from "../shared/schedule";
+import type {
+  WorkerConfigKey,
+  WorkerConfigValues,
+  WorkerControlAction,
+  WorkerControlMode,
+  WorkerState,
+  WorkerStopPersistence,
+} from "../shared/workers";
+import type {
+  BucketRange,
+  BusynessSample,
+  CounterBucket,
+  JobCounters,
+  MetricsOptions,
+  MetricsSupport,
+  RawBusynessBucket,
+  RawDurationBucket,
+  RunnerRunCounters,
+  RunnerRunTotals,
+  WorkerJobTotals,
+  WorkerMetricsRef,
+} from "./metrics";
 import type { SchemaChange, SchemaSyncOptions } from "./schemaSync";
 
 /**
@@ -37,6 +61,26 @@ export interface DriverCapabilities {
   multiProcess: boolean;
   /** Whether several hosts can share it safely. */
   multiHost: boolean;
+  /**
+   * Whether the driver records and filters job attribution. Declaring it
+   * promises all of the following, which the shared driver contract checks:
+   *
+   * - every claim path stores {@link JobRecord.processedBy} from
+   *   {@link ClaimOptions.workerId} and {@link ClaimOptions.worker}, in the
+   *   write the claim already makes;
+   * - no settle, stall recovery or retry clears it — only the next claim
+   *   replaces it;
+   * - {@link QueueDriver.findJobs} honours {@link JobQuery.workerKeys},
+   *   {@link JobQuery.workerIds}, {@link JobQuery.finishedFrom} and
+   *   {@link JobQuery.finishedTo} exactly as `attribution.ts` defines them.
+   *
+   * Absent or `false`: `findJobPage` in `readApis.ts` never hands a query
+   * using any of those four fields to the driver's `findJobs` — a driver
+   * written before them would ignore them and return every job — and runs
+   * `findJobsByScan` instead, which filters the records itself: correct, and
+   * linear. The management API reports it as `features.jobAttribution`.
+   */
+  jobAttribution?: boolean;
 }
 
 /** Connection management, shared by both halves of the contract. */
@@ -155,6 +199,167 @@ export interface RunRecord {
    * handler ignored its abort signal and is still running somewhere.
    */
   detached?: boolean;
+  /**
+   * How many lines this run's log holds, as the last append reported it.
+   *
+   * Written by the runner's capture when the run settles, so a history row can
+   * say whether there is a log to link to without reading one. Absent when
+   * nothing was captured — the driver stores no run logs, or capture was off —
+   * and `0` when the run simply said nothing.
+   */
+  logLines?: number;
+  /**
+   * How many of this run's lines {@link RunLogCaps the caps} dropped, oldest
+   * first. `0` when none were; absent alongside {@link RunRecord.logLines}.
+   */
+  logsDropped?: number;
+}
+
+/* --- run logs ------------------------------------------------------- */
+
+/**
+ * One captured line of a run's output, as the store hands it back.
+ *
+ * Run logs deliberately do **not** ride the {@link RunRecord}. A runner's
+ * history is one document on the file, SQL and MongoDB drivers — rewritten
+ * whole under a lock on every append — so a line arriving every few
+ * milliseconds while a run talks would rewrite the entire history that often.
+ * Lines therefore live in storage of their own, keyed by `runId`, and are
+ * written a line at a time exactly as a job's log is.
+ */
+export interface RunLogLine {
+  /**
+   * The line's 1-based place in its run's output.
+   *
+   * Assigned by the store, never by the caller, and never reused: lines
+   * dropped by a cap leave a gap, and that gap is how `dropped` is known. It
+   * is also the cursor {@link RunLogQuery.since} takes.
+   */
+  seq: number;
+  /** Which stream produced it. */
+  stream: RunLogStream;
+  /** When it was captured, in epoch milliseconds. */
+  at: number;
+  /** The text, with its trailing newline already removed. */
+  text: string;
+  /**
+   * The level a `log`-stream line carried.
+   *
+   * Absent on `stdout` and `stderr`, which have no levels, and on a forwarded
+   * log line that came without one. Stored from the start even though nothing
+   * sets it yet: adding a field to five backends later is a migration, and
+   * adding it now is a nullable column nobody writes to.
+   */
+  level?: LogLevel;
+  /**
+   * Set when capture cut this line at its per-line byte cap
+   * (`DEFAULT_RUN_LOG_MAX_LINE_BYTES`), so a reader can say the line is short
+   * rather than show a silently clipped one as if it were whole.
+   *
+   * Only ever `true`, and only stored when it is: absent is false. Capture
+   * decides it; storage only carries it.
+   */
+  truncated?: true;
+}
+
+/**
+ * A line as capture hands it over: everything but the number.
+ *
+ * The store numbers lines, because only the store knows what the run's last
+ * number was — a capture that numbered its own would restart from 1 after a
+ * process restart, and two gaps would be indistinguishable from one.
+ */
+export type RunLogInput = Omit<RunLogLine, "seq">;
+
+/**
+ * What bounds a run's log, applied by {@link RunnerDriver.appendRunLog} on the
+ * write path.
+ *
+ * Enforced on write rather than by a sweeper, which is the whole shape of
+ * this: there is no background task to schedule, nothing to forget to run,
+ * and a log cannot be over its cap at any moment a reader could observe it.
+ *
+ * All three are "0 means unbounded", the same convention `keep` takes
+ * throughout the contract.
+ */
+export interface RunLogCaps {
+  /**
+   * Most lines one run's log keeps; the oldest go first.
+   * Defaults to `DEFAULT_RUN_LOG_MAX_LINES` (1,000) at the caller.
+   */
+  maxLines: number;
+  /**
+   * Most bytes of line text one run's log keeps, counted as UTF-8 bytes of
+   * {@link RunLogLine.text} and nothing else — not the stream, the timestamp,
+   * the level, the truncation flag, or whatever framing the backend stores
+   * around them, so every driver bounds the same number. The oldest lines go
+   * first.
+   * Defaults to `DEFAULT_RUN_LOG_MAX_BYTES` (1 MiB) at the caller.
+   */
+  maxBytes: number;
+  /**
+   * How many of a runner's runs keep a log at all; the oldest run's log is
+   * dropped whole.
+   *
+   * Applied on the write path too, for the same reason, and matched to the
+   * runner's `keepHistory` by the caller so a run in the history and a run
+   * with a log are the same set. Defaults to `DEFAULT_KEEP_HISTORY` (50).
+   */
+  keepRuns: number;
+}
+
+/** How much of a run's log to read, and which of it. */
+export interface RunLogQuery {
+  /** How many lines to skip, in the order asked for. */
+  offset: number;
+  /** How many lines to return. `0` returns none. */
+  limit: number;
+  /** `asc` is oldest first. */
+  order: "asc" | "desc";
+  /**
+   * Only lines numbered **above** this — exclusive, so passing back the
+   * {@link RunLogPage.lastSeq} of the previous read is a tail that never
+   * repeats a line and never skips one.
+   */
+  since?: number;
+  /** Only lines from this stream. */
+  stream?: RunLogStream;
+}
+
+/** A page of a run's log, with what a reader needs to know about the rest. */
+export interface RunLogPage {
+  /** The page, in the order asked for. */
+  lines: RunLogLine[];
+  /**
+   * How many lines match the filters in total — so with `since` or `stream`
+   * set this is the filtered total, which is what pages the filtered list.
+   */
+  count: number;
+  /**
+   * How many of the run's lines the caps have dropped, in total.
+   *
+   * A property of the run's log rather than of the page, so the filters do not
+   * change it: a reader shows "N earlier lines dropped" whatever it asked for.
+   */
+  dropped: number;
+  /**
+   * The highest number the run's log holds, or `0` when it holds nothing.
+   *
+   * Unfiltered, like `dropped`, which is what makes it a correct cursor: a
+   * tail with a `stream` filter that resumed from the last *matching* line
+   * would re-read everything the filter excluded.
+   */
+  lastSeq: number;
+}
+
+/** What an append left behind, without reading the log back. */
+export interface RunLogAppendResult {
+  /** How many lines the run's log now holds, after the caps were applied. */
+  count: number;
+  /** How many of the run's lines the caps have dropped, in total. */
+  dropped: number;
+  /** The highest number the run's log holds, or `0` when it holds nothing. */
+  lastSeq: number;
 }
 
 /** The runner half of the contract: locks, state, history, queued triggers. */
@@ -217,8 +422,246 @@ export interface RunnerDriver {
     key: string,
     limit?: number,
   ) => Promise<RunRecord[]>;
-  /** Drops the history. */
+  /**
+   * Drops the history — **and, on a driver that has them, every run log this
+   * runner holds**.
+   *
+   * The two are one store as far as a caller is concerned: a run the history
+   * no longer mentions cannot be asked about, so a log left behind for it is
+   * unreachable bytes that nothing would ever collect. Clearing both here is
+   * what makes {@link RunnerDriver.appendRunLog}'s write-path trimming
+   * sufficient and a sweeper unnecessary.
+   */
   clearHistory: (ns: string, key: string) => Promise<void>;
+  /**
+   * Appends captured output to one run's log, applies
+   * {@link RunLogCaps the caps}, and says what the log holds afterwards.
+   *
+   * The store numbers the lines, continuing the run's own 1-based sequence.
+   * Lines are stored in the order given.
+   *
+   * **Keyed by `runId` alone.** It does not look for a run record and does not
+   * create one: capture flushes on a timer, so the first flush can easily beat
+   * {@link RunnerDriver.appendHistory}, and a line lost because the record was
+   * not written yet would be exactly the line explaining a start-up failure.
+   * A log outliving its record is collected by `keepRuns`, by
+   * {@link RunnerDriver.clearRunLogs} and by `clearHistory`.
+   *
+   * Both per-run caps *and* `keepRuns` are applied here, on the write path.
+   * There is no sweeper.
+   *
+   * Optional, so that a driver without it makes the API prune the route
+   * rather than serve an endpoint that answers nothing.
+   */
+  appendRunLog?: (
+    ns: string,
+    key: string,
+    runId: string,
+    lines: RunLogInput[],
+    caps: RunLogCaps,
+  ) => Promise<RunLogAppendResult>;
+  /**
+   * A page of one run's log.
+   *
+   * A run the store knows nothing about — never logged, or dropped by
+   * `keepRuns` — is not an error: it reads as an empty log,
+   * `{ lines: [], count: 0, dropped: 0, lastSeq: 0 }`. Whether the run itself
+   * exists is the history's question, not this one's.
+   *
+   * Optional, alongside {@link RunnerDriver.appendRunLog}.
+   */
+  getRunLog?: (
+    ns: string,
+    key: string,
+    runId: string,
+    opts: RunLogQuery,
+  ) => Promise<RunLogPage>;
+  /**
+   * Drops one run's log, or every log this runner holds when `runId` is
+   * omitted.
+   *
+   * Dropping a log also forgets what it dropped: the run reads back as empty
+   * with `dropped: 0`, not as a log whose every line was lost.
+   *
+   * Optional, alongside {@link RunnerDriver.appendRunLog}.
+   */
+  clearRunLogs?: (ns: string, key: string, runId?: string) => Promise<void>;
+  /**
+   * Removes the named runs from this runner — each one's history record
+   * **and**, on a driver that stores them, its run log — and answers with how
+   * many records it removed.
+   *
+   * This is how "clear the history, but not the runs still going" is done,
+   * and it is deliberately a method of its own rather than an argument to
+   * {@link RunnerDriver.clearHistory}: a driver written before the argument
+   * existed would ignore it and delete the run still in progress anyway, with
+   * nothing to tell the caller. A driver without this method has the route
+   * pruned instead, and `BunRunner.clearHistory` throws `NotSupportedError`.
+   *
+   * **Named runs go, everything else stays** — the reverse of a keep-list, on
+   * purpose. The caller lists the history, decides which runs have finished,
+   * and names those; a run that starts after it looked cannot be named, so it
+   * cannot be removed, whatever the clocks or the interleaving. That is what
+   * keeps a live run's record and log whole without the driver having to
+   * decide anything or remove anything atomically across the two stores.
+   *
+   * - A name the history does not hold is not an error. Its log, if one
+   *   survives, is removed all the same (a log outliving its record is bytes
+   *   nothing can reach), and it does not count towards the answer.
+   * - Every other run's record and log, and every other runner and namespace,
+   *   are untouched. So are the runner's state fields — the lifetime
+   *   `stat:*` counters, `lastRunId`, the pause flag — its lock, its queued
+   *   triggers and its analytics series.
+   * - An empty list removes nothing and answers `0`.
+   *
+   * Optional. {@link RunnerDriver.clearHistory} keeps its meaning of dropping
+   * everything, in-progress runs included.
+   */
+  removeRuns?: (
+    ns: string,
+    key: string,
+    runIds: readonly string[],
+  ) => Promise<number>;
+  /**
+   * Counts one runner event — a run starting, finishing or being skipped — into
+   * the analytics buckets, and its duration with it.
+   *
+   * **Never a round trip per run.** The counts go through a `MetricsBuffer`
+   * (`drivers/metrics.ts`) and are written once a second onto a single shared
+   * row per `(ns, runner, bucket)`, at every width the driver records and on
+   * the namespace roll-up at the same time. A driver that can count inside a
+   * script it is already sending may do so instead, but must still write both
+   * widths: the second-to-minute roll-up is a dual write, never a background
+   * job, because a background roll-up needs a leader and loses a minute of
+   * counts when it dies.
+   *
+   * The lifetime `RunnerStats` counters stay exactly as they are. Cumulative
+   * and resettable is a different thing from a series, and one cannot be
+   * derived from the other.
+   *
+   * `at` is when the event happened, and is floored to each bucket. A run
+   * counts in the bucket it **finished** in, which is why the duration travels
+   * with the outcome rather than with the start.
+   *
+   * Optional, alongside {@link RunnerDriver.getRunnerMetrics}: a driver with
+   * neither has its analytics routes pruned and reports
+   * `features.runnerMetrics: false`.
+   */
+  countRunnerRun?: (
+    ns: string,
+    /** The runner's **key**, `runnerKey(id)` (`r:<id>`) — not its bare id. */
+    runner: string,
+    at: number,
+    counts: RunnerRunDelta,
+  ) => Promise<void>;
+  /**
+   * One runner's buckets: its runs by outcome, and its durations when they
+   * were asked for and recorded.
+   *
+   * Sparse and oldest first, as {@link MetricsQuery} describes. A runner the
+   * backend never counted for is not an error — it reads as no buckets, the
+   * same as a runner that did nothing in the range. Counts that were never
+   * kept cannot be reconstructed, so there is no fallback: a driver either
+   * implements this or has the route pruned.
+   *
+   * Optional, alongside {@link RunnerDriver.countRunnerRun}.
+   */
+  getRunnerMetrics?: (
+    ns: string,
+    /**
+     * The runner's **key**, `runnerKey(id)` (`r:<id>`) — not its bare id,
+     * which reads as a runner never counted: empty buckets, no error.
+     */
+    runner: string,
+    query: RunnerMetricsQuery,
+  ) => Promise<RunnerMetricsRead>;
+  /**
+   * **Every** runner's totals over a range, in one read — the rows of
+   * `GET /analytics/runners`, which rank by `started` and cap at
+   * `MAX_ANALYTICS_ROWS`, and so need every runner's figure before they can
+   * pick any. A read per runner instead was a database round trip per row
+   * on every poll.
+   *
+   * One row per runner with something to report over the range: a counted
+   * outcome or — when `durations` was asked for and is recorded — a finished
+   * duration. A runner with nothing is **absent, not zero**, and so is one
+   * outside `query.runners`. The namespace roll-up (`NAMESPACE_ENTITY`)
+   * is never a row. Order is unspecified; each runner appears once.
+   *
+   * A row is exactly what `runnerTotalsOf(getRunnerMetrics(...))` gives for
+   * that runner (`drivers/metrics.ts`) — a backend may sum in the engine
+   * (`GROUP BY entity`) or reduce each entity's buckets with that helper, but
+   * the numbers must match; the contract suite compares the two. When
+   * durations were asked for and are recorded, every row carries them, with
+   * `count: 0` for a runner none of whose runs finished in range.
+   *
+   * Optional, as a set with {@link RunnerDriver.getRunnerMetricsMany}; without
+   * them a caller has only the read per runner.
+   */
+  getRunnerMetricsTotals?: (
+    ns: string,
+    query: RunnerMetricsTotalsQuery,
+  ) => Promise<RunnerMetricsTotals[]>;
+  /**
+   * Several named runners' series, in one read — the `ids=` batch of
+   * `GET /analytics/runners`, at most `MAX_ANALYTICS_SERIES` of them (the
+   * route enforces that; the driver does not). The UI's rule that a page of
+   * sparklines is one request depends on it also being one read.
+   *
+   * Each runner's entry is exactly what {@link RunnerDriver.getRunnerMetrics}
+   * answers for it — sparse, oldest first, `durations` present when asked for
+   * and recorded — plus its key. A runner with nothing in range (no run
+   * bucket and, when asked, no duration bucket) is **absent**, not an entry
+   * of empty arrays, and so is the roll-up's empty name if it is asked for.
+   * A name asked for twice is answered once; order is unspecified.
+   *
+   * Optional, as a set with {@link RunnerDriver.getRunnerMetricsTotals}.
+   */
+  getRunnerMetricsMany?: (
+    ns: string,
+    /** Runner **keys**, each `runnerKey(id)` — not bare ids. */
+    runners: readonly string[],
+    query: RunnerMetricsQuery,
+  ) => Promise<RunnerMetricsSeries[]>;
+  /**
+   * The namespace's own roll-up buckets, for the kinds asked for.
+   *
+   * Every per-entity count bumps these as it is written (§4f of the analytics
+   * design), which is the whole reason they exist: an overview of a namespace
+   * with three hundred workers costs the same three reads as one with three.
+   * Summing the entities instead would be a read per entity per refresh.
+   *
+   * Declared identically on both halves of the contract, because the runner
+   * half writes the `runs` roll-up and the queue half writes the other two,
+   * and a `JobsDriver` implements the one method for all three.
+   *
+   * Optional; sparse and oldest first.
+   */
+  getNamespaceMetrics?: (
+    ns: string,
+    query: NamespaceMetricsQuery,
+  ) => Promise<NamespaceMetricsRead>;
+  /**
+   * What this driver records and serves, so `/meta` can report it and a range
+   * can be resolved against it. Built with `metricsSupportOf()` from the
+   * driver's resolved `metrics` options.
+   *
+   * Optional and synchronous: a driver without it is taken to record nothing
+   * beyond the shipped minute throughput.
+   */
+  getMetricsSupport?: () => MetricsSupport;
+  /**
+   * Writes the analytics counts this driver instance has gathered in memory and
+   * not yet written, and resolves once they are written — or, for the ones that
+   * failed, kept for the next attempt.
+   *
+   * Optional, and separate from {@link QueueDriver.flushThroughput} for the
+   * same reason that one exists: a runner or worker closing awaits it whether
+   * or not it owns the driver, because a process that shares one driver may
+   * exit without ever closing it and the last second of counts would go with
+   * the process.
+   */
+  flushMetrics?: () => Promise<void>;
   /**
    * Queues a trigger, returning `false` when the list already holds `max` —
    * the length check and the push must be atomic, or two processes racing
@@ -382,14 +825,23 @@ export type ChildRecordResult =
    * `waiting`, or `delayed` when its `runAt` is later.
    */
   | "released"
-  /** The outcome was a failure not ignored, and buried the parent: `dead`. */
+  /**
+   * The outcome was a failure not ignored, and buried the parent: `dead`. Also
+   * answered for a completed or ignored outcome the backend could not store —
+   * on MongoDB, one that would take the parent past the 16 MB document limit —
+   * which buries the parent with a `ChildFailedError` saying so, rather than
+   * leaving it waiting on a delivery that can never land.
+   */
   | "buried"
   /** The parent already had it, or has moved on and no longer waits. */
   | "already"
   /**
    * The parent is `dead` and the outcome is a failure not ignored, so nothing
    * was stored. The child should stay as it is — a retry of the parent sees it
-   * unsettled, and the child can be retried in turn.
+   * unsettled, and the child can be retried in turn. Also answered when a
+   * completed or ignored outcome for a `dead` parent could not be stored (the
+   * MongoDB document limit): nothing is kept, and a retry of the parent
+   * delivers it again.
    */
   | "parent-dead"
   /**
@@ -397,6 +849,34 @@ export type ChildRecordResult =
    * being added children first, one cut short, or a parent removed.
    */
   | "missing";
+
+/**
+ * What {@link QueueDriver.clearJobLogs} did. Only `"cleared"` removed anything.
+ */
+export type ClearJobLogsResult =
+  | {
+      /** The job's log is now empty. */
+      status: "cleared";
+      /**
+       * How many lines were removed: what the log kept a moment before, so
+       * `0` for a job that had logged nothing (or whose lines `keepLogs` had
+       * already trimmed to none).
+       */
+      removed: number;
+    }
+  | {
+      /**
+       * The job is `active`, so nothing was removed. A worker is still
+       * writing the log, and clearing it would leave a log that looks whole
+       * while missing its start — the same reason removing an active job is
+       * refused.
+       */
+      status: "active";
+    }
+  | {
+      /** There is no such job. */
+      status: "missing";
+    };
 
 /**
  * How long finished jobs are kept.
@@ -453,6 +933,100 @@ export interface ResolvedJobOptions {
   ignoreFailure?: boolean;
 }
 
+/**
+ * A job's options as stored: {@link ResolvedJobOptions} plus the explicit
+ * mask. Kept off `ResolvedJobOptions` itself until the management API's wire
+ * schema carries it (as a list of keys, `JobOptionsDto.explicit`), so the
+ * public options type and the schema stay equal.
+ */
+export interface StoredJobOptions extends ResolvedJobOptions {
+  /**
+   * Which of the editable options ({@link EditableJobOptionKey}) the job's own
+   * `add()` passed explicitly, as a bitmask (`JOB_OPTION_BITS` in
+   * `queue/jobDefaults.ts`). Written on every job this version adds — `0` when
+   * none was — so *absent* means the job predates it and nothing can say which
+   * of its options were explicit.
+   *
+   * A driver stores it with the rest of `opts` and never interprets it, with
+   * two exceptions: {@link QueueDriver.updateJob} with a `priority` sets the
+   * priority bit (an operator's per-job priority is explicit) on a job that
+   * has a mask, and {@link QueueDriver.rewritePendingOptions} never writes a
+   * key whose bit is set.
+   */
+  explicit?: number;
+}
+
+/**
+ * The job options a queue's stored defaults may replace — the contract's
+ * `JobDefaultKey`, named for the driver layer.
+ */
+export type EditableJobOptionKey = JobDefaultKey;
+
+/** One call's worth of {@link QueueDriver.rewritePendingOptions}. */
+export interface PendingOptionsRewrite {
+  /**
+   * The states to walk, in this order: a non-empty subset of `waiting`,
+   * `delayed`, `failed` and `waiting-children` (`JOB_DEFAULTS_APPLY_STATES`),
+   * without repeats. Never `active`, `completed` or `dead`.
+   */
+  states: JobState[];
+  /**
+   * The values to write, already validated. A key absent is not touched.
+   * `attempts` also sets the job's `maxAttempts`; `priority` also sets its
+   * `priority` column / score, reordering a waiting job.
+   */
+  values: Partial<Pick<ResolvedJobOptions, EditableJobOptionKey>>;
+  /**
+   * Where the previous call stopped (its `next`), or `null` to start. Opaque
+   * and driver-defined; one the driver cannot read — or one naming a state
+   * not in `states` — is refused with a `ConfigError`.
+   */
+  cursor: string | null;
+  /** Most jobs to examine in this call, at least 1. The driver may batch internally below it. */
+  limit: number;
+  /**
+   * Treat a job with no `opts.explicit` (added before the mask existed) as
+   * all-defaulted and rewrite it, rather than counting it `skippedUnmarked`.
+   */
+  includeUnmarked: boolean;
+  /** Examine and count exactly as a real call would, but write nothing. */
+  dryRun: boolean;
+  /** The caller's clock, in epoch milliseconds. */
+  now: number;
+}
+
+/**
+ * What one {@link QueueDriver.rewritePendingOptions} call did.
+ *
+ * `rewritten`, `unchanged`, `skippedExplicit`, `skippedUnmarked` and `moved`
+ * add up to `examined`; `exhausted` is a part of `rewritten`.
+ */
+export interface PendingOptionsRewriteResult {
+  /** Jobs looked at in this call. */
+  examined: number;
+  /** Jobs at least one of whose options changed (in a dry run: would have). */
+  rewritten: number;
+  /** Jobs that already had every value — including a job met again after its own priority change moved it ahead of the walk. */
+  unchanged: number;
+  /** Jobs left alone because every key that would change is explicit on them. */
+  skippedExplicit: number;
+  /** Jobs with no `opts.explicit`, left alone because `includeUnmarked` was off. */
+  skippedUnmarked: number;
+  /**
+   * Jobs read for this call that had left `states` by the time of their
+   * write, and were not touched. A lower bound: a backend that runs a batch
+   * atomically never sees one and reports `0`.
+   */
+  moved: number;
+  /**
+   * Rewritten jobs given a new `attempts` their `attemptsMade` already
+   * reaches: each runs once more, and dies if that attempt fails.
+   */
+  exhausted: number;
+  /** Where the next call continues, or `null` when every state has been walked. */
+  next: string | null;
+}
+
 /** A job as stored. */
 export interface JobRecord {
   /** Identifies the job; also its idempotency key. */
@@ -461,8 +1035,8 @@ export interface JobRecord {
   name: string;
   /** The producer's payload. JSON only. */
   data: unknown;
-  /** Options after defaults. */
-  opts: ResolvedJobOptions;
+  /** Options after defaults, with the explicit mask when the job has one. */
+  opts: StoredJobOptions;
   /** Where the job is. */
   state: JobState;
   /** Lower runs first. */
@@ -495,12 +1069,47 @@ export interface JobRecord {
   lockToken: string | null;
   /** When that lock expires, in epoch milliseconds. */
   lockExpiresAt: number | null;
-  /** Id of the worker holding it. */
+  /**
+   * Id of the worker holding it — set by the claim, and `null` again once the
+   * attempt settles, stalls or is released. Readers take it to mean "holding
+   * it now", so a driver that keeps the claimer's id in storage after the
+   * settle (as the attribution does) reports it here only while the job is
+   * `active`, and reads who ran a finished job from `processedBy` instead.
+   */
   workerId: string | null;
+  /**
+   * Who claimed the current or last attempt. Written by the claim, in the same
+   * write that sets `workerId`, and — unlike `workerId` — never cleared by a
+   * settle, a stall recovery or a retry: only the next claim replaces it, so it
+   * lasts as long as the job does. **Last attempt only**: a job retried on
+   * another worker names that one.
+   *
+   * `null` (or absent) for a job never claimed, or last claimed by a driver or
+   * worker from before attribution existed. Optional so a driver written
+   * before it still compiles; one declaring
+   * {@link DriverCapabilities.jobAttribution} must store it. A record added
+   * with it — restored from elsewhere — keeps it.
+   */
+  processedBy?: JobWorkerRef | null;
   /** The repeat definition that produced it, when it is a repeat instance. */
   repeatKey: string | null;
   /** Its place in a flow, or `null` for a job that is in none. */
   flow: JobFlow | null;
+}
+
+/**
+ * Who claimed a job's current or last attempt, as the claim stamped it: see
+ * {@link JobRecord.processedBy}.
+ */
+export interface JobWorkerRef {
+  /** The claiming worker's incarnation id ({@link ClaimOptions.workerId}); a restart gives the worker a new one. */
+  id: string;
+  /** Its stable key, which outlives restarts; absent when the claimer did not say (an older worker). */
+  key?: string;
+  /** The host it ran on; absent when the claimer did not say. Stored whatever the API exposes. */
+  host?: string;
+  /** Its process id; absent when the claimer did not say. */
+  pid?: number;
 }
 
 /** A value stored on a queue, and the version a write must name to replace it. */
@@ -525,6 +1134,14 @@ export interface ClaimOptions {
   excludeNames?: string[];
   /** The claiming worker's id. */
   workerId: string;
+  /**
+   * The claiming worker's stable key, host and pid, stamped with `workerId`
+   * as the job's {@link JobRecord.processedBy} — in the write the claim
+   * already makes, never a round trip of its own. Absent (an older worker):
+   * the stamp is `{ id: workerId }`. A driver without
+   * {@link DriverCapabilities.jobAttribution} may ignore it.
+   */
+  worker?: { key: string; host: string; pid: number };
   /** The lock token to stamp on the job. */
   token: string;
   /** How long the claim's lock lives, in milliseconds. */
@@ -599,9 +1216,16 @@ export interface RepeatRecord {
  * count them.
  *
  * `states`, `offset`, `limit` and `order` mean exactly what they mean to
- * {@link QueueDriver.listJobs}, and the order is the same one. The two filters
- * narrow the jobs *before* the page is cut, so `offset` counts matches and a
- * page is never short because non-matching jobs sat inside it.
+ * {@link QueueDriver.listJobs}, and the order is the same one — no filter
+ * changes it. Every filter narrows the jobs *before* the page is cut, so
+ * `offset` counts matches and a page is never short because non-matching jobs
+ * sat inside it; the filters AND together. The attribution filters
+ * (`workerKeys`, `workerIds`, `finishedFrom`, `finishedTo`) are defined once, in
+ * `attribution.ts`, which every backend matches against.
+ *
+ * The one thing that changes the order is {@link JobQuery.sort}: `"createdAt"`
+ * orders by creation whatever the states. Absent, or `"natural"`, it is the
+ * `listJobs` order.
  */
 export interface JobQuery {
   /** The states to read. Several are ordered by creation, as `listJobs` does. */
@@ -610,8 +1234,35 @@ export interface JobQuery {
   offset: number;
   /** The most jobs to return. */
   limit: number;
-  /** `asc` is the states' natural order, `desc` its reverse. */
+  /**
+   * `asc` is the order {@link JobQuery.sort} names — the states' natural
+   * order by default — and `desc` its exact reverse, tie-breaks included.
+   */
   order: "asc" | "desc";
+  /**
+   * What the page is ordered by. Absent means `"natural"`, and the two are the
+   * same query:
+   *
+   * - `"natural"` — the {@link QueueDriver.listJobs} order, unchanged: one
+   *   state by its own key (`waiting` by priority then creation, `delayed` and
+   *   `failed` by `runAt`, `active` by lock expiry, `completed` and `dead` by
+   *   `finishedOn`), several states by creation;
+   * - `"createdAt"` — by `createdAt`, ascending, whatever the states, and jobs
+   *   created in the same millisecond by `id`, compared by code point (the
+   *   order `compareCodePoints` in `shared/strings.ts` gives, and a byte
+   *   comparison on every backend). `order: "desc"` reverses both keys, so
+   *   "newest first" is one well-defined sequence and an `offset` page never
+   *   skips or repeats a job. `compareCreated` in `added.ts` is the definition.
+   *
+   * Honoured only by a driver that implements
+   * {@link QueueDriver.countAddedJobs} — implementing it is the promise to
+   * (see there). For any other, `findJobPage` in `readApis.ts` never hands
+   * this query to the driver's `findJobs`, which would ignore the field and
+   * answer in the natural order: it reads by scan and sorts instead. The
+   * queue refuses the sort outright on such a driver with a `ConfigError`,
+   * since that scan reads every job in the states asked for.
+   */
+  sort?: JobListSort;
   /**
    * Only jobs whose name is exactly one of these — case, accents and all.
    * Absent means any name; an empty array matches nothing.
@@ -627,8 +1278,47 @@ export interface JobQuery {
    * The payload is never searched.
    */
   search?: string;
+  /**
+   * Only jobs whose `processedBy.key` is exactly one of these. A job never
+   * claimed, or whose stamp carries no key, never matches. Absent means any;
+   * an empty array matches nothing.
+   *
+   * Honoured only by a driver declaring
+   * {@link DriverCapabilities.jobAttribution}; for any other, `findJobPage`
+   * filters by scan rather than trust its `findJobs` with it.
+   */
+  workerKeys?: string[];
+  /**
+   * Only jobs whose `processedBy.id` is exactly one of these. Absent means
+   * any; an empty array matches nothing. Gated like `workerKeys`.
+   */
+  workerIds?: string[];
+  /**
+   * Only `completed` or `dead` jobs with `finishedOn >= finishedFrom` (epoch
+   * ms, **inclusive**). Every other state — waiting, delayed, active,
+   * waiting-children, a `failed` retry pending — never matches a range, and
+   * neither does a job with no `finishedOn`. Gated like `workerKeys`.
+   */
+  finishedFrom?: number;
+  /**
+   * Only `completed` or `dead` jobs with `finishedOn < finishedTo` (epoch ms,
+   * **exclusive**), the same analytics convention as `finishedFrom`. Not after
+   * `finishedFrom` matches nothing. Gated like `workerKeys`.
+   */
+  finishedTo?: number;
   /** Also count every match, ignoring `offset` and `limit`. Defaults to `false`. */
   total?: boolean;
+}
+
+/**
+ * The range {@link QueueDriver.countAddedJobs} counts over: jobs whose
+ * `createdAt` is at or after `from` and before `to`, both epoch ms.
+ */
+export interface AddedRange {
+  /** Start, epoch ms, **inclusive**. */
+  from: number;
+  /** End, epoch ms, **exclusive**. Not after `from` matches nothing. */
+  to: number;
 }
 
 /** A page of jobs, and how many matched in all when that was asked for. */
@@ -647,8 +1337,28 @@ export interface JobPage {
  * `paused` are as fresh as the last report rather than exact.
  */
 export interface WorkerInfo {
-  /** The worker's id. */
+  /**
+   * The worker's id: its **incarnation**, unique among live workers and new
+   * every time the process starts, unless the worker was given an explicit
+   * one. Load-bearing — it names the heartbeat record, the lock token and the
+   * limiter's lease — so two live workers must never share it.
+   */
   id: string;
+  /**
+   * The **stable** identity a configuration override is keyed by, so an
+   * override survives restarts, redeploys and rescheduling onto new hosts,
+   * and reaches every replica of the same worker. Derived as
+   * `[service.]queue[.name|.ordinal]`.
+   *
+   * Optional: a record written by a worker from before this existed has none,
+   * and a reader falls back to {@link WorkerInfo.id}.
+   */
+  key?: string;
+  /**
+   * The service the worker belongs to — its `BunJobs` context's `service`
+   * option. Absent when none was set.
+   */
+  service?: string;
   /** The queue it consumes. */
   queue: string;
   /** The host it runs on. */
@@ -659,10 +1369,26 @@ export interface WorkerInfo {
   concurrency: number;
   /** How many jobs it was running at its last report. */
   active: number;
-  /** Whether it was locally paused at its last report. */
+  /**
+   * Whether it was locally paused at its last report. Kept for compatibility
+   * with readers older than {@link WorkerInfo.state}, which says the same
+   * thing and four more besides.
+   */
   paused: boolean;
+  /**
+   * What it was doing at its last report. Absent on a record written before
+   * this existed, where {@link WorkerInfo.paused} is all there is to read.
+   */
+  state?: WorkerState;
   /** When it started consuming, in epoch milliseconds. */
   startedAt: number;
+  /**
+   * When its *process* started, in epoch milliseconds — `performance.timeOrigin`
+   * rounded. It is what tells one incarnation of a worker from the next when
+   * the id was given explicitly, so a controller's instruction can never be
+   * applied by a process that restarted since it was written.
+   */
+  processStartedAt?: number;
   /** When it last reported, in epoch milliseconds. */
   heartbeatAt: number;
   /**
@@ -671,6 +1397,106 @@ export interface WorkerInfo {
    * listed.
    */
   expiresAt: number;
+  /** The `@kingsleyweb/bun-jobs` version the worker runs. */
+  version?: string;
+  /**
+   * Jobs this incarnation has completed since it started, as of its last
+   * report. Counted by the worker when a completion it wrote landed, and
+   * written with the heartbeat record — so it costs no I/O of its own and a
+   * workers table has its headline without an analytics read.
+   *
+   * Per incarnation, like {@link WorkerInfo.id}: a restart starts it at `0`.
+   * The series that survives restarts is the one keyed by
+   * {@link WorkerInfo.key}. Absent on a record from before this existed.
+   */
+  completed?: number;
+  /**
+   * Attempts this incarnation has failed since it started, as of its last
+   * report — every failed attempt, retried or not, whose write landed.
+   * Per incarnation, like {@link WorkerInfo.completed}. Absent on a record
+   * from before this existed.
+   */
+  failed?: number;
+  /**
+   * Its settings: what it runs with, what its own code asked for, and which of
+   * them an override replaces. Absent on a worker from before remote
+   * configuration existed.
+   */
+  config?: WorkerConfigInfo;
+  /**
+   * What it says about being controlled remotely. Absent on a worker from
+   * before remote control existed, which is therefore not controllable.
+   */
+  control?: WorkerControlInfo;
+}
+
+/**
+ * A worker's settings as it reports them: what is in force, what its code
+ * asked for, and the difference between the two.
+ */
+export interface WorkerConfigInfo {
+  /** What the worker is actually running with. */
+  effective: WorkerConfigValues;
+  /** What its own code and options asked for, before any override. */
+  code: WorkerConfigValues;
+  /** The keys an override currently replaces, in `WORKER_CONFIG_KEYS` order. */
+  overridden: WorkerConfigKey[];
+  /**
+   * Keys whose `code` value was derived rather than given — today only
+   * `heartbeatInterval`, a third of `lockDuration`. Absent when none were.
+   */
+  derived?: WorkerConfigKey[];
+  /**
+   * The stored override's version, `0` when there is none. A controller sends
+   * it back as `expectedSeq` for a safe read-modify-write.
+   */
+  seq: number;
+  /** When the override was last written, epoch ms; absent when there is none. */
+  updatedAt?: number;
+}
+
+/** What a worker says about being controlled from another process. */
+export interface WorkerControlInfo {
+  /**
+   * Whether it listens for control at all: it was started with
+   * `remoteControl`, and its driver can store the entries.
+   */
+  enabled: boolean;
+  /**
+   * How it hears about a change — a driver subscription, or only its own
+   * polling. The report is a fallback under both.
+   */
+  mode: WorkerControlMode;
+  /** The version of the lifecycle instruction it has applied. */
+  appliedSeq: number;
+  /** The version of the configuration override it has applied. */
+  configSeq: number;
+  /** Whether it is mid-apply; see `state: "restarting"` and `"stopping"`. */
+  pending: boolean;
+  /**
+   * How long a stop given to this worker lasts, as its process is configured
+   * — `"process"` (the default: back running after a restart) or `"key"`
+   * (recorded against {@link WorkerInfo.key} and reapplied at startup).
+   * Reported so a dashboard can say "stopped until restart" rather than guess.
+   */
+  stopPersistence: WorkerStopPersistence;
+  /**
+   * Whether one instruction may ask for the other persistence — the
+   * `stopPersistenceOverridable` option. `false` by default, so the process
+   * rather than the caller decides whether a stop outlives it.
+   */
+  stopPersistenceOverridable: boolean;
+  /** The last instruction it could not apply, and why. Absent when none failed. */
+  lastError?: {
+    /** When it failed, epoch ms. */
+    at: number;
+    /** What went wrong, safe to show. */
+    message: string;
+    /** Which instruction failed, where one is known. */
+    action?: WorkerControlAction;
+    /** The version that failed, where one is known. */
+    seq?: number;
+  };
 }
 
 /** How many jobs a queue finished in one minute. */
@@ -686,6 +1512,175 @@ export interface ThroughputBucket {
    */
   failed: number;
 }
+
+/**
+ * Which buckets an analytics read wants: a width, and the first and last
+ * bucket to answer with.
+ *
+ * `from` and `to` are **bucket starts, both inclusive** — `getThroughput`'s
+ * convention, not the HTTP range's exclusive `to`. A route turns the one into
+ * the other exactly once, in `resolveAnalyticsRange` (`drivers/metrics.ts`),
+ * which is also what picked `interval`.
+ *
+ * A driver answers **sparsely**: a bucket it stored nothing for may be absent,
+ * and `fillBuckets` makes the series contiguous afterwards. Filling in the
+ * driver would mean every backend allocating an object per second of the range
+ * before anything had capped it.
+ */
+export interface MetricsQuery extends BucketRange {
+  /**
+   * The bucket width, ms: `SECOND_BUCKET_MS` or `MINUTE_BUCKET_MS`. A width the
+   * driver does not keep answers empty rather than throwing — the route asks
+   * for one it reported in {@link MetricsSupport}.
+   */
+  interval: number;
+}
+
+/**
+ * What one runner event counts as: the outcome, and the run's duration when it
+ * has just finished.
+ *
+ * The duration rides with the outcome so a finished run is **one** write, not
+ * two — the histogram is free precisely because nothing extra is sent for it.
+ */
+export interface RunnerRunDelta extends Partial<RunnerRunCounters> {
+  /**
+   * The run's duration, ms, when this delta reports a run *finishing*. A run
+   * counts in the bucket it finished in, not the one it started in.
+   */
+  durationMs?: number;
+}
+
+/** What a runner's analytics read asks for. */
+export interface RunnerMetricsQuery extends MetricsQuery {
+  /**
+   * Whether to read the duration buckets too. Off by default: a sparkline
+   * needs the outcome counts alone, and the histograms are 25 numbers a
+   * bucket.
+   */
+  durations?: boolean;
+}
+
+/** What a runner's analytics read answers with. */
+export interface RunnerMetricsRead {
+  /** Runs by outcome, sparse, oldest first. */
+  runs: CounterBucket<RunnerRunCounters>[];
+  /**
+   * Durations, sparse, oldest first — absent when none were asked for, and
+   * absent when the driver records none.
+   */
+  durations?: RawDurationBucket[];
+}
+
+/** What a worker's analytics read asks for. */
+export interface WorkerMetricsQuery extends MetricsQuery {
+  /**
+   * Whether to read the busyness buckets too. They are sampled on the
+   * heartbeat, so they are typically served at a coarser `interval` than the
+   * throughput beside them — read them in their own call when they are.
+   */
+  busyness?: boolean;
+}
+
+/** What a worker's analytics read answers with. */
+export interface WorkerMetricsRead {
+  /** Jobs the worker finished, sparse, oldest first. */
+  jobs: CounterBucket<JobCounters>[];
+  /** Its busyness, sparse, oldest first; absent when none was asked for or recorded. */
+  busyness?: RawBusynessBucket[];
+}
+
+/** Which namespace-wide roll-up a read wants. */
+export type NamespaceMetricKind = "jobs" | "runs" | "workerJobs";
+
+/** What a namespace roll-up read asks for. */
+export interface NamespaceMetricsQuery extends MetricsQuery {
+  /**
+   * The roll-ups wanted. A driver may answer with fewer — one it does not
+   * record is absent, never an array of zeros, so a caller can tell "nothing
+   * happened" and "nothing is recorded" apart.
+   */
+  kinds: readonly NamespaceMetricKind[];
+}
+
+/**
+ * The namespace's own buckets: what makes an overview three reads whatever the
+ * fleet size, because every per-entity count bumps these as it is written.
+ */
+export interface NamespaceMetricsRead {
+  /** Every queue's throughput, summed, sparse. */
+  jobs?: CounterBucket<JobCounters>[];
+  /** Every runner's outcomes, summed, sparse. */
+  runs?: CounterBucket<RunnerRunCounters>[];
+  /**
+   * Every worker's throughput, summed, sparse. Not the same series as
+   * {@link NamespaceMetricsRead.jobs}: a queue counts what its backend
+   * finished, a worker counts what it finished itself, and jobs finished by a
+   * process that records no worker metrics are in one and not the other.
+   */
+  workerJobs?: CounterBucket<JobCounters>[];
+}
+
+/**
+ * What a grouped runner read asks for: a range, and optionally which runners.
+ *
+ * The rows of `GET /analytics/runners` — every runner's totals, ranked by the
+ * caller — in one read however many runners there are.
+ */
+export interface RunnerMetricsTotalsQuery extends MetricsQuery {
+  /**
+   * Whether to total the durations too. Off by default, as on
+   * {@link RunnerMetricsQuery.durations}.
+   */
+  durations?: boolean;
+  /**
+   * Only these runners — their stored keys, as counted (`runnerKey(id)`).
+   * Omitted: every runner the namespace counted for. **An empty list answers
+   * nothing**, never everything: a caller restricted to no runner must not
+   * fall through to all of them. A runner filtered out is absent from the
+   * answer, not a row of zeros.
+   */
+  runners?: readonly string[];
+}
+
+/** One runner's row of a grouped read: its key, and its totals over the range. */
+export interface RunnerMetricsTotals extends RunnerRunTotals {
+  /** The runner's stored key, as counted (`runnerKey(id)`). Never the roll-up. */
+  runner: string;
+}
+
+/**
+ * What a grouped worker read asks for: a range, and optionally which queues'
+ * workers.
+ */
+export interface WorkerMetricsTotalsQuery extends MetricsQuery {
+  /**
+   * Whether to total the busyness too, at this query's `interval`. Off by
+   * default, as on {@link WorkerMetricsQuery.busyness}.
+   */
+  busyness?: boolean;
+  /**
+   * Only the workers of these queues. Omitted: every queue. **An empty list
+   * answers nothing**, never everything. The queue is the filter because it is
+   * the permission boundary — a caller restricted by `queues` or
+   * `listQueues: "authorized"` must never see a hidden queue's worker counted.
+   */
+  queues?: readonly string[];
+}
+
+/** One worker key's row of a grouped read: its identity, and its totals over the range. */
+export interface WorkerMetricsTotals
+  extends WorkerMetricsRef, WorkerJobTotals {}
+
+/** One runner's series in a batch read: {@link RunnerMetricsRead}, named. */
+export interface RunnerMetricsSeries extends RunnerMetricsRead {
+  /** The runner's stored key, as asked for. */
+  runner: string;
+}
+
+/** One worker key's series in a batch read: {@link WorkerMetricsRead}, named. */
+export interface WorkerMetricsSeries
+  extends WorkerMetricsRef, WorkerMetricsRead {}
 
 /** A cross-process notification. */
 /**
@@ -731,6 +1726,12 @@ export interface QueueDriver {
    * Moves the next due job to `active` and stamps the claim on it, atomically:
    * exactly one caller may receive any given job. `null` when the queue is
    * empty, paused, or nothing is due yet.
+   *
+   * The stamp includes {@link JobRecord.processedBy}, built by
+   * `attributionOf(opts)` in `attribution.ts` and written in the same
+   * statement or script as `workerId`, replacing any earlier attempt's — on a
+   * driver declaring {@link DriverCapabilities.jobAttribution}. Settles never
+   * clear it. The same holds for {@link QueueDriver.claimJobs}.
    */
   claimJob: (q: QueueRef, opts: ClaimOptions) => Promise<JobRecord | null>;
   /**
@@ -768,7 +1769,11 @@ export interface QueueDriver {
     lockMs: number,
     now: number,
   ) => Promise<boolean>;
-  /** Completes a job, for its lock holder only. */
+  /**
+   * Completes a job, for its lock holder only. Like every settle (`failJob`,
+   * `buryJob`, the batched completion), it clears the lock and `workerId`
+   * and keeps `processedBy`.
+   */
   completeJob: (
     q: QueueRef,
     id: string,
@@ -865,7 +1870,12 @@ export interface QueueDriver {
    *   later than `now` is `delayed`, otherwise `waiting` — so a job moved into
    *   the future is not claimable and one moved to now does not wait for
    *   promotion.
-   * - **A new priority reorders a waiting job** among the others.
+   * - **A new priority reorders a waiting job** among the others, and marks
+   *   the job's priority explicit: it sets the priority bit of
+   *   {@link StoredJobOptions.explicit} (and keeps `opts.priority` in step),
+   *   so a later rewrite with a queue's stored defaults keeps it. A job with no
+   *   mask (added before it existed) is left without one — a mask of only
+   *   that bit would claim every other option was defaulted.
    * - **`onlyIn` is checked in the same step as the write.** A job claimed
    *   between a caller reading it and calling this is not changed when
    *   `onlyIn` leaves out `active`, which is what makes replacing a pending
@@ -908,6 +1918,72 @@ export interface QueueDriver {
     opts: { offset: number; limit: number; order: "asc" | "desc" },
   ) => Promise<{ logs: string[]; count: number }>;
   /**
+   * Empties one job's log, and says how many lines went.
+   *
+   * - **Refused while the job is `active`** — `{ status: "active" }`, nothing
+   *   removed — and **checked in the same step as the removal**, as
+   *   {@link QueueDriver.removeJob} checks it: a job claimed between a caller
+   *   reading it and calling this keeps every line its worker writes.
+   * - **No such job** is `{ status: "missing" }`, removing nothing — not even
+   *   lines a removed job might have left behind under the id, which
+   *   {@link QueueDriver.addJobLog} already guarantees no later job sees.
+   * - **Afterwards the log reads as one that was never written.** Every
+   *   driver derives the count {@link QueueDriver.getJobLogs} and
+   *   {@link QueueDriver.addJobLog} answer with from the lines it stores —
+   *   there is no separate counter — so the lines must actually go: the next
+   *   `addJobLog` answers `1`, `keep` trims from there, and `getJobLogs`
+   *   counts `0` until then. A driver that owns lines through a per-job token
+   *   (the SQL and MongoDB `log_key`) may delete the token's lines or give the
+   *   job a new token; either way no line written before the clear may be
+   *   counted or read after it.
+   * - Only the job's log changes. Its record, its state and every counter,
+   *   throughput figure and analytics series stay exactly as they were.
+   *
+   * Optional, as {@link QueueDriver.addJobLog} is: a driver without it has
+   * the route pruned, and `BunQueue.clearJobLogs` throws `NotSupportedError`.
+   */
+  clearJobLogs?: (q: QueueRef, id: string) => Promise<ClearJobLogsResult>;
+  /**
+   * Writes `request.values` over the options of pending jobs, walking
+   * `request.states` in order from `request.cursor`, examining at most
+   * `request.limit` jobs — the storage half of applying a queue's stored job
+   * defaults to jobs already waiting.
+   *
+   * The rules, which the shared driver contract checks:
+   *
+   * - **Per job, atomic, state re-checked.** A job's `opts`, `maxAttempts` and
+   *   `priority` change in one write that re-checks the job is still in
+   *   `states` — {@link JobPatch.onlyIn}'s guarantee. A job claimed first is
+   *   not written (counted `moved` where the backend can see it); one claimed
+   *   after reads the whole rewritten record. `active`, `completed` and `dead`
+   *   jobs are never written.
+   * - **Explicit keys are kept.** A key whose bit is set in `opts.explicit` is
+   *   not written, per job; a job whose every changing key is explicit is
+   *   `skippedExplicit`. A job with no `opts.explicit` is `skippedUnmarked`
+   *   unless `includeUnmarked`, which treats it as all-defaulted. The mask
+   *   itself is never changed.
+   * - **Priority reorders** a waiting job exactly as `updateJob` does, keeping
+   *   its FIFO place among equal priorities.
+   * - **A keyset walk, never an offset.** Each state is walked in a fixed
+   *   order from the cursor. A job moved ahead of the cursor by its own
+   *   rewrite may be met again, and counts `unchanged`; no job that was in a
+   *   walked state for the whole walk is skipped.
+   * - **A dry run writes nothing** and counts exactly as the real call would.
+   * - Bounded: a call's writes block claims for at most a few milliseconds at a
+   *   time on a backend where a write blocks them (a Redis script, a SQLite
+   *   transaction).
+   *
+   * An `attempts` lower than a job's `attemptsMade` is written, not clamped,
+   * and counted `exhausted`.
+   *
+   * Optional: without it the apply route is pruned; saving defaults still
+   * works, since that needs only queue state.
+   */
+  rewritePendingOptions?: (
+    q: QueueRef,
+    request: PendingOptionsRewrite,
+  ) => Promise<PendingOptionsRewriteResult>;
+  /**
    * Records how a child ended on its parent, in `q`, and moves the parent on,
    * atomically.
    *
@@ -921,7 +1997,14 @@ export interface QueueDriver {
    *   ignored, is stored and counted off — `"recorded"`, or `"released"` when
    *   none are left and the parent becomes `waiting` (or `delayed`, if its
    *   `runAt` is later). A failure not ignored buries the parent: `dead`, with
-   *   `error` as its reason — `"buried"`.
+   *   `error` as its reason — `"buried"`. Except a stale one, decided from
+   *   an earlier view of the child: when the child's own record, read in the
+   *   same atomic step as the bury (under the parent's hold, transaction or
+   *   script), exists and either has `flow.recorded === true` (its failure
+   *   was delivered already — it buried this parent, which has been retried
+   *   since) or is in any state but `dead` (it has been retried since), the
+   *   answer is `"already"`, with nothing changed. A child with no record
+   *   still buries the parent, and so does one `dead` and unrecorded.
    * - **Parent `dead`:** a completed or ignored outcome is stored, with no
    *   change to the state or the count, so a retry of the parent finds it —
    *   `"recorded"`. A failure not ignored stores nothing — `"parent-dead"`.
@@ -946,6 +2029,12 @@ export interface QueueDriver {
    * was has not. Outcomes already recorded are kept. With none left the parent
    * goes to `waiting`, or `delayed` when its `runAt` is later; otherwise to
    * `waiting-children`.
+   *
+   * The parent's own `flow.recorded` is reset to `false` in the same step, as
+   * `retryJob` resets a retried job's: the outcome it ends with this time has
+   * not reached its own parent. Without it, a nested parent retried and
+   * buried again would have that failure refused by its parent's
+   * `recordChild` as already delivered, stranding the flow.
    *
    * This, not {@link QueueDriver.retryJob}, is how a queue retries a buried
    * parent. Optional, with `recordChild` and `markChildRecorded`: a driver
@@ -979,6 +2068,10 @@ export interface QueueDriver {
    * creation, `delayed` and `failed` by when they are due, `active` by lock
    * expiry, `completed` and `dead` by when they finished. Several states are
    * ordered by creation. `asc` is that order, `desc` its reverse.
+   *
+   * Always the natural order: {@link JobQuery.sort} is a `findJobs` field
+   * only, for the reason every filter is — a driver written before it would
+   * ignore an unknown option.
    */
   listJobs: (
     q: QueueRef,
@@ -1000,6 +2093,12 @@ export interface QueueDriver {
    * With no filter this is `listJobs`, and `total` is the sum of those states'
    * counts. A driver must never match against the payload. See
    * {@link JobQuery} for what each field means.
+   *
+   * The attribution filters reach this only on a driver declaring
+   * {@link DriverCapabilities.jobAttribution}, for the same reason: a
+   * `findJobs` written before them would ignore them. {@link JobQuery.sort}
+   * `"createdAt"` reaches it only on a driver implementing
+   * {@link QueueDriver.countAddedJobs}, which promises to honour it.
    */
   findJobs?: (q: QueueRef, query: JobQuery) => Promise<JobPage>;
   /**
@@ -1047,6 +2146,42 @@ export interface QueueDriver {
     ns: string,
   ) => Promise<Record<string, Record<JobState, number>>>;
   /**
+   * Of the jobs **added** in a range — `createdAt` in `[range.from, range.to)`,
+   * `from` inclusive and `to` exclusive — how many are in each state **now**,
+   * per queue: every queue of the namespace, or only `queue` when given.
+   *
+   * - **Only jobs still stored.** A job retention or a remove, clean, drain or
+   *   obliterate has deleted is not counted, so the states sum to the jobs
+   *   added in the range that are still there — not to every job ever added.
+   * - **Every state of a queue present is present**, zero where none is in
+   *   it. A queue with no job in the range may be absent, and one other than
+   *   `queue`, when given, must be. `countAdded` in `readApis.ts` fills both
+   *   in for a caller.
+   * - `range.to <= range.from` matches nothing: answer `{}` without reading.
+   * - Confined to `ns`, like everything else.
+   *
+   * `inAddedRange`, `emptyAddedCounts` and `countAddedByScan` in `added.ts`
+   * are the definition, and the shared driver contract compares each backend
+   * against them.
+   *
+   * **Implementing this also promises {@link JobQuery.sort}.** Both read by
+   * `createdAt` and are served by the same backends, so one method stands for
+   * both: a driver implementing it must honour `sort: "createdAt"` in its
+   * {@link QueueDriver.findJobs} (a driver without `findJobs` is sorted by the
+   * scan fallback). The management API reports the pair as the single
+   * `features.addedByState`.
+   *
+   * Optional, and with no fallback: without it the queue refuses the sort,
+   * and the API prunes the counts routes and reports the flag `false`.
+   * Implement it only where the answer is bounded by an index or by memory,
+   * never by reading every job record — a UI polls it.
+   */
+  countAddedJobs?: (
+    ns: string,
+    range: AddedRange,
+    queue?: string,
+  ) => Promise<Record<string, Record<JobState, number>>>;
+  /**
    * How many jobs the queue completed, and how many attempts failed, in each
    * minute whose start is in `[from, to]`, oldest first. A minute with neither
    * may be absent.
@@ -1084,6 +2219,150 @@ export interface QueueDriver {
    * closing it, and the last second of counts would go with the process.
    */
   flushThroughput?: () => Promise<void>;
+  /**
+   * One queue's throughput at an arbitrary width — what
+   * {@link QueueDriver.getThroughput} is, generalised past the minute.
+   *
+   * The same counts, read at the width the request resolved to, so a minute
+   * query answers exactly what `getThroughput` answers and a second query
+   * answers the per-second buckets beside them. It is a separate method rather
+   * than a third argument because `getThroughput` is shipped API: widening it
+   * would change what an existing driver has to implement.
+   *
+   * Sparse and oldest first. Optional, and with no fallback.
+   */
+  getQueueMetrics?: (
+    q: QueueRef,
+    query: MetricsQuery,
+  ) => Promise<CounterBucket<JobCounters>[]>;
+  /**
+   * Counts jobs one **worker** finished, keyed by its stable
+   * {@link WorkerInfo.key}.
+   *
+   * **The worker counts its own, in memory, and writes once a second.** The
+   * driver knows the lock token, not the worker, so attributing a completion
+   * inside the queue's hot script would push per-worker cardinality into the
+   * one path that must stay cheap — this feature is not willing to buy that.
+   * One writer per series is also why there are no shards here.
+   *
+   * Keyed by `key`, never by {@link WorkerInfo.id}: an id is an incarnation, so
+   * a rolling redeploy would shred the series into a new one per replica.
+   *
+   * Like {@link RunnerDriver.countRunnerRun}, one call writes every width and
+   * bumps the namespace roll-up.
+   *
+   * Optional, alongside {@link QueueDriver.getWorkerMetrics}.
+   */
+  countWorkerJobs?: (
+    q: QueueRef,
+    key: string,
+    at: number,
+    counts: Partial<JobCounters>,
+  ) => Promise<void>;
+  /**
+   * Records one busyness sample for a worker: how many jobs it had in flight,
+   * and what it was allowed to run at once.
+   *
+   * **Sampled on the heartbeat, not counted.** The worker's `reportInterval`
+   * (10 s by default) is the only moment busyness is observed, so this is
+   * called from the report and costs no I/O of its own beyond the row, and a
+   * busyness series is served at its own, coarser resolution. There is
+   * deliberately no second timer: an idle worker would then write once a
+   * second forever, which is the one cost here not bounded by activity.
+   *
+   * `at` is when the sample was taken — kept, not just floored, so that merging
+   * two writers' rows can take `concurrency` from the later one.
+   *
+   * Optional even for a driver that has {@link QueueDriver.countWorkerJobs}:
+   * without it, a worker's series carries throughput and no busyness, which is
+   * exactly what the busyness fields being optional on the wire means.
+   */
+  sampleWorkerBusyness?: (
+    q: QueueRef,
+    key: string,
+    at: number,
+    sample: BusynessSample,
+  ) => Promise<void>;
+  /**
+   * One worker's buckets: the jobs it finished, and its busyness when that was
+   * asked for and recorded.
+   *
+   * Keyed by {@link WorkerInfo.key}, so it answers for the worker across
+   * restarts rather than for one incarnation. A key the backend never counted
+   * for reads as no buckets, not an error.
+   *
+   * Sparse and oldest first. Optional, alongside
+   * {@link QueueDriver.countWorkerJobs}.
+   */
+  getWorkerMetrics?: (
+    q: QueueRef,
+    key: string,
+    query: WorkerMetricsQuery,
+  ) => Promise<WorkerMetricsRead>;
+  /**
+   * **Every** worker key's totals over a range, in one read — the rows of
+   * `GET /analytics/workers`, which rank by `completed` and cap at
+   * `MAX_ANALYTICS_ROWS`. With 200 workers a read per key was 200 round trips
+   * a poll; this is one.
+   *
+   * One row per `(queue, key)` with something to report over the range: a
+   * counted job or — when `busyness` was asked for and is recorded — a
+   * heartbeat sample. A key with nothing is **absent, not zero**, and so is
+   * every worker of a queue outside `query.queues`. The namespace roll-up
+   * (`NAMESPACE_ENTITY`) is never a row. Order is unspecified; each
+   * pair appears once.
+   *
+   * A row is exactly what `workerTotalsOf(getWorkerMetrics(...))` gives for
+   * that pair (`drivers/metrics.ts`); the contract suite compares the two.
+   * When busyness was asked for and is recorded, every row carries it, with
+   * `samples: 0` for a key that did not report in range.
+   *
+   * Whether a worker is still live is not its business: a key that stopped
+   * reporting keeps its counts, and the caller's own listing decides which
+   * rows it shows.
+   *
+   * Optional, as a set with {@link QueueDriver.getWorkerMetricsMany}.
+   */
+  getWorkerMetricsTotals?: (
+    ns: string,
+    query: WorkerMetricsTotalsQuery,
+  ) => Promise<WorkerMetricsTotals[]>;
+  /**
+   * Several named worker keys' series, in one read — the `keys=` batch of
+   * `GET /analytics/workers`, at most `MAX_ANALYTICS_SERIES` pairs (enforced
+   * by the route, not the driver).
+   *
+   * Each entry is exactly what {@link QueueDriver.getWorkerMetrics} answers
+   * for that `(queue, key)` — sparse, oldest first, `busyness` present when
+   * asked for and recorded — plus its identity. A pair with nothing in range
+   * (no job bucket and, when asked, no busyness bucket) is **absent**, not an
+   * entry of empty arrays. A pair asked for twice is answered once
+   * (`uniqueWorkerRefs`); order is unspecified.
+   *
+   * Optional, as a set with {@link QueueDriver.getWorkerMetricsTotals}.
+   */
+  getWorkerMetricsMany?: (
+    ns: string,
+    workers: readonly WorkerMetricsRef[],
+    query: WorkerMetricsQuery,
+  ) => Promise<WorkerMetricsSeries[]>;
+  /**
+   * The namespace's own roll-up buckets. Identical to
+   * {@link RunnerDriver.getNamespaceMetrics}, and declared on both halves
+   * because each half writes some of the kinds; a `JobsDriver` implements it
+   * once, for all three.
+   */
+  getNamespaceMetrics?: (
+    ns: string,
+    query: NamespaceMetricsQuery,
+  ) => Promise<NamespaceMetricsRead>;
+  /** What this driver records and serves. See {@link RunnerDriver.getMetricsSupport}. */
+  getMetricsSupport?: () => MetricsSupport;
+  /**
+   * Writes the analytics counts gathered in memory. See
+   * {@link RunnerDriver.flushMetrics}, which this is the same method as.
+   */
+  flushMetrics?: () => Promise<void>;
   /** Removes a job. Refuses (returns `false`) while it is active. */
   removeJob: (q: QueueRef, id: string) => Promise<boolean>;
   /**
@@ -1116,7 +2395,9 @@ export interface QueueDriver {
   promoteDelayed: (q: QueueRef, now: number, limit: number) => Promise<number>;
   /**
    * Recovers jobs whose worker died holding them: back to `waiting`, or to
-   * `dead` once they have stalled `maxStalledCount` times.
+   * `dead` once they have stalled `maxStalledCount` times. Clears the lock
+   * and `workerId`, but keeps `processedBy`: "last claimed by the worker that
+   * died" is the diagnostic.
    */
   recoverStalled: (
     q: QueueRef,
@@ -1286,7 +2567,20 @@ export interface JobsDriver
  * `JSON.stringify`, because it is what a spawned child receives — an
  * instance cannot cross a process boundary, a description of one can.
  */
-export type DriverConfig =
+export type DriverConfig = {
+  /**
+   * What the driver built from this config records for analytics: the finest
+   * bucket width, how long per-second buckets are kept, and whether worker,
+   * runner and duration series are written. Everything is on by default, at
+   * per-second resolution with five minutes of per-second retention.
+   *
+   * A config handed to a runner, worker or `BunJobs` that has its own
+   * `metrics` option gets that option here unless it names its own, which
+   * wins. `{ workers: false }` is the first lever for a large fleet. The file
+   * driver records minutes only, whatever `resolution` asks for.
+   */
+  metrics?: MetricsOptions;
+} & (
   | { type: "memory" }
   | {
       type: "file";
@@ -1320,10 +2614,27 @@ export type DriverConfig =
       adapter?: "postgres" | "mysql" | "mariadb" | "sqlite";
       /** Prepended to every table name. */
       tablePrefix?: string;
-      /** Exact table names, for an existing schema. Any subset; the rest are defaulted. */
+      /**
+       * Exact table names, for an existing schema. Any subset; the rest are
+       * defaulted. The keys are `SqlDriver`'s `SQL_TABLES`, spelled out rather
+       * than derived: the SQL driver imports this module, so deriving them
+       * would make the two import each other. `driver-config-names.type-test.ts`
+       * pins them together instead, so a table added to that list fails the
+       * typecheck until it is added here too.
+       */
       tables?: Partial<
         Record<
-          "jobs" | "locks" | "kv" | "events" | "logs" | "workers" | "metrics",
+          | "jobs"
+          | "locks"
+          | "kv"
+          | "events"
+          | "logs"
+          | "run_logs"
+          | "workers"
+          | "metrics"
+          | "queue_metrics"
+          | "worker_metrics"
+          | "runner_metrics",
           string
         >
       >;
@@ -1381,9 +2692,23 @@ export type DriverConfig =
       database?: string;
       /** Prepended to every collection name. */
       collectionPrefix?: string;
-      /** Exact collection names, for an existing database. Any subset; the rest are defaulted. */
+      /**
+       * Exact collection names, for an existing database. Any subset; the rest
+       * are defaulted. The keys are `MongoDriver`'s `MONGO_COLLECTIONS`, spelled out for the
+       * same reason as the SQL `tables` keys and pinned to that list the same
+       * way.
+       */
       collections?: Partial<
-        Record<"jobs" | "locks" | "kv" | "events" | "jobLogs", string>
+        Record<
+          | "jobs"
+          | "locks"
+          | "kv"
+          | "events"
+          | "jobLogs"
+          | "runLogs"
+          | "metrics",
+          string
+        >
       >;
       /**
        * Options passed to the `MongoClient` this driver creates.
@@ -1408,7 +2733,8 @@ export type DriverConfig =
        * retirement of indexes older versions created.
        */
       syncSchema?: boolean | SchemaSyncOptions;
-    };
+    }
+);
 
 /** A schedule stored alongside a runner's state. */
 export type StoredSchedule = RunnerSchedule;

@@ -2,7 +2,12 @@ import type { JobsDriver } from "../lib/index";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { throughputBucket } from "../lib/drivers/readApis";
-import { ConfigError, MongoDriver, toConnectionUrl } from "../lib/index";
+import {
+  ConfigError,
+  MONGO_COLLECTIONS,
+  MongoDriver,
+  toConnectionUrl,
+} from "../lib/index";
 import { makeJob, testNamespace } from "./helpers";
 import { driverContract } from "./helpers/driverContract";
 
@@ -25,10 +30,58 @@ const URL = process.env.BUN_JOBS_TEST_MONGODB_URL;
 
 /** Drivers to close when the suite ends. */
 const drivers: JobsDriver[] = [];
+/** The exact namespaces this file's own cases created, to purge by name. */
+const namespaces = new Set<string>();
+/**
+ * The fixed collection prefixes the options cases name, whose collections are
+ * dropped by exact name at the end — never a prefix sweep.
+ */
+const FIXED_PREFIXES = ["renamed_", "custom_"] as const;
 
 afterAll(async () => {
+  // Closed first: a closing driver writes back what it has buffered, which
+  // would land after a purge and leave the namespace behind again.
   await Promise.allSettled(drivers.map((driver) => driver.close()));
+
+  if (!URL) {
+    return;
+  }
+
+  // Then purged through a fresh driver on the default names, which has
+  // nothing buffered to write back when it closes in turn.
+  const sweeper = new MongoDriver({ url: URL });
+  try {
+    for (const ns of namespaces) {
+      await sweeper.purge(ns).catch(() => undefined);
+    }
+  } finally {
+    await sweeper.close();
+  }
+
+  const { MongoClient } = await import("mongodb");
+  const client = new MongoClient(URL);
+  await client.connect();
+  try {
+    for (const prefix of FIXED_PREFIXES) {
+      for (const name of MONGO_COLLECTIONS) {
+        await client
+          .db()
+          .collection(`${prefix}${name}`)
+          .drop()
+          .catch(() => undefined);
+      }
+    }
+  } finally {
+    await client.close();
+  }
 });
+
+/** A namespace of this case's own, recorded so `afterAll` purges it. */
+function scope(name?: string): string {
+  const created = testNamespace(name);
+  namespaces.add(created);
+  return created;
+}
 
 /** A driver on the configured server, tracked for cleanup. */
 function makeDriver(options: { collectionPrefix?: string } = {}): MongoDriver {
@@ -48,7 +101,7 @@ if (URL) {
 describe.skipIf(!URL)("MongoDB driver: storage", () => {
   it("keeps a payload byte-for-byte, whatever its keys", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "shapes" };
 
     // BSON forbids "." and "$" in field names, and a job's data belongs to
@@ -67,7 +120,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("records flow children whose keys and results no field path could hold", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "flow.parents" };
     const now = Date.now();
 
@@ -85,6 +138,11 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
       q,
       makeJob({
         id: "p",
+        // Stamped with the same `now` the deliveries pass: `makeJob` otherwise
+        // reads the clock again, and a millisecond tick in between leaves the
+        // parent's `runAt` after `now`, so its release rightly lands as
+        // `delayed` rather than `waiting`.
+        createdAt: now,
         state: "waiting-children",
         flow: {
           parent: null,
@@ -141,7 +199,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("gives one job to exactly one claimer, however many ask at once", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "contested" };
     const now = Date.now();
 
@@ -168,7 +226,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("gives one lock to exactly one holder", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const now = Date.now();
 
     const acquire = (index: number) =>
@@ -183,7 +241,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("bounds queued triggers without a read-modify-write race", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const key = "r:bounded";
 
     const push = (index: number) =>
@@ -211,7 +269,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("keeps a job's priority and its options in agreement", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "reprioritised" };
 
     await driver.addJob(q, makeJob({ id: "moved-up", priority: 5 }));
@@ -228,7 +286,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("keeps log lines off the job, and sweeps the ones a job left behind", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "log-sweep" };
     const now = Date.now();
 
@@ -271,7 +329,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("purges a namespace's log lines with the rest of it", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "log-purge" };
 
     await driver.addJob(q, makeJob({ id: "logged" }));
@@ -297,7 +355,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("claims past a large block of excluded jobs in bounded steps", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "exclude-timing" };
     const now = Date.now();
     const pile = 10_000;
@@ -426,7 +484,7 @@ describe.skipIf(!URL)("MongoDB driver: storage", () => {
 
   it("trims history on the server, newest first", async () => {
     const driver = makeDriver();
-    const ns = testNamespace();
+    const ns = scope();
     const key = "r:history";
 
     for (let i = 0; i < 6; i++) {
@@ -465,6 +523,8 @@ describe.skipIf(!URL)("MongoDB driver: options", () => {
       kv: "custom_kv",
       events: "custom_events",
       jobLogs: "custom_jobLogs",
+      runLogs: "custom_runLogs",
+      metrics: "custom_metrics",
     });
 
     const named = new MongoDriver({
@@ -480,7 +540,7 @@ describe.skipIf(!URL)("MongoDB driver: options", () => {
 
   it("actually uses the collections it was told to", async () => {
     const driver = makeDriver({ collectionPrefix: "renamed_" });
-    const ns = testNamespace();
+    const ns = scope();
     const q = { ns, queue: "named" };
 
     await driver.addJob(q, makeJob({ id: "somewhere-else" }));
@@ -607,7 +667,7 @@ describe.skipIf(!URL)("MongoDB driver: throughput writes", () => {
   it("writes again only the counts a bulk write refused", async () => {
     const driver = makeDriver();
     const proto = await collectionPrototype();
-    const ns = testNamespace("tp-bulk");
+    const ns = scope("tp-bulk");
     const refused = { ns, queue: "refused" };
     const landed = { ns, queue: "landed" };
     const now = Date.now();
@@ -648,7 +708,7 @@ describe.skipIf(!URL)("MongoDB driver: throughput writes", () => {
   it("keeps counts that landed when the retention delete fails", async () => {
     const driver = makeDriver();
     const proto = await collectionPrototype();
-    const q = { ns: testNamespace("tp-delete"), queue: "q" };
+    const q = { ns: scope("tp-delete"), queue: "q" };
     const now = Date.now();
 
     await completeOne(driver, q, now);
@@ -676,7 +736,7 @@ describe.skipIf(!URL)("MongoDB driver: throughput writes", () => {
   it("waits out a write in flight before purging", async () => {
     const driver = makeDriver();
     const proto = await collectionPrototype();
-    const q = { ns: testNamespace("tp-purge"), queue: "q" };
+    const q = { ns: scope("tp-purge"), queue: "q" };
     const now = Date.now();
 
     await completeOne(driver, q, now);

@@ -4,6 +4,10 @@ import type {
   JobState,
   QueueEventName,
   RunnerEventName,
+  WorkerConfigKey,
+  WorkerControlAction,
+  WorkerEventName,
+  WorkerState,
 } from "./constants";
 import type { RunProgress } from "./types";
 
@@ -92,8 +96,13 @@ export interface QueueEventPayloadsWire {
 
 /** What each runner event carries, by name. */
 export interface RunnerEventPayloadsWire {
-  /** A controller changed the runner's state or queued a trigger. */
-  control: { action: "pause" | "resume" | "schedule" | "trigger" };
+  /**
+   * A controller changed the runner's state, queued a trigger, or changed its
+   * executor and overlap configuration (`config`).
+   */
+  control: {
+    action: "pause" | "resume" | "schedule" | "trigger" | "config";
+  };
   /** A run began. */
   started: { runId: string };
   /** A run finished successfully. */
@@ -108,6 +117,78 @@ export interface RunnerEventPayloadsWire {
   timeout: { runId: string };
   /** A run was stopped on request, with the reason it was given. */
   killed: { runId: string; reason: string };
+  /**
+   * A run's stored log grew. A **hint, never the lines**: re-read
+   * `GET /runners/:runner/runs/:runId/logs?since=<the last seq you hold>`.
+   * Published on the runner's channel (`runner/{runner}`, and `runners` and
+   * `all`), at most one per run every 500 ms carrying the newest `lastSeq`,
+   * plus one when the run settles. A missed hint costs latency, never lines:
+   * the next read with `since` returns everything after what you hold.
+   *
+   * **Not a state change.** `logs` announces log growth only and changes no
+   * runner state, so a client caching runner detail, stats or history should
+   * not invalidate them on it; re-read the run's log with `?since=` instead.
+   * It can arrive twice a second per running run (`RUN_LOG_HINT_MS`).
+   */
+  logs: {
+    /** The run whose log grew. */
+    runId: string;
+    /** The `seq` of the last line the store now holds for that run. */
+    lastSeq: number;
+  };
+}
+
+/**
+ * What each worker event carries, by name.
+ *
+ * A worker event's `target` is the **queue**, never a worker id: one channel
+ * per queue lets a process with several workers on it share one subscription,
+ * and keeps worker traffic out of the queue's job firehose.
+ *
+ * As with a runner's `control`, an event is only ever a **hint** — the
+ * receiver re-reads the stored entry, which is the truth. A missed event
+ * therefore costs latency, never correctness.
+ */
+export interface WorkerEventPayloadsWire {
+  /** A controller recorded an instruction for one worker, or for every worker carrying a key. */
+  control: {
+    /** The incarnation it is addressed to, when it is addressed to one. */
+    worker?: string;
+    /** The stable key it is addressed to, when it is addressed to one. */
+    key?: string;
+    /** What was asked for. */
+    action: WorkerControlAction;
+    /** The version of the entry the controller wrote. */
+    seq: number;
+  };
+  /** A worker changed what it is doing. */
+  state: {
+    /** The worker's incarnation id. */
+    worker: string;
+    /** Its stable key. */
+    key: string;
+    /** What it is now. */
+    state: WorkerState;
+    /** What it was. */
+    previous: WorkerState;
+    /** Why, where there is anything to add. */
+    reason?: string;
+    /** When it changed, epoch ms. */
+    at: number;
+  };
+  /** A worker adopted — or refused part of — a configuration override. */
+  config: {
+    /** The worker's incarnation id. */
+    worker: string;
+    /** Its stable key. */
+    key: string;
+    /** The version of the override it applied. */
+    seq: number;
+    /** Which settings the override replaces, after any refusal. */
+    overridden: WorkerConfigKey[];
+    /** Why a field was refused, when one was. */
+    error?: string;
+  };
 }
 
 /** One queue event as the socket sends it, discriminated by `type`. */
@@ -150,8 +231,39 @@ export type RunnerEventWire = {
   };
 }[RunnerEventName];
 
-/** Any event exactly as an `event` frame carries it: discriminate on `kind`, then `type`. */
-export type EventWire = QueueEventWire | RunnerEventWire;
+/**
+ * One worker event as the socket sends it, discriminated by `type`.
+ *
+ * `target` is the queue the worker consumes — worker events are grouped per
+ * queue, not per worker — and `id`, where the event is about one worker, its
+ * incarnation id, so a transport that indexes on `id` indexes on something
+ * meaningful, as it does for jobs and runs.
+ */
+export type WorkerEventWire = {
+  [Name in WorkerEventName]: {
+    /** Envelope version. */
+    v: 1;
+    /** The queue the worker consumes. */
+    target: string;
+    /** When it was emitted, epoch ms. */
+    at: number;
+    /** Which subsystem emitted it. */
+    kind: "worker";
+    /** The event name. */
+    type: Name;
+    /** The worker it is about, where it is about one. */
+    id?: string;
+    /** What it carries. */
+    payload: WorkerEventPayloadsWire[Name];
+  };
+}[WorkerEventName];
+
+/**
+ * Any event exactly as an `event` frame carries it: discriminate on `kind`,
+ * then `type`. `kind` first, because `control` is both a runner event and a
+ * worker one.
+ */
+export type EventWire = QueueEventWire | RunnerEventWire | WorkerEventWire;
 
 /* ------------------------------------------------------------------ *
  * Frames

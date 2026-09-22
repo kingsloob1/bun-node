@@ -516,7 +516,10 @@ describe.skipIf(!URL)("Redis driver: read APIs", () => {
     const now = Date.now();
     const minute = now - (now % 60_000);
 
-    expect(driver.keys.queueScriptKeys(q)).toHaveLength(11);
+    // Ten, not eleven: the namespace's untagged `queues` set is SADDed in
+    // the same pipeline as the add script rather than passed as a script key,
+    // which in Cluster would put a script across two slots (CROSSSLOT).
+    expect(driver.keys.queueScriptKeys(q)).toHaveLength(10);
 
     await driver.addJob(
       q,
@@ -697,7 +700,8 @@ describe("Redis driver: keys", () => {
       "jobs:account:q:mail:meta",
       "jobs:account:q:mail:seq",
       "jobs:account:q:mail:wake",
-      "jobs:account:queues",
+      // No "jobs:account:queues": that set has no hash tag, so it is SADDed
+      // beside the script, in the same pipeline, not declared as a key.
       "jobs:account:q:mail:children",
     ]);
   });

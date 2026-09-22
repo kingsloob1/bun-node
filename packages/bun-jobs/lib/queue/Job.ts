@@ -1,10 +1,12 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
+  ClearJobLogsResult,
   JobPatch,
   JobRecord,
   JobRef,
   JobsDriver,
   JobState,
+  JobWorkerRef,
   QueueRef,
   ResolvedJobOptions,
 } from "../drivers/index";
@@ -149,8 +151,15 @@ export class Job<TData = unknown, TResult = unknown> {
   readonly failedReason: Error | null;
   /** Recent failures, newest first. */
   readonly stacktrace: Error[];
-  /** The worker holding it, while active. */
+  /** The worker holding it, while active. For who ran a finished job, read `processedBy`. */
   readonly workerId: string | null;
+  /**
+   * The worker that claimed the current or last attempt — id, stable key,
+   * host and pid — kept after the job settles. **Last attempt only**: a job
+   * retried on another worker names that one. `null` for a job never claimed,
+   * or on a driver that does not record attribution.
+   */
+  readonly processedBy: JobWorkerRef | null;
   /** The repeat series that produced it, when it is an occurrence of one. */
   readonly repeatKey: string | null;
   /** Whether `add()` created this job rather than finding an existing one. */
@@ -209,6 +218,7 @@ export class Job<TData = unknown, TResult = unknown> {
       : null;
     this.stacktrace = record.stacktrace.map((entry) => deserializeError(entry));
     this.workerId = record.workerId;
+    this.processedBy = record.processedBy ?? null;
     // Shown as the caller named it: a series key is stored namespaced so one
     // job cannot hijack another's series, and the prefix is hidden again here.
     // The record keeps the stored spelling, which is what the worker looks the
@@ -549,6 +559,21 @@ export class Job<TData = unknown, TResult = unknown> {
     });
   }
 
+  /**
+   * Empties the job's log, answering how many lines went. Refused while the
+   * job is `active` — `{ status: "active" }`, nothing removed — because its
+   * worker is still writing the log; `{ status: "missing" }` when the job is
+   * gone. The refusal is checked by the driver in the same step as the
+   * removal, so a job claimed after this view was read is refused too.
+   *
+   * A line logged afterwards is the first of a fresh log, and `keepLogs`
+   * counts from it. Nothing else about the job changes.
+   */
+  async clearLogs(): Promise<ClearJobLogsResult> {
+    const driver = this.#require("clearJobLogs", "clearLogs()");
+    return await driver.clearJobLogs!(this.#ref, this.id);
+  }
+
   /** Applies a patch through the driver and answers with a fresh view. */
   async #update(
     patch: JobPatch,
@@ -578,7 +603,12 @@ export class Job<TData = unknown, TResult = unknown> {
 
   /** The driver, checked to implement an optional method a caller needs. */
   #require(
-    method: "updateJob" | "addJobLog" | "getJobLogs" | "buryJob",
+    method:
+      | "updateJob"
+      | "addJobLog"
+      | "getJobLogs"
+      | "clearJobLogs"
+      | "buryJob",
     what: string,
   ): JobsDriver {
     if (typeof this.#driver[method] !== "function") {

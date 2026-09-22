@@ -1,4 +1,5 @@
 import type { DriverConfig, JobRecord, JobsDriver } from "../lib/index";
+import type { Backend } from "./helpers/backends";
 import { noopLogger, serializeError } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -56,6 +57,11 @@ function setup(
   } = {},
 ) {
   const namespace = testNamespace();
+  // Registered before anything that writes to it, so it runs after every
+  // queue and worker below has closed and flushed — closers run in reverse —
+  // and before the driver itself closes. Exactly this namespace, never a
+  // prefix sweep: the servers are shared.
+  closers.push(() => driver.purge(namespace));
   const queue = new BunQueue("reports", {
     namespace,
     driver,
@@ -296,7 +302,9 @@ describe("flows", () => {
     const { queue, namespace } = setup({}, driver);
     const ref = { ns: namespace, queue: "reports" };
 
-    // Three parents, each buried by its only child, which never ran.
+    // Three parents, each buried by its only child, failed from outside
+    // before it ever ran. Dead first: a failure delivered from a child that is
+    // not dead is stale, and refused.
     const bury = async () => {
       const flow = await queue.addFlow({
         name: "report",
@@ -304,6 +312,13 @@ describe("flows", () => {
         children: [{ name: "flaky", data: {}, queue: "fetch" }],
       });
       const child = flow.children[0]!.job;
+      await driver.buryJob(
+        { ns: namespace, queue: "fetch" },
+        child.id,
+        serializeError(new Error("broke")),
+        { retention: false, keepStacktraces: 1 },
+        Date.now(),
+      );
       await driver.recordChild(
         ref,
         flow.job.id,
@@ -1128,7 +1143,15 @@ describe("flows: healing", () => {
  * always, and each server whose URL is set. One whose server is unreachable
  * is skipped visibly rather than passing without running.
  */
-const backends = await crossProcessBackends({ cleanups });
+/**
+ * Every backend the per-backend cases run on: the memory driver too, the one
+ * that is always there, so each case also runs where no server is configured,
+ * and a race it guards shows on the reference driver as well.
+ */
+const backends: Backend[] = [
+  { name: "memory", config: { type: "memory" }, available: true },
+  ...(await crossProcessBackends({ cleanups })),
+];
 
 /**
  * A test timeout for each case on a server, above the waits inside it: a flow
@@ -1221,9 +1244,166 @@ for (const backend of backends) {
       BACKEND_TEST_TIMEOUT,
     );
 
+    // Both orders, since a retry promises either works. Parent first is the
+    // one that raced: a failure delivery maintenance decided from a view older
+    // than the bury can still be waiting on the parent's hold, and land after
+    // the parent's retry — or after both retries. Every driver refuses it
+    // either way, as stale: a child recorded, or no longer dead (pinned
+    // deterministically in the driver contract). Child first, the child's
+    // result is kept on the still-buried parent before its retry, so such a
+    // delivery finds an outcome already there.
+    for (const order of ["parent first", "child first"] as const) {
+      const title =
+        order === "parent first"
+          ? "completes a buried flow once its parent and failed child are retried"
+          : "completes a buried flow once its failed child and then its parent are retried";
+
+      it(
+        title,
+        async () => {
+          let attempts = 0;
+          const { queue, start, stateOf, other, driver, namespace } = setup(
+            {
+              reports: async (job) => await job.getChildrenValues(),
+              fetch: async (job) => {
+                if (job.name === "bad" && attempts++ === 0) {
+                  throw new UnrecoverableJobError("first try fails");
+                }
+                return job.name;
+              },
+            },
+            makeDriver(),
+          );
+
+          const flow = await queue.addFlow({
+            name: "report",
+            data: {},
+            children: [
+              { name: "bad", data: {}, queue: "fetch" },
+              { name: "good", data: {}, queue: "fetch" },
+            ],
+          });
+          start();
+
+          const [bad, good] = flow.children;
+          const parentRef = { ns: namespace, queue: "reports" };
+          const childRef = { ns: namespace, queue: "fetch" };
+          /** Where the flow stands, for a wait that runs out. */
+          const explain = async () => {
+            const read = async (ref: typeof parentRef, id: string) => {
+              const record = await driver.getJob(ref, id);
+              return {
+                state: record?.state,
+                recorded: record?.flow?.recorded,
+                pending: record?.flow?.pending,
+                values: record?.flow?.values,
+                failedReason: record?.failedReason?.message,
+              };
+            };
+            return JSON.stringify({
+              order,
+              parent: await read(parentRef, flow.job.id),
+              bad: await read(childRef, bad!.job.id),
+              good: await read(childRef, good!.job.id),
+            });
+          };
+
+          await waitFor(
+            async () => (await stateOf("reports", flow.job.id)) === "dead",
+            { timeout: 15_000, message: explain },
+          );
+          await waitFor(
+            async () => (await stateOf("fetch", good!.job.id)) === "completed",
+            { timeout: 15_000, message: explain },
+          );
+          // The failure that buried it has been delivered in full.
+          await waitFor(
+            async () =>
+              (await driver.getJob(childRef, bad!.job.id))?.flow?.recorded ===
+              true,
+            { timeout: 15_000, message: explain },
+          );
+
+          if (order === "parent first") {
+            // Back to back, as a person retrying both would.
+            expect(await queue.retry(flow.job.id)).toBe(true);
+            expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+          } else {
+            expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+            await waitFor(
+              async () =>
+                Object.hasOwn(
+                  (await driver.getJob(parentRef, flow.job.id))?.flow?.values ??
+                    {},
+                  `fetch:${bad!.job.id}`,
+                ),
+              { timeout: 15_000, message: explain },
+            );
+            expect(await stateOf("reports", flow.job.id)).toBe("dead");
+            expect(await queue.retry(flow.job.id)).toBe(true);
+          }
+
+          await waitFor(
+            async () => (await stateOf("reports", flow.job.id)) === "completed",
+            { timeout: 15_000, message: explain },
+          );
+          expect((await queue.getJob(flow.job.id))?.returnValue).toEqual({
+            [`fetch:${bad!.job.id}`]: "bad",
+            [`fetch:${good!.job.id}`]: "good",
+          });
+        },
+        BACKEND_TEST_TIMEOUT,
+      );
+    }
+
     it(
-      "completes a buried flow once its parent and failed child are retried",
+      "does not bury a retried parent again with the failure that buried it",
       async () => {
+        // Delivering a failure is two writes: bury the parent, then mark the
+        // child recorded. A retry of the parent landing between them used to
+        // leave a dead, unrecorded child that maintenance delivered again,
+        // burying the parent a second time; the retried child's result then
+        // reached a dead parent, which never ran. Deferring the mark makes
+        // that window as wide as the test needs.
+        const driver = makeDriver();
+        const mark = driver.markChildRecorded!.bind(driver);
+        let badId = "";
+        let released = false;
+        const deferred: Parameters<typeof mark>[] = [];
+        // Every worker's mark of the failed child is answered at once but
+        // written only on release, maintenance's repeats included: one of
+        // those landing would close the window by itself, and one kept
+        // waiting would stall the maintenance that reburies. The retry's own
+        // mark is the fix, and goes straight through — told apart by its
+        // caller, since a maintenance mark during the retry must still wait.
+        driver.markChildRecorded = async (...args: Parameters<typeof mark>) => {
+          const fromRetry =
+            new Error("caller").stack?.includes("markBuryDelivered") === true;
+          if (args[1] === badId && !fromRetry && !released) {
+            deferred.push(args);
+            return true;
+          }
+          return await mark(...args);
+        };
+        // Maintenance in the children's queue delivers dead children from a
+        // page it listed earlier, and a page listed before the retry's mark
+        // can still bury the parent after it — a separate, narrower race this
+        // test does not cover. So that sweep never sees the failed child while
+        // the mark is out; the parents' sweep, which reads the child fresh,
+        // is the one that buried a second time.
+        const listJobs = driver.listJobs.bind(driver);
+        driver.listJobs = async (...args: Parameters<typeof listJobs>) => {
+          const page = await listJobs(...args);
+          return released || args[0].queue !== "fetch"
+            ? page
+            : page.filter((record) => record.id !== badId);
+        };
+        const release = async () => {
+          released = true;
+          for (const args of deferred.splice(0)) {
+            await mark(...args);
+          }
+        };
         let attempts = 0;
         const { queue, start, stateOf, other } = setup(
           {
@@ -1235,7 +1415,7 @@ for (const backend of backends) {
               return job.name;
             },
           },
-          makeDriver(),
+          driver,
         );
 
         const flow = await queue.addFlow({
@@ -1246,21 +1426,27 @@ for (const backend of backends) {
             { name: "good", data: {}, queue: "fetch" },
           ],
         });
+        const [bad, good] = flow.children;
+        badId = bad!.job.id;
         start();
 
         await waitFor(
           async () => (await stateOf("reports", flow.job.id)) === "dead",
           { timeout: 15_000 },
         );
-        const [bad, good] = flow.children;
         await waitFor(
           async () => (await stateOf("fetch", good!.job.id)) === "completed",
           { timeout: 15_000 },
         );
+        await waitFor(() => deferred.length > 0, { timeout: 15_000 });
 
         expect(await queue.retry(flow.job.id)).toBe(true);
-        expect(await other("fetch").retry(bad!.job.id)).toBe(true);
+        // Many maintenance passes (every 20 ms) while the mark is still out.
+        await Bun.sleep(300);
+        expect(await stateOf("reports", flow.job.id)).toBe("waiting-children");
 
+        await release();
+        expect(await other("fetch").retry(bad!.job.id)).toBe(true);
         await waitFor(
           async () => (await stateOf("reports", flow.job.id)) === "completed",
           { timeout: 15_000 },

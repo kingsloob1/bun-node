@@ -1,7 +1,7 @@
 import type { DriverEvent } from "../lib/index";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
-import { MongoDriver } from "../lib/index";
+import { MONGO_COLLECTIONS, MongoDriver } from "../lib/index";
 import { queueEvent } from "../lib/shared/events";
 import { testNamespace, waitFor } from "./helpers";
 
@@ -98,7 +98,13 @@ describe.skipIf(!MONGODB)("MongoDB events", () => {
       expect(heard.toSorted()).toEqual(["first", "second"]);
     } finally {
       await unsubscribe();
-      for (const name of ["events", "kv", "jobs", "locks", "joblogs"]) {
+      // Closed before the drops: a closing driver writes back what it has
+      // buffered, which would recreate a collection dropped ahead of it.
+      await driver.close();
+      // Every collection the driver creates, from its own list, so one added
+      // later cannot be forgotten here. Exact names only — never a prefix
+      // sweep: other sessions share the server.
+      for (const name of MONGO_COLLECTIONS) {
         await client
           .db()
           .collection(`${prefix}${name}`)

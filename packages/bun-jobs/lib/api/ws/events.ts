@@ -5,9 +5,16 @@ import type {
   QueueEventPayloads,
   RunnerEventName,
   RunnerEventPayloads,
+  WorkerEventName,
+  WorkerEventPayloads,
 } from "../../shared/events";
 import type { ErrorWire, EventWire } from "../contract/ws";
 import type { Infer, Schema } from "../schema/builder";
+import {
+  WORKER_CONFIG_KEYS,
+  WORKER_CONTROL_ACTIONS,
+  WORKER_STATES,
+} from "../../shared/workers";
 import { s } from "../schema/builder";
 import { ErrorDtoSchema, JOB_STATES } from "../schemas/common";
 
@@ -152,7 +159,7 @@ export const QUEUE_EVENT_PAYLOADS = {
 /** What each runner event carries on the wire. */
 export const RUNNER_EVENT_PAYLOADS = {
   control: s.object({
-    action: s.enum(["pause", "resume", "schedule", "trigger"]),
+    action: s.enum(["pause", "resume", "schedule", "trigger", "config"]),
   }),
   started: s.object({ runId: RunId }),
   succeeded: s.object({
@@ -169,8 +176,80 @@ export const RUNNER_EVENT_PAYLOADS = {
     runId: RunId,
     reason: s.string({ description: "The reason it was given." }),
   }),
+  // A hint, never content: nothing but the run and a number may ride here.
+  // And not a state change: its description says so, because a client that
+  // invalidates runner state on every runner event would re-read it all, up
+  // to twice a second per run, on this one.
+  logs: s.object({
+    runId: RunId,
+    lastSeq: s.integer({
+      minimum: 1,
+      description:
+        "The seq of the last line the store now holds for the run. Re-read the run's log with `since` set to the last seq you hold.",
+    }),
+  }),
 } satisfies {
   [K in RunnerEventName]: Schema<WirePayload<RunnerEventPayloads[K]>, any>;
+};
+
+/** A worker's incarnation id. */
+const WorkerId = s.string({ description: "The worker's incarnation id." });
+/** A worker's stable key. */
+const WorkerKey = s.string({ description: "The worker's stable key." });
+
+/**
+ * What each worker event carries on the wire.
+ *
+ * A worker event's `target` is the **queue**, never a worker: one channel per
+ * queue lets a process with several workers on it share one subscription, and
+ * keeps worker traffic out of the queue's job firehose. Every one of them is
+ * a *hint* — the receiver re-reads the stored entry, which is the truth — so a
+ * missed event costs latency, never correctness.
+ */
+export const WORKER_EVENT_PAYLOADS = {
+  control: s.object({
+    worker: s.optional(
+      s.string({
+        description:
+          "The incarnation it is addressed to, when it is addressed to one.",
+      }),
+    ),
+    key: s.optional(
+      s.string({
+        description:
+          "The stable key it is addressed to, when it is addressed to one.",
+      }),
+    ),
+    action: s.enum(WORKER_CONTROL_ACTIONS, {
+      description: "What the controller asked for.",
+    }),
+    seq: s.integer({
+      description: "The version of the entry the controller wrote.",
+    }),
+  }),
+  state: s.object({
+    worker: WorkerId,
+    key: WorkerKey,
+    state: s.enum(WORKER_STATES, { description: "What it is now." }),
+    previous: s.enum(WORKER_STATES, { description: "What it was." }),
+    reason: s.optional(
+      s.string({ description: "Why, where there is anything to add." }),
+    ),
+    at: EpochMs("When it changed, epoch ms."),
+  }),
+  config: s.object({
+    worker: WorkerId,
+    key: WorkerKey,
+    seq: s.integer({ description: "The version of the override it applied." }),
+    overridden: s.array(s.enum(WORKER_CONFIG_KEYS), {
+      description: "Which settings the override replaces, after any refusal.",
+    }),
+    error: s.optional(
+      s.string({ description: "Why a field was refused, when one was." }),
+    ),
+  }),
+} satisfies {
+  [K in WorkerEventName]: Schema<WirePayload<WorkerEventPayloads[K]>, any>;
 };
 
 /** Queue events whose schema is looser or stricter than the payload type. */
@@ -193,14 +272,26 @@ type RunnerMismatch = {
     : K;
 }[RunnerEventName];
 
+/** Worker events whose schema is looser or stricter than the payload type. */
+type WorkerMismatch = {
+  [K in WorkerEventName]: Equivalent<
+    Infer<(typeof WORKER_EVENT_PAYLOADS)[K]>,
+    WirePayload<WorkerEventPayloads[K]>
+  > extends true
+    ? never
+    : K;
+}[WorkerEventName];
+
 /**
  * Compile-time guard that every schema describes exactly its payload: a field
  * added to or removed from a payload in `shared/events.ts` fails this line,
  * naming the event.
  */
-const _payloadSchemasMatch: [QueueMismatch | RunnerMismatch] extends [never]
+const _payloadSchemasMatch: [
+  QueueMismatch | RunnerMismatch | WorkerMismatch,
+] extends [never]
   ? true
-  : QueueMismatch | RunnerMismatch = true;
+  : QueueMismatch | RunnerMismatch | WorkerMismatch = true;
 
 /** One line per queue event, for the documents. */
 const QUEUE_EVENT_SUMMARIES: Record<QueueEventName, string> = {
@@ -229,7 +320,8 @@ const QUEUE_EVENT_SUMMARIES: Record<QueueEventName, string> = {
 
 /** One line per runner event, for the documents. */
 const RUNNER_EVENT_SUMMARIES: Record<RunnerEventName, string> = {
-  control: "A controller changed the runner's state or queued a trigger.",
+  control:
+    "A controller changed the runner's state, queued a trigger, or changed its executor and overlap configuration.",
   started: "A run began.",
   succeeded: "A run finished successfully.",
   failed: "A run failed.",
@@ -237,6 +329,14 @@ const RUNNER_EVENT_SUMMARIES: Record<RunnerEventName, string> = {
   skipped: "A scheduled run was skipped.",
   timeout: "A run outlived its timeout.",
   killed: "A run was stopped on request.",
+  logs: "A run's stored log grew: a hint to re-read it with `since`, never the lines (throttled per run). Not a state change: it changes no runner state, so a client caching runner detail, stats or history should not invalidate them on it; re-read the run's log with `?since=` instead.",
+};
+
+/** One line per worker event, for the documents. */
+const WORKER_EVENT_SUMMARIES: Record<WorkerEventName, string> = {
+  control: "A controller recorded an instruction for a worker.",
+  state: "A worker changed what it is doing.",
+  config: "A worker adopted, or refused part of, a configuration override.",
 };
 
 /** Every queue event name, in declaration order. */
@@ -248,6 +348,11 @@ export const QUEUE_EVENT_NAMES = Object.keys(
 export const RUNNER_EVENT_NAMES = Object.keys(
   RUNNER_EVENT_PAYLOADS,
 ) as RunnerEventName[];
+
+/** Every worker event name, in declaration order. */
+export const WORKER_EVENT_NAMES = Object.keys(
+  WORKER_EVENT_PAYLOADS,
+) as WorkerEventName[];
 
 /**
  * The error and event types an `event` frame carries: defined once, in the
@@ -264,7 +369,7 @@ function pascal(name: string): string {
 /** One event as the socket describes it. */
 export interface EventDescriptor {
   /** Which subsystem emits it. */
-  kind: "queue" | "runner";
+  kind: "queue" | "runner" | "worker";
   /** The event name. */
   type: string;
   /** The AsyncAPI message name, e.g. `"queue.completed"`. */
@@ -277,9 +382,23 @@ export interface EventDescriptor {
   event: Schema<unknown>;
 }
 
+/** What a kind's `target` names, for the documents. */
+const TARGET_DESCRIPTIONS: Record<EventDescriptor["kind"], string> = {
+  queue: "The queue name.",
+  runner: "The runner id.",
+  worker: "The queue the worker consumes.",
+};
+
+/** What a kind's `id` names, where an event is about one thing. */
+const ID_DESCRIPTIONS: Record<EventDescriptor["kind"], string> = {
+  queue: "The job this event is about, where it is about one.",
+  runner: "The run this event is about, where it is about one.",
+  worker: "The worker this event is about, where it is about one.",
+};
+
 /** Builds the descriptor for one event. */
 function describe(
-  kind: "queue" | "runner",
+  kind: EventDescriptor["kind"],
   type: string,
   payload: Schema<any>,
   summary: string,
@@ -299,18 +418,8 @@ function describe(
           v: s.literal(1, { description: "Envelope version." }),
           kind: s.literal(kind),
           type: s.literal(type),
-          target: s.string({
-            description:
-              kind === "queue" ? "The queue name." : "The runner id.",
-          }),
-          id: s.optional(
-            s.string({
-              description:
-                kind === "queue"
-                  ? "The job this event is about, where it is about one."
-                  : "The run this event is about, where it is about one.",
-            }),
-          ),
+          target: s.string({ description: TARGET_DESCRIPTIONS[kind] }),
+          id: s.optional(s.string({ description: ID_DESCRIPTIONS[kind] })),
           at: s.integer({ description: "When it was emitted, epoch ms." }),
           payload: named,
         },
@@ -342,10 +451,20 @@ export const RUNNER_EVENTS: readonly EventDescriptor[] = RUNNER_EVENT_NAMES.map(
     ),
 );
 
+/** Every worker event's descriptor. */
+export const WORKER_EVENTS: readonly EventDescriptor[] = WORKER_EVENT_NAMES.map(
+  (type) =>
+    describe(
+      "worker",
+      type,
+      WORKER_EVENT_PAYLOADS[type],
+      WORKER_EVENT_SUMMARIES[type],
+    ),
+);
+
 /** Any event as a client receives it: one of the event DTO schemas. */
 export const EventDtoSchema = s.union(
-  ...([...QUEUE_EVENTS, ...RUNNER_EVENTS].map((event) => event.event) as [
-    Schema<unknown>,
-    ...Schema<unknown>[],
-  ]),
+  ...([...QUEUE_EVENTS, ...RUNNER_EVENTS, ...WORKER_EVENTS].map(
+    (event) => event.event,
+  ) as [Schema<unknown>, ...Schema<unknown>[]]),
 );

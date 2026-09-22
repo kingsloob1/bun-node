@@ -1,8 +1,11 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { PendingRewritePlan } from "../queue/jobDefaults";
+import type { AttributionFilter } from "./attribution";
 import type {
   ChildOutcome,
   ChildRecordResult,
   ClaimOptions,
+  ClearJobLogsResult,
   DriverCapabilities,
   DriverEvent,
   EventKind,
@@ -17,16 +20,53 @@ import type {
   JobsDriver,
   JobState,
   LockInfo,
+  MetricsQuery,
+  NamespaceMetricsQuery,
+  NamespaceMetricsRead,
+  PendingOptionsRewrite,
+  PendingOptionsRewriteResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
   RepeatRecord,
   Retention,
+  RunLogAppendResult,
+  RunLogCaps,
+  RunLogInput,
+  RunLogLine,
+  RunLogPage,
+  RunLogQuery,
+  RunnerMetricsQuery,
+  RunnerMetricsRead,
+  RunnerMetricsSeries,
+  RunnerMetricsTotals,
+  RunnerMetricsTotalsQuery,
+  RunnerRunDelta,
   RunRecord,
   ThroughputBucket,
   WorkerInfo,
+  WorkerMetricsQuery,
+  WorkerMetricsRead,
+  WorkerMetricsSeries,
+  WorkerMetricsTotals,
+  WorkerMetricsTotalsQuery,
 } from "./driver";
+import type {
+  BufferWriteResult,
+  BusynessSample,
+  BusynessStats,
+  CounterBucket,
+  DurationStats,
+  JobCounters,
+  MetricsOptions,
+  MetricsSupport,
+  PendingMetric,
+  ResolvedMetricsOptions,
+  RunnerRunCounters,
+  WorkerMetricsRef,
+} from "./metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "./readApis";
+import type { StoredRunLogLine } from "./runLogs";
 import { Buffer } from "node:buffer";
 import {
   link,
@@ -38,11 +78,23 @@ import {
   rm,
   stat,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { MINUTE_BUCKET_MS } from "../api/contract/constants";
+import {
+  assertRewriteRequest,
+  decodeRewriteCursor,
+  emptyRewriteResult,
+  encodeRewriteCursor,
+  JOB_OPTION_BITS,
+  planPendingRewrite,
+  tallyMoved,
+  tallyRewrite,
+} from "../queue/jobDefaults";
 import { assertWritableStateName } from "../queue/windows";
 import { DriverError } from "../shared/errors";
 import { EventRetention } from "../shared/eventRetention";
@@ -51,6 +103,15 @@ import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
 import { compareCodePoints } from "../shared/strings";
+import {
+  attributionFilter,
+  attributionOf,
+  canMatchState,
+  hasRange,
+  inFinishedRange,
+  matchesAttribution,
+  matchesNothing,
+} from "./attribution";
 import { canBury } from "./bury";
 import {
   decodeName,
@@ -63,6 +124,31 @@ import {
 } from "./file-names";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
 import {
+  addBusynessSample,
+  addDuration,
+  bucketStart,
+  emptyBusynessStats,
+  emptyDurationStats,
+  hasMetricBuckets,
+  JOB_COUNTERS,
+  mergeBusynessBuckets,
+  mergeBusynessStats,
+  mergeCounterBuckets,
+  mergeDurationBuckets,
+  mergeDurationStats,
+  MetricsBuffer,
+  MetricsPruneClock,
+  metricsPruneCutoff,
+  metricsSupportOf,
+  NAMESPACE_ENTITY,
+  PendingBuffer,
+  resolveMetricsOptions,
+  RUNNER_RUN_COUNTERS,
+  runnerTotalsOf,
+  uniqueWorkerRefs,
+  workerTotalsOf,
+} from "./metrics";
+import {
   jobFilter,
   matchesFilter,
   orderByIds,
@@ -71,6 +157,14 @@ import {
   THROUGHPUT_RETENTION_MS,
   ThroughputBuffer,
 } from "./readApis";
+import {
+  emptyRunLog,
+  pageRunLog,
+  readRunLogLine,
+  runLogBytes,
+  runLogOverflow,
+  storeRunLogLine,
+} from "./runLogs";
 
 /**
  * A driver backed by a directory, for processes that share a filesystem.
@@ -139,8 +233,38 @@ const PRIORITY_OFFSET = 1_048_576;
 /** How many waiting markers' job names a driver remembers for exclusion. */
 const NAME_CACHE_SIZE = 10_000;
 
+/**
+ * How many jobs `addJobs` creates at once. Each create is independent — its
+ * own `O_EXCL` file and marker — so a few in flight keep the thread pool busy
+ * instead of waiting on one file at a time.
+ */
+const ADD_CONCURRENCY = 16;
+
+/**
+ * The longest `pruneExpired` goes without re-reading a finished record it found
+ * not due (see `#pruneSkips`): five sweeps at the worker's minute cadence.
+ */
+const PRUNE_SKIP_MS = 5 * 60_000;
+
+/** How many finished markers `pruneExpired` remembers as not due. */
+const PRUNE_SKIP_CACHE_SIZE = 100_000;
+
+/** How many job logs' line counts a driver remembers (see `#logCounts`). */
+const LOG_COUNT_CACHE_SIZE = 1_000;
+
 /** How many files a read API reads at once: job records, worker records. */
 const READ_CONCURRENCY = 16;
+
+/**
+ * How many jobs `rewritePendingOptions` changes at once, each under its own
+ * hold. A rewrite is a record write plus two renames, so a handful in flight
+ * hides the filesystem's latency; more only lengthens the moment a burst of
+ * claims finds markers held.
+ */
+const REWRITE_CONCURRENCY = 16;
+
+/** What a rewrite cursor's key holds here: the last marker examined in its state. */
+const REWRITE_CURSOR_KEY = ["string"] as const;
 
 /**
  * A throughput bucket file's name: the minute's start, in epoch milliseconds,
@@ -148,10 +272,103 @@ const READ_CONCURRENCY = 16;
  */
 const THROUGHPUT_FILE = /^(\d+)\.jsonl$/;
 
+/**
+ * The kinds of analytics series this driver stores, each its own directory
+ * under a namespace's `metrics/`.
+ *
+ * The first three are counters and are exactly `NamespaceMetricKind`, because
+ * each of them also carries the namespace's own roll-up; the last two have no
+ * roll-up, since nothing in `NamespaceMetricsRead` is made of them.
+ */
+type MetricKind = "busyness" | "durations" | "jobs" | "runs" | "workerJobs";
+
+/**
+ * The entity directory the namespace roll-up is stored under.
+ *
+ * `encodeName` never emits `-`, so no queue, worker key or runner id can
+ * encode to this and share the roll-up's files.
+ */
+const NAMESPACE_DIR = "-ns";
+
+/**
+ * A metric bucket file's name: the bucket's start in epoch milliseconds, then
+ * `.jsonl`. One width per driver — minutes — so no start can mean two things.
+ */
+const METRIC_FILE = /^(\d+)\.jsonl$/;
+
+/**
+ * One bucket of a statistic that is not a counter, waiting to be written: the
+ * duration and busyness counterpart of `PendingMetric`.
+ */
+interface PendingStats<S> {
+  /** The namespace. */
+  ns: string;
+  /** The runner id or worker key it belongs to. */
+  entity: string;
+  /** The bucket's start, epoch ms. */
+  at: number;
+  /** The bucket's width, ms. */
+  interval: number;
+  /** What has been gathered for it so far. */
+  stats: S;
+}
+
+/** What two gathered stats rows are one row by: their bucket, per entity. */
+function metricStatsKey(entry: PendingStats<unknown>): string {
+  return `${entry.ns}\n${entry.entity}\n${entry.interval}\n${entry.at}`;
+}
+
+/**
+ * Key of {@link FileDriver}'s `renewLock` test seam: a hook awaited between
+ * `renewLock`'s first read of the lock and its locked re-check, so a test can
+ * land a release exactly there without timing.
+ *
+ * Deliberately never exported, and not a declared member of the class, so the
+ * seam is no part of the module's surface or its shipped declarations. It is
+ * a registered symbol (`Symbol.for`), so this package's own tests reach it by
+ * the same description, without an import.
+ */
+const RENEW_LOCK_GATE = Symbol.for("bun-jobs: FileDriver renewLock gate");
+
+/** The `renewLock` test seam set on `driver`, if a test set one. */
+function renewLockGate(driver: object): (() => Promise<void>) | undefined {
+  const gate: unknown = Reflect.get(driver, RENEW_LOCK_GATE);
+  return typeof gate === "function" ? (gate as () => Promise<void>) : undefined;
+}
+
+/**
+ * Key of {@link FileDriver}'s `acquireLock` test seam: a hook awaited after
+ * `acquireLock` has created `lock.json` exclusively and before it has written
+ * the token into it, so a test can land a contender in exactly the moment the
+ * file exists but is still empty. Never exported, like `RENEW_LOCK_GATE`.
+ */
+const ACQUIRE_LOCK_GATE = Symbol.for("bun-jobs: FileDriver acquireLock gate");
+
+/** The `acquireLock` test seam set on `driver`, if a test set one. */
+function acquireLockGate(driver: object): (() => Promise<void>) | undefined {
+  const gate: unknown = Reflect.get(driver, ACQUIRE_LOCK_GATE);
+  return typeof gate === "function" ? (gate as () => Promise<void>) : undefined;
+}
+
+/** Whether `held` is a live lock under `token` at `now`. */
+function ownsLock(held: LockInfo | null, token: string, now: number): boolean {
+  return held !== null && held.token === token && held.expiresAt > now;
+}
+
 /** Options for {@link FileDriver}. */
 export interface FileDriverOptions {
   /** Directory the driver owns. Created on demand. */
   root: string;
+  /**
+   * What to record into the analytics buckets.
+   *
+   * **This backend serves minute resolution only**, whatever is asked for:
+   * per-second buckets here would mean a directory listing per queue per flush
+   * over thousands of entries, and hundreds of file opens per read.
+   * `getMetricsSupport()` reports that, so a range resolves to minutes with
+   * `reason: "driver"` rather than being served something that does not exist.
+   */
+  metrics?: MetricsOptions;
   /** How often to poll for new work and events. Defaults to 25ms. */
   pollInterval?: number;
   /**
@@ -181,6 +398,7 @@ export class FileDriver implements JobsDriver {
     events: "poll",
     multiProcess: true,
     multiHost: false,
+    jobAttribution: true,
   };
 
   /** The directory this driver owns. */
@@ -201,6 +419,41 @@ export class FileDriver implements JobsDriver {
    */
   readonly #names = new Map<string, string>();
   /**
+   * Queue directories this instance has already created, so `addJob` and
+   * `claimJob` do not `mkdir` nine directories that exist on every call —
+   * measured, 24 of the ~37 system calls an add made. Only a cache of what
+   * this process made: a directory deleted underneath it (a `purge` from
+   * another process) is recreated by the write that finds it missing, since
+   * every write here creates its directory on `ENOENT`. Its own `purge`
+   * forgets the namespace's entries.
+   */
+  readonly #ensured = new Set<string>();
+  /**
+   * Line counts of job logs this process last appended to, with the file's
+   * identity at that moment, so the next append to a log it wrote need not
+   * read the whole log to count it — which made a job's logging O(L²) over
+   * its life. Insertion-ordered and capped at {@link LOG_COUNT_CACHE_SIZE};
+   * an entry whose file has changed since is simply not used.
+   */
+  readonly #logCounts = new Map<string, LogCount>();
+
+  /**
+   * Finished markers `pruneExpired` read and found not due, each with the time
+   * before which reading it again is pointless: its record's `expiresAt`, but
+   * never more than {@link PRUNE_SKIP_MS} after the read. Skipping only ever
+   * defers a removal — `#deleteJob` still judges the record under its hold —
+   * and the cap bounds the deferral when the record changes somewhere this
+   * process does not see (a flow child marked recorded by another process).
+   * Changes this process makes drop the entry (`#mutateJob`). Capped at
+   * {@link PRUNE_SKIP_CACHE_SIZE} entries.
+   */
+  readonly #pruneSkips = new Map<string, number>();
+  /**
+   * The last time `#touchWake` set, in epoch milliseconds, so the next is
+   * always later even when the clock has not visibly moved.
+   */
+  #lastWake = 0;
+  /**
    * Completions and failed attempts counted in memory and appended to
    * `throughput/<minute>.jsonl` once a second, so counting a job costs a `Map`
    * update rather than a file write. Flushed by `getThroughput` and `close`.
@@ -209,10 +462,79 @@ export class FileDriver implements JobsDriver {
     async (batch) => await this.#writeThroughput(batch),
   );
 
+  /** What is recorded into the analytics buckets, and for how long. */
+  readonly #metrics: ResolvedMetricsOptions;
+  /** The one width this backend records at, ms — a minute. */
+  readonly #metricsInterval: number;
+  /** Decides when the analytics buckets are swept: once a minute per process. */
+  readonly #metricsPrune = new MetricsPruneClock();
+  /** Namespaces this instance has written a metric for, which is what it sweeps. */
+  readonly #metricsNamespaces = new Set<string>();
+  /** Queue completions and failures, gathered per bucket and written once a second. */
+  readonly #jobMetrics: MetricsBuffer<JobCounters>;
+  /** The same, counted by the worker that finished the job. */
+  readonly #workerMetrics: MetricsBuffer<JobCounters>;
+  /** Runner outcomes, gathered per bucket and written once a second. */
+  readonly #runMetrics: MetricsBuffer<RunnerRunCounters>;
+  /** Run durations and their histograms, gathered beside the outcomes. */
+  readonly #durationMetrics: PendingBuffer<PendingStats<DurationStats>>;
+  /** Worker busyness samples, gathered as the heartbeats arrive. */
+  readonly #busynessMetrics: PendingBuffer<PendingStats<BusynessStats>>;
+
   constructor(options: FileDriverOptions) {
     this.root = options.root;
     this.#poll = options.pollInterval ?? POLL_MS;
     this.#eventRetention = new EventRetention(options.eventRetentionMs);
+
+    // `seconds: false` is this backend's answer, not a default: see
+    // `FileDriverOptions.metrics`.
+    this.#metrics = resolveMetricsOptions(options.metrics, { seconds: false });
+    this.#metricsInterval = this.#metrics.intervals[0] ?? MINUTE_BUCKET_MS;
+
+    const intervals = this.#metrics.intervals;
+
+    this.#jobMetrics = new MetricsBuffer<JobCounters>({
+      write: async (batch) => await this.#writeCounters("jobs", batch),
+      keys: JOB_COUNTERS,
+      intervals,
+    });
+    this.#workerMetrics = new MetricsBuffer<JobCounters>({
+      write: async (batch) => await this.#writeCounters("workerJobs", batch),
+      keys: JOB_COUNTERS,
+      intervals,
+    });
+    this.#runMetrics = new MetricsBuffer<RunnerRunCounters>({
+      write: async (batch) => await this.#writeCounters("runs", batch),
+      keys: RUNNER_RUN_COUNTERS,
+      intervals,
+    });
+    this.#durationMetrics = new PendingBuffer<PendingStats<DurationStats>>({
+      write: async (batch) => await this.#writeStats("durations", batch),
+      key: metricStatsKey,
+      merge: (into, from) => mergeDurationStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+    });
+    this.#busynessMetrics = new PendingBuffer<PendingStats<BusynessStats>>({
+      write: async (batch) => await this.#writeStats("busyness", batch),
+      key: metricStatsKey,
+      merge: (into, from) => mergeBusynessStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+    });
+  }
+
+  /** Every analytics buffer, so lifecycle and purge need name no single one. */
+  get #metricBuffers(): {
+    close: () => Promise<void>;
+    flush: () => Promise<void>;
+    forget: (ns: string) => void;
+  }[] {
+    return [
+      this.#jobMetrics,
+      this.#workerMetrics,
+      this.#runMetrics,
+      this.#durationMetrics,
+      this.#busynessMetrics,
+    ];
   }
 
   /* --- lifecycle ---------------------------------------------------- */
@@ -227,11 +549,22 @@ export class FileDriver implements JobsDriver {
     }
     this.#subscriptions.clear();
     await this.#throughput.close();
+
+    for (const buffer of this.#metricBuffers) {
+      await buffer.close();
+    }
   }
 
   /** Writes the counts gathered in memory and not yet written. */
   async flushThroughput(): Promise<void> {
     await this.#throughput.flush();
+  }
+
+  /** Writes the analytics counts gathered in memory and not yet written. */
+  async flushMetrics(): Promise<void> {
+    for (const buffer of this.#metricBuffers) {
+      await buffer.flush();
+    }
   }
 
   async ping(): Promise<boolean> {
@@ -248,7 +581,23 @@ export class FileDriver implements JobsDriver {
     // `mkdir` would otherwise put the queue's directory back after the `rm`.
     this.#throughput.forget(ns);
     await this.#throughput.flush().catch(() => undefined);
-    await rm(join(this.root, encodeSegment(ns)), {
+
+    for (const buffer of this.#metricBuffers) {
+      buffer.forget(ns);
+      await buffer.flush().catch(() => undefined);
+    }
+    this.#metricsNamespaces.delete(ns);
+
+    const nsDir = join(this.root, encodeSegment(ns));
+    for (const cache of [this.#ensured, this.#pruneSkips, this.#logCounts]) {
+      for (const path of cache.keys()) {
+        if (path.startsWith(`${nsDir}/`)) {
+          cache.delete(path);
+        }
+      }
+    }
+
+    await rm(nsDir, {
       recursive: true,
       force: true,
     });
@@ -280,35 +629,96 @@ export class FileDriver implements JobsDriver {
     const path = join(dir, "lock.json");
     const info: LockInfo = { token, expiresAt: now + ttlMs };
 
-    if (await this.#createExclusive(path, JSON.stringify(info))) {
+    // Outside the mutex: `O_EXCL` wins only on an absent file, and nothing
+    // holding the mutex leaves the file absent and then writes it again.
+    if (await this.#createLockFile(path, JSON.stringify(info))) {
       return true;
     }
 
-    const held = await this.#readJson<LockInfo>(path);
+    return await this.#withLockMutex(dir, async () => {
+      const held = await this.#readJson<LockInfo>(path);
 
-    // Ours already, or expired: either way we may take it.
-    if (held && held.token !== token && held.expiresAt > now) {
-      return false;
-    }
+      // Ours already, or expired: either way we may take it.
+      if (held && held.token !== token && held.expiresAt > now) {
+        return false;
+      }
 
-    if (held?.token === token) {
-      await this.#writeAtomic(path, JSON.stringify(info));
-      return true;
-    }
+      // Present but unreadable is a lock being written, not a stale one: the
+      // exclusive create and the write of the token are two steps, and a
+      // contender whose create failed reads the file in between. Taking it
+      // as stale renamed the winner's lock away, and both ran. Only once it
+      // is older than a TTL is it a crash's leftover, safe to break.
+      if (!held && (await this.#fresherThan(path, now - ttlMs))) {
+        return false;
+      }
 
-    // Break a stale lock by renaming it away first: exactly one process can
-    // win that rename, and the loser sees ENOENT and backs off.
-    const claimed = join(dir, `lock.stale-${newId()}`);
-    try {
-      await rename(path, claimed);
-    } catch {
-      return false;
-    }
+      if (held?.token === token) {
+        await this.#writeAtomic(path, JSON.stringify(info));
+        return true;
+      }
 
-    await rm(claimed, { force: true });
-    return await this.#createExclusive(path, JSON.stringify(info));
+      // Break a stale lock by renaming it away first: exactly one process can
+      // win that rename, and the loser sees ENOENT and backs off.
+      const claimed = join(dir, `lock.stale-${newId()}`);
+      try {
+        await rename(path, claimed);
+      } catch {
+        return false;
+      }
+
+      await rm(claimed, { force: true });
+      return await this.#createLockFile(path, JSON.stringify(info));
+    });
   }
 
+  /**
+   * `#createExclusive` for `lock.json`, with the `acquireLock` test seam
+   * between the exclusive create and the write: the moment a contender can
+   * find the file present and still empty.
+   */
+  async #createLockFile(path: string, contents: string): Promise<boolean> {
+    const gate = acquireLockGate(this);
+    if (!gate) {
+      return await this.#createExclusive(path, contents);
+    }
+
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(path, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        return false;
+      }
+      throw new DriverError("file", "createExclusive", error, { path });
+    }
+
+    try {
+      await gate();
+      await handle.writeFile(contents);
+    } finally {
+      await handle.close();
+    }
+    return true;
+  }
+
+  /** Whether the file at `path` exists and was modified after `since`. */
+  async #fresherThan(path: string, since: number): Promise<boolean> {
+    const modified = await this.#mtime(path);
+    return modified > 0 && modified > since;
+  }
+
+  /**
+   * Extends a lock this token holds, never one it has released.
+   *
+   * A read and then a write, and without the mutex a `releaseLock` landing
+   * between the two — another process's, or this one's — let the write put
+   * the lock back under a token its owner had already forgotten, where it
+   * blocked every trigger across the cluster until the TTL ran out. So the
+   * decision is taken again under the mutex `releaseLock` takes, with the
+   * file re-read there: a lock released since answers `false` and stays gone.
+   *
+   * The first read, outside the mutex, only turns a non-owner away cheaply.
+   */
   async renewLock(
     ns: string,
     key: string,
@@ -316,30 +726,48 @@ export class FileDriver implements JobsDriver {
     ttlMs: number,
     now: number,
   ): Promise<boolean> {
-    const path = join(this.#runnerDir(ns, key), "lock.json");
-    const held = await this.#readJson<LockInfo>(path);
+    const dir = this.#runnerDir(ns, key);
+    const path = join(dir, "lock.json");
 
-    if (!held || held.token !== token || held.expiresAt <= now) {
+    if (!ownsLock(await this.#readJson<LockInfo>(path), token, now)) {
       return false;
     }
 
-    await this.#writeAtomic(
-      path,
-      JSON.stringify({ token, expiresAt: now + ttlMs }),
-    );
-    return true;
+    // Test seam; unset outside tests. See RENEW_LOCK_GATE.
+    await renewLockGate(this)?.();
+
+    return await this.#withLockMutex(dir, async () => {
+      if (!ownsLock(await this.#readJson<LockInfo>(path), token, now)) {
+        return false;
+      }
+
+      await this.#writeAtomic(
+        path,
+        JSON.stringify({ token, expiresAt: now + ttlMs }),
+      );
+      return true;
+    });
   }
 
   async releaseLock(ns: string, key: string, token: string): Promise<boolean> {
-    const path = join(this.#runnerDir(ns, key), "lock.json");
-    const held = await this.#readJson<LockInfo>(path);
+    const dir = this.#runnerDir(ns, key);
+    const path = join(dir, "lock.json");
 
-    if (!held || held.token !== token) {
+    // Cheaply refused when it is not ours, as `renewLock` is.
+    if ((await this.#readJson<LockInfo>(path))?.token !== token) {
       return false;
     }
 
-    await rm(path, { force: true });
-    return true;
+    return await this.#withLockMutex(dir, async () => {
+      const held = await this.#readJson<LockInfo>(path);
+
+      if (!held || held.token !== token) {
+        return false;
+      }
+
+      await rm(path, { force: true });
+      return true;
+    });
   }
 
   async getLock(
@@ -442,6 +870,171 @@ export class FileDriver implements JobsDriver {
     await this.#mutateState(ns, key, (state) => {
       state.history = [];
     });
+    // A run the history no longer names cannot be asked about, so its log file
+    // would be bytes on disk that nothing could ever reach or collect.
+    await this.clearRunLogs(ns, key);
+  }
+
+  async appendRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    lines: RunLogInput[],
+    caps: RunLogCaps,
+  ): Promise<RunLogAppendResult> {
+    this.#assertNameFits(runId, "runId", "appendRunLog");
+
+    const dir = this.#runLogDir(ns, key);
+    await mkdir(dir, { recursive: true });
+
+    // A lock of its own, not `state.lock`: an append must not queue behind
+    // every state write, and must not make one either. It serialises the
+    // read-modify-write a trim needs, and the readdir `keepRuns` walks.
+    const release = await this.#lockFile(join(dir, "runlogs.lock"));
+
+    try {
+      const existing = await this.#runLogFiles(dir);
+      const name =
+        existing.find((entry) => entry.runId === runId)?.name ??
+        `${pad(lines[0]?.at ?? Date.now(), 13)}-${encodeName(runId)}.jsonl`;
+      const path = join(dir, name);
+
+      const stored = readRunLogFile(await this.#readText(path));
+      let seq = stored.at(-1)?.seq ?? 0;
+      const added = lines.map((line) => storeRunLogLine(line, ++seq));
+      stored.push(...added);
+
+      const overflow = runLogOverflow(stored, caps);
+
+      if (overflow > 0) {
+        // A trim is a rewrite, as it is for a job's log: the lines a cap drops
+        // are at the front of the file, and only the whole file can lose them.
+        stored.splice(0, overflow);
+        await this.#writeAtomic(path, writeRunLogFile(stored));
+      } else {
+        // The ordinary path, and why the lines are a JSONL file at all: one
+        // append, no read-back, whatever the log already holds.
+        await writeFile(path, writeRunLogFile(added), { flag: "a" });
+      }
+
+      // `keepRuns` on the write path too, so nothing has to sweep. The names
+      // lead with the first line's timestamp, so the listing is already in run
+      // order and the oldest are simply the first of it.
+      if (caps.keepRuns > 0) {
+        const after = existing.some((entry) => entry.runId === runId)
+          ? existing
+          : [...existing, { name, runId }].sort((a, b) =>
+              a.name < b.name ? -1 : 1,
+            );
+
+        for (const stale of after.slice(0, after.length - caps.keepRuns)) {
+          await rm(join(dir, stale.name), { force: true });
+        }
+      }
+
+      return {
+        count: stored.length,
+        // Nothing records how many lines went: the numbering does. The first
+        // line the file still holds is line N, so N-1 of them are gone.
+        dropped: (stored[0]?.seq ?? seq + 1) - 1,
+        lastSeq: seq,
+      };
+    } finally {
+      await release();
+    }
+  }
+
+  async getRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    opts: RunLogQuery,
+  ): Promise<RunLogPage> {
+    const dir = this.#runLogDir(ns, key);
+    const name = (await this.#runLogFiles(dir)).find(
+      (entry) => entry.runId === runId,
+    )?.name;
+
+    if (name === undefined) {
+      return emptyRunLog();
+    }
+
+    const lines = readRunLogFile(await this.#readText(join(dir, name)));
+
+    return pageRunLog(lines, opts, {
+      dropped: (lines[0]?.seq ?? 1) - 1,
+      lastSeq: lines.at(-1)?.seq ?? 0,
+    });
+  }
+
+  async clearRunLogs(ns: string, key: string, runId?: string): Promise<void> {
+    const dir = this.#runLogDir(ns, key);
+
+    if (runId === undefined) {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    }
+
+    const name = (await this.#runLogFiles(dir)).find(
+      (entry) => entry.runId === runId,
+    )?.name;
+
+    if (name !== undefined) {
+      await rm(join(dir, name), { force: true });
+    }
+  }
+
+  async removeRuns(
+    ns: string,
+    key: string,
+    runIds: readonly string[],
+  ): Promise<number> {
+    const dir = this.#runnerDir(ns, key);
+
+    // Both writes below would make the runner's directory, and `listRunners`
+    // is a listing of those: removing from a runner that does not exist must
+    // not make it exist.
+    if (runIds.length === 0 || !(await isDirectory(dir))) {
+      return 0;
+    }
+
+    const named = new Set(runIds);
+    let removed = 0;
+
+    // The records, under `state.lock` like every other history write — the
+    // only lock that orders this against an append or a settle rewriting the
+    // same `state.json`. Nothing named, nothing rewritten.
+    await this.#mutateState(ns, key, (state) => {
+      const kept = state.history.filter((entry) => !named.has(entry.runId));
+      removed = state.history.length - kept.length;
+      if (removed === 0) {
+        return false;
+      }
+      state.history = kept;
+    });
+
+    // The logs, under `runlogs.lock` and never inside `state.lock`: the lock
+    // `appendRunLog` holds for its read-modify-write, so a named file cannot
+    // be deleted half way through a trim's rewrite. A run not named is never
+    // looked at, which is what keeps an in-flight run's log whole. A named log
+    // goes whether or not its record did — one outliving its record is bytes
+    // nothing could reach.
+    const logs = this.#runLogDir(ns, key);
+    if (await isDirectory(logs)) {
+      const release = await this.#lockFile(join(logs, "runlogs.lock"));
+
+      try {
+        for (const entry of await this.#runLogFiles(logs)) {
+          if (named.has(entry.runId)) {
+            await rm(join(logs, entry.name), { force: true });
+          }
+        }
+      } finally {
+        await release();
+      }
+    }
+
+    return removed;
   }
 
   async pushQueuedTrigger(
@@ -540,6 +1133,18 @@ export class FileDriver implements JobsDriver {
     for (const state of STATES) {
       await mkdir(join(dir, "index", state), { recursive: true });
     }
+    this.#ensured.add(dir);
+  }
+
+  /**
+   * `ensureQueue`, once per queue per instance. The hot paths call this; no
+   * correctness rests on it, because every write creates its own directory
+   * when it finds it missing (see `#ensured`).
+   */
+  async #ensureQueueOnce(q: QueueRef): Promise<void> {
+    if (!this.#ensured.has(this.#queueDir(q))) {
+      await this.ensureQueue(q);
+    }
   }
 
   async addJob(
@@ -547,42 +1152,181 @@ export class FileDriver implements JobsDriver {
     job: JobRecord,
   ): Promise<{ job: JobRecord; added: boolean }> {
     this.#assertNameFits(job.id, "id", "addJob");
-    await this.ensureQueue(q);
+    await this.#ensureQueueOnce(q);
+    const result = await this.#addOne(q, job);
+
+    if (result.added && result.job.state === "waiting") {
+      await this.#touchWake(q);
+    }
+
+    return result;
+  }
+
+  /**
+   * Adds several jobs: the results in input order, each exactly what `addJob`
+   * would have answered.
+   *
+   * It was `addJob` in a loop, paying the queue check and a wake per job and
+   * running every create one after another. Now the ids are checked and the
+   * queue made once, the creates run {@link ADD_CONCURRENCY} at a time (each is
+   * its own `O_EXCL` create, so they are independent), and the wake file is
+   * touched when the first waiting job lands — so an idle worker starts at
+   * once — and again at the end. Claim order comes from marker names, not from
+   * the order files were created, so running creates side by side changes
+   * nothing a claim sees.
+   *
+   * An id repeated inside the batch is added once, by its first occurrence;
+   * the rest answer `added: false` with that job, as a second `addJob` would.
+   * Two creates of one id never race inside one call.
+   */
+  async addJobs(
+    q: QueueRef,
+    jobs: JobRecord[],
+  ): Promise<{ job: JobRecord; added: boolean }[]> {
+    for (const job of jobs) {
+      this.#assertNameFits(job.id, "id", "addJob");
+    }
+
+    if (jobs.length === 0) {
+      return [];
+    }
+
+    await this.#ensureQueueOnce(q);
+
+    const results: ({ job: JobRecord; added: boolean } | undefined)[] = [];
+    results.length = jobs.length;
+    const firstOf = new Map<string, number>();
+    const work: number[] = [];
+
+    jobs.forEach((job, index) => {
+      if (!firstOf.has(job.id)) {
+        firstOf.set(job.id, index);
+        work.push(index);
+      }
+    });
+
+    let next = 0;
+    let failure: { error: unknown } | undefined;
+    /** Waiting jobs added since the wake file was last touched. */
+    let unannounced = 0;
+    /** Whether the first waiting job's wake has been sent. */
+    let announced = false;
+
+    const lane = async (): Promise<void> => {
+      while (next < work.length && failure === undefined) {
+        const index = work[next++]!;
+
+        try {
+          const result = await this.#addOne(q, jobs[index]!);
+          results[index] = result;
+
+          if (result.added && result.job.state === "waiting") {
+            unannounced++;
+
+            if (!announced) {
+              announced = true;
+              unannounced = 0;
+              await this.#touchWake(q);
+            }
+          }
+        } catch (error) {
+          failure ??= { error };
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(ADD_CONCURRENCY, work.length) }, lane),
+      );
+    } finally {
+      // Whatever landed is announced, a failed batch included: a job added
+      // is claimable, and a worker must not sleep through it.
+      if (unannounced > 0) {
+        await this.#touchWake(q);
+      }
+    }
+
+    if (failure) {
+      throw failure.error;
+    }
+
+    return jobs.map((job, index) => {
+      const own = results[index];
+      if (own) {
+        return own;
+      }
+
+      const first = results[firstOf.get(job.id)!]!;
+      return { job: jsonClone(first.job) as JobRecord, added: false };
+    });
+  }
+
+  /**
+   * One job's create and marker, with no queue check and no wake: what
+   * `addJob` and `addJobs` share. The caller has checked the id's length.
+   */
+  async #addOne(
+    q: QueueRef,
+    job: JobRecord,
+  ): Promise<{ job: JobRecord; added: boolean }> {
     const path = this.#jobPath(q, job.id);
-    // `undefined` is not JSON; every other driver stores it as null.
-    const record = jsonClone({ ...job, data: job.data ?? null });
+    // `undefined` is not JSON; every other driver stores it as null. Encoded
+    // once: the text is what is written, and parsing it back is the clone the
+    // caller gets — `jsonClone` and then a second `stringify` did it twice.
+    const text = JSON.stringify({ ...job, data: job.data ?? null });
+    const record = JSON.parse(text) as JobRecord;
 
     // The record file *is* the idempotency key: exactly one caller creates it.
-    if (!(await this.#createExclusive(path, JSON.stringify(record)))) {
+    if (!(await this.#createExclusive(path, text))) {
       const existing = await this.#readJob(path);
       return { job: existing ?? record, added: false };
     }
 
     await this.#addMarker(q, record);
-
-    if (record.state === "waiting") {
-      await this.#touchWake(q);
-    }
-
     return { job: record, added: true };
   }
 
-  async addJobs(
-    q: QueueRef,
-    jobs: JobRecord[],
-  ): Promise<{ job: JobRecord; added: boolean }[]> {
-    const results: { job: JobRecord; added: boolean }[] = [];
-    for (const job of jobs) {
-      results.push(await this.addJob(q, job));
-    }
-    return results;
+  async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
+    return (await this.#claim(q, opts, 1))[0] ?? null;
   }
 
-  async claimJob(q: QueueRef, opts: ClaimOptions): Promise<JobRecord | null> {
-    await this.ensureQueue(q);
+  /**
+   * Claims up to `limit` jobs off one listing of `waiting/`.
+   *
+   * `claimByLoop` would call `claimJob` once per slot, and each call lists and
+   * sorts the whole directory again — at a 2,500-job backlog that listing was
+   * most of what a claim cost. Here the queue check, the pause check, the
+   * listing and the sort happen once per batch, and the per-marker body is
+   * `claimJob`'s own. Each job is still taken by its own rename, so the batch
+   * is not atomic (the contract does not ask it to be) and each job is claimed
+   * exactly once. The listing goes stale while the batch walks it, which costs
+   * a failed rename per name somebody else took, as it always did.
+   */
+  async claimJobs(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    return await this.#claim(q, opts, limit);
+  }
+
+  /** `claimJob` and `claimJobs`: up to `limit` jobs, in claim order. */
+  async #claim(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    const claimedJobs: JobRecord[] = [];
+
+    if (limit <= 0) {
+      return claimedJobs;
+    }
+
+    await this.#ensureQueueOnce(q);
 
     if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
-      return null;
+      return claimedJobs;
     }
 
     // No `promoteDelayed` here: it ran before every claim whether or not
@@ -592,6 +1336,8 @@ export class FileDriver implements JobsDriver {
     const waiting = join(this.#queueDir(q), "index", "waiting");
     const markers = (await this.#list(waiting)).sort();
     const lockExpiresAt = opts.now + opts.lockMs;
+    /** Whether this claim has already made sure `active/` exists. */
+    const claimState = { madeDir: false };
     const excluded =
       opts.excludeNames && opts.excludeNames.length > 0
         ? new Set(opts.excludeNames)
@@ -629,9 +1375,7 @@ export class FileDriver implements JobsDriver {
         "active",
         activeMarker(lockExpiresAt, id),
       );
-      try {
-        await rename(join(waiting, marker), taken);
-      } catch {
+      if (!(await this.#take(join(waiting, marker), taken, claimState))) {
         continue;
       }
 
@@ -690,13 +1434,32 @@ export class FileDriver implements JobsDriver {
         lockToken: opts.token,
         lockExpiresAt,
         workerId: opts.workerId,
+        // Replaces the last attempt's stamp, in the write the claim already
+        // makes. Every later write spreads the record, so no settle, stall
+        // recovery or retry clears it; they clear only `workerId`.
+        processedBy: attributionOf(opts),
       };
 
-      await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(claimed));
-      return claimed;
+      try {
+        await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(claimed));
+      } catch (error) {
+        // The marker is in `active` under a record that still says `waiting`,
+        // which `recoverStalled` re-files once this lock would have expired.
+        // Jobs already taken in this batch are the caller's: never throw
+        // after claiming any, as the contract says.
+        if (claimedJobs.length === 0) {
+          throw error;
+        }
+        break;
+      }
+
+      claimedJobs.push(claimed);
+      if (claimedJobs.length >= limit) {
+        break;
+      }
     }
 
-    return null;
+    return claimedJobs;
   }
 
   async extendJobLock(
@@ -744,6 +1507,26 @@ export class FileDriver implements JobsDriver {
         return false;
       }
 
+      if (retention === true) {
+        const removed = await this.#completeRemoving(q, record, now);
+        if (removed) {
+          return true;
+        }
+
+        if (
+          !(await this.#retryLostRename(
+            q,
+            id,
+            token,
+            this.#markerFor(record),
+            deadline,
+          ))
+        ) {
+          return false;
+        }
+        continue;
+      }
+
       const completed: JobRecord = {
         ...record,
         state: "completed",
@@ -763,7 +1546,7 @@ export class FileDriver implements JobsDriver {
           JSON.stringify(completed),
         );
         // Counted once the transition has landed, and in memory: no I/O here.
-        this.#throughput.add(q, now, 1, 0);
+        this.#countJob(q, now, { completed: 1 });
         await this.#applyRetention(q, completed, retention);
         return true;
       }
@@ -772,6 +1555,52 @@ export class FileDriver implements JobsDriver {
         return false;
       }
     }
+  }
+
+  /**
+   * `completeJob` under `removeOnComplete: true`: the job is deleted rather
+   * than written as `completed` and then deleted, and says whether it was.
+   *
+   * The completed record used to be written, its marker moved into
+   * `completed/`, and retention then took that marker into `held/`, read the
+   * record again and unlinked everything — 12 trips to the thread pool where
+   * a kept completion makes 3. Now the active marker goes straight into
+   * `held/`, and that rename is the exclusion exactly as the move into
+   * `completed/` was: a stale token or a patch holding the marker makes it
+   * fail, and the caller reads again. Then the log, the record and the hold
+   * go, in `#deleteJob`'s order.
+   *
+   * A crash after the hold leaves it with the still-`active` record, which
+   * `#healHolds` files back into `active/` and `recoverStalled` retries once
+   * the lock lapses — the outcome of a crash just before a completion, not a
+   * lost job. Nobody can observe the `completed` record this no longer
+   * writes: it lived only between two of this call's own steps.
+   */
+  async #completeRemoving(
+    q: QueueRef,
+    record: JobRecord,
+    now: number,
+  ): Promise<boolean> {
+    const hold = await this.#hold(q, "active", this.#markerFor(record));
+    if (!hold) {
+      return false;
+    }
+
+    await unlink(this.#logPath(q, record)).catch(() => undefined);
+
+    try {
+      await unlink(this.#jobPath(q, record.id));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        await this.#place(q, hold, record);
+        throw new DriverError("file", "completeJob", error, { id: record.id });
+      }
+    }
+
+    await unlink(hold).catch(() => undefined);
+    // Counted once the transition has landed, and in memory: no I/O here.
+    this.#countJob(q, now, { completed: 1 });
+    return true;
   }
 
   async failJob(
@@ -817,7 +1646,7 @@ export class FileDriver implements JobsDriver {
       if (await this.#move(q, marker, "active", updated)) {
         await this.#writeAtomic(this.#jobPath(q, id), JSON.stringify(updated));
         // A failed attempt, retried or dead alike; in memory, no I/O here.
-        this.#throughput.add(q, now, 0, 1);
+        this.#countJob(q, now, { failed: 1 });
 
         if (!outcome.retry) {
           await this.#applyRetention(q, updated, outcome.retention);
@@ -870,7 +1699,7 @@ export class FileDriver implements JobsDriver {
     }
 
     // A failure, counted as `failJob` counts one; in memory, no I/O here.
-    this.#throughput.add(q, now, 0, 1);
+    this.#countJob(q, now, { failed: 1 });
     await this.#applyRetention(q, buried, opts.retention);
     return buried;
   }
@@ -976,7 +1805,18 @@ export class FileDriver implements JobsDriver {
 
       if (patch.priority !== undefined) {
         next.priority = patch.priority;
-        next.opts = { ...next.opts, priority: patch.priority };
+        next.opts = {
+          ...next.opts,
+          priority: patch.priority,
+          // An operator's per-job priority is explicit, so a queue's stored
+          // defaults never replace it — set even when the value is unchanged,
+          // since choosing it is what pins it. A job without a mask stays
+          // without one: a mask of only this bit would claim every other
+          // option of an older job was defaulted.
+          ...(typeof next.opts.explicit === "number"
+            ? { explicit: next.opts.explicit | JOB_OPTION_BITS.priority }
+            : {}),
+        };
       }
 
       if (patch.runAt !== undefined) {
@@ -992,6 +1832,204 @@ export class FileDriver implements JobsDriver {
     }
 
     return updated;
+  }
+
+  /**
+   * Walks each requested state's marker directory in claim order — the
+   * markers' own lexical order, which is what makes the marker name a keyset
+   * cursor — and rewrites each job under its own hold (`#mutateJob`), up to
+   * `REWRITE_CONCURRENCY` at once.
+   *
+   * - **Atomic per job, state re-checked**: the plan is judged again on the
+   *   record read under the hold, so a job claimed (or otherwise moved out of
+   *   `states`) after the listing is not written and counts `moved` — this
+   *   backend sees those, unlike the ones that lock a batch. A claim that
+   *   finds the marker held moves on to the next job, as it does for any held
+   *   marker, and one that comes after reads the whole rewritten record.
+   * - **Priority reorders** because `#mutateJob` puts the marker back under
+   *   the name the new record gives it: the priority prefix changes, and
+   *   `createdAt` then the id keep the job's FIFO place among equals.
+   * - **The cursor is the last marker examined.** A job whose rewrite renames
+   *   its marker ahead of the cursor is met again by a later call and counts
+   *   `unchanged`; one renamed behind it was already rewritten. Markers held
+   *   by another change at listing time (in `held/`) are walked too, so a job
+   *   an operator happens to be patching is not skipped.
+   *
+   * Cost: one directory listing per state per call (plus one of `held/`), one
+   * record read per job examined, and for each job written, one record write
+   * and two renames. Per job that is the `updateJob` path, 0.7–5 ms measured;
+   * the concurrency is what brings a call of 1,000 down to a fraction of a
+   * second.
+   */
+  async rewritePendingOptions(
+    q: QueueRef,
+    request: PendingOptionsRewrite,
+  ): Promise<PendingOptionsRewriteResult> {
+    assertRewriteRequest(request);
+
+    const result = emptyRewriteResult();
+    const { states } = request;
+    let from = 0;
+    let after: string | null = null;
+    /** The last marker examined in this call, which the next call resumes after. */
+    let last: { state: JobState; marker: string } | undefined;
+
+    if (request.cursor !== null) {
+      const cursor = decodeRewriteCursor(
+        request.cursor,
+        states,
+        REWRITE_CURSOR_KEY,
+      );
+      from = states.indexOf(cursor.state);
+      after = cursor.key[0] as string;
+    }
+
+    for (let index = from; index < states.length; index++) {
+      const state = states[index]!;
+      const floor = after;
+      after = null;
+
+      const markers = await this.#pendingMarkers(q, state);
+      const candidates =
+        floor === null ? markers : markers.filter((marker) => marker > floor);
+
+      if (candidates.length === 0) {
+        continue;
+      }
+
+      const room = request.limit - result.examined;
+
+      if (room <= 0 && last) {
+        // Stopping only when there *is* a next candidate means a walk that ends
+        // exactly at the limit answers `next: null`, not one empty call more.
+        // The cursor may name an earlier state: the next call finds nothing
+        // left there and carries on here.
+        result.next = encodeRewriteCursor(last.state, [last.marker]);
+        return result;
+      }
+
+      const batch = candidates.slice(0, room);
+
+      for (let at = 0; at < batch.length; at += REWRITE_CONCURRENCY) {
+        await Promise.all(
+          batch
+            .slice(at, at + REWRITE_CONCURRENCY)
+            .map(
+              async (marker) =>
+                await this.#rewriteOne(q, state, marker, request, result),
+            ),
+        );
+      }
+
+      last = { state, marker: batch.at(-1)! };
+
+      if (candidates.length > batch.length) {
+        result.next = encodeRewriteCursor(state, [last.marker]);
+        return result;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * The markers of every job in `state`, sorted into claim order: those in the
+   * index, and those another change holds right now (`held/`), which are back
+   * in a moment.
+   */
+  async #pendingMarkers(q: QueueRef, state: JobState): Promise<string[]> {
+    const markers = new Set(
+      await this.#list(join(this.#queueDir(q), "index", state)),
+    );
+
+    for (const name of await this.#list(this.#heldDir(q))) {
+      const hold = parseHold(name);
+      if (hold?.state === state) {
+        markers.add(hold.marker);
+      }
+    }
+
+    // Marker names are ASCII, so the default sort is byte order: claim order.
+    return [...markers].sort();
+  }
+
+  /**
+   * Examines one job of a `rewritePendingOptions` walk, rewrites it when its
+   * plan says so, and counts what happened into `result`.
+   */
+  async #rewriteOne(
+    q: QueueRef,
+    state: JobState,
+    marker: string,
+    request: PendingOptionsRewrite,
+    result: PendingOptionsRewriteResult,
+  ): Promise<void> {
+    const id = markerId(marker);
+    const record = id === "" ? null : await this.#readJob(this.#jobPath(q, id));
+
+    // Gone, or moved on since the listing — claimed, removed, promoted.
+    if (!record || record.state !== state) {
+      tallyMoved(result);
+      return;
+    }
+
+    const plan = planPendingRewrite(
+      record,
+      request.values,
+      request.includeUnmarked,
+    );
+
+    if (plan.outcome !== "rewritten" || request.dryRun) {
+      tallyRewrite(result, plan);
+      return;
+    }
+
+    /**
+     * The last judgment `decide` made: the one under the hold whenever it got
+     * that far. `null` when the record had left `states`.
+     */
+    const judged: { plan: PendingRewritePlan | null } = { plan: null };
+
+    const updated = await this.#mutateJob(
+      q,
+      id,
+      (current) => {
+        if (!request.states.includes(current.state)) {
+          judged.plan = null;
+          return null;
+        }
+
+        const now = planPendingRewrite(
+          current,
+          request.values,
+          request.includeUnmarked,
+        );
+        judged.plan = now;
+
+        return now.outcome === "rewritten"
+          ? {
+              ...current,
+              opts: now.opts,
+              priority: now.priority,
+              maxAttempts: now.maxAttempts,
+            }
+          : null;
+      },
+      record,
+    );
+
+    const final = judged.plan;
+
+    if (updated && final) {
+      tallyRewrite(result, final);
+    } else if (!final || final.outcome === "rewritten") {
+      // Left `states` before the write, or — the plan still stood — its marker
+      // stayed held past `HOLD_PATIENCE_MS`. Either way it was not written.
+      tallyMoved(result);
+    } else {
+      // Changed under the hold into a job with nothing to write.
+      tallyRewrite(result, final);
+    }
   }
 
   async addJobLog(
@@ -1013,7 +2051,33 @@ export class FileDriver implements JobsDriver {
     const path = this.#logPath(q, held.record);
 
     try {
-      await mkdir(join(path, ".."), { recursive: true });
+      // The count, without reading the log, when this process wrote its last
+      // line: the file is the one it appended to (same inode and size), so it
+      // holds exactly the lines counted then and ends in a newline. Appends to
+      // one job are serialised by the hold, in every process, so nobody can
+      // have added a line meanwhile without changing the size, and a trim is a
+      // rewrite through a new inode. Anything else reads the log, as it always
+      // did. A `stat` and the append, where the read was the whole log.
+      const known = this.#logCounts.get(path);
+      const seen = known ? await stat(path).catch(() => null) : null;
+
+      if (
+        known &&
+        seen &&
+        seen.ino === known.ino &&
+        seen.size === known.size &&
+        (keep <= 0 || known.count < keep)
+      ) {
+        const encoded = `${JSON.stringify(line)}\n`;
+        await this.#append(path, encoded);
+        this.#setLogCount(path, {
+          ino: known.ino,
+          size: known.size + Buffer.byteLength(encoded),
+          count: known.count + 1,
+        });
+        return known.count + 1;
+      }
+
       const existing = await this.#readText(path);
       // Only newline-terminated lines count. A crash mid-append leaves a
       // partial last line, and appending after it would fuse the two into one
@@ -1028,9 +2092,10 @@ export class FileDriver implements JobsDriver {
       } else if (whole.length !== existing.length) {
         await this.#writeAtomic(path, whole + encoded);
       } else {
-        await writeFile(path, encoded, { flag: "a" });
+        await this.#append(path, encoded);
       }
 
+      await this.#rememberLogCount(path, count);
       return count;
     } finally {
       await this.#place(q, held.hold, held.record);
@@ -1065,6 +2130,64 @@ export class FileDriver implements JobsDriver {
         .map((encoded) => safeJsonParse<string>(encoded, encoded)),
       count: lines.length,
     };
+  }
+
+  async clearJobLogs(q: QueueRef, id: string): Promise<ClearJobLogsResult> {
+    // Under the job's own hold — the one a claim needs too, since a claim
+    // moves the marker this takes out of the index. So the state `accept`
+    // reads under the hold is the state for the whole clear: a job claimed
+    // after it is refused, and one claimed before it cannot be claimed until
+    // the log is gone.
+    for (let attempt = 0; ; attempt++) {
+      const held = await this.#holdJob(
+        q,
+        id,
+        (record) => record.state !== "active",
+      );
+
+      if (held) {
+        const path = this.#logPath(q, held.record);
+
+        try {
+          const text = await this.#readText(path);
+          // What a read counts: newline-terminated lines only.
+          const removed = countLines(text);
+          // Gone rather than emptied: the count is the file's lines, so the
+          // next append answers one and `keep` trims from there.
+          await unlink(path).catch(() => undefined);
+          return { status: "cleared", removed };
+        } finally {
+          await this.#place(q, held.hold, held.record);
+
+          // A claim that found the marker held moved on, and may have gone
+          // to sleep believing the queue empty.
+          if (held.record.state === "waiting") {
+            await this.#touchWake(q);
+          }
+        }
+      }
+
+      // `#holdJob` answers `null` for three things. Two are answers.
+      const current = await this.#readJob(this.#jobPath(q, id));
+      if (!current) {
+        return { status: "missing" };
+      }
+      if (current.state === "active") {
+        return { status: "active" };
+      }
+
+      // The third: somebody kept the marker past `HOLD_PATIENCE_MS`, or the
+      // job settled between the refusal and the read above. Once more, then
+      // give up loudly rather than guess.
+      if (attempt >= 1) {
+        throw new DriverError(
+          "file",
+          "clearJobLogs",
+          new Error("the job's marker stayed held"),
+          { id },
+        );
+      }
+    }
   }
 
   async recordChild(
@@ -1123,6 +2246,35 @@ export class FileDriver implements JobsDriver {
     }
 
     const { record: current, hold } = held;
+
+    // A failure that is no longer the child's current outcome is stale, and
+    // must not bury the parent: either it was delivered once already (the
+    // child is marked recorded — it buried this parent, which has been retried
+    // since), or the child is no longer dead (it has been retried itself, which
+    // resets `recorded`, and is waiting or running again). Both come from a
+    // delivery decided from an earlier view — a healing pass that read the
+    // child before the first delivery marked it. A child with no record still
+    // buries, as does one that failed again (dead, unrecorded).
+    //
+    // The child is read under the parent's hold, and every retry of the parent
+    // (`requeueParent`) takes the same hold, so none can land between this
+    // read and the bury. The window is widest here of every backend: the stale
+    // delivery waits on the hold for as long as the first one and the retry
+    // take.
+    if (current.state === "waiting-children" && !settles) {
+      const stored = await this.#readJob(
+        this.#jobPath({ ns: q.ns, queue: child.queue }, child.id),
+      );
+
+      if (
+        stored !== null &&
+        (stored.flow?.recorded === true || stored.state !== "dead")
+      ) {
+        await this.#place(q, hold, current);
+        return "already";
+      }
+    }
+
     const flow = current.flow!;
     // New objects throughout: `current` is also what the hold is put back by
     // if the write below fails.
@@ -1180,7 +2332,7 @@ export class FileDriver implements JobsDriver {
 
     // A parent buried by a failed child is a failure too.
     if (result === "buried") {
-      this.#throughput.add(q, now, 0, 1);
+      this.#countJob(q, now, { failed: 1 });
     }
 
     if (updated.state === "waiting") {
@@ -1201,7 +2353,11 @@ export class FileDriver implements JobsDriver {
       const remaining = unsettledChildren(record.flow);
       return {
         ...record,
-        flow: { ...record.flow, pending: remaining },
+        // `recorded: false` as after `retryJob`: the outcome it ends with this
+        // time has not reached its own parent, and without it a nested parent
+        // that fails again would have that failure refused as already
+        // delivered.
+        flow: { ...record.flow, pending: remaining, recorded: false },
         failedReason: null,
         finishedOn: null,
         expiresAt: null,
@@ -1350,21 +2506,33 @@ export class FileDriver implements JobsDriver {
   /* --- queue: read APIs ------------------------------------------------ */
 
   /**
-   * A page narrowed by name or search. There is no index on names, so a
-   * filtered read opens the records of the states asked for — a single state
-   * a bounded batch at a time, stopping once the page is full unless a total
-   * is wanted. Unfiltered, it is `listJobs` (a single state reads only the
-   * page) and a total is the markers counted. The payload is never matched.
+   * A page narrowed by name, search or attribution. There is no index on
+   * names or workers, so a filtered read opens the records of the states
+   * asked for — a single state a bounded batch at a time, stopping once the
+   * page is full unless a total is wanted. Unfiltered, it is `listJobs` (a
+   * single state reads only the page) and a total is the markers counted. The
+   * payload is never matched.
+   *
+   * A `finishedOn` range is served from the markers: only `completed` and
+   * `dead` can match one, so no other state's directory is even listed, and
+   * theirs are named by the padded `finishedOn`, so the markers outside the
+   * range are dropped by name and only the jobs inside it are opened — to
+   * check the worker filters, and that the marker still speaks for its record.
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     const filter = jobFilter(query);
+    const attribution = attributionFilter(query);
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
     // Each state once: a job is in one state, so it is one match.
     const states = [...new Set(query.states)];
     const index = join(this.#queueDir(q), "index");
 
-    if (!filter) {
+    if (attribution && matchesNothing(attribution, states)) {
+      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+    }
+
+    if (!filter && !attribution) {
       const jobs =
         limit === 0
           ? []
@@ -1385,12 +2553,32 @@ export class FileDriver implements JobsDriver {
       return { jobs, total };
     }
 
+    /** Whether a record read through a `state` marker is a match. */
+    const matches = (
+      record: JobRecord | null,
+      state: JobState,
+    ): record is JobRecord =>
+      // A marker whose record has moved on is not a match, as in `listJobs`.
+      record !== null &&
+      record.state === state &&
+      (!filter || matchesFilter(filter, record.id, record.name)) &&
+      (!attribution || matchesAttribution(attribution, record));
+
+    /** A state's markers in order, less those a range rules out by name. */
+    const markersOf = async (state: JobState): Promise<string[]> => {
+      const markers = (await this.#list(join(index, state))).sort();
+      return attribution && hasRange(attribution)
+        ? markers.filter((marker) => mayFinishIn(attribution, marker))
+        : markers;
+    };
+
     const jobs: JobRecord[] = [];
 
     // One state is already in order by its markers' names, as in `listJobs`.
+    // (With a range, `matchesNothing` has already answered for any other.)
     if (states.length === 1) {
       const state = states[0]!;
-      const markers = (await this.#list(join(index, state))).sort();
+      const markers = await markersOf(state);
       if (query.order === "desc") {
         markers.reverse();
       }
@@ -1407,12 +2595,7 @@ export class FileDriver implements JobsDriver {
           q,
           markers.slice(at, at + READ_CONCURRENCY),
         )) {
-          // A marker whose record has moved on is not a match, as in `listJobs`.
-          if (
-            !record ||
-            record.state !== state ||
-            !matchesFilter(filter, record.id, record.name)
-          ) {
+          if (!matches(record, state)) {
             continue;
           }
 
@@ -1428,21 +2611,22 @@ export class FileDriver implements JobsDriver {
       return query.total ? { jobs, total } : { jobs };
     }
 
-    // Several states share no order but creation time, which needs them all.
+    // Several states share no order but creation time, which needs them all —
+    // all that can match, that is: a range skips every unfinished state.
     const matching: JobRecord[] = [];
     for (const state of states) {
-      const markers = (await this.#list(join(index, state))).sort();
+      if (attribution && !canMatchState(attribution, state)) {
+        continue;
+      }
+
+      const markers = await markersOf(state);
 
       for (let at = 0; at < markers.length; at += READ_CONCURRENCY) {
         for (const record of await this.#readMarked(
           q,
           markers.slice(at, at + READ_CONCURRENCY),
         )) {
-          if (
-            record &&
-            record.state === state &&
-            matchesFilter(filter, record.id, record.name)
-          ) {
+          if (matches(record, state)) {
             matching.push(record);
           }
         }
@@ -1592,6 +2776,401 @@ export class FileDriver implements JobsDriver {
     return sumBuckets(rows, range);
   }
 
+  /* --- analytics ------------------------------------------------------ */
+
+  /**
+   * Minutes and nothing finer, whatever was asked for — see
+   * {@link FileDriverOptions.metrics}. Reported rather than silently served,
+   * so `resolveAnalyticsRange` answers `clamped` with `reason: "driver"`.
+   */
+  getMetricsSupport(): MetricsSupport {
+    return metricsSupportOf(this.#metrics);
+  }
+
+  async getQueueMetrics(
+    q: QueueRef,
+    query: MetricsQuery,
+  ): Promise<CounterBucket<JobCounters>[]> {
+    return mergeCounterBuckets(
+      await this.#readMetrics<JobCounters>(
+        q.ns,
+        "jobs",
+        this.#queueEntity(q.queue),
+        query,
+      ),
+      query,
+      JOB_COUNTERS,
+    );
+  }
+
+  async countWorkerJobs(
+    q: QueueRef,
+    key: string,
+    at: number,
+    counts: Partial<JobCounters>,
+  ): Promise<void> {
+    if (this.#metrics.workers) {
+      this.#workerMetrics.count(q.ns, this.#workerEntity(q, key), at, counts);
+    }
+  }
+
+  async sampleWorkerBusyness(
+    q: QueueRef,
+    key: string,
+    at: number,
+    sample: BusynessSample,
+  ): Promise<void> {
+    if (!this.#metrics.workers) {
+      return;
+    }
+
+    for (const interval of this.#metrics.intervals) {
+      const stats = emptyBusynessStats();
+      // `at` itself, not the bucket's start: which sample is the latest is
+      // what makes a merged bucket's `concurrency` well defined.
+      addBusynessSample(stats, at, sample);
+      this.#busynessMetrics.add({
+        ns: q.ns,
+        entity: this.#workerEntity(q, key),
+        at: bucketStart(at, interval),
+        interval,
+        stats,
+      });
+    }
+  }
+
+  async getWorkerMetrics(
+    q: QueueRef,
+    key: string,
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsRead> {
+    await this.flushMetrics();
+    return await this.#readWorker(q.ns, this.#workerEntity(q, key), query);
+  }
+
+  /**
+   * Every worker key's totals, each its own read reduced by `workerTotalsOf`
+   * — the definition a grouped read is held to, so this matches the per-key
+   * read by construction.
+   *
+   * The candidates are read off the directory tree: a queue directory under
+   * `workerJobs/`, a key directory under that, and under `busyness/` too when
+   * busyness is asked for — a worker that only sampled busyness has no job
+   * series to be found by. The roll-up's `-ns` decodes to no queue, so it is
+   * never a row. One flush for the whole read, not one per key.
+   */
+  async getWorkerMetricsTotals(
+    ns: string,
+    query: WorkerMetricsTotalsQuery,
+  ): Promise<WorkerMetricsTotals[]> {
+    // A width this backend does not keep has nothing in it: answered without
+    // listing a directory, as the per-entity read answers it without a read.
+    if (!this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    const kinds: MetricKind[] =
+      query.busyness && this.#metrics.workers
+        ? ["workerJobs", "busyness"]
+        : ["workerJobs"];
+    // An empty filter lists no queue at all: "none of them", never "all".
+    const queues = query.queues ? new Set(query.queues) : undefined;
+    const refs = new Map<string, WorkerMetricsRef>();
+
+    for (const kind of kinds) {
+      const kindDir = join(this.root, encodeSegment(ns), "metrics", kind);
+      const queueDirs = queues
+        ? [...queues].map((queue) => encodeName(queue))
+        : await this.#list(kindDir);
+
+      for (const queueDir of queueDirs) {
+        const queue = decodeName(queueDir);
+        // `-ns` (the roll-up) and anything we did not write decode to null.
+        if (!queue || (queues && !queues.has(queue))) {
+          continue;
+        }
+
+        for (const keyDir of await this.#list(join(kindDir, queueDir))) {
+          const key = decodeName(keyDir);
+          if (key !== null && !METRIC_FILE.test(keyDir)) {
+            refs.set(join(queueDir, keyDir), { queue, key });
+          }
+        }
+      }
+    }
+
+    const rows: WorkerMetricsTotals[] = [];
+
+    for (const [entity, ref] of refs) {
+      const totals = workerTotalsOf(await this.#readWorker(ns, entity, query));
+      if (totals) {
+        rows.push({ ...ref, ...totals });
+      }
+    }
+
+    return rows;
+  }
+
+  async getWorkerMetricsMany(
+    ns: string,
+    workers: readonly WorkerMetricsRef[],
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsSeries[]> {
+    const unique = uniqueWorkerRefs(workers);
+    if (unique.length === 0 || !this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    const series: WorkerMetricsSeries[] = [];
+
+    for (const ref of unique) {
+      const read = await this.#readWorker(
+        ns,
+        this.#workerEntity({ ns, queue: ref.queue }, ref.key),
+        query,
+      );
+      if (hasMetricBuckets(read.jobs, read.busyness)) {
+        series.push({ ...ref, ...read });
+      }
+    }
+
+    return series;
+  }
+
+  /**
+   * One worker entity's read from what is on disk, without a flush: the
+   * per-key read and both grouped ones share it, so they cannot disagree.
+   */
+  async #readWorker(
+    ns: string,
+    entity: string,
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsRead> {
+    const read: WorkerMetricsRead = {
+      jobs: mergeCounterBuckets(
+        await this.#readMetricRows<JobCounters>(
+          ns,
+          "workerJobs",
+          entity,
+          query,
+        ),
+        query,
+        JOB_COUNTERS,
+      ),
+    };
+
+    if (query.busyness && this.#metrics.workers) {
+      read.busyness = mergeBusynessBuckets(
+        await this.#readMetricRows<BusynessStats>(
+          ns,
+          "busyness",
+          entity,
+          query,
+        ),
+        query,
+      );
+    }
+
+    return read;
+  }
+
+  async countRunnerRun(
+    ns: string,
+    runner: string,
+    at: number,
+    counts: RunnerRunDelta,
+  ): Promise<void> {
+    if (!this.#metrics.runners) {
+      return;
+    }
+
+    this.#runMetrics.count(ns, encodeName(runner), at, counts);
+
+    // The duration rides with the outcome, so a finished run is one event
+    // here too — gathered in the same second's batch, not a second write.
+    if (this.#metrics.durations && counts.durationMs !== undefined) {
+      for (const interval of this.#metrics.intervals) {
+        const stats = emptyDurationStats();
+        addDuration(stats, counts.durationMs);
+        this.#durationMetrics.add({
+          ns,
+          entity: encodeName(runner),
+          at: bucketStart(at, interval),
+          interval,
+          stats,
+        });
+      }
+    }
+  }
+
+  async getRunnerMetrics(
+    ns: string,
+    runner: string,
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsRead> {
+    await this.flushMetrics();
+    return await this.#readRunner(ns, encodeName(runner), query);
+  }
+
+  /**
+   * Every runner's totals, each its own read reduced by `runnerTotalsOf`.
+   *
+   * The candidates are the runner directories under `runs/` — and under
+   * `durations/` when durations are asked for and recorded — or, with a
+   * filter, exactly the runners it names. The roll-up is never one: its
+   * `-ns` directory decodes to nothing, and its empty name is skipped when a
+   * filter names it.
+   */
+  async getRunnerMetricsTotals(
+    ns: string,
+    query: RunnerMetricsTotalsQuery,
+  ): Promise<RunnerMetricsTotals[]> {
+    if (!this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    let runners: Set<string>;
+
+    if (query.runners) {
+      // The filter *is* the candidate list: an empty one answers nothing.
+      runners = new Set(query.runners);
+    } else {
+      runners = new Set();
+      const kinds: MetricKind[] =
+        query.durations && this.#metrics.durations
+          ? ["runs", "durations"]
+          : ["runs"];
+
+      for (const kind of kinds) {
+        const kindDir = join(this.root, encodeSegment(ns), "metrics", kind);
+        for (const entry of await this.#list(kindDir)) {
+          const runner = decodeName(entry);
+          if (runner !== null && !METRIC_FILE.test(entry)) {
+            runners.add(runner);
+          }
+        }
+      }
+    }
+
+    const rows: RunnerMetricsTotals[] = [];
+
+    for (const runner of runners) {
+      if (runner === NAMESPACE_ENTITY) {
+        continue;
+      }
+
+      const totals = runnerTotalsOf(
+        await this.#readRunner(ns, encodeName(runner), query),
+      );
+      if (totals) {
+        rows.push({ runner, ...totals });
+      }
+    }
+
+    return rows;
+  }
+
+  async getRunnerMetricsMany(
+    ns: string,
+    runners: readonly string[],
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsSeries[]> {
+    // `getRunnerMetrics(ns, "")` happens to answer the roll-up; a batch of
+    // entities never does.
+    const unique = [...new Set(runners)].filter(
+      (runner) => runner !== NAMESPACE_ENTITY,
+    );
+    if (unique.length === 0 || !this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    const series: RunnerMetricsSeries[] = [];
+
+    for (const runner of unique) {
+      const read = await this.#readRunner(ns, encodeName(runner), query);
+      if (hasMetricBuckets(read.runs, read.durations)) {
+        series.push({ runner, ...read });
+      }
+    }
+
+    return series;
+  }
+
+  /** One runner's read from what is on disk, without a flush. */
+  async #readRunner(
+    ns: string,
+    entity: string,
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsRead> {
+    const read: RunnerMetricsRead = {
+      runs: mergeCounterBuckets(
+        await this.#readMetricRows<RunnerRunCounters>(
+          ns,
+          "runs",
+          entity,
+          query,
+        ),
+        query,
+        RUNNER_RUN_COUNTERS,
+      ),
+    };
+
+    if (query.durations && this.#metrics.durations) {
+      read.durations = mergeDurationBuckets(
+        await this.#readMetricRows<DurationStats>(
+          ns,
+          "durations",
+          entity,
+          query,
+        ),
+        query,
+      );
+    }
+
+    return read;
+  }
+
+  async getNamespaceMetrics(
+    ns: string,
+    query: NamespaceMetricsQuery,
+  ): Promise<NamespaceMetricsRead> {
+    const read: NamespaceMetricsRead = {};
+
+    // A kind that is not recorded stays absent rather than answering zeros:
+    // "nothing happened" and "nothing is kept" are different answers.
+    if (query.kinds.includes("jobs")) {
+      read.jobs = mergeCounterBuckets(
+        await this.#rollUp<JobCounters>(ns, "jobs", query),
+        query,
+        JOB_COUNTERS,
+      );
+    }
+    if (query.kinds.includes("runs") && this.#metrics.runners) {
+      read.runs = mergeCounterBuckets(
+        await this.#rollUp<RunnerRunCounters>(ns, "runs", query),
+        query,
+        RUNNER_RUN_COUNTERS,
+      );
+    }
+    if (query.kinds.includes("workerJobs") && this.#metrics.workers) {
+      read.workerJobs = mergeCounterBuckets(
+        await this.#rollUp<JobCounters>(ns, "workerJobs", query),
+        query,
+        JOB_COUNTERS,
+      );
+    }
+
+    return read;
+  }
+
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     return await this.#deleteJob(q, id, (record) => record.state !== "active");
   }
@@ -1660,8 +3239,16 @@ export class FileDriver implements JobsDriver {
     const dir = this.#queueDir(q);
     let promoted = 0;
 
+    // Only the due names are sorted. Every marker's prefix is its due time,
+    // padded to one width, so comparing it with `pad(now)` as a string is the
+    // numeric test — and a large future backlog is filtered in one pass rather
+    // than sorted on every sweep.
+    const cutoff = `${pad(now, 13)}-`;
+
     for (const state of SCHEDULED_STATES) {
-      const markers = (await this.#list(join(dir, "index", state))).sort();
+      const markers = (await this.#list(join(dir, "index", state)))
+        .filter((marker) => marker < cutoff || marker.startsWith(cutoff))
+        .sort();
 
       for (const marker of markers) {
         if (promoted >= limit) {
@@ -1801,7 +3388,7 @@ export class FileDriver implements JobsDriver {
 
     // A burial is a failure, counted as a failed attempt is.
     if (dead.length > 0) {
-      this.#throughput.add(q, now, 0, dead.length);
+      this.#countJob(q, now, { failed: dead.length });
     }
 
     return { requeued, dead };
@@ -1851,11 +3438,25 @@ export class FileDriver implements JobsDriver {
     let removed = 0;
 
     for (const state of ["completed", "dead"] as const) {
-      for (const marker of await this.#list(
-        join(this.#queueDir(q), "index", state),
-      )) {
+      const dir = join(this.#queueDir(q), "index", state);
+
+      for (const marker of await this.#list(dir)) {
         if (removed >= limit) {
           break;
+        }
+
+        // A record this driver read lately and found not due, and which
+        // cannot be due yet, is not read again. The worker calls this
+        // repeatedly per sweep until a batch comes back short, and each call
+        // used to re-read every unexpired record it met before the expired
+        // ones — measured, 12,000 record reads to remove 600 of 3,000.
+        const key = join(dir, marker);
+        const skipUntil = this.#pruneSkips.get(key);
+        if (skipUntil !== undefined) {
+          if (now < skipUntil) {
+            continue;
+          }
+          this.#pruneSkips.delete(key);
         }
 
         const record = await this.#readJob(this.#jobPath(q, markerId(marker)));
@@ -1866,8 +3467,19 @@ export class FileDriver implements JobsDriver {
           // A child whose parent has not taken its outcome yet stays.
           !awaitsDelivery(candidate);
 
-        if (record && (await this.#deleteJob(q, record.id, due, record))) {
-          removed++;
+        if (!record) {
+          continue;
+        }
+
+        if (due(record)) {
+          if (await this.#deleteJob(q, record.id, due, record)) {
+            removed++;
+          }
+          continue;
+        }
+
+        if (record.state === state) {
+          this.#skipPrune(key, record, now);
         }
       }
     }
@@ -2134,10 +3746,9 @@ export class FileDriver implements JobsDriver {
 
   async publish(event: DriverEvent): Promise<void> {
     const path = this.#eventsPath(event);
-    await mkdir(join(path, ".."), { recursive: true });
     // One line, appended: writes below the pipe-buffer size are atomic on
     // POSIX, so concurrent publishers cannot interleave within a line.
-    await writeFile(path, `${JSON.stringify(event)}\n`, { flag: "a" });
+    await this.#append(path, `${JSON.stringify(event)}\n`);
     // Only once the line is down. A sweep started before the append judged
     // this log by its state a moment earlier — stale, or not there yet — and
     // could truncate it after the new line had landed, dropping an event
@@ -2219,12 +3830,19 @@ export class FileDriver implements JobsDriver {
     const queues = join(this.root, encodeSegment(ns), "queues");
     const runners = join(this.root, encodeSegment(ns), "runners");
 
-    for (const [dir, targets] of [
-      [queues, await this.#list(queues)],
-      [runners, await this.#list(runners)],
+    for (const [dir, targets, names] of [
+      // A queue holds two logs: its own events, and its workers'.
+      [
+        queues,
+        await this.#list(queues),
+        ["events.jsonl", "worker-events.jsonl"],
+      ],
+      [runners, await this.#list(runners), ["events.jsonl"]],
     ] as const) {
       for (const target of targets) {
-        logs.push(join(dir, target, "events.jsonl"));
+        for (const name of names) {
+          logs.push(join(dir, target, name));
+        }
       }
     }
 
@@ -2348,6 +3966,39 @@ export class FileDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Directory holding one runner's captured run output, one JSONL file per
+   * run. Inside the runner's directory, so `purge` takes it with everything
+   * else, and beside `state.json` rather than inside it — a line must not
+   * rewrite the run history.
+   */
+  #runLogDir(ns: string, key: string): string {
+    return join(this.#runnerDir(ns, key), "runlogs");
+  }
+
+  /**
+   * The run-log files in `dir`, oldest run first, each with the run it holds.
+   *
+   * The name leads with the first line's timestamp and ends with the encoded
+   * run id — the same shape a job marker uses — so `readdir` sorted gives run
+   * order, which is what `keepRuns` evicts by, and no second index is needed
+   * to find the oldest. An entry that is not one of ours is ignored.
+   */
+  async #runLogFiles(dir: string): Promise<{ name: string; runId: string }[]> {
+    const files: { name: string; runId: string }[] = [];
+
+    for (const name of await this.#list(dir)) {
+      const match = /^\d{13}-(.+)\.jsonl$/.exec(name);
+      const runId = match ? decodeName(match[1]!) : null;
+
+      if (runId !== null) {
+        files.push({ name, runId });
+      }
+    }
+
+    return files.sort((a, b) => (a.name < b.name ? -1 : 1));
+  }
+
   /** Directory holding one queue. */
   #queueDir(q: QueueRef): string {
     return join(
@@ -2468,18 +4119,31 @@ export class FileDriver implements JobsDriver {
     return join(this.#queueDir(q), "repeats", `${encodeName(name)}.json`);
   }
 
-  /** Path of the events log for one target. */
-  #eventsPath(event: {
-    ns: string;
-    kind: "queue" | "runner";
-    target: string;
-  }): string {
-    return event.kind === "queue"
-      ? join(
+  /**
+   * Path of the events log for one target.
+   *
+   * Three ways, one per kind, and both halves of that matter. A `worker`
+   * event's target is a queue name, so the runner branch this used to fall
+   * into would have created `runners/<queue>/` — and `listRunners`, which
+   * lists that directory, would have reported the queue as a runner. Nor can
+   * it share the queue's own log: the subscription filters by path alone, so
+   * a queue subscriber would then receive every worker event as well.
+   */
+  #eventsPath(event: { ns: string; kind: EventKind; target: string }): string {
+    switch (event.kind) {
+      case "queue":
+        return join(
           this.#queueDir({ ns: event.ns, queue: event.target }),
           "events.jsonl",
-        )
-      : join(this.#runnerDir(event.ns, event.target), "events.jsonl");
+        );
+      case "worker":
+        return join(
+          this.#queueDir({ ns: event.ns, queue: event.target }),
+          "worker-events.jsonl",
+        );
+      default:
+        return join(this.#runnerDir(event.ns, event.target), "events.jsonl");
+    }
   }
 
   /* --- index markers ----------------------------------------------------- */
@@ -2516,8 +4180,8 @@ export class FileDriver implements JobsDriver {
 
   /** Creates the marker for a newly added job. */
   async #addMarker(q: QueueRef, record: JobRecord): Promise<void> {
+    // `Bun.write` creates a missing directory itself.
     const dir = join(this.#queueDir(q), "index", record.state);
-    await mkdir(dir, { recursive: true });
     await Bun.write(join(dir, this.#markerFor(record)), "");
   }
 
@@ -2534,10 +4198,43 @@ export class FileDriver implements JobsDriver {
   ): Promise<boolean> {
     const dir = join(this.#queueDir(q), "index");
     const target = join(dir, updated.state, this.#markerFor(updated));
-    await mkdir(join(dir, updated.state), { recursive: true });
+
+    return await this.#take(join(dir, from, marker), target, {
+      madeDir: false,
+    });
+  }
+
+  /**
+   * Renames `from` to `to`, and says whether it did. The rename is the
+   * exclusion, so `false` means somebody else moved `from` first.
+   *
+   * The target's directory is made only when the rename fails, and then the
+   * rename is tried once more — the pattern `#hold` and `#place` use. A
+   * missing directory and a missing source both arrive as `ENOENT`, so a lost
+   * race costs one `mkdir` more than it did; `state.madeDir` bounds that to
+   * once per caller, which is what keeps a claim walking a contended listing
+   * from paying it per marker.
+   */
+  async #take(
+    from: string,
+    to: string,
+    /** Shared across one caller's renames: whether the `mkdir` has run. */
+    state: { madeDir: boolean },
+  ): Promise<boolean> {
+    try {
+      await rename(from, to);
+      return true;
+    } catch (error) {
+      if (state.madeDir || (error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return false;
+      }
+    }
+
+    state.madeDir = true;
+    await mkdir(join(to, ".."), { recursive: true }).catch(() => undefined);
 
     try {
-      await rename(join(dir, from, marker), target);
+      await rename(from, to);
       return true;
     } catch {
       return false;
@@ -2559,17 +4256,23 @@ export class FileDriver implements JobsDriver {
    * whole — and `#healHolds` files the marker by whichever it finds.
    *
    * `decide` is called twice, once to refuse without taking anything and once
-   * under the hold, so it must not have side effects.
+   * under the hold, so it must not have side effects beyond remembering its
+   * last judgment.
+   *
+   * `known` stands in for the first read when the caller has just read the
+   * record anyway (a rewrite walk); it is still read again under the hold.
    */
   async #mutateJob(
     q: QueueRef,
     id: string,
     decide: (record: JobRecord) => JobRecord | null,
+    known?: JobRecord,
   ): Promise<JobRecord | null> {
     const held = await this.#holdJob(
       q,
       id,
       (record) => decide(record) !== null,
+      known,
     );
     if (!held) {
       return null;
@@ -2577,6 +4280,11 @@ export class FileDriver implements JobsDriver {
 
     const { record: current, hold } = held;
     let updated = decide(current);
+
+    // Whatever `pruneExpired` concluded about this job may no longer hold.
+    this.#pruneSkips.delete(
+      join(this.#queueDir(q), "index", current.state, this.#markerFor(current)),
+    );
 
     if (!updated) {
       await this.#place(q, hold, current);
@@ -3056,6 +4764,277 @@ export class FileDriver implements JobsDriver {
       : { unwritten, error: failure };
   }
 
+  /* --- analytics storage -------------------------------------------------- */
+
+  /**
+   * Counts a queue's completions or failed attempts, into both the shipped
+   * per-minute throughput and the analytics buckets.
+   *
+   * The two are separate stores answering the same question at different
+   * widths: `getThroughput` is the shipped one and keeps its own retention,
+   * and `getQueueMetrics` has no other writer, so a queue's analytics series
+   * is made here or nowhere.
+   */
+  #countJob(q: QueueRef, now: number, counts: Partial<JobCounters>): void {
+    this.#throughput.add(q, now, counts.completed ?? 0, counts.failed ?? 0);
+    this.#jobMetrics.count(q.ns, this.#queueEntity(q.queue), now, counts);
+  }
+
+  /**
+   * Writes one batch of counter rows: a JSON line each, appended to
+   * `metrics/<kind>/<entity>/<bucket>.jsonl`.
+   *
+   * The throughput layout's shape, and for its reasons — an `O_APPEND` write
+   * of one small line is atomic, so processes sharing a bucket cannot
+   * interleave within a line, and the read sums the lines. An entry whose
+   * append fails is reported rather than thrown, so only it is written again.
+   */
+  async #writeCounters<C extends Record<keyof C, number>>(
+    kind: MetricKind,
+    batch: PendingMetric<C>[],
+  ): Promise<BufferWriteResult<PendingMetric<C>>> {
+    return await this.#appendBatch(
+      kind,
+      batch,
+      (entry) => entry.counts as Record<string, unknown>,
+    );
+  }
+
+  /** The same, for the rows that carry a histogram or a sample rather than counters. */
+  async #writeStats<S>(
+    kind: MetricKind,
+    batch: PendingStats<S>[],
+  ): Promise<BufferWriteResult<PendingStats<S>>> {
+    return await this.#appendBatch(
+      kind,
+      batch,
+      (entry) => entry.stats as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * Appends a batch's rows, then sweeps if the prune is due.
+   *
+   * The sweep is **not** per entity written, which is what the throughput
+   * layout does (`#writeThroughput`): that is a directory listing per queue
+   * per flush, and it never reaches a series nobody writes to any more, so a
+   * worker that stopped reporting would keep its buckets for good.
+   */
+  async #appendBatch<TEntry extends { at: number; entity: string; ns: string }>(
+    kind: MetricKind,
+    batch: TEntry[],
+    payload: (entry: TEntry) => Record<string, unknown>,
+  ): Promise<BufferWriteResult<TEntry>> {
+    const unwritten: TEntry[] = [];
+    let failure: unknown;
+    let latest = 0;
+
+    for (const entry of batch) {
+      const dir = this.#metricsDir(entry.ns, kind, entry.entity);
+
+      try {
+        await mkdir(dir, { recursive: true });
+        await writeFile(
+          join(dir, `${entry.at}.jsonl`),
+          `${JSON.stringify(payload(entry))}\n`,
+          { flag: "a" },
+        );
+      } catch (error) {
+        unwritten.push(entry);
+        failure ??= error;
+        continue;
+      }
+
+      this.#metricsNamespaces.add(entry.ns);
+      latest = Math.max(latest, entry.at);
+    }
+
+    await this.#pruneMetrics(latest);
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
+  }
+
+  /**
+   * Drops every metric bucket past the retention, once a minute per process.
+   *
+   * By range: every entity of every kind in every namespace this instance has
+   * written to, read back from the directory rather than from the batch — so a
+   * queue, worker or runner that stopped being written to loses its old
+   * buckets like any other. The clock is what keeps a whole-tree walk off the
+   * counting path.
+   *
+   * `latest` is the newest bucket just written, and the later of it and the
+   * wall clock drives the clock — so a caller that passes times in, as the
+   * contract suite does, can step the sweep forward instead of waiting.
+   */
+  async #pruneMetrics(latest: number): Promise<void> {
+    const now = Math.max(Date.now(), latest);
+
+    if (!this.#metricsPrune.due(now)) {
+      return;
+    }
+
+    const cutoff = metricsPruneCutoff(
+      this.#metrics,
+      this.#metricsInterval,
+      now,
+    );
+
+    for (const ns of this.#metricsNamespaces) {
+      await this.#pruneMetricsDir(
+        join(this.root, encodeSegment(ns), "metrics"),
+        cutoff,
+      );
+    }
+  }
+
+  /**
+   * One directory of the metrics tree swept, and everything below it.
+   *
+   * Whatever is not a bucket file is taken for a directory and descended into
+   * — a kind, a queue, a worker key — which is what lets a kind nest as deep
+   * as it needs to. An encoded entity name can hold no `.`, so nothing but a
+   * bucket file can match {@link METRIC_FILE}, and `#list` answers `[]` for
+   * anything that turns out not to be a directory.
+   */
+  async #pruneMetricsDir(dir: string, cutoff: number): Promise<void> {
+    for (const entry of await this.#list(dir)) {
+      const match = METRIC_FILE.exec(entry);
+
+      if (!match) {
+        await this.#pruneMetricsDir(join(dir, entry), cutoff);
+      } else if (Number(match[1]) < cutoff) {
+        await unlink(join(dir, entry)).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * One series' stored rows in range, this driver's own pending counts written
+   * first so a caller sees what it has just counted.
+   *
+   * Empty without a file read for a width this backend does not keep: the
+   * route asks for one `getMetricsSupport()` reported, and answering nothing
+   * is what says the width is not there.
+   */
+  async #readMetrics<T>(
+    ns: string,
+    kind: MetricKind,
+    entity: string,
+    query: MetricsQuery,
+  ): Promise<({ at: number } & Partial<T>)[]> {
+    if (!this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+    return await this.#readMetricRows<T>(ns, kind, entity, query);
+  }
+
+  /**
+   * {@link FileDriver.#readMetrics} without the flush, for a read that has
+   * flushed once already and now reads many series: a grouped read flushes
+   * once, not once per entity and kind.
+   */
+  async #readMetricRows<T>(
+    ns: string,
+    kind: MetricKind,
+    entity: string,
+    query: MetricsQuery,
+  ): Promise<({ at: number } & Partial<T>)[]> {
+    if (!this.#servesInterval(query.interval)) {
+      return [];
+    }
+
+    const dir = this.#metricsDir(ns, kind, entity);
+    const rows: ({ at: number } & Partial<T>)[] = [];
+
+    for (const file of await this.#list(dir)) {
+      const match = METRIC_FILE.exec(file);
+      const at = Number(match?.[1]);
+      if (!match || at < query.from || at > query.to) {
+        continue;
+      }
+
+      // Newline-terminated lines only: a partial last line is an append in
+      // flight, or one a crash cut short.
+      const lines = (await this.#readText(join(dir, file))).split("\n");
+      for (const line of lines.slice(0, -1)) {
+        const row = safeJsonParse<Partial<T> | null>(line, null);
+        if (row) {
+          rows.push({ ...row, at });
+        }
+      }
+    }
+
+    return rows;
+  }
+
+  /**
+   * Whether this backend keeps buckets of `interval` — minutes only, unless
+   * recording was turned down further. A read at any other width answers
+   * nothing, which is how a caller learns the width is not kept.
+   */
+  #servesInterval(interval: number): boolean {
+    return this.#metrics.intervals.includes(interval);
+  }
+
+  /** The namespace's own roll-up rows for a counter kind. */
+  async #rollUp<C>(
+    ns: string,
+    kind: MetricKind,
+    query: MetricsQuery,
+  ): Promise<({ at: number } & Partial<C>)[]> {
+    return await this.#readMetrics<C>(ns, kind, NAMESPACE_ENTITY, query);
+  }
+
+  /**
+   * Directory of one series' bucket files, one `<bucket>.jsonl` per bucket.
+   *
+   * A directory per entity rather than a file per entity, because the prune is
+   * a range: deleting whole files below a cutoff needs no read, where one file
+   * per series would mean rewriting it.
+   *
+   * `entity` is already encoded, and may be more than one segment deep — a
+   * worker's series is its queue and then its key. The sweep walks whatever
+   * depth it finds, so a kind may nest as far as it needs to.
+   */
+  #metricsDir(ns: string, kind: MetricKind, entity: string): string {
+    return join(
+      this.root,
+      encodeSegment(ns),
+      "metrics",
+      kind,
+      entity === NAMESPACE_ENTITY ? NAMESPACE_DIR : entity,
+    );
+  }
+
+  /**
+   * The stored path of one queue's series: the queue name, encoded.
+   *
+   * `encodeName` rather than `encodeSegment`, so that the roll-up's
+   * {@link NAMESPACE_DIR} — which starts with a `-`, a character `encodeName`
+   * never emits — cannot be some queue's directory as well.
+   */
+  #queueEntity(queue: string): string {
+    return encodeName(queue);
+  }
+
+  /**
+   * The stored path of one worker's series: its queue, then its stable
+   * `WorkerInfo.key`.
+   *
+   * Keyed by `key` and never by `WorkerInfo.id`: an id is one incarnation, so
+   * a rolling redeploy would shred the series into one per replica. Scoped by
+   * queue because a worker record is, so two queues' workers that happen to
+   * share a key stay two series.
+   */
+  #workerEntity(q: QueueRef, key: string): string {
+    return join(encodeName(q.queue), encodeName(key));
+  }
+
   /* --- primitives --------------------------------------------------------- */
 
   /**
@@ -3127,15 +5106,8 @@ export class FileDriver implements JobsDriver {
    * whole driver rests on: exactly one caller can win.
    */
   async #createExclusive(path: string, contents: string): Promise<boolean> {
-    await mkdir(join(path, ".."), { recursive: true });
-
     try {
-      const handle = await open(path, "wx");
-      try {
-        await handle.writeFile(contents);
-      } finally {
-        await handle.close();
-      }
+      await this.#writeExclusive(path, contents);
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -3145,9 +5117,33 @@ export class FileDriver implements JobsDriver {
     }
   }
 
-  /** Writes via a temp file and a rename, so a reader never sees a partial file. */
-  async #writeAtomic(path: string, contents: string): Promise<void> {
+  /**
+   * `writeFile` with `wx`, making the directory only if the first attempt finds
+   * it missing — not before every create, which was a `mkdir` and a `stat` on a
+   * directory that nearly always exists. One call rather than `open`, write
+   * and `close` on a handle: the same system calls, in one trip to the thread
+   * pool instead of three.
+   */
+  async #writeExclusive(path: string, contents: string): Promise<void> {
+    try {
+      await writeFile(path, contents, { flag: "wx" });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
     await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, contents, { flag: "wx" });
+  }
+
+  /**
+   * Writes via a temp file and a rename, so a reader never sees a partial file.
+   * No `mkdir` first: `Bun.write` creates a missing directory itself, and the
+   * rename stays inside it.
+   */
+  async #writeAtomic(path: string, contents: string): Promise<void> {
     const temp = `${path}.${process.pid}.${newId()}.tmp`;
 
     try {
@@ -3167,7 +5163,76 @@ export class FileDriver implements JobsDriver {
     }
   }
 
-  /** Modification time in milliseconds, or `0` when the file is absent. */
+  /**
+   * Remembers that the finished marker at `key` need not be read again by
+   * `pruneExpired` before its record could be due (see `#pruneSkips`).
+   */
+  #skipPrune(key: string, record: JobRecord, now: number): void {
+    const cap = now + PRUNE_SKIP_MS;
+    const until =
+      record.expiresAt !== null && !awaitsDelivery(record)
+        ? Math.min(record.expiresAt, cap)
+        : cap;
+
+    if (this.#pruneSkips.size >= PRUNE_SKIP_CACHE_SIZE) {
+      // Lapsed entries first; when every entry is live, remember no more.
+      for (const [entry, lapses] of this.#pruneSkips) {
+        if (lapses <= now) {
+          this.#pruneSkips.delete(entry);
+        }
+      }
+      if (this.#pruneSkips.size >= PRUNE_SKIP_CACHE_SIZE) {
+        return;
+      }
+    }
+
+    this.#pruneSkips.set(key, until);
+  }
+
+  /**
+   * Records `count` as the line count of the job log at `path`, with the file's
+   * identity as it stands now (see `#logCounts`): one `stat`, taken only after
+   * a log had to be read.
+   */
+  async #rememberLogCount(path: string, count: number): Promise<void> {
+    const info = await stat(path).catch(() => null);
+
+    if (!info) {
+      this.#logCounts.delete(path);
+      return;
+    }
+
+    this.#setLogCount(path, { ino: info.ino, size: info.size, count });
+  }
+
+  /** Stores a job log's count, dropping the oldest entry past the cap. */
+  #setLogCount(path: string, entry: LogCount): void {
+    this.#logCounts.delete(path);
+
+    if (this.#logCounts.size >= LOG_COUNT_CACHE_SIZE) {
+      this.#logCounts.delete(this.#logCounts.keys().next().value!);
+    }
+    this.#logCounts.set(path, entry);
+  }
+
+  /**
+   * Appends to a file, making its directory only when the append finds it
+   * missing rather than before every append.
+   */
+  async #append(path: string, contents: string): Promise<void> {
+    try {
+      await writeFile(path, contents, { flag: "a" });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, contents, { flag: "a" });
+  }
+
   /**
    * Whether anything is sitting in the queue's waiting index.
    *
@@ -3180,6 +5245,7 @@ export class FileDriver implements JobsDriver {
     return (await this.#list(waiting)).length > 0;
   }
 
+  /** Modification time in milliseconds, or `0` when the file is absent. */
   async #mtime(path: string): Promise<number> {
     try {
       return (await stat(path)).mtimeMs;
@@ -3197,12 +5263,32 @@ export class FileDriver implements JobsDriver {
     }
   }
 
-  /** Touches the file workers watch for new work. */
+  /**
+   * Touches the file workers watch for new work.
+   *
+   * Only its modification time is ever read (`waitForJob` compares it), so
+   * this sets the time rather than rewriting the file: one `utimes` where an
+   * atomic write was a create, a write, a close and a rename. The time given
+   * is fine-grained and strictly increasing within the process, so two wakes
+   * inside one kernel timestamp tick still read as two changes — a
+   * kernel-stamped mtime is only tick-granular on older kernels.
+   */
   async #touchWake(q: QueueRef): Promise<void> {
-    await this.#writeAtomic(
-      join(this.#queueDir(q), "wake"),
-      String(Date.now()),
+    const path = join(this.#queueDir(q), "wake");
+    const at = Math.max(
+      performance.timeOrigin + performance.now(),
+      this.#lastWake + 0.001,
     );
+    this.#lastWake = at;
+
+    try {
+      await utimes(path, at / 1000, at / 1000);
+    } catch {
+      // Not there yet (a first wake, or a purge since): creating it is a
+      // change from the `0` a missing file reads as. `Bun.write` makes the
+      // directory too.
+      await Bun.write(path, "");
+    }
   }
 
   /** Merges fields into a queue's metadata. */
@@ -3233,6 +5319,22 @@ export class FileDriver implements JobsDriver {
       history: state?.history ?? [],
       queued: state?.queued ?? [],
     };
+  }
+
+  /**
+   * Runs `critical` holding a runner's `lock.mutex`, the file lock every
+   * read-then-write of its `lock.json` takes — except `acquireLock`'s `O_EXCL`
+   * fast path, which needs none. Its own file, not `state.lock`: a renewal
+   * must not queue behind state writes.
+   */
+  async #withLockMutex<T>(dir: string, critical: () => Promise<T>): Promise<T> {
+    const release = await this.#lockFile(join(dir, "lock.mutex"));
+
+    try {
+      return await critical();
+    } finally {
+      await release();
+    }
   }
 
   /**
@@ -3314,6 +5416,16 @@ export class FileDriver implements JobsDriver {
   }
 }
 
+/** A job log's line count, and the file it was counted in (see `#logCounts`). */
+interface LogCount {
+  /** The log file's inode when counted; a rewrite gives it a new one. */
+  ino: number;
+  /** The log file's size in bytes when counted; an append changes it. */
+  size: number;
+  /** Newline-terminated lines the file held. */
+  count: number;
+}
+
 /** A job whose marker the caller has taken out of the index. */
 interface HeldJob {
   /** The job's record, as read once the marker was held. */
@@ -3342,13 +5454,42 @@ function pad(value: number, width: number): string {
   return String(Math.max(0, Math.floor(value))).padStart(width, "0");
 }
 
+/**
+ * Whether a `completed` or `dead` marker may name a job that finished inside
+ * the filter's range, judged by its name alone: its prefix is the padded
+ * `finishedOn`. A superset, never a guess — the prefix is `finishedOn` floored
+ * and clamped at `0`, so the lower bound is floored to match and a `0` prefix
+ * is always kept, and a name that does not parse is kept too. The record,
+ * read afterwards, has the last word.
+ */
+function mayFinishIn(filter: AttributionFilter, marker: string): boolean {
+  const prefix = Number(marker.slice(0, marker.indexOf("-")));
+
+  if (!Number.isFinite(prefix) || prefix === 0) {
+    return true;
+  }
+
+  return inFinishedRange(
+    {
+      finishedFrom:
+        filter.finishedFrom === undefined
+          ? undefined
+          : Math.floor(filter.finishedFrom),
+      finishedTo: filter.finishedTo,
+    },
+    prefix,
+  );
+}
+
 /** The marker name of an active job, which is ordered by its lock expiry. */
 function activeMarker(lockExpiresAt: number, id: string): string {
   return `${pad(lockExpiresAt, 13)}-${encodeName(id)}`;
 }
 
-/** Splits a hold's name into when it was taken and the marker it holds. */
-function parseHold(name: string): { stamp: number; marker: string } | null {
+/** Splits a hold's name into when it was taken, the state it was taken from and the marker it holds. */
+function parseHold(
+  name: string,
+): { stamp: number; state: string; marker: string } | null {
   // `<stamp>.<state>.<marker>`: none of the three contains a dot (an encoded
   // id never does), but reading only the first two keeps that from mattering.
   const first = name.indexOf(".");
@@ -3359,7 +5500,50 @@ function parseHold(name: string): { stamp: number; marker: string } | null {
     return null;
   }
 
-  return { stamp, marker: name.slice(second + 1) };
+  return {
+    stamp,
+    state: name.slice(first + 1, second),
+    marker: name.slice(second + 1),
+  };
+}
+
+/**
+ * Reads a run's JSONL log back, oldest first.
+ *
+ * Only newline-terminated records count, and one that will not parse is
+ * skipped: a crash mid-append leaves a partial last record, and treating it as
+ * a line would put a half-written object into a reader's page. `bytes` is
+ * recomputed rather than stored, so the file holds exactly the contract's
+ * fields and nothing a future version would have to keep writing.
+ */
+function readRunLogFile(text: string): StoredRunLogLine[] {
+  const lines: StoredRunLogLine[] = [];
+
+  for (const record of text.split("\n").slice(0, -1)) {
+    const line = safeJsonParse<RunLogLine | null>(record, null);
+
+    if (line && typeof line.seq === "number") {
+      lines.push({ ...line, bytes: runLogBytes(line.text) });
+    }
+  }
+
+  return lines;
+}
+
+/** Renders run-log lines as JSONL, each record newline-terminated. */
+function writeRunLogFile(lines: readonly StoredRunLogLine[]): string {
+  return lines
+    .map((line) => `${JSON.stringify(readRunLogLine(line))}\n`)
+    .join("");
+}
+
+/** Whether `path` is a directory: `false` when it is absent. */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** How many newline-terminated lines `text` holds. */

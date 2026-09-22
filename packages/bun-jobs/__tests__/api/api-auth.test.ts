@@ -6,7 +6,7 @@ import type {
   ResolvedJobsApiConfig,
 } from "../../lib/api/config";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
   authorizeHandler,
   canonicalOrigin,
@@ -99,6 +99,7 @@ describe("route-level authorization", () => {
     updateJob: { priority: 1 },
     failJob: { reason: "stopped by hand" },
     rescheduleRunner: { schedule: null },
+    configureWorker: { concurrency: 4 },
   };
 
   /** Operation ids whose authorize target carries the bulk ids. */
@@ -119,6 +120,7 @@ describe("route-level authorization", () => {
       .replace(":queue", "mail")
       .replace(":id", "7")
       .replace(":runner", "nightly")
+      .replace(":worker", "w1")
       .replace(":key", "k");
     if (route.method === "GET") {
       return [path, { method: "GET" }];
@@ -148,6 +150,15 @@ describe("route-level authorization", () => {
     }
     if (route.path.includes(":id") && route.operationId !== "retryItem") {
       target.jobId = "7";
+    }
+    if (route.path.includes(":worker")) {
+      target.worker = "w1";
+    }
+    if (
+      route.path.includes("/worker-configs/:key") ||
+      route.path.includes("/analytics/workers/:key")
+    ) {
+      target.workerKey = "k";
     }
     if (BULK.has(route.operationId)) {
       target.jobIds = ["7"];
@@ -272,9 +283,21 @@ describe("route-level authorization", () => {
 
 const allow: JobsApiAuthorize = () => true;
 
+/** Every context {@link jobsContext} made, closed after the file. */
+const contexts: BunJobs[] = [];
+
+// Closing stops the runners they own: `setup()`'s `nightly` is in-process,
+// and one a route triggered would otherwise keep holding the console patch
+// (and a timer) into every later test file.
+afterAll(async () => {
+  await Promise.all(contexts.splice(0).map((jobs) => jobs.close()));
+});
+
 /** A context over the memory driver, in its own namespace. */
 function jobsContext(namespace = "api-auth") {
-  return new BunJobs({ namespace, driver: new MemoryDriver() });
+  const jobs = new BunJobs({ namespace, driver: new MemoryDriver() });
+  contexts.push(jobs);
+  return jobs;
 }
 
 /** Resolves a configuration with sensible required fields filled in. */

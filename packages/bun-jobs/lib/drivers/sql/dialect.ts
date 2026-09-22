@@ -170,6 +170,19 @@ export interface SqlDialect {
    */
   readonly nameType: string;
   /**
+   * Column type for the attribution stamp's text: the claiming worker's id,
+   * key and host (`processed_by_id`, `processed_by_key`, `processed_by_host`).
+   *
+   * Exact, like {@link SqlDialect.idType}, because a key filter must not match
+   * `SVC` for `svc`; but unbounded, like {@link SqlDialect.nameType}, because
+   * none is indexed and none is short by rule — a host name may be 253
+   * characters — and on MySQL and MariaDB a value too wide for a bounded
+   * column is an error, which here would fail the claim itself. Its own member
+   * rather than `nameType`: the columns are new, so no install ever created
+   * them in an older collation, and they follow neither type's history.
+   */
+  readonly stampType: string;
+  /**
    * The collation, as written after `COLLATE`, that orders an identifier
    * column by code point where the column's own collation does not; `null`
    * where it already does.
@@ -225,6 +238,76 @@ export interface SqlDialect {
    * assigned to a `JSON` column, and SQLite stores text either way.
    */
   jsonParameter: (placeholder: string) => string;
+  /**
+   * An expression that is `column`, a JSON object, with each `[key,
+   * placeholder]` of `entries` set to the JSON value whose *text* is bound at
+   * that placeholder — a number, a boolean or a whole object, which replaces
+   * the key's old value entirely (no merge into an old object).
+   *
+   * Used by the pending-options rewrite to write the options a queue's stored
+   * defaults change, in one statement per batch, without re-encoding the rest
+   * of the document in JavaScript. Keys are the driver's own option names,
+   * inlined; values always travel as parameters. Placeholders appear once
+   * each, in `entries` order, so positional (`?`) binding holds. `column` may
+   * be an expression, but it can be repeated, so it must carry no positional
+   * placeholder of its own.
+   *
+   * Postgres merges with `||` on `jsonb`, which replaces top-level keys whole
+   * (and unwraps a document stored as a JSON string first, as
+   * {@link SqlDialect.jsonSetInteger} does); MySQL and MariaDB use one
+   * multi-path `JSON_SET` with each value parsed by `JSON_EXTRACT(?, '$')`
+   * (MariaDB, whose `JSON` is text, would otherwise store an object as a
+   * string); SQLite a multi-path `json_set` over `json(?)`.
+   */
+  jsonSetValues: (
+    column: string,
+    entries: readonly (readonly [key: string, placeholder: string])[],
+  ) => string;
+  /**
+   * An expression that is `column`, a JSON object, with the integer at `key`
+   * OR-ed with `bit` — when `key` holds a number. A document without that
+   * key, or with a non-number there, comes back unchanged.
+   *
+   * `updateJob` uses it to mark an operator's per-job priority explicit in
+   * `opts.explicit` without reading the row first. "Only where a number is
+   * already stored" is the rule, not a convenience: a job added before the
+   * mask existed has none, and a mask of only this bit would claim every
+   * other option of it was defaulted. `column` may be an expression; it is
+   * repeated, so it must carry no positional placeholder.
+   */
+  jsonOrBit: (column: string, key: string, bit: number) => string;
+  /**
+   * "After `cursor` in claim order" — `(priority, created_at, id)` — in the
+   * form this engine bounds an index range with: the predicate the windowed
+   * claim resumes with, shared with the pending-options rewrite's keyset walk.
+   */
+  claimOrderAfter: (
+    bind: ClaimStatementOptions["bind"],
+    cursor: ClaimCursor,
+  ) => string;
+  /**
+   * Text placed after a table name in `FROM` to pin a read to `index`, or
+   * `""` where the engine needs no hint.
+   *
+   * MySQL and MariaDB only. Their choice between `ref` on the claim index's
+   * `(ns, queue, state)` prefix — every row of the state, filtered — and a
+   * `range` bounded by {@link SqlDialect.claimOrderAfter} swings with the
+   * statistics, and `ref` makes each keyset page cost the whole walk so far.
+   * Measured on 40,000 waiting jobs, a page three quarters in: MariaDB picked
+   * `ref` for the covering read and took 21.0ms; `FORCE INDEX` made it a
+   * `range`, 1.3ms. MySQL on a 20,000-row table picked `ref` with index
+   * condition pushdown for the full read (9.6ms at the halfway page). With
+   * the hint every page was a `range` on both.
+   */
+  indexHint: (index: string) => string;
+  /**
+   * Whether an error is the engine refusing an {@link SqlDialect.indexHint}
+   * because the index it names does not exist (`ER_KEY_DOES_NOT_EXITS`,
+   * 1176). Unlike an optimizer-hint comment, `FORCE INDEX` fails the statement
+   * then, so a caller retries unhinted rather than failing its work over a
+   * missing index. Always `false` where there is no hint.
+   */
+  isMissingHintedIndex: (error: unknown) => boolean;
   /** Whether `UPDATE … RETURNING` is available. MariaDB's is not. */
   readonly supportsReturning: boolean;
   /** Whether `FOR UPDATE SKIP LOCKED` is available. */
@@ -307,6 +390,35 @@ export interface SqlDialect {
     update: string[],
   ) => string;
   /**
+   * The alias an upsert may give the row already stored, or `null` where the
+   * engine has none.
+   *
+   * Postgres needs one — unqualified beside `EXCLUDED` its columns are
+   * ambiguous — and SQLite accepts the same spelling. MySQL and MariaDB have
+   * no alias on `INSERT` at all and read the stored row's columns bare, which
+   * is why an analytics merge asks for this rather than assuming either.
+   */
+  readonly upsertAlias: string | null;
+  /** The clause that turns an insert into a merge on the given key columns. */
+  upsertOnConflict: (conflict: readonly string[]) => string;
+  /**
+   * How a merge refers to the value being inserted for `column`.
+   *
+   * `EXCLUDED.x`, `excluded.x` or `VALUES(x)`. On MySQL and MariaDB the
+   * assignments are also evaluated **left to right**, so a merge whose
+   * expression reads another column must be written before that column is
+   * assigned — see `BUSYNESS_COLUMNS` and `DURATION_STAT_COLUMNS`, whose
+   * order exists for exactly that.
+   */
+  upsertIncoming: (column: string) => string;
+  /**
+   * The larger of two expressions. `GREATEST` everywhere except SQLite, where
+   * the scalar of that meaning is `MAX`.
+   */
+  greatest: (first: string, second: string) => string;
+  /** The smaller of two expressions; {@link SqlDialect.greatest}'s twin. */
+  least: (first: string, second: string) => string;
+  /**
    * Wraps a subquery selecting ids so it can be used in `IN (…)`. MySQL
    * cannot read the table it is updating without a derived table in between.
    */
@@ -339,11 +451,12 @@ export interface SqlDialect {
    */
   claimWindowEnd: (options: ClaimStatementOptions) => string;
   /**
-   * How many rows a write affected.
+   * How many rows a write affected, read off its result.
    *
-   * Not every engine reports it the same way: Postgres and SQLite put it on
-   * the result, while MySQL and MariaDB report nothing and have to be asked
-   * with `ROW_COUNT()` on the connection the write ran on.
+   * Postgres and SQLite put it in `count`; MySQL and MariaDB in
+   * `affectedRows`, counting rows *changed* rather than matched — the same
+   * answer `ROW_COUNT()` gives, which is what this used to ask for, in a
+   * transaction of its own around every write.
    */
   affectedRows: (result: unknown, connection: SQL) => Promise<number>;
   /**
@@ -376,10 +489,12 @@ export interface SqlDialect {
    */
   notifyingInsert: (statement: string, channel: string) => string;
   /**
-   * Whether a write needs its own connection so {@link affectedRows} can ask
-   * the server what it just did.
+   * Whether a write that selects its rows by a range, rather than by primary
+   * key, runs in a {@link transaction} of its own for the isolation level it
+   * sets. MySQL and MariaDB: see `transaction` there. A write that names its
+   * row by primary key takes a record lock at any level, and runs bare.
    */
-  readonly countsNeedSameConnection: boolean;
+  readonly rangedWritesNeedTransaction: boolean;
   /** Runs `fn` inside a transaction. */
   transaction: <T>(sql: SQL, fn: (tx: SQL) => Promise<T>) => Promise<T>;
   /**
@@ -468,6 +583,18 @@ export interface ClaimStatementOptions {
   token: string;
   /** The worker doing the claiming. */
   workerId: string;
+  /**
+   * The claiming worker's key, host and pid, stamped with `workerId` as the
+   * attribution stamp (`processed_by_*`). `null` stamps the id alone, clearing
+   * whatever key, host and pid an earlier claim stamped, so a stamp is always
+   * one claim's whole. Absent names none of the stamp's columns — for a table
+   * not yet synced, which does not have them — and leaves the statement
+   * byte-identical to one from before they existed.
+   *
+   * Present, it is bound whether `null` or not, so the claim stays one
+   * statement text either way.
+   */
+  worker?: { key: string; host: string; pid: number } | null;
   /** How long the claim's lock lives. */
   lockMs: number;
   /**
@@ -543,6 +670,14 @@ function claimAssignments(options: ClaimStatementOptions, prefix = ""): string {
     `${prefix}lock_token = ${bind(options.token)}`,
     `${prefix}lock_expires_at = ${bind(options.now + options.lockMs)}`,
     `${prefix}worker_id = ${bind(options.workerId)}`,
+    ...(options.worker === undefined
+      ? []
+      : [
+          `${prefix}processed_by_id = ${bind(options.workerId)}`,
+          `${prefix}processed_by_key = ${bind(options.worker?.key ?? null)}`,
+          `${prefix}processed_by_host = ${bind(options.worker?.host ?? null)}`,
+          `${prefix}processed_by_pid = ${bind(options.worker?.pid ?? null)}`,
+        ]),
   ].join(", ");
 }
 
@@ -683,6 +818,31 @@ function claimWindowEndStatement(
        WHERE ${claimWindowFilter(options, shape)}
        ORDER BY priority ASC, created_at ASC, id ASC
        LIMIT 1 OFFSET ${CLAIM_WINDOW - 1}`;
+}
+
+/**
+ * `bit` as the literal a JSON bit-OR inlines: a whole number of at least 1, or
+ * a `ConfigError`, since it is written into the statement text rather than
+ * bound.
+ */
+function bitLiteral(bit: number): string {
+  if (!Number.isSafeInteger(bit) || bit < 1) {
+    throw new ConfigError(`A JSON bit must be a positive integer, not ${bit}`, {
+      bit,
+    });
+  }
+
+  return String(bit);
+}
+
+/**
+ * Postgres: `column` as a `jsonb` object — `{}` for `NULL`, and a document
+ * stored as a JSON *string* (a single-row insert binds untyped text, see
+ * {@link SqlDialect.jsonSetInteger}) unwrapped to the object it holds.
+ */
+function postgresObject(column: string): string {
+  const document = `COALESCE(${column}::jsonb, '{}'::jsonb)`;
+  return `(CASE WHEN jsonb_typeof(${document}) = 'string' THEN (${document} #>> '{}')::jsonb ELSE ${document} END)`;
 }
 
 /** Postgres locks named rows and ranges on a two-column row comparison. */
@@ -1068,6 +1228,7 @@ const postgres: SqlDialect = {
   normalizeType: normalizeSqlType,
   idType: "TEXT",
   nameType: "TEXT",
+  stampType: "TEXT",
   codePointCollation: '"C"',
   timeType: "BIGINT",
   serialType: "BIGSERIAL PRIMARY KEY",
@@ -1080,12 +1241,27 @@ const postgres: SqlDialect = {
   // stores as a JSON *string* holding the object — `jsonOut` parses it twice,
   // so reads never notice. The setter cannot reach into a string, so one is
   // unwrapped first; what is written back is the object itself.
-  jsonSetInteger: (column, key, placeholder) => {
-    const document = `COALESCE(${column}::jsonb, '{}'::jsonb)`;
-    const object = `(CASE WHEN jsonb_typeof(${document}) = 'string' THEN (${document} #>> '{}')::jsonb ELSE ${document} END)`;
-
-    return `jsonb_set(${object}, '{${key}}', to_jsonb(${placeholder}::integer))`;
-  },
+  jsonSetInteger: (column, key, placeholder) =>
+    `jsonb_set(${postgresObject(column)}, '{${key}}', to_jsonb(${placeholder}::integer))`,
+  // `||` replaces a top-level key whole, which is what writing an option means:
+  // a new `backoff` object does not keep an old one's `factor`. `column` is
+  // unwrapped once; every value is bound as text and read as `jsonb`.
+  jsonSetValues: (column, entries) =>
+    entries.length === 0
+      ? column
+      : `(${postgresObject(column)} || jsonb_build_object(${entries
+          .map(([key, placeholder]) => `'${key}', ${placeholder}::text::jsonb`)
+          .join(", ")}))`,
+  // Named once through a scalar subquery, so the unwrapping is not repeated
+  // for every mention of the object.
+  jsonOrBit: (column, key, bit) =>
+    `(SELECT CASE WHEN jsonb_typeof(o.v -> '${key}') = 'number'
+                  THEN o.v || jsonb_build_object('${key}', (o.v ->> '${key}')::bigint | ${bitLiteral(bit)})
+                  ELSE o.v END
+        FROM (SELECT ${postgresObject(column)} AS v) AS o)`,
+  claimOrderAfter: rowValueAfter,
+  indexHint: () => "",
+  isMissingHintedIndex: () => false,
   // `->>` works on `json` and on a `jsonb` column left by an older version.
   jsonInteger: (column, key) => `(${column}->>'${key}')::bigint`,
   // `::text` first, so the client's untyped string is read as the document.
@@ -1132,6 +1308,12 @@ const postgres: SqlDialect = {
       .join(", ")}) ON CONFLICT (${conflict.join(", ")}) DO UPDATE SET ${update
       .map((column) => `${column} = EXCLUDED.${column}`)
       .join(", ")}`,
+  upsertAlias: "stored",
+  upsertOnConflict: (conflict) =>
+    `ON CONFLICT (${conflict.join(", ")}) DO UPDATE SET`,
+  upsertIncoming: (column) => `EXCLUDED.${column}`,
+  greatest: (first, second) => `GREATEST(${first}, ${second})`,
+  least: (first, second) => `LEAST(${first}, ${second})`,
   transaction: async (sql, fn) => (await sql.begin(fn as never)) as never,
   /**
    * A CTE, not `IN (SELECT ... LIMIT 1 FOR UPDATE SKIP LOCKED)`.
@@ -1172,7 +1354,7 @@ const postgres: SqlDialect = {
   notifyingInsert: (statement, channel) =>
     `WITH written AS (${statement} RETURNING id)
      SELECT id, pg_notify('${channel}', '') FROM written`,
-  countsNeedSameConnection: false,
+  rangedWritesNeedTransaction: false,
 };
 
 /** MySQL: `?` placeholders, `INSERT IGNORE`, and a derived table for updates. */
@@ -1183,8 +1365,14 @@ const mysql: SqlDialect = {
   jsonType: "JSON",
   // MySQL and MariaDB have no partial indexes.
   partialIndex: () => "",
-  // No online index build, and no `IF NOT EXISTS` on `ADD COLUMN` either, so
-  // the sync checks before it writes rather than relying on the statement.
+  // No keyword needed: InnoDB builds a secondary index online by default, on
+  // MySQL and MariaDB alike. Measured on MySQL 8.4 and MariaDB, building one
+  // on a 2M-row table let concurrent inserts through in about 3 ms each. It
+  // still takes a brief metadata lock at the start and at the end, and that
+  // lock waits for any transaction still open on the table (and, while it
+  // waits, holds up the statements queued behind it). MySQL has no
+  // `IF NOT EXISTS` on `ADD COLUMN` (MariaDB has, but shares this dialect),
+  // so the sync checks before it writes rather than relying on the statement.
   concurrentIndex: "",
   describeColumns: () =>
     `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLLATION_NAME AS collation
@@ -1215,6 +1403,7 @@ const mysql: SqlDialect = {
   // MySQL 8's; MariaDB has its own, below.
   idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
   nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
+  stampType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
   codePointCollation: null,
   timeType: "BIGINT",
   serialType: "BIGINT AUTO_INCREMENT PRIMARY KEY",
@@ -1234,6 +1423,25 @@ const mysql: SqlDialect = {
     value === null || value === undefined ? fallback : (value as T),
   jsonSetInteger: (column, key, placeholder) =>
     `JSON_SET(COALESCE(${column}, JSON_OBJECT()), '$.${key}', CAST(${placeholder} AS SIGNED))`,
+  jsonSetValues: (column, entries) =>
+    entries.length === 0
+      ? column
+      : `JSON_SET(COALESCE(${column}, JSON_OBJECT()), ${entries
+          .map(
+            ([key, placeholder]) =>
+              `'$.${key}', JSON_EXTRACT(${placeholder}, '$')`,
+          )
+          .join(", ")})`,
+  // `JSON_TYPE` answers `INTEGER` or `DOUBLE` for a number on both engines,
+  // SQL `NULL` for a missing key and `NULL` (the text) for a JSON null.
+  jsonOrBit: (column, key, bit) =>
+    `(CASE WHEN JSON_TYPE(JSON_EXTRACT(${column}, '$.${key}')) IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
+           THEN JSON_SET(${column}, '$.${key}', CAST(CAST(JSON_EXTRACT(${column}, '$.${key}') AS SIGNED) | ${bitLiteral(bit)} AS SIGNED))
+           ELSE ${column} END)`,
+  claimOrderAfter: expandedAfter,
+  indexHint: (index) => ` FORCE INDEX (${index})`,
+  isMissingHintedIndex: (error) =>
+    hasErrorCode(error, [1176, "1176", "ER_KEY_DOES_NOT_EXITS"]),
   // MySQL's `JSON_EXTRACT` yields a JSON number and MariaDB's (whose `JSON` is
   // `LONGTEXT`) yields text; `CAST … AS SIGNED` reads both.
   jsonInteger: (column, key) =>
@@ -1263,6 +1471,13 @@ const mysql: SqlDialect = {
       .join(", ")}) ON DUPLICATE KEY UPDATE ${update
       .map((column) => `${column} = VALUES(${column})`)
       .join(", ")}`,
+  // No alias: `INSERT INTO t AS x` does not parse here, and the stored row's
+  // columns are read bare.
+  upsertAlias: null,
+  upsertOnConflict: () => "ON DUPLICATE KEY UPDATE",
+  upsertIncoming: (column) => `VALUES(${column})`,
+  greatest: (first, second) => `GREATEST(${first}, ${second})`,
+  least: (first, second) => `LEAST(${first}, ${second})`,
   // "You can't specify target table for update in FROM clause" without this.
   limitedIdSubquery: (select) => `SELECT id FROM (${select}) AS picked`,
   /**
@@ -1283,7 +1498,7 @@ const mysql: SqlDialect = {
    * It is set per transaction, not per session, because a session setting is
    * lost silently whenever the pool replaces a connection. Nothing here relies
    * on a snapshot: every write is conditional on the state and lock token it
-   * expects, and `ROW_COUNT()` reports whether it landed.
+   * expects, and its affected-row count reports whether it landed.
    *
    * Bun's `begin(options)` sends `START TRANSACTION <options>`, which both
    * engines reject with an isolation level, so the connection is reserved and
@@ -1326,26 +1541,30 @@ const mysql: SqlDialect = {
          AND ${table}.queue = ${bind(options.queue)}
          AND ${table}.state = 'waiting'`;
   },
-  /**
-   * MySQL and MariaDB report nothing about a write through this client, so
-   * the count has to be asked for, and `ROW_COUNT()` answers only about the
-   * connection it runs on: that is why these writes take a transaction.
-   */
   claimCandidate: (options) => claimCandidateStatement(options, MYSQL_CLAIM),
   claimById: claimByIdStatement,
   claimWindowEnd: (options) => claimWindowEndStatement(options, MYSQL_CLAIM),
-  affectedRows: async (_result, connection) => {
-    const rows = (await connection.unsafe("SELECT ROW_COUNT() AS n")) as {
-      n: number | string;
-    }[];
-    return Math.max(0, Number(rows[0]?.n ?? 0));
+  affectedRows: async (result) => {
+    // Bun's client reports it on every result (measured on 1.4.3: INSERT 2,
+    // matched-but-unchanged UPDATE 0, INSERT IGNORE of a duplicate 0, an
+    // upsert that updates 2 — `ROW_COUNT()` exactly). Absent, the count is
+    // unknown, and a silent 0 would make every conditional write report
+    // failure, so it is refused instead.
+    const affected = (result as { affectedRows?: unknown } | null)
+      ?.affectedRows;
+    if (typeof affected !== "number" && typeof affected !== "bigint") {
+      throw new TypeError(
+        "the MySQL client reported no affectedRows for a write; Bun >= 1.4.2 is required",
+      );
+    }
+    return Math.max(0, Number(affected));
   },
   claimNeedsTransaction: true,
   analyze: (table) => `ANALYZE TABLE ${table}`,
   estimatedRows: () => null,
   supportsListen: false,
   notifyingInsert: (statement) => statement,
-  countsNeedSameConnection: true,
+  rangedWritesNeedTransaction: true,
 };
 
 /**
@@ -1365,6 +1584,7 @@ const mariadb: SqlDialect = {
   // compares by code point, which for UTF-8 is byte order.
   idType: "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
   nameType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
+  stampType: "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
   // MariaDB's `JSON` is an alias for `LONGTEXT` with a validity check, and
   // `information_schema` reports `longtext`. Without this, a schema the driver
   // has just created reports every JSON column as drift, forever.
@@ -1409,12 +1629,28 @@ const sqlite: SqlDialect = {
   normalizeType: normalizeSqlType,
   idType: "TEXT",
   nameType: "TEXT",
+  stampType: "TEXT",
   codePointCollation: null,
   timeType: "INTEGER",
   serialType: "INTEGER PRIMARY KEY AUTOINCREMENT",
   longTextType: "TEXT",
   jsonSetInteger: (column, key, placeholder) =>
     `json_set(COALESCE(${column}, '{}'), '$.${key}', CAST(${placeholder} AS INTEGER))`,
+  // `json(?)` marks the value as JSON, so an object is stored as one rather
+  // than as a string holding it.
+  jsonSetValues: (column, entries) =>
+    entries.length === 0
+      ? column
+      : `json_set(COALESCE(${column}, '{}'), ${entries
+          .map(([key, placeholder]) => `'$.${key}', json(${placeholder})`)
+          .join(", ")})`,
+  jsonOrBit: (column, key, bit) =>
+    `(CASE WHEN json_type(${column}, '$.${key}') IN ('integer', 'real')
+           THEN json_set(${column}, '$.${key}', CAST(json_extract(${column}, '$.${key}') AS INTEGER) | ${bitLiteral(bit)})
+           ELSE ${column} END)`,
+  claimOrderAfter: rowValueAfter,
+  indexHint: () => "",
+  isMissingHintedIndex: () => false,
   jsonInteger: (column, key) =>
     `CAST(json_extract(${column}, '$.${key}') AS INTEGER)`,
   jsonParameter: (placeholder) => placeholder,
@@ -1443,6 +1679,14 @@ const sqlite: SqlDialect = {
       .join(", ")}) ON CONFLICT (${conflict.join(", ")}) DO UPDATE SET ${update
       .map((column) => `${column} = excluded.${column}`)
       .join(", ")}`,
+  upsertAlias: "stored",
+  upsertOnConflict: (conflict) =>
+    `ON CONFLICT (${conflict.join(", ")}) DO UPDATE SET`,
+  upsertIncoming: (column) => `excluded.${column}`,
+  // SQLite has no `GREATEST`: its two-argument `MAX`/`MIN` are the scalars,
+  // and the aggregates of the same name are the one-argument forms.
+  greatest: (first, second) => `MAX(${first}, ${second})`,
+  least: (first, second) => `MIN(${first}, ${second})`,
   /**
    * A scalar subquery under the database's write lock. There is no
    * `SKIP LOCKED` because there is nothing to skip: `BEGIN IMMEDIATE` makes
@@ -1469,7 +1713,7 @@ const sqlite: SqlDialect = {
   estimatedRows: () => null,
   supportsListen: false,
   notifyingInsert: (statement) => statement,
-  countsNeedSameConnection: false,
+  rangedWritesNeedTransaction: false,
   transaction: async (sql, fn) =>
     // The mutex serialises writers inside this process; the retry handles the
     // ones in other processes, which contend for the file's single write lock.

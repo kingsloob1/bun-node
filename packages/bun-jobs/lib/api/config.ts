@@ -88,6 +88,20 @@ export interface JobsApiAuthorizeContext {
   /** The runner the action targets, when it targets one. */
   runner?: string;
   /**
+   * The worker **incarnation** a lifecycle route targets, as the path names it
+   * (`POST /queues/{queue}/workers/{worker}/pause`). Always accompanied by
+   * `queue`: worker routes are queue-scoped so the queue is known before
+   * `authorize` runs.
+   */
+  worker?: string;
+  /**
+   * The **stable worker key** a configuration route targets
+   * (`PUT /queues/{queue}/worker-configs/{key}`). One key reaches every
+   * replica carrying it, so this is the blast radius of a `workers.configure`
+   * call. Always accompanied by `queue`.
+   */
+  workerKey?: string;
+  /**
    * The WebSocket channel, in canonical form, e.g. `"queue/mail"`: set when a
    * `subscribe` (or a `/meta/permissions?channel=` preview) is authorized, and
    * on the per-target calls. A broad channel (`all`, `queues`, `runners`)
@@ -168,7 +182,11 @@ export interface JobsApiSerializers {
   exposeStacks?: boolean;
   /** Include a runner's absolute handler `file` path. Defaults to `false`. */
   exposeRunnerFiles?: boolean;
-  /** Include host/pid on workers, run records and `runningOn`. Defaults to `true` (operators need it). */
+  /**
+   * Include host/pid on workers, run records, `runningOn` and a job's
+   * `processedBy`; off, the worker listing's `host` filter is refused too.
+   * Defaults to `true` (operators need it).
+   */
   exposeHosts?: boolean;
 }
 
@@ -200,7 +218,18 @@ export interface JobsApiLimits {
   queueCacheMs?: number;
   /** Largest request body accepted for `jobs.add`/`jobs.update`, in bytes. Defaults to `1048576`. */
   maxJobDataBytes?: number;
+  /**
+   * Most jobs one `POST /queues/:queue/job-defaults/apply` call examines (its
+   * largest `limit`). Defaults to `1000`; at most `10000`
+   * ({@link MAX_APPLY_DEFAULTS_LIMIT}), because one call is one request and the
+   * slowest backend (the file driver) rewrites a job in about a millisecond or
+   * more. A walk longer than this is several calls, each resuming at `next`.
+   */
+  maxApplyDefaults?: number;
 }
+
+/** The highest `limits.maxApplyDefaults` a configuration may set. */
+export const MAX_APPLY_DEFAULTS_LIMIT = 10_000;
 
 /** Every limit, with its default applied. */
 export type ResolvedJobsApiLimits = Readonly<Required<JobsApiLimits>>;
@@ -217,6 +246,7 @@ export const DEFAULT_JOBS_API_LIMITS: ResolvedJobsApiLimits = Object.freeze({
   maxQueues: 500,
   queueCacheMs: 2000,
   maxJobDataBytes: 1_048_576,
+  maxApplyDefaults: 1000,
 });
 
 /**
@@ -822,12 +852,18 @@ function integerOption(
   fallback: number,
   what: string,
   min: number,
+  max?: number,
 ): number {
   if (value === undefined) {
     return fallback;
   }
   if (!Number.isSafeInteger(value) || value < min) {
     throw new ConfigError(`${what} must be an integer of at least ${min}`, {
+      value,
+    });
+  }
+  if (max !== undefined && value > max) {
+    throw new ConfigError(`${what} must be an integer of at most ${max}`, {
       value,
     });
   }
@@ -911,6 +947,13 @@ function resolveLimits(
       d.maxJobDataBytes,
       "limits.maxJobDataBytes",
       1,
+    ),
+    maxApplyDefaults: integerOption(
+      l.maxApplyDefaults,
+      d.maxApplyDefaults,
+      "limits.maxApplyDefaults",
+      1,
+      MAX_APPLY_DEFAULTS_LIMIT,
     ),
   };
   if (resolved.defaultPageSize > resolved.maxPageSize) {

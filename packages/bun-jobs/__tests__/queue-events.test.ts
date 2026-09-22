@@ -211,6 +211,12 @@ describe("queue events: what a producer can see of a worker's run", () => {
       } finally {
         await worker.close({ force: true });
         await queue.close();
+        // Exactly the namespace this test made, never a prefix sweep: the
+        // server is shared. Through both drivers, since each forgets only
+        // the analytics it buffered itself, and a buffer left behind would
+        // be written back when that driver closes.
+        await workerDriver.purge(namespace);
+        await producerDriver.purge(namespace);
       }
     },
     45_000,

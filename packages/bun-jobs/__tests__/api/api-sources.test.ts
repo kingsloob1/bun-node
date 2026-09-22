@@ -471,7 +471,10 @@ describe("serializers", () => {
     );
     expect(read.data).toEqual({ email: "a@example.com" });
     expect(read).toHaveProperty("returnValue");
-    expect(read.opts).toEqual(record.opts);
+    // The stored options pass through as they are, the mask aside: a number
+    // only the drivers read, which never leaves the process as one.
+    const { explicit: _mask, ...stored } = record.opts;
+    expect(read.opts).toEqual(stored);
     expect(read).not.toHaveProperty("stacktrace");
 
     const withStacks = toErrorDto(failure, { exposeStacks: true });

@@ -7,6 +7,30 @@ export {
   BunRunnerManager,
   type BunRunnerManagerOptions,
 } from "./BunRunnerManager";
+export {
+  type ClearHistoryOptions,
+  type ClearHistoryResult,
+  clearRunnerHistory,
+  DEFAULT_STALE_RUN_AFTER,
+  type HistoryClearInput,
+  type HistoryClearPlan,
+  planHistoryClear,
+} from "./clearHistory";
+export {
+  describeRunnerConfig,
+  isExecutionMode,
+  type ResolvedRunnerConfig,
+  resolveRunnerConfig,
+  type ResolveRunnerConfigInput,
+  RUNNER_CONFIG_STATE,
+  runnerConfigFields,
+  type RunnerConfigFieldsOptions,
+  runnerConfigResetFields,
+  type StoredRunnerConfig,
+  type StoredRunnerOverride,
+  UNLIMITED_CONCURRENCY,
+  writeRunnerConfig,
+} from "./config";
 export type {
   Executor,
   ExecutorHandle,
@@ -33,7 +57,20 @@ export {
   PROTOCOL_VERSION,
   type SerializableContext,
 } from "./protocol";
+export {
+  createRedactor,
+  DEFAULT_REDACT_KEYS,
+  DEFAULT_REDACT_REPLACEMENT,
+  type RunLogRedactor,
+} from "./redact";
 export { RemoteRunner, type RemoteRunnerOptions } from "./RemoteRunner";
+export {
+  cutToBytes,
+  renderRunLogLine,
+  RunLogCapture,
+  type RunLogCaptureInit,
+  type RunLogTotals,
+} from "./runLogCapture";
 export {
   type BunRunnerEvents,
   type BunRunnerOptions,
@@ -41,11 +78,20 @@ export {
   type InProcessOptions,
   type RemoteRunnerInfo,
   type RemoteRunRecord,
+  type ResolvedRunLogCaptureOptions,
   type ResolvedRunnerOptions,
   type RunContext,
   type RunHandle,
+  type RunLogCaptureOptions,
+  type RunLogOptions,
+  type RunLogRedactOptions,
+  type RunnerConfigInfo,
+  type RunnerConfigKey,
+  type RunnerConfigPatch,
+  type RunnerConfigValues,
   type RunnerHandler,
   type RunnerInfo,
+  type RunnerRemoteConfigOptions,
   type RunnerStats,
   type RunnerStatus,
   type RunProgress,

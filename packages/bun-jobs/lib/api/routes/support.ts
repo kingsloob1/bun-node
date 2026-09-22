@@ -45,6 +45,58 @@ export const RepeatableParams = s.query(
 export const RunnerParams = s.query(s.object({ runner: RunnerIdSchema }));
 
 /**
+ * A worker's incarnation id or stable key as a path parameter. Both are key
+ * segments, like a queue name, and the route checks them as such before
+ * `authorize` runs, so a bad one is 400 `INVALID_NAME` rather than a
+ * validation error.
+ */
+export const WorkerNameSchema = s.documented(
+  s.string({
+    minLength: 1,
+    maxLength: MAX_NAME_LENGTH,
+    description:
+      'A worker id or stable key: letters, digits, "_", "." and "-", and not "." or "..". Anything else is 400 INVALID_NAME.',
+  }),
+  { pattern: NAME_PARAM_PATTERN },
+);
+
+/** `:queue/:worker` — a queue, and one incarnation of a worker on it. */
+export const WorkerParams = s.query(
+  s.object({ queue: QueueNameSchema, worker: WorkerNameSchema }),
+);
+
+/** `:queue/:key` — a queue, and one stable worker key on it. */
+export const WorkerConfigParams = s.query(
+  s.object({ queue: QueueNameSchema, key: WorkerNameSchema }),
+);
+
+/**
+ * The authorize target for a worker's lifecycle route: the queue, checked as
+ * {@link queueTarget} checks it, and the incarnation the path names.
+ */
+export function workerTarget(
+  queue: string,
+  worker: string,
+): { queue: string; worker: string } {
+  return { ...queueTarget(queue), worker: parseSegment(worker, "worker") };
+}
+
+/**
+ * The authorize target for a worker configuration route: the queue, and the
+ * **stable key** — which reaches every replica carrying it, and is therefore
+ * the blast radius a host is deciding about.
+ */
+export function workerKeyTarget(
+  queue: string,
+  key: string,
+): { queue: string; workerKey: string } {
+  return {
+    ...queueTarget(queue),
+    workerKey: parseSegment(key, "worker key"),
+  };
+}
+
+/**
  * The authorize target for a queue route. The name is checked as a key segment
  * here — before `authorize` — so `authorize` only ever sees a valid name, and
  * a bad one is 400 `INVALID_NAME`.
@@ -122,4 +174,4 @@ export function toEpoch(value: number | string): number {
 
 /** How soon a change reaches a runner registered in another process. */
 export const REMOTE_LATENCY_NOTE =
-  "For a runner registered in another process the change is stored at once and adopted at the owner's next sync — every 30s by default — or within about 25–50ms (at once on Redis and memory) when the owner was created with `remoteControl: true`. A trigger for such a runner is queued for an owner to drain.";
+  'For a runner registered in another process the change is stored at once and adopted at the owner\'s next sync — every 30s by default — or as soon as it is published when the owner listens for `control` events, which `remoteControl: "auto"` (the default) does on Redis and memory and `remoteControl: true` does everywhere, in about 25–50ms on a polling backend. A trigger for such a runner is queued for an owner to drain.';

@@ -14,9 +14,11 @@ import type {
 import type { MetaDto } from "../serialize";
 import type { AnyRouteDef, RouteMode } from "./define";
 import { supportsWorkers } from "../../drivers/index";
+import { supportsWorkerControl } from "../../queue/workerControl";
 import { decide, denialError } from "../auth";
 import { JOBS_API_ACTIONS } from "../config";
 import { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
+import { builtInRoutes } from "../createJobsApi";
 import { RETRY_ALL_MAX_IDS } from "../schemas/jobs";
 import {
   MetaSchema,
@@ -25,15 +27,37 @@ import {
 } from "../schemas/meta";
 import { defaultCleanLimit } from "../schemas/queues";
 import { isWebSocketEnabled, parseChannel } from "../ws/channels";
-import { defineRoute, joinPath } from "./define";
+import { analyticsMetaOf } from "./analytics";
+import { defineRoute, isRouteEnabled, joinPath } from "./define";
 
 /** The API protocol version, reported by `/meta` and the socket's `hello`. Defined in the contract. */
 export { JOBS_API_PROTOCOL_VERSION } from "../contract/constants";
 
 /**
+ * The driver methods every analytics route needs: what a range is resolved
+ * against, and the jobs series. `/meta.analytics` is non-`null` exactly when
+ * a driver implements all three, and every analytics route requires them —
+ * so `analytics: null` means every analytics route is pruned.
+ *
+ * Defined here rather than beside the analytics routes (which re-export it)
+ * because {@link DRIVER_FEATURES} is built from it when this module loads,
+ * and the analytics module imports this one: defined there, whichever of the
+ * two loaded second would read it before it existed.
+ */
+export const ANALYTICS_METHODS = [
+  "getMetricsSupport",
+  "getNamespaceMetrics",
+  "getQueueMetrics",
+] as const;
+
+/**
  * The driver methods behind each optional feature. A feature is on when the
  * driver implements every one — the same probe `BunQueue` makes before using
  * an optional method. The last three arrive with the 2.13 read APIs.
+ *
+ * Where a feature describes routes, its list is what those routes `require`,
+ * and the routes name this list rather than a copy, so the flag and the
+ * pruning cannot disagree.
  */
 export const DRIVER_FEATURES = {
   logs: ["getJobLogs"],
@@ -42,8 +66,54 @@ export const DRIVER_FEATURES = {
   flows: ["recordChild"],
   search: ["findJobs"],
   workers: ["listWorkers"],
+  workerControl: ["getQueueState", "setQueueState", "listQueueState"],
   throughput: ["getThroughput"],
+  // Both, deliberately: a driver that can read a log it can never write has
+  // nothing to serve, and the flag says logs exist to be read, not that a
+  // method does.
+  runnerLogs: ["appendRunLog", "getRunLog"],
+  // The same rule for the two analytics flags: a series that can be read but
+  // never written is an empty chart, so each names its write and its read.
+  // Each also needs `ANALYTICS_METHODS`, because every analytics route does:
+  // without them the runner and worker routes are pruned, and a flag reading
+  // `true` would advertise a route that is not there. These two lists are
+  // exactly what those routes require. All five built-in drivers implement
+  // every method named; a custom driver may implement none, some or all.
+  runnerMetrics: [...ANALYTICS_METHODS, "countRunnerRun", "getRunnerMetrics"],
+  workerMetrics: [...ANALYTICS_METHODS, "countWorkerJobs", "getWorkerMetrics"],
+  // A capability, not a method: `findJobs` already exists on drivers that
+  // record nothing, so no method list can say whether `processedBy` is
+  // written. `probeFeatures` reads `capabilities.jobAttribution` instead
+  // (`supportsJobAttribution`), and this empty list only keeps the map total.
+  jobAttribution: [],
+  // Reads by creation time: the per-state counts of the jobs added in a range,
+  // and `sort=createdAt` on the job list. A driver implements the count only
+  // where an index or memory bounds it, never by reading every job record —
+  // the Redis and file drivers do not — and the same backends are the ones
+  // whose `findJobs` can order by `createdAt`, so the one method stands for
+  // both. The memory, SQL and MongoDB drivers implement it.
+  addedByState: ["countAddedJobs"],
+  // A queue's stored override lives in queue state, beside limits and worker
+  // config, so these are exactly limits' methods. Every built-in driver has
+  // them; `readJobDefaults` answers "no override" on a driver without.
+  jobDefaults: ["getQueueState", "setQueueState"],
+  // Applying it needs the override (queue state) and the batched rewrite. All
+  // five built-in drivers implement `rewritePendingOptions`; a custom driver
+  // without it keeps saving defaults and loses only the apply route.
+  jobDefaultsApply: ["getQueueState", "setQueueState", "rewritePendingOptions"],
 } as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
+
+/**
+ * Whether a driver declares the job-attribution capability: it stamps
+ * `processedBy` in the claim's own write, keeps it through every settle, and
+ * its `findJobs` honours the worker and `finishedOn` filters
+ * (`DriverCapabilities.jobAttribution`). Only `true` counts. Every built-in
+ * driver declares it; a custom driver that does not reads `false`, and the
+ * job list then serves the four filters by scanning.
+ */
+export function supportsJobAttribution(driver: JobsDriver): boolean {
+  return driver.capabilities.jobAttribution === true;
+}
 
 /** Whether a driver implements every named method. */
 export function driverImplements(
@@ -54,7 +124,11 @@ export function driverImplements(
   return methods.every((method) => typeof record[method] === "function");
 }
 
-/** The optional features a driver supports. */
+/**
+ * The optional features a driver supports, whatever the API around it
+ * serves. `/meta` reports {@link servedFeatures}, which narrows this to the
+ * routes actually served.
+ */
 export function probeFeatures(driver: JobsDriver): MetaDto["features"] {
   return {
     ...(Object.fromEntries(
@@ -70,7 +144,124 @@ export function probeFeatures(driver: JobsDriver): MetaDto["features"] {
     // and file drivers among them — would be reported as having no workers
     // while `/workers` happily answered.
     workers: supportsWorkers(driver),
+    // Control needs both: a registry to address a worker in, and queue state
+    // to record what it should be. `DRIVER_FEATURES` names only the second.
+    workerControl: supportsWorkers(driver) && supportsWorkerControl(driver),
+    // Worker analytics needs the registry too, and for the same kind of
+    // reason: the series are keyed by the worker's stable key and the rows
+    // are the worker listing, so counters without records serve no route.
+    // `DRIVER_FEATURES.workerMetrics` names only the driver methods.
+    workerMetrics:
+      supportsWorkers(driver) &&
+      driverImplements(driver, DRIVER_FEATURES.workerMetrics),
+    // Attribution is a promise about what the claim writes and what
+    // `findJobs` filters on, which no method's presence can show — so the
+    // driver says so itself. `DRIVER_FEATURES.jobAttribution` is empty.
+    jobAttribution: supportsJobAttribution(driver),
   };
+}
+
+/**
+ * The routes each feature flag describes, by operation id. A flag is on only
+ * when the backend supports the feature ({@link probeFeatures}) **and** every
+ * route named here is served by this API — the same pruning predicate the
+ * router applies, so a flag cannot advertise a route that answers 404. A
+ * route that needs more than the flag's driver methods (none today) would
+ * turn the flag off with it; one that needs less (the run-log read, which
+ * needs only `getRunLog`) leaves the flag to the methods.
+ *
+ * `search` has no route of its own: it is `?search=` on the job list. Nor has
+ * `jobAttribution`: it is `processedBy` on every job and four filters on the
+ * same list.
+ */
+export const FEATURE_ROUTES = {
+  logs: ["getJobLogs"],
+  update: ["updateJob"],
+  limits: ["getQueueLimits", "setQueueLimits"],
+  flows: ["getJobChildren"],
+  search: ["listJobs"],
+  workers: ["listQueueWorkers", "listWorkers", "getWorker"],
+  workerControl: [
+    "pauseWorker",
+    "resumeWorker",
+    "stopWorker",
+    "startWorker",
+    "listWorkerConfigs",
+    "configureWorker",
+    "resetWorkerConfig",
+  ],
+  throughput: ["getQueueThroughput"],
+  runnerLogs: ["getRunLogs"],
+  runnerMetrics: ["getRunnersAnalytics", "getRunnerAnalytics"],
+  workerMetrics: ["getWorkersAnalytics", "getWorkerAnalytics"],
+  // Like `search`, no route of its own: `processedBy` rides every job read and
+  // the filters are on the job list, so the list is what must be served.
+  jobAttribution: ["listJobs"],
+  // The two count routes, and the job list that `sort=createdAt` rides. The
+  // count routes `require` `DRIVER_FEATURES.addedByState`, so they are pruned
+  // exactly where the flag's driver half is false, and in `runner` mode.
+  addedByState: ["getAddedByState", "getQueueAddedByState", "listJobs"],
+  // Reading, saving and resetting; each `requires` `DRIVER_FEATURES.jobDefaults`.
+  jobDefaults: ["getJobDefaults", "setJobDefaults", "resetJobDefaults"],
+  // The rewrite, which `requires` `DRIVER_FEATURES.jobDefaultsApply`.
+  jobDefaultsApply: ["applyJobDefaults"],
+} as const satisfies Record<keyof MetaDto["features"], readonly string[]>;
+
+/**
+ * Which features have every route {@link FEATURE_ROUTES} names served, once
+ * per resolved configuration: the routes do not change after construction.
+ * Support is not cached with it — see {@link servedFeatures}.
+ */
+const routedCache = new WeakMap<
+  ResolvedJobsApiConfig,
+  Record<keyof MetaDto["features"], boolean>
+>();
+
+/**
+ * The features this API serves, as `/meta.features` reports them: what the
+ * backend supports ({@link probeFeatures}), narrowed to the features whose
+ * routes ({@link FEATURE_ROUTES}) this API registers — the API's `mode`, a
+ * `jobs` source where a route needs one, and each route's own condition, by
+ * the router's own predicate (`isRouteEnabled`).
+ *
+ * `readOnly` and `actions` are deliberately left out. They are permissions,
+ * which `/meta.readOnly` and `/meta/permissions` already answer; a flag says
+ * whether the thing exists here, so a UI can tell "this backend cannot" from
+ * "you may not".
+ */
+export function servedFeatures(
+  config: ResolvedJobsApiConfig,
+): MetaDto["features"] {
+  let routed = routedCache.get(config);
+  if (!routed) {
+    const permitted: ResolvedJobsApiConfig = {
+      ...config,
+      readOnly: false,
+      enabledActions: new Set(JOBS_API_ACTIONS),
+    };
+    const served = new Set(
+      builtInRoutes(config)
+        .filter((def) => isRouteEnabled(def, permitted))
+        .map((def) => def.operationId),
+    );
+    routed = Object.fromEntries(
+      Object.entries(FEATURE_ROUTES).map(([feature, ids]) => [
+        feature,
+        ids.every((id) => served.has(id)),
+      ]),
+    ) as Record<keyof MetaDto["features"], boolean>;
+    routedCache.set(config, routed);
+  }
+  // Probed on every call: support can change under a running API. The SQL
+  // driver's `jobAttribution` turns on when a sync adds the stamp's columns,
+  // and a cached `false` would hide that until a restart.
+  const probed = probeFeatures(config.driver);
+  return Object.fromEntries(
+    Object.entries(probed).map(([feature, supported]) => [
+      feature,
+      supported && routed[feature as keyof MetaDto["features"]],
+    ]),
+  ) as MetaDto["features"];
 }
 
 /** Which half of the API an action belongs to. */
@@ -161,6 +352,7 @@ export function limitsOf(
     maxHistory: limits.maxHistory,
     maxJobDataBytes: limits.maxJobDataBytes,
     maxQueues: limits.maxQueues,
+    maxApplyDefaults: limits.maxApplyDefaults,
   };
 }
 
@@ -227,9 +419,20 @@ export function buildMeta(
     protocol: JOBS_API_PROTOCOL_VERSION,
     driver: {
       name: driver.name,
-      capabilities: { ...driver.capabilities },
+      // Picked, never spread: the schema admits no key it does not name, so
+      // a driver declaring a capability this version does not know (a newer
+      // or custom one) would otherwise fail `/meta`'s response validation.
+      capabilities: {
+        blockingWait: driver.capabilities.blockingWait,
+        events: driver.capabilities.events,
+        multiProcess: driver.capabilities.multiProcess,
+        multiHost: driver.capabilities.multiHost,
+        jobAttribution: supportsJobAttribution(driver),
+      },
     },
-    features: probeFeatures(driver),
+    // What this API serves, not only what the driver can do: a feature whose
+    // routes the mode prunes reads `false`.
+    features: servedFeatures(config),
     events: driver.capabilities.events,
     // The context's resolved `publishEvents`. Without a `BunJobs` there is
     // nothing to ask, so a client is told honestly that it is unknown.
@@ -246,6 +449,10 @@ export function buildMeta(
     docs: docsOf(config, routes),
     csrf: csrfOf(config),
     limits: limitsOf(config),
+    // From the driver's own `getMetricsSupport()`, so a client sizes its
+    // picker from what this backend keeps. `null` exactly when every
+    // analytics route is pruned.
+    analytics: analyticsMetaOf(driver),
     addableNames: addableNamesOf(config, routes),
     runnerTriggerArgs:
       config.runnerTriggerArgs &&
@@ -444,11 +651,22 @@ export function metaRoutes(): AnyRouteDef[] {
       summary: "What this API exposes and what its backend supports",
       tags: ["Meta"],
       responses: { 200: MetaSchema },
-      handler: ({ services }) => ({
-        body: buildMeta(services.config, services.routes(), {
-          port: services.socketPort?.(),
-        }),
-      }),
+      // Connected first: a driver's capabilities can depend on what connecting
+      // finds. The SQL driver's `jobAttribution` reads `false` until connect
+      // has confirmed the stamp's columns, so an API process nothing else had
+      // connected yet would report the feature missing, and a client caching
+      // `/meta` would hide the worker filters for no reason. Every built-in
+      // driver's `connect()` is shared or a no-op after the first call. A
+      // failure is mapped like any other route's (a `DriverError` is a 503,
+      // anything unrecognised a bare 500), so no internals reach the body.
+      handler: async ({ services }) => {
+        await services.config.driver.connect();
+        return {
+          body: buildMeta(services.config, services.routes(), {
+            port: services.socketPort?.(),
+          }),
+        };
+      },
     }),
     defineRoute({
       method: "GET",

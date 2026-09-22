@@ -157,6 +157,11 @@ export class IsolatedProcessor {
       args: null,
       signal: controller.signal,
       logger: context.logger,
+      // An isolated *job* has no run log: run logs are keyed by a runner's run
+      // id, and this context stands in for one only so the executors can be
+      // shared. A processor logs through `ctx.logger` and `job.log()`.
+      log: () => {},
+      flushLogs: async () => {},
       progress: () => {},
       send: () => {},
       onMessage: () => () => {},

@@ -1,5 +1,10 @@
+import type { Schema } from "../schema/builder";
 import {
+  JOB_DEFAULT_KEYS,
   JOB_INCLUDES,
+  JOB_LIST_SORTS,
+  MAX_DATE_MS,
+  MAX_JOB_FILTER_VALUES,
   MAX_JOB_ID_LENGTH,
   MAX_JOB_REF_LENGTH,
 } from "../contract/constants";
@@ -48,8 +53,8 @@ export const NewJobIdSchema = s.string({
 /** Optional fields a client asks for with `include`. */
 export const JobIncludeSchema = s.enum(JOB_INCLUDES);
 
-/** How long finished jobs are kept. Mirrors `Retention`. */
-const RetentionSchema = s.union(
+/** How long finished jobs are kept. Mirrors `Retention` (`RetentionDto`). */
+export const RetentionSchema = s.union(
   s.boolean(),
   s.integer({ minimum: 0 }),
   s.object({
@@ -58,8 +63,24 @@ const RetentionSchema = s.union(
   }),
 );
 
+/** A job's backoff: fixed ms, or a strategy. Mirrors `JobOptionsDto["backoff"]`. */
+export const BackoffSchema = s.union(
+  s.number({ minimum: 0 }),
+  s.object(
+    {
+      type: s.optional(s.string()),
+      delay: s.optional(s.number({ minimum: 0 })),
+      factor: s.optional(s.number()),
+      max: s.optional(s.number({ minimum: 0 })),
+      jitter: s.optional(s.union(s.number(), s.boolean())),
+    },
+    { additionalProperties: true },
+  ),
+);
+
 /**
- * A job's options after defaults. Mirrors `ResolvedJobOptions`. Open to extra
+ * A job's options after defaults. Mirrors `ResolvedJobOptions`, plus
+ * `explicit` — the stored explicit-option mask as key names. Open to extra
  * properties: a record written by another version may carry options this one
  * does not know, and they are passed through rather than hidden.
  */
@@ -69,19 +90,7 @@ export const JobOptionsSchema = s.named(
     {
       priority: s.number(),
       attempts: s.integer({ minimum: 0 }),
-      backoff: s.union(
-        s.number({ minimum: 0 }),
-        s.object(
-          {
-            type: s.optional(s.string()),
-            delay: s.optional(s.number({ minimum: 0 })),
-            factor: s.optional(s.number()),
-            max: s.optional(s.number({ minimum: 0 })),
-            jitter: s.optional(s.union(s.number(), s.boolean())),
-          },
-          { additionalProperties: true },
-        ),
-      ),
+      backoff: BackoffSchema,
       timeout: s.number({ minimum: 0 }),
       removeOnComplete: RetentionSchema,
       removeOnFail: RetentionSchema,
@@ -89,6 +98,12 @@ export const JobOptionsSchema = s.named(
       deadLetter: s.optional(s.string()),
       keepLogs: s.optional(s.integer({ minimum: 0 })),
       ignoreFailure: s.optional(s.boolean()),
+      explicit: s.optional(
+        s.array(s.enum(JOB_DEFAULT_KEYS), {
+          description:
+            "The options this job's own `add()` passed explicitly, which stored queue defaults never replace, in `JOB_DEFAULT_KEYS` order. Absent on a job added before bun-jobs recorded it; the apply action skips such a job unless `includeUnmarked`.",
+        }),
+      ),
     },
     { additionalProperties: true },
   ),
@@ -109,6 +124,45 @@ export const JobFlowSchema = s.named(
 
 /** Epoch milliseconds, or `null`. */
 const MaybeTime = s.nullable(s.integer());
+
+/**
+ * The worker that claimed a job's current or last attempt. Mirrors
+ * `JobWorkerDto`: the same four fields as `Worker`, with `host` and `pid`
+ * omitted when `serialize.exposeHosts` is off.
+ */
+export const JobWorkerSchema = s.named(
+  "JobWorker",
+  s.object(
+    {
+      id: s.string({
+        description:
+          "The claiming incarnation's id (`Worker.id`). Changes when its process restarts, so on a finished job it usually names a worker that is gone.",
+      }),
+      key: s.optional(
+        s.string({
+          description:
+            "Its stable key (`Worker.key`), unique within the job's queue. Absent when the claimer recorded only the id.",
+        }),
+      ),
+      host: s.optional(
+        s.string({
+          description:
+            "Omitted with `serialize.exposeHosts: false`, and when not recorded.",
+        }),
+      ),
+      pid: s.optional(
+        s.integer({
+          description:
+            "Omitted with `serialize.exposeHosts: false`, and when not recorded.",
+        }),
+      ),
+    },
+    {
+      description:
+        "The worker that ran the job's **last** attempt, recorded at its claim and kept after the job settles. Earlier attempts are not recorded.",
+    },
+  ),
+);
 
 /** A job. Mirrors `JobDto`; never carries a lock token. */
 export const JobSchema = s.named(
@@ -137,7 +191,13 @@ export const JobSchema = s.named(
     ),
     failedReason: s.nullable(ErrorDtoSchema),
     lockExpiresAt: MaybeTime,
-    workerId: s.nullable(s.string()),
+    workerId: s.nullable(
+      s.string({
+        description:
+          "The worker holding it now: set while `active`, `null` once it settles. Who ran a finished job is `processedBy`.",
+      }),
+    ),
+    processedBy: s.nullable(JobWorkerSchema),
     repeatKey: s.nullable(s.string()),
     flow: s.nullable(JobFlowSchema),
     data: s.optional(s.unknown({ description: "With `include=data`." })),
@@ -163,6 +223,24 @@ export const JobPageSchema = s.named(
 /** `include` as a query value: repeated, or comma-separated. */
 const IncludeQuery = s.optional(s.array(JobIncludeSchema));
 
+/**
+ * One end of the job list's `finishedOn` range: epoch ms or an RFC 3339
+ * date-time, the analytics range's inputs, each member described.
+ */
+function finishedAt(description: string): Schema<number | string> {
+  return s.union(
+    s.integer({
+      minimum: 0,
+      maximum: MAX_DATE_MS,
+      description: `${description} As epoch ms.`,
+    }),
+    s.string({
+      format: "date-time",
+      description: `${description} As an RFC 3339 date-time.`,
+    }),
+  );
+}
+
 /** `GET /queues/:queue/jobs` query. */
 export function jobListQuerySchema(
   defaultPageSize: number,
@@ -183,7 +261,20 @@ export function jobListQuerySchema(
           default: defaultPageSize,
         }),
       ),
-      order: s.optional(s.enum(["asc", "desc"], { default: "asc" })),
+      order: s.optional(
+        s.enum(["asc", "desc"], {
+          default: "asc",
+          description:
+            "`asc` is the order `sort` names, `desc` its reverse: newest first is `order=desc`, with either sort.",
+        }),
+      ),
+      sort: s.optional(
+        s.enum(JOB_LIST_SORTS, {
+          default: "natural",
+          description:
+            "`natural` (the default) is each state's own order: `waiting` by priority then `createdAt` (claim order), `delayed` and `failed` by `runAt`, `active` by lock expiry, `completed` and `dead` by `finishedOn`, `waiting-children` by `createdAt`; several states, or none named, by `createdAt`. `createdAt` orders by creation time whatever the states, ties within a millisecond by `id`. It is served only where `features.addedByState` is true (memory, SQL, MongoDB); elsewhere it is 400 `INVALID_ARGUMENT`, never a page silently in the natural order. On SQL and MongoDB a page of one large state sorted by `createdAt` is a top-N sort over every job of that state.",
+        }),
+      ),
       include: IncludeQuery,
       name: s.optional(
         s.array(s.string({ minLength: 1, maxLength: 512 }), {
@@ -197,6 +288,28 @@ export function jobListQuerySchema(
           description:
             "Only jobs whose id or name contains this, ignoring case. Matched literally, never against the payload, and linear in the jobs in the states asked for.",
         }),
+      ),
+      workerKey: s.optional(
+        s.array(s.string({ minLength: 1, maxLength: 512 }), {
+          maxItems: MAX_JOB_FILTER_VALUES,
+          description: `Only jobs whose last attempt was run by a worker with one of these stable keys (\`processedBy.key\`), exactly. Repeat the key, or comma-separate, for several; at most ${MAX_JOB_FILTER_VALUES}. Matched within the states and range asked for, not through an index of its own: pair it with \`finishedFrom\`/\`finishedTo\`.`,
+        }),
+      ),
+      workerId: s.optional(
+        s.array(s.string({ minLength: 1, maxLength: 512 }), {
+          maxItems: MAX_JOB_FILTER_VALUES,
+          description: `Only jobs whose last attempt was run by one of these incarnations (\`processedBy.id\`), exactly. Repeatable like \`workerKey\`; at most ${MAX_JOB_FILTER_VALUES}.`,
+        }),
+      ),
+      finishedFrom: s.optional(
+        finishedAt(
+          "Only jobs that finished at or after this instant (`finishedOn`, **inclusive**). Only `completed` and `dead` jobs have a `finishedOn`, so no other job matches a range.",
+        ),
+      ),
+      finishedTo: s.optional(
+        finishedAt(
+          "Only jobs that finished before this instant (`finishedOn`, **exclusive**). Not after `finishedFrom` is 400 `INVALID_ARGUMENT`.",
+        ),
       ),
       total: s.optional(
         s.boolean({
@@ -249,6 +362,15 @@ export function logsQuerySchema(maxLogPage: number) {
 export const LogPageSchema = s.object({
   items: s.array(s.string()),
   page: PageInfoSchema,
+});
+
+/** `DELETE /queues/:queue/jobs/:id/logs` response. */
+export const ClearJobLogsResultSchema = s.object({
+  removed: s.integer({
+    minimum: 0,
+    description:
+      "How many lines were removed: what the log held a moment before, so `0` for a job that had logged nothing.",
+  }),
 });
 
 /** `GET /queues/:queue/jobs/:id/children` response. */

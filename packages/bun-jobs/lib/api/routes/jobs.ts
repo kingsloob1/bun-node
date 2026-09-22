@@ -4,6 +4,8 @@ import type { Job } from "../../queue/Job";
 import type { ResolvedJobsApiConfig } from "../config";
 import type { JobInclude } from "../serialize";
 import type { AnyRouteDef, RouteContext, RouteServices } from "./define";
+import { supportsCreatedSort } from "../../drivers/index";
+import { ConfigError } from "../../shared/errors";
 import { isAddableName } from "../config";
 import { ApiError, mapCallSiteError } from "../errors";
 import { s } from "../schema/builder";
@@ -14,6 +16,7 @@ import {
   bulkBodySchema,
   bulkRetryBodySchema,
   ChildrenSchema,
+  ClearJobLogsResultSchema,
   FailBodySchema,
   IncludeQuerySchema,
   jobListQuerySchema,
@@ -102,6 +105,41 @@ async function singleJobOperation(
   throw stateConflict(operation, now.state);
 }
 
+/**
+ * The 400 for `sort=createdAt` on a backend that cannot order by creation
+ * time: a detail, and `features.addedByState` in its context, so a client
+ * can tell "this backend cannot" from a bad value.
+ */
+function sortRefused(): ApiError {
+  return new ApiError(
+    "INVALID_ARGUMENT",
+    400,
+    "This backend cannot order jobs by creation time (`features.addedByState` is false: the Redis and file drivers store each state in its own order), so the job list cannot take `sort=createdAt`. Leave `sort` unset, or `natural`, for the state's own order.",
+    { context: { sort: "createdAt", features: { addedByState: false } } },
+  );
+}
+
+/**
+ * Runs a job-list read, answering the queue's refusal of `sort: "createdAt"`
+ * — a `ConfigError` naming `countAddedJobs`, thrown before any read — with
+ * {@link sortRefused}. The route checks first, so this only matters if the
+ * two ever disagree; either way the client gets the 400, never a 200 in the
+ * natural order or a detail-less 500.
+ */
+async function listing<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (
+      error instanceof ConfigError &&
+      error.context?.needs === "countAddedJobs"
+    ) {
+      throw sortRefused();
+    }
+    throw error;
+  }
+}
+
 /** Errors every route naming a queue can answer with. */
 const QUEUE_ERRORS = ["INVALID_NAME", "QUEUE_NOT_FOUND"] as const;
 
@@ -127,12 +165,12 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       mode: "jobs",
       summary: "A page of the queue's jobs",
       description:
-        "Offset pagination over the states asked for, in their natural order. Jobs move between states while you page, so a page can repeat or skip a job: treat it as live data. Lists omit `data`, `returnValue`, `stacktrace` and `opts` unless `include` asks for them. `stacktrace` entries (and `failedReason`) carry `stack` only with `serialize.exposeStacks`; otherwise each is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
+        "Offset pagination over the states asked for, in their natural order by default; `sort=createdAt` orders by creation time instead where `features.addedByState` is true (400 `INVALID_ARGUMENT` elsewhere). Jobs move between states while you page, so a page can repeat or skip a job: treat it as live data. Lists omit `data`, `returnValue`, `stacktrace` and `opts` unless `include` asks for them. `stacktrace` entries (and `failedReason`) carry `stack` only with `serialize.exposeStacks`; otherwise each is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
       tags: ["Jobs"],
       params: QueueParams,
       query: jobListQuerySchema(limits.defaultPageSize, limits.maxPageSize),
       responses: { 200: JobPageSchema },
-      errors: QUEUE_ERRORS,
+      errors: [...QUEUE_ERRORS, "INVALID_ARGUMENT"],
       target: ({ params }) => queueTarget(params.queue),
       handler: async (ctx) => {
         const { params, query, services } = ctx;
@@ -142,23 +180,96 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             ? [...new Set(query.state)]
             : [...JOB_STATES];
         const include = includeOf(query.include, JOB_LIST_INCLUDE);
-        // `name` and `search` filter on every backend: the queue takes the
-        // driver's own query where there is one and scans where there is not.
+        const finishedFrom =
+          query.finishedFrom === undefined
+            ? undefined
+            : toEpoch(query.finishedFrom);
+        const finishedTo =
+          query.finishedTo === undefined
+            ? undefined
+            : toEpoch(query.finishedTo);
+        // An empty range would answer an empty page, which reads as "this
+        // worker ran nothing then" — refused instead, as analytics refuses it.
+        if (
+          finishedFrom !== undefined &&
+          finishedTo !== undefined &&
+          finishedTo <= finishedFrom
+        ) {
+          throw new ApiError(
+            "INVALID_ARGUMENT",
+            400,
+            "`finishedTo` must be later than `finishedFrom`; `finishedTo` is exclusive",
+            { context: { finishedFrom, finishedTo } },
+          );
+        }
+        // A worker filter needs a backend that records who ran each job. One
+        // that does not (a custom driver, or a SQL table from before the
+        // stamp's columns, until `syncSchema()` adds them) has no stamp to
+        // match, so any answer would be an empty page that reads as "this
+        // worker ran nothing". Refused instead — a 400, like the worker
+        // listing's `host` filter under `exposeHosts: false`, since `/meta`
+        // told the client, and so the detail can say what to do (a 5xx never
+        // carries one). Only these two: a
+        // `finishedOn` range needs no stamp and is answered everywhere. The
+        // same test `/meta.features.jobAttribution` reports, read now — and
+        // after connecting, since a SQL driver's answer is `false` until
+        // connect has confirmed the columns.
+        if (query.workerKey !== undefined || query.workerId !== undefined) {
+          await queue.connect();
+        }
+        if (
+          (query.workerKey !== undefined || query.workerId !== undefined) &&
+          services.config.driver.capabilities.jobAttribution !== true
+        ) {
+          throw new ApiError(
+            "INVALID_ARGUMENT",
+            400,
+            "This backend does not record which worker ran a job (`features.jobAttribution` is false), so it cannot filter by `workerKey` or `workerId`. On a SQL backend, run `syncSchema()` to add the columns it needs.",
+            { context: { features: { jobAttribution: false } } },
+          );
+        }
+        // `sort=createdAt` needs a backend that can order by creation time —
+        // the one whose `countAddedJobs` promises it (`features.addedByState`).
+        // Elsewhere the queue refuses it rather than answer in the natural
+        // order; refused here first, as a 400 with a detail saying why, for
+        // the same reason the worker filters are.
+        if (
+          query.sort === "createdAt" &&
+          !supportsCreatedSort(services.config.driver)
+        ) {
+          throw sortRefused();
+        }
+        // Every filter works on every backend: the queue takes the driver's
+        // own query where there is one (for the four attribution filters,
+        // only where the driver declares `jobAttribution`) and scans where
+        // there is not. A present filter is passed even when empty — the
+        // query parser drops an empty repeat, so none arrives here.
         const filters = {
+          // Always passed, `"natural"` included: every parameter this route
+          // accepts reaches the queue, or is refused above.
+          sort: query.sort,
           ...(query.name && query.name.length > 0 ? { name: query.name } : {}),
           ...(query.search === undefined ? {} : { search: query.search }),
+          ...(query.workerKey === undefined
+            ? {}
+            : { workerKey: query.workerKey }),
+          ...(query.workerId === undefined ? {} : { workerId: query.workerId }),
+          ...(finishedFrom === undefined ? {} : { finishedFrom }),
+          ...(finishedTo === undefined ? {} : { finishedTo }),
         };
 
         // A total has to see every match, so it is asked for only when the
         // caller wants it; `hasMore` then follows from the total rather than
         // from reading one extra job.
         if (query.total) {
-          const page = await queue.page(states, {
-            offset: query.offset,
-            limit: query.limit,
-            order: query.order,
-            ...filters,
-          });
+          const page = await listing(() =>
+            queue.page(states, {
+              offset: query.offset,
+              limit: query.limit,
+              order: query.order,
+              ...filters,
+            }),
+          );
           return {
             body: {
               items: page.jobs.map((job) => dto(ctx, queue, job, include)),
@@ -173,12 +284,14 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
         }
 
         // One more than a page, so whether another follows is known without a count.
-        const jobs = await queue.list(states, {
-          offset: query.offset,
-          limit: query.limit + 1,
-          order: query.order,
-          ...filters,
-        });
+        const jobs = await listing(() =>
+          queue.list(states, {
+            offset: query.offset,
+            limit: query.limit + 1,
+            order: query.order,
+            ...filters,
+          }),
+        );
         return {
           body: {
             items: jobs
@@ -296,6 +409,40 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             },
           },
         };
+      },
+    }),
+    defineRoute({
+      method: "DELETE",
+      path: "/queues/:queue/jobs/:id/logs",
+      operationId: "clearJobLogs",
+      action: "jobs.clearLogs",
+      mode: "jobs",
+      requires: ["clearJobLogs"],
+      summary: "Empty a job's log",
+      description:
+        "Removes every line the job has logged, for good. Afterwards the log reads as one never written: `GET …/logs` counts `0`, the next line the job logs is its first, and `keepLogs` trims from there. The job itself, its state, and every counter, throughput figure and analytics series are untouched, and no event is sent. **Refused (409 `JOB_ACTIVE`) while a worker is running the job**, the same rule and code as `DELETE /queues/{queue}/jobs/{id}`: the backend checks the state in the same step as the removal, so a job claimed while the request was in flight is refused too, with nothing removed. A backend that cannot clear a job's log has this route pruned, so it never answers 501.",
+      tags: ["Jobs"],
+      params: JobParams,
+      responses: { 200: ClearJobLogsResultSchema },
+      errors: [...JOB_ERRORS, "JOB_ACTIVE"],
+      target: ({ params }) => ({
+        ...queueTarget(params.queue),
+        jobId: params.id,
+      }),
+      handler: async ({ params, services }) => {
+        const queue = await services.queues.get(params.queue);
+        // The driver decides all three answers in one step — active, missing
+        // or cleared — so nothing is read first: a read would only open a
+        // window in which the job could change.
+        const result = await queue.clearJobLogs(params.id);
+        switch (result.status) {
+          case "cleared":
+            return { body: { removed: result.removed } };
+          case "active":
+            throw stateConflict("cleared of its log", "active", "JOB_ACTIVE");
+          case "missing":
+            throw jobNotFound(queue.name, params.id);
+        }
       },
     }),
     defineRoute({

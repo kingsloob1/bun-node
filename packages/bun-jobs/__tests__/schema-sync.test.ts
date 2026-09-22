@@ -1,11 +1,18 @@
 import type { JobsDriver, SchemaChange } from "../lib/index";
 import process from "node:process";
 import { SQL } from "bun";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { resolveSyncOptions } from "../lib/drivers/schemaSync";
 import { createSchema, schemaDefinition } from "../lib/drivers/sql/schema";
 import { syncSqlSchema } from "../lib/drivers/sql/sync";
-import { ConfigError, dialectFor, MongoDriver, SqlDriver } from "../lib/index";
+import {
+  ConfigError,
+  dialectFor,
+  MONGO_COLLECTIONS,
+  MongoDriver,
+  SQL_TABLES,
+  SqlDriver,
+} from "../lib/index";
 import { takeBooleanParam } from "../lib/shared/connection";
 import { queueEvent } from "../lib/shared/events";
 import { makeJob, testNamespace, waitFor } from "./helpers";
@@ -45,33 +52,100 @@ function connection(): SQL {
   return shared;
 }
 
-/** Drivers to close when the suite ends. */
+/** Drivers to close when the test that made them ends. */
 const drivers: JobsDriver[] = [];
-/** Table prefixes to drop when the suite ends. */
+/** Postgres table prefixes to drop when the test that made them ends. */
 const prefixes: string[] = [];
+/**
+ * Statements undoing the Postgres objects a case makes outside its tables —
+ * the rewrite counter's log table, function and event trigger — run in order
+ * when that case ends.
+ */
+const extraPostgres: string[] = [];
+/** MySQL-family table prefixes to drop, each with the client to drop it on. */
+const familyTables: { client: SQL; prefix: string }[] = [];
+/** Clients opened for MySQL-family servers, closed when the suite ends. */
+const familyClients: SQL[] = [];
+/** MongoDB collection prefixes to drop when the test that made them ends. */
+const mongoPrefixes: string[] = [];
+/** SQL drivers made so far, closed as the next one is made. */
+const sqlDrivers: SqlDriver[] = [];
 
-afterAll(async () => {
-  await Promise.allSettled(drivers.map((driver) => driver.close()));
+/**
+ * Everything one case made, removed as that case ends.
+ *
+ * Per test rather than once at the end of the file, because these servers are
+ * shared and a run that is interrupted — or a `bun test` cut short — then
+ * leaves at most one case's tables behind instead of the whole suite's. Each
+ * list is drained as it is walked, so a later test never re-drops an earlier
+ * one's names.
+ *
+ * It removes **only the names this file generated**, never a `LIKE 'sy_%'` or
+ * regex sweep: another session's suite may be running against the same server
+ * at the same time, and by prefix alone its tables are indistinguishable from
+ * ours. The name lists come from the driver's own (`SQL_TABLES`,
+ * `MONGO_COLLECTIONS`) so a table added there cannot be forgotten here — which
+ * is how the three analytics tables came to be left behind.
+ */
+afterEach(async () => {
+  // First, so nothing still holds a connection to what is about to be dropped.
+  sqlDrivers.length = 0;
+  await Promise.allSettled(
+    drivers.splice(0, drivers.length).map((driver) => driver.close()),
+  );
 
-  if (POSTGRES && prefixes.length > 0) {
-    for (const prefix of prefixes) {
-      for (const table of [
-        "jobs",
-        "locks",
-        "kv",
-        "events",
-        "logs",
-        "workers",
-        "metrics",
-      ]) {
-        await connection()
-          .unsafe(`DROP TABLE IF EXISTS ${prefix}${table} CASCADE`)
-          .catch(() => undefined);
-      }
+  // Before the tables, so the event trigger cannot fire on a drop.
+  for (const statement of extraPostgres.splice(0, extraPostgres.length)) {
+    await connection()
+      .unsafe(statement)
+      .catch(() => undefined);
+  }
+
+  for (const prefix of prefixes.splice(0, prefixes.length)) {
+    for (const table of SQL_TABLES) {
+      await connection()
+        .unsafe(`DROP TABLE IF EXISTS ${prefix}${table} CASCADE`)
+        .catch(() => undefined);
     }
   }
 
+  for (const { client, prefix } of familyTables.splice(
+    0,
+    familyTables.length,
+  )) {
+    for (const table of SQL_TABLES) {
+      await client
+        .unsafe(`DROP TABLE IF EXISTS ${prefix}${table}`)
+        .catch(() => undefined);
+    }
+  }
+
+  const collections = mongoPrefixes.splice(0, mongoPrefixes.length);
+  if (collections.length > 0) {
+    // Opened here and closed again rather than kept: three cases in the file
+    // need it, and a client held open outlives them by the whole suite.
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(MONGODB!);
+    try {
+      await client.connect();
+      const db = client.db();
+      for (const prefix of collections) {
+        for (const collection of MONGO_COLLECTIONS) {
+          await db
+            .collection(`${prefix}${collection}`)
+            .drop()
+            .catch(() => undefined);
+        }
+      }
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  }
+});
+
+afterAll(async () => {
   await shared?.close().catch(() => undefined);
+  await Promise.allSettled(familyClients.map((client) => client.close()));
 });
 
 /** A prefix nothing else in the suite uses, ending in `_` as the naming wants. */
@@ -81,8 +155,12 @@ function makePrefix(label: string): string {
   return prefix;
 }
 
-/** SQL drivers made so far, closed as the next one is made. */
-const sqlDrivers: SqlDriver[] = [];
+/** A MongoDB collection prefix nothing else uses, dropped when the test ends. */
+function makeMongoPrefix(label: string): string {
+  const prefix = `sy_${label}_${Math.random().toString(36).slice(2, 8)}_`;
+  mongoPrefixes.push(prefix);
+  return prefix;
+}
 
 /**
  * A driver on its own tables, so one case cannot disturb another.
@@ -509,6 +587,7 @@ function tablesFor(prefix: string) {
     kv: `${prefix}kv`,
     events: `${prefix}events`,
     logs: `${prefix}logs`,
+    run_logs: `${prefix}run_logs`,
     workers: `${prefix}workers`,
     metrics: `${prefix}metrics`,
   };
@@ -537,30 +616,6 @@ const MYSQL_FAMILY: {
     binary: "utf8mb4_0900_bin",
   },
 ];
-
-/** Table prefixes to drop when the suite ends, with the client to drop them on. */
-const familyTables: { client: SQL; prefix: string }[] = [];
-/** Clients opened for MySQL-family servers, closed when the suite ends. */
-const familyClients: SQL[] = [];
-
-afterAll(async () => {
-  for (const { client, prefix } of familyTables) {
-    for (const table of [
-      "jobs",
-      "locks",
-      "kv",
-      "events",
-      "logs",
-      "workers",
-      "metrics",
-    ]) {
-      await client
-        .unsafe(`DROP TABLE IF EXISTS ${prefix}${table}`)
-        .catch(() => undefined);
-    }
-  }
-  await Promise.allSettled(familyClients.map((client) => client.close()));
-});
 
 /**
  * The case- and accent-insensitive identifiers an older version created.
@@ -597,7 +652,7 @@ for (const engine of MYSQL_FAMILY) {
     return shared;
   };
 
-  /** A prefix nothing else uses, dropped when the suite ends. */
+  /** A prefix nothing else uses, dropped when the test that made it ends. */
   const prefixFor = (label: string): string => {
     const prefix = `sy_${label}_${Math.random().toString(36).slice(2, 8)}_`;
     familyTables.push({ client: client(), prefix });
@@ -972,6 +1027,17 @@ describe.skipIf(!POSTGRES_SUPERUSER)(
       const log = `${prefix}rewrites`;
       const fn = `${prefix}count_rewrite`;
       const trigger = `${prefix}rewrite_trigger`;
+
+      // Registered before they are made, not undone in a `finally`: if one of
+      // the three statements below fails the earlier ones are still there, and
+      // an event trigger left behind is database-wide — it would fire on every
+      // later rewrite of a table whose name starts with this prefix.
+      extraPostgres.push(
+        `DROP EVENT TRIGGER IF EXISTS ${trigger}`,
+        `DROP FUNCTION IF EXISTS ${fn}()`,
+        `DROP TABLE IF EXISTS ${log}`,
+      );
+
       await ddl([
         `CREATE TABLE ${log} (tbl text)`,
         `CREATE FUNCTION ${fn}() RETURNS event_trigger LANGUAGE plpgsql AS $$
@@ -983,24 +1049,16 @@ describe.skipIf(!POSTGRES_SUPERUSER)(
         `CREATE EVENT TRIGGER ${trigger} ON table_rewrite EXECUTE FUNCTION ${fn}()`,
       ]);
 
-      try {
-        const applied = await driver.syncSchema({ alterColumns: true });
-        const jobs = applied.filter(
-          (c) => c.kind === "alter-column" && c.table === `${prefix}jobs`,
-        );
-        expect(jobs.map((c) => c.target)).toEqual(["data", "opts", "progress"]);
-        expect(jobs.every((c) => c.blocking && c.applied)).toBe(true);
+      const applied = await driver.syncSchema({ alterColumns: true });
+      const jobs = applied.filter(
+        (c) => c.kind === "alter-column" && c.table === `${prefix}jobs`,
+      );
+      expect(jobs.map((c) => c.target)).toEqual(["data", "opts", "progress"]);
+      expect(jobs.every((c) => c.blocking && c.applied)).toBe(true);
 
-        const rewrites = await query<{ tbl: string }>(`SELECT tbl FROM ${log}`);
-        expect(rewrites.map((row) => row.tbl)).toEqual([`${prefix}jobs`]);
-        expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
-      } finally {
-        await ddl([
-          `DROP EVENT TRIGGER IF EXISTS ${trigger}`,
-          `DROP FUNCTION IF EXISTS ${fn}()`,
-          `DROP TABLE IF EXISTS ${log}`,
-        ]);
-      }
+      const rewrites = await query<{ tbl: string }>(`SELECT tbl FROM ${log}`);
+      expect(rewrites.map((row) => row.tbl)).toEqual([`${prefix}jobs`]);
+      expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
     }, 60_000);
   },
 );
@@ -1009,7 +1067,7 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
   it("finds nothing to do against the indexes it just created", async () => {
     const driver = new MongoDriver({
       url: MONGODB,
-      collectionPrefix: `sy_fresh_${Math.random().toString(36).slice(2, 8)}_`,
+      collectionPrefix: makeMongoPrefix("fresh"),
     });
     drivers.push(driver);
     await driver.connect();
@@ -1018,7 +1076,7 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
   }, 45_000);
 
   it("leaves a retired index alone unless syncSchema applies the change", async () => {
-    const prefix = `sy_keep_${Math.random().toString(36).slice(2, 8)}_`;
+    const prefix = makeMongoPrefix("keep");
     const retired = "ns_1_queue_1_state_1_priority_1_createdAt_1";
     const { MongoClient } = await import("mongodb");
     const client = new MongoClient(MONGODB!);
@@ -1061,13 +1119,14 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
       await applying.syncSchema();
       expect(await names()).not.toContain(retired);
     } finally {
-      await jobs.drop().catch(() => undefined);
+      // The collections themselves go in the file's `afterEach`, which knows
+      // every name this prefix can have rather than only `jobs`.
       await client.close();
     }
   }, 45_000);
 
   it("retires an index an older version created", async () => {
-    const prefix = `sy_old_${Math.random().toString(36).slice(2, 8)}_`;
+    const prefix = makeMongoPrefix("old");
     const driver = new MongoDriver({ url: MONGODB, collectionPrefix: prefix });
     drivers.push(driver);
     await driver.connect();
@@ -1098,12 +1157,6 @@ describe.skipIf(!MONGODB)("schema sync: MongoDB", () => {
       expect(names).not.toContain(
         "ns_1_queue_1_state_1_priority_1_createdAt_1",
       );
-
-      await client
-        .db()
-        .collection(`${prefix}jobs`)
-        .drop()
-        .catch(() => undefined);
     } finally {
       await client.close();
     }

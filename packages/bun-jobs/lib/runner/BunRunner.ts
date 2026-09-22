@@ -1,13 +1,21 @@
 import type {
+  ExecutionMode,
   JobsDriver,
   QueuedTrigger,
+  RunnerRunCounters,
+  RunnerRunDelta,
   RunRecord,
   RunSource,
   RunStatus,
 } from "../drivers/index";
-import type { RunnerEventName, RunnerEventPayloads } from "../shared/events";
-import type { Logger } from "../shared/logger";
+import type {
+  RunnerControlAction,
+  RunnerEventName,
+  RunnerEventPayloads,
+} from "../shared/events";
+import type { LogFields, Logger } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput, Ticker } from "../shared/schedule";
+import type { ClearHistoryOptions, ClearHistoryResult } from "./clearHistory";
 import type {
   Executor,
   ExecutorHandle,
@@ -19,6 +27,10 @@ import type {
   ResolvedRunnerOptions,
   RunContext,
   RunHandle,
+  RunnerConfigInfo,
+  RunnerConfigKey,
+  RunnerConfigPatch,
+  RunnerConfigValues,
   RunnerInfo,
   RunnerStats,
   RunnerStatus,
@@ -37,10 +49,23 @@ import {
   nextFireDate,
   normalizeSchedule,
 } from "../shared/schedule";
+import { clearRunnerHistory } from "./clearHistory";
+import {
+  adoptableExecutionModes,
+  fromRunnerConcurrency,
+  readStoredRunnerConfig,
+  resolveRunnerConfig,
+  RUNNER_CONFIG_STATE,
+  runnerConfigFields,
+  runnerConfigResetFields,
+  toRunnerConcurrency,
+  writeRunnerConfig,
+} from "./config";
 import { InProcessExecutor } from "./executors/in-process";
 import { SpawnExecutor } from "./executors/spawn";
 import { WorkerExecutor } from "./executors/worker";
 import { resolveRunnerOptions } from "./options";
+import { RunLogCapture } from "./runLogCapture";
 
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
@@ -50,6 +75,22 @@ const SETTLED: Promise<void> = Promise.resolve();
  * another drainer, before leaving the queue to that drainer.
  */
 const TAKE_QUEUED_ATTEMPTS = 16;
+
+/**
+ * Which analytics counter each way a run can end bumps. The series' `failed`
+ * is a run that threw and nothing else — unlike the lifetime `stat:failed`,
+ * which also counts timeouts and kills — because the series reports every
+ * outcome in a counter of its own.
+ */
+const OUTCOME_COUNTERS = {
+  success: "succeeded",
+  failed: "failed",
+  timeout: "timeout",
+  killed: "killed",
+} as const satisfies Record<
+  Exclude<RunStatus, "running">,
+  keyof RunnerRunCounters
+>;
 
 /**
  * Runs a JS/TS file on a schedule or on demand.
@@ -100,8 +141,40 @@ export class BunRunner<
   #logger: Logger;
   /** The key every driver call for this runner uses. */
   readonly #key: string;
-  /** How runs execute. */
-  readonly #executor: Executor;
+  /**
+   * How runs execute. Rebuilt when {@link #executionMode} changes, so a run
+   * in flight keeps the executor — and the mode — it started with.
+   */
+  #executor: Executor;
+  /**
+   * Where runs execute, live: the adopted override when there is one, else
+   * what this process's options asked for. Read at every site that used to
+   * read `options.executionMode`, so a change applies from the next run.
+   */
+  #executionMode: ExecutionMode;
+  /** Whether runs may overlap, live. */
+  #runMode: "parallel" | "single";
+  /** The concurrency cap in `parallel`, live; `Infinity` means unlimited. */
+  #maxConcurrency: number;
+  /** What this process's own options asked for, before any override. */
+  readonly #codeConfig: RunnerConfigValues;
+  /** The execution modes this runner's code permits an override to choose (`remoteConfig.executionModes`). */
+  readonly #permittedModes: readonly ExecutionMode[];
+  /**
+   * The execution modes an override may choose *and* this owner can adopt:
+   * {@link #permittedModes} less the child modes a runner built from a driver
+   * instance cannot run (`adoptableExecutionModes`). What it publishes as
+   * `allowed` and checks `updateConfig()` against.
+   */
+  readonly #allowedModes: readonly ExecutionMode[];
+  /** The version of the stored override this instance has adopted. */
+  #configSeq = 0;
+  /** Which settings an override is stored for, as of the last adoption. */
+  #overridden: RunnerConfigKey[] = [];
+  /** Why part of the last override was refused, when some of it was. */
+  #configError: { at: number; message: string } | undefined;
+  /** When the stored override was last written, epoch ms. */
+  #configUpdatedAt: number | undefined;
   /** Identifies this runner's published events as coming from this process. */
   readonly #origin = newToken();
   /** Awaited before each publish; see `BunRunnerOptions.publishGate`. */
@@ -134,6 +207,12 @@ export class BunRunner<
   readonly #settling = new Set<Promise<RunStatus>>();
   /** Publishes still in flight, which `close()` waits for. */
   readonly #publishing = new Set<Promise<void>>();
+  /**
+   * Whether an analytics write has failed yet. The first failure is logged
+   * and every later one is not: a backend that refuses one count refuses
+   * them all, and a line per run would drown the log it was meant to help.
+   */
+  #metricsFailed = false;
 
   /** The schedule ticker, while started. */
   #ticker: Ticker | undefined;
@@ -147,6 +226,22 @@ export class BunRunner<
   #schedule: RunnerSchedule;
   /** The single-run lock token, while held. */
   #lockToken: string | undefined;
+  /**
+   * The release of the lock in flight, while one is. A trigger waits for it
+   * before asking for the lock: the token is dropped the moment a release
+   * starts, but the driver may still hold the lock until the release lands,
+   * and an acquire in that window is refused as if another process held it.
+   */
+  #releasing: Promise<void> | undefined;
+  /**
+   * Triggers reusing the lock this instance holds, from the renewal until the
+   * run they start is tracked. The drain does not release the lock while one
+   * is: a release racing that renewal could land before it — the run then
+   * goes ahead holding nothing — or after it on a driver whose renewal is a
+   * read then a write, which puts the released lock back under a token this
+   * instance has already forgotten, so nothing ever releases it again.
+   */
+  #reusing = 0;
   /** Renews the lock while a run holds it. */
   #heartbeat: ReturnType<typeof setInterval> | undefined;
   /** Set while the lock holder drains queued triggers, to avoid re-entering. */
@@ -177,6 +272,21 @@ export class BunRunner<
       { namespace: resolved.namespace, runnerId: resolved.id },
       resolved.name,
     );
+
+    this.#executionMode = resolved.executionMode;
+    this.#runMode = resolved.runMode;
+    this.#maxConcurrency = resolved.maxConcurrency;
+    this.#permittedModes = resolved.remoteConfig.executionModes;
+    this.#allowedModes = adoptableExecutionModes(
+      resolved.remoteConfig.executionModes,
+      resolved.executionMode,
+      resolved.childDriver !== undefined,
+    );
+    this.#codeConfig = {
+      executionMode: resolved.executionMode,
+      runMode: resolved.runMode,
+      maxConcurrency: fromRunnerConcurrency(resolved.maxConcurrency),
+    };
 
     this.#executor = this.#createExecutor();
 
@@ -218,6 +328,45 @@ export class BunRunner<
     return this.#schedule;
   }
 
+  /** Where runs execute now: the adopted override, else what the code asked for. */
+  get executionMode(): ExecutionMode {
+    return this.#executionMode;
+  }
+
+  /** Whether runs may overlap now. */
+  get runMode(): "parallel" | "single" {
+    return this.#runMode;
+  }
+
+  /** The concurrency cap in force now; `Infinity` when unlimited. */
+  get maxConcurrency(): number {
+    return this.#maxConcurrency;
+  }
+
+  /**
+   * What this instance runs with, what its code asked for, and whether it has
+   * adopted the stored override. Read from this process's own view, so it is
+   * current without a driver round trip.
+   */
+  get config(): RunnerConfigInfo {
+    return {
+      effective: {
+        executionMode: this.#executionMode,
+        runMode: this.#runMode,
+        maxConcurrency: fromRunnerConcurrency(this.#maxConcurrency),
+      },
+      code: { ...this.#codeConfig },
+      overridden: [...this.#overridden],
+      allowed: [...this.#allowedModes],
+      seq: this.#configSeq,
+      appliedSeq: this.#configSeq,
+      ...(this.#configError ? { error: { ...this.#configError } } : {}),
+      ...(this.#configUpdatedAt !== undefined
+        ? { updatedAt: this.#configUpdatedAt }
+        : {}),
+    };
+  }
+
   /** When this instance next fires, or `null` when nothing is scheduled. */
   nextRunAt(): Date | null {
     return this.#ticker?.next() ?? nextFireDate(this.#schedule);
@@ -245,6 +394,12 @@ export class BunRunner<
       this.#schedule = state.schedule;
     }
 
+    // So does a stored configuration override — adopted before the write
+    // below, which persists the *effective* values it produced.
+    if (state.raw) {
+      await this.#adoptConfig(state.raw, { persist: false });
+    }
+
     await this.driver.setState(this.namespace, this.#key, {
       paused: this.#paused ? "1" : "0",
       schedule: JSON.stringify(this.#schedule),
@@ -252,14 +407,12 @@ export class BunRunner<
       // What a remote controller needs to describe the runner and to queue a
       // trigger within its cap, from a process that never saw the options.
       name: this.name,
-      executionMode: this.options.executionMode,
-      runMode: this.options.runMode,
       queueRuns: this.options.queueRuns ? "1" : "0",
       maxQueuedRuns: String(this.options.maxQueuedRuns),
-      maxConcurrency: String(this.options.maxConcurrency),
       lockTtl: String(this.options.lockTtl),
       updatedAt: Date.now(),
       updatedBy: newToken(),
+      ...this.#configStateFields(),
     });
 
     this.#status = this.#paused ? "paused" : "running";
@@ -303,12 +456,14 @@ export class BunRunner<
     }
 
     await Promise.allSettled([...this.#active.values()].map((run) => run.done));
+    this.#executor.close?.();
     // Then whatever is still being written for runs that already settled.
     await Promise.allSettled([...this.#settling]);
     await Promise.allSettled([...this.#publishing]);
 
     this.#clearHeartbeat();
     await this.#releaseLock();
+    await this.#flushMetrics();
 
     if (this.#ownsDriver) {
       await this.driver.close();
@@ -423,8 +578,8 @@ export class BunRunner<
       return await this.#skip("paused");
     }
 
-    if (this.options.runMode === "parallel") {
-      if (this.#active.size >= this.options.maxConcurrency) {
+    if (this.#runMode === "parallel") {
+      if (this.#active.size >= this.#maxConcurrency) {
         return await this.#queueLocally(
           args,
           "max-concurrency",
@@ -442,10 +597,26 @@ export class BunRunner<
 
     // The lock outlives a run until its drain finishes, so a trigger arriving
     // in that window reuses what this instance already holds rather than
-    // fighting itself for it.
-    if (this.#lockToken && (await this.#renew(this.#lockToken))) {
-      return { outcome: "started", runId: await this.#startRun(args, source) };
+    // fighting itself for it. Counted from here, synchronously, so a drain
+    // deciding whether to release sees this trigger before it lets go.
+    if (this.#lockToken) {
+      const held = this.#lockToken;
+      this.#reusing += 1;
+
+      try {
+        if ((await this.#renew(held)) && this.#lockToken === held) {
+          return {
+            outcome: "started",
+            runId: await this.#startRun(args, source),
+          };
+        }
+      } finally {
+        this.#reusing -= 1;
+      }
     }
+
+    // A release of our own still in flight is not another holder: let it land.
+    await this.#releasing;
 
     const token = newToken(this.id);
     const acquired = await this.#acquireLock(token);
@@ -507,6 +678,31 @@ export class BunRunner<
     }
   }
 
+  /**
+   * Clears the run history — each finished run's record **and** its log —
+   * keeping every run still in progress whole, and answers what went and what
+   * stayed.
+   *
+   * Kept: the runs this process is executing, the run the runner's live lock
+   * holder is executing, and any other run whose record still says `running`
+   * and started less than `staleAfter` ago (a day by default). A `running`
+   * record nothing vouches for is a run whose process crashed, and is cleared
+   * like a finished one — see `planHistoryClear` for the full rule.
+   *
+   * The lifetime counters ({@link BunRunner.stats}), the analytics series and
+   * the runner's state are untouched: resetting the counters is
+   * {@link BunRunner.resetStats}. Throws `NotSupportedError` on a driver
+   * without `removeRuns`.
+   */
+  async clearHistory(
+    options?: ClearHistoryOptions,
+  ): Promise<ClearHistoryResult> {
+    return await clearRunnerHistory(this.driver, this.namespace, this.#key, {
+      ...options,
+      local: this.#active,
+    });
+  }
+
   /** Lifetime counters. */
   async stats(): Promise<RunnerStats> {
     const state = await this.driver.getState(this.namespace, this.#key);
@@ -566,10 +762,11 @@ export class BunRunner<
       file: this.file,
       schedule: this.#schedule,
       nextRunAt: this.nextRunAt(),
-      executionMode: this.options.executionMode,
-      runMode: this.options.runMode,
+      executionMode: this.#executionMode,
+      runMode: this.#runMode,
       queueRuns: this.options.queueRuns,
-      maxConcurrency: this.options.maxConcurrency,
+      maxConcurrency: this.#maxConcurrency,
+      config: this.config,
       status: this.#status,
       isPaused: state.paused === "1",
       isRunning: lock !== null,
@@ -593,9 +790,9 @@ export class BunRunner<
 
   /* --- internals -------------------------------------------------------- */
 
-  /** Builds the executor for the configured mode. */
+  /** Builds the executor for the mode in force now. */
   #createExecutor(): Executor {
-    switch (this.options.executionMode) {
+    switch (this.#executionMode) {
       case "in-process":
         return new InProcessExecutor(this.options.inProcess);
       case "worker":
@@ -605,10 +802,16 @@ export class BunRunner<
     }
   }
 
-  /** Reads the persisted paused flag and schedule, tolerating a bad read. */
+  /**
+   * Reads the persisted paused flag and schedule, tolerating a bad read.
+   *
+   * `raw` is the whole state hash, so a caller that also needs the `config:*`
+   * family — every caller that adopts an override — does not read twice.
+   */
   async #readState(): Promise<{
     paused?: boolean;
     schedule?: RunnerSchedule;
+    raw?: Record<string, string>;
   }> {
     try {
       const state = await this.driver.getState(this.namespace, this.#key);
@@ -617,6 +820,7 @@ export class BunRunner<
         schedule: state.schedule
           ? (JSON.parse(state.schedule) as RunnerSchedule)
           : undefined,
+        raw: state,
       };
     } catch (error) {
       this.#emitError(error, "readState");
@@ -690,12 +894,20 @@ export class BunRunner<
       this.#armTicker();
     }
 
-    // A resume adopted from elsewhere releases what the pause held back.
+    if (state.raw) {
+      await this.#adoptConfig(state.raw, { persist: true });
+    }
+
+    // A resume adopted from elsewhere releases what the pause held back — and
+    // so does a configuration change: a raised cap, or a mode switch that
+    // stranded the lock or the local queue.
     await this.#drainAll();
   }
 
   /**
-   * Subscribes to this runner's `control` events when `remoteControl` asks,
+   * Subscribes to this runner's `control` events when the resolved
+   * `remoteControl` asks — which `"auto"`, the default, decides from the
+   * driver: yes where events are pushed or local, no where they are polled —
    * so a remote change is adopted as soon as it is published rather than at
    * the next sync. A failure is reported and the sync carries on regardless.
    */
@@ -710,7 +922,13 @@ export class BunRunner<
         "runner",
         this.id,
         (event) => {
-          if (event.type === "control" && this.#status !== "stopped") {
+          // Its own announcement is skipped: it adopted that change before
+          // publishing it.
+          if (
+            event.type === "control" &&
+            event.origin !== this.#origin &&
+            this.#status !== "stopped"
+          ) {
             void this.#sync().catch((error: unknown) => {
               this.#emitError(error, "control");
             });
@@ -731,6 +949,230 @@ export class BunRunner<
       await unsubscribe?.();
     } catch (error) {
       this.#emitError(error, "unsubscribeControl");
+    }
+  }
+
+  /* --- configuration ---------------------------------------------------- */
+
+  /**
+   * Overrides this runner's executor or overlap settings for every process
+   * that owns it, and adopts the change here at once.
+   *
+   * A merge patch: a field left out is untouched, `null` clears that
+   * override. The change applies from the *next* run — a run in flight keeps
+   * the mode it started with, and lowering `maxConcurrency` or switching
+   * `parallel` → `single` never kills one.
+   *
+   * @throws ConfigError when the patch is empty, out of bounds, or asks for
+   * an execution mode this runner's `remoteConfig` does not permit.
+   */
+  async updateConfig(patch: RunnerConfigPatch): Promise<RunnerConfigInfo> {
+    const fields = runnerConfigFields(patch, { allowed: this.#allowedModes });
+    return await this.#writeAndAdopt(fields);
+  }
+
+  /** Clears every override, so the runner goes back to what its code asked for. */
+  async resetConfig(): Promise<RunnerConfigInfo> {
+    return await this.#writeAndAdopt(runnerConfigResetFields());
+  }
+
+  /**
+   * Stores an override, adopts it here, drains what it may have released, and
+   * announces it — so the runner's other owners adopt it within the driver's
+   * event latency rather than at their next sync (`syncInterval`, 30 s by
+   * default). The same `control` event `RemoteRunner` publishes.
+   */
+  async #writeAndAdopt(
+    fields: Record<string, string | null>,
+  ): Promise<RunnerConfigInfo> {
+    await writeRunnerConfig(this.driver, this.namespace, this.#key, fields);
+
+    const state = await this.driver.getState(this.namespace, this.#key);
+    await this.#adoptConfig(state, { persist: true });
+    await this.#drainAll();
+    await this.#announceControl("config");
+
+    return this.config;
+  }
+
+  /**
+   * Publishes a `control` event for this runner's other owners, whatever the
+   * `publish` option says: like `RemoteRunner`'s, it is addressed to the
+   * processes that own the runner, not to dashboards. The change is already
+   * stored, so a failure is logged rather than thrown — the others still
+   * adopt it at their next sync.
+   */
+  async #announceControl(action: RunnerControlAction): Promise<void> {
+    try {
+      await this.driver.publish(
+        runnerEvent(
+          {
+            ns: this.namespace,
+            target: this.id,
+            type: "control",
+            origin: this.#origin,
+          },
+          { action },
+        ),
+      );
+    } catch (error) {
+      this.#logger.warn("Could not publish a runner control event", {
+        error,
+        action,
+      });
+    }
+  }
+
+  /**
+   * Adopts the stored override, dropping any field it cannot honour.
+   *
+   * Everything that reads a configured value reads the live field, so a
+   * change takes effect from the next decision each of them makes: the next
+   * run's executor and `RunRecord.mode`, the next trigger's concurrency gate,
+   * the next drain's lock handling. Nothing in flight is touched.
+   *
+   * `persist` writes the effective values, the adopted version and any
+   * refusal back — skipped by `start()`, which folds them into its own write.
+   */
+  async #adoptConfig(
+    state: Record<string, string>,
+    options: { persist: boolean },
+  ): Promise<void> {
+    const stored = readStoredRunnerConfig(state);
+    const resolved = resolveRunnerConfig({
+      override: stored.override,
+      code: this.#codeConfig,
+      // The code's list, not the published one, so an override stored before
+      // this owner started is refused with the specific reason.
+      allowed: this.#permittedModes,
+      hasChildDriver: this.options.childDriver !== undefined,
+    });
+
+    const previousRunMode = this.#runMode;
+    const previous = {
+      executionMode: this.#executionMode,
+      runMode: this.#runMode,
+      maxConcurrency: this.#maxConcurrency,
+    };
+
+    if (resolved.effective.executionMode !== this.#executionMode) {
+      this.#executionMode = resolved.effective.executionMode;
+      // Only the next run sees it: a handle already started owns its child.
+      this.#executor.close?.();
+      this.#executor = this.#createExecutor();
+    }
+    this.#runMode = resolved.effective.runMode;
+    this.#maxConcurrency = toRunnerConcurrency(
+      resolved.effective.maxConcurrency,
+    );
+
+    this.#overridden = resolved.overridden;
+    this.#configUpdatedAt = stored.updatedAt;
+    this.#configError =
+      resolved.refusals.length > 0
+        ? { at: Date.now(), message: resolved.refusals.join("; ") }
+        : undefined;
+
+    for (const warning of resolved.warnings) {
+      this.#logger.warn(warning, { runnerId: this.id });
+    }
+    for (const refusal of resolved.refusals) {
+      this.#logger.warn(`Refused a runner configuration override: ${refusal}`, {
+        runnerId: this.id,
+      });
+    }
+
+    const changed =
+      previous.executionMode !== this.#executionMode ||
+      previous.runMode !== this.#runMode ||
+      previous.maxConcurrency !== this.#maxConcurrency;
+    const adopted = stored.seq !== this.#configSeq;
+    this.#configSeq = stored.seq;
+
+    // `parallel` → `single`: this process's local queue is never drained in
+    // single mode, so its triggers would sit there for good. They belong in
+    // the driver's queue, which single mode does drain.
+    if (previousRunMode === "parallel" && this.#runMode === "single") {
+      await this.#migrateLocalQueue();
+    }
+
+    if (changed) {
+      this.safeEmit("configured", this.config);
+    }
+
+    if (options.persist && (changed || adopted)) {
+      try {
+        await this.driver.setState(
+          this.namespace,
+          this.#key,
+          this.#configStateFields(),
+        );
+      } catch (error) {
+        this.#emitError(error, "adoptConfig");
+      }
+    }
+  }
+
+  /**
+   * The state fields an owner writes: the effective values under their
+   * original names — so `RemoteRunner.info()` and older clients are unchanged
+   * — plus what only an owner knows.
+   */
+  #configStateFields(): Record<string, string | number | null> {
+    return {
+      executionMode: this.#executionMode,
+      runMode: this.#runMode,
+      maxConcurrency: String(this.#maxConcurrency),
+      [RUNNER_CONFIG_STATE.code]: JSON.stringify(this.#codeConfig),
+      [RUNNER_CONFIG_STATE.allowed]: JSON.stringify(this.#allowedModes),
+      [RUNNER_CONFIG_STATE.appliedSeq]: this.#configSeq,
+      [RUNNER_CONFIG_STATE.appliedAt]: Date.now(),
+      [RUNNER_CONFIG_STATE.error]: this.#configError
+        ? JSON.stringify(this.#configError)
+        : null,
+    };
+  }
+
+  /**
+   * Moves triggers parked in this process into the driver's queue, which is
+   * the only one `single` mode drains.
+   *
+   * `maxQueuedRuns` is honoured against the driver's queue, so a migration
+   * that overflows it counts the rest as skipped rather than silently
+   * dropping them — the same outcome a trigger arriving at a full queue gets.
+   */
+  async #migrateLocalQueue(): Promise<void> {
+    if (this.#localQueue.length === 0) {
+      return;
+    }
+
+    const parked = this.#localQueue.splice(0, this.#localQueue.length);
+
+    for (const trigger of parked) {
+      let queued = false;
+      try {
+        queued = await this.driver.pushQueuedTrigger(
+          this.namespace,
+          this.#key,
+          {
+            id: trigger.id,
+            ...(trigger.args !== undefined ? { args: trigger.args } : {}),
+            source: "manual",
+            requestedAt: Date.now(),
+            requestedBy: newToken(this.id),
+            ...(trigger.force ? { force: true } : {}),
+          },
+          this.options.maxQueuedRuns,
+        );
+      } catch (error) {
+        this.#emitError(error, "migrateLocalQueue");
+      }
+
+      if (!queued) {
+        // Already counted as `queued` when it was parked; a trigger that no
+        // longer fits is a skip, exactly as it would have been on arrival.
+        await this.#skip("queue-full");
+      }
     }
   }
 
@@ -774,11 +1216,11 @@ export class BunRunner<
     }
 
     try {
-      if (this.options.runMode === "parallel") {
+      if (this.#runMode === "parallel") {
         // Re-read on every pass: `stop()` may land while a run is starting,
         // which the narrowing from the check above cannot know about.
         while (
-          this.#active.size < this.options.maxConcurrency &&
+          this.#active.size < this.#maxConcurrency &&
           (this.#status as RunnerStatus) !== "stopped"
         ) {
           const trigger = await this.#takeQueued();
@@ -843,6 +1285,7 @@ export class BunRunner<
   ): Promise<TriggerOutcome> {
     const outcome = { outcome: "skipped", reason } as const;
     await this.#bump({ skipped: 1 });
+    await this.#countRun(Date.now(), { skipped: 1 });
     this.safeEmit("skipped", outcome);
     void this.#publish("skipped", { reason: outcome.reason });
     return outcome;
@@ -860,7 +1303,7 @@ export class BunRunner<
 
     // Single mode has no local queue, and its `#drain` pops without taking
     // the lock, so it is reached only through `#drainQueued`.
-    if (this.options.runMode === "parallel") {
+    if (this.#runMode === "parallel") {
       await this.#drain();
     }
     await this.#drainQueued();
@@ -1017,10 +1460,18 @@ export class BunRunner<
     const token = this.#lockToken;
     this.#lockToken = undefined;
 
-    try {
-      await this.driver.releaseLock(this.namespace, this.#key, token);
-    } catch (error) {
-      this.#emitError(error, "releaseLock");
+    const releasing = (async () => {
+      try {
+        await this.driver.releaseLock(this.namespace, this.#key, token);
+      } catch (error) {
+        this.#emitError(error, "releaseLock");
+      }
+    })();
+    this.#releasing = releasing;
+    await releasing;
+
+    if (this.#releasing === releasing) {
+      this.#releasing = undefined;
     }
   }
 
@@ -1094,7 +1545,7 @@ export class BunRunner<
       runnerId: this.id,
       attempt: 1,
       source,
-      mode: this.options.executionMode,
+      mode: this.#executionMode,
       host: HOST,
       startedAt,
       status: "running",
@@ -1112,14 +1563,17 @@ export class BunRunner<
       lastStatus: "running",
     });
     await this.#bump({ total: 1 });
+    await this.#countRun(startedAt, { started: 1 });
 
     const controller = new AbortController();
+    const capture = this.#createCapture(runId);
     const context = this.#buildContext(
       runId,
       args,
       source,
       startedAt,
       controller,
+      capture,
     );
 
     const handle = this.#executor.start({
@@ -1130,6 +1584,13 @@ export class BunRunner<
       killTimeout: this.options.killTimeout,
       waitToExit: this.options.waitToExit,
       forwardLogs: this.options.forwardLogs,
+      // A run sharing a console — in-process, or a worker's realm — has no
+      // pipes, so its console calls are captured by async context instead
+      // (`consoleCapture.ts`). A spawned run's console is in its pipes.
+      captureConsole:
+        capture !== undefined &&
+        this.options.captureLogs.console &&
+        this.#executionMode !== "spawn",
       events: {
         onProgress: (value) => this.safeEmit("progress", record, value),
         // The executor is transport and hands messages over untyped; this is
@@ -1137,17 +1598,28 @@ export class BunRunner<
         // runtime checks it — the handler is trusted to send what it declares.
         onMessage: (data) =>
           this.safeEmit("message", record, data as TFromHandler),
-        onLog: (level, message, fields) =>
-          this.safeEmit("log", record, level, message, fields),
-        onOutput: (stream, chunk) =>
-          this.safeEmit("output", record, stream, chunk),
+        onLog: (level, message, fields) => {
+          capture?.line(message, {
+            level,
+            fields: this.#logFields(fields, runId),
+          });
+          this.safeEmit("log", record, level, message, fields);
+        },
+        onOutput: (stream, chunk) => {
+          capture?.output(stream, chunk);
+          this.safeEmit("output", record, stream, chunk);
+        },
+        onOutputEnd: (stream) => capture?.endOutput(stream),
+        // Into the store only: the public `output` event stays what its JSDoc
+        // says, a child writing to a piped stream.
+        onConsole: (stream, text) => capture?.output(stream, text),
         onPid: (pid) => {
           record.pid = pid;
         },
       },
     });
 
-    const settle = this.#finish(runId, record, handle);
+    const settle = this.#finish(runId, record, handle, capture);
     const tracked = settle.finally(() => {
       this.#settling.delete(tracked);
     });
@@ -1174,6 +1646,84 @@ export class BunRunner<
     return runId;
   }
 
+  /**
+   * Starts capturing one run's output, when there is somewhere to put it.
+   *
+   * `undefined` — no capture at all — when the option is off or the driver
+   * cannot store run logs, so neither the executor callbacks nor the context
+   * carry a per-line branch for those cases.
+   */
+  #createCapture(runId: string): RunLogCapture | undefined {
+    if (
+      !this.options.captureLogs.enabled ||
+      typeof this.driver.appendRunLog !== "function"
+    ) {
+      return undefined;
+    }
+
+    return new RunLogCapture({
+      driver: this.driver,
+      namespace: this.namespace,
+      key: this.#key,
+      runId,
+      caps: {
+        maxLines: this.options.captureLogs.maxLines,
+        maxBytes: this.options.captureLogs.maxBytes,
+        // A run in the history and a run with a log are the same set: the
+        // driver contract asks the caller to match them, and `clearHistory`
+        // drops both together.
+        keepRuns: this.options.keepHistory,
+      },
+      options: this.options.captureLogs,
+      logger: this.#logger,
+      // The `logs` hint: that this run's stored log grew, and to where — the
+      // number only, never a line. Throttled inside capture. Only built when
+      // the runner publishes at all, so a quiet runner arms no timers for it.
+      ...(this.options.publish
+        ? {
+            hint: (lastSeq: number) => {
+              void this.#publish("logs", { runId, lastSeq });
+            },
+          }
+        : {}),
+      // Only a spawned run has pipes of its own, and only the ones actually
+      // piped: an explicit `"inherit"` leaves nothing for capture to wait for.
+      streams:
+        this.#executionMode === "spawn"
+          ? (["stdout", "stderr"] as const).filter(
+              (stream) => this.options.spawn[stream] === "pipe",
+            )
+          : [],
+    });
+  }
+
+  /**
+   * The fields of a forwarded log record worth storing on the line.
+   *
+   * A forwarded record carries the child logger's bindings, which are this
+   * run's own namespace and ids — true of every line in this log by
+   * definition, so rendering them onto each one is noise. Only bindings whose
+   * value is this run's are dropped; a field that happens to share a name but
+   * not a value is kept.
+   */
+  #logFields(fields: LogFields, runId: string): LogFields {
+    const self: Record<string, string> = {
+      namespace: this.namespace,
+      runnerId: this.id,
+      runId,
+    };
+
+    const kept: LogFields = {};
+    for (const [key, value] of Object.entries(fields)) {
+      if (self[key] === value) {
+        continue;
+      }
+      kept[key] = value;
+    }
+
+    return kept;
+  }
+
   /** The context handed to the handler. */
   #buildContext(
     runId: string,
@@ -1181,6 +1731,7 @@ export class BunRunner<
     source: RunSource,
     startedAt: number,
     controller: AbortController,
+    capture: RunLogCapture | undefined,
   ): RunContext<TArgs> {
     return {
       runId,
@@ -1189,22 +1740,24 @@ export class BunRunner<
       namespace: this.namespace,
       attempt: 1,
       source,
-      mode: this.options.executionMode,
+      mode: this.#executionMode,
       startedAt,
       deadline:
         this.options.timeout > 0 ? startedAt + this.options.timeout : null,
       args: args as TArgs,
       signal: controller.signal,
       logger: this.#logger.child({ runId }),
+      // Only an in-process run gets these: `toSerializable` drops every
+      // function, and a child builds its own pair over the IPC channel.
+      log: (message, options) => capture?.line(message, options),
+      flushLogs: async () => await (capture?.flush() ?? SETTLED),
       progress: () => {},
       send: () => {},
       onMessage: () => () => {},
       ...(this.options.childDriver
         ? { driverConfig: this.options.childDriver }
         : {}),
-      ...(this.options.executionMode === "in-process"
-        ? { driver: this.driver }
-        : {}),
+      ...(this.#executionMode === "in-process" ? { driver: this.driver } : {}),
     };
   }
 
@@ -1213,8 +1766,13 @@ export class BunRunner<
     runId: string,
     record: RunRecord,
     handle: ExecutorHandle,
+    capture: RunLogCapture | undefined,
   ): Promise<RunStatus> {
     const outcome = await handle.done;
+    // Before the record is written, so the history row and the log agree, and
+    // bounded by `RUN_LOG_GRACE_MS` inside `close()` so a store that has
+    // stopped answering cannot hold the run open.
+    const logs = await capture?.close();
     const finishedAt = Date.now();
 
     Object.assign(record, {
@@ -1225,6 +1783,10 @@ export class BunRunner<
       ...(outcome.exitCode !== undefined ? { exitCode: outcome.exitCode } : {}),
       ...(outcome.signal !== undefined ? { signal: outcome.signal } : {}),
       ...(outcome.detached ? { detached: true } : {}),
+      // Absent, not zero, when nothing captured: `undefined` is how a reader
+      // is told this backend stores no run logs, and `0` that the run was
+      // simply quiet.
+      ...(logs ? { logLines: logs.count, logsDropped: logs.dropped } : {}),
       ...(outcome.result !== undefined
         ? {
             result: JSON.parse(
@@ -1277,6 +1839,16 @@ export class BunRunner<
     } catch (error) {
       this.#emitError(error, "record");
     }
+
+    // Outside the block above, so a history write that failed does not lose
+    // the run from the series too: the run did finish, whatever was stored.
+    // One call carrying the duration, so a finished run is one write, into the
+    // bucket it finished in.
+    const finishedAt = record.finishedAt ?? Date.now();
+    await this.#countRun(finishedAt, {
+      [OUTCOME_COUNTERS[outcome.status]]: 1,
+      durationMs: record.durationMs ?? finishedAt - record.startedAt,
+    });
   }
 
   /**
@@ -1400,9 +1972,9 @@ export class BunRunner<
 
     this.#draining = true;
     try {
-      if (this.options.runMode === "parallel") {
+      if (this.#runMode === "parallel") {
         while (
-          this.#active.size < this.options.maxConcurrency &&
+          this.#active.size < this.#maxConcurrency &&
           this.#status !== "stopped"
         ) {
           // The same gate as the driver's queue: while paused, only a forced
@@ -1443,7 +2015,13 @@ export class BunRunner<
     } finally {
       this.#draining = false;
 
-      if (this.options.runMode === "single" && this.#active.size === 0) {
+      // Whenever the lock is held and nothing is running, not only in single
+      // mode: a `single` → `parallel` switch leaves a lock nothing will ever
+      // release again, and it would sit there until its TTL lapsed. Only
+      // single mode ever takes one, so this is a no-op the rest of the time.
+      // Nor while a trigger is reusing it: that trigger's run holds it now,
+      // and its own drain releases it.
+      if (this.#lockToken && this.#active.size === 0 && this.#reusing === 0) {
         await this.#releaseLock();
       }
     }
@@ -1461,6 +2039,75 @@ export class BunRunner<
     } catch (error) {
       this.#emitError(error, "counters");
     }
+  }
+
+  /**
+   * Counts a runner event into the analytics buckets — a run starting, one
+   * finishing with its duration, a trigger skipped — beside the lifetime
+   * counters {@link #bump} keeps, which stay exactly as they are.
+   *
+   * Written only while `metrics.runners` is on and the driver has
+   * `countRunnerRun`; the duration only while `metrics.durations` is. Never
+   * throws: capture must not change a run's outcome, so a driver that fails is
+   * logged once and otherwise ignored. Awaited by its callers, so the count is
+   * in the driver's buffer before `stop()` flushes it.
+   */
+  async #countRun(at: number, counts: RunnerRunDelta): Promise<void> {
+    const { runners, durations } = this.options.metrics;
+
+    if (!runners || typeof this.driver.countRunnerRun !== "function") {
+      return;
+    }
+
+    const { durationMs, ...outcomes } = counts;
+
+    try {
+      await this.driver.countRunnerRun(
+        this.namespace,
+        this.#key,
+        at,
+        durations && durationMs !== undefined
+          ? { ...outcomes, durationMs }
+          : outcomes,
+      );
+    } catch (error) {
+      this.#metricsFailure(error);
+    }
+  }
+
+  /**
+   * Writes the analytics counts the driver has gathered in memory. Awaited on
+   * stop whether or not this runner owns the driver: a process sharing one
+   * driver may exit without ever closing it, and the last second of counts
+   * would go with the process.
+   */
+  async #flushMetrics(): Promise<void> {
+    if (typeof this.driver.flushMetrics !== "function") {
+      return;
+    }
+
+    try {
+      await this.driver.flushMetrics();
+    } catch (error) {
+      this.#metricsFailure(error);
+    }
+  }
+
+  /**
+   * Logs an analytics write that failed, the first time only. Never through
+   * the `error` event: a series losing a point is not a failure of the runner,
+   * and a listener that treats `error` as fatal must not be handed one.
+   */
+  #metricsFailure(error: unknown): void {
+    if (this.#metricsFailed) {
+      return;
+    }
+
+    this.#metricsFailed = true;
+    this.#logger.warn(
+      "Could not record runner analytics; further failures will not be logged",
+      { error },
+    );
   }
 
   /** Reports a failure outside a run, and logs it when nobody is listening. */

@@ -1,6 +1,7 @@
 import type { LogEvent } from "@kingsleyweb/bun-common/lib/logging";
 import type { SerializedError } from "@kingsleyweb/bun-common/lib/utils/native";
 import type { ProcessorContext } from "../../queue/types";
+import type { ConsoleSink } from "../consolePatch";
 import type { IsolatedJob } from "../executors/executor";
 import type {
   ChildToParent,
@@ -245,6 +246,28 @@ async function execute(
     args: ctx.args,
     signal: controller.signal,
     logger: buildLogger(transport, ctx),
+    // The parent owns the store, so a child's log line is one more protocol
+    // message on the existing `log` channel — no new message type, and no
+    // round trip per line. `level` defaults to `info`, the level a line with
+    // nothing said about it reads as.
+    log: (message, options) => {
+      try {
+        transport.send({
+          t: "log",
+          runId: ctx.runId,
+          level: options?.level ?? "info",
+          message,
+          fields: options?.fields ?? {},
+        });
+      } catch {
+        // A channel that has already gone is not the handler's problem:
+        // capture never fails a run.
+      }
+    },
+    // Nothing to await here: the channel is ordered, so every line sent
+    // before the run's outcome reaches the parent ahead of it, and the
+    // parent's flush at settle stores them. See `RunContext.flushLogs`.
+    flushLogs: async () => {},
     progress: (value) => {
       transport.send({ t: "progress", runId: ctx.runId, value });
     },
@@ -263,16 +286,35 @@ async function execute(
 
   transport.send({ t: "started", runId: ctx.runId });
 
-  try {
+  const invoke = async (): Promise<unknown> => {
     const module: unknown = await import(ctx.file);
-    const result =
-      ctx.kind === "job" && ctx.job
-        ? await toHandler(
-            module,
-            ctx.file,
-            "job",
-          )(...isolatedJob(transport, ctx, controller, replies, attempt))
-        : await toHandler(module, ctx.file)(context);
+    return ctx.kind === "job" && ctx.job
+      ? await toHandler(
+          module,
+          ctx.file,
+          "job",
+        )(...isolatedJob(transport, ctx, controller, replies, attempt))
+      : await toHandler(module, ctx.file)(context);
+  };
+
+  // A worker shares no pipe with its parent, so its console is captured here
+  // and sent as `output` messages, on the same ordered channel as `ctx.log()`.
+  // Never in a spawned child (its pipes carry the console already, and this
+  // would store every line twice) and never for a queue job (whose log is the
+  // job's, written with `job.log()`).
+  const captureConsole =
+    ctx.captureConsole === true && ctx.mode === "worker" && ctx.kind !== "job";
+
+  try {
+    const result = captureConsole
+      ? await withRealmCapture((stream, chunk) => {
+          try {
+            transport.send({ t: "output", runId: ctx.runId, stream, chunk });
+          } catch {
+            // A channel that has already gone is not the handler's problem.
+          }
+        }, invoke)
+      : await invoke();
     attempt.settled = true;
     // `job.fail()` was called: the attempt ends that way however the
     // processor returned, exactly as the worker settles an in-process one.
@@ -297,6 +339,29 @@ async function execute(
       error: serializeError(attempt.failedWith ?? error),
     });
     finish(transport, 1);
+  }
+}
+
+/**
+ * Runs `fn` with this realm's console captured into `sink`, for exactly as
+ * long as it runs. The worker is terminated once the run reports, so the
+ * release matters only for tidiness — but a patch left behind is exactly the
+ * kind of thing that bites the one caller who reuses a realm.
+ *
+ * The capture module is imported here, on demand, never statically: a spawned
+ * child — which never captures, its console being in its pipes — would
+ * otherwise load it into every run's module graph for nothing.
+ */
+async function withRealmCapture<T>(
+  sink: ConsoleSink,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const { captureRealmConsole } = await import("../realmConsole");
+  const release = captureRealmConsole(sink);
+  try {
+    return await fn();
+  } finally {
+    release();
   }
 }
 
@@ -424,6 +489,7 @@ function isolatedJob(
       : null,
     stacktrace: record.stacktrace.map((entry) => deserializeError(entry)),
     workerId: record.workerId,
+    processedBy: record.processedBy ?? null,
     // Shown as `Job` shows it: a caller's key without its stored `k:` prefix,
     // unless the key contains `|` (see `displayRepeatKey`). The raw stored
     // spelling made the same job report a different key once isolated.
@@ -440,6 +506,9 @@ function isolatedJob(
     extendLock,
     touch: extendLock,
     getLogs: unavailable("getLogs"),
+    // An isolated job is by definition active, which the driver refuses to
+    // clear the log of anyway.
+    clearLogs: unavailable("clearLogs"),
     updateData: unavailable("updateData"),
     setPriority: unavailable("setPriority"),
     reschedule: unavailable("reschedule"),

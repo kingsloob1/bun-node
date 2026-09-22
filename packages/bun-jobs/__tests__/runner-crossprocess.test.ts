@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
 import { createDriver, runnerKey } from "../lib/index";
@@ -16,6 +16,11 @@ interface Line {
   stats?: { success?: number };
   /** How many triggers were still queued, on a `done` line. */
   queued?: number;
+  /**
+   * Runs that finished in that very process, on a `done` line — unlike
+   * `stats`, whose counters the driver shares across every process.
+   */
+  localRuns?: number;
 }
 
 /**
@@ -30,10 +35,17 @@ interface Line {
 
 const cleanups: (() => Promise<void>)[] = [];
 
+/**
+ * Namespace purges, run before `cleanups`: the file and sqlite backends keep
+ * their data in a temp directory that a cleanup removes.
+ */
+const purges: (() => Promise<void>)[] = [];
+
 /** Shared with the queue suite, so neither can cover a backend the other misses. */
 const READY = await crossProcessBackends({ cleanups });
 
 afterAll(async () => {
+  await Promise.allSettled(purges.map((purge) => purge()));
   await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
 });
 
@@ -48,15 +60,61 @@ const INSTANCE = join(
 /** The handler that records each run to a shared file. */
 const HANDLER = join(import.meta.dir, "fixtures", "handlers", "append.ts");
 
-/** A temp directory plus the run log both processes append to. */
-async function makeWorkspace(): Promise<{ root: string; log: string }> {
+/**
+ * A temp directory, the run log both processes append to, and the directory
+ * each process marks once its trigger has decided.
+ */
+async function makeWorkspace(): Promise<{
+  root: string;
+  log: string;
+  decided: string;
+}> {
   const tmp = await makeTmpDir("bun-jobs-xproc");
   cleanups.push(tmp.cleanup);
 
   const log = join(tmp.path, "runs.log");
   await writeFile(log, "");
 
-  return { root: join(tmp.path, "driver"), log };
+  const decided = join(tmp.path, "decided");
+  await mkdir(decided);
+
+  return { root: join(tmp.path, "driver"), log, decided };
+}
+
+/**
+ * Holds the winner's run open until both processes have decided.
+ *
+ * "Both trigger at once" used to mean both were spawned at once, and the
+ * winner's run lasted a fixed time. On a loaded machine the second process
+ * sometimes started after that run had ended and released the lock, took the
+ * free lock, and ran — correctly, one run after the other — and the test
+ * counted two runs as two processes running at once. With the hold, the
+ * loser always decides while the lock is held, so two runs here can only
+ * mean two holders.
+ */
+function holdForBoth(decided: string): Record<string, string> {
+  return { DECIDED_DIR: decided, PARTICIPANTS: "2" };
+}
+
+/**
+ * The environments of a holder and a latecomer, ordered by handshake.
+ *
+ * The latecomer used to be spawned 400 ms after the holder, whose run lasted
+ * 1,200 ms, and the holder stayed a fixed time afterwards to drain — three
+ * bets on timing, each lost on a loaded machine the way "both trigger at
+ * once" lost its own. Now each waits for the state it needs:
+ * - the latecomer triggers only after the holder has decided (`started`);
+ * - the holder's run is held until the latecomer has decided too;
+ * - the holder stays until it has itself finished both runs.
+ */
+function holderAndLatecomer(decided: string): {
+  holder: Record<string, string>;
+  latecomer: Record<string, string>;
+} {
+  return {
+    holder: { ...holdForBoth(decided), AWAIT_RUNS: "2" },
+    latecomer: { ...holdForBoth(decided), AWAIT_DECIDED: "1" },
+  };
 }
 
 /** How many runs the handler recorded. */
@@ -67,7 +125,7 @@ async function runCount(log: string): Promise<string[]> {
 
 describe("runner across processes", () => {
   it("runs in exactly one process when both trigger at once", async () => {
-    const { root, log } = await makeWorkspace();
+    const { root, log, decided } = await makeWorkspace();
     const namespace = testNamespace();
 
     const env = (marker: string) => ({
@@ -77,6 +135,7 @@ describe("runner across processes", () => {
       HANDLER_FILE: HANDLER,
       RUN_LOG: log,
       MARKER: marker,
+      ...holdForBoth(decided),
     });
 
     const [first, second] = await Promise.all([
@@ -111,8 +170,9 @@ describe("runner across processes", () => {
   }, 30_000);
 
   it("queues the loser's demand, and the lock holder drains it", async () => {
-    const { root, log } = await makeWorkspace();
+    const { root, log, decided } = await makeWorkspace();
     const namespace = testNamespace();
+    const roles = holderAndLatecomer(decided);
 
     const env = (marker: string, extra: Record<string, string> = {}) => ({
       RUNNER_ID: "sync",
@@ -125,18 +185,11 @@ describe("runner across processes", () => {
       ...extra,
     });
 
-    // The holder's run lasts long enough for the second process to arrive
-    // while the lock is genuinely held, and it stays alive afterwards to
-    // notice what that process queued.
-    const holder = runBun<{ event: string; queued?: number }>(
-      INSTANCE,
-      env("holder", { RUN_MS: "1200", DRAIN_MS: "2000" }),
-    );
-    await Bun.sleep(400);
-    const other = await runBun<{
-      event: string;
-      outcome?: { outcome: string; position?: number };
-    }>(INSTANCE, env("other"));
+    // The second process arrives while the lock is genuinely held, and the
+    // holder stays alive until it has run what that process queued — each by
+    // handshake (see `holderAndLatecomer`), not by timing.
+    const holder = runBun<Line>(INSTANCE, env("holder", roles.holder));
+    const other = await runBun<Line>(INSTANCE, env("other", roles.latecomer));
 
     const queued = other.lines.find((line) => line.event === "trigger");
     expect(queued?.outcome?.outcome).toBe("queued");
@@ -144,18 +197,17 @@ describe("runner across processes", () => {
     const holderResult = await holder;
     expect(holderResult.exitCode).toBe(0);
 
-    const holderDone = holderResult.lines.find(
-      (line) => line.event === "done",
-    ) as { stats?: { success?: number }; queued?: number } | undefined;
-    const otherDone = other.lines.find((line) => line.event === "done") as
-      | { stats?: { success?: number } }
-      | undefined;
+    const holderDone = holderResult.lines.find((line) => line.event === "done");
+    const otherDone = other.lines.find((line) => line.event === "done");
 
     // Two runs happened, and both executed in the holder's process — the one
-    // that owns the lock is the one that does the work.
+    // that owns the lock is the one that does the work. `stats` is the
+    // cluster's count, so `localRuns` is what says *where* they ran.
     expect(await runCount(log)).toHaveLength(2);
     expect(holderDone?.stats?.success).toBe(2);
     expect(otherDone?.stats?.success).toBe(0);
+    expect(holderDone?.localRuns).toBe(2);
+    expect(otherDone?.localRuns).toBe(0);
 
     // The queued run kept the *requester's* arguments, not the holder's:
     // whoever asked for the run decides what it runs with.
@@ -250,13 +302,29 @@ for (const { name: backendName, config, available } of READY) {
       ) => Record<string, string>;
       log: string;
       namespace: string;
+      decided: string;
     }> {
-      const { log } = await makeWorkspace();
+      const { log, decided } = await makeWorkspace();
       const namespace = testNamespace(backendName);
+
+      // Everything the runner processes wrote under this namespace — lock,
+      // state, history, metrics — goes when the file does. By then each
+      // process has exited, so every runner has stopped and flushed what it
+      // buffered: nothing can write the namespace back after the purge.
+      purges.push(async () => {
+        const janitor = createDriver(config);
+        await janitor.connect();
+        try {
+          await janitor.purge(namespace);
+        } finally {
+          await janitor.close();
+        }
+      });
 
       return {
         log,
         namespace,
+        decided,
         env: (marker, extra = {}) => ({
           RUNNER_ID: "cleanup",
           NAMESPACE: namespace,
@@ -271,11 +339,11 @@ for (const { name: backendName, config, available } of READY) {
     }
 
     it("runs in exactly one process when both trigger at once", async () => {
-      const { env, log } = await setup();
+      const { env, log, decided } = await setup();
 
       const [first, second] = await Promise.all([
-        runBun<Line>(INSTANCE, env("a", { RUN_MS: "700" })),
-        runBun<Line>(INSTANCE, env("b", { RUN_MS: "700" })),
+        runBun<Line>(INSTANCE, env("a", holdForBoth(decided))),
+        runBun<Line>(INSTANCE, env("b", holdForBoth(decided))),
       ]);
 
       // Stderr is part of the assertion: a process that dies should say why
@@ -298,14 +366,11 @@ for (const { name: backendName, config, available } of READY) {
     }, 60_000);
 
     it("queues the loser's demand, and the lock holder drains it", async () => {
-      const { env, log } = await setup({ queueRuns: true });
+      const { env, log, decided } = await setup({ queueRuns: true });
+      const roles = holderAndLatecomer(decided);
 
-      const holder = runBun<Line>(
-        INSTANCE,
-        env("holder", { RUN_MS: "1200", DRAIN_MS: "2500" }),
-      );
-      await Bun.sleep(400);
-      const other = await runBun<Line>(INSTANCE, env("other"));
+      const holder = runBun<Line>(INSTANCE, env("holder", roles.holder));
+      const other = await runBun<Line>(INSTANCE, env("other", roles.latecomer));
 
       expect(
         other.lines.find((line) => line.event === "trigger")?.outcome?.outcome,
@@ -320,6 +385,10 @@ for (const { name: backendName, config, available } of READY) {
       expect(await runCount(log)).toHaveLength(2);
       expect(holderDone?.stats?.success).toBe(2);
       expect(holderDone?.queued).toBe(0);
+      expect(holderDone?.localRuns).toBe(2);
+      expect(other.lines.find((line) => line.event === "done")?.localRuns).toBe(
+        0,
+      );
     }, 60_000);
 
     it("lets another process take over a lock left by a crash", async () => {

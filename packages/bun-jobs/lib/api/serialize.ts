@@ -4,15 +4,24 @@ import type {
   JobFlow,
   JobRecord,
   JobState,
+  JobWorkerRef,
   RepeatRecord,
   ResolvedJobOptions,
+  RunLogLine,
   RunRecord,
+  StoredJobOptions,
+  WorkerInfo,
 } from "../drivers/index";
-import type { RemoteRunnerInfo, RunnerStatus } from "../runner/types";
+import type {
+  RemoteRunnerInfo,
+  RunnerConfigInfo,
+  RunnerStatus,
+} from "../runner/types";
 import type { RunProgress } from "../shared/progress";
 import type { ResolvedJobsApiSerializers } from "./config";
-import type { JobInclude } from "./contract/constants";
+import type { JobDefaultKey, JobInclude } from "./contract/constants";
 import type { EventWire } from "./ws/events";
+import { explicitKeys } from "../queue/jobDefaults";
 import { JOB_INCLUDES } from "./contract/constants";
 
 /**
@@ -125,8 +134,17 @@ export interface JobDto {
   failedReason: ErrorDto | null;
   /** When the holding worker's lock expires, epoch ms. */
   lockExpiresAt: number | null;
-  /** Id of the worker holding it. */
+  /**
+   * Id of the worker holding it now: set while `active`, `null` once it
+   * settles. Who ran a finished job is {@link JobDto.processedBy}.
+   */
   workerId: string | null;
+  /**
+   * The worker that claimed the current or last attempt, kept after the job
+   * settles; `null` for a job never claimed, or claimed where attribution is
+   * not recorded. `host` and `pid` only with `exposeHosts`.
+   */
+  processedBy: JobWorkerDto | null;
   /** The repeat series that produced it. */
   repeatKey: string | null;
   /** Its place in a flow. */
@@ -143,7 +161,47 @@ export interface JobDto {
    */
   stacktrace?: ErrorDto[];
   /** Options after defaults; with `include=opts`. */
-  opts?: ResolvedJobOptions;
+  opts?: SerializedJobOptions;
+}
+
+/**
+ * A job's options as a client sees them: the stored options, with the
+ * explicit-option mask (`opts.explicit`, a number only the drivers read)
+ * turned into the key names it marks. `explicit` is absent on a job added
+ * before the mask existed, which is not the same as `[]`.
+ */
+export interface SerializedJobOptions extends ResolvedJobOptions {
+  /** The options the job's own `add()` passed explicitly, in `JOB_DEFAULT_KEYS` order. */
+  explicit?: JobDefaultKey[];
+}
+
+/**
+ * Stored options as {@link SerializedJobOptions}: every option passed through
+ * as it is stored (a record written by another version may carry options this
+ * one does not know), except the mask, which is never sent as a number.
+ */
+export function toJobOptionsDto(
+  opts: StoredJobOptions | ResolvedJobOptions,
+): SerializedJobOptions {
+  const { explicit, ...rest } = opts as StoredJobOptions;
+  const keys = explicitKeys(explicit);
+  return keys === undefined ? rest : { ...rest, explicit: keys };
+}
+
+/**
+ * The worker that claimed a job's current or last attempt, as a client sees
+ * it: the stored {@link JobWorkerRef} minus what `exposeHosts` hides — the
+ * same rule, and the same four fields, as {@link WorkerDto}.
+ */
+export interface JobWorkerDto {
+  /** The claiming incarnation's id (`WorkerDto.id`). */
+  id: string;
+  /** Its stable key (`WorkerDto.key`); absent when the claimer recorded only the id. */
+  key?: string;
+  /** The host it ran on; omitted with `exposeHosts: false`, and when not recorded. */
+  host?: string;
+  /** Its process id; omitted with `exposeHosts: false`, and when not recorded. */
+  pid?: number;
 }
 
 /** Where a page sits in its list. */
@@ -182,9 +240,11 @@ export interface QueueSummaryDto {
 }
 
 /** A repeat series as a client sees it. */
-export interface RepeatableDto extends Omit<RepeatRecord, "data"> {
+export interface RepeatableDto extends Omit<RepeatRecord, "data" | "opts"> {
   /** The queue the series belongs to. */
   queue: string;
+  /** Options each occurrence gets, the explicit-option mask as key names. */
+  opts: SerializedJobOptions;
   /** Payload given to each instance; with `include=data`. */
   data?: unknown;
   /** Whether the series is disabled: it schedules nothing until enabled. */
@@ -202,6 +262,16 @@ export interface RunRecordDto extends Omit<
   pid?: number;
   /** The failure. */
   error?: ErrorDto;
+}
+
+/**
+ * One captured line of a run's output as a client sees it: the store's line
+ * exactly, except that its `text` is sent as `message` — what a job log line
+ * is called, so a reader has one name for a logged line.
+ */
+export interface RunLogLineDto extends Omit<RunLogLine, "text"> {
+  /** The line's text, with its trailing newline already removed. */
+  message: string;
 }
 
 /**
@@ -249,37 +319,26 @@ export interface RunnerInfoDto extends Omit<
 export type EventDto = EventWire;
 
 /**
- * A worker as the backend reports it.
+ * A worker as the backend reports it: the driver's own heartbeat record.
  *
- * **Placeholder for the 2.13 read APIs**, which add `WorkerInfo` to the driver
- * contract with exactly these fields. Replace this with an import of
- * `WorkerInfo` once 2.13 merges; the DTO below then follows it.
+ * An alias rather than a shape of its own — it was a placeholder for the
+ * record the 2.13 read APIs added, and the DTO below now follows
+ * {@link WorkerInfo} field for field, so the two can no longer drift.
  */
-export interface WorkerInfoLike {
-  /** The worker's id. */
-  id: string;
-  /** The queue it consumes. */
-  queue: string;
-  /** The host it runs on. */
-  host: string;
-  /** Its process id. */
-  pid: number;
-  /** How many jobs it runs at once. */
-  concurrency: number;
-  /** How many jobs it was running at its last report. */
-  active: number;
-  /** Whether it was locally paused at its last report. */
-  paused: boolean;
-  /** When it started consuming, epoch ms. */
-  startedAt: number;
-  /** When it last reported, epoch ms. */
-  heartbeatAt: number;
-  /** When the record lapses unless the worker reports again, epoch ms. */
-  expiresAt: number;
-}
+export type WorkerInfoLike = WorkerInfo;
 
-/** A worker as a client sees it. */
-export interface WorkerDto extends Omit<WorkerInfoLike, "host" | "pid"> {
+/**
+ * A worker as a client sees it: its record, minus what `exposeHosts` hides,
+ * plus the `stale` flag the server computes (the record carries the
+ * heartbeat, not the verdict).
+ */
+export interface WorkerDto extends Omit<WorkerInfo, "host" | "pid"> {
+  /**
+   * Whether it has missed a report — `now - heartbeatAt` past
+   * {@link STALE_REPORTS} times its effective `reportInterval`. Absent on a
+   * worker that reports no config, where there is no interval to judge it by.
+   */
+  stale?: boolean;
   /** The host it runs on; omitted with `exposeHosts: false`. */
   host?: string;
   /** Its process id; omitted with `exposeHosts: false`. */
@@ -375,6 +434,9 @@ export function toJobDto(
       : null,
     lockExpiresAt: record.lockExpiresAt,
     workerId: record.workerId,
+    processedBy: record.processedBy
+      ? toJobWorkerDto(record.processedBy, options)
+      : null,
     repeatKey: record.repeatKey,
     flow: record.flow ? toFlowDto(record.flow, options) : null,
   };
@@ -390,9 +452,32 @@ export function toJobDto(
     );
   }
   if (input.include.has("opts")) {
-    dto.opts = record.opts;
+    dto.opts = toJobOptionsDto(record.opts);
   }
   return options.job ? options.job(dto, record, input.req) : dto;
+}
+
+/**
+ * Shapes a job's attribution stamp, picked field by field; `host` and `pid`
+ * only with `exposeHosts`, exactly as {@link toWorkerDto} decides them.
+ */
+export function toJobWorkerDto(
+  stamp: JobWorkerRef,
+  options: Pick<ResolvedJobsApiSerializers, "exposeHosts">,
+): JobWorkerDto {
+  const dto: JobWorkerDto = { id: stamp.id };
+  if (stamp.key !== undefined) {
+    dto.key = stamp.key;
+  }
+  if (options.exposeHosts) {
+    if (stamp.host !== undefined) {
+      dto.host = stamp.host;
+    }
+    if (stamp.pid !== undefined) {
+      dto.pid = stamp.pid;
+    }
+  }
+  return dto;
 }
 
 /**
@@ -427,7 +512,7 @@ export function toRepeatableDto(
     queue: input.queue,
     key: record.key,
     name: record.name,
-    opts: record.opts,
+    opts: toJobOptionsDto(record.opts),
     count: record.count,
     // A disabled series has no next occurrence, whatever a stale pointer says.
     nextRunAt: record.disabled ? null : record.nextRunAt,
@@ -476,6 +561,10 @@ export function toRunRecordDto(
       dto.pid = record.pid;
     }
   }
+  // Every optional field is copied only when the record has it, which is what
+  // the two run-log counters need: absent says this backend stores no run
+  // logs, `0` says the run was quiet, and a `?? 0` would turn the first into
+  // the second for every driver that cannot capture.
   for (const key of [
     "finishedAt",
     "durationMs",
@@ -483,6 +572,8 @@ export function toRunRecordDto(
     "signal",
     "result",
     "detached",
+    "logLines",
+    "logsDropped",
   ] as const) {
     if (record[key] !== undefined) {
       (dto as unknown as Record<string, unknown>)[key] = record[key];
@@ -492,6 +583,62 @@ export function toRunRecordDto(
     dto.error = toErrorDto(record.error, options);
   }
   return options.run ? options.run(dto, record, req) : dto;
+}
+
+/**
+ * Shapes one captured run-log line for the wire.
+ *
+ * The one rename in the whole surface: the store's `text` is the DTO's
+ * `message`, which is what a job log line is called. Nothing is redacted —
+ * a line is the run's own output, and `exposeHosts`/`exposeStacks` have no
+ * say over what a program printed — and the two optional fields are sent only
+ * when they are set, so `truncated` absent means the line is whole.
+ */
+export function toRunLogLineDto(line: RunLogLine): RunLogLineDto {
+  const dto: RunLogLineDto = {
+    seq: line.seq,
+    at: line.at,
+    stream: line.stream,
+    message: line.text,
+  };
+  if (line.level !== undefined) {
+    dto.level = line.level;
+  }
+  if (line.truncated) {
+    dto.truncated = true;
+  }
+  return dto;
+}
+
+/**
+ * A runner's configuration as a client sees it: the runtime's record field
+ * for field — every one of them is already safe to publish — so the DTO and
+ * the record cannot drift, as `WorkerInfoLike` does for a worker's.
+ */
+export type RunnerConfigDto = RunnerConfigInfo;
+
+/**
+ * Shapes a runner's configuration for a client: its values, what its code
+ * asked for, and how far an owner has adopted the stored override.
+ *
+ * Picked field by field like every other DTO here, not spread — a field added
+ * to `RunnerConfigInfo` is then published only once somebody decides to.
+ */
+export function toRunnerConfigDto(config: RunnerConfigInfo): RunnerConfigDto {
+  return {
+    effective: { ...config.effective },
+    ...(config.code ? { code: { ...config.code } } : {}),
+    overridden: [...config.overridden],
+    ...(config.allowed ? { allowed: [...config.allowed] } : {}),
+    seq: config.seq,
+    ...(config.appliedSeq === undefined
+      ? {}
+      : { appliedSeq: config.appliedSeq }),
+    ...(config.error
+      ? { error: { at: config.error.at, message: config.error.message } }
+      : {}),
+    ...(config.updatedAt === undefined ? {} : { updatedAt: config.updatedAt }),
+  };
 }
 
 /**
@@ -535,6 +682,9 @@ export function toRunnerInfoDto(
   }
   if (options.exposeRunnerFiles && info.file !== undefined) {
     dto.file = info.file;
+  }
+  if (info.config) {
+    dto.config = toRunnerConfigDto(info.config);
   }
   if (info.local) {
     dto.local = {
@@ -604,11 +754,41 @@ export function toEventDto(
   return options.event ? options.event(dto, event, req) : dto;
 }
 
-/** Shapes a worker; host and pid only with `exposeHosts`. */
+/**
+ * How many report intervals a worker may miss before it is `stale`.
+ *
+ * Under three (`REPORT_LIFETIMES`, after which the record lapses and the
+ * worker stops being listed at all) and over one, since a report landing a
+ * few milliseconds late is ordinary jitter, not a sick worker.
+ */
+export const STALE_REPORTS = 1.5;
+
+/**
+ * Whether a worker has missed a report. `undefined` when it reports no
+ * config, so there is no interval to judge it by — an older worker is
+ * reported honestly as unknown rather than guessed at with a default.
+ */
+export function isWorkerStale(
+  worker: WorkerInfoLike,
+  now: number,
+): boolean | undefined {
+  const interval = worker.config?.effective.reportInterval;
+  if (typeof interval !== "number" || !Number.isFinite(interval)) {
+    return undefined;
+  }
+  return now - worker.heartbeatAt > interval * STALE_REPORTS;
+}
+
+/**
+ * Shapes a worker; host and pid only with `exposeHosts`, and `stale` computed
+ * here because the record carries the heartbeat rather than the verdict.
+ */
 export function toWorkerDto(
   worker: WorkerInfoLike,
   options: Pick<ResolvedJobsApiSerializers, "exposeHosts">,
+  now: number = Date.now(),
 ): WorkerDto {
+  const stale = isWorkerStale(worker, now);
   const dto: WorkerDto = {
     id: worker.id,
     queue: worker.queue,
@@ -619,9 +799,85 @@ export function toWorkerDto(
     heartbeatAt: worker.heartbeatAt,
     expiresAt: worker.expiresAt,
   };
+  if (worker.key !== undefined) {
+    dto.key = worker.key;
+  }
+  if (worker.service !== undefined) {
+    dto.service = worker.service;
+  }
+  if (worker.state !== undefined) {
+    dto.state = worker.state;
+  }
+  if (worker.processStartedAt !== undefined) {
+    dto.processStartedAt = worker.processStartedAt;
+  }
+  if (stale !== undefined) {
+    dto.stale = stale;
+  }
+  if (worker.version !== undefined) {
+    dto.version = worker.version;
+  }
+  // Only when the record carries them: absent (a worker from before the
+  // counters) and `0` (one that has finished nothing yet) are different
+  // answers, as with a run's log counters.
+  if (worker.completed !== undefined) {
+    dto.completed = worker.completed;
+  }
+  if (worker.failed !== undefined) {
+    dto.failed = worker.failed;
+  }
+  if (worker.config !== undefined) {
+    dto.config = toWorkerConfigDto(worker.config);
+  }
+  if (worker.control !== undefined) {
+    dto.control = toWorkerControlDto(worker.control);
+  }
   if (options.exposeHosts) {
     dto.host = worker.host;
     dto.pid = worker.pid;
   }
   return dto;
+}
+
+/** Shapes a worker's settings: copied field by field, like every other DTO. */
+function toWorkerConfigDto(
+  config: NonNullable<WorkerInfo["config"]>,
+): NonNullable<WorkerDto["config"]> {
+  return {
+    effective: { ...config.effective },
+    code: { ...config.code },
+    overridden: [...config.overridden],
+    ...(config.derived === undefined ? {} : { derived: [...config.derived] }),
+    seq: config.seq,
+    ...(config.updatedAt === undefined ? {} : { updatedAt: config.updatedAt }),
+  };
+}
+
+/** Shapes what a worker says about being controlled from outside. */
+function toWorkerControlDto(
+  control: NonNullable<WorkerInfo["control"]>,
+): NonNullable<WorkerDto["control"]> {
+  return {
+    enabled: control.enabled,
+    mode: control.mode,
+    appliedSeq: control.appliedSeq,
+    configSeq: control.configSeq,
+    pending: control.pending,
+    stopPersistence: control.stopPersistence,
+    stopPersistenceOverridable: control.stopPersistenceOverridable,
+    ...(control.lastError === undefined
+      ? {}
+      : {
+          lastError: {
+            at: control.lastError.at,
+            message: control.lastError.message,
+            ...(control.lastError.action === undefined
+              ? {}
+              : { action: control.lastError.action }),
+            ...(control.lastError.seq === undefined
+              ? {}
+              : { seq: control.lastError.seq }),
+          },
+        }),
+  };
 }

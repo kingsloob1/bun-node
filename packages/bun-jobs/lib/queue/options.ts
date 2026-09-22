@@ -1,4 +1,6 @@
+import type { StoredJobOptions } from "../drivers/driver";
 import type { ResolvedJobOptions, Retention } from "../drivers/index";
+import type { JobDefaultsPatch } from "./jobDefaults";
 import type { JobOptions } from "./types";
 import { encodeName, MAX_ENCODED_NAME } from "../drivers/file-names";
 import {
@@ -9,6 +11,7 @@ import {
 import { ConfigError } from "../shared/errors";
 import { fitName } from "../shared/fit";
 import { assertSegment } from "../shared/keys";
+import { explicitMaskOf } from "./optionBits";
 
 /** Widest priority the drivers can order on; keeps marker names sortable. */
 const PRIORITY_LIMIT = 1_048_576;
@@ -207,13 +210,104 @@ export const DEFAULT_JOB_OPTIONS: ResolvedJobOptions = {
   keepStacktraces: DEFAULT_KEEP_STACKTRACES,
 };
 
-/** Applies queue defaults and this call's options over the built-in ones. */
+/**
+ * Applies queue defaults and this call's options over the built-in ones.
+ *
+ * The two-layer merge, unchanged: no stored override, no `define()` layer, and
+ * no `explicit` mask on the result — so `resolveJobOptions(undefined,
+ * undefined)` is still exactly {@link DEFAULT_JOB_OPTIONS}. The add path uses
+ * {@link resolveLayeredJobOptions}.
+ */
 export function resolveJobOptions(
   queueDefaults: JobOptions | undefined,
   options: JobOptions | undefined,
 ): ResolvedJobOptions {
-  const merged: JobOptions = { ...queueDefaults, ...options };
+  return resolveMerged({ ...queueDefaults, ...options });
+}
 
+/**
+ * The layers under a call's own options, lowest first: `code`, then
+ * `definition`, then `override`. Each may be absent.
+ */
+export interface JobOptionLayers {
+  /** The queue's own `defaultJobOptions` (`BunQueueOptions.defaultJobOptions`). */
+  code?: JobOptions;
+  /**
+   * A `define()` definition's defaults for the job's name. Above `code` —
+   * the per-name choice is the more specific one — and below `override`: a
+   * queue's stored defaults reach defined names too (decision D3).
+   */
+  definition?: JobOptions;
+  /**
+   * The queue's stored override (`JobDefaultsCache.get()`). Omit it where a
+   * result must not freeze it — a repeat series' definition stores the code's
+   * resolution, so a later reset still has something to fall back to.
+   */
+  override?: JobDefaultsPatch;
+}
+
+/**
+ * Copies `layer`'s own defined values onto `into`, so an absent key cannot
+ * mask a lower layer. An absent layer costs one check, and an empty one a
+ * loop that never runs.
+ */
+function assignDefined(into: JobOptions, layer: object | undefined): void {
+  if (layer === undefined) {
+    return;
+  }
+
+  const target = into as Record<string, unknown>;
+  const source = layer as Record<string, unknown>;
+
+  for (const key of Object.keys(source)) {
+    const value = source[key];
+
+    if (value !== undefined) {
+      target[key] = value;
+    }
+  }
+}
+
+/**
+ * Resolves a new job's options from every layer, highest first: an option
+ * passed on the call itself (`options`), the queue's stored override, the
+ * `define()` definition's defaults, the queue's `defaultJobOptions`, the
+ * built-ins. Per key and shallow — an override's `backoff` replaces the
+ * code's whole object.
+ *
+ * Also records **which editable options the call passed itself** as
+ * `explicit` ({@link explicitMaskOf}) — always, `0` included, so a stored job
+ * without one is unambiguously older than the mask — which is what lets
+ * rewriting pending jobs keep them.
+ *
+ * Unlike {@link resolveJobOptions}, a key set to `undefined` in any layer is
+ * treated as absent: `{ attempts: undefined }` on a call falls through to the
+ * override rather than wiping it to the built-in.
+ *
+ * On the add path, so it merges into one object rather than spreading a
+ * filtered copy of every layer: an absent layer is skipped outright, which is
+ * the common case (no `define()` layer, an empty override).
+ */
+export function resolveLayeredJobOptions(
+  layers: JobOptionLayers,
+  options: JobOptions | undefined,
+): StoredJobOptions {
+  const merged: JobOptions = {};
+
+  assignDefined(merged, layers.code);
+  assignDefined(merged, layers.definition);
+  assignDefined(merged, layers.override);
+  assignDefined(merged, options);
+
+  // Appended rather than spread in, so `explicit` stays the last key without
+  // copying the resolved object a second time.
+  const resolved = resolveMerged(merged) as StoredJobOptions;
+  resolved.explicit = explicitMaskOf(options);
+  return resolved;
+}
+
+/** Checks one merged set of options and fills its gaps with the built-ins. */
+function resolveMerged(merged: JobOptions): ResolvedJobOptions {
   const attempts = merged.attempts ?? DEFAULT_JOB_OPTIONS.attempts;
   if (!Number.isInteger(attempts) || attempts < 1) {
     throw new ConfigError("attempts must be a whole number of at least 1", {

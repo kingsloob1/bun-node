@@ -1,4 +1,9 @@
-import type { DriverConfig, JobsDriver, WorkerInfo } from "./drivers/index";
+import type {
+  DriverConfig,
+  JobsDriver,
+  MetricsOptions,
+  WorkerInfo,
+} from "./drivers/index";
 import type { JobsNotifierOptions } from "./notifier";
 import type { BackoffStrategy } from "./queue/backoff";
 import type { JobDefinition, JobDefinitionOptions } from "./queue/definitions";
@@ -35,15 +40,17 @@ import {
 } from "./drivers/index";
 import { JobsNotifier } from "./notifier";
 import { BackoffStrategies } from "./queue/backoff";
+import { addDefinedJob, splitDefinitionDefaults } from "./queue/BunQueue";
 import { MAX_TIMER_MS } from "./queue/BunQueueWorker";
 import { JobDefinitions } from "./queue/definitions";
-import { BunQueue, BunQueueWorker } from "./queue/index";
+import { BunQueue, BunQueueWorker, RemoteWorkerManager } from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
 import { BunRunnerManager } from "./runner/index";
+import { mapConcurrent } from "./shared/bounded";
 import { ConfigError, NotSupportedError } from "./shared/errors";
 import { assertDateParser, parseDuration } from "./shared/humanTime";
-import { assertNamespace } from "./shared/keys";
+import { assertNamespace, assertSegment } from "./shared/keys";
 import { createJobsLogger } from "./shared/logger";
 
 /** Options for a {@link BunJobs} context. */
@@ -96,6 +103,47 @@ export interface BunJobsOptions {
    * leaves the worker's own defaults.
    */
   processEvery?: number | string;
+  /**
+   * What this service is called, in the worker inventory and in every
+   * worker's stable key (`[service.]queue[.name|.ordinal]`).
+   *
+   * Worth setting whenever more than one service shares a backend and a
+   * namespace, because an override written against `mail` would otherwise
+   * apply to whichever of them consumes a queue of that name. Unset by
+   * default, which drops the prefix.
+   */
+  service?: string;
+  /**
+   * Whether the workers this context creates obey instructions written by
+   * another process — pause, resume, stop, start and configuration
+   * overrides.
+   *
+   * `true` by default here, unlike a `BunQueueWorker` built directly: a
+   * context's workers are the ones a management API lists, and a worker that
+   * could be listed but not controlled is the more surprising default. It
+   * costs one subscription per worker where the driver pushes events, and
+   * where it does not (poll mode), two reads per worker every
+   * `remoteControl.interval` — 2 s by default, and never longer than the
+   * worker's `reportInterval`. Either way each heartbeat re-reads them too.
+   */
+  workerRemoteControl?: boolean;
+  /**
+   * What is recorded into the analytics buckets — per-second and per-minute
+   * series of every queue's jobs, each runner's runs and durations, and each
+   * worker's jobs and busyness. Everything is on by default, at per-second
+   * resolution with five minutes of per-second retention (`secondRetentionMs`,
+   * at most fifteen).
+   *
+   * Handed to the driver this context builds from a config (a config naming
+   * its own `metrics` wins) and merged under every runner and worker created
+   * here, whose own `metrics` wins. `workers`, `runners` and `durations` also
+   * govern those runners and workers on a driver instance passed in;
+   * `resolution` and `secondRetentionMs` belong to whoever built the instance.
+   *
+   * **`{ workers: false }` is the first lever for a large fleet**: per-worker
+   * series are the term that grows with the number of workers.
+   */
+  metrics?: MetricsOptions;
 }
 
 /**
@@ -241,10 +289,18 @@ export class BunJobs<
 > {
   /** The namespace everything here belongs to. */
   readonly namespace: string;
+  /** What this service is called, when it was named. */
+  readonly service: string | undefined;
   /** The backend everything here shares. */
   readonly driver: JobsDriver;
   /** Runners created here, registered so they can be started and stopped together. */
   readonly runners: BunRunnerManager;
+  /**
+   * The workers of this namespace, and the controller for each queue's —
+   * `jobs.workers.remote("mail")` pauses, stops, starts and reconfigures
+   * workers wherever they run.
+   */
+  readonly workers: RemoteWorkerManager;
 
   /** Whether this context built the driver and must close it. */
   readonly #ownsDriver: boolean;
@@ -277,6 +333,16 @@ export class BunJobs<
   readonly #dateParser: DateParser | undefined;
   /** Whether what is created here publishes its events. */
   readonly #publishEvents: boolean;
+  /** The `metrics` option, merged under every runner's and worker's own. */
+  readonly #metrics: MetricsOptions | undefined;
+  /** Whether workers created here obey instructions from other processes. */
+  readonly #workerRemoteControl: boolean;
+  /**
+   * How many workers have been created here for each queue, so the second one
+   * on a queue gets an ordinal in its stable key and the first keeps the
+   * plain `[service.]queue`.
+   */
+  readonly #workerOrdinals = new Map<string, number>();
   /** Notifiers opened here, closed with the context. */
   readonly #notifiers = new Set<JobsNotifier>();
   /** The worker running defined jobs, once `start()` has been called. */
@@ -294,7 +360,7 @@ export class BunJobs<
   constructor(options: BunJobsConfig<NoInfer<TJobs>, NoInfer<TRegistryQueue>>) {
     this.namespace = assertNamespace(options.namespace);
 
-    const { driver, owned } = resolveDriver(options.driver);
+    const { driver, owned } = resolveDriver(options.driver, options.metrics);
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#loggerOption = options.logger;
@@ -305,6 +371,12 @@ export class BunJobs<
     this.#defaultJobOptions = options.defaultJobOptions;
     this.#registryQueue = options.registryQueue ?? "jobs";
     this.#publishEvents = options.publishEvents ?? false;
+    this.#metrics = options.metrics;
+    this.service =
+      options.service === undefined
+        ? undefined
+        : assertSegment(options.service, "service");
+    this.#workerRemoteControl = options.workerRemoteControl ?? true;
     this.#processEvery =
       options.processEvery === undefined
         ? undefined
@@ -319,6 +391,13 @@ export class BunJobs<
       { namespace: this.namespace },
       `jobs:${this.namespace}`,
     );
+
+    this.workers = new RemoteWorkerManager({
+      namespace: this.namespace,
+      driver: this.driver,
+      locals: () => this.#workers,
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    });
 
     this.runners = new BunRunnerManager({
       namespace: this.namespace,
@@ -385,6 +464,7 @@ export class BunJobs<
       // Children get the config, since an instance cannot be serialised.
       ...(this.#childDriver ? { childDriver: this.#childDriver } : {}),
       ...options,
+      ...this.#mergeMetrics(this.#runnerDefaults?.metrics, options.metrics),
       logger: options.logger ?? this.#loggerOption,
     } as Omit<BunRunnerOptions<TArgs>, "namespace"> & { namespace?: string });
   }
@@ -449,16 +529,54 @@ export class BunJobs<
     return queue;
   }
 
+  /**
+   * The context's `metrics` option with the more specific ones over it, field
+   * by field — so a context's `{ workers: false }` is not undone by a worker
+   * that only asked for `resolution: "minute"`. Empty when nobody set any, so
+   * the option is left out rather than passed as `undefined`.
+   */
+  #mergeMetrics(...specific: (MetricsOptions | undefined)[]): {
+    metrics?: MetricsOptions;
+  } {
+    const layers = [this.#metrics, ...specific].filter(
+      (layer): layer is MetricsOptions => layer !== undefined,
+    );
+
+    if (layers.length === 0) {
+      return {};
+    }
+
+    // A field given as `undefined` is not an answer, so it does not hide the
+    // layer below it.
+    const merged: Record<string, unknown> = {};
+    for (const layer of layers) {
+      for (const [field, value] of Object.entries(layer)) {
+        if (value !== undefined) {
+          merged[field] = value;
+        }
+      }
+    }
+
+    return { metrics: merged as MetricsOptions };
+  }
+
   /** Creates a worker consuming a queue in this namespace. */
   worker<TData = unknown, TResult = unknown>(
     name: string,
     processor: JobProcessor<TData, TResult> | string | URL,
     options?: Omit<BunQueueWorkerOptions, "namespace" | "driver">,
   ): BunQueueWorker<TData, TResult> {
+    const ordinal = (this.#workerOrdinals.get(name) ?? 0) + 1;
+    this.#workerOrdinals.set(name, ordinal);
+
     const worker = new BunQueueWorker<TData, TResult>(name, processor, {
       ...(this.#publishEvents ? { publish: true } : {}),
       publishGate: this.#publishGate,
+      ...(this.service === undefined ? {} : { service: this.service }),
+      keyOrdinal: ordinal,
+      remoteControl: this.#workerRemoteControl,
       ...options,
+      ...this.#mergeMetrics(options?.metrics),
       namespace: this.namespace,
       driver: this.driver,
       logger: options?.logger ?? this.#loggerOption,
@@ -916,15 +1034,17 @@ export class BunJobs<
     // The definition's options underneath, the call's on top: a caller asking
     // for a delay on one job should not lose the retry policy the definition
     // gave every job of that name.
+    // Its editable options go as their own layer, under the queue's stored
+    // job defaults, so they are not recorded as explicit (see `addDefinedJob`).
     const { concurrency: _concurrency, ...defaults } = definition.options;
+    const { definition: layer, rest } = splitDefinitionDefaults(defaults);
 
-    return await this.queue<TData>(this.#registryQueue).add(
+    return await addDefinedJob(
+      this.queue<TData>(this.#registryQueue),
       name,
       data as TData,
-      {
-        ...defaults,
-        ...options,
-      },
+      { ...rest, ...options },
+      layer,
     );
   }
 
@@ -947,23 +1067,23 @@ export class BunJobs<
    * Here rather than on `BunQueue` because it is a question about the
    * namespace, which this context owns: a queue knows only itself. Counting
    * is one grouped query on the SQL and MongoDB drivers, and one count per
-   * queue elsewhere; each queue's pause flag is one read.
+   * queue elsewhere; each queue's pause flag is one read, at most
+   * `FAN_OUT_LIMIT` at a time — not one per queue all at once, on the pool
+   * the workers claim through.
    */
   async getQueueSummaries(): Promise<QueueSummary[]> {
     await this.driver.connect();
     const counts = await countQueues(this.driver, this.namespace);
 
-    return await Promise.all(
-      [...counts].map(async ([name, byState]) => ({
-        name,
-        counts: byState,
-        total: Object.values(byState).reduce((sum, count) => sum + count, 0),
-        paused: await this.driver.isQueuePaused({
-          ns: this.namespace,
-          queue: name,
-        }),
-      })),
-    );
+    return await mapConcurrent([...counts], async ([name, byState]) => ({
+      name,
+      counts: byState,
+      total: Object.values(byState).reduce((sum, count) => sum + count, 0),
+      paused: await this.driver.isQueuePaused({
+        ns: this.namespace,
+        queue: name,
+      }),
+    }));
   }
 
   /**
@@ -983,19 +1103,14 @@ export class BunJobs<
 
     const now = Date.now();
     const queues = [...(await this.driver.listQueues(this.namespace))].sort();
-    const workers: WorkerInfo[] = [];
+    // Concurrently but bounded: one read per queue in series made a
+    // dashboard's worker list cost the sum of every queue's round trip.
+    const perQueue = await mapConcurrent(queues, async (queue) => {
+      const ref = { ns: this.namespace, queue };
+      return await listWorkerRecords(this.driver, ref, now);
+    });
 
-    for (const queue of queues) {
-      workers.push(
-        ...(await listWorkerRecords(
-          this.driver,
-          { ns: this.namespace, queue },
-          now,
-        )),
-      );
-    }
-
-    return workers;
+    return perQueue.flat();
   }
 
   /** Deletes everything in this namespace, and nothing outside it. */

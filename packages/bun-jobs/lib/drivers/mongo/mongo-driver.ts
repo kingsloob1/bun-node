@@ -1,12 +1,17 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
+import type { PendingRewritePlan } from "../../queue/jobDefaults";
 import type {
   ConnectionInput,
   ConnectionOptions,
 } from "../../shared/connection";
+import type { RunLogStream } from "../../shared/constants";
+import type { AttributionFilter } from "../attribution";
 import type {
+  AddedRange,
   ChildOutcome,
   ChildRecordResult,
   ClaimOptions,
+  ClearJobLogsResult,
   DriverCapabilities,
   DriverEvent,
   EventKind,
@@ -20,33 +25,125 @@ import type {
   JobRef,
   JobsDriver,
   JobState,
+  JobWorkerRef,
   LockInfo,
+  MetricsQuery,
+  NamespaceMetricsQuery,
+  NamespaceMetricsRead,
+  PendingOptionsRewrite,
+  PendingOptionsRewriteResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
   RepeatRecord,
-  ResolvedJobOptions,
   Retention,
+  RunLogAppendResult,
+  RunLogCaps,
+  RunLogInput,
+  RunLogLine,
+  RunLogPage,
+  RunLogQuery,
+  RunnerMetricsQuery,
+  RunnerMetricsRead,
+  RunnerMetricsSeries,
+  RunnerMetricsTotals,
+  RunnerMetricsTotalsQuery,
+  RunnerRunDelta,
   RunRecord,
+  StoredJobOptions,
   ThroughputBucket,
   WorkerInfo,
+  WorkerMetricsQuery,
+  WorkerMetricsRead,
+  WorkerMetricsSeries,
+  WorkerMetricsTotals,
+  WorkerMetricsTotalsQuery,
 } from "../driver";
+import type {
+  BufferWriteResult,
+  BusynessSample,
+  BusynessStats,
+  CounterBucket,
+  DurationStats,
+  JobCounters,
+  MetricsOptions,
+  MetricsSupport,
+  PendingMetric,
+  ResolvedMetricsOptions,
+  RunnerRunCounters,
+  WorkerMetricsRef,
+} from "../metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
-import { jsonClone, sleep } from "@kingsleyweb/bun-common";
+import { jsonClone, serializeError, sleep } from "@kingsleyweb/bun-common";
+import {
+  assertRewriteRequest,
+  decodeRewriteCursor,
+  emptyRewriteResult,
+  encodeRewriteCursor,
+  JOB_OPTION_BITS,
+  planPendingRewrite,
+  tallyMoved,
+  tallyRewrite,
+} from "../../queue/jobDefaults";
 import { assertWritableStateName } from "../../queue/windows";
 import {
   databaseFromUrl,
   resolveConnectionUrl,
   resolveNames,
 } from "../../shared/connection";
-import { ConfigError, DriverError } from "../../shared/errors";
+import {
+  ChildFailedError,
+  ConfigError,
+  DriverError,
+} from "../../shared/errors";
 import { EventRetention } from "../../shared/eventRetention";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
+import {
+  emptyAddedCounts,
+  rangeMatchesNothing,
+  sortsByCreated,
+} from "../added";
+import {
+  attributionFilter,
+  attributionOf,
+  FINISHED_STATES,
+  hasRange,
+  matchesNothing,
+} from "../attribution";
 import { BURIABLE_STATES, canBury } from "../bury";
+import { claimByLoop } from "../claimBatch";
 import { EventGaps } from "../eventGaps";
 import { flowKey, unsettledChildren } from "../flow";
+import {
+  addBusynessSample,
+  addDuration,
+  bucketStart,
+  emptyBusynessStats,
+  emptyDurationStats,
+  emptyHistogram,
+  hasMetricBuckets,
+  JOB_COUNTERS,
+  mergeBusynessBuckets,
+  mergeBusynessStats,
+  mergeCounterBuckets,
+  mergeDurationBuckets,
+  mergeDurationStats,
+  MetricsBuffer,
+  MetricsPruneClock,
+  metricsPruneCutoff,
+  metricsSupportOf,
+  NAMESPACE_ENTITY,
+  PendingBuffer,
+  resolveMetricsOptions,
+  RUNNER_RUN_COUNTERS,
+  runnerTotalsOf,
+  splitWorkerMetricsEntity,
+  uniqueWorkerRefs,
+  workerMetricsEntity,
+  workerTotalsOf,
+} from "../metrics";
 import {
   emptyCounts,
   escapeRegExp,
@@ -58,6 +155,7 @@ import {
   THROUGHPUT_RETENTION_MS,
   ThroughputBuffer,
 } from "../readApis";
+import { emptyRunLog, runLogBytes } from "../runLogs";
 import { resolveSyncOptions } from "../schemaSync";
 
 /**
@@ -91,6 +189,12 @@ const POLL_MS = 50;
  * a claim returns the whole document, so lines kept on it would ride along on
  * every claim of a job that logs, and grow the document the claim index
  * points at.
+ *
+ * Analytics buckets have one for the same kind of reason and one more: they
+ * need two indexes nothing else wants — one to read a series, one for the
+ * range prune — and carrying those on `kv`, where the shipped throughput
+ * buckets live, would tax every runner-state and worker-record write with
+ * them.
  */
 export const MONGO_COLLECTIONS = [
   "jobs",
@@ -98,6 +202,8 @@ export const MONGO_COLLECTIONS = [
   "kv",
   "events",
   "jobLogs",
+  "runLogs",
+  "metrics",
 ] as const;
 
 /** One of the collections this driver uses. */
@@ -105,22 +211,45 @@ export type MongoCollection = (typeof MONGO_COLLECTIONS)[number];
 
 /** MongoDB's duplicate-key error, which is how "someone got there first" arrives. */
 /**
- * Indexes earlier versions of this driver created on the jobs collection.
+ * Indexes earlier versions of this driver created, by collection.
  *
  * Named explicitly rather than inferred. MongoDB names an index after its key
  * pattern, so an index this driver no longer defines is indistinguishable from
  * one somebody added by hand — dropping "anything we do not recognise" would
  * eventually delete a user's index. A list of what *we* retired cannot.
  *
- * `ns_1_queue_1_state_1_priority_1_createdAt_1` is the claim index from before
- * `_id` joined the key. Without `_id` the index does not cover the claim's
- * sort, so MongoDB fell back to a blocking in-memory sort of every matching
- * document: measured on a 2,000-job queue, 2,000 documents examined to return
- * one, at 2.75ms per claim and growing with the backlog.
+ * Jobs:
+ *
+ * - `ns_1_queue_1_state_1_priority_1_createdAt_1` is the claim index from
+ *   before `_id` joined the key. Without `_id` the index does not cover the
+ *   claim's sort, so MongoDB fell back to a blocking in-memory sort of every
+ *   matching document: measured on a 2,000-job queue, 2,000 documents
+ *   examined to return one, at 2.75ms per claim and growing with the backlog.
+ * - The `runAt`, `lockExpiresAt` and `finishedOn` indexes from before `_id`
+ *   joined them, for the same reason: a listing sorts by the field *then*
+ *   `_id`, and without `_id` a page of `completed` read and sorted every job
+ *   in the state (2,000 keys and documents for a 50-row page).
+ * - `expiresAt_1`, global, so pruning one queue walked every namespace's
+ *   expired jobs. Replaced by `{ ns, queue, expiresAt }`.
+ *
+ * Events:
+ *
+ * - `ns_1_channel_1__id_1`, which no query uses on purpose: events are
+ *   followed by `seq`, and the age prune has its own `{ ns, at }`.
  */
-const RETIRED_INDEXES = [
-  "ns_1_queue_1_state_1_priority_1_createdAt_1",
-] as const;
+const RETIRED_INDEXES: readonly {
+  /** Which of the driver's collections the index is on. */
+  collection: MongoCollection;
+  /** The index's name, as MongoDB derived it from the key pattern. */
+  name: string;
+}[] = [
+  { collection: "jobs", name: "ns_1_queue_1_state_1_priority_1_createdAt_1" },
+  { collection: "jobs", name: "ns_1_queue_1_state_1_runAt_1" },
+  { collection: "jobs", name: "ns_1_queue_1_state_1_lockExpiresAt_1" },
+  { collection: "jobs", name: "ns_1_queue_1_state_1_finishedOn_1" },
+  { collection: "jobs", name: "expiresAt_1" },
+  { collection: "events", name: "ns_1_channel_1__id_1" },
+];
 
 const DUPLICATE_KEY = 11000;
 
@@ -205,11 +334,117 @@ const PENDING: JobState[] = ["waiting", "delayed"];
 const PATCH_RETRIES = 3;
 
 /**
+ * How many pending jobs `rewritePendingOptions` reads with one `find` and
+ * writes with one `bulkWrite`.
+ *
+ * Each document read carries its `opts` string (~400 bytes), so a batch is a
+ * couple of hundred kilobytes each way: large enough that the round trips are
+ * a small part of the cost, small enough that a batch lost to a crash or a
+ * limit is little work to redo. Nothing is locked meanwhile — every write is
+ * its own per-document compare-and-set — so it bounds no claim's wait.
+ */
+const REWRITE_BATCH = 500;
+
+/**
+ * What a rewrite cursor's key holds: the last examined job's priority,
+ * `createdAt` and id — its position in the claim index.
+ */
+const REWRITE_CURSOR_KEY = ["number", "number", "string"] as const;
+
+/** A job's place in the claim index, which a rewrite walk resumes after. */
+interface RewritePosition {
+  /** Its priority. */
+  priority: number;
+  /** When it was added. */
+  createdAt: number;
+  /** Its `_id`, the tie-break. */
+  _id: string;
+}
+
+/** The fields of a job `rewritePendingOptions` reads, plans from and pins. */
+type RewriteCandidate = Pick<
+  JobDocument,
+  | "_id"
+  | "id"
+  | "state"
+  | "priority"
+  | "createdAt"
+  | "maxAttempts"
+  | "attemptsMade"
+  | "opts"
+>;
+
+/**
  * How many times recording on a parent, or requeueing one, decides afresh
  * after the parent changed under it. Each round is a complete decision, so
  * more than a couple means something keeps rewriting the parent.
  */
 const RECORD_CHILD_ROUNDS = 5;
+
+/**
+ * The server error codes for "this document would be larger than 16 MB":
+ * `BSONObjectTooLarge`, and the two older update-specific codes a server
+ * before 5.0 answers with.
+ */
+const DOCUMENT_TOO_LARGE_CODES = new Set<number>([10334, 17419, 17420]);
+
+/**
+ * What a read of a runner's state document needs for its fields: not the run
+ * history beside them, which holds up to `keepHistory` records with a result
+ * each (up to `maxResultBytes` apiece) and would otherwise ship on every read.
+ */
+const STATE_FIELDS = { fields: 1, counters: 1 } as const;
+
+/**
+ * What a read of the trigger queue's head needs: its first entry alone.
+ *
+ * `_id` is named so this is an *inclusion*: a `$slice` on its own slices the
+ * array and still returns every other field, the whole history included.
+ */
+const QUEUE_HEAD = { _id: 1, queued: { $slice: 1 } } as const;
+
+/** The cap a count retention keeps a state to, if it has one. */
+function retentionCount(retention: Retention): number | undefined {
+  return typeof retention === "number"
+    ? retention
+    : retention && typeof retention === "object"
+      ? retention.count
+      : undefined;
+}
+
+/** Whether an error is MongoDB refusing a document past its 16 MB limit. */
+function isDocumentTooLarge(error: unknown): boolean {
+  const { code, codeName } = (error ?? {}) as {
+    code?: unknown;
+    codeName?: unknown;
+  };
+  return (
+    (typeof code === "number" && DOCUMENT_TOO_LARGE_CODES.has(code)) ||
+    codeName === "BSONObjectTooLarge"
+  );
+}
+
+/**
+ * The reason a flow parent is buried with when a child's result would take it
+ * past MongoDB's document limit: a `ChildFailedError` naming the child, so it
+ * reads like any other child failure and a repeat of the delivery is
+ * recognised as the one that buried it.
+ */
+function tooLargeReason(child: JobRef, json: string): SerializedError {
+  // Without its stack: this driver's own frames tell whoever reads the
+  // parent's reason nothing about their flow.
+  const { stack: _stack, ...reason } = serializeError(
+    new ChildFailedError(
+      child,
+      {
+        name: "DocumentTooLarge",
+        message: `its result (${json.length} bytes as JSON) would take the parent past MongoDB's 16 MB document limit, which holds every child's result`,
+      },
+      { limit: "16MB", bytes: json.length },
+    ),
+  );
+  return reason;
+}
 
 /**
  * Leaves out a flow child whose parent has not recorded its outcome yet,
@@ -430,11 +665,31 @@ export interface IndexDescriptionLike {
   [field: string]: unknown;
 }
 
+/** The options this driver passes when it obtains a collection. */
+export interface CollectionOptionsLike {
+  /** Which members of a replica set the collection's reads go to. */
+  readPreference?: "primary";
+}
+
+/**
+ * How every collection this driver uses is obtained: reading from the primary.
+ *
+ * Pinned here rather than inherited, because the `client` option lets an
+ * application share its own client, and that client's read preference is the
+ * application's choice, not this driver's. With `secondaryPreferred` there,
+ * the reads that decide writes (`failJob` checking the lock, `buryJob`,
+ * `updateJob`, `recordChild`, `requeueParent`) could hit a lagging secondary
+ * and see a job as not yet claimed, so a failure would be lost. A standalone
+ * server has only a primary, so there it changes nothing.
+ */
+const COLLECTION_OPTIONS: CollectionOptionsLike = { readPreference: "primary" };
+
 /** One database, with the operations this driver performs on it. */
 export interface DbLike {
   /** A collection by name. */
   collection: <TDoc = Record<string, unknown>>(
     name: string,
+    options?: CollectionOptionsLike,
   ) => CollectionLike<TDoc>;
   /** Runs a database command; used only to ping. */
   command: (
@@ -522,6 +777,17 @@ export interface MongoDriverOptions extends ConnectionInput {
    * and prune it yourself.
    */
   eventRetentionMs?: number;
+  /**
+   * What to record into the analytics buckets. Everything, at one-second
+   * resolution, by default.
+   *
+   * A count costs no round trip — it is gathered in memory and written with
+   * the rest of the second's batch — so what this option governs is storage:
+   * per-second bucketing costs one document per entity per second, kept for
+   * `secondRetentionMs`. `metrics.workers: false` is the first lever on a
+   * large fleet, since workers are the term that scales with it.
+   */
+  metrics?: MetricsOptions;
 }
 
 /** A job as it is stored: identifiers and ordering keys plain, payloads JSON. */
@@ -556,8 +822,21 @@ interface JobDocument {
   maxAttempts: number;
   /** How many times it stalled. Absent means never. */
   stalledCount?: number;
-  /** The worker holding it. Absent while unclaimed. */
+  /** The worker holding it. Absent while unclaimed; cleared by the settle. */
   workerId?: string | null;
+  /**
+   * Who claimed the current or last attempt, whole: the id, and the key, host
+   * and pid when the claimer gave them. Written by the claim in the update it
+   * already makes, replaced by the next claim, and touched by nothing else —
+   * so, unlike `workerId`, it outlives the settle. Absent on a job never
+   * claimed, and on every document claimed before attribution existed.
+   *
+   * One sub-document rather than fields beside `workerId`: a claim replaces
+   * the whole stamp with one `$set`, and the holder keeps its own field and
+   * meaning, so a record whose `workerId` and stamp disagree (one restored
+   * from elsewhere) round-trips as it was written.
+   */
+  processedBy?: JobWorkerRef;
   /** That worker's lock token. Absent while unclaimed. */
   lockToken?: string | null;
   /** When the lock expires. Absent while unclaimed. */
@@ -619,6 +898,14 @@ interface FlowDocument {
   failures: Record<string, string>;
   /** Whether this child's outcome has been recorded on its parent. */
   recorded: boolean;
+  /**
+   * How many times `requeueParent` has returned this parent to waiting on its
+   * children. Absent until the first time, and never read back into the
+   * record: it exists so `recordChild` can tell the parent it read from a
+   * parent buried and requeued since, which its state alone cannot — both
+   * read `waiting-children`.
+   */
+  requeues?: number;
 }
 
 /** A lock as it is stored. */
@@ -690,6 +977,294 @@ function throughputKeyMinute(at: number): string {
   );
 }
 
+/**
+ * The kinds of analytics series this driver stores, all in one collection and
+ * told apart by the `kind` field.
+ *
+ * The first three are counters and are exactly `NamespaceMetricKind`, because
+ * each of them also carries the namespace's own roll-up; the last two have no
+ * roll-up, since nothing in `NamespaceMetricsRead` is made of them.
+ */
+type MetricKind = "busyness" | "durations" | "jobs" | "runs" | "workerJobs";
+
+/**
+ * One analytics bucket, as it is stored.
+ *
+ * **One document per `(ns, kind, entity, interval, at)`, shared by every
+ * process** — §4a of the analytics design. The shards the throughput buckets
+ * fan out to exist because *per-job* statements contend on a document; a
+ * metric bucket is written once per entity per second per process, so that
+ * contention does not arise, and fanning out here would turn a mid-sized
+ * namespace's 58 K documents into 1.25 M.
+ *
+ * The counter fields and the statistic fields are both optional because one
+ * collection holds all five kinds: a `jobs` document has `completed`/`failed`,
+ * a `runs` document the six outcomes, a `durations` document a histogram, a
+ * `busyness` document its samples. A read only ever asks for one kind, and the
+ * merge helpers read a missing counter as zero.
+ */
+interface MetricDocument
+  extends
+    Partial<JobCounters>,
+    Partial<RunnerRunCounters>,
+    Partial<DurationStats>,
+    Partial<BusynessStats> {
+  /** `<ns>:<kind>:<entity>:<interval>:<at>`; see {@link metricId}. */
+  _id: string;
+  /** The namespace, so `purge` deletes a namespace's buckets with everything else. */
+  ns: string;
+  /** Which series this is a bucket of. */
+  kind: MetricKind;
+  /** The queue, worker key or runner id — or `NAMESPACE_ENTITY` for the roll-up. */
+  entity: string;
+  /** The bucket's width, ms: a second or a minute. */
+  interval: number;
+  /** The bucket's start, epoch ms. */
+  at: number;
+  /** When it last changed. */
+  updatedAt: number;
+}
+
+/**
+ * A metric document's `_id`, which is what makes the bucket shared: every
+ * writer of the same `(ns, kind, entity, interval, at)` computes the same
+ * string, so an `$inc` upsert needs no query and lands on one document.
+ *
+ * `at` is zero-padded to {@link THROUGHPUT_KEY_DIGITS}, so the tail is always
+ * `:<interval>:<15 digits>` and the mapping stays one-to-one even for a worker
+ * key holding a colon — `ns` and `kind` cannot hold one, so the head is
+ * unambiguous too.
+ */
+function metricId(
+  ns: string,
+  kind: MetricKind,
+  entity: string,
+  interval: number,
+  at: number,
+): string {
+  return `${ns}:${kind}:${entity}:${interval}:${throughputKeyMinute(at)}`;
+}
+
+/**
+ * One bucket of a statistic that is not a counter, waiting to be written: the
+ * duration and busyness counterpart of `PendingMetric`.
+ */
+interface PendingStats<S> {
+  /** The namespace. */
+  ns: string;
+  /** The runner id or worker key it belongs to. */
+  entity: string;
+  /** The bucket's start, epoch ms. */
+  at: number;
+  /** The bucket's width, ms. */
+  interval: number;
+  /** What has been gathered for it so far. */
+  stats: S;
+}
+
+/** What two gathered stats rows are one row by: their bucket, per entity. */
+function metricStatsKey(entry: PendingStats<unknown>): string {
+  return `${entry.ns}\n${entry.entity}\n${entry.interval}\n${entry.at}`;
+}
+
+/**
+ * Which worker a metric series belongs to: its queue, then its stable
+ * `WorkerInfo.key`.
+ *
+ * Keyed by `key` and never by `WorkerInfo.id`: an id is one incarnation, so a
+ * rolling redeploy would shred the series into one per replica. Scoped by
+ * queue because a worker record is, so two queues' workers that happen to
+ * share a key stay two series.
+ */
+function metricWorkerEntity(q: QueueRef, key: string): string {
+  return workerMetricsEntity(q.queue, key);
+}
+
+/**
+ * The finished-order index's key: a queue's jobs of one state by `finishedOn`,
+ * which is what cleaning and retention walk and what a job listing's
+ * `finishedFrom`/`finishedTo` range is — a range matches only `completed` and
+ * `dead` jobs, so it is one bounded scan of this index per state.
+ *
+ * Named once because a range read **hints** it, so the definition and the hint
+ * cannot drift apart. It cannot name a missing index: `#createIndexes`
+ * creates it on every connect.
+ *
+ * `_id` ends the key because every read of it sorts by `finishedOn` then
+ * `_id`: without it a page of the state, or retention's walk, read and sorted
+ * every job in the state in memory instead of walking the index.
+ */
+const FINISHED_INDEX = {
+  ns: 1,
+  queue: 1,
+  state: 1,
+  finishedOn: 1,
+  _id: 1,
+} as const satisfies Record<string, 1>;
+
+/**
+ * A job listing's attribution filters as query conditions on the stamp's
+ * fields, and the range on `finishedOn`. None of the stamp is indexed: the
+ * worker conditions are checked on whatever scan the rest of the filter gets.
+ */
+function attributionWhere(filter: AttributionFilter): FilterLike {
+  const where: FilterLike = {};
+
+  if (filter.workerKeys) {
+    where["processedBy.key"] = { $in: [...filter.workerKeys] };
+  }
+
+  if (filter.workerIds) {
+    where["processedBy.id"] = { $in: [...filter.workerIds] };
+  }
+
+  if (hasRange(filter)) {
+    // A comparison never matches `null` or an absent field, so a job with
+    // no `finishedOn` is left out as the range's definition says.
+    const finishedOn: Record<string, number> = {};
+    if (filter.finishedFrom !== undefined) {
+      finishedOn.$gte = filter.finishedFrom;
+    }
+    if (filter.finishedTo !== undefined) {
+      finishedOn.$lt = filter.finishedTo;
+    }
+    where.finishedOn = finishedOn;
+  }
+
+  return where;
+}
+
+/**
+ * The analytics read index's key: one series over a range of buckets, which
+ * is every read, and — with `kind` and `entity` as `$in` bounds — every
+ * grouped read too.
+ *
+ * Named once because the grouped reads **hint** it. Their filter names only
+ * fields of this key, but also both fields of the range-prune index
+ * `{ interval, at }`, and on a collection holding little besides the entities
+ * asked for, the two plans examine the same number of keys: the planner then
+ * ties, and was seen picking the prune index — which walks every namespace's
+ * buckets for the range. The hint makes the plan the one this index exists
+ * for, whatever the planner's trial happened to see. It cannot name a missing
+ * index: `#createIndexes` creates it on every connect.
+ */
+const METRICS_READ_INDEX = {
+  ns: 1,
+  kind: 1,
+  entity: 1,
+  interval: 1,
+  at: 1,
+} as const satisfies Record<string, 1>;
+
+/**
+ * One entity's buckets over a range, added up in the engine by
+ * {@link MongoDriver}'s grouped totals read: `_id` is the entity, and the
+ * other fields are whichever of the counters and statistics the kinds it was
+ * grouped from carry — the same field names a {@link MetricDocument} has, so
+ * the shared `runnerTotalsOf` / `workerTotalsOf` reduce it like a bucket.
+ */
+type MetricTotalsRow = Omit<
+  MetricDocument,
+  "_id" | "at" | "interval" | "kind" | "ns" | "updatedAt" | "entity"
+> & {
+  /** The entity the row totals. */
+  _id: string;
+};
+
+/**
+ * The `$group` accumulators that add one kind's buckets up, by kind.
+ *
+ * Counters and the additive statistics `$sum` (a missing field is zero, so a
+ * `runs` bucket adds nothing to `count` and a `durations` bucket nothing to
+ * `started`); the extremes `$min`/`$max`, which ignore a missing field just
+ * as the write path's pipeline relies on. Two statistics cannot be
+ * accumulated directly and are finished in {@link metricTotalsFinish}:
+ *
+ * - the histogram, pushed whole and summed element by element afterwards;
+ * - busyness' `concurrency`, which is the *latest* sample's — `$max` of the
+ *   sub-document `{ lastAt, concurrency }` orders by `lastAt` first, which is
+ *   `mergeBusynessStats`' rule. Only busyness buckets contribute one.
+ */
+const METRIC_TOTALS_ACCUMULATORS: Record<
+  MetricKind,
+  Record<string, Record<string, unknown>>
+> = {
+  jobs: Object.fromEntries(
+    JOB_COUNTERS.map((key) => [key, { $sum: `$${key}` }]),
+  ),
+  workerJobs: Object.fromEntries(
+    JOB_COUNTERS.map((key) => [key, { $sum: `$${key}` }]),
+  ),
+  runs: Object.fromEntries(
+    RUNNER_RUN_COUNTERS.map((key) => [key, { $sum: `$${key}` }]),
+  ),
+  durations: {
+    count: { $sum: "$count" },
+    sumMs: { $sum: "$sumMs" },
+    minMs: { $min: "$minMs" },
+    maxMs: { $max: "$maxMs" },
+    histograms: { $push: "$histogram" },
+  },
+  busyness: {
+    samples: { $sum: "$samples" },
+    activeSum: { $sum: "$activeSum" },
+    activeMax: { $max: "$activeMax" },
+    latest: {
+      $max: {
+        $cond: [
+          { $eq: ["$kind", "busyness"] },
+          { lastAt: "$lastAt", concurrency: "$concurrency" },
+          "$$REMOVE",
+        ],
+      },
+    },
+  },
+};
+
+/**
+ * The stages after the `$group` that finish what it could not accumulate,
+ * for the kinds that need it.
+ *
+ * The histogram is summed exactly the way `#writeDurations` merges one into a
+ * stored bucket — `$zip` the running total with the next array, `$map` each
+ * pair to its `$sum` — so a total is bin-for-bin what the write path would
+ * have produced had every bucket been one document. `useLongestLength` with
+ * zero defaults keeps a short (or missing) array from truncating the total.
+ */
+function metricTotalsFinish(kinds: readonly MetricKind[]): unknown[] {
+  const set: Record<string, unknown> = {};
+  const unset: string[] = [];
+
+  if (kinds.includes("durations")) {
+    set.histogram = {
+      $reduce: {
+        input: "$histograms",
+        initialValue: emptyHistogram(),
+        in: {
+          $map: {
+            input: {
+              $zip: {
+                inputs: ["$$value", { $ifNull: ["$$this", []] }],
+                useLongestLength: true,
+                defaults: [0, 0],
+              },
+            },
+            in: { $sum: "$$this" },
+          },
+        },
+      },
+    };
+    unset.push("histograms");
+  }
+  if (kinds.includes("busyness")) {
+    set.lastAt = { $ifNull: ["$latest.lastAt", 0] };
+    set.concurrency = { $ifNull: ["$latest.concurrency", 0] };
+    unset.push("latest");
+  }
+
+  return unset.length === 0 ? [] : [{ $set: set }, { $unset: unset }];
+}
+
 /** One line of a job's log, as it is stored. */
 interface JobLogDocument {
   /** Assigned by the server; not used for ordering. */
@@ -717,7 +1292,92 @@ interface JobLogDocument {
   line: string;
 }
 
+/**
+ * One captured line of a runner's run output.
+ *
+ * Its own collection rather than an array on the runner's state document, for
+ * the reason the state document itself makes plain: it holds the whole run
+ * history, and every change to it is a whole-document write. A line arriving
+ * every few milliseconds would rewrite the history that often, and race every
+ * other writer of it.
+ */
+interface RunLogDocument {
+  /** Assigned by the server; not used for ordering. */
+  _id?: ObjectIdLike;
+  /** The namespace the runner belongs to. */
+  ns: string;
+  /** The runner's key, exactly as the contract passes it. */
+  runnerKey: string;
+  /** Which run's output this is. */
+  runId: string;
+  /**
+   * The line's 1-based place in its run's output, which the contract exposes
+   * as `RunLogLine.seq`.
+   *
+   * Trimming only ever deletes from the front, so the lowest `lineNo` still
+   * stored, minus one, is exactly how many lines a cap dropped. Nothing has to
+   * count them, and nothing can disagree with the documents.
+   */
+  lineNo: number;
+  /** Which stream produced it. */
+  stream: RunLogStream;
+  /** When it was captured, in epoch milliseconds. */
+  at: number;
+  /** The text's UTF-8 length, so the byte cap need not re-measure it. */
+  bytes: number;
+  /** The level a `log`-stream line carried; absent when it had none. */
+  level?: LogLevel;
+  /** Set when capture cut the line short; absent when it did not. */
+  truncated?: true;
+  /** The line, verbatim. */
+  text: string;
+}
+
 /** An event as it is stored. */
+/**
+ * How many numbers past its cursor one poll asks of a channel: the most events
+ * of one channel a single poll delivers.
+ */
+const EVENT_POLL_WINDOW = 200;
+
+/**
+ * Every how many ticks a namespace's poll asks whether an empty channel has
+ * events past its window. See `MongoDriver.#pollEvents`.
+ */
+const EVENT_PROBE_EVERY = 20;
+
+/** One subscription to a channel. */
+interface EventFollower {
+  /** The channel's latest number when it subscribed: it hears what follows. */
+  from: number;
+  /** Its listener. */
+  deliver: (event: DriverEvent) => void;
+}
+
+/** One followed channel of a namespace's poll. */
+interface EventFollow {
+  /** The channel's cursor, and the numbers passed over and still awaited. */
+  gaps: EventGaps;
+  /** The subscriptions to it. */
+  followers: Set<EventFollower>;
+  /** Whether its window came back empty on the last tick. */
+  empty: boolean;
+  /** Whether the next tick reads past the window, as a probe asked. */
+  wide: boolean;
+}
+
+/** One namespace's shared event poll. */
+interface EventPoll {
+  /** The channels followed, by name. */
+  channels: Map<string, EventFollow>;
+  /** The tick timer. */
+  timer: ReturnType<typeof setInterval>;
+  /** Whether a tick is running, so a slow one is not overlapped. */
+  busy: boolean;
+  /** Ticks run, for spacing the probes. */
+  ticks: number;
+}
+
 interface EventDocument {
   /** The namespace. */
   ns: string;
@@ -764,6 +1424,7 @@ export class MongoDriver implements JobsDriver {
     events: "poll",
     multiProcess: true,
     multiHost: true,
+    jobAttribution: true,
   };
 
   /** The database this driver uses. */
@@ -785,6 +1446,8 @@ export class MongoDriver implements JobsDriver {
   readonly #ownsClient: boolean;
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /** Each namespace's shared event poll, while anything follows it. */
+  readonly #eventPolls = new Map<string, EventPoll>();
   /**
    * Where each queue's orphaned-log sweep resumes: the last job id it read,
    * keyed by `<ns>:<queue>`. Absent means start from the beginning. Per
@@ -814,6 +1477,21 @@ export class MongoDriver implements JobsDriver {
   readonly #throughput = new ThroughputBuffer(
     async (batch) => await this.#writeThroughput(batch),
   );
+
+  /** What is recorded into the analytics buckets, and for how long. */
+  readonly #metrics: ResolvedMetricsOptions;
+  /** Decides when the analytics buckets are swept: once a minute per process. */
+  readonly #metricsPrune = new MetricsPruneClock();
+  /** Queue completions and failures, gathered per bucket and written once a second. */
+  readonly #jobMetrics: MetricsBuffer<JobCounters>;
+  /** The same, counted by the worker that finished the job. */
+  readonly #workerMetrics: MetricsBuffer<JobCounters>;
+  /** Runner outcomes, gathered per bucket and written once a second. */
+  readonly #runMetrics: MetricsBuffer<RunnerRunCounters>;
+  /** Run durations and their histograms, gathered beside the outcomes. */
+  readonly #durationMetrics: PendingBuffer<PendingStats<DurationStats>>;
+  /** Worker busyness samples, gathered as the heartbeats arrive. */
+  readonly #busynessMetrics: PendingBuffer<PendingStats<BusynessStats>>;
 
   /** The last log sequence number this instance handed out. */
   #lastLogSeq = 0;
@@ -855,6 +1533,52 @@ export class MongoDriver implements JobsDriver {
     this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#client = options.client;
     this.#ownsClient = !options.client;
+
+    this.#metrics = resolveMetricsOptions(options.metrics);
+    const intervals = this.#metrics.intervals;
+
+    this.#jobMetrics = new MetricsBuffer<JobCounters>({
+      write: async (batch) => await this.#writeCounters("jobs", batch),
+      keys: JOB_COUNTERS,
+      intervals,
+    });
+    this.#workerMetrics = new MetricsBuffer<JobCounters>({
+      write: async (batch) => await this.#writeCounters("workerJobs", batch),
+      keys: JOB_COUNTERS,
+      intervals,
+    });
+    this.#runMetrics = new MetricsBuffer<RunnerRunCounters>({
+      write: async (batch) => await this.#writeCounters("runs", batch),
+      keys: RUNNER_RUN_COUNTERS,
+      intervals,
+    });
+    this.#durationMetrics = new PendingBuffer<PendingStats<DurationStats>>({
+      write: async (batch) => await this.#writeDurations(batch),
+      key: metricStatsKey,
+      merge: (into, from) => mergeDurationStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+    });
+    this.#busynessMetrics = new PendingBuffer<PendingStats<BusynessStats>>({
+      write: async (batch) => await this.#writeBusyness(batch),
+      key: metricStatsKey,
+      merge: (into, from) => mergeBusynessStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+    });
+  }
+
+  /** Every analytics buffer, so lifecycle and purge need name no single one. */
+  get #metricBuffers(): {
+    close: () => Promise<void>;
+    flush: () => Promise<void>;
+    forget: (ns: string) => void;
+  }[] {
+    return [
+      this.#jobMetrics,
+      this.#workerMetrics,
+      this.#runMetrics,
+      this.#durationMetrics,
+      this.#busynessMetrics,
+    ];
   }
 
   /* --- lifecycle ---------------------------------------------------- */
@@ -874,6 +1598,10 @@ export class MongoDriver implements JobsDriver {
     // Write the last throughput counts while the client is still open.
     await this.#throughput.close();
 
+    for (const buffer of this.#metricBuffers) {
+      await buffer.close();
+    }
+
     if (this.#ownsClient && this.#client) {
       await this.#client.close();
       this.#client = undefined;
@@ -884,6 +1612,13 @@ export class MongoDriver implements JobsDriver {
   /** Writes the counts gathered in memory and not yet written. */
   async flushThroughput(): Promise<void> {
     await this.#throughput.flush();
+  }
+
+  /** Writes the analytics counts gathered in memory and not yet written. */
+  async flushMetrics(): Promise<void> {
+    for (const buffer of this.#metricBuffers) {
+      await buffer.flush();
+    }
   }
 
   async ping(): Promise<boolean> {
@@ -901,10 +1636,16 @@ export class MongoDriver implements JobsDriver {
     this.#throughput.forget(ns);
     // A write already in flight would otherwise land after the deletes.
     await this.#throughput.flush().catch(() => undefined);
+
+    for (const buffer of this.#metricBuffers) {
+      buffer.forget(ns);
+      await buffer.flush().catch(() => undefined);
+    }
+
     const db = await this.#db();
 
     for (const name of Object.values(this.collections)) {
-      await db.collection(name).deleteMany({ ns });
+      await db.collection(name, COLLECTION_OPTIONS).deleteMany({ ns });
     }
   }
 
@@ -1029,7 +1770,12 @@ export class MongoDriver implements JobsDriver {
 
   async getState(ns: string, key: string): Promise<Record<string, string>> {
     const kv = await this.#kv();
-    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    // Only the fields: the document also carries the run history, up to
+    // `keepHistory` records with a result each, which this never reads.
+    const document = await kv.findOne(
+      { _id: this.#stateId(ns, key) },
+      { projection: STATE_FIELDS },
+    );
 
     if (!document) {
       return {};
@@ -1089,7 +1835,7 @@ export class MongoDriver implements JobsDriver {
         $inc: increments,
         $set: { ns, key: `${key}:state`, updatedAt: Date.now() },
       },
-      { upsert: true, returnDocument: "after" },
+      { upsert: true, returnDocument: "after", projection: { counters: 1 } },
     );
 
     const counters = updated?.counters ?? {};
@@ -1127,7 +1873,10 @@ export class MongoDriver implements JobsDriver {
     patch: Partial<RunRecord>,
   ): Promise<boolean> {
     const kv = await this.#kv();
-    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    const document = await kv.findOne(
+      { _id: this.#stateId(ns, key) },
+      { projection: { history: 1 } },
+    );
     const history = document?.history ?? [];
 
     const index = history.findIndex(
@@ -1160,7 +1909,17 @@ export class MongoDriver implements JobsDriver {
     limit?: number,
   ): Promise<RunRecord[]> {
     const kv = await this.#kv();
-    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    // Sliced by the server: newest first, so the first `limit` entries.
+    const document = await kv.findOne(
+      { _id: this.#stateId(ns, key) },
+      {
+        // `_id` makes it an inclusion; see QUEUE_HEAD.
+        projection: {
+          _id: 1,
+          history: limit && limit > 0 ? { $slice: limit } : 1,
+        },
+      },
+    );
     const history = document?.history ?? [];
     const slice = limit && limit > 0 ? history.slice(0, limit) : history;
 
@@ -1171,6 +1930,215 @@ export class MongoDriver implements JobsDriver {
     await this.#upsertState(ns, key, {
       $set: { history: [], updatedAt: Date.now() },
     });
+    // A run the history no longer names cannot be asked about, so its lines
+    // would be documents nothing could ever reach or collect.
+    await this.clearRunLogs(ns, key);
+  }
+
+  /**
+   * Appends captured output to one run's log.
+   *
+   * The run's next number is read and the batch is inserted with numbers
+   * computed from it. Safe because there is one writer per run: capture lives
+   * in the process running the run, and flushes on one timer.
+   */
+  async appendRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    lines: RunLogInput[],
+    caps: RunLogCaps,
+  ): Promise<RunLogAppendResult> {
+    const logs = await this.#runLogs();
+    const owner = { ns, runnerKey: key, runId };
+    let { firstSeq, lastSeq } = await this.#runLogBounds(owner);
+    // Only a run's first lines add a run to the runner's set, so only then can
+    // `keepRuns` have anything new to evict.
+    const startsRun = lastSeq === 0 && lines.length > 0;
+
+    if (lines.length > 0) {
+      await logs.insertMany(
+        lines.map((line) => ({
+          ...owner,
+          lineNo: ++lastSeq,
+          stream: line.stream,
+          at: line.at,
+          bytes: runLogBytes(line.text),
+          ...(line.level === undefined ? {} : { level: line.level }),
+          ...(line.truncated ? { truncated: true as const } : {}),
+          text: line.text,
+        })),
+      );
+      firstSeq = firstSeq === 0 ? 1 : firstSeq;
+    }
+
+    if (caps.maxLines > 0) {
+      firstSeq = await this.#dropRunLogBelow(
+        owner,
+        lastSeq - caps.maxLines + 1,
+        firstSeq,
+      );
+    }
+
+    if (caps.maxBytes > 0) {
+      // The byte cap needs a running total from the newest line backwards.
+      // `$setWindowFields` would do it in the server, but only from MongoDB 5,
+      // and the sizes are tiny and bounded by the line cap — so they are read
+      // and accumulated here instead.
+      const sizes = await logs
+        .find(owner)
+        .sort({ lineNo: -1 })
+        .project<{ lineNo: number; bytes: number }>({
+          _id: 0,
+          lineNo: 1,
+          bytes: 1,
+        })
+        .toArray();
+
+      let total = 0;
+      let keepFrom: number | undefined;
+
+      for (const size of sizes) {
+        total += size.bytes;
+        // One line always survives, however long.
+        if (total > caps.maxBytes && keepFrom !== undefined) {
+          break;
+        }
+        keepFrom = size.lineNo;
+      }
+
+      if (keepFrom !== undefined) {
+        firstSeq = await this.#dropRunLogBelow(owner, keepFrom, firstSeq);
+      }
+    }
+
+    // `keepRuns` on the write path too, so nothing has to sweep — and only on
+    // a run's first append. The eviction groups every line the runner keeps,
+    // so running it on every flush cost O(lines kept across runs) per flush
+    // (measured: 4,000 lines read for 20 runs of 200) to find nothing new.
+    if (caps.keepRuns > 0 && startsRun) {
+      await this.#evictRunLogs(ns, key, caps.keepRuns);
+    }
+
+    return {
+      count: lastSeq === 0 ? 0 : lastSeq - firstSeq + 1,
+      dropped: lastSeq === 0 ? 0 : firstSeq - 1,
+      lastSeq,
+    };
+  }
+
+  async getRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    opts: RunLogQuery,
+  ): Promise<RunLogPage> {
+    const logs = await this.#runLogs();
+    const owner = { ns, runnerKey: key, runId };
+    const { firstSeq, lastSeq } = await this.#runLogBounds(owner);
+
+    if (lastSeq === 0) {
+      return emptyRunLog();
+    }
+
+    const totals = { dropped: firstSeq - 1, lastSeq };
+    const filter: FilterLike = {
+      ...owner,
+      ...(opts.since === undefined ? {} : { lineNo: { $gt: opts.since } }),
+      ...(opts.stream === undefined ? {} : { stream: opts.stream }),
+    };
+    const limit = Math.max(0, Math.floor(opts.limit));
+
+    const [count, page] = await Promise.all([
+      logs.countDocuments(filter),
+      // A limit of 0 means "no limit" to MongoDB, and "nothing" to the caller.
+      limit > 0
+        ? logs
+            .find(filter)
+            .sort({ lineNo: opts.order === "desc" ? -1 : 1 })
+            .skip(Math.max(0, Math.floor(opts.offset)))
+            .limit(limit)
+            .toArray()
+        : Promise.resolve([]),
+    ]);
+
+    return {
+      lines: page.map((document) => toRunLogLine(document)),
+      count,
+      ...totals,
+    };
+  }
+
+  async clearRunLogs(ns: string, key: string, runId?: string): Promise<void> {
+    const logs = await this.#runLogs();
+    await logs.deleteMany({
+      ns,
+      runnerKey: key,
+      ...(runId === undefined ? {} : { runId }),
+    });
+  }
+
+  /**
+   * Removes exactly the named runs: their history records and their log
+   * documents, and nothing else of the runner's.
+   *
+   * History entries are JSON strings, so the server cannot match them by run
+   * id. They are read, and the exact strings naming the runs are pulled in one
+   * update with no upsert — a runner nobody knows gets no document — whose
+   * `before` image says how many it took. An entry rewritten between the read
+   * and the pull (an `updateHistory`) no longer matches, and is found and
+   * pulled on the next, bounded, pass. The logs are one `deleteMany` per chunk
+   * of names, and go whether or not a record still names them.
+   */
+  async removeRuns(
+    ns: string,
+    key: string,
+    runIds: readonly string[],
+  ): Promise<number> {
+    if (runIds.length === 0) {
+      return 0;
+    }
+
+    const kv = await this.#kv();
+    const _id = this.#stateId(ns, key);
+    const named = new Set(runIds);
+
+    /** The stored entries that name one of the runs. */
+    const naming = (history: string[] | undefined): string[] =>
+      (history ?? []).filter((entry) =>
+        named.has((JSON.parse(entry) as RunRecord).runId),
+      );
+
+    let removed = 0;
+    let targets = naming((await kv.findOne({ _id }))?.history);
+
+    for (let pass = 0; targets.length > 0 && pass <= CREATE_RETRIES; pass++) {
+      const pulling = new Set(targets);
+      const before = await kv.findOneAndUpdate(
+        { _id },
+        {
+          $pull: { history: { $in: targets } },
+          $set: { updatedAt: Date.now() },
+        } as UpdateFilterLike,
+        { returnDocument: "before", upsert: false },
+      );
+
+      const seen = naming(before?.history);
+      removed += seen.filter((entry) => pulling.has(entry)).length;
+      targets = seen.filter((entry) => !pulling.has(entry));
+    }
+
+    const logs = await this.#runLogs();
+    const ids = [...named];
+    for (let start = 0; start < ids.length; start += INSERT_CHUNK) {
+      await logs.deleteMany({
+        ns,
+        runnerKey: key,
+        runId: { $in: ids.slice(start, start + INSERT_CHUNK) },
+      });
+    }
+
+    return removed;
   }
 
   async pushQueuedTrigger(
@@ -1258,7 +2226,7 @@ export class MongoDriver implements JobsDriver {
     const previous = await kv.findOneAndUpdate(
       { _id: this.#stateId(ns, key), queued: { $exists: true, $ne: [] } },
       { $pop: { queued: -1 } },
-      { returnDocument: "before" },
+      { returnDocument: "before", projection: QUEUE_HEAD },
     );
 
     const head = previous?.queued?.[0];
@@ -1273,7 +2241,10 @@ export class MongoDriver implements JobsDriver {
 
     // A find, not an update: the head `$pop: -1` would take, left in place,
     // and no document is created for a runner that has none.
-    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    const document = await kv.findOne(
+      { _id: this.#stateId(ns, key) },
+      { projection: QUEUE_HEAD },
+    );
     const head = document?.queued?.[0];
     return head ? (JSON.parse(head) as QueuedTrigger) : null;
   }
@@ -1294,7 +2265,7 @@ export class MongoDriver implements JobsDriver {
     // longer matches. A stored record is never rewritten in place, so a head
     // that no longer matches means the inspected record is gone from the
     // front, and `null` is the answer rather than a retry.
-    const document = await kv.findOne({ _id: id });
+    const document = await kv.findOne({ _id: id }, { projection: QUEUE_HEAD });
     const head = document?.queued?.[0];
     if (!head || (JSON.parse(head) as QueuedTrigger).id !== expectedId) {
       return null;
@@ -1303,7 +2274,7 @@ export class MongoDriver implements JobsDriver {
     const previous = await kv.findOneAndUpdate(
       { _id: id, "queued.0": head },
       { $pop: { queued: -1 } },
-      { returnDocument: "before" },
+      { returnDocument: "before", projection: QUEUE_HEAD },
     );
 
     const taken = previous?.queued?.[0];
@@ -1312,7 +2283,10 @@ export class MongoDriver implements JobsDriver {
 
   async countQueuedTriggers(ns: string, key: string): Promise<number> {
     const kv = await this.#kv();
-    const document = await kv.findOne({ _id: this.#stateId(ns, key) });
+    const document = await kv.findOne(
+      { _id: this.#stateId(ns, key) },
+      { projection: { queued: 1 } },
+    );
     return document?.queued?.length ?? 0;
   }
 
@@ -1322,7 +2296,7 @@ export class MongoDriver implements JobsDriver {
     const previous = await kv.findOneAndUpdate(
       { _id: this.#stateId(ns, key) },
       { $set: { queued: [], updatedAt: Date.now() } },
-      { returnDocument: "before" },
+      { returnDocument: "before", projection: { queued: 1 } },
     );
 
     return previous?.queued?.length ?? 0;
@@ -1474,7 +2448,96 @@ export class MongoDriver implements JobsDriver {
     return claimed ? this.#toRecord(claimed) : null;
   }
 
-  /** The update that turns a waiting job into one held by the claimer. */
+  /**
+   * Claims up to `limit` jobs: one read of the head of the queue, then a
+   * conditional claim of each candidate, sent concurrently.
+   *
+   * Each claim is the singular form's own atomic write, filtered on the job
+   * still waiting, so each job is taken by exactly one caller and each write
+   * answers for its own job — which an `updateMany` could not: it answers with
+   * a count, and reading back "the jobs with my token" would also pick up a
+   * concurrent claim made under the same token. Two round trips of latency
+   * for the batch, against one per job claimed in a loop. A candidate another
+   * claimer took first is simply absent, so a batch can come back short.
+   *
+   * Never throws once anything is claimed: a claim that fails beside ones that
+   * succeeded leaves its job waiting, and the ones taken are returned.
+   */
+  async claimJobs(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+  ): Promise<JobRecord[]> {
+    if (opts.excludeNames && opts.excludeNames.length > 0) {
+      // Skipping names already reads bounded windows and claims one by one.
+      return await claimByLoop(async () => await this.claimJob(q, opts), limit);
+    }
+
+    if (await this.#pauseCache.read(q, () => this.isQueuePaused(q))) {
+      return [];
+    }
+
+    const jobs = await this.#jobs();
+    const due: FilterLike = {
+      ns: q.ns,
+      queue: q.queue,
+      state: "waiting",
+      runAt: { $lte: opts.now },
+    };
+    const wanted = Math.max(1, Math.floor(limit));
+    const candidates = await jobs
+      .find<{ _id: string }>(due, {
+        sort: { priority: 1, createdAt: 1, _id: 1 },
+        limit: wanted,
+        batchSize: wanted,
+        projection: { _id: 1 },
+      })
+      .toArray();
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    const update = this.#claimUpdate(opts);
+    const outcomes = await Promise.allSettled(
+      candidates.map(
+        async (candidate) =>
+          await jobs.findOneAndUpdate(
+            { _id: candidate._id, state: "waiting", runAt: { $lte: opts.now } },
+            update,
+            { returnDocument: "after" },
+          ),
+      ),
+    );
+
+    const claimed: JobRecord[] = [];
+    let failure: unknown;
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        failure ??= outcome.reason;
+      } else if (outcome.value) {
+        claimed.push(this.#toRecord(outcome.value));
+      }
+    }
+
+    if (claimed.length === 0 && failure !== undefined) {
+      throw failure;
+    }
+
+    // The writes land in any order; the contract's is the claim order.
+    return claimed.sort(
+      (a, b) =>
+        a.priority - b.priority ||
+        a.createdAt - b.createdAt ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+  }
+
+  /**
+   * The update that turns a waiting job into one held by the claimer — and
+   * stamps it with who that is, in the same write. The stamp is set whole, so
+   * it replaces a previous attempt's entirely, key and all.
+   */
   #claimUpdate(opts: ClaimOptions): UpdateFilterLike {
     return {
       $set: {
@@ -1483,6 +2546,7 @@ export class MongoDriver implements JobsDriver {
         lockToken: opts.token,
         lockExpiresAt: opts.now + opts.lockMs,
         workerId: opts.workerId,
+        processedBy: attributionOf(opts),
       },
       $inc: { attemptsMade: 1 },
     };
@@ -1656,6 +2720,126 @@ export class MongoDriver implements JobsDriver {
   ): Promise<boolean> {
     const jobs = await this.#jobs();
 
+    if (
+      !(await this.#writeCompleted(jobs, q, id, token, result, retention, now))
+    ) {
+      return false;
+    }
+
+    this.#countJob(q, now, { completed: 1 });
+    // A removal is already done: the write was the delete.
+    if (retention !== true) {
+      await this.#applyRetention(q, id, "completed", retention);
+    }
+    return true;
+  }
+
+  /**
+   * Completes a set of jobs held under one token: every job's write at once,
+   * then the counting and any count retention once for the set.
+   *
+   * Each job is still its own conditional write, sent concurrently rather than
+   * in one `bulkWrite`. A bulk write answers with a total, which cannot say
+   * which of the jobs lost its lock, while each write here answers for its own job
+   * exactly as `completeJob` does — so a burst costs one round trip of
+   * latency and keeps the singular form's holder check to the letter. The
+   * server runs them in parallel, where a bulk write's operations run one
+   * after another.
+   *
+   * A write that fails leaves that job to the stalled sweep, as a lost lock
+   * does; only when every write fails is the error thrown, since then nothing
+   * was settled.
+   */
+  async completeJobs(
+    q: QueueRef,
+    token: string,
+    completions: { id: string; result: unknown; retention: Retention }[],
+    now: number,
+  ): Promise<string[]> {
+    if (completions.length === 0) {
+      return [];
+    }
+
+    const jobs = await this.#jobs();
+    const outcomes = await Promise.allSettled(
+      completions.map(
+        async (one) =>
+          await this.#writeCompleted(
+            jobs,
+            q,
+            one.id,
+            token,
+            one.result,
+            one.retention,
+            now,
+          ),
+      ),
+    );
+
+    const settled: string[] = [];
+    /** Each count retention the settled jobs carry, applied once apiece. */
+    const counts = new Map<number, Retention>();
+    let failure: unknown;
+
+    outcomes.forEach((outcome, index) => {
+      const one = completions[index]!;
+      if (outcome.status === "rejected") {
+        failure ??= outcome.reason;
+        return;
+      }
+      if (!outcome.value) {
+        return;
+      }
+      settled.push(one.id);
+      const count = retentionCount(one.retention);
+      if (count !== undefined && one.retention !== true) {
+        counts.set(count, one.retention);
+      }
+    });
+
+    if (settled.length === 0 && failure !== undefined) {
+      throw failure;
+    }
+
+    if (settled.length > 0) {
+      this.#countJob(q, now, { completed: settled.length });
+    }
+
+    for (const retention of counts.values()) {
+      await this.#applyRetention(q, "", "completed", retention);
+    }
+
+    return settled;
+  }
+
+  /**
+   * The write that completes one job, for its lock holder only: answers
+   * whether it was still this holder's to settle. Counting and retention are
+   * the caller's, so a batch can do them once.
+   */
+  async #writeCompleted(
+    jobs: CollectionLike<JobDocument>,
+    q: QueueRef,
+    id: string,
+    token: string,
+    result: unknown,
+    retention: Retention,
+    now: number,
+  ): Promise<boolean> {
+    // Removed on completion: one conditional delete settles it. Writing the
+    // completed state first, only to delete it, was a second round trip and a
+    // second write to every index the job is in. `returnValue` is never read
+    // for a job that no longer exists, and a flow child never gets here with
+    // `true` — the worker defers its retention until the parent has its result.
+    if (retention === true) {
+      const removed = await jobs.deleteOne({
+        _id: this.#jobId(q, id),
+        state: "active",
+        lockToken: token,
+      });
+      return removed.deletedCount > 0;
+    }
+
     const expiresAt =
       typeof retention === "object" && retention?.ttl && retention.ttl > 0
         ? now + retention.ttl
@@ -1672,17 +2856,12 @@ export class MongoDriver implements JobsDriver {
           lockToken: null,
           lockExpiresAt: null,
           workerId: null,
+          // `processedBy` stays: it names who ran it.
         },
       },
     );
 
-    if (updated.matchedCount === 0) {
-      return false;
-    }
-
-    this.#throughput.add(q, now, 1, 0);
-    await this.#applyRetention(q, id, "completed", retention);
-    return true;
+    return updated.matchedCount > 0;
   }
 
   async failJob(
@@ -1695,7 +2874,12 @@ export class MongoDriver implements JobsDriver {
     keepStacktraces: number,
   ): Promise<boolean> {
     const jobs = await this.#jobs();
-    const existing = await jobs.findOne({ _id: this.#jobId(q, id) });
+    // Only what the decision and the write need — not the payload, the
+    // result or the flow, which can be large.
+    const existing = await jobs.findOne(
+      { _id: this.#jobId(q, id) },
+      { projection: { state: 1, lockToken: 1, runAt: 1, stacktrace: 1 } },
+    );
 
     if (
       !existing ||
@@ -1741,7 +2925,7 @@ export class MongoDriver implements JobsDriver {
     }
 
     // A failed attempt counts whether it is retried or dead.
-    this.#throughput.add(q, now, 0, 1);
+    this.#countJob(q, now, { failed: 1 });
 
     if (!outcome.retry) {
       await this.#applyRetention(q, id, "dead", outcome.retention);
@@ -1805,7 +2989,7 @@ export class MongoDriver implements JobsDriver {
       return null;
     }
 
-    this.#throughput.add(q, now, 0, 1);
+    this.#countJob(q, now, { failed: 1 });
     await this.#applyRetention(q, id, "dead", opts.retention);
 
     // Read back, unless retention removed it: then as it was buried.
@@ -1905,7 +3089,20 @@ export class MongoDriver implements JobsDriver {
         return null;
       }
 
-      const opts = JSON.parse(current.opts) as ResolvedJobOptions;
+      const opts = JSON.parse(current.opts) as StoredJobOptions;
+      const next: StoredJobOptions = {
+        ...opts,
+        priority: patch.priority,
+        // An operator's per-job priority is explicit, so a queue's stored
+        // defaults never replace it — set even when the value is unchanged,
+        // since choosing it is what pins it. A job without a mask stays
+        // without one: a mask of only this bit would claim every other option
+        // of an older job was defaulted. It rides the compare-and-set that
+        // already rewrites `opts`, so it costs no extra round trip.
+        ...(typeof opts.explicit === "number"
+          ? { explicit: opts.explicit | JOB_OPTION_BITS.priority }
+          : {}),
+      };
 
       const updated = await jobs.findOneAndUpdate(
         { ...filter, opts: current.opts },
@@ -1913,7 +3110,7 @@ export class MongoDriver implements JobsDriver {
           $set: {
             ...set,
             priority: patch.priority,
-            opts: JSON.stringify({ ...opts, priority: patch.priority }),
+            opts: JSON.stringify(next),
           },
         },
         { returnDocument: "after" },
@@ -1928,6 +3125,234 @@ export class MongoDriver implements JobsDriver {
       id,
       reason: "the job's options kept changing underneath this",
     });
+  }
+
+  /**
+   * Writes a queue's stored defaults over its pending jobs, a batch at a time.
+   *
+   * Each state is walked in claim-index order, `(priority, createdAt, _id)`,
+   * by keyset from the cursor — one `find` per batch, each a set of bounded
+   * ranges of the claim index — and each batch's writes go in one unordered
+   * `bulkWrite`.
+   *
+   * Without a replica set nothing spans documents, so each job's write is its
+   * own compare-and-set: its filter re-checks the state is still one being
+   * walked **and** pins every field the plan was computed from (`opts`,
+   * `priority`, `maxAttempts`, `attemptsMade`). A job claimed, retried or
+   * patched between the read and the write matches nothing and is counted
+   * `moved` — never half-written, and never written from a stale plan. `opts`,
+   * `maxAttempts` and `priority` change in that one `$set`, so a claim reads
+   * either none of the rewrite or all of it; the new `priority` moves a waiting
+   * job in the claim index exactly as `updateJob` does, and `createdAt` keeps
+   * its place among equals.
+   */
+  async rewritePendingOptions(
+    q: QueueRef,
+    request: PendingOptionsRewrite,
+  ): Promise<PendingOptionsRewriteResult> {
+    assertRewriteRequest(request);
+
+    const jobs = await this.#jobs();
+    const result = emptyRewriteResult();
+    const { states } = request;
+
+    let from = 0;
+    let after: RewritePosition | null = null;
+    /** The last job examined in this call, which the next call resumes after. */
+    let last: { state: JobState; key: [number, number, string] } | undefined;
+
+    if (request.cursor !== null) {
+      const cursor = decodeRewriteCursor(
+        request.cursor,
+        states,
+        REWRITE_CURSOR_KEY,
+      );
+      const [priority, createdAt, id] = cursor.key as [number, number, string];
+      from = states.indexOf(cursor.state);
+      after = { priority, createdAt, _id: this.#jobId(q, id) };
+    }
+
+    for (let index = from; index < states.length; index++) {
+      const state = states[index]!;
+
+      for (;;) {
+        // One more than there is room for: finding it is what says the walk
+        // goes on, so a walk ending exactly at the limit answers `next: null`
+        // rather than costing the caller one empty call more.
+        const room = request.limit - result.examined;
+        const want = Math.min(REWRITE_BATCH, room + 1);
+        const batch = await jobs
+          .find<RewriteCandidate>(this.#rewriteWindow(q, state, after), {
+            sort: { priority: 1, createdAt: 1, _id: 1 },
+            limit: want,
+            batchSize: want,
+            projection: {
+              _id: 1,
+              id: 1,
+              state: 1,
+              priority: 1,
+              createdAt: 1,
+              maxAttempts: 1,
+              attemptsMade: 1,
+              opts: 1,
+            },
+          })
+          .toArray();
+
+        const taken = batch.slice(0, room);
+        await this.#rewriteBatch(jobs, taken, request, result);
+
+        const end = taken.at(-1);
+        if (end) {
+          last = { state, key: [end.priority, end.createdAt, end.id] };
+          after = {
+            priority: end.priority,
+            createdAt: end.createdAt,
+            _id: end._id,
+          };
+        }
+
+        if (batch.length > room && last) {
+          // Set, since the limit is at least 1 and so `room` was spent on at
+          // least one job — possibly in an earlier state, in which case the
+          // next call finds nothing left there and carries on here.
+          result.next = encodeRewriteCursor(last.state, last.key);
+          return result;
+        }
+
+        if (batch.length < want) {
+          break;
+        }
+      }
+
+      after = null;
+    }
+
+    return result;
+  }
+
+  /**
+   * The filter for one batch of a rewrite walk: a queue's jobs in `state`,
+   * after `after` in claim order. "After" is the claim window's disjunction,
+   * one bounded range of the claim index per branch.
+   */
+  #rewriteWindow(
+    q: QueueRef,
+    state: JobState,
+    after: RewritePosition | null,
+  ): FilterLike {
+    const base: FilterLike = { ns: q.ns, queue: q.queue, state };
+
+    return after
+      ? {
+          ...base,
+          $or: [
+            { priority: { $gt: after.priority } },
+            { priority: after.priority, createdAt: { $gt: after.createdAt } },
+            {
+              priority: after.priority,
+              createdAt: after.createdAt,
+              _id: { $gt: after._id },
+            },
+          ],
+        }
+      : base;
+  }
+
+  /**
+   * Plans one batch of a rewrite, writes what it plans in one unordered
+   * `bulkWrite` of compare-and-sets, and counts each job into `result`.
+   */
+  async #rewriteBatch(
+    jobs: CollectionLike<JobDocument>,
+    batch: RewriteCandidate[],
+    request: PendingOptionsRewrite,
+    result: PendingOptionsRewriteResult,
+  ): Promise<void> {
+    /** Each planned write: the plan, counted once its fate is known, by `_id`. */
+    const planned = new Map<
+      string,
+      { plan: PendingRewritePlan; opts: string }
+    >();
+    const operations: unknown[] = [];
+
+    for (const candidate of batch) {
+      const plan = planPendingRewrite(
+        {
+          opts: JSON.parse(candidate.opts) as StoredJobOptions,
+          priority: candidate.priority,
+          maxAttempts: candidate.maxAttempts,
+          attemptsMade: candidate.attemptsMade ?? 0,
+        },
+        request.values,
+        request.includeUnmarked,
+      );
+
+      if (plan.outcome !== "rewritten" || request.dryRun) {
+        tallyRewrite(result, plan);
+        continue;
+      }
+
+      // Encoded as `#toDocument` encodes it, so a rewritten job reads back
+      // exactly as an added one does.
+      const opts = JSON.stringify(plan.opts);
+      planned.set(candidate._id, { plan, opts });
+      operations.push({
+        updateOne: {
+          filter: {
+            _id: candidate._id,
+            state: { $in: request.states },
+            opts: candidate.opts,
+            priority: candidate.priority,
+            maxAttempts: candidate.maxAttempts,
+            // `null` also matches the field being absent, which is how a job
+            // never claimed stores it.
+            attemptsMade: candidate.attemptsMade ?? null,
+          },
+          update: {
+            $set: {
+              opts,
+              priority: plan.priority,
+              maxAttempts: plan.maxAttempts,
+            },
+          },
+        },
+      });
+    }
+
+    if (operations.length === 0) {
+      return;
+    }
+
+    const outcome = (await jobs.bulkWrite(operations, {
+      ordered: false,
+    })) as Partial<UpdateResultLike>;
+
+    if (outcome.matchedCount === operations.length) {
+      for (const { plan } of planned.values()) {
+        tallyRewrite(result, plan);
+      }
+      return;
+    }
+
+    // Some filter matched nothing, and a bulk result counts rather than names.
+    // One read says which: a job carrying exactly the `opts` written was
+    // written (and whoever wrote since left the values asked for); any other
+    // left the walked states or changed before its write, and is `moved`.
+    const now = await jobs
+      .find<
+        Pick<JobDocument, "_id" | "opts">
+      >({ _id: { $in: [...planned.keys()] } }, { projection: { _id: 1, opts: 1 } })
+      .toArray();
+    const stored = new Map(now.map((found) => [found._id, found.opts]));
+
+    for (const [_id, { plan, opts }] of planned) {
+      if (stored.get(_id) === opts) {
+        tallyRewrite(result, plan);
+      } else {
+        tallyMoved(result);
+      }
+    }
   }
 
   async addJobLog(
@@ -2011,6 +3436,61 @@ export class MongoDriver implements JobsDriver {
     return { logs: page.map((document) => document.line), count };
   }
 
+  /**
+   * Empties a job's log, refusing an active job.
+   *
+   * The refusal and the rotation are one filtered write: `logKey` is unset
+   * only on a job whose state is not `active`, so a job claimed first answers
+   * `active` with nothing removed, and one claimed after keeps logging under a
+   * fresh key. Unsetting the key is what makes the next line count from one —
+   * it is stamped anew, as a job that never logged is. The old key's lines are
+   * then deleted, which is what `removed` counts; a line a concurrent append
+   * wrote under the old key after that belongs to no job's key, so no read
+   * counts it and the log sweep collects it, as it does a removed job's.
+   */
+  async clearJobLogs(q: QueueRef, id: string): Promise<ClearJobLogsResult> {
+    const jobs = await this.#jobs();
+    const _id = this.#jobId(q, id);
+
+    for (let attempt = 0; attempt <= CREATE_RETRIES; attempt++) {
+      const before = await jobs.findOneAndUpdate(
+        { _id, state: { $ne: "active" } },
+        { $unset: { logKey: "" } },
+        { projection: { logKey: 1 }, returnDocument: "before" },
+      );
+
+      if (before) {
+        if (!before.logKey) {
+          return { status: "cleared", removed: 0 };
+        }
+
+        const logs = await this.#jobLogs();
+        const { deletedCount } = await logs.deleteMany({
+          ns: q.ns,
+          queue: q.queue,
+          logKey: before.logKey,
+        });
+        return { status: "cleared", removed: deletedCount };
+      }
+
+      // Nothing matched: no such job, or it was active. Which one is read
+      // back, and a job that has since settled is tried again rather than
+      // refused on a state it no longer has.
+      const current = await jobs.findOne({ _id }, { projection: { state: 1 } });
+
+      if (!current) {
+        return { status: "missing" };
+      }
+      if (current.state === "active") {
+        return { status: "active" };
+      }
+    }
+
+    // Bounded: it settled and was claimed again on every attempt, so it is
+    // busy, and saying so removes nothing.
+    return { status: "active" };
+  }
+
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
     const jobs = await this.#jobs();
     const document = await jobs.findOne({ _id: this.#jobId(q, id) });
@@ -2029,9 +3509,16 @@ export class MongoDriver implements JobsDriver {
    * together; two updates would leave a crash between them holding a parent
    * at zero pending that no repeat could release.
    *
+   * A failure is refused (`"already"`) when the child's record says it is
+   * stale — marked recorded, or no longer dead — while a child with no record
+   * still buries: the bury is read-then-write across the two documents,
+   * pinned to the parent's `flow.requeues` so a retry in between cannot slip
+   * through (see the comment at the bury).
+   *
    * When no write matches, one read says why. Only a parent that changed
-   * state between the write and the read — buried by a sibling, say — sends
-   * it round again, and each round is a fresh, complete decision.
+   * state between the write and the read — buried by a sibling, say, or
+   * buried and retried — sends it round again, and each round is a fresh,
+   * complete decision.
    */
   async recordChild(
     q: QueueRef,
@@ -2063,55 +3550,118 @@ export class MongoDriver implements JobsDriver {
 
     for (let round = 0; round < RECORD_CHILD_ROUNDS; round++) {
       if (!settles) {
-        // A child that failed buries its parent, which can then never run.
-        const buried = await jobs.updateOne(unrecorded("waiting-children"), {
-          $set: {
-            state: "dead",
-            failedReason: JSON.stringify(outcome.error),
-            finishedOn: now,
-          },
+        // A failure already delivered once — it buried this parent, which has
+        // been retried since — is stale: a delivery decided from an earlier
+        // view must not bury the retried parent again. The child's record
+        // tells: marked recorded, or no longer dead (retried since, which
+        // clears the mark). It is another document, though, and nothing spans
+        // two here. So the parent is read first, then the child, and the bury
+        // is pinned to the round of waiting the parent was read in: the child
+        // is only ever marked after its failure buried the parent and before a
+        // retry requeued it, so if the parent is still in that round at the
+        // write, the child read after it saw any such mark. A retry in between
+        // moves `flow.requeues`, the write matches nothing, and the next round
+        // reads the child again. (A child retried in the one round trip
+        // between that read and the write, on a parent its failure never
+        // reached, is ordered after this delivery — the outcome a transaction
+        // gives the delivery that reads first.)
+        const parent = await jobs.findOne(unrecorded("waiting-children"), {
+          projection: { "flow.requeues": 1 },
         });
-        if (buried.matchedCount > 0) {
-          // A parent buried by a failed child is a failure too.
-          this.#throughput.add(q, now, 0, 1);
-          return "buried";
-        }
-      } else {
-        const counted = await jobs.findOneAndUpdate(
-          unrecorded("waiting-children"),
-          [
+
+        if (parent) {
+          const stored = await jobs.findOne(
+            { _id: this.#jobId({ ns: q.ns, queue: child.queue }, child.id) },
+            { projection: { state: 1, "flow.recorded": 1 } },
+          );
+          // No record at all still buries: nothing says it was delivered.
+          if (
+            stored &&
+            (stored.flow?.recorded === true || stored.state !== "dead")
+          ) {
+            return "already";
+          }
+
+          // A child that failed buries its parent, which can then never run.
+          const buried = await jobs.updateOne(
             {
-              $set: {
-                // `$literal`, because a pipeline reads a string starting with
-                // `$` as a field path, and a JSON string can.
-                [entry.path]: { $literal: entry.json },
-                "flow.pending": {
-                  $max: [0, { $subtract: ["$flow.pending", 1] }],
-                },
-              },
+              ...unrecorded("waiting-children"),
+              // `null` also matches absent: a parent never requeued.
+              "flow.requeues": parent.flow?.requeues ?? null,
             },
             {
-              // A later stage sees the earlier one's output: this reads the
-              // decremented count.
               $set: {
-                state: {
-                  $cond: {
-                    if: { $lte: ["$flow.pending", 0] },
-                    then: {
-                      $cond: {
-                        if: { $gt: ["$runAt", now] },
-                        then: "delayed",
-                        else: "waiting",
-                      },
-                    },
-                    else: "$state",
+                state: "dead",
+                failedReason: JSON.stringify(outcome.error),
+                finishedOn: now,
+              },
+            },
+          );
+          if (buried.matchedCount > 0) {
+            // A parent buried by a failed child is a failure too.
+            this.#countJob(q, now, { failed: 1 });
+            return "buried";
+          }
+        }
+      } else {
+        let counted: Pick<JobDocument, "state"> | null;
+        try {
+          counted = await jobs.findOneAndUpdate(
+            unrecorded("waiting-children"),
+            [
+              {
+                $set: {
+                  // `$literal`, because a pipeline reads a string starting with
+                  // `$` as a field path, and a JSON string can.
+                  [entry.path]: { $literal: entry.json },
+                  "flow.pending": {
+                    $max: [0, { $subtract: ["$flow.pending", 1] }],
                   },
                 },
               },
+              {
+                // A later stage sees the earlier one's output: this reads the
+                // decremented count.
+                $set: {
+                  state: {
+                    $cond: {
+                      if: { $lte: ["$flow.pending", 0] },
+                      then: {
+                        $cond: {
+                          if: { $gt: ["$runAt", now] },
+                          then: "delayed",
+                          else: "waiting",
+                        },
+                      },
+                      else: "$state",
+                    },
+                  },
+                },
+              },
+            ],
+            { returnDocument: "after", projection: { state: 1 } },
+          );
+        } catch (error) {
+          if (!isDocumentTooLarge(error)) {
+            throw error;
+          }
+          // Every child's result lives on the parent, so a big enough fan-out
+          // outgrows the document. Retrying cannot help — the write fails the
+          // same way on every delivery, and the parent would wait forever — so
+          // the parent is buried, saying why, and the flow ends.
+          const buried = await jobs.updateOne(unrecorded("waiting-children"), {
+            $set: {
+              state: "dead",
+              failedReason: JSON.stringify(tooLargeReason(child, entry.json)),
+              finishedOn: now,
             },
-          ],
-          { returnDocument: "after", projection: { state: 1 } },
-        );
+          });
+          if (buried.matchedCount > 0) {
+            this.#countJob(q, now, { failed: 1 });
+            return "buried";
+          }
+          counted = null;
+        }
         // No wake to send: workers find a newly waiting job by polling
         // `waitForJob`, which this driver has no push channel to shortcut.
         if (counted) {
@@ -2120,9 +3670,20 @@ export class MongoDriver implements JobsDriver {
 
         // A buried parent keeps the outcome for its retry. A plain `$set`,
         // not a pipeline, so the JSON string is stored as the value it is.
-        const kept = await jobs.updateOne(unrecorded("dead"), {
-          $set: { [entry.path]: entry.json },
-        });
+        let kept: UpdateResultLike;
+        try {
+          kept = await jobs.updateOne(unrecorded("dead"), {
+            $set: { [entry.path]: entry.json },
+          });
+        } catch (error) {
+          if (!isDocumentTooLarge(error)) {
+            throw error;
+          }
+          // It cannot be kept for the retry. Nothing is stored and the child
+          // stays as it is: a retry of the parent waits on it again, and its
+          // delivery then buries the parent with the reason above.
+          return "parent-dead";
+        }
         if (kept.matchedCount > 0) {
           return "recorded";
         }
@@ -2181,7 +3742,9 @@ export class MongoDriver implements JobsDriver {
    * The count left is taken from the outcomes the parent holds, read first;
    * the update then matches only while they are exactly what was read, so an
    * outcome recorded in between sends it round to count again rather than
-   * leaving the parent waiting on a child it already has.
+   * leaving the parent waiting on a child it already has. The same write
+   * clears the parent's own `flow.recorded` and counts the round in
+   * `flow.requeues`.
    */
   async requeueParent(q: QueueRef, id: string, now: number): Promise<boolean> {
     const jobs = await this.#jobs();
@@ -2231,6 +3794,13 @@ export class MongoDriver implements JobsDriver {
       {
         $set: {
           "flow.pending": { $literal: remaining },
+          // The outcome it ends with this time has not reached its own
+          // parent, as after `retryJob`: without this a nested parent that
+          // fails again would have that failure refused as already delivered.
+          "flow.recorded": { $literal: false },
+          // A new round of waiting, which a failure delivery decided against
+          // an earlier one must not bury (see `recordChild`).
+          "flow.requeues": { $add: [{ $ifNull: ["$flow.requeues", 0] }, 1] },
           finishedOn: null,
           expiresAt: null,
           state:
@@ -2352,6 +3922,20 @@ export class MongoDriver implements JobsDriver {
             : { createdAt: direction, _id: direction };
   }
 
+  /**
+   * The `"createdAt"` order ({@link JobQuery.sort}): by `createdAt`, and jobs
+   * created in the same millisecond by `_id`, both keys reversed for `desc`.
+   *
+   * `_id` stands in for the job's id because every document one `find` reads
+   * shares its `ns:queue:` prefix, and MongoDB compares strings by their UTF-8
+   * bytes when no collation is set — which is code point order, the order
+   * `compareCreated` in `added.ts` breaks ties by.
+   */
+  #createdSort(order: "asc" | "desc"): Record<string, 1 | -1> {
+    const direction = order === "asc" ? 1 : -1;
+    return { createdAt: direction, _id: direction };
+  }
+
   async countJobs(q: QueueRef): Promise<Record<JobState, number>> {
     const jobs = await this.#jobs();
 
@@ -2393,18 +3977,48 @@ export class MongoDriver implements JobsDriver {
    * payload is never matched. A total with a filter is a `countDocuments` with
    * the same filter, sent alongside the page; without one it is the states'
    * counts summed.
+   *
+   * The attribution filters are conditions on the `processedBy` sub-document,
+   * checked on the same scan. A `finishedOn` range reads only `completed` and
+   * `dead`, each a bounded scan of {@link FINISHED_INDEX}, which both reads
+   * hint; a filter that can match nothing asks the server nothing.
+   *
+   * `sort: "createdAt"` swaps the sort for `#createdSort`
+   * and nothing else. No index has `createdAt` right after the states, so it
+   * is a top-k sort of the claim index's keys, fetching only the page:
+   * measured on 170,000 completed jobs, 170,000 keys and 50 documents
+   * examined in about 600ms — the natural order's cost on the same state,
+   * which fetches every document. The sort holds offset + limit keys, about
+   * 300 bytes each, so a page past roughly 340,000 jobs deep exceeds the
+   * 100MB in-memory limit and spills to disk (`allowDiskUseByDefault`).
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
-    const jobs = await this.#jobs();
     const filter = jobFilter(query);
+    const attribution = attributionFilter(query);
+
+    if (attribution && matchesNothing(attribution, query.states)) {
+      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+    }
+
+    const jobs = await this.#jobs();
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
+    const range = attribution !== null && hasRange(attribution);
 
     const where: FilterLike = {
       ns: q.ns,
       queue: q.queue,
-      state: { $in: query.states },
+      // A range matches only the finished states, so only theirs are read.
+      state: {
+        $in: range
+          ? query.states.filter((state) => FINISHED_STATES.includes(state))
+          : query.states,
+      },
     };
+
+    if (attribution) {
+      Object.assign(where, attributionWhere(attribution));
+    }
 
     if (filter?.names) {
       where.name = { $in: [...filter.names] };
@@ -2415,21 +4029,29 @@ export class MongoDriver implements JobsDriver {
       where.$or = [{ id: pattern }, { name: pattern }];
     }
 
+    // A range is read from the finished-order index, named rather than left
+    // to the planner (see FINISHED_INDEX).
+    const options = range ? { hint: FINISHED_INDEX } : undefined;
+
     // `limit(0)` means "no limit" to MongoDB, so an empty page is not asked for.
     const page =
       limit === 0
         ? Promise.resolve([])
         : jobs
-            .find(where)
-            .sort(this.#listSort(query.states, query.order))
+            .find(where, options)
+            .sort(
+              sortsByCreated(query)
+                ? this.#createdSort(query.order)
+                : this.#listSort(query.states, query.order),
+            )
             .skip(offset)
             .limit(limit)
             .toArray();
 
     const total = !query.total
       ? undefined
-      : filter
-        ? jobs.countDocuments(where)
+      : filter || attribution
+        ? jobs.countDocuments(where, options)
         : this.countJobs(q).then((counts) => sumStates(counts, query.states));
 
     const [documents, counted] = await Promise.all([page, total]);
@@ -2569,6 +4191,67 @@ export class MongoDriver implements JobsDriver {
   }
 
   /**
+   * The jobs added in a range, per queue and state, as one aggregation: a
+   * `$match` on the namespace (and the queue, when named) and on `createdAt`
+   * from `range.from` inclusive to `range.to` exclusive, grouped by queue and
+   * state. A queue with no job in the range is absent; every queue present
+   * carries every state. An empty or inverted range asks the server nothing.
+   *
+   * No new index serves it, and none is needed: every field it reads is in
+   * the claim index `{ ns, queue, state, priority, createdAt, _id }`, so the
+   * plan is a covered scan of that index — no document fetched — whose
+   * bounds seek to the range under each `(queue, state, priority)` prefix.
+   * Measured on 200,000 jobs (MongoDB 7), a day's 28,571 jobs examined
+   * 28,581 keys and 0 documents in 39ms; an hour's, 1,138 keys in 2ms. The
+   * cost is the jobs in the range, not the namespace.
+   */
+  async countAddedJobs(
+    ns: string,
+    range: AddedRange,
+    queue?: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    const result: Record<string, Record<JobState, number>> = {};
+
+    if (rangeMatchesNothing(range)) {
+      return result;
+    }
+
+    const jobs = await this.#jobs();
+    const match: FilterLike = {
+      ns,
+      createdAt: { $gte: range.from, $lt: range.to },
+    };
+
+    if (queue !== undefined) {
+      match.queue = queue;
+    }
+
+    const grouped = await jobs
+      .aggregate<{
+        _id: { queue: string; state: JobState };
+        total: number;
+      }>([
+        { $match: match },
+        {
+          $group: {
+            _id: { queue: "$queue", state: "$state" },
+            total: { $sum: 1 },
+          },
+        },
+      ])
+      .toArray();
+
+    for (const row of grouped) {
+      const counts = (result[row._id.queue] ??= emptyAddedCounts());
+      if (row._id.state in counts) {
+        counts[row._id.state] = row.total;
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Completions and failed attempts per minute. Writes what this instance has
    * counted first, then reads the queue's bucket keys across the range — every
    * shard's — and sums them by minute.
@@ -2693,6 +4376,350 @@ export class MongoDriver implements JobsDriver {
     return failure === undefined
       ? { unwritten }
       : { unwritten, error: failure };
+  }
+
+  /* --- analytics ---------------------------------------------------- */
+
+  /**
+   * Everything, at one-second resolution, unless the constructor said
+   * otherwise: a count here is a `Map` update and a share of the second's
+   * batch, so there is no backend limit to report.
+   */
+  getMetricsSupport(): MetricsSupport {
+    return metricsSupportOf(this.#metrics);
+  }
+
+  async getQueueMetrics(
+    q: QueueRef,
+    query: MetricsQuery,
+  ): Promise<CounterBucket<JobCounters>[]> {
+    return mergeCounterBuckets(
+      await this.#readMetrics(q.ns, "jobs", q.queue, query),
+      query,
+      JOB_COUNTERS,
+    );
+  }
+
+  async countWorkerJobs(
+    q: QueueRef,
+    key: string,
+    at: number,
+    counts: Partial<JobCounters>,
+  ): Promise<void> {
+    if (this.#metrics.workers) {
+      this.#workerMetrics.count(q.ns, metricWorkerEntity(q, key), at, counts);
+    }
+  }
+
+  async sampleWorkerBusyness(
+    q: QueueRef,
+    key: string,
+    at: number,
+    sample: BusynessSample,
+  ): Promise<void> {
+    if (!this.#metrics.workers) {
+      return;
+    }
+
+    for (const interval of this.#metrics.intervals) {
+      const stats = emptyBusynessStats();
+      // `at` itself, not the bucket's start: which sample is the latest is
+      // what makes a merged bucket's `concurrency` well defined.
+      addBusynessSample(stats, at, sample);
+      this.#busynessMetrics.add({
+        ns: q.ns,
+        entity: metricWorkerEntity(q, key),
+        at: bucketStart(at, interval),
+        interval,
+        stats,
+      });
+    }
+  }
+
+  async getWorkerMetrics(
+    q: QueueRef,
+    key: string,
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsRead> {
+    const entity = metricWorkerEntity(q, key);
+    const read: WorkerMetricsRead = {
+      jobs: mergeCounterBuckets(
+        await this.#readMetrics(q.ns, "workerJobs", entity, query),
+        query,
+        JOB_COUNTERS,
+      ),
+    };
+
+    if (query.busyness && this.#metrics.workers) {
+      read.busyness = mergeBusynessBuckets(
+        await this.#readMetrics(q.ns, "busyness", entity, query),
+        query,
+      );
+    }
+
+    return read;
+  }
+
+  async countRunnerRun(
+    ns: string,
+    runner: string,
+    at: number,
+    counts: RunnerRunDelta,
+  ): Promise<void> {
+    if (!this.#metrics.runners) {
+      return;
+    }
+
+    this.#runMetrics.count(ns, runner, at, counts);
+
+    // The duration rides with the outcome, so a finished run is one event
+    // here too — gathered in the same second's batch, not a second write.
+    if (this.#metrics.durations && counts.durationMs !== undefined) {
+      for (const interval of this.#metrics.intervals) {
+        const stats = emptyDurationStats();
+        addDuration(stats, counts.durationMs);
+        this.#durationMetrics.add({
+          ns,
+          entity: runner,
+          at: bucketStart(at, interval),
+          interval,
+          stats,
+        });
+      }
+    }
+  }
+
+  async getRunnerMetrics(
+    ns: string,
+    runner: string,
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsRead> {
+    const read: RunnerMetricsRead = {
+      runs: mergeCounterBuckets(
+        await this.#readMetrics(ns, "runs", runner, query),
+        query,
+        RUNNER_RUN_COUNTERS,
+      ),
+    };
+
+    if (query.durations && this.#metrics.durations) {
+      read.durations = mergeDurationBuckets(
+        await this.#readMetrics(ns, "durations", runner, query),
+        query,
+      );
+    }
+
+    return read;
+  }
+
+  async getNamespaceMetrics(
+    ns: string,
+    query: NamespaceMetricsQuery,
+  ): Promise<NamespaceMetricsRead> {
+    const read: NamespaceMetricsRead = {};
+
+    // A kind that is not recorded stays absent rather than answering zeros:
+    // "nothing happened" and "nothing is kept" are different answers.
+    if (query.kinds.includes("jobs")) {
+      read.jobs = mergeCounterBuckets(
+        await this.#readMetrics(ns, "jobs", NAMESPACE_ENTITY, query),
+        query,
+        JOB_COUNTERS,
+      );
+    }
+    if (query.kinds.includes("runs") && this.#metrics.runners) {
+      read.runs = mergeCounterBuckets(
+        await this.#readMetrics(ns, "runs", NAMESPACE_ENTITY, query),
+        query,
+        RUNNER_RUN_COUNTERS,
+      );
+    }
+    if (query.kinds.includes("workerJobs") && this.#metrics.workers) {
+      read.workerJobs = mergeCounterBuckets(
+        await this.#readMetrics(ns, "workerJobs", NAMESPACE_ENTITY, query),
+        query,
+        JOB_COUNTERS,
+      );
+    }
+
+    return read;
+  }
+
+  /* --- analytics: grouped reads ----------------------------------- */
+
+  /**
+   * Every runner's totals over a range, in **one aggregation**: a `$match` on
+   * the read index (`ns`, `kind`, `entity`, `interval`, `at` — all five of its
+   * fields, so the server walks only the range's index entries), a `$group` by
+   * entity and a `$set` that finishes the histogram. Each row is then reduced
+   * by `runnerTotalsOf`, the definition of a totals row, which is also where
+   * the presence rule lives: an entity with nothing to report is absent.
+   *
+   * The roll-up is excluded in the `$match` itself, so it is neither read nor
+   * returned; a filter naming it names nothing.
+   */
+  async getRunnerMetricsTotals(
+    ns: string,
+    query: RunnerMetricsTotalsQuery,
+  ): Promise<RunnerMetricsTotals[]> {
+    const durations = Boolean(query.durations) && this.#metrics.durations;
+    const kinds: MetricKind[] = durations ? ["runs", "durations"] : ["runs"];
+    const named = query.runners?.filter(
+      (runner) => runner !== NAMESPACE_ENTITY,
+    );
+
+    // An empty filter is "none of them": nothing to ask the server.
+    if (named?.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#totalMetrics(
+      ns,
+      kinds,
+      named === undefined
+        ? { $ne: NAMESPACE_ENTITY }
+        : { $in: [...new Set(named)] },
+      query,
+    );
+    const totals: RunnerMetricsTotals[] = [];
+
+    for (const row of rows) {
+      const reduced = runnerTotalsOf(
+        durations ? { runs: [row], durations: [row] } : { runs: [row] },
+      );
+      if (reduced) {
+        totals.push({ runner: row._id, ...reduced });
+      }
+    }
+
+    return totals;
+  }
+
+  /**
+   * A batch of runners' series in **one query** — `entity: { $in }` over the
+   * read index — grouped by runner here and merged by the same helpers
+   * `getRunnerMetrics` uses, so each entry is exactly that read.
+   */
+  async getRunnerMetricsMany(
+    ns: string,
+    runners: readonly string[],
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsSeries[]> {
+    // `getRunnerMetrics(ns, "")` happens to answer the roll-up; a batch of
+    // entities never does.
+    const named = [...new Set(runners)].filter(
+      (runner) => runner !== NAMESPACE_ENTITY,
+    );
+    const durations = Boolean(query.durations) && this.#metrics.durations;
+    const byEntity = await this.#readMetricsOf(
+      ns,
+      durations ? ["runs", "durations"] : ["runs"],
+      named,
+      query,
+    );
+    const series: RunnerMetricsSeries[] = [];
+
+    for (const runner of named) {
+      const docs = byEntity.get(runner);
+      const read: RunnerMetricsRead = {
+        runs: mergeCounterBuckets(docs?.runs ?? [], query, RUNNER_RUN_COUNTERS),
+      };
+      if (durations) {
+        read.durations = mergeDurationBuckets(docs?.durations ?? [], query);
+      }
+      if (hasMetricBuckets(read.runs, read.durations)) {
+        series.push({ runner, ...read });
+      }
+    }
+
+    return series;
+  }
+
+  /**
+   * Every worker key's totals over a range, in **one aggregation**, the
+   * runner read's shape. A `queues` filter becomes anchored prefix patterns
+   * on `entity` (`^<queue>:`), which the server turns into index bounds, so a
+   * filtered read still walks only its queues' entries. Each entity is split
+   * back into `(queue, key)` at its first colon by the shared
+   * `splitWorkerMetricsEntity`, so a key holding a colon survives, and the
+   * roll-up — excluded in the `$match` — would split to nothing anyway.
+   */
+  async getWorkerMetricsTotals(
+    ns: string,
+    query: WorkerMetricsTotalsQuery,
+  ): Promise<WorkerMetricsTotals[]> {
+    const busyness = Boolean(query.busyness) && this.#metrics.workers;
+    const kinds: MetricKind[] = busyness
+      ? ["workerJobs", "busyness"]
+      : ["workerJobs"];
+
+    if (query.queues?.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#totalMetrics(
+      ns,
+      kinds,
+      query.queues === undefined
+        ? { $ne: NAMESPACE_ENTITY }
+        : {
+            $in: [...new Set(query.queues)].map(
+              (queue) => new RegExp(`^${escapeRegExp(queue)}:`),
+            ),
+          },
+      query,
+    );
+    const totals: WorkerMetricsTotals[] = [];
+
+    for (const row of rows) {
+      const ref = splitWorkerMetricsEntity(row._id);
+      if (!ref) {
+        continue;
+      }
+
+      const reduced = workerTotalsOf(
+        busyness ? { jobs: [row], busyness: [row] } : { jobs: [row] },
+      );
+      if (reduced) {
+        totals.push({ ...ref, ...reduced });
+      }
+    }
+
+    return totals;
+  }
+
+  /**
+   * A batch of worker keys' series in **one query**, the runner batch's shape.
+   */
+  async getWorkerMetricsMany(
+    ns: string,
+    workers: readonly WorkerMetricsRef[],
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsSeries[]> {
+    const refs = uniqueWorkerRefs(workers);
+    const busyness = Boolean(query.busyness) && this.#metrics.workers;
+    const byEntity = await this.#readMetricsOf(
+      ns,
+      busyness ? ["workerJobs", "busyness"] : ["workerJobs"],
+      refs.map((ref) => workerMetricsEntity(ref.queue, ref.key)),
+      query,
+    );
+    const series: WorkerMetricsSeries[] = [];
+
+    for (const ref of refs) {
+      const docs = byEntity.get(workerMetricsEntity(ref.queue, ref.key));
+      const read: WorkerMetricsRead = {
+        jobs: mergeCounterBuckets(docs?.workerJobs ?? [], query, JOB_COUNTERS),
+      };
+      if (busyness) {
+        read.busyness = mergeBusynessBuckets(docs?.busyness ?? [], query);
+      }
+      if (hasMetricBuckets(read.jobs, read.busyness)) {
+        series.push({ ...ref, ...read });
+      }
+    }
+
+    return series;
   }
 
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
@@ -2858,7 +4885,7 @@ export class MongoDriver implements JobsDriver {
 
     // A burial is a failure, counted as a failed attempt is.
     if (dead.length > 0) {
-      this.#throughput.add(q, now, 0, dead.length);
+      this.#countJob(q, now, { failed: dead.length });
     }
 
     return { requeued, dead };
@@ -3252,6 +5279,19 @@ export class MongoDriver implements JobsDriver {
     return removed.deletedCount ?? 0;
   }
 
+  /**
+   * Follows one channel, through the poll this driver runs for the channel's
+   * namespace.
+   *
+   * Every subscription of a namespace shares one poll: a single `find` per
+   * tick over all of its followed channels, each in a bounded window of its
+   * own numbers, dispatched here by channel. One poll per subscription was
+   * one query per channel per tick — at 30 channels and the 50ms default,
+   * 600 queries a second from an idle process.
+   *
+   * Each subscription starts from its channel's latest number when it
+   * subscribes, and is told of every event after that, as before.
+   */
   async subscribe<TKind extends EventKind>(
     ns: string,
     kind: TKind,
@@ -3272,46 +5312,62 @@ export class MongoDriver implements JobsDriver {
       .find({ ns, channel, seq: { $exists: true } })
       .sort({ seq: -1 })
       .limit(1)
+      .project<{ seq?: number }>({ _id: 0, seq: 1 })
       .toArray();
+    const from = latest[0]?.seq ?? 0;
 
-    const gaps = new EventGaps(latest[0]?.seq ?? 0);
+    // Joined synchronously after that read, so two subscriptions racing to
+    // open a namespace's poll cannot both create one.
+    let poll = this.#eventPolls.get(ns);
+    if (!poll) {
+      const created: EventPoll = {
+        channels: new Map(),
+        busy: false,
+        ticks: 0,
+        timer: setInterval(() => {
+          void this.#pollEvents(ns, created).catch(() => {
+            // A failed poll is retried on the next tick.
+          });
+        }, this.#poll),
+      };
+      created.timer.unref?.();
+      this.#eventPolls.set(ns, created);
+      poll = created;
+    }
+
+    let follow = poll.channels.get(channel);
+    if (!follow) {
+      follow = {
+        gaps: new EventGaps(from),
+        followers: new Set(),
+        empty: false,
+        wide: false,
+      };
+      poll.channels.set(channel, follow);
+    }
+
+    const follower: EventFollower = { from, deliver };
+    follow.followers.add(follower);
+
+    const owner = poll;
+    const followed = follow;
     let stopped = false;
-
-    const timer = setInterval(() => {
-      void (async () => {
-        if (stopped) {
-          return;
-        }
-
-        const now = Date.now();
-        const retry = gaps.retry(now);
-        const documents = await events
-          .find({
-            ns,
-            channel,
-            $or: [
-              { seq: { $gt: gaps.cursor } },
-              ...(retry.length > 0 ? [{ seq: { $in: retry } }] : []),
-            ],
-          })
-          .sort({ seq: 1 })
-          .limit(200)
-          .toArray();
-
-        for (const document of documents) {
-          if (document.seq !== undefined && gaps.accept(document.seq, now)) {
-            deliver(JSON.parse(document.payload) as DriverEvent);
-          }
-        }
-      })().catch(() => {
-        // A failed poll is retried on the next tick.
-      });
-    }, this.#poll);
-    timer.unref?.();
-
     const stop = () => {
+      if (stopped) {
+        return;
+      }
       stopped = true;
-      clearInterval(timer);
+      followed.followers.delete(follower);
+      if (
+        followed.followers.size === 0 &&
+        owner.channels.get(channel) === followed
+      ) {
+        owner.channels.delete(channel);
+      }
+      if (owner.channels.size === 0 && this.#eventPolls.get(ns) === owner) {
+        clearInterval(owner.timer);
+        this.#eventPolls.delete(ns);
+      }
     };
 
     this.#subscriptions.add(stop);
@@ -3320,6 +5376,126 @@ export class MongoDriver implements JobsDriver {
       stop();
       this.#subscriptions.delete(stop);
     };
+  }
+
+  /**
+   * One tick of a namespace's event poll: every followed channel's next
+   * events in one `find`, delivered to that channel's followers.
+   *
+   * Each channel asks for the numbers just past its cursor, at most
+   * {@link EVENT_POLL_WINDOW} of them — the bound one poll per channel used to
+   * get from a `limit` — and for the numbers it passed over and is still
+   * waiting on (see `EventGaps`). A window bounds a burst, but a run of
+   * numbers longer than the window with no event behind them (publishes whose
+   * insert failed after taking a number) would hold the cursor below it for
+   * good. So every {@link EVENT_PROBE_EVERY} ticks, channels whose window came
+   * back empty are asked whether anything lies past it, and those that answer
+   * yes read unbounded on the next tick.
+   */
+  async #pollEvents(ns: string, poll: EventPoll): Promise<void> {
+    // A slow poll is not overlapped by the next tick: both would deliver.
+    if (poll.busy || poll.channels.size === 0) {
+      return;
+    }
+    poll.busy = true;
+
+    try {
+      const events = await this.#events();
+      const now = Date.now();
+      const channels = [...poll.channels];
+      const branches: FilterLike[] = [];
+
+      for (const [channel, follow] of channels) {
+        const cursor = follow.gaps.cursor;
+        branches.push({
+          channel,
+          seq: follow.wide
+            ? { $gt: cursor }
+            : { $gt: cursor, $lte: cursor + EVENT_POLL_WINDOW },
+        });
+        const retry = follow.gaps.retry(now);
+        if (retry.length > 0) {
+          branches.push({ channel, seq: { $in: retry } });
+        }
+      }
+
+      const documents = await events
+        .find<{ channel: string; seq?: number; payload: string }>(
+          { ns, $or: branches },
+          { projection: { _id: 0, channel: 1, seq: 1, payload: 1 } },
+        )
+        .sort({ channel: 1, seq: 1 })
+        .toArray();
+
+      const found = new Set<string>();
+      for (const document of documents) {
+        const follow = poll.channels.get(document.channel);
+        if (!follow || document.seq === undefined) {
+          continue;
+        }
+        found.add(document.channel);
+        if (!follow.gaps.accept(document.seq, now)) {
+          continue;
+        }
+        for (const follower of follow.followers) {
+          if (document.seq <= follower.from) {
+            continue;
+          }
+          try {
+            // Parsed per follower, so one listener's changes to the event
+            // are not another's.
+            follower.deliver(JSON.parse(document.payload) as DriverEvent);
+          } catch {
+            // One listener's failure is not another's: the rest are told.
+          }
+        }
+      }
+
+      for (const [channel, follow] of channels) {
+        follow.wide = false;
+        follow.empty = !found.has(channel);
+      }
+
+      poll.ticks++;
+      if (poll.ticks % EVENT_PROBE_EVERY === 0) {
+        await this.#probeEvents(ns, poll);
+      }
+    } finally {
+      poll.busy = false;
+    }
+  }
+
+  /**
+   * Asks, for the channels whose window came back empty, whether any event
+   * lies past it; those that have one read unbounded on the next tick. See
+   * {@link MongoDriver.#pollEvents}.
+   */
+  async #probeEvents(ns: string, poll: EventPoll): Promise<void> {
+    const empty = [...poll.channels].filter(([, follow]) => follow.empty);
+    if (empty.length === 0) {
+      return;
+    }
+
+    const events = await this.#events();
+    const past = await events
+      .find<{ channel: string }>(
+        {
+          ns,
+          $or: empty.map(([channel, follow]) => ({
+            channel,
+            seq: { $gt: follow.gaps.cursor + EVENT_POLL_WINDOW },
+          })),
+        },
+        { projection: { _id: 0, channel: 1 }, limit: empty.length },
+      )
+      .toArray();
+
+    for (const { channel } of past) {
+      const follow = poll.channels.get(channel);
+      if (follow) {
+        follow.wide = true;
+      }
+    }
   }
 
   /* --- internals ------------------------------------------------------------ */
@@ -3407,26 +5583,36 @@ export class MongoDriver implements JobsDriver {
         collection: this.collections.jobs,
         key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 },
       },
-      // Promotion: what is due but not yet claimable.
+      // Promotion: what is due but not yet claimable. `_id` ends it, as it
+      // ends a listing's sort by `runAt`, so a page of `delayed` walks the
+      // index instead of sorting the whole state.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, runAt: 1 },
+        key: { ns: 1, queue: 1, state: 1, runAt: 1, _id: 1 },
       },
-      // Stalled recovery: active jobs whose lock has lapsed.
+      // Stalled recovery: active jobs whose lock has lapsed. `_id` for the
+      // same reason, for a listing of `active`.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1 },
+        key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1, _id: 1 },
       },
-      // Cleaning and retention.
+      // Cleaning and retention, and a job listing's `finishedOn` range.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, finishedOn: 1 },
+        key: { ...FINISHED_INDEX },
       },
-      { collection: this.collections.jobs, key: { expiresAt: 1 } },
+      // The expiry prune, one queue at a time: global, it walked every
+      // namespace's expired jobs to find one queue's.
+      {
+        collection: this.collections.jobs,
+        key: { ns: 1, queue: 1, expiresAt: 1 },
+      },
       { collection: this.collections.kv, key: { ns: 1, key: 1 } },
+      // The age prune of a namespace's events. Without it the delete walked
+      // every event the namespace kept.
       {
         collection: this.collections.events,
-        key: { ns: 1, channel: 1, _id: 1 },
+        key: { ns: 1, at: 1 },
       },
       // Following a channel: by its number, and asking again for the ones a
       // poll passed over.
@@ -3445,6 +5631,28 @@ export class MongoDriver implements JobsDriver {
       {
         collection: this.collections.jobLogs,
         key: { ns: 1, queue: 1, jobId: 1, logKey: 1 },
+      },
+      // A run's log: counted, paged and trimmed by its run id, in `lineNo`
+      // order. Its `(ns, runnerKey)` prefix also serves the walk `keepRuns`
+      // makes over a runner's runs, so a captured line costs one index write.
+      {
+        collection: this.collections.runLogs,
+        key: { ns: 1, runnerKey: 1, runId: 1, lineNo: 1 },
+      },
+      // One analytics series over a range of buckets, which is every read
+      // here: the whole filter is a prefix of this key, and `at` orders the
+      // rows the way a series is read.
+      {
+        collection: this.collections.metrics,
+        key: { ...METRICS_READ_INDEX },
+      },
+      // The range prune, which names neither a namespace nor an entity — a
+      // sweep driven by a series' own writes would never reach a worker that
+      // stopped reporting. Its own index because the read index starts with
+      // `ns`, so nothing of it can answer this.
+      {
+        collection: this.collections.metrics,
+        key: { interval: 1, at: 1 },
       },
     ];
   }
@@ -3489,7 +5697,7 @@ export class MongoDriver implements JobsDriver {
       }
 
       const names = await db
-        .collection(collection)
+        .collection(collection, COLLECTION_OPTIONS)
         .indexes()
         .then((found) => new Set(found.map((index) => String(index.name))))
         .catch(() => new Set<string>());
@@ -3518,14 +5726,15 @@ export class MongoDriver implements JobsDriver {
       });
     }
 
-    for (const name of RETIRED_INDEXES) {
-      if (!existing.get(this.collections.jobs)?.has(name)) {
+    for (const { collection: logical, name } of RETIRED_INDEXES) {
+      const collection = this.collections[logical];
+      if (!existing.get(collection)?.has(name)) {
         continue;
       }
 
       changes.push({
         kind: "drop-index",
-        table: this.collections.jobs,
+        table: collection,
         target: name,
         statement: `dropIndex(${JSON.stringify(name)})`,
         reason:
@@ -3561,7 +5770,9 @@ export class MongoDriver implements JobsDriver {
         );
 
         if (definition) {
-          await db.collection(change.table).createIndex(definition.key);
+          await db
+            .collection(change.table, COLLECTION_OPTIONS)
+            .createIndex(definition.key);
           change.applied = true;
         }
 
@@ -3569,7 +5780,7 @@ export class MongoDriver implements JobsDriver {
       }
 
       await db
-        .collection(change.table)
+        .collection(change.table, COLLECTION_OPTIONS)
         .dropIndex(change.target)
         .catch(() => undefined);
       change.applied = true;
@@ -3591,7 +5802,7 @@ export class MongoDriver implements JobsDriver {
 
     for (const [collection, keys] of byCollection) {
       await db
-        .collection(collection)
+        .collection(collection, COLLECTION_OPTIONS)
         .createIndexes(keys.map((key) => ({ key })));
     }
 
@@ -3609,23 +5820,33 @@ export class MongoDriver implements JobsDriver {
 
   /** The jobs collection. */
   async #jobs(): Promise<CollectionLike<JobDocument>> {
-    return (await this.#db()).collection<JobDocument>(this.collections.jobs);
+    return (await this.#db()).collection<JobDocument>(
+      this.collections.jobs,
+      COLLECTION_OPTIONS,
+    );
   }
 
   /** The locks collection. */
   async #locks(): Promise<CollectionLike<LockDocument>> {
-    return (await this.#db()).collection<LockDocument>(this.collections.locks);
+    return (await this.#db()).collection<LockDocument>(
+      this.collections.locks,
+      COLLECTION_OPTIONS,
+    );
   }
 
   /** The key/value collection. */
   async #kv(): Promise<CollectionLike<KvDocument>> {
-    return (await this.#db()).collection<KvDocument>(this.collections.kv);
+    return (await this.#db()).collection<KvDocument>(
+      this.collections.kv,
+      COLLECTION_OPTIONS,
+    );
   }
 
   /** The events collection. */
   async #events(): Promise<CollectionLike<EventDocument>> {
     return (await this.#db()).collection<EventDocument>(
       this.collections.events,
+      COLLECTION_OPTIONS,
     );
   }
 
@@ -3633,7 +5854,508 @@ export class MongoDriver implements JobsDriver {
   async #jobLogs(): Promise<CollectionLike<JobLogDocument>> {
     return (await this.#db()).collection<JobLogDocument>(
       this.collections.jobLogs,
+      COLLECTION_OPTIONS,
     );
+  }
+
+  /** The run-logs collection. */
+  async #runLogs(): Promise<CollectionLike<RunLogDocument>> {
+    return (await this.#db()).collection<RunLogDocument>(
+      this.collections.runLogs,
+      COLLECTION_OPTIONS,
+    );
+  }
+
+  /** The analytics-buckets collection. */
+  async #metricsCollection(): Promise<CollectionLike<MetricDocument>> {
+    return (await this.#db()).collection<MetricDocument>(
+      this.collections.metrics,
+      COLLECTION_OPTIONS,
+    );
+  }
+
+  /* --- analytics storage -------------------------------------------- */
+
+  /**
+   * Counts a queue's completions or failed attempts, into both the shipped
+   * per-minute throughput and the analytics buckets.
+   *
+   * The two are separate stores answering the same question at different
+   * widths: `getThroughput` is the shipped one and keeps its own retention and
+   * its own sharded `kv` documents, and `getQueueMetrics` has no other writer,
+   * so a queue's analytics series is made here or nowhere.
+   */
+  #countJob(q: QueueRef, now: number, counts: Partial<JobCounters>): void {
+    this.#throughput.add(q, now, counts.completed ?? 0, counts.failed ?? 0);
+    this.#jobMetrics.count(q.ns, q.queue, now, counts);
+  }
+
+  /**
+   * Writes one batch of counter buckets: a single `bulkWrite` of `$inc`
+   * upserts, one operation per `(ns, kind, entity, interval, at)`.
+   *
+   * `$inc` on a **shared** document, not on a shard of this instance's own —
+   * §4a. The throughput buckets shard because a *per-job* statement contends
+   * on a document; a metric bucket is written once per entity per second per
+   * process, so the contention the shards exist for cannot happen, and
+   * sharding would multiply the stored documents by the process count on top
+   * of the sixty-fold the per-second widths already cost.
+   */
+  async #writeCounters<C extends Record<keyof C, number>>(
+    kind: MetricKind,
+    batch: PendingMetric<C>[],
+  ): Promise<BufferWriteResult<PendingMetric<C>>> {
+    return await this.#writeMetricBatch(batch, (entry) => ({
+      filter: {
+        _id: metricId(entry.ns, kind, entry.entity, entry.interval, entry.at),
+      },
+      update: {
+        $inc: { ...entry.counts },
+        $set: { updatedAt: Date.now() },
+        $setOnInsert: {
+          ns: entry.ns,
+          kind,
+          entity: entry.entity,
+          interval: entry.interval,
+          at: entry.at,
+        },
+      },
+    }));
+  }
+
+  /**
+   * Writes one batch of duration buckets, each merged into whatever the
+   * document already holds.
+   *
+   * An aggregation pipeline rather than `$inc`/`$min`/`$max`, because of the
+   * histogram: its 25 bins are stored **wholesale as the array `durationBin`
+   * indexes**, so a writer never increments a bin
+   * remotely, and `$zip` adds the two arrays element by element in one atomic
+   * operation. A layout keyed by bin (`hist.7`) would be a second indexing of
+   * the same histogram, and the design has exactly one.
+   *
+   * `$min`/`$max` here are the aggregation operators, which ignore a missing
+   * field — so an upsert's first write keeps its own extremes rather than
+   * racing a zero.
+   */
+  async #writeDurations(
+    batch: PendingStats<DurationStats>[],
+  ): Promise<BufferWriteResult<PendingStats<DurationStats>>> {
+    return await this.#writeMetricBatch(batch, (entry) => ({
+      filter: {
+        _id: metricId(
+          entry.ns,
+          "durations",
+          entry.entity,
+          entry.interval,
+          entry.at,
+        ),
+      },
+      update: [
+        {
+          $set: {
+            ns: entry.ns,
+            kind: "durations",
+            entity: entry.entity,
+            interval: entry.interval,
+            at: entry.at,
+            updatedAt: Date.now(),
+            count: { $add: [{ $ifNull: ["$count", 0] }, entry.stats.count] },
+            sumMs: { $add: [{ $ifNull: ["$sumMs", 0] }, entry.stats.sumMs] },
+            minMs: { $min: ["$minMs", entry.stats.minMs] },
+            maxMs: { $max: ["$maxMs", entry.stats.maxMs] },
+            histogram: {
+              $map: {
+                input: {
+                  $zip: {
+                    inputs: [
+                      { $ifNull: ["$histogram", emptyHistogram()] },
+                      entry.stats.histogram,
+                    ],
+                  },
+                },
+                in: { $sum: "$$this" },
+              },
+            },
+          },
+        },
+      ],
+    }));
+  }
+
+  /**
+   * Writes one batch of busyness buckets, merged the way
+   * `mergeBusynessStats` merges them.
+   *
+   * A pipeline for `concurrency`: it is the *latest* sample's setting, so it
+   * moves only when the incoming sample is at least as new as the stored
+   * `lastAt`. A `$set` stage reads the document as it was before the update,
+   * which is what makes comparing the two safe in one operation — and what
+   * keeps an earlier heartbeat arriving late from becoming "the concurrency as
+   * of the last sample".
+   */
+  async #writeBusyness(
+    batch: PendingStats<BusynessStats>[],
+  ): Promise<BufferWriteResult<PendingStats<BusynessStats>>> {
+    return await this.#writeMetricBatch(batch, (entry) => ({
+      filter: {
+        _id: metricId(
+          entry.ns,
+          "busyness",
+          entry.entity,
+          entry.interval,
+          entry.at,
+        ),
+      },
+      update: [
+        {
+          $set: {
+            ns: entry.ns,
+            kind: "busyness",
+            entity: entry.entity,
+            interval: entry.interval,
+            at: entry.at,
+            updatedAt: Date.now(),
+            samples: {
+              $add: [{ $ifNull: ["$samples", 0] }, entry.stats.samples],
+            },
+            activeSum: {
+              $add: [{ $ifNull: ["$activeSum", 0] }, entry.stats.activeSum],
+            },
+            activeMax: { $max: ["$activeMax", entry.stats.activeMax] },
+            concurrency: {
+              $cond: [
+                { $gte: [entry.stats.lastAt, { $ifNull: ["$lastAt", 0] }] },
+                entry.stats.concurrency,
+                { $ifNull: ["$concurrency", 0] },
+              ],
+            },
+            lastAt: { $max: ["$lastAt", entry.stats.lastAt] },
+          },
+        },
+      ],
+    }));
+  }
+
+  /**
+   * One batch written as a single `bulkWrite` of upserts, then the prune if it
+   * is due.
+   *
+   * Unordered, so every operation is attempted and the error names the refused
+   * ones by position — only those go back to the buffer, because the ones that
+   * landed have already been counted and writing them again would count them
+   * twice.
+   */
+  async #writeMetricBatch<
+    TEntry extends { at: number; entity: string; interval: number; ns: string },
+  >(
+    batch: TEntry[],
+    operation: (entry: TEntry) => {
+      filter: FilterLike;
+      update: UpdateFilterLike;
+    },
+  ): Promise<BufferWriteResult<TEntry>> {
+    if (batch.length === 0) {
+      return { unwritten: [] };
+    }
+
+    const metrics = await this.#metricsCollection();
+    let unwritten: TEntry[] = [];
+    let failure: unknown;
+    let latest = 0;
+
+    for (const entry of batch) {
+      latest = Math.max(latest, entry.at);
+    }
+
+    try {
+      await metrics.bulkWrite(
+        batch.map((entry) => ({
+          updateOne: { ...operation(entry), upsert: true },
+        })),
+        { ordered: false },
+      );
+    } catch (error) {
+      const refused = bulkWriteFailures(error);
+      // An error naming none says nothing about what landed, so it is thrown
+      // and the whole batch goes back.
+      if (refused === null) {
+        throw error;
+      }
+      unwritten = batch.filter((_, index) => refused.has(index));
+      failure = error;
+    }
+
+    await this.#pruneMetrics(latest);
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
+  }
+
+  /**
+   * Drops every analytics bucket past its width's retention, once a minute per
+   * process.
+   *
+   * **By range, not per entity written.** That is the difference from
+   * `#writeThroughput`, which deletes a queue's old buckets whenever that
+   * queue is written to: such a sweep never reaches a series nobody writes to
+   * any more, so a worker that stopped reporting would keep its buckets for
+   * good. One `deleteMany` per width per minute per process instead, over
+   * every namespace, answered by the `(interval, at)` index.
+   *
+   * `latest` is the newest bucket just written, and the later of it and the
+   * wall clock drives the clock — so a caller that passes times in, as the
+   * contract suite does, can step the sweep forward instead of waiting a
+   * minute for it.
+   */
+  async #pruneMetrics(latest: number): Promise<void> {
+    const now = Math.max(Date.now(), latest);
+
+    if (!this.#metricsPrune.due(now)) {
+      return;
+    }
+
+    const metrics = await this.#metricsCollection();
+
+    for (const interval of this.#metrics.intervals) {
+      // Best-effort: buckets that landed stay landed, and the next sweep
+      // deletes what this one did not.
+      await metrics
+        .deleteMany({
+          interval,
+          at: { $lt: metricsPruneCutoff(this.#metrics, interval, now) },
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * One series' stored buckets in range, this driver's own pending counts
+   * written first so a caller sees what it has just counted.
+   *
+   * Empty without a query for a width this backend does not record: the route
+   * asks for one `getMetricsSupport()` reported, and answering nothing is what
+   * says the width is not there.
+   */
+  async #readMetrics(
+    ns: string,
+    kind: MetricKind,
+    entity: string,
+    query: MetricsQuery,
+  ): Promise<MetricDocument[]> {
+    if (!this.#metricsReadable(query)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    const metrics = await this.#metricsCollection();
+
+    return await metrics
+      .find({
+        ns,
+        kind,
+        entity,
+        interval: query.interval,
+        at: { $gte: query.from, $lte: query.to },
+      })
+      .toArray();
+  }
+
+  /**
+   * Whether a range read can answer anything: a width this backend records,
+   * and a range that is not inverted.
+   */
+  #metricsReadable(query: MetricsQuery): boolean {
+    return (
+      this.#metrics.intervals.includes(query.interval) && query.to >= query.from
+    );
+  }
+
+  /**
+   * The grouped totals read's single aggregation: one row per entity with a
+   * bucket of any of `kinds` in range, each the sum of those buckets.
+   *
+   * The `$match` names every field of the read index `{ ns, kind, entity,
+   * interval, at }` — `kind` and `entity` as `$in`/`$ne`/prefix bounds — so it
+   * is an index scan over the range's entries, never the collection — and
+   * hinted, so it is that index's scan (see {@link METRICS_READ_INDEX}).
+   */
+  async #totalMetrics(
+    ns: string,
+    kinds: readonly MetricKind[],
+    entity: Record<string, unknown>,
+    query: MetricsQuery,
+  ): Promise<MetricTotalsRow[]> {
+    if (!this.#metricsReadable(query)) {
+      return [];
+    }
+
+    await this.flushMetrics();
+
+    const metrics = await this.#metricsCollection();
+    const accumulators: Record<string, unknown> = { _id: "$entity" };
+    for (const kind of kinds) {
+      Object.assign(accumulators, METRIC_TOTALS_ACCUMULATORS[kind]);
+    }
+
+    return await metrics
+      .aggregate<MetricTotalsRow>(
+        [
+          {
+            $match: {
+              ns,
+              kind: { $in: [...kinds] },
+              entity,
+              interval: query.interval,
+              at: { $gte: query.from, $lte: query.to },
+            },
+          },
+          { $group: accumulators },
+          ...metricTotalsFinish(kinds),
+        ],
+        { hint: METRICS_READ_INDEX },
+      )
+      .toArray();
+  }
+
+  /**
+   * The batch read's single query: every bucket in range of any of `kinds`
+   * for any of `entities`, by entity and then by kind.
+   */
+  async #readMetricsOf(
+    ns: string,
+    kinds: readonly MetricKind[],
+    entities: readonly string[],
+    query: MetricsQuery,
+  ): Promise<Map<string, Partial<Record<MetricKind, MetricDocument[]>>>> {
+    const byEntity = new Map<
+      string,
+      Partial<Record<MetricKind, MetricDocument[]>>
+    >();
+
+    if (entities.length === 0 || !this.#metricsReadable(query)) {
+      return byEntity;
+    }
+
+    await this.flushMetrics();
+
+    const metrics = await this.#metricsCollection();
+    const docs = await metrics
+      .find(
+        {
+          ns,
+          kind: { $in: [...kinds] },
+          entity: { $in: [...entities] },
+          interval: query.interval,
+          at: { $gte: query.from, $lte: query.to },
+        },
+        { hint: METRICS_READ_INDEX },
+      )
+      .toArray();
+
+    for (const doc of docs) {
+      let kinds = byEntity.get(doc.entity);
+      if (!kinds) {
+        kinds = {};
+        byEntity.set(doc.entity, kinds);
+      }
+      (kinds[doc.kind] ??= []).push(doc);
+    }
+
+    return byEntity;
+  }
+
+  /**
+   * The lowest and highest line number one run's log still holds, or zeroes
+   * when it holds nothing.
+   *
+   * These two are the whole of a run log's bookkeeping — there is no counter,
+   * and so nothing that can disagree with the documents.
+   */
+  async #runLogBounds(owner: {
+    /** The namespace. */
+    ns: string;
+    /** The runner's key. */
+    runnerKey: string;
+    /** The run. */
+    runId: string;
+  }): Promise<{ firstSeq: number; lastSeq: number }> {
+    const logs = await this.#runLogs();
+
+    const ends = async (direction: 1 | -1): Promise<number> =>
+      (
+        await logs
+          .find(owner)
+          .sort({ lineNo: direction })
+          .limit(1)
+          .project<{ lineNo: number }>({ _id: 0, lineNo: 1 })
+          .toArray()
+      )[0]?.lineNo ?? 0;
+
+    const [firstSeq, lastSeq] = await Promise.all([ends(1), ends(-1)]);
+    return { firstSeq, lastSeq };
+  }
+
+  /**
+   * Deletes a run's lines numbered below `keepFrom`, and answers what the
+   * lowest remaining number is.
+   */
+  async #dropRunLogBelow(
+    owner: {
+      /** The namespace. */
+      ns: string;
+      /** The runner's key. */
+      runnerKey: string;
+      /** The run. */
+      runId: string;
+    },
+    keepFrom: number,
+    firstSeq: number,
+  ): Promise<number> {
+    if (keepFrom <= firstSeq) {
+      return firstSeq;
+    }
+
+    const logs = await this.#runLogs();
+    await logs.deleteMany({ ...owner, lineNo: { $lt: keepFrom } });
+    return keepFrom;
+  }
+
+  /**
+   * Drops the logs of every run but this runner's `keepRuns` most recent.
+   *
+   * Run order is the `_id` of a run's first line: an `ObjectId` leads with the
+   * time it was generated, so grouping on the minimum orders the runs by when
+   * they first logged — not by `at`, which capture stamps and a clock could
+   * disagree about, and not by `lineNo`, which restarts at 1 for every run.
+   */
+  async #evictRunLogs(
+    ns: string,
+    runnerKey: string,
+    keepRuns: number,
+  ): Promise<void> {
+    const logs = await this.#runLogs();
+
+    const runs = await logs
+      .aggregate<{
+        _id: string;
+      }>([
+        { $match: { ns, runnerKey } },
+        { $group: { _id: "$runId", first: { $min: "$_id" } } },
+        { $sort: { first: -1 } },
+        { $skip: Math.max(0, Math.floor(keepRuns)) },
+      ])
+      .toArray();
+
+    if (runs.length > 0) {
+      await logs.deleteMany({
+        ns,
+        runnerKey,
+        runId: { $in: runs.map((run) => run._id) },
+      });
+    }
   }
 
   /**
@@ -3885,6 +6607,9 @@ export class MongoDriver implements JobsDriver {
     document.attemptsMade = job.attemptsMade;
     document.stalledCount = job.stalledCount;
     document.workerId = job.workerId;
+    if (job.processedBy) {
+      document.processedBy = { ...job.processedBy };
+    }
     document.lockToken = job.lockToken;
     document.lockExpiresAt = job.lockExpiresAt;
     document.repeatKey = job.repeatKey;
@@ -3911,6 +6636,7 @@ export class MongoDriver implements JobsDriver {
       job.lockToken === null &&
       job.lockExpiresAt === null &&
       job.workerId === null &&
+      (job.processedBy ?? null) === null &&
       job.repeatKey === null &&
       job.attemptsMade === 0 &&
       job.stalledCount === 0 &&
@@ -3927,7 +6653,7 @@ export class MongoDriver implements JobsDriver {
       id: document.id,
       name: document.name,
       data: JSON.parse(document.data) as unknown,
-      opts: JSON.parse(document.opts) as ResolvedJobOptions,
+      opts: JSON.parse(document.opts) as StoredJobOptions,
       state: document.state,
       priority: document.priority,
       runAt: document.runAt,
@@ -3953,6 +6679,9 @@ export class MongoDriver implements JobsDriver {
       workerId: document.workerId ?? null,
       repeatKey: document.repeatKey ?? null,
       flow: document.flow ? decodeFlow(document.flow) : null,
+      // Left off rather than `null` for a job never claimed, as a record
+      // added without one reads back on every backend that stores it whole.
+      ...(document.processedBy ? { processedBy: document.processedBy } : {}),
     };
   }
 
@@ -3969,12 +6698,7 @@ export class MongoDriver implements JobsDriver {
       return;
     }
 
-    const count =
-      typeof retention === "number"
-        ? retention
-        : retention && typeof retention === "object"
-          ? retention.count
-          : undefined;
+    const count = retentionCount(retention);
 
     if (count === undefined || count < 0) {
       return;
@@ -3986,7 +6710,9 @@ export class MongoDriver implements JobsDriver {
     // still counted towards the cap, which only ever keeps more, never fewer.
     const stale = await jobs
       .find({ ns: q.ns, queue: q.queue, state })
-      .sort({ finishedOn: -1, createdAt: -1 })
+      // `_id` breaks ties, not `createdAt`: it is what the finished-order
+      // index ends with, so the walk is covered and sorts nothing.
+      .sort({ finishedOn: -1, _id: -1 })
       .skip(Math.max(0, Math.floor(count)))
       .limit(1000)
       .project<{ _id: string }>({ _id: 1 })
@@ -4004,6 +6730,24 @@ export class MongoDriver implements JobsDriver {
 }
 
 /** Whether an error is MongoDB's "this key already exists". */
+/**
+ * One stored document as the contract's line.
+ *
+ * `lineNo` becomes `seq`, and the bookkeeping (`_id`, `bytes`, the owner keys)
+ * is left behind. `level` and `truncated` are copied only when the document
+ * has them, so a line reads back without them exactly as it was stored.
+ */
+function toRunLogLine(document: RunLogDocument): RunLogLine {
+  return {
+    seq: document.lineNo,
+    stream: document.stream,
+    at: document.at,
+    text: document.text,
+    ...(document.level === undefined ? {} : { level: document.level }),
+    ...(document.truncated ? { truncated: true as const } : {}),
+  };
+}
+
 function isDuplicateKey(error: unknown): boolean {
   return (
     typeof error === "object" &&

@@ -38,12 +38,31 @@ interface SqlColumnRow extends ColumnRow {
  * column type change rewrites the table under a lock that blocks every reader
  * and writer for its duration — seconds on a small table, minutes on a large
  * one, and the queue is stopped throughout. Adding a column or dropping an
- * index is effectively instant, and Postgres can even build an index without
- * blocking writes at all.
+ * index is effectively instant. Building an index depends on the engine: see
+ * {@link indexBuildBlocks}.
  *
  * So they are separated. A sync does the changes that cannot stall a queue by
  * default, and the one that can has to be asked for by name.
  */
+
+/**
+ * Whether building an index on `dialect` blocks writes to its table for the
+ * build, which is what a `create-index` change reports as `blocking`.
+ *
+ * Measured by timing an insert from a second connection while a
+ * 2,000,000-row table built a two-column index: Postgres (`CONCURRENTLY`),
+ * MySQL 8.4 and MariaDB (InnoDB's online build, `LOCK=NONE` by default) took
+ * the insert in 2-3ms during a 1.9-2.9s build; SQLite (rollback journal and
+ * WAL alike) made it wait 1.7s of a 1.9s build, since one writer holds the
+ * database file until the `CREATE INDEX` commits. So only SQLite reports it.
+ * An online build still takes a brief exclusive metadata lock at its start
+ * and end, so on MySQL and MariaDB it waits for a transaction still open on
+ * the table, and statements arriving meanwhile queue behind it: a stall only
+ * a long transaction can cause, not one the build's length does.
+ */
+function indexBuildBlocks(dialect: SqlDialect): boolean {
+  return dialect.name === "sqlite";
+}
 
 /**
  * Whether an index the database reports carries a predicate.
@@ -203,7 +222,7 @@ export async function syncSqlSchema(
           target: index.name,
           statement: renderIndex(index, dialect, true),
           reason: "the driver defines it and the table does not have it",
-          blocking: false,
+          blocking: indexBuildBlocks(dialect),
           applied: false,
         });
         continue;
@@ -260,7 +279,7 @@ export async function syncSqlSchema(
             : columnDrift
               ? "rebuilt with the columns the driver defines"
               : "rebuilt with the collation the driver defines",
-          blocking: false,
+          blocking: indexBuildBlocks(dialect),
           applied: false,
         });
       }

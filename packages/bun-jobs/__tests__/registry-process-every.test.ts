@@ -414,6 +414,8 @@ for (const backend of backends) {
   describe.skipIf(!backend.available)(`processEvery: ${backend.name}`, () => {
     let driver: JobsDriver;
     let jobs: BunJobs;
+    /** The namespace `jobs` works in, purged by name after each case. */
+    let namespace: string;
     /** Jobs the `tick` definition ran, by data. */
     let ran: unknown[];
     /** Releases the `hold` jobs, which run until it is called. */
@@ -433,8 +435,9 @@ for (const backend of backends) {
       const gate = Promise.withResolvers<void>();
       release = gate.resolve;
 
+      namespace = testNamespace("every");
       jobs = new BunJobs({
-        namespace: testNamespace("every"),
+        namespace,
         driver,
         logger: noopLogger,
       });
@@ -449,8 +452,11 @@ for (const backend of backends) {
     afterEach(async () => {
       release();
       await jobs.stop().catch(() => {});
-      await jobs.purge().catch(() => {});
       await jobs.close();
+      // After the close, not before it: a worker records its last analytics
+      // as it stops, and a purge ahead of that left them behind. Exactly this
+      // case's namespace — never a prefix sweep, the server is shared.
+      await driver.purge(namespace).catch(() => {});
     });
 
     it(`applies before start, on the driver's own terms (${backend.name})`, async () => {
@@ -465,8 +471,9 @@ for (const backend of backends) {
     });
 
     it(`applies as a constructor option, on the driver's own terms (${backend.name})`, async () => {
+      const own = testNamespace("every");
       const configured = new BunJobs({
-        namespace: testNamespace("every"),
+        namespace: own,
         driver,
         logger: noopLogger,
         processEvery: "250ms",
@@ -480,8 +487,8 @@ for (const backend of backends) {
           driver.capabilities.blockingWait ? 250 : 5_000,
         );
       } finally {
-        await configured.purge().catch(() => {});
         await configured.close();
+        await driver.purge(own).catch(() => {});
       }
     });
 

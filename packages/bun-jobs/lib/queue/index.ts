@@ -7,8 +7,17 @@ export {
   type JobBackoffOptions,
   nextBackoff,
 } from "./backoff";
-export { BunQueue, type RegistryQueue } from "./BunQueue";
-export { BunQueueWorker, MAX_TIMER_MS } from "./BunQueueWorker";
+export {
+  BunQueue,
+  JobDefaultsChangedError,
+  type RegistryQueue,
+} from "./BunQueue";
+export {
+  BunQueueWorker,
+  deriveWorkerKey,
+  incarnationTag,
+  MAX_TIMER_MS,
+} from "./BunQueueWorker";
 /**
  * The queue: producers, consumers and the job they exchange.
  */
@@ -23,6 +32,42 @@ export {
 export { Job } from "./Job";
 export type { JobEvent, JobHooks, JobUpdate } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
+export {
+  ALL_JOB_OPTION_BITS,
+  assertRewriteRequest,
+  decodeRewriteCursor,
+  DEFAULT_JOB_DEFAULTS_REFRESH_MS,
+  describeJobDefaults,
+  emptyRewriteResult,
+  encodeRewriteCursor,
+  explicitKeys,
+  explicitMaskOf,
+  isJobDefaultKey,
+  JOB_DEFAULTS_STATE,
+  JOB_OPTION_BITS,
+  jobDefaultIssue,
+  JobDefaultsCache,
+  type JobDefaultsEntry,
+  type JobDefaultsPatch,
+  type JobDefaultsStoredValues,
+  type JobDefaultsUpdate,
+  jobDefaultsValuesOf,
+  maskOfKeys,
+  overlayJobDefaults,
+  overriddenKeys,
+  type PendingRewritePlan,
+  planPendingRewrite,
+  readJobDefaults,
+  resetJobDefaults,
+  type RewritableJob,
+  sameOptionValue,
+  sanitizeJobDefaults,
+  type StoredJobDefaults,
+  supportsJobDefaults,
+  tallyMoved,
+  tallyRewrite,
+  writeJobDefaults,
+} from "./jobDefaults";
 export { JobDraft, type RepeatEveryOptions } from "./JobDraft";
 export {
   DEFAULT_LIMITS_REFRESH_MS,
@@ -38,13 +83,24 @@ export {
   CALLER_REPEAT_KEY_PREFIX,
   DEFAULT_JOB_OPTIONS,
   displayRepeatKey,
+  type JobOptionLayers,
   MAX_JOB_ID_LENGTH,
   MAX_REPEAT_KEY_LENGTH,
   resolveJobOptions,
+  resolveLayeredJobOptions,
   resolveRunAt,
   retentionExpiry,
   shortenJobId,
 } from "./options";
+export {
+  type LocalWorker,
+  RemoteWorker,
+  RemoteWorkerManager,
+  type RemoteWorkerOptions,
+  type WorkerConfigResult,
+  type WorkerControlResult,
+  type WorkerTarget,
+} from "./RemoteWorker";
 export {
   nextOccurrence,
   repeatJobId,
@@ -53,6 +109,8 @@ export {
 } from "./repeat";
 export type {
   AdHocJobName,
+  ApplyJobDefaultsOptions,
+  ApplyJobDefaultsResult,
   BulkEntriesOf,
   BulkJobsOf,
   BunQueueEvents,
@@ -69,6 +127,9 @@ export type {
   ForeignFlowNode,
   JobAddArgs,
   JobDataOf,
+  JobDefaultsInfo,
+  JobDefaultsWriteOptions,
+  JobDefaultsWriteResult,
   JobEntryData,
   JobEntryResult,
   JobHandlerResultOf,
@@ -107,6 +168,7 @@ export type {
   WhenDeclared,
   WhenUndeclared,
   WorkerEventsOf,
+  WorkerRemoteControlOptions,
 } from "./types";
 export {
   assertWritableStateName,
@@ -121,3 +183,30 @@ export {
   WINDOW_PENDING_MS,
   type WindowSweep,
 } from "./windows";
+export {
+  listWorkerConfigs,
+  readWorkerConfig,
+  readWorkerControl,
+  readWorkerStop,
+  removeWorkerControl,
+  supportsWorkerControl,
+  sweepWorkerControls,
+  WORKER_CONFIG_PREFIX,
+  WORKER_CONTROL_GRACE_LIFETIMES,
+  WORKER_CONTROL_PREFIX,
+  WORKER_CONTROL_SWEEP_LIMIT,
+  WORKER_STOP_PREFIX,
+  WORKER_STOP_TIMEOUT_MAX,
+  type WorkerConfigEntry,
+  workerConfigName,
+  type WorkerConfigOverride,
+  type WorkerControlEntry,
+  workerControlName,
+  type WorkerControlSweep,
+  type WorkerStopEntry,
+  workerStopName,
+  workerStopTimeoutIssue,
+  writeWorkerConfig,
+  writeWorkerControl,
+  writeWorkerStop,
+} from "./workerControl";

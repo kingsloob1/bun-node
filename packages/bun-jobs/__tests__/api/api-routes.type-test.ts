@@ -1,3 +1,12 @@
+/**
+ * Compile-time assertions that the route schemas describe the real bun-jobs
+ * types: a field added to `ResolvedJobOptions`, `RunnerSchedule` or
+ * `StoredLimits` without the schema following fails here. Checked by `tsc`.
+ *
+ * DTOs carrying an `ErrorDto` are checked for assignability rather than
+ * equality: the schema describes `cause` loosely, since it cannot recurse.
+ */
+import type { JobDefaultKey } from "../../lib/api/contract/constants";
 import type { Infer } from "../../lib/api/schema/builder";
 import type {
   JobOptionsSchema,
@@ -16,20 +25,14 @@ import type {
   RunRecordSchema,
   TriggerOutcomeSchema,
 } from "../../lib/api/schemas/runners";
-/**
- * Compile-time assertions that the route schemas describe the real bun-jobs
- * types: a field added to `ResolvedJobOptions`, `RunnerSchedule` or
- * `StoredLimits` without the schema following fails here. Checked by `tsc`.
- *
- * DTOs carrying an `ErrorDto` are checked for assignability rather than
- * equality: the schema describes `cause` loosely, since it cannot recurse.
- */
 import type {
   JobDto,
   RepeatableDto,
   RunnerInfoDto,
   RunRecordDto,
+  SerializedJobOptions,
 } from "../../lib/api/serialize";
+import type { StoredJobOptions } from "../../lib/drivers/driver";
 import type {
   JobState,
   QueueLimits,
@@ -46,9 +49,36 @@ type Equal<X, Y> =
     ? true
     : false;
 type Expect<T extends true> = T;
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
-type OptionsEqual = Equal<Infer<typeof JobOptionsSchema>, ResolvedJobOptions>;
+// `JobOptionsSchema` describes a job's options **as sent**: the public
+// `ResolvedJobOptions` plus `explicit`, the stored mask (`StoredJobOptions`,
+// a number) serialised as the key names it marks. Compared in two halves so
+// neither can hide the other: everything but `explicit` must equal
+// `ResolvedJobOptions` exactly — an option added there without the schema
+// still fails here — and `explicit` must be the key-name list, never the
+// number. The whole schema also equals the server's `SerializedJobOptions`.
+type OptionsEqual = Equal<
+  Omit<Infer<typeof JobOptionsSchema>, "explicit">,
+  ResolvedJobOptions
+>;
 export type OptionsMatch = Expect<OptionsEqual>;
+type ExplicitEqual = Equal<
+  Infer<typeof JobOptionsSchema>["explicit"],
+  JobDefaultKey[] | undefined
+>;
+export type ExplicitMatches = Expect<ExplicitEqual>;
+type SerializedEqual = Equal<
+  Infer<typeof JobOptionsSchema>,
+  Simplify<SerializedJobOptions>
+>;
+export type SerializedMatches = Expect<SerializedEqual>;
+type MaskOnWire = Equal<
+  Infer<typeof JobOptionsSchema>["explicit"],
+  StoredJobOptions["explicit"]
+>;
+// @ts-expect-error — the stored mask is a number; the wire carries key names.
+export type MaskOnWireCaught = Expect<MaskOnWire>;
 
 type ScheduleEqual = Equal<Infer<typeof RunnerScheduleSchema>, RunnerSchedule>;
 export type ScheduleMatches = Expect<ScheduleEqual>;

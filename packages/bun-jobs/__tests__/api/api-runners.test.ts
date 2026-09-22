@@ -41,10 +41,19 @@ async function withRunners(overrides = {}) {
   return { ...h, nightly };
 }
 
-/** Waits until a runner has recorded `count` runs. */
+/**
+ * Waits until a runner has recorded `count` finished runs. A run enters the
+ * history as `running` the moment it starts and is rewritten when it settles,
+ * so counting records alone returns while the run is still in flight, with no
+ * `result` yet. That window is widest on the first in-process run of a handler
+ * in the process, which pays for importing the file.
+ */
 async function runsRecorded(jobs: BunJobs, id: string, count: number) {
   const controller = await jobs.runners.remote(id);
-  await waitFor(async () => (await controller.history()).length >= count);
+  await waitFor(async () => {
+    const history = await controller.history();
+    return history.filter((run) => run.status !== "running").length >= count;
+  });
 }
 
 describe("listing and reading", () => {
@@ -519,6 +528,11 @@ describe("pruning and docs", () => {
     ] as const) {
       expect(paths[path]![method]!.description).toContain(
         "remoteControl: true",
+      );
+      // And what the default now does on its own, which is the part an
+      // operator reading "30s" would otherwise take as the only answer.
+      expect(paths[path]![method]!.description).toContain(
+        'remoteControl: "auto"',
       );
       expect(paths[path]![method]!.description).toContain("30s");
     }

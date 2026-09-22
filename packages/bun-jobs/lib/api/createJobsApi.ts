@@ -15,6 +15,7 @@ import type { JobsApiWebSocketInternalOptions } from "./ws/attach";
 import { BunRouter, cors } from "@kingsleyweb/bun-common";
 import { resolveConfig } from "./config";
 import { createApiErrorHandler, createNotFoundHandler } from "./errors";
+import { analyticsRoutes } from "./routes/analytics";
 import { isRouteEnabled, registerRoutes } from "./routes/define";
 import { docsRoutes } from "./routes/docs";
 import { jobRoutes } from "./routes/jobs";
@@ -22,6 +23,7 @@ import { buildMeta, csrfOf, metaRoutes } from "./routes/meta";
 import { queueRoutes } from "./routes/queues";
 import { repeatableRoutes } from "./routes/repeatables";
 import { runnerRoutes } from "./routes/runners";
+import { workerRoutes } from "./routes/workers";
 import { QueueSource, RunnerSource } from "./sources";
 import {
   asyncApiForRequest,
@@ -38,9 +40,14 @@ export function builtInRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
     ...metaRoutes(),
     ...docsRoutes(config),
     ...queueRoutes(config),
+    ...workerRoutes(),
     ...jobRoutes(config),
     ...repeatableRoutes(),
     ...runnerRoutes(config),
+    // Last, so each shared action's preview route stays what it was:
+    // `metrics.read` previews as `GET /overview` and, for a queue,
+    // `GET /queues/:queue/throughput`.
+    ...analyticsRoutes(),
   ];
 }
 

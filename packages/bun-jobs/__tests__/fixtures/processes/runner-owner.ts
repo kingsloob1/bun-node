@@ -22,6 +22,11 @@ function report(event: string, fields: Record<string, unknown> = {}): void {
   );
 }
 
+/** How this process reaches the backend, and how a child of it would. */
+const driverConfig: DriverConfig = process.env.DRIVER_CONFIG
+  ? (JSON.parse(process.env.DRIVER_CONFIG) as DriverConfig)
+  : { type: "file", root: process.env.DRIVER_ROOT ?? "" };
+
 const runner = new BunRunner<
   { marker?: string; log?: string; ms?: number },
   string
@@ -33,12 +38,22 @@ const runner = new BunRunner<
   runMode: "single",
   schedule: 3_600_000,
   remoteControl: process.env.REMOTE_CONTROL === "1",
+  ...(process.env.EXECUTION_MODES
+    ? {
+        remoteConfig: {
+          executionModes: process.env.EXECUTION_MODES.split(",") as (
+            | "spawn"
+            | "worker"
+            | "in-process"
+          )[],
+        },
+      }
+    : {}),
   syncInterval: Number(process.env.SYNC_INTERVAL ?? 0),
-  driver: createDriver(
-    process.env.DRIVER_CONFIG
-      ? (JSON.parse(process.env.DRIVER_CONFIG) as DriverConfig)
-      : { type: "file", root: process.env.DRIVER_ROOT ?? "" },
-  ),
+  driver: createDriver(driverConfig),
+  // A description of the same backend, so an override moving runs into a
+  // child process is honoured rather than refused for want of one.
+  childDriver: driverConfig,
   waitToExit: false,
   logger: noopLogger,
   args: { marker: "default", log: process.env.RUN_LOG ?? "", ms: 50 },
@@ -46,6 +61,15 @@ const runner = new BunRunner<
 
 runner.on("paused", () => report("paused"));
 runner.on("resumed", () => report("resumed"));
+runner.on("configured", (config) => {
+  report("configured", {
+    executionMode: config.effective.executionMode,
+    runMode: config.effective.runMode,
+    maxConcurrency: config.effective.maxConcurrency,
+    overridden: config.overridden,
+    error: config.error?.message,
+  });
+});
 runner.on("scheduled", () => {
   report("scheduled", { schedule: runner.schedule });
 });

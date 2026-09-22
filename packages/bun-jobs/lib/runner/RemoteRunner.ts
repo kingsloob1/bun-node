@@ -3,19 +3,30 @@ import type { RunnerControlAction } from "../shared/events";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
 import type { BunRunner } from "./BunRunner";
+import type { ClearHistoryOptions, ClearHistoryResult } from "./clearHistory";
 import type {
   RemoteRunnerInfo,
   RemoteRunRecord,
+  RunnerConfigInfo,
+  RunnerConfigPatch,
   RunnerStats,
   TriggerOutcome,
 } from "./types";
 import { DEFAULT_LOCK_TTL, DEFAULT_MAX_QUEUED_RUNS } from "../shared/constants";
-import { RunnerNotFoundError } from "../shared/errors";
+import { ConfigError, RunnerNotFoundError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
 import { newId, newToken, parseToken } from "../shared/ids";
 import { assertNamespace, assertSegment, runnerKey } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { nextFireDate, normalizeSchedule } from "../shared/schedule";
+import { clearRunnerHistory } from "./clearHistory";
+import {
+  describeRunnerConfig,
+  readStoredRunnerConfig,
+  runnerConfigFields,
+  runnerConfigResetFields,
+  writeRunnerConfig,
+} from "./config";
 
 /** Options for a {@link RemoteRunner}. */
 export interface RemoteRunnerOptions<TArgs = unknown, TResult = unknown> {
@@ -66,7 +77,8 @@ const STAT_FIELDS = [
  *
  * - `pause`, `resume` and `updateSchedule` write the shared state. An owner
  *   adopts it at its next sync (`syncInterval`, 30s by default), or within the
- *   driver's event latency when it was started with `remoteControl: true`.
+ *   driver's event latency when it is listening for `control` events — which
+ *   `remoteControl: "auto"`, the default, does on Redis and memory.
  * - `trigger` queues the run in the driver, and an owner drains it: at once
  *   when it is idle and follows `control` events, at its next sync otherwise,
  *   or when its current run finishes.
@@ -205,6 +217,86 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
   }
 
   /**
+   * Overrides the runner's executor or overlap settings for every process
+   * that owns it.
+   *
+   * A merge patch — a field left out is untouched, `null` clears that
+   * override — stored in the runner's own `config:*` state fields, one per
+   * setting, so two controllers changing different settings at the same
+   * moment cannot lose each other's write. Its owners adopt it at their next
+   * sync (`syncInterval`, 30 s by default), or within the driver's event
+   * latency when they are listening for `control` events — which
+   * `remoteControl: "auto"`, the default, does on Redis and memory.
+   *
+   * The change applies from the **next** run: a run in flight keeps the mode
+   * it started with, `parallel` → `single` never kills one, and a lowered
+   * `maxConcurrency` only gates new runs. `parallel` → `single` is also not
+   * immediate across processes — a parallel run holds no lock — so pause the
+   * runner first when exclusivity matters.
+   *
+   * An owner that cannot honour part of the override drops that field, keeps
+   * its code's value and records why in {@link RunnerConfigInfo.error}; the
+   * returned snapshot's `appliedSeq` says whether an owner has adopted it.
+   *
+   * @throws ConfigError with `context.reason` `"empty"`, `"invalid"`,
+   * `"not-allowed"` (the runner's `remoteConfig` forbids that execution mode)
+   * or `"not-configurable"` (no owner has started since remote configuration
+   * shipped, so nothing would ever adopt it).
+   */
+  async updateConfig(patch: RunnerConfigPatch): Promise<RunnerConfigInfo> {
+    if (this.#local) {
+      // The runner announces the change itself, so its other owners hear
+      // it whichever way it was made.
+      return await this.#local.updateConfig(patch);
+    }
+
+    await this.#assertKnown();
+    const state = await this.driver.getState(this.namespace, this.#key);
+    const stored = readStoredRunnerConfig(state);
+    this.#assertConfigurable(stored.code !== undefined);
+
+    const fields = runnerConfigFields(patch, {
+      ...(stored.allowed ? { allowed: stored.allowed } : {}),
+    });
+    await this.#writeConfig(fields);
+
+    return await this.#readConfig();
+  }
+
+  /** Clears every override, so the runner goes back to what its code asked for. */
+  async resetConfig(): Promise<RunnerConfigInfo> {
+    if (this.#local) {
+      // The runner announces the change itself, so its other owners hear
+      // it whichever way it was made.
+      return await this.#local.resetConfig();
+    }
+
+    await this.#assertKnown();
+    const state = await this.driver.getState(this.namespace, this.#key);
+    this.#assertConfigurable(readStoredRunnerConfig(state).code !== undefined);
+
+    await this.#writeConfig(runnerConfigResetFields());
+
+    return await this.#readConfig();
+  }
+
+  /**
+   * The runner's configuration as its owners persisted it, or `undefined`
+   * when none has started since remote configuration shipped — such an owner
+   * would store an override and never adopt it, so it cannot be configured.
+   */
+  async config(): Promise<RunnerConfigInfo | undefined> {
+    if (this.#local) {
+      return this.#local.config;
+    }
+
+    await this.#assertKnown();
+    return describeRunnerConfig(
+      await this.driver.getState(this.namespace, this.#key),
+    );
+  }
+
+  /**
    * Asks for a run.
    *
    * Remotely this always goes through the runner's trigger queue in the
@@ -292,6 +384,36 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
     )) as RemoteRunRecord<TResult>[];
   }
 
+  /**
+   * Clears the run history — each finished run's record and its log — from
+   * any process, keeping every run still in progress whole. Delegates to the
+   * runner when it is registered here, which also knows the runs it is
+   * executing.
+   *
+   * Unlike `kill` and `resetStats` on the API, this needs no owner: it works
+   * on what the runner persists, keyed by namespace and runner. From another
+   * process the stored record is the only signal a run is still going — its
+   * `running` status, the runner's live lock, and its age against
+   * `staleAfter` (see `planHistoryClear`). The lifetime counters are
+   * untouched. Throws `RunnerNotFoundError` for a runner the backend does not
+   * know, and `NotSupportedError` on a driver without `removeRuns`.
+   */
+  async clearHistory(
+    options?: ClearHistoryOptions,
+  ): Promise<ClearHistoryResult> {
+    if (this.#local) {
+      return await this.#local.clearHistory(options);
+    }
+
+    await this.#assertKnown();
+    return await clearRunnerHistory(
+      this.driver,
+      this.namespace,
+      this.#key,
+      options,
+    );
+  }
+
   /** Lifetime counters, shared by every process. */
   async stats(): Promise<RunnerStats> {
     if (this.#local) {
@@ -337,10 +459,8 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
       nextRunAt: nextFireDate(schedule),
       executionMode:
         (state.executionMode as RemoteRunnerInfo["executionMode"]) ??
-        local?.options.executionMode,
-      runMode:
-        (state.runMode as RemoteRunnerInfo["runMode"]) ??
-        local?.options.runMode,
+        local?.executionMode,
+      runMode: (state.runMode as RemoteRunnerInfo["runMode"]) ?? local?.runMode,
       queueRuns:
         state.queueRuns === undefined
           ? local?.options.queueRuns
@@ -351,8 +471,16 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
           : Number(state.maxQueuedRuns),
       maxConcurrency:
         state.maxConcurrency === undefined
-          ? local?.options.maxConcurrency
+          ? local?.maxConcurrency
           : Number(state.maxConcurrency),
+      // The owner's own view when it is here — current without waiting for
+      // its next write — and what it persisted otherwise.
+      ...(local
+        ? { config: local.config }
+        : (() => {
+            const config = describeRunnerConfig(state);
+            return config ? { config } : {};
+          })()),
       isPaused: state.paused === "1",
       isRunning: lock !== null,
       ...(owner && state.lastRunId
@@ -398,6 +526,40 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
     if (!(await this.exists())) {
       throw new RunnerNotFoundError(this.id, this.namespace);
     }
+  }
+
+  /**
+   * Refuses to store an override nothing would ever adopt.
+   *
+   * An owner only writes `config:code` once it supports remote configuration,
+   * so its absence means every owner predates the feature: the override would
+   * sit in state for good while the runner went on running its code's values.
+   */
+  #assertConfigurable(configurable: boolean): void {
+    if (!configurable) {
+      throw new ConfigError(
+        `The runner "${this.id}" has no owner that supports remote configuration, so an override would never be adopted`,
+        { reason: "not-configurable", runner: this.id, ns: this.namespace },
+      );
+    }
+  }
+
+  /** Stores an override and tells the owners about it. */
+  async #writeConfig(fields: Record<string, string | null>): Promise<void> {
+    await writeRunnerConfig(this.driver, this.namespace, this.#key, fields);
+    await this.#announce("config");
+  }
+
+  /** Re-reads the configuration after a write; the write proves it exists. */
+  async #readConfig(): Promise<RunnerConfigInfo> {
+    const state = await this.driver.getState(this.namespace, this.#key);
+    const config = describeRunnerConfig(state);
+    if (!config) {
+      throw new RunnerNotFoundError(this.id, this.namespace, {
+        reason: "its configuration disappeared while it was being written",
+      });
+    }
+    return config;
   }
 
   /** Counts and reports a trigger that was not queued, as the runner does. */

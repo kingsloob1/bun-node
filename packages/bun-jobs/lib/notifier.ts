@@ -33,6 +33,19 @@ export interface JobsNotifierOptions {
   /** `"all"` (the default) follows every runner in the namespace; a list, just those. */
   runners?: "all" | string[];
   /**
+   * Which queues' **worker** events to follow — a worker pausing, stopping or
+   * adopting a configuration override — by queue name, since that is the
+   * channel workers of a queue share.
+   *
+   * Defaults to `[]`: none. Unlike queues and runners this is opt-in, because
+   * it is a second subscription per queue, and on a driver that polls
+   * (`capabilities.events === "poll"`) a second query every few dozen
+   * milliseconds per queue — a cost nobody who is not watching workers should
+   * pay. `"all"` follows every queue's, and `hold("worker", queue)` follows
+   * one for as long as something is watching it.
+   */
+  workers?: "all" | string[];
+  /**
    * How often to look for queues and runners that appeared since the last
    * look, in milliseconds. Defaults to `2000`. Only meaningful with `"all"`.
    */
@@ -74,6 +87,8 @@ export class JobsNotifier
   readonly #queues: "all" | string[];
   /** Which runners to follow. */
   readonly #runners: "all" | string[];
+  /** Which queues' worker events to follow. */
+  readonly #workers: "all" | string[];
   /** How often to discover new queues and runners. */
   readonly #discoveryInterval: number;
   /** The most events an iterator buffers. */
@@ -110,6 +125,7 @@ export class JobsNotifier
     this.namespace = assertNamespace(namespace);
     this.#queues = validateTargets(options.queues ?? "all", "queue name");
     this.#runners = validateTargets(options.runners ?? "all", "runner id");
+    this.#workers = validateTargets(options.workers ?? [], "queue name");
     this.#discoveryInterval = Math.max(10, options.discoveryInterval ?? 2_000);
     this.#bufferSize = Math.max(1, options.bufferSize ?? 10_000);
   }
@@ -130,7 +146,9 @@ export class JobsNotifier
     if (
       !this.#closed &&
       !this.#timer &&
-      (this.#queues === "all" || this.#runners === "all")
+      (this.#queues === "all" ||
+        this.#runners === "all" ||
+        this.#workers === "all")
     ) {
       this.#timer = setInterval(() => {
         void this.#discover().catch((error: unknown) => {
@@ -212,25 +230,42 @@ export class JobsNotifier
       return;
     }
 
-    const [queues, runners] = await Promise.all([
-      this.#queues === "all"
-        ? this.#driver.listQueues(this.namespace)
-        : this.#queues,
+    const needsQueueNames = this.#queues === "all" || this.#workers === "all";
+    const [queueNames, runners] = await Promise.all([
+      needsQueueNames ? this.#driver.listQueues(this.namespace) : [],
       this.#runners === "all"
         ? this.#driver.listRunners(this.namespace)
         : this.#runners,
     ]);
+    const queues = this.#queues === "all" ? queueNames : this.#queues;
+    const workers = this.#workers === "all" ? queueNames : this.#workers;
 
     await Promise.all([
       ...queues.map(async (queue) => await this.#follow("queue", queue)),
       ...runners.map(async (runner) => await this.#follow("runner", runner)),
+      ...workers.map(async (queue) => await this.#follow("worker", queue)),
     ]);
   }
 
-  /** Whether this notifier is meant to follow a queue or runner by that name. */
+  /**
+   * Whether this notifier is meant to follow that target of that kind — a
+   * queue's jobs, a runner's runs, or a queue's workers.
+   */
   wants(kind: EventKind, target: string): boolean {
-    const targets = kind === "queue" ? this.#queues : this.#runners;
+    const targets = this.#targetsOf(kind);
     return targets === "all" || targets.includes(target);
+  }
+
+  /** The configured target list for one kind. */
+  #targetsOf(kind: EventKind): "all" | string[] {
+    switch (kind) {
+      case "queue":
+        return this.#queues;
+      case "worker":
+        return this.#workers;
+      default:
+        return this.#runners;
+    }
   }
 
   /**
@@ -242,7 +277,7 @@ export class JobsNotifier
   async follow(kind: EventKind, target: string): Promise<void> {
     await this.#follow(
       kind,
-      assertSegment(target, kind === "queue" ? "queue name" : "runner id"),
+      assertSegment(target, targetLabel(kind)),
       "permanent",
     );
   }
@@ -256,11 +291,7 @@ export class JobsNotifier
    * queue that does not exist yet, or never will.
    */
   async hold(kind: EventKind, target: string): Promise<void> {
-    await this.#follow(
-      kind,
-      assertSegment(target, kind === "queue" ? "queue name" : "runner id"),
-      "held",
-    );
+    await this.#follow(kind, assertSegment(target, targetLabel(kind)), "held");
   }
 
   /**
@@ -411,4 +442,9 @@ function validateTargets(
   return targets === "all"
     ? "all"
     : targets.map((target) => assertSegment(target, what));
+}
+
+/** What a target of this kind is called, for a validation message. */
+function targetLabel(kind: EventKind): string {
+  return kind === "runner" ? "runner id" : "queue name";
 }
