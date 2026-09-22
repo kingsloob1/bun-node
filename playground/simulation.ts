@@ -8,7 +8,7 @@ import type { BunJobs, Job } from "@kingsleyweb/bun-jobs";
  * | `emails`   | 3 at a time, 0.5–3 s each  | logs, progress 0→100, ~15% fail and retry, a few dead |
  * | `reports`  | 1 at a time, 6–15 s each   | a long progress bar (`{ step, done, of }`), a backlog |
  * | `webhooks` | rate-limited 20/min        | retries with backoff, a dead-letter pile           |
- * | `images`   | none                       | a growing `waiting` backlog, nothing consumes it   |
+ * | `images`   | none here — `mailer.ts` runs its only worker (1 at a time, 2–5 s) | a backlog that drains slowly; pause that worker and it grows |
  *
  * plus a weekly-digest repeat series on `emails`, a flow (a newsletter
  * waiting on two renders in `images`) and a delayed reminder. A producer adds
@@ -78,7 +78,14 @@ export async function startSimulation(
       await job.log(`sent to ${job.data.to}`);
       return { messageId: `<${job.id}@smtp.example.com>` };
     },
-    { concurrency: 3 },
+    {
+      concurrency: 3,
+      // A stable name, so its key is `api.emails.transactional` and a
+      // settings override survives a restart of the playground.
+      name: "transactional",
+      // Lets the Stop dialog offer "until somebody starts it again".
+      stopPersistenceOverridable: true,
+    },
   );
 
   const reportWorker = jobs.worker(
@@ -92,7 +99,7 @@ export async function startSimulation(
       }
       return { pages: between(4, 40) };
     },
-    { concurrency: 1 },
+    { concurrency: 1, name: "monthly" },
   );
 
   const webhookWorker = jobs.worker(
@@ -100,15 +107,19 @@ export async function startSimulation(
     async (job: Job<{ partner: string; event: string }>) => {
       await job.log(`POST https://${job.data.partner}.example/hooks`);
       await sleep(between(100, 400));
-      if (job.data.partner === "umbrella" || Math.random() < 0.1) {
-        throw new Error(`POST ${job.data.partner}.example answered 503`);
+      const randomVal = Math.random();
+      if (job.data.partner === "umbrella" || randomVal < 0.1) {
+        throw new Error(
+          `POST ${job.data.partner}.example answered 503 - random val is ${randomVal}`,
+        );
       }
       return { status: 204 };
     },
-    { concurrency: 2 },
+    { concurrency: 2, name: "delivery" },
   );
 
-  for (const worker of [emailWorker, reportWorker, webhookWorker]) {
+  const workersMap = [emailWorker, reportWorker, webhookWorker];
+  for (const worker of workersMap) {
     void worker.run();
   }
 
@@ -123,7 +134,10 @@ export async function startSimulation(
     webhooks.add(
       "deliver",
       { partner: pick(PARTNERS), event: pick(["order.paid", "user.created"]) },
-      { attempts: 4, backoff: { type: "exponential", delay: 2_000 } },
+      {
+        attempts: 4,
+        backoff: { type: "exponential", delay: 2_000 },
+      },
     );
 
   for (let i = 0; i < 12; i++) {
@@ -153,8 +167,10 @@ export async function startSimulation(
     { template: "daily-summary" },
     { repeat: { every: "1 day", key: "daily-summary" } },
   );
-  // A flow: the newsletter goes out once both renders ran. Nothing consumes
-  // `images`, so it waits (`waiting-children`) until you process them.
+  // A flow: the newsletter goes out once both renders ran. The renders are on
+  // `images`, whose only worker is the `mailer` service's (`mailer.ts`), so
+  // the newsletter sits in `waiting-children` until that worker reaches them
+  // behind the thumbnail backlog — or for good while it is paused.
   await emails.addFlow({
     name: "send-newsletter",
     data: { edition: "2026-09" },
@@ -189,9 +205,7 @@ export async function startSimulation(
     stop: async () => {
       clearInterval(producer);
       await Promise.all(
-        [emailWorker, reportWorker, webhookWorker].map((worker) =>
-          worker.close({ timeout: 2_000 }),
-        ),
+        workersMap.map((worker) => worker.close({ timeout: 2_000 })),
       );
     },
   };

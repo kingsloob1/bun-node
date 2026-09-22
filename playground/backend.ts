@@ -49,6 +49,26 @@ function requireUrl(example: string): string {
 }
 
 /** The driver config for the chosen backend. */
+/**
+ * Bring an existing SQL or MongoDB schema up to date on connect.
+ *
+ * The playground keeps its state across restarts (`.data/jobs.db`, or a
+ * database server), so its tables usually predate the checkout it runs. A
+ * feature whose storage arrived later — the columns that record which worker
+ * ran a job, say — then stays honestly OFF on that old table until the schema
+ * is synced, and the screens that need it stay hidden. Syncing on connect
+ * keeps the playground showing what the current code can do.
+ *
+ * It is the default sync: it adds columns and builds indexes, and reports but
+ * does not perform a column-type rewrite (that needs `alterColumns`, which
+ * locks the table). On SQLite an index build does block writers until it
+ * finishes — about 1.7 s on a 2M-row table, reported as `blocking: true` — so
+ * a big playground file may pause for a moment on the first start after an
+ * upgrade. Postgres builds CONCURRENTLY and MySQL/MariaDB online. A real
+ * deployment decides this for itself; the playground can.
+ */
+const SYNC_SCHEMA = true;
+
 export function playgroundDriver(): DriverConfig {
   const backend = playgroundBackend();
   switch (backend) {
@@ -59,7 +79,11 @@ export function playgroundDriver(): DriverConfig {
       return { type: "file", root: join(DATA_DIR, "file") };
     case "sqlite":
       mkdirSync(DATA_DIR, { recursive: true });
-      return { type: "sql", url: `sqlite://${join(DATA_DIR, "jobs.db")}` };
+      return {
+        type: "sql",
+        url: `sqlite://${join(DATA_DIR, "jobs.db")}`,
+        syncSchema: SYNC_SCHEMA,
+      };
     case "postgres":
     case "mysql":
     case "mariadb":
@@ -68,6 +92,7 @@ export function playgroundDriver(): DriverConfig {
         adapter: backend,
         url: requireUrl(`${backend}://user:pass@localhost/jobs`),
         tablePrefix: PREFIX,
+        syncSchema: SYNC_SCHEMA,
       };
     case "redis":
       return {
@@ -80,6 +105,7 @@ export function playgroundDriver(): DriverConfig {
         type: "mongodb",
         url: requireUrl("mongodb://localhost/jobs"),
         collectionPrefix: PREFIX,
+        syncSchema: SYNC_SCHEMA,
       };
     default:
       console.error(
