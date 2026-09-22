@@ -2749,6 +2749,54 @@ describe("worker channels", () => {
     await waitFor(() => !notifier.following.includes("worker:mail"));
   });
 
+  it("delivers a worker's first start once, with no previous, on both worker channels", async () => {
+    const jobs = publishingJobs("ws-workers-first");
+    const h = await served({ jobs });
+    await jobs.queue("mail").add("n", {});
+    const client = await connect(h.url);
+    client.send({
+      op: "subscribe",
+      id: "s",
+      channels: ["workers", "queue/mail/workers"],
+    });
+    await client.next("ack");
+
+    const worker = jobs.worker("mail", async () => null);
+    cleanups.push(() => worker.close({ force: true }));
+    void worker.run();
+
+    const isState = (frame: { event: { kind: string; type: string } }) =>
+      frame.event.kind === "worker" && frame.event.type === "state";
+    const first = await client.next("event", isState);
+    expect(first.event).toMatchObject({
+      kind: "worker",
+      type: "state",
+      target: "mail",
+      id: worker.id,
+      payload: { worker: worker.id, key: worker.key, state: "running" },
+    });
+    expect(Object.hasOwn(first.event.payload as object, "previous")).toBe(
+      false,
+    );
+    // One frame, naming both subscriptions — not one per channel.
+    expect([...first.subscriptions].sort()).toEqual([
+      "queue/mail/workers",
+      "workers",
+    ]);
+
+    await worker.pause();
+    await client.next(
+      "event",
+      (frame) => isState(frame) && frame.seq !== first.seq,
+    );
+    const states = client.all("event").filter(isState);
+    expect(states.map((frame) => frame.event.payload)).toMatchObject([
+      { state: "running" },
+      { state: "paused", previous: "running" },
+    ]);
+    expect(client.invalid).toEqual([]);
+  });
+
   it("follows every queue it can reach on the broad channel, and lets them all go", async () => {
     const jobs = publishingJobs("ws-workers-broad");
     const opened = spyOn(jobs, "notifier");
@@ -2824,6 +2872,153 @@ describe("worker channels", () => {
     expect(calls).toContainEqual(
       expect.objectContaining({ channel: "workers", queue: "secret" }),
     );
+  });
+
+  it("follows a queue created after the subscription, delivering its worker's first start at once", async () => {
+    const jobs = publishingJobs("ws-workers-new-queue");
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({
+      jobs,
+      authorize: (_req, context) => context.queue !== "secret",
+    });
+    const client = await connect(h.url);
+    // Subscribed while the namespace has no queue at all.
+    client.send({ op: "subscribe", id: "s", channels: ["workers"] });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+    expect(notifier.following.filter((k) => k.startsWith("worker:"))).toEqual(
+      [],
+    );
+
+    const isState = (frame: { event: { kind: string; type: string } }) =>
+      frame.event.kind === "worker" && frame.event.type === "state";
+
+    // A queue the refused worker's first run() creates is followed like any
+    // other, but its events are still decided per queue, and refused.
+    const secret = jobs.worker("secret", async () => null);
+    cleanups.push(() => secret.close({ force: true }));
+    void secret.run();
+    const fresh = jobs.worker("fresh", async () => null);
+    cleanups.push(() => fresh.close({ force: true }));
+    void fresh.run();
+
+    const first = await client.next(
+      "event",
+      (frame) => isState(frame) && frame.event.target === "fresh",
+    );
+    expect(first.event.payload).toMatchObject({
+      worker: fresh.id,
+      state: "running",
+    });
+    expect(Object.hasOwn(first.event.payload as object, "previous")).toBe(
+      false,
+    );
+    expect(notifier.following).toContain("worker:fresh");
+
+    await secret.pause();
+    await fresh.pause();
+    await client.next(
+      "event",
+      (frame) => isState(frame) && frame.seq !== first.seq,
+    );
+    await Bun.sleep(30);
+    expect(
+      client.all("event").filter((frame) => frame.event.target === "secret"),
+    ).toEqual([]);
+    // Nothing was missed on this path, so nothing asks for a refetch.
+    expect(client.all("gap")).toEqual([]);
+    expect(client.invalid).toEqual([]);
+
+    // And the holds the channel grew go with it.
+    client.send({ op: "unsubscribe", id: "u", channels: ["workers"] });
+    await client.next("ack", (ack) => ack.id === "u");
+    await waitFor(
+      () => !notifier.following.some((key) => key.startsWith("worker:")),
+    );
+  });
+
+  it("follows a queue another process creates from the next discovery pass, with one gap per pass", async () => {
+    const jobs = publishingJobs("ws-workers-discovered");
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({
+      jobs,
+      authorize: (_req, context) => context.queue !== "secret",
+    });
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["workers"] });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+
+    // Another context on the same backend stands in for another process:
+    // this API learns of its queues only from discovery.
+    const other = new BunJobs({
+      namespace: jobs.namespace,
+      driver: jobs.driver,
+      logger: noopLogger,
+      publishEvents: true,
+    });
+    cleanups.push(() => other.close());
+    // Created together, so one discovery pass finds all three.
+    await Promise.all(
+      ["elsewhere", "second", "secret"].map(
+        async (name) => await other.queue(name).add("n", {}),
+      ),
+    );
+    const worker = other.worker("elsewhere", async () => null);
+    cleanups.push(() => worker.close({ force: true }));
+
+    const gap = await client.next("gap", undefined, 4000);
+    expect(gap).toMatchObject({
+      reason: "queue-discovered",
+      channels: ["workers"],
+      fromSeq: 0,
+    });
+    expect(notifier.following).toContain("worker:elsewhere");
+    expect(notifier.following).toContain("worker:second");
+    // The refused queue is neither followed for this channel nor announced.
+    expect(notifier.following).not.toContain("worker:secret");
+
+    void worker.run();
+    const frame = await client.next(
+      "event",
+      (each) =>
+        each.event.kind === "worker" &&
+        each.event.type === "state" &&
+        each.event.target === "elsewhere",
+    );
+    expect(frame.subscriptions).toEqual(["workers"]);
+    await Bun.sleep(50);
+    expect(client.all("gap")).toHaveLength(1);
+    expect(client.invalid).toEqual([]);
+  });
+
+  it("sends no queue-discovered gap for a queue discovery finds that this connection may not see", async () => {
+    const jobs = publishingJobs("ws-workers-discovered-refused");
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({
+      jobs,
+      authorize: (_req, context) => context.queue !== "secret",
+    });
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["workers"] });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+
+    const other = new BunJobs({
+      namespace: jobs.namespace,
+      driver: jobs.driver,
+      logger: noopLogger,
+    });
+    cleanups.push(() => other.close());
+    await other.queue("secret").add("n", {});
+
+    await waitFor(() => notifier.following.includes("queue:secret"), {
+      timeout: 4000,
+      message: () => `following ${notifier.following.join(", ")}`,
+    });
+    await Bun.sleep(50);
+    expect(client.all("gap")).toEqual([]);
+    expect(notifier.following).not.toContain("worker:secret");
   });
 
   it("is a jobs-side channel: a runner-only API does not serve it", () => {

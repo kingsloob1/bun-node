@@ -197,6 +197,48 @@ describe("QueueSource", () => {
     expect(lists).toBe(2);
   });
 
+  it("confirms backend-sourced names with a fresh read, past has()'s one-per-window limit", async () => {
+    const jobs = jobsContext("api-sources-confirm");
+    await jobs.queue("mail").add("send", {});
+    let lists = 0;
+    const listQueues = jobs.listQueues.bind(jobs);
+    jobs.listQueues = async () => {
+      lists++;
+      return await listQueues();
+    };
+    const time = clock();
+    const source = new QueueSource(resolve(jobs), { now: time.now });
+    expect(await source.names()).toEqual(["mail"]);
+
+    // The window's one re-read goes on a first new queue...
+    await jobs.queue("first").add("n", {});
+    expect(await source.has("first")).toBe(true);
+    expect(lists).toBe(2);
+    // ...so has() cannot see a second one until the window passes.
+    await jobs.queue("second").add("n", {});
+    expect(await source.has("second")).toBe(false);
+
+    // confirm() is for names a worker record gave, which exist: it reads
+    // again, and only what the backend lists comes back.
+    expect([...(await source.confirm(["second", "mail", "ghost"]))]).toEqual([
+      "second",
+      "mail",
+    ]);
+    expect(lists).toBe(3);
+    // The fresh read is the cache now, for every caller.
+    expect(await source.names()).toEqual(["first", "mail", "second"]);
+    // Nothing missing: answered from the cache, and concurrent misses share.
+    expect([...(await source.confirm(["mail"]))]).toEqual(["mail"]);
+    await jobs.queue("third").add("n", {});
+    await Promise.all([source.confirm(["third"]), source.confirm(["third"])]);
+    expect(lists).toBe(4);
+
+    // With a configured list, only its members, and no backend read.
+    const listed = new QueueSource(resolve(jobs, { queues: ["mail"] }));
+    expect([...(await listed.confirm(["mail", "second"]))]).toEqual(["mail"]);
+    expect(lists).toBe(4);
+  });
+
   it("builds an unknown queue for an add, and still refuses one outside a configured list", async () => {
     const jobs = jobsContext("api-sources-add");
     const all = new QueueSource(resolve(jobs));

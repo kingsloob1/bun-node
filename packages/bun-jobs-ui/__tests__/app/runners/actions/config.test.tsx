@@ -285,11 +285,24 @@ describe("the settings editor: what it shows", () => {
         error: {
           at: NOW - 30_000,
           message: "worker mode needs a bundled file",
+          keys: ["executionMode"],
         },
       }),
     });
+    const refused = within(dialog).getByTestId("config-refused").textContent;
+    expect(refused).toContain("worker mode needs a bundled file");
+    // It names the setting refused, from `error.keys`.
+    expect(refused).toContain("The owner refused Execution mode");
+  });
+
+  it("says only 'the stored settings' for a refusal stored before keys were named", async () => {
+    const { dialog } = await openSettings({
+      runner: configurable({
+        error: { at: NOW - 30_000, message: "refused", keys: [] },
+      }),
+    });
     expect(within(dialog).getByTestId("config-refused").textContent).toContain(
-      "worker mode needs a bundled file",
+      "The owner refused the stored settings",
     );
   });
 });
@@ -607,6 +620,7 @@ describe("the runner summary's override rows", () => {
             error: {
               at: 1,
               message: 'executionMode "worker" needs a driver config',
+              keys: ["executionMode"],
             },
           }),
         )}
@@ -618,6 +632,72 @@ describe("the runner summary's override rows", () => {
     expect(summaryValue("Execution mode")).not.toContain("Overridden here");
     // Run mode was adopted: it differs from the code's, so it IS in force.
     expect(summaryValue("Run mode")).toContain("Overridden here");
+  });
+
+  it("reads the refused settings from error.keys, not from the values left in place", () => {
+    // Run mode's override asks for `single`, which is also what the code
+    // asks for, and the owner adopted it; only the execution mode was
+    // refused. Guessing from values would call run mode refused too.
+    render(
+      <RunnerSummary
+        runner={configurable(
+          unoverridden({
+            effective: {
+              executionMode: "spawn",
+              runMode: "single",
+              maxConcurrency: null,
+            },
+            code: {
+              executionMode: "spawn",
+              runMode: "single",
+              maxConcurrency: null,
+            },
+            overridden: ["executionMode", "runMode"],
+            seq: 3,
+            appliedSeq: 3,
+            error: {
+              at: 1,
+              message: 'executionMode "worker" needs a driver config',
+              keys: ["executionMode"],
+            },
+          }),
+        )}
+      />,
+    );
+    expect(summaryValue("Execution mode")).toContain(
+      "Override refused by the owner",
+    );
+    expect(summaryValue("Run mode")).toContain("Overridden here");
+    expect(summaryValue("Run mode")).not.toContain("refused");
+  });
+
+  it("falls back to the values left in place for a refusal that names no keys", () => {
+    // Stored before the API named keys: `keys: []` means unknown, so a
+    // setting still running the code's value is taken as refused.
+    render(
+      <RunnerSummary
+        runner={configurable(
+          unoverridden({
+            effective: {
+              executionMode: "spawn",
+              runMode: "single",
+              maxConcurrency: 4,
+            },
+            overridden: ["executionMode", "runMode"],
+            seq: 3,
+            appliedSeq: 3,
+            error: { at: 1, message: "refused", keys: [] },
+          }),
+        )}
+      />,
+    );
+    expect(summaryValue("Execution mode")).toContain(
+      "Override refused by the owner",
+    );
+    expect(summaryValue("Run mode")).toContain("Overridden here");
+    expect(summaryValue("Settings override")).toContain(
+      "The owner refused these settings: refused",
+    );
   });
 
   it("says when nothing is overridden", () => {
@@ -637,12 +717,16 @@ describe("the runner summary's override rows", () => {
     rerender(
       <RunnerSummary
         runner={configurable({
-          error: { at: NOW, message: "in-process is not permitted here" },
+          error: {
+            at: NOW,
+            message: "in-process is not permitted here",
+            keys: ["executionMode"],
+          },
         })}
       />,
     );
     expect(summaryValue("Settings override")).toContain(
-      "in-process is not permitted here",
+      "The owner refused Execution mode: in-process is not permitted here",
     );
   });
 

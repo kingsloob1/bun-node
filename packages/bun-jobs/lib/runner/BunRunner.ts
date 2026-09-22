@@ -16,6 +16,7 @@ import type {
 import type { LogFields, Logger } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput, Ticker } from "../shared/schedule";
 import type { ClearHistoryOptions, ClearHistoryResult } from "./clearHistory";
+import type { RunnerConfigError } from "./config";
 import type {
   Executor,
   ExecutorHandle,
@@ -172,7 +173,7 @@ export class BunRunner<
   /** Which settings an override is stored for, as of the last adoption. */
   #overridden: RunnerConfigKey[] = [];
   /** Why part of the last override was refused, when some of it was. */
-  #configError: { at: number; message: string } | undefined;
+  #configError: RunnerConfigError | undefined;
   /** When the stored override was last written, epoch ms. */
   #configUpdatedAt: number | undefined;
   /** Identifies this runner's published events as coming from this process. */
@@ -360,7 +361,14 @@ export class BunRunner<
       allowed: [...this.#allowedModes],
       seq: this.#configSeq,
       appliedSeq: this.#configSeq,
-      ...(this.#configError ? { error: { ...this.#configError } } : {}),
+      ...(this.#configError
+        ? {
+            error: {
+              ...this.#configError,
+              keys: [...this.#configError.keys],
+            },
+          }
+        : {}),
       ...(this.#configUpdatedAt !== undefined
         ? { updatedAt: this.#configUpdatedAt }
         : {}),
@@ -1070,7 +1078,11 @@ export class BunRunner<
     this.#configUpdatedAt = stored.updatedAt;
     this.#configError =
       resolved.refusals.length > 0
-        ? { at: Date.now(), message: resolved.refusals.join("; ") }
+        ? {
+            at: Date.now(),
+            message: resolved.refusals.join("; "),
+            keys: resolved.refusedKeys,
+          }
         : undefined;
 
     for (const warning of resolved.warnings) {

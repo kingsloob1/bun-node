@@ -622,8 +622,18 @@ export class BunQueueWorker<
   readonly #stopPersistenceOverridable: boolean;
   /** What the worker is, before `paused` is folded in. */
   #phase: WorkerPhase = "running";
-  /** The state last announced, so only a real change raises an event. */
-  #announcedState: WorkerState = "running";
+  /**
+   * The state last announced, so only a real change raises an event;
+   * `undefined` until `run()` makes the first announcement, which carries no
+   * `previous`.
+   */
+  #announcedState: WorkerState | undefined;
+  /**
+   * The reason given with the latest change made before the first
+   * announcement — a stop recorded against the key, adopted during startup —
+   * carried on that announcement.
+   */
+  #firstReason: string | undefined;
   /** Resolved by `start()` to call off a stop that is still draining. */
   #stopCancel: ReturnType<typeof createDeferred<void>> | undefined;
   /** Instruction applications chained, so the latest wins rather than a queue of stale steps. */
@@ -1163,6 +1173,14 @@ export class BunQueueWorker<
     // against its key must not claim one job on the way to finding that out.
     await this.#adoptControl({ initial: true });
     this.#armControl();
+    // The first announcement, once startup has settled what the worker is —
+    // `running`, `paused`, or `stopped` by a stop recorded against its key —
+    // and with no `previous`, which is how a listener tells a start from a
+    // transition. Only a worker's first `run()` reaches here unannounced.
+    if (this.#announcedState === undefined) {
+      this.#announceState(this.#firstReason, { first: true });
+      this.#firstReason = undefined;
+    }
     this.safeEmit("ready");
 
     // Held only once the worker is actually running: a `run()` that failed to
@@ -1332,9 +1350,18 @@ export class BunQueueWorker<
   /**
    * Emits and publishes the worker's state, if it has changed since the last
    * announcement.
+   *
+   * Nothing is announced before `run()` has made the first announcement
+   * (`first`): a change made earlier — a `pause()` before `run()`, or what
+   * startup adopts — is folded into that one, which carries no `previous`.
    */
-  #announceState(reason?: string): void {
+  #announceState(reason?: string, options?: { first?: boolean }): void {
     const state = this.state;
+
+    if (this.#announcedState === undefined && !options?.first) {
+      this.#firstReason = reason;
+      return;
+    }
 
     if (state === this.#announcedState) {
       return;
@@ -1346,7 +1373,7 @@ export class BunQueueWorker<
       worker: this.id,
       key: this.key,
       state,
-      previous,
+      ...(previous === undefined ? {} : { previous }),
       ...(reason === undefined ? {} : { reason }),
       at: Date.now(),
     });

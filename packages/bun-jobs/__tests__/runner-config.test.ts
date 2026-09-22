@@ -400,6 +400,8 @@ describe("remote runner configuration — validation", () => {
     expect(config.effective.maxConcurrency).toBe(4);
     expect(config.error?.message).toContain("in-process");
     expect(config.error?.message).toContain("9000");
+    // And names the two it refused, in contract order.
+    expect(config.error?.keys).toEqual(["executionMode", "maxConcurrency"]);
     // The refusal is persisted, so a controller elsewhere sees it too.
     const stored = await driver.getState(namespace, KEY);
     expect(stored[RUNNER_CONFIG_STATE.error]).toContain("9000");

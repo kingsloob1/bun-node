@@ -523,3 +523,80 @@ describe("the worker kind", () => {
     ).toBe(true);
   });
 });
+
+describe("the followed event", () => {
+  it("fires once per target followed for good, never for a hold", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const notifier = new JobsNotifier(driver, namespace, {
+      queues: [],
+      runners: [],
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => notifier.close());
+    await notifier.start();
+    const followed: string[] = [];
+    notifier.on("followed", (kind, target, source) => {
+      followed.push(`${kind}:${target}:${source}`);
+    });
+
+    await notifier.hold("queue", "held");
+    await notifier.follow("queue", "mail");
+    await notifier.follow("queue", "mail");
+    // A held target becoming followed for good is announced then.
+    await notifier.follow("queue", "held");
+    await notifier.follow("runner", "nightly");
+
+    expect(followed).toEqual([
+      "queue:mail:follow",
+      "queue:held:follow",
+      "runner:nightly:follow",
+    ]);
+
+    // A discovery pass says so.
+    const discovering = new JobsNotifier(driver, namespace, {
+      runners: [],
+      discoveryInterval: 20,
+    });
+    closers.push(() => discovering.close());
+    const found: string[] = [];
+    discovering.on("followed", (kind, target, source) => {
+      found.push(`${kind}:${target}:${source}`);
+    });
+    await discovering.start();
+    await new BunQueue("found", { namespace, driver }).add("n", {});
+    await waitFor(() => found.length > 0);
+    expect(found).toEqual(["queue:found:discovery"]);
+    expect(notifier.followedForGood("queue")).toEqual(["held", "mail"]);
+    expect(notifier.followedForGood("worker")).toEqual([]);
+  });
+
+  it("resolves a queue's follow only once a worker hold its listener started is live", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    // A backend slow to subscribe to worker events, as a networked one is.
+    const subscribe = driver.subscribe.bind(driver);
+    driver.subscribe = (async (ns, kind, target, listener) => {
+      if (kind === "worker") {
+        await Bun.sleep(50);
+      }
+      return await subscribe(ns, kind, target, listener);
+    }) as typeof driver.subscribe;
+    const notifier = new JobsNotifier(driver, namespace, {
+      queues: [],
+      runners: [],
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => notifier.close());
+    await notifier.start();
+    notifier.on("followed", (kind, target) => {
+      if (kind === "queue") {
+        void notifier.hold("worker", target);
+      }
+    });
+
+    await notifier.follow("queue", "mail");
+
+    expect(notifier.following).toEqual(["queue:mail", "worker:mail"]);
+  });
+});

@@ -520,6 +520,27 @@ describe("the Events console", () => {
     expect(gap!.textContent).toContain("events 10–42 may be missing on all");
   });
 
+  it("leaves out the range of a gap that covers no sequenced event", async () => {
+    await renderEvents("?channel=workers");
+    // `queue-discovered` arrives before any sequenced event on the
+    // connection, so its range is 0–0 and saying "events 0–0" reads as a
+    // range of nothing.
+    await act(async () =>
+      live.gap({
+        type: "gap",
+        epoch: "e",
+        fromSeq: 0,
+        toSeq: 0,
+        reason: "queue-discovered",
+        channels: ["workers"],
+      }),
+    );
+    const [gap] = rows();
+    expect(gap!.textContent).toContain("gap: queue-discovered");
+    expect(gap!.textContent).toContain("events may be missing on workers");
+    expect(gap!.textContent).not.toContain("0–0");
+  });
+
   it("shows the server's rejection of a channel, with the reason", async () => {
     await renderEvents("?channel=queue/secret");
     await act(async () =>

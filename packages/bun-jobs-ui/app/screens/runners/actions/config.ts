@@ -318,6 +318,55 @@ export function describeOverridden(config: RunnerConfigDto): string {
 }
 
 /**
+ * The settings the owner refused, as `RunnerConfigDto.error.keys` names them;
+ * `null` when nothing was refused **or** the refusal names none. An error
+ * stored before the API named its keys reads back with `keys: []`, which
+ * means "unknown", not "none refused".
+ */
+export function refusedKeys(config: RunnerConfigDto): RunnerConfigKey[] | null {
+  const keys = config.error?.keys;
+  return keys === undefined || keys.length === 0 ? null : keys;
+}
+
+/**
+ * Whether the owner refused one overridden setting, so it still runs what
+ * the code asks for. Read from `error.keys`; where the refusal names no keys
+ * (stored before the API did), guessed from the value left in place — the
+ * setting runs the code's value — which misreads an override equal to the
+ * code's value, hence the keys.
+ */
+export function isRefused(
+  config: RunnerConfigDto,
+  key: RunnerConfigKey,
+): boolean {
+  if (config.error === undefined) {
+    return false;
+  }
+  const keys = refusedKeys(config);
+  if (keys !== null) {
+    return keys.includes(key);
+  }
+  return (
+    config.code !== undefined && config.effective[key] === config.code[key]
+  );
+}
+
+/**
+ * The refused settings in words — "Execution mode", "Run mode and Max
+ * concurrency" — or `null` when the refusal names none.
+ */
+export function describeRefused(config: RunnerConfigDto): string | null {
+  const keys = refusedKeys(config);
+  if (keys === null) {
+    return null;
+  }
+  const labels = keys.map((key) => CONFIG_KEY_LABELS[key] ?? key);
+  return labels.length === 1
+    ? labels[0]!
+    : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)!}`;
+}
+
+/**
  * The note beside one summary row: whether that setting is an override, and
  * what the runner's code asks for instead. `undefined` when it is the code's
  * own value, or when the runner reports no configuration at all.
@@ -330,15 +379,10 @@ export function describeOverride(
     return undefined;
   }
   const code = codeValue(config, key);
-  // Stored but not in force: the owner reported a refusal and this setting
-  // still runs what the code asks for. Saying "Overridden here" would read as
-  // an override in effect. (The error does not name its keys, so a refused
-  // override is recognised by the value it left in place.)
-  if (
-    config.error !== undefined &&
-    config.code !== undefined &&
-    config.effective[key] === config.code[key]
-  ) {
+  // Stored but not in force: the owner refused this setting, so it still
+  // runs what the code asks for. Saying "Overridden here" would read as an
+  // override in effect.
+  if (isRefused(config, key)) {
     return code === null
       ? "Override refused by the owner; it runs what its code asks for"
       : `Override refused by the owner; it runs what its code asks for, ${code}`;
@@ -355,7 +399,10 @@ export function describeOverride(
  */
 export function describeAdoption(config: RunnerConfigDto): string | null {
   if (config.error !== undefined) {
-    return `The owner refused these settings: ${config.error.message}`;
+    const refused = describeRefused(config);
+    return refused === null
+      ? `The owner refused these settings: ${config.error.message}`
+      : `The owner refused ${refused}: ${config.error.message}`;
   }
   const pending = pendingAdoption(config);
   return pending === null

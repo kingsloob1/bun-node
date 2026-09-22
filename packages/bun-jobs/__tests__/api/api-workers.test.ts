@@ -353,6 +353,44 @@ describe("listing workers", () => {
   });
 });
 
+describe("a worker on a queue newer than the queue cache", () => {
+  it("is listed at once with the default queueCacheMs, and a refused queue's stays hidden", async () => {
+    const jobs = jobsContext("api-workers-new-queue");
+    const h = harness({
+      jobs,
+      // The default cache window, not the harness's zero.
+      limits: { queueCacheMs: 2_000 },
+      listQueues: "authorized",
+      authorize: (_req, ctx) =>
+        !(ctx.action === "queues.read" && ctx.queue === "secret"),
+    });
+    // Fills the queue cache while neither queue exists.
+    expect((await h.call("GET", "/workers")).body.items).toEqual([]);
+
+    const started = Date.now();
+    const fresh = jobs.worker("fresh", async () => null);
+    const secret = jobs.worker("secret", async () => null);
+    closers.push(async () => await fresh.close({ force: true }));
+    closers.push(async () => await secret.close({ force: true }));
+    void fresh.run();
+    void secret.run();
+    await waitFor(async () => (await jobs.listWorkers()).length === 2, {
+      timeout: 250,
+      message: "the workers never reported",
+    });
+
+    const listed = await h.call("GET", "/workers");
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(listed.body.items.map((worker: any) => worker.id)).toEqual([
+      fresh.id,
+    ]);
+    // The fresh read refreshed the cache for everyone: the queue is listed.
+    expect(
+      (await h.call("GET", "/queues")).body.items.map((q: any) => q.name),
+    ).toEqual(["fresh"]);
+  });
+});
+
 describe("lifecycle control", () => {
   it("stores the instruction, answers 202, and 200 once the worker acknowledges it", async () => {
     const jobs = jobsContext("api-workers-pause");

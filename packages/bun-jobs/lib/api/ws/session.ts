@@ -1,4 +1,5 @@
 import type { BunRequest, WebSocketClient } from "@kingsleyweb/bun-common";
+import type { NotifierFollowSource } from "../../notifier";
 import type { EventKind } from "../../shared/events";
 import type { AuthDecision } from "../auth";
 import type {
@@ -255,6 +256,30 @@ export class Session implements HubSubscriber {
    * on a driver that cannot push.
    */
   readonly #holds = new Map<string, { kind: EventKind; target: string }[]>();
+  /**
+   * While the broad `workers` channel is held, the notifier `followed`
+   * listener that extends its holds to each queue the notifier starts
+   * following for good after the subscription — a queue a worker's first
+   * `run()` creates, or one created in another process and found by
+   * discovery. `undefined` otherwise.
+   */
+  #onQueueFollowed:
+    | ((kind: EventKind, target: string, source: NotifierFollowSource) => void)
+    | undefined;
+
+  /**
+   * Queues a discovery pass found for the `workers` channel, waiting for the
+   * microtask that authorizes them, holds the allowed ones and sends one
+   * `queue-discovered` gap for the whole pass.
+   */
+  readonly #discoveredQueues = new Set<string>();
+  /** Whether a flush of {@link #discoveredQueues} is already scheduled. */
+  #discoveryFlushScheduled = false;
+  /**
+   * Queues the listener saw while the `workers` channel's first holds were
+   * still being worked out, merged into them once they are.
+   */
+  readonly #queuesSeenEarly = new Set<string>();
   /** Tokens left in the rate bucket. */
   #tokens: number;
   /** When the bucket was last refilled. */
@@ -519,8 +544,31 @@ export class Session implements HubSubscriber {
         if (this.#holds.has(key)) {
           return;
         }
+        // The broad `workers` channel keeps following: listening starts
+        // before the queues are listed, so one appearing meanwhile is kept.
+        const growing = this.#followsNewQueues(def, target);
+        if (growing) {
+          this.#listenForQueues(key);
+        }
         const wanted = await this.#wantedHolds(def, target);
-        if (wanted.length === 0) {
+        if (growing) {
+          const known = new Set(wanted.map((hold) => hold.target));
+          const early = [
+            ...this.#queuesSeenEarly,
+            ...notifier.followedForGood("queue"),
+          ];
+          this.#queuesSeenEarly.clear();
+          for (const queue of early) {
+            if (!known.has(queue)) {
+              known.add(queue);
+              wanted.push({ kind: "worker", target: queue });
+            }
+          }
+          if (this.#ended) {
+            this.#stopListeningForQueues();
+            return;
+          }
+        } else if (wanted.length === 0) {
           return;
         }
         // Recorded before the await, so a session ending meanwhile releases
@@ -583,10 +631,211 @@ export class Session implements HubSubscriber {
   }
 
   /**
-   * The queues the broad `workers` channel follows: the configured list, or
-   * what the backend knows. A queue created after the subscription is not
-   * among them — the same limit the notifier's own discovery has, and the
-   * reason a dashboard watching one queue should name it.
+   * Whether this channel is the broad `workers` channel over every queue, and
+   * so must go on following queues that appear after it was subscribed. A
+   * configured queue list is fixed, so it has nothing to grow into.
+   */
+  #followsNewQueues(
+    def: ParsedChannel["def"],
+    target: ParsedChannel["target"],
+  ): boolean {
+    return (
+      def.receives === "worker" &&
+      target.queue === undefined &&
+      this.#ctx.config.queues === "all" &&
+      this.#ctx.hub.notifier !== undefined
+    );
+  }
+
+  /**
+   * Extends `channel`'s holds to every queue the notifier starts following
+   * for good from now on, and only to those this connection may see.
+   *
+   * - **A queue this process creates** (`source: "follow"`, what a `BunJobs`
+   *   does before its first publish on it) is held synchronously, inside the
+   *   notifier's event, so the notifier has it live before that queue's own
+   *   follow resolves — which the `BunJobs` awaits before a new worker's
+   *   first publish. Nothing was missed, so no gap. The per-queue decision is
+   *   asked afterwards, and a refused queue's hold is dropped again: it never
+   *   delivered anything, since every event on the broad channel is decided
+   *   per queue at delivery too.
+   * - **A queue a discovery pass found** (another process created it) may
+   *   already have published events nobody heard — a worker's first start
+   *   among them. The pass's queues are gathered for one microtask, decided
+   *   per queue, the allowed ones held, and one `queue-discovered` gap sent
+   *   for the pass. A refused queue is neither held nor announced.
+   */
+  #listenForQueues(channel: string): void {
+    const notifier = this.#ctx.hub.notifier;
+    if (!notifier || this.#onQueueFollowed) {
+      return;
+    }
+    const listener = (
+      kind: EventKind,
+      queue: string,
+      source: NotifierFollowSource,
+    ): void => {
+      if (kind !== "queue" || this.#ended) {
+        return;
+      }
+      const holds = this.#holds.get(channel);
+      if (!holds) {
+        this.#queuesSeenEarly.add(queue);
+        return;
+      }
+      if (holds.some((hold) => hold.target === queue)) {
+        return;
+      }
+      if (source === "follow") {
+        this.#holdWorkers(channel, queue);
+        void this.#queueAllowed(channel, queue).then((allowed) => {
+          if (!allowed) {
+            this.#dropWorkers(channel, queue);
+          }
+        });
+        return;
+      }
+      this.#discoveredQueues.add(queue);
+      if (!this.#discoveryFlushScheduled) {
+        this.#discoveryFlushScheduled = true;
+        queueMicrotask(() => {
+          void this.#flushDiscovered(channel);
+        });
+      }
+    };
+    this.#onQueueFollowed = listener;
+    notifier.on("followed", listener);
+  }
+
+  /**
+   * Holds the allowed queues of one discovery pass for `channel`, then sends
+   * one `queue-discovered` gap scoped to it — when any was allowed, the
+   * channel is subscribed (not still being acked) and the connection is not
+   * lagging, whose own `slow-consumer` gap already asks for a refetch.
+   */
+  async #flushDiscovered(channel: string): Promise<void> {
+    this.#discoveryFlushScheduled = false;
+    const batch = [...this.#discoveredQueues];
+    this.#discoveredQueues.clear();
+    const decisions = await Promise.all(
+      batch.map(async (queue) => await this.#queueAllowed(channel, queue)),
+    );
+    const holds = this.#holds.get(channel);
+    if (this.#ended || !holds) {
+      return;
+    }
+    const allowed = batch.filter(
+      (queue, index) =>
+        decisions[index] && !holds.some((hold) => hold.target === queue),
+    );
+    if (allowed.length === 0) {
+      return;
+    }
+    await Promise.all(
+      allowed.map(async (queue) => await this.#holdWorkers(channel, queue)),
+    );
+    if (this.#ended || !this.#channels.has(channel) || this.#lag) {
+      return;
+    }
+    const { hub } = this.#ctx;
+    this.#send({
+      type: "gap",
+      epoch: hub.epoch,
+      fromSeq: 0,
+      toSeq: hub.seq,
+      reason: "queue-discovered",
+      channels: [channel],
+    });
+  }
+
+  /**
+   * Adds a queue's worker hold to `channel`'s, starting it synchronously; the
+   * promise settles once the subscription is live. Never rejects.
+   */
+  async #holdWorkers(channel: string, queue: string): Promise<void> {
+    const notifier = this.#ctx.hub.notifier;
+    const holds = this.#holds.get(channel);
+    if (!notifier || !holds) {
+      return;
+    }
+    holds.push({ kind: "worker", target: queue });
+    try {
+      await notifier.hold("worker", queue);
+    } catch (error) {
+      this.#ctx.config.logger.warn("jobs api could not follow a target", {
+        error,
+        kind: "worker",
+        target: queue,
+      });
+    }
+  }
+
+  /** Takes a queue's worker hold back off `channel`'s, if it has one. */
+  #dropWorkers(channel: string, queue: string): void {
+    const holds = this.#holds.get(channel);
+    const index =
+      holds?.findIndex(
+        (hold) => hold.kind === "worker" && hold.target === queue,
+      ) ?? -1;
+    if (!holds || index === -1) {
+      return;
+    }
+    holds.splice(index, 1);
+    this.#ctx.hub.notifier
+      ?.unfollow("worker", queue)
+      .catch((error: unknown) => {
+        this.#ctx.config.logger.warn("jobs api could not release a target", {
+          error,
+          kind: "worker",
+          target: queue,
+        });
+      });
+  }
+
+  /**
+   * Whether this connection may see one queue's worker events on `channel`:
+   * the same per-target decision delivery asks, and shares — so it is asked
+   * once. A failure counts as refused and is not remembered.
+   */
+  async #queueAllowed(channel: string, queue: string): Promise<boolean> {
+    const key = `${channel}\0worker:${queue}`;
+    const known = this.#targetDecisions.get(key);
+    if (known) {
+      return known.allow;
+    }
+    try {
+      const decision = await decide(this.#ctx.config, this.request, {
+        action: "events.subscribe",
+        transport: "ws",
+        channel,
+        queue,
+      });
+      this.#targetDecisions.set(key, decision);
+      return decision.allow;
+    } catch (error) {
+      this.#ctx.config.logger.error(
+        "jobs api authorize failed for a channel's target",
+        { error, channel, target: queue },
+      );
+      return false;
+    }
+  }
+
+  /** Stops extending the `workers` channel to new queues. */
+  #stopListeningForQueues(): void {
+    if (this.#onQueueFollowed) {
+      this.#ctx.hub.notifier?.off("followed", this.#onQueueFollowed);
+      this.#onQueueFollowed = undefined;
+    }
+    this.#queuesSeenEarly.clear();
+    this.#discoveredQueues.clear();
+  }
+
+  /**
+   * The queues the broad `workers` channel follows at subscribe time: the
+   * configured list, or what the backend knows. With every queue configured,
+   * the channel then goes on to follow each queue the notifier starts
+   * following for good (see {@link #listenForQueues}).
    */
   async #reachableQueues(): Promise<string[]> {
     const { config } = this.#ctx;
@@ -898,6 +1147,9 @@ export class Session implements HubSubscriber {
 
   /** Releases every notifier hold a channel took, if it took any. */
   #release(channel: string): void {
+    if (channel === "workers") {
+      this.#stopListeningForQueues();
+    }
     const holds = this.#holds.get(channel);
     if (!holds) {
       return;
@@ -1308,6 +1560,7 @@ export class Session implements HubSubscriber {
     for (const channel of [...this.#holds.keys()]) {
       this.#release(channel);
     }
+    this.#stopListeningForQueues();
     this.#decisions.clear();
     this.#targetDecisions.clear();
     this.#outbox = [];

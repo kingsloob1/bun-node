@@ -169,8 +169,14 @@ export interface WorkerEventPayloadsWire {
     key: string;
     /** What it is now. */
     state: WorkerState;
-    /** What it was. */
-    previous: WorkerState;
+    /**
+     * What it was. Absent on the worker's first state announcement since it
+     * started — a first `run()`, whose `state` is `running`; `paused` when it
+     * starts paused; or `stopped` (reason `"stopped persistently"`) when a stop
+     * recorded against its key holds it parked. A restart after a stop carries
+     * it.
+     */
+    previous?: WorkerState;
     /** Why, where there is anything to add. */
     reason?: string;
     /** When it changed, epoch ms. */
@@ -434,12 +440,27 @@ export interface JobsApiEventMessage {
   event: EventWire;
 }
 
-/** Why events may have been missed. */
+/**
+ * Why events may have been missed.
+ *
+ * - `resume-expired`: the events after the resume point are no longer retained.
+ * - `epoch-changed`: the resume point is from another server instance.
+ * - `slow-consumer`: the connection fell behind and events were skipped.
+ * - `coalesced`: reserved; progress coalescing announces no gap.
+ * - `queue-discovered`: the broad `workers` channel started following a queue
+ *   another process created, found by the server's discovery pass. What that
+ *   queue's workers published before the pass — a worker's first-start
+ *   `state` among it — was never received. Sent once per discovery pass that
+ *   found queues this connection may see, with `channels: ["workers"]`,
+ *   `fromSeq: 0` (unknown) and `toSeq` the latest `seq`. A queue created in
+ *   the server's own process is followed at once and causes no gap.
+ */
 export type JobsApiGapReason =
   | "resume-expired"
   | "epoch-changed"
   | "slow-consumer"
-  | "coalesced";
+  | "coalesced"
+  | "queue-discovered";
 
 /** Events in `[fromSeq, toSeq]` may have been missed: refetch over HTTP. */
 export interface JobsApiGapMessage {
@@ -451,7 +472,10 @@ export interface JobsApiGapMessage {
   fromSeq: number;
   /** The last `seq` that may be missing. */
   toSeq: number;
-  /** Why. `coalesced` is reserved: progress coalescing announces no gap. */
+  /**
+   * Why. `coalesced` is reserved: progress coalescing announces no gap.
+   * `queue-discovered` is scoped to `workers`: refetch the workers over HTTP.
+   */
   reason: JobsApiGapReason;
   /** The channels affected, when not every one. */
   channels?: string[];

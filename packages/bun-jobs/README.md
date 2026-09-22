@@ -974,9 +974,12 @@ memory) and polls every `remoteControl.interval` elsewhere. It exposes:
 
 A worker with `publish` on (or `publishEvents` on its `BunJobs`) publishes a
 worker `state` event on each change of state and a `config` event when it
-adopts an override. A first start is not announced as a `state` event: a new
-worker appears through its first heartbeat. The `control` events are always
-published. A
+adopts an override. A first start is announced with no `previous`: the first
+`run()` publishes one `state` event with the state the worker came up in —
+`running`, `paused` when it was paused before `run()`, or `stopped` (reason
+`"stopped persistently"`) under a stop recorded against its key. Nothing is
+published before `run()`, and every later change carries `previous`, a
+`start()` after a stop included. The `control` events are always published. A
 `JobsNotifier` hears worker events only for the queues in its
 [`workers`](#events-and-jobsnotifier) option.
 
@@ -2754,7 +2757,7 @@ await remote.resetConfig(); // back to what the code asks for
 | `allowed` | The execution modes the owner's `remoteConfig` permits. |
 | `seq` | The override's version, `0` when nothing was ever stored. |
 | `appliedSeq` | The version an owner has adopted. Below `seq`, no owner has picked it up yet. |
-| `error` | `{ at, message }`, when an owner refused part of the override. |
+| `error` | `{ at, message, keys }`, when an owner refused all or part of the override. `keys` names the refused settings in `executionMode, runMode, maxConcurrency` order; every other overridden setting was adopted. A whole refusal names every overridden key, and an error stored by an older owner reads as `keys: []`. |
 | `updatedAt` | When the override was last written, epoch ms. |
 
 The same three members are on `BunRunner` itself: `runner.updateConfig(patch)`
@@ -2777,7 +2780,8 @@ either, because a parallel run holds no lock. Pause the runner first when
 exclusivity matters.
 
 **What an owner refuses.** An owner that cannot honour a field drops it, keeps
-its code's value, records why in `error`, and logs a warning. That happens for
+its code's value, records why in `error` (naming the field in `error.keys`),
+and logs a warning. That happens for
 a mode its `remoteConfig` does not permit, and for `"spawn"` or `"worker"` on a
 runner built from a driver instance with no `childDriver`, whose handler would
 then reach no backend. Both are refused up front by `updateConfig()` and the
@@ -2924,8 +2928,16 @@ for await (const event of notifier) {
 - **Members.** `follow(kind, target)` starts following a queue or runner
   before it exists, so nothing is missed, and for good. `following` lists
   the **live** subscriptions, as `<kind>:<target>`: a target whose subscribe
-  is still in flight, or failed (reported as `error`), is not in it yet. The
-  emitted events are `event`, `subscribed` and `error`.
+  is still in flight, or failed (reported as `error`), is not in it yet.
+  `followedForGood(kind)` lists what discovery, the configured lists, a
+  `BunJobs` creating it or `follow()` follows, live or not; a `hold()` alone is
+  not in it. The emitted events are `event`, `subscribed`, `followed` and
+  `error`. `followed(kind, target, source)` fires once when a target becomes
+  followed for good, before its subscription is live: `source` is
+  `"discovery"` for a discovery pass (or the configured lists it follows) and
+  `"follow"` for `follow()`, which is what a `BunJobs` calls for what it
+  creates. A `hold("worker", queue)` a listener starts there is live before
+  that queue's own follow resolves.
 - **Holding a target.** `hold(kind, target)` follows a queue or runner like
   `follow()`, but reference-counted: each `hold` needs its own
   `unfollow(kind, target)`, and the subscription is closed when the last
@@ -2947,10 +2959,10 @@ for await (const event of notifier) {
 - **Worker events.** An event with `kind: "worker"` has the queue as its
   `target` and one of three types: `control` (`payload.action`: `pause`,
   `resume`, `stop`, `start`, `config` or `reset`, with the `worker` id or the
-  `key` it is addressed to), `state` (`worker`, `key`, `state`, `previous`,
+  `key` it is addressed to), `state` (`worker`, `key`, `state`, `previous?`,
   `reason?`, `at`) and `config` (`worker`, `key`, `seq`, `overridden`, `error?`).
-  A worker's first start is not announced as a `state` event; it appears
-  through its first heartbeat (see [Routes](#routes)). Only a notifier whose
+  A worker's first start is announced with no `previous`; every later `state`
+  event carries it. Only a notifier whose
   `workers` option names the queue, or `"all"`, hears them.
   `follow("worker", queue)` and `hold("worker", queue)` also work.
 - **Discovery has a gap.** Anything a newly used queue published before the
@@ -3606,10 +3618,23 @@ state; every built-in driver does. See
 [Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely).
 
 A worker is listed by `GET /workers` from its first heartbeat, written when it
-starts: at once on a queue the API already knows, and within
-`limits.queueCacheMs` (2 s by default) on a queue the API has not seen yet.
-Its row then refreshes every `reportInterval` (10 s by default). A first start
-is not announced as a `state` event.
+starts, even on a queue created a moment ago: a queue a live worker consumes
+but the cached queue list (`limits.queueCacheMs`) does not have yet is checked
+with a fresh read. Its row then refreshes every `reportInterval` (10 s by
+default). A first start is announced as a `state` event with no `previous`.
+
+The socket's broad `workers` channel follows queues that appear after it was
+subscribed. A queue this API's own `BunJobs` creates, for instance through a
+worker's first `run()`, is followed at once, and that worker's first-start
+`state` event arrives. A queue created in another process is followed from the
+API notifier's next discovery pass, within its `discoveryInterval` (2 s by
+default). What that queue's workers published before the pass, a first start
+among it, is not delivered, so the session receives one `gap` with reason
+`queue-discovered` and `channels: ["workers"]` per pass: refetch the workers
+over HTTP. A new worker in another process is therefore seen within
+`discoveryInterval` plus that refetch. Each queue is authorized on its own, as
+on every broad channel: a queue `authorize` refuses is neither followed for
+the session nor announced by a gap.
 
 Worker routes reach workers in any process too. `:worker` is one
 **incarnation**, the id a worker's record carries, and `authorize` sees it as
@@ -3973,6 +3998,8 @@ ws.onopen = () =>
 | `queue/{queue}/job/{jobId}` | one job's events (the id escaped with `encodeJobId`, below) |
 | `runners` | every runner event |
 | `runner/{runner}` | one runner's events |
+| `workers` | every queue's worker events: `control`, `state`, `config` (mode `jobs` or `both`) |
+| `queue/{queue}/workers` | one queue's worker events |
 
 **Naming a job channel.** Escape the id with `encodeJobId(id)`, exported by
 `@kingsleyweb/bun-jobs/api/contract` (and the root): it is
@@ -4008,6 +4035,12 @@ HTTP what a gap covers. The gap's `reason` says why:
   balancer without sticky sessions), or an `afterSeq` **ahead** of anything
   this instance has stamped in that epoch, which can only come from another
   instance; the gap runs from `0`.
+
+A connection subscribed to `workers` can also receive a `gap` with reason
+`queue-discovered`, `channels: ["workers"]` and `fromSeq: 0`: the server's
+discovery pass found a queue another process created, and what its workers
+published before then was missed. One per pass, however many queues it found;
+a queue created in the server's own process causes none.
 
 A resume may be split over several `subscribe`s — a different `events` filter
 per group of channels, or more than 256 channels — each carrying the same
@@ -4123,7 +4156,7 @@ served slowly. Override any of them through `limits`.
 | `maxLogPage` | `500` | largest log page, for a job's logs and a run's alike |
 | `maxHistory` | `200` | largest runner history page |
 | `maxQueues` | `500` | queues summarised by `/queues` and `/overview` |
-| `queueCacheMs` | `2000` | how long the known-queue list is cached; a queue missing from it is checked against the backend once more (at most once per window) before a 404 |
+| `queueCacheMs` | `2000` | how long the known-queue list is cached; a queue missing from it is checked against the backend once more (at most once per window) before a 404, and a queue a live worker consumes is re-read whenever it is missing |
 | `maxJobDataBytes` | `1048576` | body accepted by `jobs.add`/`jobs.update` |
 | `maxApplyDefaults` | `1000` | largest `limit` of one `job-defaults/apply` call; at most `10000` |
 

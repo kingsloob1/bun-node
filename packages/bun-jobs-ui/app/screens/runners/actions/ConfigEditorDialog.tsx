@@ -19,6 +19,7 @@ import {
   CONCURRENCY_BOUNDS,
   configBody,
   configWarnings,
+  describeRefused,
   EXECUTION_MODE_LABELS,
   formFromConfig,
   hasConfigChanges,
@@ -176,7 +177,7 @@ export function ConfigEditorDialog({
             role="note"
             data-testid="config-refused"
           >
-            The owner refused the stored settings{" "}
+            The owner refused {describeRefused(config) ?? "the stored settings"}{" "}
             <RelativeTime value={config.error.at} />: {config.error.message}
           </p>
         )}

@@ -566,15 +566,13 @@ export function workerRoutes(): AnyRouteDef[] {
       handler: async ({ req, query, services }) => {
         checkHostFilter(services, query);
         const workers = await services.config.jobs!.listWorkers();
-        // Only the queues a worker consumes are asked about, not every queue.
-        const reachable = new Set(await services.queues.names());
-        const consumed = [
-          ...new Set(
-            workers
-              .map((worker) => worker.queue)
-              .filter((queue) => reachable.has(queue)),
-          ),
-        ].sort();
+        // Only the queues a worker consumes are asked about, not every queue —
+        // re-read when one is newer than the cached queue list, since a live
+        // worker proves its queue exists.
+        const reachable = await services.queues.confirm(
+          workers.map((worker) => worker.queue),
+        );
+        const consumed = [...reachable].sort();
         const allowed = new Set(
           await visibleQueueNames(services, req, consumed),
         );

@@ -221,12 +221,19 @@ export const GapMessageSchema = s.named(
       epoch: s.string(),
       fromSeq: SeqSchema,
       toSeq: SeqSchema,
-      reason: s.enum([
-        "resume-expired",
-        "epoch-changed",
-        "slow-consumer",
-        "coalesced",
-      ]),
+      reason: s.enum(
+        [
+          "resume-expired",
+          "epoch-changed",
+          "slow-consumer",
+          "coalesced",
+          "queue-discovered",
+        ],
+        {
+          description:
+            "Why. `slow-consumer`: the connection fell behind. `resume-expired` / `epoch-changed`: a resume could not be honoured. `coalesced` is reserved. `queue-discovered`: the broad `workers` channel started following a queue another process created, found by the server's discovery pass (within its `discoveryInterval`, 2 s by default); what that queue's workers published before, a first-start `state` among it, was missed. Sent once per pass with `channels: [\"workers\"]` and `fromSeq: 0`; a queue created in the server's own process causes none.",
+        },
+      ),
       channels: s.optional(s.array(s.string())),
     },
     {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+  defaultRange,
+  MAX_RANGE_MS,
+  RANGE_PRESETS,
+  rangeProblem,
+  readRange,
+} from "../../app/analytics/range";
+import {
   ADDED_BY_STATE_POLL_MS,
   addedByStateKey,
   addedByStateRequest,
@@ -18,24 +25,31 @@ const LIMITS = { defaultPageSize: 20, maxPageSize: 100 };
 describe("the added-by-state request", () => {
   it("resolves a preset against the clock", () => {
     expect(addedByStateRequest({ kind: "preset", seconds: 3600 }, NOW)).toEqual(
-      { from: NOW - HOUR, to: NOW, clamped: false },
+      { from: NOW - HOUR, to: NOW },
     );
   });
 
-  it("never sends a span longer than the contract allows", () => {
-    const week = {
-      kind: "custom",
-      from: NOW - 7 * 24 * HOUR,
-      to: NOW,
-    } as const;
-    const request = addedByStateRequest(week, NOW);
-    expect(request.to - request.from).toBe(MAX_ADDED_BY_STATE_SPAN_MS);
-    // Its last day: the end is kept.
-    expect(request.to).toBe(NOW);
-    expect(request.clamped).toBe(true);
-    // Exactly a day is allowed as is.
+  it("sends a custom range as is", () => {
     const day = { kind: "custom", from: NOW - 24 * HOUR, to: NOW } as const;
-    expect(addedByStateRequest(day, NOW).clamped).toBe(false);
+    expect(addedByStateRequest(day, NOW)).toEqual({
+      from: day.from,
+      to: day.to,
+    });
+  });
+
+  // The request is sent uncut, so what keeps it inside the API's limit is
+  // the range model. If the contract ever made the added-by-state limit
+  // shorter than the analytics one, these fail here rather than as a 400 in
+  // a user's Overview.
+  it("never holds a range longer than the API counts added jobs over", () => {
+    expect(MAX_RANGE_MS).toBeLessThanOrEqual(MAX_ADDED_BY_STATE_SPAN_MS);
+    for (const seconds of RANGE_PRESETS) {
+      expect(seconds * 1_000).toBeLessThanOrEqual(MAX_ADDED_BY_STATE_SPAN_MS);
+    }
+    // A longer custom range in the URL is refused, not cut.
+    const week = `${NOW - 7 * 24 * HOUR}-${NOW}`;
+    expect(readRange(week)).toEqual(defaultRange());
+    expect(rangeProblem(NOW - 7 * 24 * HOUR, NOW)).not.toBeNull();
   });
 
   it("keys a preset by its length and a custom range by its instants", () => {
