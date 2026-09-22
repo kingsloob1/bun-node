@@ -3,7 +3,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   ADDED_BY_STATE_POLL_MS,
   addedByStateKey,
-  addedByStateRequest,
   getAddedByState,
 } from "../../api/added";
 import { JOB_STATES } from "../../api/contract";
@@ -14,7 +13,7 @@ import { usePollInterval } from "../../live";
 
 /** Props of {@link AddedByStateGroup}. */
 export interface AddedByStateGroupProps {
-  /** The range the tile is read over; a span over a day is cut to its last day. */
+  /** The range the tile is read over (the Jobs section's). */
   range: TimeRange;
 }
 
@@ -34,12 +33,11 @@ export function AddedByStateGroup({ range }: AddedByStateGroupProps) {
     refetchInterval,
     placeholderData: keepPreviousData,
   });
-  const { clamped } = addedByStateRequest(range);
   return (
     <>
       <p className="range-group-title">
-        {clamped ? "Added in the range's last 24 hours" : "Added in range"},
-        where they are now <span className="muted">(still stored)</span>
+        Added in range, where they are now{" "}
+        <span className="muted">(still stored)</span>
       </p>
       {added.data ? (
         <dl className="range-cells">

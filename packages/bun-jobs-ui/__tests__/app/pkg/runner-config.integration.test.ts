@@ -984,6 +984,9 @@ for (const label of ["memory", "SQLite"]) {
           error: {
             message:
               'executionMode "worker" needs a driver config for the child, and this runner was built from a driver instance',
+            // The owner names what it refused; the concurrency override it
+            // adopted is not listed.
+            keys: ["executionMode"],
           },
         });
 
@@ -1001,11 +1004,11 @@ for (const label of ["memory", "SQLite"]) {
         });
         expect(view.summary.override).toEqual({
           value: "Execution mode, Run mode, Max concurrency",
-          hint: `The owner refused these settings: ${config.error!.message}`,
+          hint: `The owner refused Execution mode: ${config.error!.message}`,
         });
         const dialog = await ui.openSettings();
         expect(dialog.view().refused).toContain(
-          `The owner refused the stored settings`,
+          `The owner refused Execution mode`,
         );
         expect(dialog.view().refused).toContain(config.error!.message);
         expect(dialog.view().modeOptions).toEqual(["in-process"]);

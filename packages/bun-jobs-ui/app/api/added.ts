@@ -2,7 +2,6 @@ import type { TimeRange } from "../analytics/range";
 import type { ApiClient } from "./client";
 import type { AddedByStateDto } from "./types";
 import { rangeBounds } from "../analytics/range";
-import { MAX_ADDED_BY_STATE_SPAN_MS } from "./contract";
 
 /**
  * `GET /overview/added`: of the jobs added during a range, how many are in
@@ -17,9 +16,13 @@ import { MAX_ADDED_BY_STATE_SPAN_MS } from "./contract";
 export const ADDED_BY_STATE_POLL_MS = 20_000;
 
 /**
- * The `from`/`to` one read sends: the range resolved against `now`, with a
- * span over `MAX_ADDED_BY_STATE_SPAN_MS` cut to its **last** day (the API
- * refuses a longer one). `clamped` says whether that happened.
+ * The `from`/`to` one read sends: the range resolved against `now`.
+ *
+ * Sent as is. The API refuses a span over `MAX_ADDED_BY_STATE_SPAN_MS`, and no
+ * range the app can hold is longer: the range model caps every span at
+ * `MAX_RANGE_MS`, which is not above it (`addedByState.test.ts` holds that,
+ * so a contract change that splits the two fails there, not in a user's
+ * Overview).
  */
 export function addedByStateRequest(
   range: TimeRange,
@@ -29,16 +32,8 @@ export function addedByStateRequest(
   from: number;
   /** End, epoch ms, exclusive. */
   to: number;
-  /** Whether the range was longer than the API serves and was cut to its last day. */
-  clamped: boolean;
 } {
-  const { from, to } = rangeBounds(range, now);
-  const clamped = to - from > MAX_ADDED_BY_STATE_SPAN_MS;
-  return {
-    from: clamped ? to - MAX_ADDED_BY_STATE_SPAN_MS : from,
-    to,
-    clamped,
-  };
+  return rangeBounds(range, now);
 }
 
 /**

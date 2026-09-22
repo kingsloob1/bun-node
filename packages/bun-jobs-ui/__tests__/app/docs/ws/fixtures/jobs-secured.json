@@ -21,7 +21,7 @@
     "connection": {
       "address": "/jobs-api/ws",
       "title": "Connection",
-      "description": "The WebSocket itself (subprotocol `bun-jobs.v1`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.\n\nOrdering: live events arrive in `seq` order. A subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A resume split over several subscribes replays each one's channels in full, so a later one can replay `seq`s below ones already received: resume again from the same position until every resuming subscribe is acked. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped.\n\nSubscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.\n\nAn upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
+      "description": "The WebSocket itself (subprotocol `bun-jobs.v1`, optional). Control messages travel here; events for the logical channels below arrive over it once subscribed.\n\nOrdering: live events arrive in `seq` order. A subscribe with `resume` sends the replayed events first, then the `ack`; when events could not be replayed the ack says `resumed: false` and a `gap` follows it. A resume split over several subscribes replays each one's channels in full, so a later one can replay `seq`s below ones already received: resume again from the same position until every resuming subscribe is acked. A connection that falls behind stops receiving events and, once it catches up, receives one `gap` (`slow-consumer`) covering what it skipped. A connection subscribed to `workers` receives one `gap` (`queue-discovered`, `channels: [\"workers\"]`) when the server's discovery pass finds queues another process created: what their workers published before the pass was missed.\n\nSubscriptions are not reference-counted: subscribing to a channel already held replaces its `events` filter (the last subscribe wins), and one unsubscribe removes it.\n\nAn upgrade can be refused before any socket exists, with an ordinary HTTP problem response (`x-bun-jobs-upgrade-refusals`); an open connection is closed with the codes in `x-bun-jobs-close-codes`; the limits it is held to are in `x-bun-jobs-limits`.",
       "messages": {
         "subscribe": { "$ref": "#/components/messages/subscribe" },
         "unsubscribe": { "$ref": "#/components/messages/unsubscribe" },
@@ -533,8 +533,10 @@
               "resume-expired",
               "epoch-changed",
               "slow-consumer",
-              "coalesced"
-            ]
+              "coalesced",
+              "queue-discovered"
+            ],
+            "description": "Why. `slow-consumer`: the connection fell behind. `resume-expired` / `epoch-changed`: a resume could not be honoured. `coalesced` is reserved. `queue-discovered`: the broad `workers` channel started following a queue another process created, found by the server's discovery pass (within its `discoveryInterval`, 2 s by default); what that queue's workers published before, a first-start `state` among it, was missed. Sent once per pass with `channels: [\"workers\"]` and `fromSeq: 0`; a queue created in the server's own process causes none."
           },
           "channels": { "type": "array", "items": { "type": "string" } }
         },
@@ -2176,7 +2178,7 @@
         },
         "required": ["v", "kind", "type", "target", "at", "payload"],
         "additionalProperties": false,
-        "description": "A worker changed what it is doing."
+        "description": "A worker changed what it is doing — or, with no `previous`, announced its first start."
       },
       "WorkerStateEventMessage": {
         "type": "object",
@@ -2201,7 +2203,7 @@
         },
         "required": ["type", "seq", "epoch", "subscriptions", "event"],
         "additionalProperties": false,
-        "description": "A worker changed what it is doing."
+        "description": "A worker changed what it is doing — or, with no `previous`, announced its first start."
       },
       "WorkerStatePayload": {
         "type": "object",
@@ -2222,7 +2224,7 @@
           "previous": {
             "type": "string",
             "enum": ["running", "paused", "stopping", "stopped", "restarting"],
-            "description": "What it was."
+            "description": "What it was. Absent on the worker's first state announcement since it started: its first `run()`, announced as `running`; `paused` when it starts paused; or `stopped` (reason `\"stopped persistently\"`) when a stop recorded against its key holds it parked. A restart after a stop carries it."
           },
           "reason": {
             "type": "string",
@@ -2233,7 +2235,7 @@
             "description": "When it changed, epoch ms."
           }
         },
-        "required": ["worker", "key", "state", "previous", "at"],
+        "required": ["worker", "key", "state", "at"],
         "additionalProperties": false
       }
     },
@@ -3098,13 +3100,13 @@
       "worker.state": {
         "name": "worker.state",
         "title": "Worker state",
-        "summary": "A worker changed what it is doing.",
+        "summary": "A worker changed what it is doing — or, with no `previous`, announced its first start.",
         "contentType": "application/json",
         "payload": { "$ref": "#/components/schemas/WorkerStateEventMessage" },
         "examples": [
           {
             "name": "worker.state",
-            "summary": "A worker changed what it is doing.",
+            "summary": "A worker changed what it is doing — or, with no `previous`, announced its first start.",
             "payload": {
               "type": "event",
               "seq": 43,
