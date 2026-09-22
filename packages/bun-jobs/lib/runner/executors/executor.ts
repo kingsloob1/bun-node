@@ -53,6 +53,28 @@ export interface ExecutorEvents {
   onLog: (level: LogLevel, message: string, fields: LogFields) => void;
   /** A child wrote to a piped stream. */
   onOutput: (stream: "stdout" | "stderr", chunk: string) => void;
+  /**
+   * A piped stream is over: the child closed it, or reading it failed.
+   *
+   * Optional, so a caller that only wants the chunks need not write it. Run-log
+   * capture does: a pipe is drained by a loop of its own, so the last chunk can
+   * land after the child's exit has already settled the run, and this is what
+   * lets the final flush wait for exactly as long as there is something to wait
+   * for instead of always spending the grace window.
+   */
+  onOutputEnd?: (stream: "stdout" | "stderr") => void;
+  /**
+   * The handler wrote to the console in a realm it shares: an `in-process`
+   * run's `console`, or a `worker` run's. Called once per console call with
+   * its formatted text, ending in a newline. Only fired when the run was
+   * started with `captureConsole`; a spawned child's console reaches
+   * `onOutput` through its pipes instead.
+   *
+   * Separate from `onOutput` on purpose: the runner turns `onOutput` into its
+   * public `output` event, which means "a child wrote to a piped stream", and
+   * a listener echoing what it hears there must not start hearing itself.
+   */
+  onConsole?: (stream: "stdout" | "stderr", text: string) => void;
   /** The run has a process id. */
   onPid: (pid: number) => void;
 }
@@ -90,6 +112,13 @@ export interface ExecutorStartOptions<TArgs = unknown> {
    * as `log` events instead of going to the child's own stdout.
    */
   forwardLogs: boolean;
+  /**
+   * Whether to capture the handler's `console.log/info/debug/warn/error` calls
+   * and report them through `events.onConsole`. Honoured by the `in-process`
+   * and `worker` executors, whose runs share a console; ignored by `spawn`,
+   * whose pipes already carry it. Defaults to `false`.
+   */
+  captureConsole?: boolean;
   /** Callbacks for events the run produces. */
   events: ExecutorEvents;
   /**
@@ -107,6 +136,12 @@ export interface Executor {
   readonly mode: ExecutionMode;
   /** Starts a run. */
   start: <TArgs>(options: ExecutorStartOptions<TArgs>) => ExecutorHandle;
+  /**
+   * Lets go of anything the executor keeps between runs (the in-process
+   * console patch). Called by the runner on `stop()` and when it replaces the
+   * executor; runs still live finish normally. Optional: most hold nothing.
+   */
+  close?: () => void;
 }
 
 /**

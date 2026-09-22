@@ -139,6 +139,15 @@ code {
   white-space: nowrap;
 }
 
+.app-nav .app-nav-sub {
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
+}
+
+.app-nav-sub .app-nav-link {
+  font-size: var(--text-sm);
+}
+
 .app-nav-link:hover {
   background: var(--surface-2);
 }
@@ -357,6 +366,17 @@ code {
 .search {
   flex: 0 1 260px;
   min-width: 0;
+}
+
+/*
+ * A search placed straight in a screen's column (the Workers page, the queue
+ * filter under a card title): there the flex basis above would be a HEIGHT,
+ * and the box grew 260px tall. Size it by width instead.
+ */
+.screen > .search,
+.queues-search {
+  flex: none;
+  width: min(100%, 260px);
 }
 
 .table-wrap {
@@ -585,6 +605,91 @@ code {
   color: var(--text-muted);
 }
 
+/*
+ * "Over the range": a full-width band under the totals, not a tile in their
+ * grid. In the grid its figures stacked into one tall column and stretched the
+ * other tiles to match; here each group is one row of compact cells — a small
+ * label over its number, like the state row above — and the two groups sit
+ * side by side, wrapping under each other only on a narrow screen.
+ */
+.range-band {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.range-band-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.range-band-title {
+  font-weight: 600;
+}
+
+.range-band-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+}
+
+.range-group {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The added-by-state group has eight cells to the finished group's two. */
+.range-group-wide {
+  flex: 1 1 32rem;
+}
+
+.range-group-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.range-cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.range-cell dt {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.range-cell dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Set apart by weight, not a divider: when the cells wrap, a left border would
+ * be left hanging at the start of the next line.
+ */
+.range-cell-total dt {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.range-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 /* Sparkline */
 .sparkline-cell {
   display: inline-flex;
@@ -644,6 +749,17 @@ code {
     flex-direction: row;
   }
 
+  /* A parent and its children sit on the one row. */
+  .app-nav li {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  .app-nav .app-nav-sub {
+    margin-top: 0;
+    padding-left: 0;
+  }
+
   .app-main {
     padding: var(--space-4);
   }
@@ -671,4 +787,41 @@ code {
   .stat-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* The Overview's title row: the heading left, the range control right. */
+.overview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.overview-header .screen-title {
+  margin: 0;
+}
+
+/* The range control and its toggle, stacked at the right of the title row. */
+.overview-range {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* Narrow: the control drops under the heading and fills the width. */
+@media (max-width: 720px) {
+  .overview-range {
+    align-items: stretch;
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* The queue filter, under the Queues card's title and above its table. */
+.queues-search {
+  margin-bottom: var(--space-3);
 }

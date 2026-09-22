@@ -1,0 +1,41 @@
+/* The analytics range picker, and the sections it drives. */
+
+.range-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.range-picker > .field {
+  min-width: 0;
+}
+
+.range-scope {
+  margin-top: var(--space-2);
+}
+
+.range-caption {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* A range wholly older than retention: an explanation, not an alarm. */
+.range-not-retained {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+
+.range-not-retained-title {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.range-not-retained-detail {
+  margin: 0;
+  font-size: var(--text-sm);
+}

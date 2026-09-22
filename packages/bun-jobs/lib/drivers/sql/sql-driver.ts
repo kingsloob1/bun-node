@@ -1,16 +1,20 @@
-import type { SerializedError } from "@kingsleyweb/bun-common";
+import type { LogLevel, SerializedError } from "@kingsleyweb/bun-common";
 import type { SQL } from "bun";
 import type {
   ConnectionInput,
   ConnectionOptions,
   UrlDefaults,
 } from "../../shared/connection";
+import type { RunLogStream } from "../../shared/constants";
 import type {
+  AddedRange,
   ChildOutcome,
   ChildRecordResult,
   ClaimOptions,
+  ClearJobLogsResult,
   DriverCapabilities,
   DriverEvent,
+  EditableJobOptionKey,
   EventKind,
   EventOfKind,
   FailOutcome,
@@ -22,22 +26,77 @@ import type {
   JobRef,
   JobsDriver,
   JobState,
+  JobWorkerRef,
   LockInfo,
+  MetricsQuery,
+  NamespaceMetricsQuery,
+  NamespaceMetricsRead,
+  PendingOptionsRewrite,
+  PendingOptionsRewriteResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
   RepeatRecord,
   ResolvedJobOptions,
   Retention,
+  RunLogAppendResult,
+  RunLogCaps,
+  RunLogInput,
+  RunLogLine,
+  RunLogPage,
+  RunLogQuery,
+  RunnerMetricsQuery,
+  RunnerMetricsRead,
+  RunnerMetricsSeries,
+  RunnerMetricsTotals,
+  RunnerMetricsTotalsQuery,
+  RunnerRunDelta,
   RunRecord,
+  StoredJobOptions,
   ThroughputBucket,
   WorkerInfo,
+  WorkerMetricsQuery,
+  WorkerMetricsRead,
+  WorkerMetricsSeries,
+  WorkerMetricsTotals,
+  WorkerMetricsTotalsQuery,
 } from "../driver";
+import type {
+  BufferWriteResult,
+  BusynessSample,
+  BusynessStats,
+  CounterBucket,
+  DurationStats,
+  JobCounters,
+  MetricsOptions,
+  MetricsSupport,
+  PendingMetric,
+  RawBusynessBucket,
+  RawDurationBucket,
+  ResolvedMetricsOptions,
+  RunnerRunCounters,
+  WorkerMetricsRef,
+} from "../metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
-import type { ClaimCursor, SqlAdapter, SqlDialect } from "./dialect";
+import type {
+  ClaimCursor,
+  ClaimStatementOptions,
+  SqlAdapter,
+  SqlDialect,
+} from "./dialect";
+import type { SchemaTableNames } from "./schema";
 import { jsonClone, sleep } from "@kingsleyweb/bun-common";
 import { SQL as BunSQL } from "bun";
+import {
+  assertRewriteRequest,
+  decodeRewriteCursor,
+  emptyRewriteResult,
+  encodeRewriteCursor,
+  JOB_OPTION_BITS,
+  planPendingRewrite,
+  tallyRewrite,
+} from "../../queue/jobDefaults";
 import { assertWritableStateName } from "../../queue/windows";
 import {
   resolveConnectionUrl,
@@ -49,6 +108,17 @@ import { EventRetention } from "../../shared/eventRetention";
 import { fitName } from "../../shared/fit";
 import { newId } from "../../shared/ids";
 import { PauseCache } from "../../shared/pauseCache";
+import {
+  emptyAddedCounts,
+  rangeMatchesNothing,
+  sortsByCreated,
+} from "../added";
+import {
+  attributionFilter,
+  FINISHED_STATES,
+  hasRange,
+  matchesNothing,
+} from "../attribution";
 import { BURIABLE_STATES, canBury } from "../bury";
 import { claimByLoop } from "../claimBatch";
 import { EventGaps } from "../eventGaps";
@@ -59,6 +129,31 @@ import {
   unsettledChildren,
 } from "../flow";
 import {
+  addBusynessSample,
+  addDuration,
+  bucketStart,
+  emptyBusynessStats,
+  emptyDurationStats,
+  hasMetricBuckets,
+  JOB_COUNTERS,
+  mergeBusynessBuckets,
+  mergeBusynessStats,
+  mergeCounterBuckets,
+  mergeDurationBuckets,
+  mergeDurationStats,
+  MetricsBuffer,
+  MetricsPruneClock,
+  metricsPruneCutoff,
+  metricsSupportOf,
+  NAMESPACE_ENTITY,
+  PendingBuffer,
+  resolveMetricsOptions,
+  RUNNER_RUN_COUNTERS,
+  splitWorkerMetricsEntity,
+  uniqueWorkerRefs,
+  workerMetricsEntity,
+} from "../metrics";
+import {
   emptyCounts,
   escapeLike,
   orderByIds,
@@ -68,16 +163,23 @@ import {
   throughputBucket,
   ThroughputBuffer,
 } from "../readApis";
+import { emptyRunLog, runLogBytes } from "../runLogs";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
 import { detectAdapter, dialectFor, withLockRetry } from "./dialect";
 import {
+  BUSYNESS_COLUMNS,
+  claimIndexName,
   createSchema,
-  FLOWLESS_JOB_COLUMNS,
+  DURATION_BIN_COLUMNS,
+  DURATION_STAT_COLUMNS,
   FRESH_JOB_COLUMNS,
+  insertColumns,
   JOB_COLUMNS,
   jobColumnTypes,
+  METRIC_KEY_COLUMNS,
   schemaDefinition,
+  STAMP_COLUMNS,
 } from "./schema";
 import { syncSqlSchema } from "./sync";
 
@@ -174,6 +276,42 @@ const SCHEDULED: JobState[] = ["delayed", "failed"];
 
 /** States whose due time `updateJob` may move. */
 const PENDING: JobState[] = ["waiting", "delayed"];
+
+/**
+ * How many jobs one transaction of `rewritePendingOptions` reads, locks and
+ * writes, per engine.
+ *
+ * On Postgres, MySQL and MariaDB the batch holds row locks, which a claim
+ * skips (`SKIP LOCKED`) rather than waits on, so a larger batch costs nothing
+ * but a transient reorder. SQLite's transaction is the database's only write
+ * lock — every claim waits for it — so its batch is kept to what writes in a
+ * few milliseconds.
+ */
+const REWRITE_BATCH: Record<SqlAdapter, number> = {
+  postgres: 500,
+  mysql: 500,
+  mariadb: 500,
+  sqlite: 200,
+};
+
+/** The key a rewrite cursor carries: claim order, `(priority, created_at, id)`. */
+const REWRITE_CURSOR_KEY = ["number", "number", "string"] as const;
+
+/** The columns of a pending job the rewrite reads. */
+interface RewriteRow {
+  /** The job's id. */
+  id: string;
+  /** Its `priority` column, as the engine returns an integer. */
+  priority: number | string;
+  /** Its `created_at`, likewise. */
+  created_at: number | string;
+  /** Its `max_attempts`, likewise. */
+  max_attempts: number | string;
+  /** Its `attempts_made`, likewise. */
+  attempts_made: number | string;
+  /** Its `opts` document, as the client returned it. */
+  opts: unknown;
+}
 
 /**
  * How long the orphaned-log sweep rests after a full pass over a queue.
@@ -282,6 +420,165 @@ export function queueStateListStatement(
 }
 
 /**
+ * The `ORDER BY` of `sort: "createdAt"`: `created_at`, then the id in
+ * code-point order, both ascending or both descending — `desc` reverses the
+ * tie-break too, as `compareCreated` in `added.ts` defines it.
+ *
+ * The id is compared in code point order whatever the column's collation, so
+ * `tie-B` comes before `tie-a`:
+ *
+ * - **Postgres** declares ids in the database's collation, which in
+ *   `en_US.utf8` puts `a` before `B`; `COLLATE "C"` is byte order, which for
+ *   UTF-8 is code-point order.
+ * - **MySQL and MariaDB** declare ids in a binary collation today
+ *   ({@link SqlDialect.idType}), but a table created before that keeps a case-
+ *   insensitive one until a sync with `alterColumns` rewrites it. Comparing
+ *   the bytes (`CAST(id AS BINARY)`) is right under either, and under any
+ *   character set whose bytes sort as its code points do (utf8mb4, utf8mb3).
+ * - **SQLite**'s default `BINARY` collation already is code-point order.
+ *
+ * No index serves this order (the claim index has `priority` ahead of
+ * `created_at`), so a page is a top-N sort over the matching rows, and the
+ * expression on `id` costs no index use.
+ *
+ * Exported so a test can `EXPLAIN` exactly what the driver runs.
+ */
+export function createdAtOrder(
+  dialect: SqlDialect,
+  order: "asc" | "desc",
+): string {
+  const direction = order === "desc" ? "DESC" : "ASC";
+  const id = dialect.codePointCollation
+    ? `id COLLATE ${dialect.codePointCollation}`
+    : dialect.name === "mysql" || dialect.name === "mariadb"
+      ? "CAST(id AS BINARY)"
+      : "id";
+
+  return `created_at ${direction}, ${id} ${direction}`;
+}
+
+/**
+ * The statement counting a namespace's jobs added in `[from, to)` by queue and
+ * state — or one queue's, when `queue` is given: what `countAddedJobs` runs.
+ *
+ * Every column it reads is in the claim index `(ns, queue, state, priority,
+ * created_at[, id])`, so it can be answered from that index alone: a covering
+ * scan of the `ns` (or `ns, queue`) prefix with `created_at` as a filter, the
+ * same work as the `countJobsByQueue` the overview already runs. Two engines
+ * need steering there, each measured on 200,000 jobs:
+ *
+ * - **MySQL** (8.4) costs a lookup of `ix_..._due` — which lacks `created_at`,
+ *   so it reads every row — below the covering scan, and took 440ms where the
+ *   claim index takes 60ms. An optimizer hint names the claim index
+ *   ({@link claimIndexName}). A hint, not `FORCE INDEX`: one naming an index
+ *   that is not there is ignored with a warning rather than failing the
+ *   statement. MariaDB picks the claim index unaided and gets no hint.
+ * - **SQLite** otherwise skip-scans the claim index for the `created_at`
+ *   range, or with a queue named reads `ix_..._due` and every row: fast for a
+ *   narrow range, 4x slower than the plain covering scan for a day's. `+`
+ *   keeps `created_at` out of the index search, so the cost is the prefix's
+ *   size whatever the range — 20ms for a day's range over the namespace
+ *   against 85ms, 15ms for one queue against 47ms, 11ms for an hour's against
+ *   2ms.
+ *
+ * Postgres plans an index-only scan of the claim index once `ns` narrows the
+ * table, and a sequential scan when one namespace is most of it, as it does for
+ * the overview's count.
+ *
+ * Exported so a test can `EXPLAIN` exactly what the driver runs.
+ */
+export function countAddedStatement(
+  dialect: SqlDialect,
+  table: string,
+  bind: (value: unknown) => string,
+  options: {
+    /** The namespace. */
+    ns: string;
+    /** Only this queue, when given; every queue of the namespace otherwise. */
+    queue?: string;
+    /** The range's start, epoch ms, inclusive. */
+    from: number;
+    /** The range's end, epoch ms, exclusive. */
+    to: number;
+  },
+): string {
+  const created = dialect.name === "sqlite" ? "+created_at" : "created_at";
+  const hint =
+    dialect.name === "mysql"
+      ? ` /*+ INDEX(added ${claimIndexName(table)}) */`
+      : "";
+
+  // Bound in text order: MySQL's `?` placeholders are positional.
+  const where = [
+    `ns = ${bind(options.ns)}`,
+    ...(options.queue === undefined ? [] : [`queue = ${bind(options.queue)}`]),
+    `${created} >= ${bind(options.from)}`,
+    `${created} < ${bind(options.to)}`,
+  ];
+
+  return `SELECT${hint} queue, state, COUNT(*) AS total FROM ${table} added
+        WHERE ${where.join(" AND ")}
+        GROUP BY queue, state`;
+}
+
+/**
+ * One page of the pending-options rewrite's walk: at most `limit` jobs of
+ * `state` in claim order, `(priority, created_at, id)`, after `after` when
+ * given — a range on the claim index `(ns, queue, state, priority,
+ * created_at[, id])` on every engine.
+ *
+ * - **Postgres**: an index scan on the claim index bounded by the two-column
+ *   row comparison, then an incremental sort on `id` within each
+ *   `(priority, created_at)` group — `id` is not in the index there — and
+ *   `LockRows` under the `LIMIT`, so a row that left the state while it was
+ *   waited on is dropped and the next one read.
+ * - **MySQL / MariaDB**: pinned to the claim index with
+ *   {@link SqlDialect.indexHint} (`hinted`), which keeps each page a `range`
+ *   rather than a `ref` over the whole state; the claim index names `id` on
+ *   MySQL, and MariaDB reads it from the primary-key suffix, so neither sorts.
+ * - **SQLite**: a search on the claim index with the row-value bound, and a
+ *   sort of only the last `ORDER BY` term within each group.
+ *
+ * `lock` appends `FOR UPDATE` (never on SQLite, whose transaction is the
+ * lock, nor on a dry run). Exported so a test can `EXPLAIN` exactly what the
+ * driver runs.
+ */
+export function rewritePageStatement(
+  dialect: SqlDialect,
+  table: string,
+  bind: (value: unknown) => string,
+  options: {
+    /** The namespace. */
+    ns: string;
+    /** The queue. */
+    queue: string;
+    /** The state being walked. */
+    state: JobState;
+    /** The claim-order key of the last job already examined, or `null` to start. */
+    after: ClaimCursor | null;
+    /** Most rows to read. */
+    limit: number;
+    /** Whether to lock the rows read (`FOR UPDATE`). */
+    lock: boolean;
+    /** Whether to pin the read to the claim index where the engine takes a hint. */
+    hinted: boolean;
+  },
+): string {
+  // Bound in text order: MySQL's and SQLite's `?` placeholders are positional.
+  return `SELECT id, priority, created_at, max_attempts, attempts_made, opts
+       FROM ${table}${options.hinted ? dialect.indexHint(claimIndexName(table)) : ""}
+      WHERE ns = ${bind(options.ns)} AND queue = ${bind(options.queue)}
+        AND state = ${bind(options.state)}${
+          options.after
+            ? `
+        AND ${dialect.claimOrderAfter(bind, options.after)}`
+            : ""
+        }
+      ORDER BY priority ASC, created_at ASC, id ASC
+      LIMIT ${Math.max(0, Math.floor(options.limit))}${options.lock ? " FOR UPDATE" : ""}`;
+}
+
+/**
  * Whether an error is Bun's MySQL client refusing to fetch the server's RSA
  * key: MySQL 8's `caching_sha2_password` asked for it over a connection
  * without TLS, and `allowPublicKeyRetrieval` was not set. Read through the
@@ -323,6 +620,28 @@ function isMissingLogKey(error: unknown): boolean {
  * insert. The engine's error sits one or more `cause` links below the
  * driver's wrapper, so the whole chain is read.
  */
+/**
+ * One `run_logs` row as the contract's line.
+ *
+ * `line_no` becomes `seq`: the run's own numbering is what the contract
+ * exposes, and the table's `seq` is insertion order the caller never sees.
+ * The optional fields are rebuilt as *absent* rather than null or false, so a
+ * line reads back identically here and on the backends that simply store
+ * nothing for them.
+ */
+function toRunLogLine(row: Record<string, unknown>): RunLogLine {
+  const level = row.level == null ? undefined : (String(row.level) as LogLevel);
+
+  return {
+    seq: Number(row.line_no),
+    stream: String(row.stream) as RunLogStream,
+    at: Number(row.at),
+    text: String(row.message),
+    ...(level === undefined ? {} : { level }),
+    ...(Number(row.truncated) === 1 ? { truncated: true as const } : {}),
+  };
+}
+
 function isMissingColumn(error: unknown, column: string): boolean {
   const named = new RegExp(`\\b${column}\\b`);
 
@@ -355,6 +674,80 @@ function isMissingColumn(error: unknown, column: string): boolean {
 const FLOW_COLUMN_RECHECK_MS = 60_000;
 
 /**
+ * The most jobs one count-retention sweep removes. Past it, the next sweep
+ * takes the rest; {@link RETENTION_MAX_STRIDE} keeps that from falling behind.
+ */
+const RETENTION_SWEEP_LIMIT = 1000;
+
+/**
+ * The share of a retention `count` that may pile up before a settle sweeps
+ * again: a tenth, so `removeOnComplete: 1000` keeps at most 1,099 per process.
+ */
+const RETENTION_SLACK = 0.1;
+
+/**
+ * The most settles between count sweeps, whatever the `count`. Half of
+ * {@link RETENTION_SWEEP_LIMIT}, so one sweep always clears what built up.
+ */
+const RETENTION_MAX_STRIDE = RETENTION_SWEEP_LIMIT / 2;
+
+/**
+ * The most pages one sweep reads past flow children it has to keep. A page of
+ * nothing but held children is rare — they wait on a parent that records
+ * them within moments — so this only bounds a pathological queue.
+ */
+const SWEEP_MAX_PAGES = 8;
+
+/**
+ * Rows one event poll reads per channel it follows — what each subscription's
+ * own poll read before they shared one — up to {@link EVENT_FEED_MAX_PAGE}.
+ */
+const EVENT_PAGE_PER_CHANNEL = 200;
+
+/** The most rows one namespace's event poll reads at once. */
+const EVENT_FEED_MAX_PAGE = 1000;
+
+/** One subscription on a namespace's event feed (`SqlDriver.subscribe`). */
+interface EventFeedListener {
+  /** Hands the subscriber one event. */
+  readonly deliver: (event: DriverEvent) => void;
+  /** The sequence it starts after: its channel's latest when it subscribed. */
+  readonly after: number;
+}
+
+/** One namespace's shared event poll, and who it delivers to. */
+interface EventFeed {
+  /** What the poll has read and passed over, across all its channels. */
+  readonly gaps: EventGaps;
+  /** Listeners by channel. A channel goes when its last listener does. */
+  readonly channels: Map<string, Set<EventFeedListener>>;
+  /** The poll's timer, cleared when the last channel goes. */
+  readonly timer: ReturnType<typeof setInterval>;
+  /** Whether a poll is running, so ticks do not pile up behind a slow one. */
+  polling: boolean;
+}
+
+/**
+ * How long a table seen without the attribution stamp's columns
+ * (`processed_by_id`, `_key`, `_host`, `_pid`) is trusted to still lack them.
+ * The same reasoning, and the same minute, as {@link FLOW_COLUMN_RECHECK_MS}.
+ */
+const STAMP_COLUMNS_RECHECK_MS = 60_000;
+
+/**
+ * Whether an error is the engine saying one of the attribution stamp's
+ * columns does not exist — a table from before attribution, not yet synced.
+ */
+function isMissingStampColumn(error: unknown): boolean {
+  return STAMP_COLUMNS.some((column) => isMissingColumn(error, column));
+}
+
+/** Whether a record carries an attribution stamp, and so needs its columns. */
+function carriesStamp(job: JobRecord): boolean {
+  return job.processedBy != null;
+}
+
+/**
  * How many counter rows a Postgres driver spreads its counted statements over.
  *
  * Statements a driver has in flight at once — one worker's completions and its
@@ -377,6 +770,16 @@ const BOUNDED_ID_LENGTH: Partial<Record<SqlAdapter, number>> = {
   mariadb: 191,
 };
 
+/**
+ * How many runs one `keepRuns` eviction may drop the logs of.
+ *
+ * `LIMIT` is there only because `OFFSET` needs one — every engine here refuses
+ * an offset without it. Eviction runs on every append, so in practice it finds
+ * one run to drop, or none; the bound is generous enough that it never becomes
+ * the reason a log survived.
+ */
+const MAX_EVICTED_RUN_LOGS = 1000;
+
 /** The tables this driver uses. */
 export const SQL_TABLES = [
   "jobs",
@@ -384,9 +787,205 @@ export const SQL_TABLES = [
   "kv",
   "events",
   "logs",
+  "run_logs",
   "workers",
   "metrics",
+  "queue_metrics",
+  "worker_metrics",
+  "runner_metrics",
 ] as const;
+
+/**
+ * The three analytics tables, in the order a sweep visits them.
+ *
+ * All-lowercase names, like `run_logs` and for the same reason: `resolveNames`
+ * turns a key into a table name, Postgres folds an unquoted mixed-case
+ * identifier to lowercase, and `describeIndexes` would then match nothing —
+ * so the sync would propose creating this table's indexes on every run,
+ * forever.
+ */
+const ANALYTICS_TABLES = [
+  "queue_metrics",
+  "worker_metrics",
+  "runner_metrics",
+] as const satisfies readonly SqlTable[];
+
+/**
+ * How many analytics rows go into one upsert.
+ *
+ * The point of a batch here is the statement *rate*: every engine but
+ * Postgres buffers every count, and one statement per row would be two per
+ * entity per second. The widest of these rows is `runner_metrics` at 39
+ * columns, so 200 rows is 7,800 parameters — inside every engine's limit,
+ * SQLite's 32,766 included.
+ */
+const METRIC_CHUNK = 200;
+
+/**
+ * Which worker a metric series belongs to: its queue, then its stable
+ * `WorkerInfo.key`.
+ *
+ * Keyed by `key` and never by `WorkerInfo.id`, because an id is one
+ * incarnation — a rolling redeploy would shred the series into one per
+ * replica. Scoped by queue because a worker record is, so two queues' workers
+ * that happen to share a key stay two series. A queue name cannot hold a colon
+ * (`assertSegment` allows `[A-Za-z0-9_.-]` only) while a worker key may, so the
+ * **first** colon always splits the pair the same way and no two pairs meet.
+ *
+ * The namespace roll-up keeps `NAMESPACE_ENTITY` — the empty name — unchanged,
+ * so it is an entity like any other and nothing downstream needs a second
+ * code path.
+ */
+function workerEntity(q: QueueRef, key: string): string {
+  return workerMetricsEntity(q.queue, key);
+}
+
+/**
+ * How many entity names one batch read binds into its `IN (...)` at most.
+ *
+ * The route caps a batch at `MAX_ANALYTICS_SERIES` (20), so in practice a
+ * batch is one statement; this is the driver's own bound, so a direct caller
+ * naming thousands still stays inside every engine's parameter limit.
+ */
+const METRIC_READ_CHUNK = 500;
+
+/** The range a metrics read covers, already cut to what the driver holds. */
+interface MetricReadRange {
+  /** The first bucket's start, epoch ms. */
+  from: number;
+  /** The last bucket's start, epoch ms. */
+  to: number;
+  /** The bucket width, ms. */
+  interval: number;
+}
+
+/**
+ * Stored counter rows as sparse buckets, oldest first — the one reading of a
+ * counter row, shared by the per-entity and the batch reads so the two cannot
+ * disagree.
+ */
+function counterBucketsOf<K extends string>(
+  /** Rows carrying `bucket` and each counter column. */
+  rows: readonly Record<string, unknown>[],
+  /** The buckets wanted. */
+  range: MetricReadRange,
+  /** The counter columns. */
+  keys: readonly K[],
+): CounterBucket<Record<K, number>>[] {
+  return mergeCounterBuckets(
+    rows.map((row) => {
+      const bucket: Record<string, number> = { at: Number(row.bucket) };
+      for (const key of keys) {
+        bucket[key] = Number(row[key]) || 0;
+      }
+      return bucket as { at: number } & Record<K, number>;
+    }),
+    range,
+    keys,
+  );
+}
+
+/** Stored duration rows as sparse buckets, histogram included. */
+function durationBucketsOf(
+  /** Rows carrying `bucket`, the duration statistics and the 25 bins. */
+  rows: readonly Record<string, unknown>[],
+  /** The buckets wanted. */
+  range: MetricReadRange,
+): RawDurationBucket[] {
+  return mergeDurationBuckets(
+    rows.map((row) => ({
+      at: Number(row.bucket),
+      ...durationStatsOf(row),
+    })),
+    range,
+  );
+}
+
+/**
+ * One row's duration statistics, whether a stored bucket or a grouped sum.
+ *
+ * Every figure through `Number`: Postgres answers a `SUM` over integers as
+ * `numeric`, which arrives as a string — and `"3" + "4"` is `"34"`.
+ */
+function durationStatsOf(row: Record<string, unknown>): DurationStats {
+  return {
+    count: Number(row.dur_count) || 0,
+    sumMs: Number(row.dur_sum_ms) || 0,
+    minMs: Number(row.dur_min_ms) || 0,
+    maxMs: Number(row.dur_max_ms) || 0,
+    // Read back in `durationBin`'s own order: `h07` is `histogram[7]`.
+    histogram: DURATION_BIN_COLUMNS.map((column) => Number(row[column]) || 0),
+  };
+}
+
+/** Stored busyness rows as sparse buckets. */
+function busynessBucketsOf(
+  /** Rows carrying `bucket` and the busyness columns. */
+  rows: readonly Record<string, unknown>[],
+  /** The buckets wanted. */
+  range: MetricReadRange,
+): RawBusynessBucket[] {
+  return mergeBusynessBuckets(
+    rows.map((row) => ({ at: Number(row.bucket), ...busynessStatsOf(row) })),
+    range,
+  );
+}
+
+/** One row's busyness statistics, whether a stored bucket or a grouped sum. */
+function busynessStatsOf(row: Record<string, unknown>): BusynessStats {
+  return {
+    samples: Number(row.samples) || 0,
+    activeSum: Number(row.active_sum) || 0,
+    activeMax: Number(row.active_max) || 0,
+    concurrency: Number(row.concurrency) || 0,
+    lastAt: Number(row.last_at) || 0,
+  };
+}
+
+/** Rows grouped by their `entity` column, each group in the order it came. */
+function rowsByEntity(
+  rows: readonly Record<string, unknown>[],
+): Map<string, Record<string, unknown>[]> {
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const entity = String(row.entity);
+    let group = grouped.get(entity);
+    if (!group) {
+      group = [];
+      grouped.set(entity, group);
+    }
+    group.push(row);
+  }
+  return grouped;
+}
+
+/** One writer's duration statistics for a bucket, waiting to be written. */
+interface PendingDuration {
+  /** The namespace. */
+  ns: string;
+  /** The runner key. */
+  entity: string;
+  /** The bucket's start, epoch ms. */
+  at: number;
+  /** The bucket's width, ms. */
+  interval: number;
+  /** What was measured, merged in memory before it is written. */
+  stats: DurationStats;
+}
+
+/** One worker's busyness samples for a bucket, waiting to be written. */
+interface PendingBusyness {
+  /** The namespace. */
+  ns: string;
+  /** The worker's series, as {@link workerEntity} spells it. */
+  entity: string;
+  /** The bucket's start, epoch ms. */
+  at: number;
+  /** The bucket's width, ms. */
+  interval: number;
+  /** What was sampled, merged in memory before it is written. */
+  stats: BusynessStats;
+}
 
 /** One of the tables this driver uses. */
 export type SqlTable = (typeof SQL_TABLES)[number];
@@ -405,6 +1004,17 @@ export interface SqlDriverOptions extends ConnectionInput {
   connection?: ConnectionOptions;
   /** Overrides the engine detected from the URL. */
   adapter?: SqlAdapter;
+  /**
+   * What to record into the analytics tables, and for how long. Everything,
+   * at one-second resolution, by default.
+   *
+   * Recording is what costs here, not reading: per-second bucketing is
+   * O(entities), not O(jobs), so it is the retention and the fleet size that
+   * decide the bill. `workers: false` is the first lever to pull on a large
+   * one, and `resolution: "minute"` turns the per-second buckets off
+   * altogether.
+   */
+  metrics?: MetricsOptions;
   /**
    * Announce new jobs over Postgres `LISTEN`/`NOTIFY` as well as polling.
    *
@@ -496,8 +1106,15 @@ export class SqlDriver implements JobsDriver {
    */
   readonly capabilities: DriverCapabilities;
 
-  /** The resolved table names. */
-  readonly #tables: Record<SqlTable, string>;
+  /**
+   * The resolved table names, one per entry of `SQL_TABLES`.
+   *
+   * Also typed as every name the schema reads, which is the compile-time half
+   * of the guard in `schemaDefinition`: a key added to `SchemaTableNames` but
+   * not to `SQL_TABLES` makes the `resolveNames` assignment in the constructor
+   * a type error, instead of a table created as `undefined`.
+   */
+  readonly #tables: Record<SqlTable, string> & Required<SchemaTableNames>;
 
   /** The connection. */
   readonly #sql: SQL;
@@ -525,6 +1142,8 @@ export class SqlDriver implements JobsDriver {
   readonly #pauseCache = new PauseCache();
   /** Active event subscriptions, so `close()` can stop them. */
   readonly #subscriptions = new Set<() => void>();
+  /** Each namespace's shared event poll, while it has a subscriber. */
+  readonly #eventFeeds = new Map<string, EventFeed>();
   /**
    * Where the orphaned-log sweep has got to in each queue, keyed by
    * `ns` and `queue`.
@@ -594,6 +1213,44 @@ export class SqlDriver implements JobsDriver {
   /** Retention deletes still in flight, awaited by reads and by `close()`. */
   readonly #metricsPrunes = new Set<Promise<void>>();
 
+  /** What is recorded into the analytics tables, and for how long. */
+  readonly #analytics: ResolvedMetricsOptions;
+
+  /**
+   * When the analytics tables were last swept. Once a minute per process,
+   * whatever the write rate — the sweep is a delete per table per width, so
+   * paying it per count would be paying it thousands of times a second.
+   */
+  readonly #analyticsPrune = new MetricsPruneClock();
+
+  /**
+   * The namespaces this instance has written analytics for, which is what the
+   * sweep covers.
+   *
+   * By range over a namespace and never per entity: a worker that stopped
+   * reporting writes nothing, so a prune driven by an entity's own writes
+   * never reaches its buckets — §9.13's whole point. Scoped to a namespace
+   * rather than the whole table because these tables are shared: one
+   * deployment's sweep has no business deleting another's rows, and the
+   * contract suite deliberately drives the clock from a bucket in the future.
+   */
+  readonly #analyticsNamespaces = new Set<string>();
+
+  /** A queue's completions and failures, counted once a second. */
+  readonly #queueJobs: MetricsBuffer<JobCounters>;
+
+  /** What each worker finished itself, counted once a second. */
+  readonly #workerJobs: MetricsBuffer<JobCounters>;
+
+  /** How busy each worker's heartbeats said it was, written once a second. */
+  readonly #workerBusyness: PendingBuffer<PendingBusyness>;
+
+  /** How each runner's runs ended, counted once a second. */
+  readonly #runnerRuns: MetricsBuffer<RunnerRunCounters>;
+
+  /** How long each runner's runs took, written once a second. */
+  readonly #runnerDurations: PendingBuffer<PendingDuration>;
+
   /**
    * Whether the `jobs` table was last seen without its `log_key` column — an
    * install from before job logs that has not been synced.
@@ -613,6 +1270,47 @@ export class SqlDriver implements JobsDriver {
    * {@link FLOW_COLUMN_RECHECK_MS}, since another process may sync.
    */
   #flowMissingAt: number | undefined;
+  /**
+   * Settles since the last count-retention sweep, per queue and state, in this
+   * process: what spaces those sweeps out (`#retentionDue`).
+   */
+  readonly #retentionSettles = new Map<string, number>();
+  /**
+   * Whether the pending-options rewrite found the claim index missing when it
+   * named it in an index hint (MySQL and MariaDB's `FORCE INDEX`), and so
+   * walks unhinted from then on. `false` until that happens; never set on an
+   * engine without hints.
+   */
+  #claimIndexMissing = false;
+
+  /**
+   * When the `jobs` table was last seen without the attribution stamp's
+   * columns, or `undefined` when it was not. The claim stamps a worker's key,
+   * host and pid there; on a table that predates them it falls back to the
+   * statement without them rather than failing every claim, and so does an
+   * insert of a stamped record. Cleared by a sync, and trusted for
+   * {@link STAMP_COLUMNS_RECHECK_MS}, since another process may sync.
+   */
+  #stampMissingAt: number | undefined;
+
+  /**
+   * Whether the `jobs` table was last seen *with* the stamp's columns — by the
+   * probe connect runs, a sync's re-probe, or a stamped claim or insert that
+   * succeeded. `false` until one has, so `capabilities.jobAttribution` reads
+   * `false` before connect: unknown is not "yes".
+   */
+  #stampConfirmed = false;
+
+  /**
+   * Bumped by every sync, so a probe that started before it cannot record an
+   * answer about the table as it was: only a probe of the current epoch
+   * writes {@link SqlDriver.#stampConfirmed} and
+   * {@link SqlDriver.#stampMissingAt}.
+   */
+  #stampEpoch = 0;
+
+  /** A re-probe for the stamp's columns in flight, so reads never start two. */
+  #stampProbe: Promise<void> | undefined;
 
   constructor(options: SqlDriverOptions) {
     // A URL names its engine; fields do not, so `adapter` is required there.
@@ -633,6 +1331,15 @@ export class SqlDriver implements JobsDriver {
       // SQLite is a local file; every other engine is reached over a socket.
       multiHost: this.adapter !== "sqlite",
     };
+    // Live, not fixed: a jobs table from before attribution has no stamp
+    // columns until a sync adds them, and until then no claim stamps and no
+    // worker filter can be answered, so declaring it would promise what the
+    // table cannot keep. Read on every access (`/meta` asks per request), and
+    // `false` until connecting has confirmed the columns.
+    Object.defineProperty(this.capabilities, "jobAttribution", {
+      enumerable: true,
+      get: () => this.#stampColumnsReady(),
+    });
 
     this.#tables = resolveNames(SQL_TABLES, {
       prefix: options.tablePrefix,
@@ -649,6 +1356,48 @@ export class SqlDriver implements JobsDriver {
     this.#syncOnConnect = options.syncSchema ?? false;
     this.#eventRetention = new EventRetention(options.eventRetentionMs);
     this.#arrivals = new Arrivals(this.#sql, this.#notify);
+
+    // No `MetricsLimits`: a row per entity per second is what every engine
+    // here is for, and §4a's shared row is what keeps it that cheap.
+    this.#analytics = resolveMetricsOptions(options.metrics);
+    const intervals = this.#analytics.intervals;
+
+    this.#queueJobs = new MetricsBuffer<JobCounters>({
+      keys: JOB_COUNTERS,
+      intervals,
+      write: async (batch) =>
+        await this.#writeCounters("queue_metrics", batch, JOB_COUNTERS),
+    });
+    this.#workerJobs = new MetricsBuffer<JobCounters>({
+      keys: JOB_COUNTERS,
+      intervals,
+      write: async (batch) =>
+        await this.#writeCounters("worker_metrics", batch, JOB_COUNTERS),
+    });
+    this.#runnerRuns = new MetricsBuffer<RunnerRunCounters>({
+      keys: RUNNER_RUN_COUNTERS,
+      intervals,
+      write: async (batch) =>
+        await this.#writeCounters("runner_metrics", batch, RUNNER_RUN_COUNTERS),
+    });
+
+    // Durations and busyness have no namespace roll-up — nothing in
+    // `NamespaceMetricsRead` carries them — so they ride the plain buffer
+    // rather than `MetricsBuffer`, merged by the shared helpers.
+    this.#runnerDurations = new PendingBuffer<PendingDuration>({
+      key: (entry) =>
+        `${entry.ns}\n${entry.entity}\n${entry.interval}\n${entry.at}`,
+      merge: (into, from) => mergeDurationStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+      write: async (batch) => await this.#writeDurations(batch),
+    });
+    this.#workerBusyness = new PendingBuffer<PendingBusyness>({
+      key: (entry) =>
+        `${entry.ns}\n${entry.entity}\n${entry.interval}\n${entry.at}`,
+      merge: (into, from) => mergeBusynessStats(into.stats, from.stats),
+      ns: (entry) => entry.ns,
+      write: async (batch) => await this.#writeBusyness(batch),
+    });
   }
 
   /**
@@ -712,6 +1461,9 @@ export class SqlDriver implements JobsDriver {
     await this.#analyzing?.catch(() => undefined);
     // Counts gathered since the last write, before the connection goes.
     await this.#throughputBuffer?.close();
+    for (const buffer of this.#analyticsBuffers()) {
+      await buffer.close().catch(() => undefined);
+    }
     await Promise.allSettled([...this.#metricsPrunes]);
     await this.#arrivals.close();
 
@@ -719,6 +1471,10 @@ export class SqlDriver implements JobsDriver {
       stop();
     }
     this.#subscriptions.clear();
+    for (const feed of this.#eventFeeds.values()) {
+      clearInterval(feed.timer);
+    }
+    this.#eventFeeds.clear();
 
     if (this.#ownsConnection) {
       await this.#sql.close();
@@ -751,7 +1507,11 @@ export class SqlDriver implements JobsDriver {
    */
   async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
     await this.connect();
-    return await this.#syncSchema(options);
+    const changes = await this.#syncSchema(options);
+    // The sync may have added the stamp's columns (or, dry, not): asked now,
+    // so `capabilities.jobAttribution` answers for the table as it is.
+    await this.#probeStampColumns();
+    return changes;
   }
 
   /**
@@ -765,6 +1525,10 @@ export class SqlDriver implements JobsDriver {
     // A sync may be what adds `log_key` or `flow`, so both are asked again.
     this.#logKeyMissing = false;
     this.#flowMissingAt = undefined;
+    this.#stampMissingAt = undefined;
+    // Unknown until asked again: connect's probe or the public method's.
+    this.#stampConfirmed = false;
+    this.#stampEpoch++;
 
     return await syncSqlSchema(
       {
@@ -794,6 +1558,11 @@ export class SqlDriver implements JobsDriver {
     // is pending, then wait that write out.
     this.#throughputBuffer?.forget(ns);
     await this.#throughputBuffer?.flush().catch(() => undefined);
+    for (const buffer of this.#analyticsBuffers()) {
+      buffer.forget(ns);
+      await buffer.flush().catch(() => undefined);
+    }
+    this.#analyticsNamespaces.delete(ns);
     await Promise.allSettled([...this.#metricsPrunes]);
 
     for (const table of Object.values(this.#tables)) {
@@ -882,7 +1651,7 @@ export class SqlDriver implements JobsDriver {
     const expiresAt = now + ttlMs;
 
     // Take it outright when nobody holds it.
-    const inserted = await this.#run(
+    const inserted = await this.#runPoint(
       this.dialect.insertIgnore(this.#tables.locks, [
         "ns",
         "lock_key",
@@ -899,7 +1668,7 @@ export class SqlDriver implements JobsDriver {
     // Otherwise take it only if it is ours or has lapsed — one conditional
     // update, so two contenders cannot both succeed.
     const { bind, values } = this.#binder();
-    const taken = await this.#run(
+    const taken = await this.#runPoint(
       `UPDATE ${this.#tables.locks}
          SET token = ${bind(token)}, expires_at = ${bind(expiresAt)}
        WHERE ns = ${bind(ns)} AND lock_key = ${bind(key)}
@@ -920,7 +1689,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const renewed = await this.#run(
+    const renewed = await this.#runPoint(
       `UPDATE ${this.#tables.locks}
          SET expires_at = ${bind(now + ttlMs)}
        WHERE ns = ${bind(ns)} AND lock_key = ${bind(key)}
@@ -935,7 +1704,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const released = await this.#run(
+    const released = await this.#runPoint(
       `DELETE FROM ${this.#tables.locks}
         WHERE ns = ${bind(ns)} AND lock_key = ${bind(key)} AND token = ${bind(token)}`,
       values,
@@ -1050,6 +1819,197 @@ export class SqlDriver implements JobsDriver {
     await this.#mutateState(ns, key, (state) => {
       state.history = [];
     });
+    // A run the history no longer names cannot be asked about, so its lines
+    // would be rows nothing could ever reach or collect.
+    await this.clearRunLogs(ns, key);
+  }
+
+  /**
+   * Appends captured output to one run's log.
+   *
+   * Two statements, not one: the run's next line number is read, then the
+   * batch goes in with the numbers computed from it. A single statement
+   * computing `MAX(line_no) + 1` per row is not portable — MySQL will not read
+   * the table an `INSERT` targets in its own subquery without a derived table,
+   * and the derived table is materialised once, so every row of a batch would
+   * get the same number.
+   *
+   * One writer per run, which is what makes the read-then-write safe: capture
+   * lives in the process running the run and flushes on one timer.
+   */
+  async appendRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    lines: RunLogInput[],
+    caps: RunLogCaps,
+  ): Promise<RunLogAppendResult> {
+    await this.connect();
+
+    const table = this.#tables.run_logs;
+    const bounds = await this.#runLogBounds(ns, key, runId);
+    let seq = bounds.lastSeq;
+
+    if (lines.length > 0) {
+      const { bind, values } = this.#binder();
+      const rows = lines.map((line) => {
+        const truncated = line.truncated ? 1 : 0;
+        return `(${bind(ns)}, ${bind(key)}, ${bind(runId)}, ${bind(++seq)}, ${bind(line.stream)}, ${bind(line.at)}, ${bind(runLogBytes(line.text))}, ${bind(line.level ?? null)}, ${bind(truncated)}, ${bind(line.text)})`;
+      });
+
+      await this.#run(
+        `INSERT INTO ${table}
+           (ns, runner_key, run_id, line_no, stream, at, bytes, level, truncated, message)
+         VALUES ${rows.join(", ")}`,
+        values,
+      );
+    }
+
+    const dropped = await this.#trimRunLog(ns, key, runId, caps, seq);
+
+    // `keepRuns` on the write path too, so nothing has to sweep.
+    if (caps.keepRuns > 0) {
+      await this.#evictRunLogs(ns, key, caps.keepRuns);
+    }
+
+    return {
+      count: seq - dropped,
+      dropped,
+      lastSeq: seq,
+    };
+  }
+
+  async getRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    opts: RunLogQuery,
+  ): Promise<RunLogPage> {
+    await this.connect();
+
+    const { lastSeq, firstSeq } = await this.#runLogBounds(ns, key, runId);
+
+    if (lastSeq === 0) {
+      return emptyRunLog();
+    }
+
+    const totals = { dropped: firstSeq - 1, lastSeq };
+    const limit = Math.max(0, Math.floor(opts.limit));
+
+    /** The run's lines, narrowed by whichever filters the query set. */
+    const where = (bind: (value: unknown) => string): string => {
+      const clauses = [
+        `ns = ${bind(ns)}`,
+        `runner_key = ${bind(key)}`,
+        `run_id = ${bind(runId)}`,
+      ];
+
+      if (opts.since !== undefined) {
+        clauses.push(`line_no > ${bind(opts.since)}`);
+      }
+      if (opts.stream !== undefined) {
+        clauses.push(`stream = ${bind(opts.stream)}`);
+      }
+
+      return clauses.join(" AND ");
+    };
+
+    const counted = this.#binder();
+    const count = Number(
+      (
+        await this.#one<{ total: number | string }>(
+          `SELECT COUNT(*) AS total FROM ${this.#tables.run_logs}
+            WHERE ${where(counted.bind)}`,
+          counted.values,
+        )
+      )?.total ?? 0,
+    );
+
+    if (limit === 0 || count === 0) {
+      return { lines: [], count, ...totals };
+    }
+
+    const page = this.#binder();
+    const rows = await this.#all<Record<string, unknown>>(
+      `SELECT line_no, stream, at, level, truncated, message
+         FROM ${this.#tables.run_logs}
+        WHERE ${where(page.bind)}
+        ORDER BY line_no ${opts.order === "desc" ? "DESC" : "ASC"}
+        LIMIT ${page.bind(limit)} OFFSET ${page.bind(Math.max(0, Math.floor(opts.offset)))}`,
+      page.values,
+    );
+
+    return { lines: rows.map((row) => toRunLogLine(row)), count, ...totals };
+  }
+
+  async clearRunLogs(ns: string, key: string, runId?: string): Promise<void> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    await this.#run(
+      `DELETE FROM ${this.#tables.run_logs}
+        WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}${
+          runId === undefined ? "" : ` AND run_id = ${bind(runId)}`
+        }`,
+      values,
+    );
+  }
+
+  /**
+   * Removes exactly the named runs: their history records and their log
+   * lines, and nothing else of the runner's.
+   *
+   * The history lives in the runner's state document, so its part is one
+   * locked read-modify-write through `#mutateState`, and the lifetime
+   * counters, lock, queued triggers and the rest of the document are written
+   * back as read. It is read first, as a pop does: a mutation creates the
+   * runner's row, and removing from a runner nobody knows must not bring it
+   * into being. The logs are one `DELETE … IN (…)` per chunk of names, and go
+   * whether or not a record still names them.
+   */
+  async removeRuns(
+    ns: string,
+    key: string,
+    runIds: readonly string[],
+  ): Promise<number> {
+    if (runIds.length === 0) {
+      return 0;
+    }
+
+    await this.connect();
+
+    const named = new Set(runIds);
+    let removed = 0;
+
+    // Only a shortcut: the decision is the filter inside the transaction.
+    const { history } = await this.#readState(ns, key);
+    if (history.some((entry) => named.has(entry.runId))) {
+      await this.#mutateState(ns, key, (state) => {
+        const before = state.history.length;
+        state.history = state.history.filter(
+          (entry) => !named.has(entry.runId),
+        );
+        removed = before - state.history.length;
+
+        if (removed === 0) {
+          return false;
+        }
+      });
+    }
+
+    const ids = [...named];
+    for (let start = 0; start < ids.length; start += INSERT_CHUNK) {
+      const chunk = ids.slice(start, start + INSERT_CHUNK);
+      const { bind, values } = this.#binder();
+      await this.#run(
+        `DELETE FROM ${this.#tables.run_logs}
+          WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+            AND run_id IN (${chunk.map((runId) => bind(runId)).join(", ")})`,
+        values,
+      );
+    }
+
+    return removed;
   }
 
   async pushQueuedTrigger(
@@ -1161,19 +2121,29 @@ export class SqlDriver implements JobsDriver {
 
     // The `NOTIFY` rides inside the insert rather than following it, so a
     // producer pays nothing for a consumer that may not exist.
-    // `flow` is named only for a job in one, so everything else still inserts
-    // into a table that predates the column — see `FLOWLESS_JOB_COLUMNS`.
-    const columns = job.flow ? JOB_COLUMNS : FLOWLESS_JOB_COLUMNS;
-    const plain = this.dialect.insertIgnore(this.#tables.jobs, [...columns]);
-    const insert = this.#notify
-      ? this.dialect.notifyingInsert(plain, this.#arrivals.channel(q))
-      : plain;
-    const row = this.#toRow(q, job, columns);
-    const write = async () =>
-      this.#notify
+    // `flow` is named only for a job in one, and the stamp's columns only
+    // for a record carrying a stamp, so everything else still inserts into a
+    // table that predates them — see `FLOWLESS_JOB_COLUMNS`.
+    const write = async (stamped: boolean) => {
+      const columns = insertColumns(job.flow !== null, stamped);
+      const plain = this.dialect.insertIgnore(this.#tables.jobs, [...columns]);
+      const insert = this.#notify
+        ? this.dialect.notifyingInsert(plain, this.#arrivals.channel(q))
+        : plain;
+      const row = this.#toRow(q, job, columns);
+      return this.#notify
         ? (await this.#all<{ id: string }>(insert, row)).length
-        : await this.#run(insert, row);
-    const added = await this.#requireFlowColumn(job.flow !== null, write);
+        : await this.#runPoint(insert, row);
+    };
+    const added = await this.#requireFlowColumn(
+      job.flow !== null,
+      async () =>
+        await this.#withStampColumns(
+          carriesStamp(job),
+          async () => await write(true),
+          async () => await write(false),
+        ),
+    );
 
     if (added > 0) {
       return { job: jsonClone(job), added: true };
@@ -1332,6 +2302,8 @@ export class SqlDriver implements JobsDriver {
       job.lockToken === null &&
       job.lockExpiresAt === null &&
       job.workerId === null &&
+      // A stamp lives in the stamp's columns, which the fresh list leaves out.
+      (job.processedBy ?? null) === null &&
       job.repeatKey === null &&
       job.attemptsMade === 0 &&
       job.stalledCount === 0 &&
@@ -1445,7 +2417,12 @@ export class SqlDriver implements JobsDriver {
   ): Promise<{ job: JobRecord; added: boolean }[]> {
     return await this.#requireFlowColumn(
       chunk.some((job) => job.flow),
-      async () => await this.#insertChunkRows(q, chunk),
+      async () =>
+        await this.#withStampColumns(
+          chunk.some((job) => carriesStamp(job)),
+          async () => await this.#insertChunkRows(q, chunk, true),
+          async () => await this.#insertChunkRows(q, chunk, false),
+        ),
     );
   }
 
@@ -1453,6 +2430,7 @@ export class SqlDriver implements JobsDriver {
   async #insertChunkRows(
     q: QueueRef,
     chunk: JobRecord[],
+    stamps: boolean,
   ): Promise<{ job: JobRecord; added: boolean }[]> {
     // A batch of brand-new jobs names only the columns such a job carries; the
     // rest are the table's defaults, and not naming them is worth about 20%.
@@ -1462,12 +2440,15 @@ export class SqlDriver implements JobsDriver {
     const allFresh = chunk.every((job) => this.#isFreshJob(job));
     // The module constants themselves, not copies: `columnIndices` memoises on
     // the array's identity, and a fresh copy per chunk would defeat it.
-    // Past that, `flow` is named only when some job in the chunk is in one.
+    // Past that, `flow` is named only when some job in the chunk is in one,
+    // and the stamp's columns only when some job carries a stamp (and the
+    // caller has not found the table without them).
     const columns: readonly string[] = allFresh
       ? FRESH_JOB_COLUMNS
-      : chunk.every((job) => !job.flow)
-        ? FLOWLESS_JOB_COLUMNS
-        : JOB_COLUMNS;
+      : insertColumns(
+          chunk.some((job) => job.flow),
+          stamps && chunk.some((job) => carriesStamp(job)),
+        );
     const allTypes = jobColumnTypes(this.dialect);
     const types = columnIndices(columns).map((index) => allTypes[index]!);
 
@@ -1554,16 +2535,29 @@ export class SqlDriver implements JobsDriver {
     // with `maintenance: false` promotes explicitly, which is what the
     // contract suite does.
 
+    // Before the claim, so a job that lands after it looked is known to the
+    // wait that follows an empty one (`Arrivals.mark`).
+    this.#arrivals.mark(q);
+
+    let job: JobRecord | null;
     if (!opts.excludeNames || opts.excludeNames.length === 0) {
-      return await this.#claimOne(q, opts, null);
+      job = await this.#claimOne(q, opts, null);
+    } else {
+      [job = null] = await this.#claimPastExclusions(
+        q,
+        opts,
+        1,
+        async (after) => {
+          const claimed = await this.#claimOne(q, opts, after);
+          return claimed ? [claimed] : [];
+        },
+      );
     }
 
-    const [job] = await this.#claimPastExclusions(q, opts, 1, async (after) => {
-      const claimed = await this.#claimOne(q, opts, after);
-      return claimed ? [claimed] : [];
-    });
-
-    return job ?? null;
+    if (job) {
+      this.#arrivals.unmark(q);
+    }
+    return job;
   }
 
   /**
@@ -1574,6 +2568,19 @@ export class SqlDriver implements JobsDriver {
     q: QueueRef,
     opts: ClaimOptions,
     after: ClaimCursor | null,
+  ): Promise<JobRecord | null> {
+    return await this.#withClaimStamp(
+      opts,
+      async (worker) => await this.#claimOneStamped(q, opts, after, worker),
+    );
+  }
+
+  /** {@link SqlDriver.#claimOne}, stamping `worker` as the dialect takes it. */
+  async #claimOneStamped(
+    q: QueueRef,
+    opts: ClaimOptions,
+    after: ClaimCursor | null,
+    worker: ClaimStatementOptions["worker"],
   ): Promise<JobRecord | null> {
     // Every engine claims differently — a CTE, a joined derived table, a
     // scalar subquery under a write lock — so the statement comes from the
@@ -1589,6 +2596,7 @@ export class SqlDriver implements JobsDriver {
       now: opts.now,
       token: opts.token,
       workerId: opts.workerId,
+      worker,
       lockMs: opts.lockMs,
       excludeNames: opts.excludeNames,
       after,
@@ -1648,6 +2656,7 @@ export class SqlDriver implements JobsDriver {
             now: opts.now,
             token: opts.token,
             workerId: opts.workerId,
+            worker,
             lockMs: opts.lockMs,
           },
           candidate.id,
@@ -1706,16 +2715,24 @@ export class SqlDriver implements JobsDriver {
       return [];
     }
 
-    if (!opts.excludeNames || opts.excludeNames.length === 0) {
-      return await this.#claimMany(q, opts, limit, null);
-    }
+    // As in `claimJob`: the wait after an empty claim judges by this.
+    this.#arrivals.mark(q);
 
-    return await this.#claimPastExclusions(
-      q,
-      opts,
-      limit,
-      async (after, wanted) => await this.#claimMany(q, opts, wanted, after),
-    );
+    const jobs =
+      !opts.excludeNames || opts.excludeNames.length === 0
+        ? await this.#claimMany(q, opts, limit, null)
+        : await this.#claimPastExclusions(
+            q,
+            opts,
+            limit,
+            async (after, wanted) =>
+              await this.#claimMany(q, opts, wanted, after),
+          );
+
+    if (jobs.length > 0) {
+      this.#arrivals.unmark(q);
+    }
+    return jobs;
   }
 
   /**
@@ -1728,6 +2745,21 @@ export class SqlDriver implements JobsDriver {
     limit: number,
     after: ClaimCursor | null,
   ): Promise<JobRecord[]> {
+    return await this.#withClaimStamp(
+      opts,
+      async (worker) =>
+        await this.#claimManyStamped(q, opts, limit, after, worker),
+    );
+  }
+
+  /** {@link SqlDriver.#claimMany}, stamping `worker` as the dialect takes it. */
+  async #claimManyStamped(
+    q: QueueRef,
+    opts: ClaimOptions,
+    limit: number,
+    after: ClaimCursor | null,
+    worker: ClaimStatementOptions["worker"],
+  ): Promise<JobRecord[]> {
     const { bind, values } = this.#binder();
     const statement = this.dialect.claim({
       table: this.#tables.jobs,
@@ -1737,6 +2769,7 @@ export class SqlDriver implements JobsDriver {
       now: opts.now,
       token: opts.token,
       workerId: opts.workerId,
+      worker,
       lockMs: opts.lockMs,
       limit,
       excludeNames: opts.excludeNames,
@@ -1877,7 +2910,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const extended = await this.#run(
+    const extended = await this.#runPoint(
       `UPDATE ${this.#tables.jobs} SET lock_expires_at = ${bind(now + lockMs)}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state = 'active' AND lock_token = ${bind(token)}`,
@@ -1924,6 +2957,9 @@ export class SqlDriver implements JobsDriver {
       return removed > 0;
     }
 
+    // `worker_id` is the holder and goes with the lock, here and in every
+    // other settle. The attribution stamp's `processed_by*` columns are not
+    // named by any settle, so the stamp outlives the attempt.
     const { bind, values } = this.#binder();
     const completed = await this.#settle(
       q,
@@ -2019,6 +3055,7 @@ export class SqlDriver implements JobsDriver {
       );
       settled.push(...rows.map((row) => String(row.id)));
       this.#afterCounted(q, now);
+      this.#countQueueJobs(q, now, rows.length, 0);
     }
 
     // Anything with a count-based retention still needs the per-state sweep the
@@ -2068,6 +3105,7 @@ export class SqlDriver implements JobsDriver {
       );
       settled.push(...rows.map((row) => String(row.id)));
       this.#afterCounted(q, now);
+      this.#countQueueJobs(q, now, rows.length, 0);
     }
 
     for (const one of individual) {
@@ -2243,7 +3281,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const updated = await this.#run(
+    const updated = await this.#runPoint(
       `UPDATE ${this.#tables.jobs} SET progress = ${bind(this.dialect.jsonIn(progress))}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
       values,
@@ -2292,11 +3330,23 @@ export class SqlDriver implements JobsDriver {
       }
 
       // The column is what claiming orders by and what a record reads back;
-      // the copy in `opts` is kept in step so the two never disagree.
+      // the copy in `opts` is kept in step so the two never disagree. An
+      // operator's per-job priority is explicit, so the priority bit is OR-ed
+      // into `opts.explicit` in the same write — even when the value is
+      // unchanged, since choosing it is what pins it — but only where a mask
+      // is stored: an older job without one stays without one.
       if (patch.priority !== undefined) {
         set.push(`priority = ${bind(patch.priority)}`);
         set.push(
-          `opts = ${this.dialect.jsonSetInteger("opts", "priority", bind(patch.priority))}`,
+          `opts = ${this.dialect.jsonSetInteger(
+            this.dialect.jsonOrBit(
+              "opts",
+              "explicit",
+              JOB_OPTION_BITS.priority,
+            ),
+            "priority",
+            bind(patch.priority),
+          )}`,
         );
       }
 
@@ -2376,6 +3426,336 @@ export class SqlDriver implements JobsDriver {
   }
 
   /**
+   * Writes a queue's stored defaults over its pending jobs' options: a keyset
+   * walk over each requested state in claim order, `(priority, created_at,
+   * id)`, on the claim index, one transaction per batch.
+   *
+   * Each batch reads its jobs `FOR UPDATE` (on SQLite, under the transaction's
+   * write lock), decides every job with `planPendingRewrite` — the rule every
+   * backend shares, computed here in JavaScript because an option value is
+   * compared as JSON, whatever its key order, which no engine spells alike —
+   * and then writes the rewritten ones with one `UPDATE` per distinct set of
+   * changing keys: `opts` through {@link SqlDialect.jsonSetValues}, plus
+   * `max_attempts` for `attempts` and the `priority` column for `priority`,
+   * in the statement that re-checks `state`. So a job's options, attempts
+   * and priority change together or not at all, and one a claim took first
+   * is not in the batch: a claim locks with `SKIP LOCKED` and moves the row
+   * out of `waiting` before this lock is granted, and the re-evaluated
+   * `state` drops it. `moved` is therefore always 0 here.
+   *
+   * Plain `FOR UPDATE` rather than `SKIP LOCKED`: skipping a row some other
+   * writer holds for a moment (an `updateJob`) would skip a job that is still
+   * pending, which the walk promises never to do. The wait is one statement's.
+   *
+   * A priority change moves a row within the claim index, and so within the
+   * walk: behind the cursor it is not met again; ahead of it, it is met again
+   * and counts `unchanged` — the same keyset rule the memory driver follows.
+   * A dry run reads without locks or a transaction, and writes nothing.
+   */
+  async rewritePendingOptions(
+    q: QueueRef,
+    request: PendingOptionsRewrite,
+  ): Promise<PendingOptionsRewriteResult> {
+    assertRewriteRequest(request);
+    await this.connect();
+
+    const result = emptyRewriteResult();
+    const { states } = request;
+    const batchSize = REWRITE_BATCH[this.adapter];
+
+    let from = 0;
+    let after: ClaimCursor | null = null;
+    /** The last job examined in this call, which the next call resumes after. */
+    let last: { state: JobState; key: ClaimCursor } | undefined;
+    /**
+     * The jobs this call has rewritten. One whose new priority moved it ahead
+     * of the walk is met again further on; within the call it is passed over
+     * uncounted, as a walk over the jobs as they stood when the call began
+     * would (the memory driver's), so a dry run — which moves nothing —
+     * counts exactly what the real call does. A later call meets it again and
+     * counts it `unchanged`.
+     */
+    const rewritten = new Set<string>();
+
+    if (request.cursor !== null) {
+      const cursor = decodeRewriteCursor(
+        request.cursor,
+        states,
+        REWRITE_CURSOR_KEY,
+      );
+      const [priority, createdAt, id] = cursor.key as [number, number, string];
+      from = states.indexOf(cursor.state);
+      after = { priority, createdAt, id };
+    }
+
+    for (let index = from; index < states.length; index++) {
+      const state = states[index]!;
+      let floor = after;
+      after = null;
+
+      for (;;) {
+        const room = request.limit - result.examined;
+
+        if (room <= 0 && last) {
+          // Resume after the last job examined — but only when there *is*
+          // something after it, so a walk ending exactly at the limit answers
+          // `next: null` rather than costing the caller one empty call more.
+          if (await this.#rewriteRemains(q, states.slice(index), floor)) {
+            result.next = encodeRewriteCursor(last.state, [
+              last.key.priority,
+              last.key.createdAt,
+              last.key.id,
+            ]);
+          }
+          return result;
+        }
+
+        const batch = await this.#rewriteBatch(
+          q,
+          state,
+          floor,
+          Math.min(batchSize, room),
+          request,
+          rewritten,
+        );
+
+        for (const key of [
+          "examined",
+          "rewritten",
+          "unchanged",
+          "skippedExplicit",
+          "skippedUnmarked",
+          "moved",
+          "exhausted",
+        ] as const) {
+          result[key] += batch.tally[key];
+        }
+
+        // Only an empty batch ends a state. A short one would too, on a
+        // snapshot, but under locks a row re-evaluated after a wait can drop
+        // out of the page, and a short page must not be mistaken for the end.
+        if (!batch.last) {
+          break;
+        }
+
+        floor = batch.last;
+        last = { state, key: batch.last };
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * One batch of {@link SqlDriver.rewritePendingOptions}: at most `take` jobs
+   * of `state` after `floor` in claim order, planned and — unless a dry run —
+   * written in one transaction. A job in `rewritten` (this call's own work,
+   * met again after its priority moved it) is passed over uncounted; every
+   * job written is added to it once the transaction commits. Answers the
+   * counts, and the claim-order key of the last job read (`null` when there
+   * was none).
+   */
+  async #rewriteBatch(
+    q: QueueRef,
+    state: JobState,
+    floor: ClaimCursor | null,
+    take: number,
+    request: PendingOptionsRewrite,
+    rewritten: Set<string>,
+  ): Promise<{
+    /** What this batch counted. */
+    tally: PendingOptionsRewriteResult;
+    /** The last job read, in claim order, or `null` when none was. */
+    last: ClaimCursor | null;
+  }> {
+    const table = this.#tables.jobs;
+
+    const work = async (tx?: SQL) => {
+      /** The page, pinned to the claim index where the engine takes a hint. */
+      const page = async (hinted: boolean) => {
+        const read = this.#binder();
+        return await this.#all<RewriteRow>(
+          rewritePageStatement(this.dialect, table, read.bind, {
+            ns: q.ns,
+            queue: q.queue,
+            state,
+            after: floor,
+            limit: take,
+            lock: !request.dryRun && this.adapter !== "sqlite",
+            hinted,
+          }),
+          read.values,
+          tx,
+        );
+      };
+
+      let rows: RewriteRow[];
+
+      try {
+        rows = await page(!this.#claimIndexMissing);
+      } catch (error) {
+        // A table whose claim index is gone (dropped by hand) still walks,
+        // unhinted; MySQL rolls back only the failed statement, so the
+        // transaction carries on.
+        if (
+          this.#claimIndexMissing ||
+          !this.dialect.isMissingHintedIndex(error)
+        ) {
+          throw error;
+        }
+        this.#claimIndexMissing = true;
+        rows = await page(false);
+      }
+
+      const tally = emptyRewriteResult();
+      /** The rewritten ids, by the keys that change on them. */
+      const groups = new Map<
+        string,
+        { keys: EditableJobOptionKey[]; ids: string[] }
+      >();
+
+      for (const row of rows) {
+        if (rewritten.has(String(row.id))) {
+          continue;
+        }
+
+        const plan = planPendingRewrite(
+          {
+            opts: this.dialect.jsonOut<StoredJobOptions>(
+              row.opts,
+              {} as StoredJobOptions,
+            ),
+            priority: Number(row.priority),
+            maxAttempts: Number(row.max_attempts),
+            attemptsMade: Number(row.attempts_made),
+          },
+          request.values,
+          request.includeUnmarked,
+        );
+        tallyRewrite(tally, plan);
+
+        if (plan.outcome === "rewritten") {
+          const signature = plan.keys.join(",");
+          const group = groups.get(signature);
+
+          if (group) {
+            group.ids.push(String(row.id));
+          } else {
+            groups.set(signature, { keys: plan.keys, ids: [String(row.id)] });
+          }
+        }
+      }
+
+      if (!request.dryRun) {
+        for (const { keys, ids } of groups.values()) {
+          await this.#rewriteGroup(q, state, keys, ids, request.values, tx);
+        }
+      }
+
+      const tail = rows.at(-1);
+
+      return {
+        tally,
+        written: request.dryRun
+          ? []
+          : [...groups.values()].flatMap((group) => group.ids),
+        last: tail
+          ? {
+              priority: Number(tail.priority),
+              createdAt: Number(tail.created_at),
+              id: String(tail.id),
+            }
+          : null,
+      };
+    };
+
+    // Postgres's transaction does not retry a deadlock by itself (MySQL's,
+    // MariaDB's and SQLite's do); a batch read and planned again from scratch
+    // is safe to repeat, and its counts are only taken once it commits.
+    const transaction = async () =>
+      await this.dialect.transaction(this.#sql, async (tx) => await work(tx));
+
+    const batch = request.dryRun
+      ? await work()
+      : this.adapter === "postgres"
+        ? await withLockRetry(transaction)
+        : await transaction();
+
+    for (const id of batch.written) {
+      rewritten.add(id);
+    }
+
+    return { tally: batch.tally, last: batch.last };
+  }
+
+  /**
+   * Writes `keys` of `values` over the jobs `ids` of `state`, in one
+   * statement that re-checks the state: `opts` through
+   * {@link SqlDialect.jsonSetValues}, `max_attempts` with `attempts`, and the
+   * `priority` column with `priority` — which moves each row in the claim
+   * index, keeping `created_at` and so its FIFO place among equals.
+   */
+  async #rewriteGroup(
+    q: QueueRef,
+    state: JobState,
+    keys: EditableJobOptionKey[],
+    ids: string[],
+    values: PendingOptionsRewrite["values"],
+    tx: SQL | undefined,
+  ): Promise<void> {
+    const { bind, values: params } = this.#binder();
+    const opts = this.dialect.jsonSetValues(
+      "opts",
+      keys.map((key) => [key, bind(JSON.stringify(values[key]))] as const),
+    );
+    const attempts = keys.includes("attempts")
+      ? `, max_attempts = ${bind(values.attempts)}`
+      : "";
+    const priority = keys.includes("priority")
+      ? `, priority = ${bind(values.priority)}`
+      : "";
+    const where = `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+        AND state = ${bind(state)} AND id IN (${ids.map((id) => bind(id)).join(", ")})`;
+
+    await this.#run(
+      `UPDATE ${this.#tables.jobs} SET opts = ${opts}${attempts}${priority}
+        WHERE ${where}`,
+      params,
+      tx,
+    );
+  }
+
+  /**
+   * Whether the rewrite walk has anything left from `states[0]` after
+   * `floor`, or in any later state — each an index probe for one row.
+   */
+  async #rewriteRemains(
+    q: QueueRef,
+    states: JobState[],
+    floor: ClaimCursor | null,
+  ): Promise<boolean> {
+    for (const [index, state] of states.entries()) {
+      const { bind, values } = this.#binder();
+      const after = index === 0 ? floor : null;
+      const row = await this.#one<{ id: string }>(
+        `SELECT id FROM ${this.#tables.jobs}
+          WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+            AND state = ${bind(state)}${
+              after ? ` AND ${this.dialect.claimOrderAfter(bind, after)}` : ""
+            }
+          LIMIT 1`,
+        values,
+      );
+
+      if (row) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Appends a line to a job's log.
    *
    * Lines belong to a job through its `log_key`, a random token the job is
@@ -2406,7 +3786,7 @@ export class SqlDriver implements JobsDriver {
         }
 
         const { bind, values } = this.#binder();
-        await this.#run(
+        await this.#runPoint(
           `INSERT INTO ${this.#tables.logs} (ns, queue, job_id, log_key, message)
            VALUES (${bind(q.ns)}, ${bind(q.queue)}, ${bind(id)}, ${bind(key)}, ${bind(line)})`,
           values,
@@ -2442,6 +3822,79 @@ export class SqlDriver implements JobsDriver {
 
       return { logs: rows.map((row) => String(row.message)), count };
     });
+  }
+
+  /**
+   * Empties a job's log, refusing an active job.
+   *
+   * One transaction that holds the job's row from the state check to the
+   * write — `FOR UPDATE` on Postgres, MySQL and MariaDB, the database's write
+   * lock (`BEGIN IMMEDIATE`) on SQLite — so a claim landing mid-clear waits
+   * behind it, and a job claimed first answers `active` with nothing removed.
+   *
+   * The key is rotated as well as its lines deleted. Nulling `log_key` is what
+   * makes the next line count from one: it is stamped a fresh key, exactly as
+   * a job that never logged is. The delete is what makes the lines really go,
+   * and what `removed` counts. A line a concurrent append wrote under the old
+   * key after the delete belongs to no job's key any more, so no read counts
+   * it and the orphan sweep collects it, as it does a removed job's.
+   */
+  async clearJobLogs(q: QueueRef, id: string): Promise<ClearJobLogsResult> {
+    await this.connect();
+
+    return await this.#requireLogKey(
+      async () =>
+        await this.dialect.transaction(
+          this.#sql,
+          async (tx): Promise<ClearJobLogsResult> => {
+            const { jobs, logs } = this.#tables;
+            const lock = this.adapter === "sqlite" ? "" : " FOR UPDATE";
+
+            const read = this.#binder();
+            const job = await this.#one<{
+              state: string;
+              log_key: string | null;
+            }>(
+              `SELECT state, log_key FROM ${jobs}
+                WHERE ns = ${read.bind(q.ns)} AND queue = ${read.bind(q.queue)}
+                  AND id = ${read.bind(id)}${lock}`,
+              read.values,
+              tx,
+            );
+
+            if (!job) {
+              return { status: "missing" };
+            }
+            if (job.state === "active") {
+              return { status: "active" };
+            }
+            // Never logged: nothing to rotate and nothing to delete.
+            if (job.log_key == null) {
+              return { status: "cleared", removed: 0 };
+            }
+
+            const rotate = this.#binder();
+            await this.#runPoint(
+              `UPDATE ${jobs} SET log_key = NULL
+                WHERE ns = ${rotate.bind(q.ns)} AND queue = ${rotate.bind(q.queue)}
+                  AND id = ${rotate.bind(id)}`,
+              rotate.values,
+              tx,
+            );
+
+            const drop = this.#binder();
+            const removed = await this.#run(
+              `DELETE FROM ${logs}
+                WHERE ns = ${drop.bind(q.ns)} AND queue = ${drop.bind(q.queue)}
+                  AND log_key = ${drop.bind(String(job.log_key))}`,
+              drop.values,
+              tx,
+            );
+
+            return { status: "cleared", removed };
+          },
+        ),
+    );
   }
 
   async getJob(q: QueueRef, id: string): Promise<JobRecord | null> {
@@ -2536,6 +3989,22 @@ export class SqlDriver implements JobsDriver {
         }
 
         if (!settles) {
+          // A failure decided from an earlier view is stale, and must not
+          // bury a parent that has been retried since: one already delivered
+          // (the child is marked recorded), or one the child has moved past
+          // (it was retried itself, which resets `recorded`, so only its
+          // state — no longer `dead` — tells it apart). The child's row is
+          // read here, inside the transaction holding the parent's, so no
+          // retry of the parent can land between this read and the bury: a
+          // retry marks the child recorded before it requeues the parent, and
+          // the requeue waits on this lock. Read, not locked — locking the
+          // child while holding the parent could deadlock against a writer
+          // that holds the child and wants the parent. A child with no record
+          // at all still buries, as one that failed again does.
+          if (await this.#staleFailure(tx, q.ns, child)) {
+            return { result: "already" };
+          }
+
           // A child that failed buries its parent, which can then never run.
           // `flow` is left as it is: a retry of the parent keeps the values of
           // the children that did complete.
@@ -2588,6 +4057,7 @@ export class SqlDriver implements JobsDriver {
     // so a transaction that rolled back counts nothing.
     if (result === "buried") {
       this.#throughput().add(q, now, 0, 1);
+      this.#countQueueJobs(q, now, 0, 1);
     }
 
     // After the commit, so a woken worker's claim can see the row.
@@ -2615,8 +4085,15 @@ export class SqlDriver implements JobsDriver {
         }
 
         // Counted under the row lock, so an outcome recorded in the meantime
-        // is never counted as still to come.
-        const flow = { ...job.flow, pending: unsettledChildren(job.flow) };
+        // is never counted as still to come. `recorded` is cleared as a retry
+        // clears it: the outcome this parent ends with next time has not
+        // reached its own parent, and without this a nested parent that fails
+        // again would have that failure refused as already delivered.
+        const flow: JobFlow = {
+          ...job.flow,
+          pending: unsettledChildren(job.flow),
+          recorded: false,
+        };
         const state: JobState =
           flow.pending > 0
             ? "waiting-children"
@@ -2807,9 +4284,25 @@ export class SqlDriver implements JobsDriver {
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
 
-    if (query.states.length === 0 || query.names?.length === 0) {
+    const attribution = attributionFilter(query);
+
+    if (
+      query.states.length === 0 ||
+      query.names?.length === 0 ||
+      (attribution !== null && matchesNothing(attribution, query.states))
+    ) {
       return query.total ? { jobs: [], total: 0 } : { jobs: [] };
     }
+
+    // A range matches only finished jobs, so the other states are not even
+    // looked at. The order stays the one the query's own states give it, as
+    // on every backend.
+    const range = attribution !== null && hasRange(attribution);
+    const states = range
+      ? query.states.filter((state) => FINISHED_STATES.includes(state))
+      : query.states;
+    const workerKeys = query.workerKeys && [...new Set(query.workerKeys)];
+    const workerIds = query.workerIds && [...new Set(query.workerIds)];
 
     const search =
       query.search === undefined || query.search === ""
@@ -2821,7 +4314,7 @@ export class SqlDriver implements JobsDriver {
     const where = (bind: (value: unknown) => string): string =>
       [
         `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}`,
-        `state IN (${query.states.map((state) => bind(state)).join(", ")})`,
+        `state IN (${states.map((state) => bind(state)).join(", ")})`,
         ...(names
           ? [`name IN (${names.map((name) => bind(name)).join(", ")})`]
           : []),
@@ -2830,6 +4323,31 @@ export class SqlDriver implements JobsDriver {
               `(LOWER(id) LIKE ${bind(search)} ESCAPE '!' OR LOWER(name) LIKE ${bind(search)} ESCAPE '!')`,
             ]
           : []),
+        // The stamp, matched exactly. Its columns outlive the settle, and a
+        // job with no stamp (or no key) has NULL there, which `IN` never
+        // matches. Not `worker_id`: that is the holder, gone once it settles.
+        ...(workerKeys
+          ? [
+              `processed_by_key IN (${workerKeys.map((key) => bind(key)).join(", ")})`,
+            ]
+          : []),
+        ...(workerIds
+          ? [
+              `processed_by_id IN (${workerIds.map((id) => bind(id)).join(", ")})`,
+            ]
+          : []),
+        // Spelled out, although each bound implies it: a planner does not
+        // infer it from a bound parameter. On SQLite it is what lets the
+        // partial index on finished jobs serve the range; that index exists
+        // on SQLite only, and Postgres, MySQL and MariaDB serve the range
+        // without it, from the (ns, queue, state) prefix of their indexes.
+        ...(range ? ["finished_on IS NOT NULL"] : []),
+        ...(attribution?.finishedFrom === undefined
+          ? []
+          : [`finished_on >= ${bind(attribution.finishedFrom)}`]),
+        ...(attribution?.finishedTo === undefined
+          ? []
+          : [`finished_on < ${bind(attribution.finishedTo)}`]),
       ].join(" AND ");
 
     const page = async (): Promise<JobRecord[]> => {
@@ -2841,7 +4359,11 @@ export class SqlDriver implements JobsDriver {
       const rows = await this.#all<Record<string, unknown>>(
         `SELECT * FROM ${this.#tables.jobs}
           WHERE ${where(bind)}
-          ORDER BY ${this.#listOrder(query.states, query.order)}
+          ORDER BY ${
+            sortsByCreated(query)
+              ? createdAtOrder(this.dialect, query.order)
+              : this.#listOrder(query.states, query.order)
+          }
           LIMIT ${bind(limit)} OFFSET ${bind(offset)}`,
         values,
       );
@@ -2858,10 +4380,14 @@ export class SqlDriver implements JobsDriver {
       return Number(row?.total ?? 0);
     };
 
-    const [jobs, total] = await Promise.all([
-      page(),
-      query.total ? count() : Promise.resolve(undefined),
-    ]);
+    const [jobs, total] = await this.#requireStampColumns(
+      workerKeys !== undefined || workerIds !== undefined,
+      async () =>
+        await Promise.all([
+          page(),
+          query.total ? count() : Promise.resolve(undefined),
+        ]),
+    );
 
     return total === undefined ? { jobs } : { jobs, total };
   }
@@ -2896,7 +4422,7 @@ export class SqlDriver implements JobsDriver {
   async registerWorker(q: QueueRef, worker: WorkerInfo): Promise<void> {
     await this.connect();
 
-    await this.#run(
+    await this.#runPoint(
       this.dialect.upsert(
         this.#tables.workers,
         ["ns", "queue", "id", "info", "expires_at"],
@@ -2923,7 +4449,7 @@ export class SqlDriver implements JobsDriver {
 
     const { bind, values } = this.#binder();
     return (
-      (await this.#run(
+      (await this.#runPoint(
         `DELETE FROM ${this.#tables.workers}
           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
         values,
@@ -2983,6 +4509,50 @@ export class SqlDriver implements JobsDriver {
 
     for (const row of rows) {
       const counts = (result[String(row.queue)] ??= emptyCounts());
+      if (STATES.includes(row.state)) {
+        counts[row.state] = Number(row.total);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * One `GROUP BY queue, state` over the namespace's rows added in the range
+   * ({@link countAddedStatement}); `{}` without a query when `to <= from`.
+   * Counts arrive as strings on Postgres and MySQL once they are big, so each
+   * is read through `Number()`.
+   */
+  async countAddedJobs(
+    ns: string,
+    range: AddedRange,
+    queue?: string,
+  ): Promise<Record<string, Record<JobState, number>>> {
+    if (rangeMatchesNothing(range)) {
+      return {};
+    }
+
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    const rows = await this.#all<{
+      queue: string;
+      state: JobState;
+      total: number | string;
+    }>(
+      countAddedStatement(this.dialect, this.#tables.jobs, bind, {
+        ns,
+        ...(queue === undefined ? {} : { queue }),
+        from: range.from,
+        to: range.to,
+      }),
+      values,
+    );
+
+    const result: Record<string, Record<JobState, number>> = {};
+
+    for (const row of rows) {
+      const counts = (result[String(row.queue)] ??= emptyAddedCounts());
       if (STATES.includes(row.state)) {
         counts[row.state] = Number(row.total);
       }
@@ -3064,15 +4634,27 @@ export class SqlDriver implements JobsDriver {
 
       if (rows.length > 0) {
         this.#afterCounted(q, now);
+        this.#countQueueJobs(
+          q,
+          now,
+          kind === "completed" ? rows.length : 0,
+          kind === "failed" ? rows.length : 0,
+        );
       }
 
       return rows.length;
     }
 
-    const settled = await this.#run(statement, values);
+    const settled = await this.#runPoint(statement, values);
 
     if (settled > 0) {
       this.#throughput().add(
+        q,
+        now,
+        kind === "completed" ? settled : 0,
+        kind === "failed" ? settled : 0,
+      );
+      this.#countQueueJobs(
         q,
         now,
         kind === "completed" ? settled : 0,
@@ -3221,7 +4803,7 @@ export class SqlDriver implements JobsDriver {
       const { bind, values } = this.#binder();
 
       try {
-        await this.#run(
+        await this.#runPoint(
           `INSERT INTO ${into} (ns, queue, bucket, shard, completed, failed)
            VALUES (${bind(entry.q.ns)}, ${bind(entry.q.queue)}, ${bind(entry.at)},
                    ${bind(this.#metricsShard)}, ${bind(entry.completed)}, ${bind(entry.failed)})
@@ -3268,6 +4850,1022 @@ export class SqlDriver implements JobsDriver {
     await Promise.allSettled([...this.#metricsPrunes]);
   }
 
+  /* --- analytics ---------------------------------------------------- */
+
+  /**
+   * The analytics buckets, in three tables of their own.
+   *
+   * ```
+   * <prefix>queue_metrics    (ns, entity, interval_ms, bucket)  completed, failed
+   * <prefix>worker_metrics   (ns, entity, interval_ms, bucket)  completed, failed + busyness
+   * <prefix>runner_metrics   (ns, entity, interval_ms, bucket)  six outcomes + durations
+   * ```
+   *
+   * `entity` is the queue, a worker's `<queue>:<key>` or the runner's key, and
+   * the empty entity is that kind's **namespace roll-up** — which is what
+   * makes an overview three reads whatever the fleet size, and what keeps the
+   * prune and `purge` free of a special case.
+   *
+   * Three things about this layout are load-bearing:
+   *
+   * - **One shared row per `(ns, entity, bucket, interval)`, and none of the
+   *   shipped `metrics` table's shard fan-out.** Those eight shards per
+   *   process exist because a *per-job* statement contends on one row — 1,421
+   *   ms against 2 ms, measured. Nothing here is per job: every count goes
+   *   through a buffer that writes once a second, so each process touches each
+   *   row once a second and that contention cannot arise. Fanning out anyway
+   *   would turn a mid-sized namespace's 19.5 K rows into 1.25 M, churning
+   *   completely every retention window.
+   * - **Second and minute are a dual write**, not a roll-up job: one count
+   *   bumps both, so nothing needs a leader and no minute is lost when one
+   *   dies.
+   * - **The prune is by range**, on a clock, once a minute per process — never
+   *   per entity, because a worker that stopped reporting writes nothing and
+   *   an entity-driven prune would never reach its buckets again.
+   *
+   * Every count is buffered on every engine, Postgres included: this is the
+   * one thing that deliberately does **not** ride the counted statement.
+   */
+
+  /** What this driver records and serves, for `/meta` and range resolution. */
+  getMetricsSupport(): MetricsSupport {
+    return metricsSupportOf(this.#analytics);
+  }
+
+  /**
+   * Writes every analytics count gathered in memory and not yet sent.
+   *
+   * A count here is a `Map` update, so a caller that wrote one and reads it
+   * back in the same tick has to ask for this first — every read below flushes
+   * its own buffer, so in practice only a caller reading through another
+   * process needs it.
+   */
+  async flushMetrics(): Promise<void> {
+    const settled = await Promise.allSettled(
+      this.#analyticsBuffers().map(async (buffer) => await buffer.flush()),
+    );
+    const failed = settled.find((result) => result.status === "rejected");
+
+    if (failed) {
+      throw failed.reason;
+    }
+  }
+
+  async getQueueMetrics(
+    q: QueueRef,
+    query: MetricsQuery,
+  ): Promise<CounterBucket<JobCounters>[]> {
+    return await this.#readCounters(
+      "queue_metrics",
+      q.ns,
+      q.queue,
+      query,
+      JOB_COUNTERS,
+      this.#queueJobs,
+    );
+  }
+
+  /**
+   * Counts jobs one worker finished, keyed by its stable `WorkerInfo.key`.
+   *
+   * The worker counts its own and reports once a second: the driver knows the
+   * lock token, not the worker, so attributing inside the completion
+   * statement would push per-worker cardinality into the hot path.
+   */
+  async countWorkerJobs(
+    q: QueueRef,
+    key: string,
+    at: number,
+    counts: Partial<JobCounters>,
+  ): Promise<void> {
+    if (!this.#analytics.workers) {
+      return;
+    }
+
+    this.#analyticsNamespaces.add(q.ns);
+    this.#workerJobs.count(q.ns, workerEntity(q, key), at, counts);
+  }
+
+  /**
+   * Records one heartbeat's view of how busy a worker is.
+   *
+   * Sampled at the heartbeat's own interval rather than once a second: the
+   * heartbeat is the only source, and a second timer would have an idle worker
+   * writing forever — the one cost here not bounded by activity.
+   */
+  async sampleWorkerBusyness(
+    q: QueueRef,
+    key: string,
+    at: number,
+    sample: BusynessSample,
+  ): Promise<void> {
+    if (!this.#analytics.workers) {
+      return;
+    }
+
+    this.#analyticsNamespaces.add(q.ns);
+    const entity = workerEntity(q, key);
+
+    for (const interval of this.#analytics.intervals) {
+      const stats = emptyBusynessStats();
+      // `at` itself, not the bucket's start: which sample is the latest is
+      // what makes a merged bucket's `concurrency` well defined.
+      addBusynessSample(stats, at, sample);
+      this.#workerBusyness.add({
+        ns: q.ns,
+        entity,
+        at: bucketStart(at, interval),
+        interval,
+        stats,
+      });
+    }
+  }
+
+  async getWorkerMetrics(
+    q: QueueRef,
+    key: string,
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsRead> {
+    const entity = workerEntity(q, key);
+    const read: WorkerMetricsRead = {
+      jobs: await this.#readCounters(
+        "worker_metrics",
+        q.ns,
+        entity,
+        query,
+        JOB_COUNTERS,
+        this.#workerJobs,
+      ),
+    };
+
+    if (query.busyness && this.#analytics.workers) {
+      read.busyness = await this.#readBusyness(q.ns, entity, query);
+    }
+
+    return read;
+  }
+
+  /**
+   * Counts how one run ended, with its duration riding the same call.
+   *
+   * One call per run event and no second write for the histogram: the bins are
+   * columns of the same row, so they cost nothing beyond the statement the
+   * outcome was already going to be part of.
+   */
+  async countRunnerRun(
+    ns: string,
+    runner: string,
+    at: number,
+    counts: RunnerRunDelta,
+  ): Promise<void> {
+    if (!this.#analytics.runners) {
+      return;
+    }
+
+    this.#analyticsNamespaces.add(ns);
+    this.#runnerRuns.count(ns, runner, at, counts);
+
+    if (this.#analytics.durations && counts.durationMs !== undefined) {
+      for (const interval of this.#analytics.intervals) {
+        const stats = emptyDurationStats();
+        addDuration(stats, counts.durationMs);
+        this.#runnerDurations.add({
+          ns,
+          entity: runner,
+          at: bucketStart(at, interval),
+          interval,
+          stats,
+        });
+      }
+    }
+  }
+
+  async getRunnerMetrics(
+    ns: string,
+    runner: string,
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsRead> {
+    const read: RunnerMetricsRead = {
+      runs: await this.#readCounters(
+        "runner_metrics",
+        ns,
+        runner,
+        query,
+        RUNNER_RUN_COUNTERS,
+        this.#runnerRuns,
+      ),
+    };
+
+    if (query.durations && this.#analytics.durations) {
+      read.durations = await this.#readDurations(ns, runner, query);
+    }
+
+    return read;
+  }
+
+  async getNamespaceMetrics(
+    ns: string,
+    query: NamespaceMetricsQuery,
+  ): Promise<NamespaceMetricsRead> {
+    const read: NamespaceMetricsRead = {};
+
+    // A kind that is not recorded stays absent rather than answering zeros:
+    // "nothing happened" and "nothing is kept" are different answers.
+    if (query.kinds.includes("jobs")) {
+      read.jobs = await this.#readCounters(
+        "queue_metrics",
+        ns,
+        NAMESPACE_ENTITY,
+        query,
+        JOB_COUNTERS,
+        this.#queueJobs,
+      );
+    }
+    if (query.kinds.includes("runs") && this.#analytics.runners) {
+      read.runs = await this.#readCounters(
+        "runner_metrics",
+        ns,
+        NAMESPACE_ENTITY,
+        query,
+        RUNNER_RUN_COUNTERS,
+        this.#runnerRuns,
+      );
+    }
+    if (query.kinds.includes("workerJobs") && this.#analytics.workers) {
+      read.workerJobs = await this.#readCounters(
+        "worker_metrics",
+        ns,
+        NAMESPACE_ENTITY,
+        query,
+        JOB_COUNTERS,
+        this.#workerJobs,
+      );
+    }
+
+    return read;
+  }
+
+  /* --- analytics: grouped reads ------------------------------------- */
+
+  /**
+   * Every runner's totals over a range, in **one statement**: a `GROUP BY
+   * entity` over the `(ns, interval_ms, bucket)` range the prune index
+   * already serves, summing in the engine — the histogram's 25 columns
+   * included — so the cost is one round trip whatever the fleet size.
+   *
+   * ```sql
+   * SELECT entity, SUM(started) AS started, …                -- six outcomes
+   *        [, SUM(dur_count), SUM(dur_sum_ms),
+   *           MIN(CASE WHEN dur_count > 0 THEN dur_min_ms END),
+   *           MAX(CASE WHEN dur_count > 0 THEN dur_max_ms END),
+   *           SUM(h00) … SUM(h24)]                              -- durations asked
+   *   FROM runner_metrics
+   *  WHERE ns = ? AND interval_ms = ? AND bucket >= ? AND bucket <= ?
+   *    AND entity <> ''                                         -- never the roll-up
+   *    [AND entity IN (…)]                                      -- the filter
+   *  GROUP BY entity
+   * HAVING SUM(started) > 0 OR … [OR SUM(dur_count) > 0]
+   * ```
+   *
+   * The extremes skip rows with no duration in them: a row the outcome
+   * counters wrote alone has `dur_min_ms = 0`, which would otherwise report
+   * the runner's fastest run as instant. `HAVING` is the presence rule — a
+   * runner with nothing to report in range is absent, never a row of zeros.
+   */
+  async getRunnerMetricsTotals(
+    ns: string,
+    query: RunnerMetricsTotalsQuery,
+  ): Promise<RunnerMetricsTotals[]> {
+    const range = this.#analyticsRange(query);
+    const runners =
+      query.runners === undefined ? undefined : [...new Set(query.runners)];
+
+    // An empty filter is "none of them", never "no filter".
+    if (!range || runners?.length === 0) {
+      return [];
+    }
+
+    const durations = query.durations === true && this.#analytics.durations;
+
+    await this.#runnerRuns.flush();
+    if (durations) {
+      await this.#runnerDurations.flush();
+    }
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    const sums = [
+      ...RUNNER_RUN_COUNTERS.map((key) => `SUM(${key}) AS ${key}`),
+      ...(durations
+        ? [
+            "SUM(dur_count) AS dur_count",
+            "SUM(dur_sum_ms) AS dur_sum_ms",
+            "MIN(CASE WHEN dur_count > 0 THEN dur_min_ms END) AS dur_min_ms",
+            "MAX(CASE WHEN dur_count > 0 THEN dur_max_ms END) AS dur_max_ms",
+            ...DURATION_BIN_COLUMNS.map(
+              (column) => `SUM(${column}) AS ${column}`,
+            ),
+          ]
+        : []),
+    ];
+    const present = [
+      ...RUNNER_RUN_COUNTERS.map((key) => `SUM(${key}) > 0`),
+      ...(durations ? ["SUM(dur_count) > 0"] : []),
+    ];
+    const where = [
+      this.#groupedRange(bind, ns, range),
+      ...(runners
+        ? [`entity IN (${runners.map((runner) => bind(runner)).join(", ")})`]
+        : []),
+    ].join(" AND ");
+
+    const rows = await this.#all<Record<string, unknown>>(
+      `SELECT entity, ${sums.join(", ")} FROM ${this.#tables.runner_metrics}
+        WHERE ${where}
+        GROUP BY entity
+       HAVING ${present.join(" OR ")}`,
+      values,
+    );
+
+    return rows.map((row) => {
+      const runs = {} as RunnerRunCounters;
+      for (const key of RUNNER_RUN_COUNTERS) {
+        runs[key] = Number(row[key]) || 0;
+      }
+      const runner = String(row.entity);
+      return durations
+        ? { runner, runs, durations: durationStatsOf(row) }
+        : { runner, runs };
+    });
+  }
+
+  /**
+   * A batch of runners' series in **one statement** (per
+   * {@link METRIC_READ_CHUNK} names), each entry exactly what
+   * {@link SqlDriver.getRunnerMetrics} answers for it.
+   *
+   * ```sql
+   * SELECT entity, bucket, started, … [, dur_min_ms, …, h24]
+   *   FROM runner_metrics
+   *  WHERE ns = ? AND entity <> '' AND entity IN (…)
+   *    AND interval_ms = ? AND bucket >= ? AND bucket <= ?
+   * ```
+   *
+   * The rows are grouped by entity here and merged by the very helpers the
+   * one-runner read uses, so the two cannot disagree.
+   */
+  async getRunnerMetricsMany(
+    ns: string,
+    runners: readonly string[],
+    query: RunnerMetricsQuery,
+  ): Promise<RunnerMetricsSeries[]> {
+    const range = this.#analyticsRange(query);
+    const named = [...new Set(runners)].filter(
+      (runner) => runner !== NAMESPACE_ENTITY,
+    );
+
+    if (!range || named.length === 0) {
+      return [];
+    }
+
+    const durations = query.durations === true && this.#analytics.durations;
+
+    await this.#runnerRuns.flush();
+    if (durations) {
+      await this.#runnerDurations.flush();
+    }
+
+    const rows = await this.#readManyMetricRows(
+      "runner_metrics",
+      ns,
+      named,
+      range,
+      [
+        ...RUNNER_RUN_COUNTERS,
+        ...(durations
+          ? [...DURATION_STAT_COLUMNS, ...DURATION_BIN_COLUMNS]
+          : []),
+      ],
+    );
+
+    const series: RunnerMetricsSeries[] = [];
+    for (const [runner, group] of rowsByEntity(rows)) {
+      const entry: RunnerMetricsSeries = {
+        runner,
+        runs: counterBucketsOf(group, range, RUNNER_RUN_COUNTERS),
+      };
+      if (durations) {
+        entry.durations = durationBucketsOf(group, range);
+      }
+      if (hasMetricBuckets(entry.runs, entry.durations)) {
+        series.push(entry);
+      }
+    }
+    return series;
+  }
+
+  /**
+   * Every worker key's totals over a range, in **one statement**, split back
+   * into `(queue, key)` with the shared {@link splitWorkerMetricsEntity}.
+   *
+   * Busyness shares `worker_metrics` rows with the job counters, so the
+   * presence rule has to be a `HAVING` on the counters — plus the samples
+   * only when busyness was asked for. Without it a worker that only
+   * heartbeated would come back as a row of zero jobs; with the samples in it
+   * unconditionally, it would come back when busyness was never asked.
+   *
+   * ```sql
+   * SELECT entity, SUM(completed) AS completed, SUM(failed) AS failed
+   *   FROM worker_metrics
+   *  WHERE ns = ? AND interval_ms = ? AND bucket >= ? AND bucket <= ?
+   *    AND entity <> '' [AND (SUBSTR(entity, 1, n) = 'queue:' OR …)]
+   *  GROUP BY entity
+   * HAVING SUM(completed) > 0 OR SUM(failed) > 0
+   * ```
+   *
+   * With busyness asked, the same over a derived table that carries each
+   * entity's latest sample time (`MAX(…) OVER (PARTITION BY entity)`), so the
+   * outer `GROUP BY` can take that sample's `concurrency` — a sample's
+   * `last_at` lies inside its own bucket, so it is unique within one width —
+   * and `OR SUM(samples) > 0` joins the `HAVING`.
+   *
+   * The queue filter is an exact prefix comparison rather than a `LIKE`:
+   * `_` is legal in a queue name and a `LIKE` wildcard, and SQLite's `LIKE`
+   * ignores ASCII case.
+   */
+  async getWorkerMetricsTotals(
+    ns: string,
+    query: WorkerMetricsTotalsQuery,
+  ): Promise<WorkerMetricsTotals[]> {
+    const range = this.#analyticsRange(query);
+    // A queue name cannot hold a colon, so a filter entry with one names no
+    // queue — and as a prefix it would match another queue's keys.
+    const queues =
+      query.queues === undefined
+        ? undefined
+        : [...new Set(query.queues)].filter(
+            (queue) => queue !== "" && !queue.includes(":"),
+          );
+
+    if (!range || queues?.length === 0) {
+      return [];
+    }
+
+    const busyness = query.busyness === true && this.#analytics.workers;
+
+    await this.#workerJobs.flush();
+    if (busyness) {
+      await this.#workerBusyness.flush();
+    }
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    const where = [
+      this.#groupedRange(bind, ns, range),
+      ...(queues
+        ? [
+            `(${queues
+              .map(
+                (queue) =>
+                  `SUBSTR(entity, 1, ${[...queue].length + 1}) = ${bind(`${queue}:`)}`,
+              )
+              .join(" OR ")})`,
+          ]
+        : []),
+    ].join(" AND ");
+    const table = this.#tables.worker_metrics;
+    const counters = JOB_COUNTERS.map((key) => `SUM(${key}) AS ${key}`);
+    const present = JOB_COUNTERS.map((key) => `SUM(${key}) > 0`);
+
+    const text = busyness
+      ? `SELECT entity, ${[
+          ...counters,
+          "SUM(samples) AS samples",
+          "SUM(active_sum) AS active_sum",
+          "MAX(CASE WHEN samples > 0 THEN active_max END) AS active_max",
+          "MAX(CASE WHEN samples > 0 THEN last_at END) AS last_at",
+          "MAX(CASE WHEN samples > 0 AND last_at = latest_at THEN concurrency END) AS concurrency",
+        ].join(", ")}
+          FROM (
+            SELECT entity, ${JOB_COUNTERS.join(", ")}, ${BUSYNESS_COLUMNS.join(", ")},
+                   MAX(CASE WHEN samples > 0 THEN last_at END) OVER (PARTITION BY entity) AS latest_at
+              FROM ${table}
+             WHERE ${where}
+          ) scoped
+         GROUP BY entity
+        HAVING ${[...present, "SUM(samples) > 0"].join(" OR ")}`
+      : `SELECT entity, ${counters.join(", ")} FROM ${table}
+          WHERE ${where}
+          GROUP BY entity
+         HAVING ${present.join(" OR ")}`;
+
+    const rows = await this.#all<Record<string, unknown>>(text, values);
+
+    const totals: WorkerMetricsTotals[] = [];
+    for (const row of rows) {
+      const ref = splitWorkerMetricsEntity(String(row.entity));
+      if (!ref) {
+        continue;
+      }
+      const jobs = {} as JobCounters;
+      for (const key of JOB_COUNTERS) {
+        jobs[key] = Number(row[key]) || 0;
+      }
+      totals.push(
+        busyness
+          ? { ...ref, jobs, busyness: busynessStatsOf(row) }
+          : { ...ref, jobs },
+      );
+    }
+    return totals;
+  }
+
+  /**
+   * A batch of worker keys' series in **one statement** (per
+   * {@link METRIC_READ_CHUNK} names), each entry exactly what
+   * {@link SqlDriver.getWorkerMetrics} answers for it — the job counters and,
+   * when asked for, the busyness columns of the same rows.
+   */
+  async getWorkerMetricsMany(
+    ns: string,
+    workers: readonly WorkerMetricsRef[],
+    query: WorkerMetricsQuery,
+  ): Promise<WorkerMetricsSeries[]> {
+    const range = this.#analyticsRange(query);
+    const refs = uniqueWorkerRefs(workers);
+
+    if (!range || refs.length === 0) {
+      return [];
+    }
+
+    const busyness = query.busyness === true && this.#analytics.workers;
+
+    await this.#workerJobs.flush();
+    if (busyness) {
+      await this.#workerBusyness.flush();
+    }
+
+    const rows = await this.#readManyMetricRows(
+      "worker_metrics",
+      ns,
+      refs.map((ref) => workerMetricsEntity(ref.queue, ref.key)),
+      range,
+      [...JOB_COUNTERS, ...(busyness ? BUSYNESS_COLUMNS : [])],
+    );
+
+    const series: WorkerMetricsSeries[] = [];
+    for (const [entity, group] of rowsByEntity(rows)) {
+      const ref = splitWorkerMetricsEntity(entity);
+      if (!ref) {
+        continue;
+      }
+      const entry: WorkerMetricsSeries = {
+        ...ref,
+        jobs: counterBucketsOf(group, range, JOB_COUNTERS),
+      };
+      if (busyness) {
+        entry.busyness = busynessBucketsOf(group, range);
+      }
+      if (hasMetricBuckets(entry.jobs, entry.busyness)) {
+        series.push(entry);
+      }
+    }
+    return series;
+  }
+
+  /**
+   * The conditions every grouped read starts from: one namespace, one width,
+   * a bucket range — the prune index's own columns, in its order — and never
+   * the namespace roll-up.
+   */
+  #groupedRange(
+    bind: (value: unknown) => string,
+    ns: string,
+    range: MetricReadRange,
+  ): string {
+    return (
+      `ns = ${bind(ns)} AND interval_ms = ${bind(range.interval)}` +
+      ` AND bucket >= ${bind(range.from)} AND bucket <= ${bind(range.to)}` +
+      ` AND entity <> ${bind(NAMESPACE_ENTITY)}`
+    );
+  }
+
+  /**
+   * Named entities' stored buckets at one width, one statement per
+   * {@link METRIC_READ_CHUNK} names, every row carrying its `entity`.
+   */
+  async #readManyMetricRows(
+    table: SqlTable,
+    ns: string,
+    entities: readonly string[],
+    range: MetricReadRange,
+    columns: readonly string[],
+  ): Promise<Record<string, unknown>[]> {
+    await this.connect();
+
+    const rows: Record<string, unknown>[] = [];
+    for (let start = 0; start < entities.length; start += METRIC_READ_CHUNK) {
+      const chunk = entities.slice(start, start + METRIC_READ_CHUNK);
+      const { bind, values } = this.#binder();
+      // Written in the primary key's order, `(ns, entity, interval_ms,
+      // bucket)`: a handful of key ranges, one per name.
+      rows.push(
+        ...(await this.#all<Record<string, unknown>>(
+          `SELECT entity, bucket, ${columns.join(", ")} FROM ${this.#tables[table]}
+            WHERE ns = ${bind(ns)} AND entity <> ${bind(NAMESPACE_ENTITY)}
+              AND entity IN (${chunk.map((entity) => bind(entity)).join(", ")})
+              AND interval_ms = ${bind(range.interval)}
+              AND bucket >= ${bind(range.from)} AND bucket <= ${bind(range.to)}`,
+          values,
+        )),
+      );
+    }
+    return rows;
+  }
+
+  /**
+   * Counts a queue's settled jobs into its analytics series and the
+   * namespace's.
+   *
+   * Called at every site that already counts throughput — both Postgres
+   * counted-CTE branches, the buffered branch, a parent buried by a failed
+   * child and the stalled sweep's burials — so the two can never disagree
+   * about an event. It is a `Map` update and no I/O, whatever the engine.
+   */
+  #countQueueJobs(
+    q: QueueRef,
+    now: number,
+    completed: number,
+    failed: number,
+  ): void {
+    this.#analyticsNamespaces.add(q.ns);
+    this.#queueJobs.count(q.ns, q.queue, now, { completed, failed });
+  }
+
+  /** Every analytics buffer, for flushing, forgetting and closing as one. */
+  #analyticsBuffers(): {
+    /** Writes what it holds. */
+    flush: () => Promise<void>;
+    /** Stops its timer and writes what is left. */
+    close: () => Promise<void>;
+    /** Drops what it holds for one namespace. */
+    forget: (ns: string) => void;
+  }[] {
+    return [
+      this.#queueJobs,
+      this.#workerJobs,
+      this.#workerBusyness,
+      this.#runnerRuns,
+      this.#runnerDurations,
+    ];
+  }
+
+  /**
+   * A query cut to what this driver actually holds, or `null` when that is
+   * nothing.
+   *
+   * A width it does not record answers empty rather than throwing, as the
+   * contract says. `from` is **not** pulled forward to the retention: unlike a
+   * store that expires keys itself, these tables keep a bucket until the sweep
+   * runs, and answering with what is there is honest about that.
+   */
+  #analyticsRange(
+    query: MetricsQuery,
+  ): { from: number; to: number; interval: number } | null {
+    const { interval } = query;
+
+    if (!this.#analytics.intervals.includes(interval)) {
+      return null;
+    }
+
+    const from = bucketStart(query.from, interval);
+    const to = bucketStart(query.to, interval);
+
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) {
+      return null;
+    }
+
+    return { from, to, interval };
+  }
+
+  /** One entity's stored buckets at one width, as rows the merges take. */
+  async #readMetricRows(
+    table: SqlTable,
+    ns: string,
+    entity: string,
+    range: { from: number; to: number; interval: number },
+    columns: readonly string[],
+  ): Promise<Record<string, unknown>[]> {
+    await this.connect();
+
+    const { bind, values } = this.#binder();
+    // A range of the primary key: `(ns, entity, interval_ms, bucket)` is in
+    // exactly this order for this read.
+    return await this.#all<Record<string, unknown>>(
+      `SELECT bucket, ${columns.join(", ")} FROM ${this.#tables[table]}
+        WHERE ns = ${bind(ns)} AND entity = ${bind(entity)}
+          AND interval_ms = ${bind(range.interval)}
+          AND bucket >= ${bind(range.from)} AND bucket <= ${bind(range.to)}`,
+      values,
+    );
+  }
+
+  /** One entity's counters in range, sparse and oldest first. */
+  async #readCounters<K extends string>(
+    table: SqlTable,
+    ns: string,
+    entity: string,
+    query: MetricsQuery,
+    keys: readonly K[],
+    buffer: { flush: () => Promise<void> },
+  ): Promise<CounterBucket<Record<K, number>>[]> {
+    const range = this.#analyticsRange(query);
+
+    if (!range) {
+      return [];
+    }
+
+    // This process's own counts first, so a caller sees what it just counted.
+    await buffer.flush();
+
+    const rows = await this.#readMetricRows(table, ns, entity, range, keys);
+
+    return counterBucketsOf(rows, range, keys);
+  }
+
+  /** One runner's duration buckets in range, histogram included. */
+  async #readDurations(
+    ns: string,
+    runner: string,
+    query: MetricsQuery,
+  ): Promise<RawDurationBucket[]> {
+    const range = this.#analyticsRange(query);
+
+    if (!range) {
+      return [];
+    }
+
+    await this.#runnerDurations.flush();
+
+    const rows = await this.#readMetricRows(
+      "runner_metrics",
+      ns,
+      runner,
+      range,
+      [...DURATION_STAT_COLUMNS, ...DURATION_BIN_COLUMNS],
+    );
+
+    return durationBucketsOf(rows, range);
+  }
+
+  /** One worker's busyness buckets in range. */
+  async #readBusyness(
+    ns: string,
+    entity: string,
+    query: MetricsQuery,
+  ): Promise<RawBusynessBucket[]> {
+    const range = this.#analyticsRange(query);
+
+    if (!range) {
+      return [];
+    }
+
+    await this.#workerBusyness.flush();
+
+    const rows = await this.#readMetricRows(
+      "worker_metrics",
+      ns,
+      entity,
+      range,
+      BUSYNESS_COLUMNS,
+    );
+
+    return busynessBucketsOf(rows, range);
+  }
+
+  /** One buffer's worth of counters, added into whatever is already stored. */
+  async #writeCounters<C extends Record<keyof C, number>>(
+    table: SqlTable,
+    batch: PendingMetric<C>[],
+    keys: readonly (keyof C & string)[],
+  ): Promise<BufferWriteResult<PendingMetric<C>>> {
+    return await this.#writeMetricBatch(
+      table,
+      keys,
+      batch,
+      (entry) => [
+        entry.ns,
+        entry.entity,
+        entry.interval,
+        entry.at,
+        ...keys.map((key) => entry.counts[key] ?? 0),
+      ],
+      (stored, incoming) =>
+        keys.map((key) => `${key} = ${stored(key)} + ${incoming(key)}`),
+    );
+  }
+
+  /**
+   * One buffer's worth of durations, merged into whatever is already stored.
+   *
+   * The extremes are guarded by the counts rather than taken blindly: a row
+   * written by the outcome counters alone has `dur_count = 0` and a `dur_min_ms`
+   * of zero, and `LEAST` against that would report every runner's fastest run
+   * as instant.
+   */
+  async #writeDurations(
+    batch: PendingDuration[],
+  ): Promise<BufferWriteResult<PendingDuration>> {
+    const { greatest, least } = this.dialect;
+
+    return await this.#writeMetricBatch(
+      "runner_metrics",
+      [...DURATION_STAT_COLUMNS, ...DURATION_BIN_COLUMNS],
+      batch,
+      (entry) => [
+        entry.ns,
+        entry.entity,
+        entry.interval,
+        entry.at,
+        entry.stats.minMs,
+        entry.stats.maxMs,
+        entry.stats.count,
+        entry.stats.sumMs,
+        ...entry.stats.histogram,
+      ],
+      (stored, incoming) => [
+        `dur_min_ms = CASE WHEN ${incoming("dur_count")} = 0 THEN ${stored("dur_min_ms")}` +
+          ` WHEN ${stored("dur_count")} = 0 THEN ${incoming("dur_min_ms")}` +
+          ` ELSE ${least(stored("dur_min_ms"), incoming("dur_min_ms"))} END`,
+        `dur_max_ms = CASE WHEN ${incoming("dur_count")} = 0 THEN ${stored("dur_max_ms")}` +
+          ` WHEN ${stored("dur_count")} = 0 THEN ${incoming("dur_max_ms")}` +
+          ` ELSE ${greatest(stored("dur_max_ms"), incoming("dur_max_ms"))} END`,
+        `dur_count = ${stored("dur_count")} + ${incoming("dur_count")}`,
+        `dur_sum_ms = ${stored("dur_sum_ms")} + ${incoming("dur_sum_ms")}`,
+        ...DURATION_BIN_COLUMNS.map(
+          (column) => `${column} = ${stored(column)} + ${incoming(column)}`,
+        ),
+      ],
+    );
+  }
+
+  /**
+   * One buffer's worth of busyness samples, merged into whatever is stored.
+   *
+   * `concurrency` is the latest sample's, which is what `lastAt` is kept for:
+   * once a bucket holds two writers' samples, "the concurrency as of the last
+   * one" is otherwise undefined.
+   */
+  async #writeBusyness(
+    batch: PendingBusyness[],
+  ): Promise<BufferWriteResult<PendingBusyness>> {
+    const { greatest } = this.dialect;
+
+    return await this.#writeMetricBatch(
+      "worker_metrics",
+      BUSYNESS_COLUMNS,
+      batch,
+      (entry) => [
+        entry.ns,
+        entry.entity,
+        entry.interval,
+        entry.at,
+        entry.stats.concurrency,
+        entry.stats.lastAt,
+        entry.stats.samples,
+        entry.stats.activeSum,
+        entry.stats.activeMax,
+      ],
+      (stored, incoming) => [
+        `concurrency = CASE WHEN ${incoming("samples")} = 0 THEN ${stored("concurrency")}` +
+          ` WHEN ${stored("samples")} = 0 OR ${incoming("last_at")} >= ${stored("last_at")}` +
+          ` THEN ${incoming("concurrency")} ELSE ${stored("concurrency")} END`,
+        `last_at = ${greatest(stored("last_at"), incoming("last_at"))}`,
+        `samples = ${stored("samples")} + ${incoming("samples")}`,
+        `active_sum = ${stored("active_sum")} + ${incoming("active_sum")}`,
+        `active_max = ${greatest(stored("active_max"), incoming("active_max"))}`,
+      ],
+    );
+  }
+
+  /**
+   * Writes one buffer's batch as **one upsert per chunk**, and answers with
+   * the entries that did not land.
+   *
+   * Batched rather than a statement apiece because on every engine but
+   * Postgres every count is buffered, and a statement per row would be two per
+   * entity per second — the statement *rate*, not the row count, is what this
+   * is about. A chunk is one statement, so it lands whole or not at all and a
+   * retry can never double-count part of it. The buffer merges by
+   * `(ns, entity, interval, at)`, so no chunk can hold the same key twice —
+   * which is what Postgres refuses with "cannot affect row a second time".
+   */
+  async #writeMetricBatch<TEntry extends { at: number }>(
+    table: SqlTable,
+    columns: readonly string[],
+    batch: TEntry[],
+    row: (entry: TEntry) => unknown[],
+    assignments: (
+      stored: (column: string) => string,
+      incoming: (column: string) => string,
+    ) => string[],
+  ): Promise<BufferWriteResult<TEntry>> {
+    await this.connect();
+
+    const alias = this.dialect.upsertAlias;
+    const stored = (column: string): string =>
+      alias ? `${alias}.${column}` : column;
+    const incoming = (column: string): string =>
+      this.dialect.upsertIncoming(column);
+    const all = [...METRIC_KEY_COLUMNS, ...columns].join(", ");
+    const merge = `${this.dialect.upsertOnConflict(METRIC_KEY_COLUMNS)} ${assignments(
+      stored,
+      incoming,
+    ).join(", ")}`;
+
+    const unwritten: TEntry[] = [];
+    let failure: unknown;
+    let latest = 0;
+
+    for (let start = 0; start < batch.length; start += METRIC_CHUNK) {
+      const chunk = batch.slice(start, start + METRIC_CHUNK);
+      const { bind, values } = this.#binder();
+      const tuples = chunk
+        .map((entry) => `(${row(entry).map(bind).join(", ")})`)
+        .join(", ");
+
+      try {
+        // `#all`, not `#run`: nothing here wants the affected-row count, and
+        // asking for it costs a transaction per statement on MySQL and
+        // MariaDB, which is the round trip this batching exists to avoid.
+        await this.#all(
+          `INSERT INTO ${this.#tables[table]}${alias ? ` AS ${alias}` : ""} (${all})
+             VALUES ${tuples}
+             ${merge}`,
+          values,
+        );
+      } catch (error) {
+        unwritten.push(...chunk);
+        failure ??= error;
+        continue;
+      }
+
+      for (const entry of chunk) {
+        latest = Math.max(latest, entry.at);
+      }
+    }
+
+    // Best-effort and never thrown from here: counts that landed stay landed
+    // whatever the sweep does, and a sweep that failed is tried again on the
+    // next write. Throwing would put the whole batch back and count it twice.
+    await this.#pruneAnalytics(latest).catch(() => undefined);
+
+    return failure === undefined
+      ? { unwritten }
+      : { unwritten, error: failure };
+  }
+
+  /**
+   * Drops every analytics bucket past its width's retention, once a minute per
+   * process.
+   *
+   * **By range, never per entity.** A prune driven by new writes to a series
+   * never reaches a series nobody writes to any more — a worker that died
+   * leaves its buckets behind for good — so it is one
+   * `DELETE … WHERE bucket < cutoff` per table per width, over the namespaces
+   * this instance writes to.
+   *
+   * `at` is the latest bucket the batch carried, and the later of it and the
+   * wall clock drives the clock — so a caller that passes times in, as the
+   * contract suite does, can step the sweep forward instead of waiting a
+   * minute for it.
+   */
+  async #pruneAnalytics(at: number): Promise<void> {
+    const now = Math.max(Date.now(), at);
+
+    if (!this.#analyticsPrune.due(now)) {
+      return;
+    }
+
+    for (const ns of this.#analyticsNamespaces) {
+      for (const interval of this.#analytics.intervals) {
+        const cutoff = metricsPruneCutoff(this.#analytics, interval, now);
+
+        for (const table of ANALYTICS_TABLES) {
+          const { bind, values } = this.#binder();
+          // A range of `ix_..._prune`, which is `(ns, interval_ms, bucket)`:
+          // the primary key has `entity` second and could only scan.
+          await this.#all(
+            `DELETE FROM ${this.#tables[table]}
+              WHERE ns = ${bind(ns)} AND interval_ms = ${bind(interval)}
+                AND bucket < ${bind(cutoff)}`,
+            values,
+          );
+        }
+      }
+    }
+  }
+
   async removeJob(q: QueueRef, id: string): Promise<boolean> {
     await this.connect();
 
@@ -3277,7 +5875,7 @@ export class SqlDriver implements JobsDriver {
     await this.#forgetLogs(q, [id], true);
 
     const { bind, values } = this.#binder();
-    const removed = await this.#run(
+    const removed = await this.#runPoint(
       `DELETE FROM ${this.#tables.jobs}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state <> 'active'`,
@@ -3298,7 +5896,7 @@ export class SqlDriver implements JobsDriver {
     /** The retry itself, with `flow` rewritten only when given one. */
     const retry = async (flow: JobFlow | null, tx?: SQL) => {
       const { bind, values } = this.#binder();
-      return await this.#run(
+      return await this.#runPoint(
         `UPDATE ${this.#tables.jobs}
             SET state = 'waiting', run_at = ${bind(now)}, finished_on = NULL,
                 expires_at = NULL${resetAttempts ? ", attempts_made = 0, stalled_count = 0" : ""}${
@@ -3335,7 +5933,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const promoted = await this.#run(
+    const promoted = await this.#runPoint(
       `UPDATE ${this.#tables.jobs} SET state = 'waiting', run_at = ${bind(now)}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state IN ('delayed', 'failed')`,
@@ -3417,6 +6015,7 @@ export class SqlDriver implements JobsDriver {
     // it goes to the once-a-second write on every engine, Postgres included.
     if (dead.length > 0) {
       this.#throughput().add(q, now, 0, dead.length);
+      this.#countQueueJobs(q, now, 0, dead.length);
     }
 
     return { requeued, dead };
@@ -3464,22 +6063,20 @@ export class SqlDriver implements JobsDriver {
   async pruneExpired(q: QueueRef, now: number, limit: number): Promise<number> {
     await this.connect();
 
-    const scan = this.#binder();
-    const where = `WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
-          AND expires_at IS NOT NULL AND expires_at <= ${scan.bind(now)}
-        LIMIT ${Math.max(1, Math.floor(limit))}`;
-    const rows = await this.#sweepable(where, scan.values);
-
-    // Before the jobs go, while their keys can still be read.
-    await this.#forgetLogs(
-      q,
-      rows.map((row) => row.id),
+    const expired = (bind: (value: unknown) => string) =>
+      `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND expires_at IS NOT NULL AND expires_at <= ${bind(now)}`;
+    const removed = await this.#sweep(
+      expired,
+      "",
+      Math.max(1, Math.floor(limit)),
+      0,
+      async (ids) => {
+        // Before the jobs go, while their keys can still be read.
+        await this.#forgetLogs(q, ids);
+        return await this.#deleteJobs(ids, expired);
+      },
     );
-
-    let removed = 0;
-    for (const row of rows) {
-      removed += await this.#deleteJob(q, row.id);
-    }
 
     // The maintenance tick is where lines orphaned by the paths that cannot
     // afford to delete them — completion and failure with retention — go.
@@ -3705,7 +6302,7 @@ export class SqlDriver implements JobsDriver {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const removed = await this.#run(
+    const removed = await this.#runPoint(
       `DELETE FROM ${this.#tables.kv}
         WHERE ns = ${bind(q.ns)} AND kv_key = ${bind(this.#queueKvKey(q, "repeat", key))}`,
       values,
@@ -3719,13 +6316,36 @@ export class SqlDriver implements JobsDriver {
   async nextDelayedAt(q: QueueRef): Promise<number | null> {
     await this.connect();
 
+    // One `MIN` per state rather than one over `state IN (…)`, on the server
+    // engines. Each is then a one-entry probe of `ix_…_due`'s `(ns, queue,
+    // state, run_at)`; over the `IN` list the engine read every delayed and
+    // failed row of the queue and aggregated them, on every idle pass.
+    // Measured with 50,000 scheduled jobs: Postgres 31ms to 0.27ms, MySQL
+    // 54ms to 0.33ms, MariaDB 27ms to 0.19ms, and no slower with five.
+    // SQLite already answers the `IN` form from the index, and pays a little
+    // for the subqueries, so it keeps it.
+    //
+    // Postgres's `LEAST` ignores a NULL argument. MySQL's is NULL when either
+    // is, so there each side falls back to the other; the derived table binds
+    // each subquery once, since `?` placeholders are positional.
     const { bind, values } = this.#binder();
-    const row = await this.#one<{ next: number | string | null }>(
-      `SELECT MIN(run_at) AS next FROM ${this.#tables.jobs}
+    const earliest = (state: string) =>
+      `(SELECT MIN(run_at) FROM ${this.#tables.jobs}
+         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+           AND state = '${state}')`;
+    let text: string;
+    if (this.adapter === "sqlite") {
+      text = `SELECT MIN(run_at) AS next FROM ${this.#tables.jobs}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-          AND state IN ('delayed', 'failed')`,
-      values,
-    );
+          AND state IN ('delayed', 'failed')`;
+    } else {
+      const both = `(SELECT ${earliest("delayed")} AS d, ${earliest("failed")} AS f) AS earliest`;
+      text =
+        this.adapter === "postgres"
+          ? `SELECT LEAST(d, f) AS next FROM ${both}`
+          : `SELECT ${this.dialect.least("COALESCE(d, f)", "COALESCE(f, d)")} AS next FROM ${both}`;
+    }
+    const row = await this.#one<{ next: number | string | null }>(text, values);
 
     return row?.next === null || row?.next === undefined
       ? null
@@ -3751,13 +6371,25 @@ export class SqlDriver implements JobsDriver {
       // goes when the race settles. Otherwise the loser kept going until its
       // deadline: a poll loop still querying, or a notification waiter still
       // registered, and a listener left on the caller's signal each time.
+      //
+      // A notification that landed since the last claim began has already
+      // been missed by any waiter — there was none — so it ends the wait
+      // here, without a statement. Otherwise the poll still opens at once:
+      // skipping that one statement when the channel is known to have stayed
+      // quiet saved about one poll in a hundred per idle pass, and measured
+      // no difference.
+      const mark = this.#arrivals.take(q);
+      if (mark.state === "moved") {
+        return;
+      }
+
       const local = new AbortController();
       const onAbort = () => local.abort();
       signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
         await Promise.race([
-          this.#arrivals.wait(q, timeoutMs, local.signal),
+          this.#arrivals.wait(q, timeoutMs, local.signal, mark.since),
           this.#pollForJob(q, deadline, local.signal),
         ]);
       } finally {
@@ -3795,17 +6427,26 @@ export class SqlDriver implements JobsDriver {
     let wait = 1;
 
     while (Date.now() < deadline && !signal?.aborted) {
+      // Whether one exists, not how many: a `COUNT` walked every due waiting
+      // row, which is all of them when they are held back (names skipped by
+      // limits, a paused peer), up to twenty times a second per worker —
+      // measured with 50,000 of them, 13ms to 0.2ms on Postgres, 59ms to
+      // 0.5ms on MySQL. Ordered by `run_at` so the plan is a walk of
+      // `ix_…_due` stopping at its first entry: unordered, Postgres chose a
+      // sequential scan that read 50,305 rows to find one.
       const { bind, values } = this.#binder();
-      const row = await this.#one<{ total: number | string }>(
-        `SELECT COUNT(*) AS total FROM ${this.#tables.jobs}
+      const row = await this.#one<{ found: number | string }>(
+        `SELECT 1 AS found FROM ${this.#tables.jobs}
           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-            AND state = 'waiting' AND run_at <= ${bind(Date.now())}`,
+            AND state = 'waiting' AND run_at <= ${bind(Date.now())}
+          ORDER BY run_at
+          LIMIT 1`,
         values,
       );
 
       // Only a *claimable* job ends the wait; a paused queue has none.
       if (
-        Number(row?.total ?? 0) > 0 &&
+        row !== null &&
         !(await this.#pauseCache.read(q, () => this.isQueuePaused(q)))
       ) {
         return true;
@@ -3829,7 +6470,7 @@ export class SqlDriver implements JobsDriver {
     this.#pruneEvents(event.ns);
 
     const { bind, values } = this.#binder();
-    await this.#run(
+    await this.#runPoint(
       `INSERT INTO ${this.#tables.events} (ns, channel, payload, created_at)
        VALUES (${bind(event.ns)}, ${bind(`${event.kind}:${event.target}`)},
                ${bind(this.dialect.jsonIn(event))}, ${bind(event.at)})`,
@@ -3867,6 +6508,20 @@ export class SqlDriver implements JobsDriver {
     );
   }
 
+  /**
+   * Follows `kind:target` in `ns`, through that namespace's shared feed.
+   *
+   * One poll per namespace per driver, not one per subscription: it asks for
+   * every followed channel at once and hands each row to that channel's
+   * listeners. Each subscription used to run its own `setInterval` query, so
+   * a process following thirty channels — the API socket, `BunQueue`
+   * subscriptions, worker control — sent thirty queries every poll interval
+   * while nothing happened at all.
+   *
+   * What a subscriber sees is unchanged: it starts after the channel's latest
+   * event when it subscribes (`after`), and is told what lands next, in `seq`
+   * order, late commits included (`EventGaps`, now kept once for the feed).
+   */
   async subscribe<TKind extends EventKind>(
     ns: string,
     kind: TKind,
@@ -3889,58 +6544,37 @@ export class SqlDriver implements JobsDriver {
         WHERE ns = ${head.bind(ns)} AND channel = ${head.bind(channel)}`,
       head.values,
     );
+    const after = Number(latest?.seq ?? 0);
 
-    // Numbers are handed out at insert and seen at commit, in different
-    // orders; `EventGaps` remembers the ones a poll passes over.
-    const gaps = new EventGaps(Number(latest?.seq ?? 0));
+    // No await between here and registering: two first subscriptions to a
+    // namespace must find, or make, the same feed.
+    const feed = this.#eventFeed(ns, after);
+    const entry: EventFeedListener = { deliver, after };
+    let listeners = feed.channels.get(channel);
+    if (!listeners) {
+      listeners = new Set();
+      feed.channels.set(channel, listeners);
+    }
+    listeners.add(entry);
+
     let stopped = false;
-
-    const timer = setInterval(() => {
-      void (async () => {
-        if (stopped) {
-          return;
-        }
-
-        const now = Date.now();
-        const page = this.#binder();
-        const retry = gaps.retry(now);
-        const rows = await this.#all<{
-          seq: number | string;
-          payload: unknown;
-        }>(
-          `SELECT seq, payload FROM ${this.#tables.events}
-            WHERE ns = ${page.bind(ns)} AND channel = ${page.bind(channel)}
-              AND (seq > ${page.bind(gaps.cursor)}${
-                retry.length > 0
-                  ? ` OR seq IN (${retry.map((seq) => page.bind(seq)).join(", ")})`
-                  : ""
-              })
-            ORDER BY seq ASC LIMIT 200`,
-          page.values,
-        );
-
-        for (const row of rows) {
-          if (!gaps.accept(Number(row.seq), now)) {
-            continue;
-          }
-
-          const event = this.dialect.jsonOut<DriverEvent | null>(
-            row.payload,
-            null,
-          );
-          if (event) {
-            deliver(event);
-          }
-        }
-      })().catch(() => {
-        // A failed poll is retried on the next tick.
-      });
-    }, this.#poll);
-    timer.unref?.();
-
     const stop = () => {
+      if (stopped) {
+        return;
+      }
       stopped = true;
-      clearInterval(timer);
+
+      const set = feed.channels.get(channel);
+      set?.delete(entry);
+      if (set?.size === 0) {
+        feed.channels.delete(channel);
+      }
+      if (feed.channels.size === 0) {
+        clearInterval(feed.timer);
+        if (this.#eventFeeds.get(ns) === feed) {
+          this.#eventFeeds.delete(ns);
+        }
+      }
     };
 
     this.#subscriptions.add(stop);
@@ -3951,7 +6585,125 @@ export class SqlDriver implements JobsDriver {
     };
   }
 
+  /**
+   * The namespace's event feed, started at `after` if it has to be made: a
+   * first subscriber's own starting point, so nothing it is owed is passed
+   * over before it could be delivered.
+   */
+  #eventFeed(ns: string, after: number): EventFeed {
+    const existing = this.#eventFeeds.get(ns);
+    if (existing) {
+      return existing;
+    }
+
+    const feed: EventFeed = {
+      gaps: new EventGaps(after),
+      channels: new Map(),
+      polling: false,
+      timer: setInterval(() => {
+        if (feed.polling || feed.channels.size === 0) {
+          return;
+        }
+        feed.polling = true;
+        void this.#pollEventFeed(ns, feed)
+          .catch(() => {
+            // A failed poll is retried on the next tick.
+          })
+          .finally(() => {
+            feed.polling = false;
+          });
+      }, this.#poll),
+    };
+    feed.timer.unref?.();
+    this.#eventFeeds.set(ns, feed);
+    return feed;
+  }
+
+  /** One poll of a feed: every followed channel at once, dispatched by channel. */
+  async #pollEventFeed(ns: string, feed: EventFeed): Promise<void> {
+    const channels = [...feed.channels.keys()];
+    const now = Date.now();
+    const page = this.#binder();
+    // Bound in statement order: `?` placeholders are positional.
+    const where = `ns = ${page.bind(ns)}
+            AND channel IN (${channels.map((channel) => page.bind(channel)).join(", ")})`;
+    const retry = feed.gaps.retry(now);
+    const rows = await this.#all<{
+      seq: number | string;
+      channel: string;
+      payload: unknown;
+    }>(
+      `SELECT seq, channel, payload FROM ${this.#tables.events}
+        WHERE ${where}
+          AND (seq > ${page.bind(feed.gaps.cursor)}${
+            retry.length > 0
+              ? ` OR seq IN (${retry.map((seq) => page.bind(seq)).join(", ")})`
+              : ""
+          })
+        ORDER BY seq ASC LIMIT ${Math.min(
+          EVENT_FEED_MAX_PAGE,
+          EVENT_PAGE_PER_CHANNEL * channels.length,
+        )}`,
+      page.values,
+    );
+
+    for (const row of rows) {
+      const seq = Number(row.seq);
+      if (!feed.gaps.accept(seq, now)) {
+        continue;
+      }
+
+      const listeners = feed.channels.get(String(row.channel));
+      if (!listeners) {
+        continue;
+      }
+
+      for (const listener of [...listeners]) {
+        if (seq <= listener.after) {
+          continue;
+        }
+        // Decoded per listener, so one that mutates its event cannot change
+        // what the next is given.
+        const event = this.dialect.jsonOut<DriverEvent | null>(
+          row.payload,
+          null,
+        );
+        if (event) {
+          listener.deliver(event);
+        }
+      }
+    }
+  }
+
   /* --- internals ------------------------------------------------------------ */
+
+  /**
+   * The schema's tables that already exist, asked of the engine's own column
+   * listing — the one `syncSchema` reads — so a table with no columns
+   * reported is one to create.
+   *
+   * A process that starts beside another may see a table the other has just
+   * created and so leave its indexes to that one. Should that one then fail
+   * before creating them, they are missing until a sync, which reports them.
+   */
+  async #existingTables(): Promise<Set<string>> {
+    const existing = new Set<string>();
+
+    for (const table of schemaDefinition(this.#tables, this.dialect).tables) {
+      const columns = await withLockRetry(
+        async () =>
+          await this.#sql.unsafe(this.dialect.describeColumns(table.name), [
+            table.name,
+          ]),
+      );
+
+      if ((columns as unknown[]).length > 0) {
+        existing.add(table.name);
+      }
+    }
+
+    return existing;
+  }
 
   /** Creates the schema and applies any connection pragmas. */
   async #migrate(): Promise<void> {
@@ -3964,10 +6716,21 @@ export class SqlDriver implements JobsDriver {
         }).catch(() => {});
       }
 
+      // Indexes are created only with the table they belong to. On a table
+      // that was already there, a newly defined index is `syncSchema`'s to
+      // build — reported, and `CONCURRENTLY` on Postgres — rather than a plain
+      // `CREATE INDEX` here, which would block every write to a live jobs
+      // table for the length of the build. See `createSchema`.
+      const existing = await this.#existingTables();
+
       // Two processes starting together both create the schema, and one is
       // told the database is busy. Every statement is `IF NOT EXISTS`, so
       // waiting and repeating is exactly the right answer.
-      for (const statement of createSchema(this.#tables, this.dialect)) {
+      for (const statement of createSchema(
+        this.#tables,
+        this.dialect,
+        existing,
+      )) {
         await withLockRetry(async () => {
           try {
             await this.#sql.unsafe(statement);
@@ -3989,6 +6752,11 @@ export class SqlDriver implements JobsDriver {
           typeof this.#syncOnConnect === "object" ? this.#syncOnConnect : {},
         );
       }
+
+      // Whether the table the claims will write has the stamp's columns, so
+      // `capabilities.jobAttribution` is true from connect rather than after
+      // the first claim fails over to the unstamped statement.
+      await this.#probeStampColumns();
     } catch (error) {
       // A failed migration must not be remembered as done.
       this.#ready = undefined;
@@ -4036,13 +6804,23 @@ export class SqlDriver implements JobsDriver {
    *
    * The count is what every conditional write here is judged by — "did this
    * update find the row in the state I required?" — so getting it wrong makes
-   * every such write silently report failure. MySQL and MariaDB report
-   * nothing through this client and must be asked with `ROW_COUNT()`, which
-   * only answers about its own connection: those writes therefore run inside
-   * a transaction, unless they are already in one.
+   * every such write silently report failure. Every engine reports it on the
+   * result (`SqlDialect.affectedRows`).
+   *
+   * On MySQL and MariaDB a write outside a transaction still gets one of its
+   * own, for the READ COMMITTED it sets: a range under REPEATABLE READ takes
+   * next-key locks, and the promote sweep's deadlocked against claims (see the
+   * dialect's `transaction`). A write naming its row by primary key takes a
+   * record lock under either level, so {@link SqlDriver.#runPoint} skips that
+   * transaction.
    */
-  async #run(text: string, params: unknown[], tx?: SQL): Promise<number> {
-    if (this.dialect.countsNeedSameConnection && !tx) {
+  async #run(
+    text: string,
+    params: unknown[],
+    tx?: SQL,
+    point = false,
+  ): Promise<number> {
+    if (this.dialect.rangedWritesNeedTransaction && !tx && !point) {
       return await this.dialect.transaction(
         this.#sql,
         async (connection) => await this.#run(text, params, connection),
@@ -4059,6 +6837,17 @@ export class SqlDriver implements JobsDriver {
     } catch (error) {
       throw new DriverError("sql", "run", error, { text });
     }
+  }
+
+  /**
+   * {@link SqlDriver.#run} for a write that selects its rows by primary key
+   * (`ns, queue, id`, or a table's own key) and nothing wider: one round trip
+   * on every engine. On MySQL and MariaDB that was five — reserve, set the
+   * isolation level, start, the write, `ROW_COUNT()`, commit — while the
+   * record lock such a write takes is the same under any isolation level.
+   */
+  async #runPoint(text: string, params: unknown[], tx?: SQL): Promise<number> {
+    return await this.#run(text, params, tx, true);
   }
 
   /**
@@ -4184,6 +6973,10 @@ export class SqlDriver implements JobsDriver {
       // SQL NULL rather than the JSON text `null`, so "in no flow" reads the
       // same whether the column was named or left to its default.
       job.flow ? json(job.flow) : null,
+      job.processedBy?.id ?? null,
+      job.processedBy?.key ?? null,
+      job.processedBy?.host ?? null,
+      job.processedBy?.pid ?? null,
     ];
 
     // The caller may have asked for a subset — a batch of brand-new jobs names
@@ -4244,6 +7037,10 @@ export class SqlDriver implements JobsDriver {
       job.workerId,
       job.repeatKey,
       json(job.flow),
+      job.processedBy?.id ?? null,
+      job.processedBy?.key ?? null,
+      job.processedBy?.host ?? null,
+      job.processedBy?.pid ?? null,
     ];
 
     const indices = columnIndices(columns);
@@ -4263,6 +7060,7 @@ export class SqlDriver implements JobsDriver {
     const number = (value: unknown): number => Number(value);
     const nullableNumber = (value: unknown): number | null =>
       value === null || value === undefined ? null : Number(value);
+    const processedBy = this.#decodeStamp(row);
 
     return {
       id: String(row.id),
@@ -4295,6 +7093,38 @@ export class SqlDriver implements JobsDriver {
       repeatKey: (row.repeat_key as string | null) ?? null,
       // Absent on a table not yet synced, which reads as a job in no flow.
       flow: this.#decodeFlow(row.flow),
+      // Left off rather than `null` for a job never claimed, as a record
+      // added without one reads back on every backend that stores it whole.
+      ...(processedBy ? { processedBy } : {}),
+    };
+  }
+
+  /**
+   * The attribution stamp a row carries: `processed_by_id` as its id, and
+   * the key, host and pid where the claim recorded them — each absent rather
+   * than `null` when it did not. `null` for a job never claimed, and for every
+   * row of a table not yet synced, which has no such columns: such a job reads
+   * as unattributed rather than as its holder.
+   *
+   * `processed_by_pid` goes through `Number()`, since an engine may hand back
+   * an integer as a string.
+   */
+  #decodeStamp(row: Record<string, unknown>): JobWorkerRef | null {
+    if (row.processed_by_id == null) {
+      return null;
+    }
+
+    return {
+      id: String(row.processed_by_id),
+      ...(row.processed_by_key == null
+        ? {}
+        : { key: String(row.processed_by_key) }),
+      ...(row.processed_by_host == null
+        ? {}
+        : { host: String(row.processed_by_host) }),
+      ...(row.processed_by_pid == null
+        ? {}
+        : { pid: Number(row.processed_by_pid) }),
     };
   }
 
@@ -4358,6 +7188,28 @@ export class SqlDriver implements JobsDriver {
   }
 
   /**
+   * Whether a failure delivery from `child` is stale, judged by the child's
+   * own row read inside `tx`: the row exists and either its outcome has
+   * already been delivered (`flow.recorded`) or it is no longer `dead` — it
+   * was retried after the failure being delivered. A child with no row is
+   * not stale: its failure still buries.
+   */
+  async #staleFailure(tx: SQL, ns: string, child: JobRef): Promise<boolean> {
+    const { bind, values } = this.#binder();
+    const row = await this.#one<{ state: string; flow: unknown }>(
+      `SELECT state, flow FROM ${this.#tables.jobs}
+        WHERE ns = ${bind(ns)} AND queue = ${bind(child.queue)} AND id = ${bind(child.id)}`,
+      values,
+      tx,
+    );
+
+    return (
+      row !== null &&
+      (row.state !== "dead" || this.#decodeFlow(row.flow)?.recorded === true)
+    );
+  }
+
+  /**
    * Tells waiting workers that `q` has a job ready, where the engine can.
    *
    * The same `pg_notify` an insert carries, sent on its own because a released
@@ -4378,9 +7230,153 @@ export class SqlDriver implements JobsDriver {
   /** Removes one job by id, returning how many rows went. */
   async #deleteJob(q: QueueRef, id: string): Promise<number> {
     const { bind, values } = this.#binder();
-    return await this.#run(
+    return await this.#runPoint(
       `DELETE FROM ${this.#tables.jobs}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
+      values,
+    );
+  }
+
+  /* --- run logs ------------------------------------------------------- */
+
+  /**
+   * The lowest and highest line number one run's log still holds, or zeroes
+   * when it holds nothing.
+   *
+   * These two numbers are the whole of a run log's bookkeeping. Trimming only
+   * ever deletes from the front, so `firstSeq - 1` is exactly how many lines a
+   * cap dropped — no counter to keep, and nothing that can disagree with the
+   * rows.
+   */
+  async #runLogBounds(
+    ns: string,
+    key: string,
+    runId: string,
+  ): Promise<{ firstSeq: number; lastSeq: number }> {
+    const { bind, values } = this.#binder();
+    const row = await this.#one<{
+      lowest: number | string | null;
+      highest: number | string | null;
+    }>(
+      `SELECT MIN(line_no) AS lowest, MAX(line_no) AS highest
+         FROM ${this.#tables.run_logs}
+        WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+          AND run_id = ${bind(runId)}`,
+      values,
+    );
+
+    return {
+      firstSeq: Number(row?.lowest ?? 0),
+      lastSeq: Number(row?.highest ?? 0),
+    };
+  }
+
+  /**
+   * Applies the per-run caps, and answers how many lines the run has lost in
+   * total.
+   *
+   * The line cap is one `DELETE` on a computed bound. The byte cap cannot be:
+   * it needs a running total from the newest line backwards, and the window
+   * function that would express it is not available on every engine this
+   * driver supports. The sizes are read instead and accumulated here — bounded
+   * by the line cap, so at most `maxLines` small rows, and only when the log is
+   * actually over its byte cap.
+   */
+  async #trimRunLog(
+    ns: string,
+    key: string,
+    runId: string,
+    caps: RunLogCaps,
+    lastSeq: number,
+  ): Promise<number> {
+    if (caps.maxLines > 0) {
+      await this.#dropRunLogBelow(ns, key, runId, lastSeq - caps.maxLines + 1);
+    }
+
+    if (caps.maxBytes > 0) {
+      const { bind, values } = this.#binder();
+      const rows = await this.#all<{
+        line_no: number | string;
+        bytes: number | string;
+      }>(
+        `SELECT line_no, bytes FROM ${this.#tables.run_logs}
+          WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+            AND run_id = ${bind(runId)}
+          ORDER BY line_no DESC`,
+        values,
+      );
+
+      let total = 0;
+      let keepFrom: number | undefined;
+
+      for (const row of rows) {
+        total += Number(row.bytes);
+        // One line always survives, however long: an empty log says less
+        // than an over-long one.
+        if (total > caps.maxBytes && keepFrom !== undefined) {
+          break;
+        }
+        keepFrom = Number(row.line_no);
+      }
+
+      if (keepFrom !== undefined) {
+        await this.#dropRunLogBelow(ns, key, runId, keepFrom);
+      }
+    }
+
+    return (await this.#runLogBounds(ns, key, runId)).firstSeq - 1;
+  }
+
+  /** Deletes a run's lines numbered below `keepFrom`. */
+  async #dropRunLogBelow(
+    ns: string,
+    key: string,
+    runId: string,
+    keepFrom: number,
+  ): Promise<void> {
+    if (keepFrom <= 1) {
+      return;
+    }
+
+    const { bind, values } = this.#binder();
+    await this.#run(
+      `DELETE FROM ${this.#tables.run_logs}
+        WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+          AND run_id = ${bind(runId)} AND line_no < ${bind(keepFrom)}`,
+      values,
+    );
+  }
+
+  /**
+   * Drops the logs of every run but this runner's `keepRuns` most recent.
+   *
+   * Run order is `MIN(seq)`, the insertion order of a run's first line — not
+   * `at`, which capture stamps and a clock could disagree about, and not
+   * `line_no`, which restarts at 1 for every run.
+   *
+   * The derived table is for MySQL, which refuses to read the table a `DELETE`
+   * is deleting from any other way; the others do not mind it.
+   */
+  async #evictRunLogs(
+    ns: string,
+    key: string,
+    keepRuns: number,
+  ): Promise<void> {
+    const table = this.#tables.run_logs;
+    const { bind, values } = this.#binder();
+
+    await this.#run(
+      `DELETE FROM ${table}
+        WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+          AND run_id IN (
+            SELECT run_id FROM (
+              SELECT run_id FROM ${table}
+               WHERE ns = ${bind(ns)} AND runner_key = ${bind(key)}
+               GROUP BY run_id
+               ORDER BY MIN(seq) DESC
+               LIMIT ${MAX_EVICTED_RUN_LOGS} OFFSET ${Math.max(0, Math.floor(keepRuns))}
+            ) AS stale
+          )`,
       values,
     );
   }
@@ -4441,7 +7437,7 @@ export class SqlDriver implements JobsDriver {
             values,
           )
         ).length
-      : await this.#run(statement, values);
+      : await this.#runPoint(statement, values);
   }
 
   /**
@@ -4735,9 +7731,9 @@ export class SqlDriver implements JobsDriver {
    *
    * Judged by the most reliable count each engine offers. Where there is
    * `RETURNING`, a returned row is the proof: Bun's SQLite client does not
-   * report an affected-row count that can be trusted. MySQL and MariaDB go
-   * through {@link SqlDriver.#run}'s same-connection `ROW_COUNT()`, which
-   * counts *changed* rows rather than matched ones — safe for every caller
+   * report an affected-row count that can be trusted. MySQL and MariaDB use
+   * the result's `affectedRows`, which, like `ROW_COUNT()`, counts *changed*
+   * rows rather than matched ones — safe for every caller
    * here, because each write either removes the row or bumps the version it
    * holds, and so never leaves a matched row unchanged.
    */
@@ -4747,7 +7743,7 @@ export class SqlDriver implements JobsDriver {
       return rows.length > 0;
     }
 
-    return (await this.#run(text, params)) > 0;
+    return (await this.#runPoint(text, params)) > 0;
   }
 
   /** Reads one key/value document. */
@@ -4782,7 +7778,7 @@ export class SqlDriver implements JobsDriver {
     // Insert-if-absent first, then update. A bare upsert is enough on
     // Postgres and SQLite, but concurrent `ON DUPLICATE KEY UPDATE` on one
     // key deadlocks in InnoDB; this shape does not.
-    await this.#run(this.dialect.insertIgnore(this.#tables.kv, columns), [
+    await this.#runPoint(this.dialect.insertIgnore(this.#tables.kv, columns), [
       ns,
       key,
       encoded,
@@ -4794,7 +7790,7 @@ export class SqlDriver implements JobsDriver {
     }
 
     const { bind, values } = this.#binder();
-    await this.#run(
+    await this.#runPoint(
       `UPDATE ${this.#tables.kv}
           SET value = ${bind(encoded)}, updated_at = ${bind(Date.now())}
         WHERE ns = ${bind(ns)} AND kv_key = ${bind(key)}`,
@@ -4852,7 +7848,7 @@ export class SqlDriver implements JobsDriver {
     // in InnoDB, so two processes arriving together both hold one and both
     // then try to insert, which deadlocks. With the row already present the
     // lock is an ordinary record lock and the transaction only ever updates.
-    await this.#run(
+    await this.#runPoint(
       this.dialect.insertIgnore(this.#tables.kv, [
         "ns",
         "kv_key",
@@ -4933,52 +7929,187 @@ export class SqlDriver implements JobsDriver {
       return;
     }
 
-    const scan = this.#binder();
-    const stale = await this.#sweepable(
-      `WHERE ns = ${scan.bind(q.ns)} AND queue = ${scan.bind(q.queue)}
-          AND state = ${scan.bind(state)}
-        ORDER BY COALESCE(finished_on, created_at) DESC
-        LIMIT 1000 OFFSET ${Math.max(0, Math.floor(count))}`,
-      scan.values,
-    );
-
-    for (const row of stale) {
-      await this.#deleteJob(q, row.id);
+    if (!this.#retentionDue(q, state, count)) {
+      return;
     }
+
+    const inState = (bind: (value: unknown) => string) =>
+      `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND state = ${bind(state)}`;
+    await this.#sweep(
+      inState,
+      "ORDER BY COALESCE(finished_on, created_at) DESC",
+      RETENTION_SWEEP_LIMIT,
+      Math.max(0, Math.floor(count)),
+      async (ids) => await this.#deleteJobs(ids, inState),
+    );
   }
 
   /**
-   * The ids a retention sweep selected with `where`, less any flow child whose
-   * parent has not recorded its outcome.
+   * Whether this settle should run the count sweep for `state`, or leave it
+   * to a later one.
    *
-   * The check is made on the few rows the sweep already chose, from `flow`
-   * fetched alongside the id, rather than as a JSON predicate in SQL: the
-   * engines spell JSON extraction differently, and Postgres stores a document
-   * bound as text as a JSON *string*, which no path expression reaches into.
-   * A job in no flow has `flow` NULL, so the sweep stays as cheap as it was —
-   * one more column of NULL per selected row. On a table not yet synced there
-   * is no `flow`, no job can be in a flow, and the old statement runs.
+   * The sweep reads every kept row of the state in order to find the ones past
+   * `count` — there is no index its order can walk on most engines — so run
+   * on every settle it made each completion cost O(kept): measured, with
+   * 10,000 kept that was most of a completion. One sweep in every
+   * {@link RETENTION_SLACK} of `count` settles (in this process, per queue and
+   * state) removes everything past `count` at once, which amortises it to a
+   * constant. The price is that up to that many extra jobs (at most
+   * {@link RETENTION_MAX_STRIDE}) can be kept between one process's sweeps; a
+   * `count` under 20 is swept on every settle, exactly as before. The first
+   * settle after a start always sweeps, so what an earlier process left over
+   * goes at once.
    */
-  async #sweepable(
-    where: string,
-    values: unknown[],
-  ): Promise<{ id: string }[]> {
-    return await this.#withFlowColumn(
-      async () =>
-        (
-          await this.#all<{ id: string; flow: unknown }>(
-            `SELECT id, flow FROM ${this.#tables.jobs} ${where}`,
-            values,
-          )
-        ).filter(
-          (row) => !awaitsDelivery({ flow: this.#decodeFlow(row.flow) }),
-        ),
-      async () =>
-        await this.#all<{ id: string }>(
-          `SELECT id FROM ${this.#tables.jobs} ${where}`,
-          values,
-        ),
+  #retentionDue(q: QueueRef, state: JobState, count: number): boolean {
+    const every = Math.min(
+      RETENTION_MAX_STRIDE,
+      Math.max(1, Math.floor(count * RETENTION_SLACK)),
     );
+
+    if (every === 1) {
+      return true;
+    }
+
+    const key = `${q.ns}\n${q.queue}\n${state}`;
+    const since = (this.#retentionSettles.get(key) ?? every - 1) + 1;
+
+    if (since >= every) {
+      this.#retentionSettles.set(key, 0);
+      return true;
+    }
+
+    this.#retentionSettles.set(key, since);
+    return false;
+  }
+
+  /**
+   * Removes up to `limit` jobs matching `filter`, in `order` from `offset`,
+   * less any flow child whose parent has not recorded its outcome; answers how
+   * many `remove` took.
+   *
+   * The flow check is made in JS on the rows the page already chose, from
+   * `flow` fetched alongside the id, rather than as a JSON predicate in SQL:
+   * the engines spell JSON extraction differently, and Postgres stores a
+   * document bound as text as a JSON *string*, which no path expression
+   * reaches into. A job in no flow has `flow` NULL, so the page stays as cheap
+   * as it was — one more column of NULL per selected row. On a table not yet
+   * synced there is no `flow`, no job can be in a flow, and every row goes.
+   *
+   * It pages. A page used to be the whole sweep, and the `LIMIT` was applied
+   * before the check, so a page of held children removed nothing and hid every
+   * removable job behind them: the worker's prune reads a short batch as "the
+   * backlog is gone" and stops, and the count sweep kept everything past them.
+   * Now each page's removable jobs go through `remove` at once — so the
+   * positions past `offset` move up — and the held ones are excluded from the
+   * next page, until `limit` jobs went, a page comes back short, or
+   * {@link SWEEP_MAX_PAGES} pages passed. With no held child on a page, which
+   * is every sweep of a queue with no flows, that is one read as before.
+   */
+  async #sweep(
+    filter: (bind: (value: unknown) => string) => string,
+    order: string,
+    limit: number,
+    offset: number,
+    remove: (ids: string[]) => Promise<number>,
+  ): Promise<number> {
+    let removed = 0;
+    const held: string[] = [];
+
+    for (let page = 0; page < SWEEP_MAX_PAGES && removed < limit; page++) {
+      const wanted = limit - removed;
+      const rows = await this.#sweepPage(filter, order, wanted, offset, held);
+
+      const removable: string[] = [];
+      let newlyHeld = 0;
+      for (const row of rows) {
+        if (awaitsDelivery({ flow: this.#decodeFlow(row.flow) })) {
+          held.push(row.id);
+          newlyHeld++;
+        } else {
+          removable.push(row.id);
+        }
+      }
+
+      if (removable.length > 0) {
+        removed += await remove(removable);
+      }
+
+      // Short: nothing more matches. None held: `removable` was the page, and
+      // either `limit` is reached or the page was short.
+      if (rows.length < wanted || newlyHeld === 0) {
+        break;
+      }
+    }
+
+    return removed;
+  }
+
+  /**
+   * One page of {@link SqlDriver.#sweep}: ids and `flow` of the jobs matching
+   * `filter`, past `offset` in `order`, leaving out the `held` ids earlier
+   * pages kept back. `flow` is `null` on a table without the column.
+   */
+  async #sweepPage(
+    filter: (bind: (value: unknown) => string) => string,
+    order: string,
+    limit: number,
+    offset: number,
+    held: string[],
+  ): Promise<{ id: string; flow: unknown }[]> {
+    const statement = (columns: string) => {
+      const { bind, values } = this.#binder();
+      // Bound in statement order: `?` placeholders are positional.
+      const where = filter(bind);
+      const excluded =
+        held.length === 0
+          ? ""
+          : ` AND id NOT IN (${held.map((id) => bind(id)).join(", ")})`;
+      return {
+        text: `SELECT ${columns} FROM ${this.#tables.jobs}
+          WHERE ${where}${excluded}
+          ${order}
+          LIMIT ${limit}${offset > 0 ? ` OFFSET ${offset}` : ""}`,
+        values,
+      };
+    };
+
+    return await this.#withFlowColumn(
+      async () => {
+        const { text, values } = statement("id, flow");
+        return await this.#all<{ id: string; flow: unknown }>(text, values);
+      },
+      async () => {
+        const { text, values } = statement("id");
+        const rows = await this.#all<{ id: string }>(text, values);
+        return rows.map((row) => ({ id: row.id, flow: null }));
+      },
+    );
+  }
+
+  /**
+   * Deletes the jobs `ids` of `q` that still match `filter` — a sweep's own
+   * condition, so a job that left the swept state since the page was read
+   * stays — in statements of at most {@link INSERT_CHUNK} ids; answers how
+   * many went.
+   */
+  async #deleteJobs(
+    ids: string[],
+    filter: (bind: (value: unknown) => string) => string,
+  ): Promise<number> {
+    let removed = 0;
+
+    for (let start = 0; start < ids.length; start += INSERT_CHUNK) {
+      const chunk = ids.slice(start, start + INSERT_CHUNK);
+      const { bind, values } = this.#binder();
+      removed += await this.#run(
+        `DELETE FROM ${this.#tables.jobs}
+          WHERE ${filter(bind)}
+            AND id IN (${chunk.map((id) => bind(id)).join(", ")})`,
+        values,
+      );
+    }
+
+    return removed;
   }
 
   /**
@@ -5008,6 +8139,157 @@ export class SqlDriver implements JobsDriver {
       }
       this.#flowMissingAt = Date.now();
       return await without();
+    }
+  }
+
+  /**
+   * Runs `withStamp`, which names the attribution stamp's columns, or
+   * `without` where the table does not have them yet — remembered for
+   * {@link STAMP_COLUMNS_RECHECK_MS}, as {@link SqlDriver.#withFlowColumn}
+   * remembers `flow`. `named` is whether the work would name them at all; one
+   * that would not runs `without` directly.
+   *
+   * This is what keeps an upgraded install that has not synced working: the
+   * claim names the columns, and failing it would fail every claim. Until a
+   * sync adds them, a claim records no stamp — `worker_id` still names the
+   * holder while the job is active, as before — and a stamped record is
+   * inserted without its stamp, as an older version would insert it.
+   */
+  async #withStampColumns<T>(
+    named: boolean,
+    withStamp: () => Promise<T>,
+    without: () => Promise<T>,
+  ): Promise<T> {
+    if (
+      !named ||
+      (this.#stampMissingAt !== undefined &&
+        Date.now() - this.#stampMissingAt < STAMP_COLUMNS_RECHECK_MS)
+    ) {
+      return await without();
+    }
+
+    try {
+      const result = await withStamp();
+      this.#stampMissingAt = undefined;
+      this.#stampConfirmed = true;
+      return result;
+    } catch (error) {
+      if (!isMissingStampColumn(error)) {
+        throw error;
+      }
+      this.#stampMissingAt = Date.now();
+      this.#stampConfirmed = false;
+      return await without();
+    }
+  }
+
+  /**
+   * Asks the engine whether the jobs table has the stamp's columns, with a
+   * statement that reads no row, and records the answer where the claim's
+   * fallback keeps it. Any other failure propagates.
+   */
+  async #probeStampColumns(): Promise<void> {
+    const epoch = this.#stampEpoch;
+    try {
+      await withLockRetry(
+        async () =>
+          await this.#sql.unsafe(
+            `SELECT processed_by_id, processed_by_key, processed_by_host, processed_by_pid FROM ${this.#tables.jobs} WHERE 1 = 0`,
+          ),
+      );
+      if (epoch === this.#stampEpoch) {
+        this.#stampMissingAt = undefined;
+        this.#stampConfirmed = true;
+      }
+    } catch (error) {
+      if (!isMissingStampColumn(error)) {
+        throw error;
+      }
+      if (epoch === this.#stampEpoch) {
+        this.#stampMissingAt = Date.now();
+        this.#stampConfirmed = false;
+      }
+    }
+  }
+
+  /**
+   * `capabilities.jobAttribution`: whether the jobs table was last seen with
+   * the stamp's columns — at connect, by a claim or insert, or by a sync.
+   * `false` until something has confirmed them, so before connect it is
+   * `false`: connecting settles it.
+   *
+   * Once connecting has begun, an unconfirmed answer is asked again in the
+   * background: at once when nothing has been seen (a probe whose answer a
+   * sync overtook, or one that failed), and once a "missing" answer is older
+   * than {@link STAMP_COLUMNS_RECHECK_MS}, so a process that never claims
+   * (one serving only the API) still notices a sync another process ran. This
+   * read reports the old answer until that probe lands.
+   */
+  #stampColumnsReady(): boolean {
+    if (this.#stampConfirmed) {
+      return true;
+    }
+
+    const missingAt = this.#stampMissingAt;
+    if (
+      this.#ready !== undefined &&
+      this.#stampProbe === undefined &&
+      (missingAt === undefined ||
+        Date.now() - missingAt >= STAMP_COLUMNS_RECHECK_MS)
+    ) {
+      this.#stampProbe = this.#probeStampColumns()
+        .catch(() => {})
+        .finally(() => {
+          this.#stampProbe = undefined;
+        });
+    }
+
+    return false;
+  }
+
+  /**
+   * Runs a claim with the stamp its options ask for: the worker's id with its
+   * key, host and pid, or with `null` for them to clear an earlier claim's —
+   * or, on a table without the stamp's columns, a claim naming none of them.
+   */
+  async #withClaimStamp<T>(
+    opts: ClaimOptions,
+    claim: (worker: ClaimStatementOptions["worker"]) => Promise<T>,
+  ): Promise<T> {
+    return await this.#withStampColumns(
+      true,
+      async () => await claim(opts.worker ?? null),
+      async () => await claim(undefined),
+    );
+  }
+
+  /**
+   * Runs a read that filters on the stamp's key or id, translating a missing
+   * stamp column into an error that says what to do about it. There is no
+   * answer to give without the columns — no job on such a table has a stamp —
+   * and an empty page would read as "this worker ran nothing".
+   */
+  async #requireStampColumns<T>(
+    names: boolean,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    if (!names) {
+      return await work();
+    }
+
+    try {
+      return await work();
+    } catch (error) {
+      if (!isMissingStampColumn(error)) {
+        throw error;
+      }
+
+      this.#stampMissingAt = Date.now();
+      this.#stampConfirmed = false;
+      throw new ConfigError(
+        `Filtering jobs by worker needs the attribution columns (processed_by_id, processed_by_key, processed_by_host, processed_by_pid) on ${this.#tables.jobs}, which this database does not have yet. Run driver.syncSchema(), or construct the driver with syncSchema: true, to add them.`,
+        { table: this.#tables.jobs, columns: STAMP_COLUMNS },
+      );
     }
   }
 

@@ -96,6 +96,20 @@ export function useCanFn(): (action: JobsApiAction) => boolean {
   );
 }
 
+/**
+ * A predicate over the **untargeted** map from the bootstrap, whatever
+ * `<PermissionScope>` this is in: what the nav, and so the routes, were built
+ * from. A link to another section asks this, since a queue's own answer says
+ * nothing about whether that section's route exists.
+ */
+export function useUntargetedCanFn(): (action: JobsApiAction) => boolean {
+  const { permissions } = useMetaContext();
+  return useMemo(
+    () => (action: JobsApiAction) => canPerform(permissions, action),
+    [permissions],
+  );
+}
+
 /** Whether the backend supports a feature (`MetaDto.features`). */
 export function useFeature(name: FeatureName): boolean {
   return useMetaContext().meta.features[name];

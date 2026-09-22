@@ -1,4 +1,7 @@
 import type { ComponentType, LazyExoticComponent } from "react";
+import type { AddedByStateGroupProps } from "./overview/added";
+import type { SectionProps } from "./overview/sections";
+import type { JobDefaultsPanelProps } from "./queues/panels/jobDefaults";
 import { lazy, Suspense } from "react";
 import { Spinner } from "../components/Spinner";
 
@@ -17,11 +20,11 @@ import { Spinner } from "../components/Spinner";
  * for good, so a failed load swaps in a fresh `lazy()` and "Reload this
  * screen" really fetches the chunk again.
  */
-export function onDemand(
-  load: () => Promise<ComponentType>,
+export function onDemand<TProps extends object = Record<string, never>>(
+  load: () => Promise<ComponentType<TProps>>,
   label: string,
-): ComponentType {
-  let Screen: LazyExoticComponent<ComponentType>;
+): ComponentType<TProps> {
+  let Screen: LazyExoticComponent<ComponentType<TProps>>;
   const create = () =>
     lazy(async () => {
       try {
@@ -32,7 +35,7 @@ export function onDemand(
       }
     });
   Screen = create();
-  function OnDemand() {
+  function OnDemand(props: TProps) {
     return (
       <Suspense
         fallback={
@@ -42,7 +45,7 @@ export function onDemand(
           />
         }
       >
-        <Screen />
+        <Screen {...props} />
       </Suspense>
     );
   }
@@ -101,4 +104,57 @@ export const RunnersListScreen = onDemand(
 export const RunnerScreen = onDemand(
   async () => (await import("./runners")).RunnerScreen,
   "Loading the runner",
+);
+
+/** `/workers`, on demand. */
+export const WorkersListScreen = onDemand(
+  async () => (await import("./workers")).WorkersListScreen,
+  "Loading the workers",
+);
+
+/** `/workers/:queue/:key`, on demand. */
+export const WorkerScreen = onDemand(
+  async () => (await import("./workers")).WorkerScreen,
+  "Loading the worker",
+);
+
+/**
+ * The Overview's Runners analytics section, on demand.
+ *
+ * It is split off the entry deliberately: the Overview is the landing screen,
+ * so everything it imports is paid for on every first load, and a deployment
+ * recording no analytics (`meta.analytics === null`, which is every one until
+ * the recording lands) never renders this section and so never fetches it.
+ * `useAnalyticsGate` in `./overview/gate` decides, and stays in the entry.
+ */
+export const RunnersSection = onDemand<SectionProps>(
+  async () => (await import("./overview/sections")).RunnersSection,
+  "Loading runner analytics",
+);
+
+/** The Overview's Workers analytics section, on demand; see {@link RunnersSection}. */
+export const WorkersSection = onDemand<SectionProps>(
+  async () => (await import("./overview/sections")).WorkersSection,
+  "Loading worker analytics",
+);
+
+/**
+ * The Overview's "added in range, by state" group, on demand. Split off the
+ * entry, which is nearly at its budget, and fetched only where
+ * `features.addedByState` is true — a deployment without it never loads it.
+ */
+export const AddedByStateGroup = onDemand<AddedByStateGroupProps>(
+  async () => (await import("./overview/added")).AddedByStateGroup,
+  "Loading jobs added in the range",
+);
+
+/**
+ * The queue screen's Job defaults panel (with its editor and apply dialogs),
+ * on demand: a chunk of its own, fetched only when the panel is opened on a
+ * queue whose API serves job defaults, so the queue screen's chunk does not
+ * grow by it.
+ */
+export const JobDefaultsPanel = onDemand<JobDefaultsPanelProps>(
+  async () => (await import("./queues/panels/jobDefaults")).JobDefaultsPanel,
+  "Loading the job defaults",
 );

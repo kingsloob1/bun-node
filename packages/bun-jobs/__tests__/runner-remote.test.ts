@@ -227,9 +227,11 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
     expect((await remote.info()).isPaused).toBe(false);
   });
 
-  it("applies them at the next sync without remoteControl", async () => {
+  it("applies them at the next sync with remoteControl off", async () => {
     const { owner, observer } = cluster();
-    const runner = addRunner(owner, { syncInterval: 40 });
+    // Explicitly off: the memory driver's events are local, so the default
+    // (`"auto"`) would subscribe and deliver them before the sync ever fired.
+    const runner = addRunner(owner, { syncInterval: 40, remoteControl: false });
     await runner.start();
 
     const remote = await observer.remote("reports");

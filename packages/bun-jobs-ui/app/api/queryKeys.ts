@@ -17,6 +17,8 @@ export const queryKeys = {
       "permissions",
       { queue: target.queue ?? null, runner: target.runner ?? null },
     ] as const,
+  /** Every `GET /overview` read, whatever window it covers: what an invalidation targets. */
+  overviewAll: ["overview"] as const,
   /** `GET /overview`. */
   overview: (minutes?: number) =>
     ["overview", { minutes: minutes ?? null }] as const,

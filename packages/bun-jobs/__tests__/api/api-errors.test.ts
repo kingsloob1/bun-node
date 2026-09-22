@@ -7,12 +7,14 @@ import {
 } from "@kingsleyweb/bun-common";
 import { describe, expect, it } from "bun:test";
 import {
+  API_ERROR_STATUS,
   ApiError,
   createApiErrorHandler,
   createNotFoundHandler,
   errorStatusCode,
   isNotSupportedError,
   mapCallSiteError,
+  problemTitle,
   tagRequestAction,
   toProblem,
 } from "../../lib/api/errors";
@@ -427,6 +429,54 @@ describe("errorStatusCode", () => {
     expect(errorStatusCode({ status: 600 })).toBe(500);
     expect(errorStatusCode(null)).toBe(500);
     expect(errorStatusCode("boom")).toBe(500);
+  });
+});
+
+describe("the worker-control and runner-config codes", () => {
+  it("each has a status and a title of its own, and none falls back", () => {
+    // The routes are not built yet; the codes land with the contract so a
+    // client can branch on them, and `problemTitle` must already answer for
+    // each — a code with no title of its own would show "Conflict".
+    const expected = {
+      WORKER_NOT_FOUND: 404,
+      WORKER_GONE: 410,
+      WORKER_STATE_CONFLICT: 409,
+      WORKER_NOT_CONTROLLABLE: 409,
+      WORKER_PERSISTENCE_NOT_ALLOWED: 409,
+      CONTROL_CONTENDED: 409,
+      CONFIG_NOT_ALLOWED: 409,
+      RUNNER_NOT_CONFIGURABLE: 409,
+    } as const;
+    expect(API_ERROR_STATUS).toMatchObject(expected);
+    const generic = new Set(["Conflict", "Not found", "Gone"]);
+    for (const [code, status] of Object.entries(expected)) {
+      const title = problemTitle(code, status);
+      expect({ code, generic: generic.has(title) }).toEqual({
+        code,
+        generic: false,
+      });
+      expect({ code, empty: title.length === 0 }).toEqual({
+        code,
+        empty: false,
+      });
+    }
+  });
+
+  it("shapes a problem body a client can branch on", () => {
+    const { problem } = toProblem(
+      new ApiError(
+        "WORKER_PERSISTENCE_NOT_ALLOWED",
+        API_ERROR_STATUS.WORKER_PERSISTENCE_NOT_ALLOWED,
+        "not allowed here",
+      ),
+      { instance: "/queues/mail/workers/w1/stop" },
+    );
+    expect(problem).toMatchObject({
+      type: "urn:bun-jobs:error:WORKER_PERSISTENCE_NOT_ALLOWED",
+      code: "WORKER_PERSISTENCE_NOT_ALLOWED",
+      status: 409,
+      detail: "not allowed here",
+    });
   });
 });
 

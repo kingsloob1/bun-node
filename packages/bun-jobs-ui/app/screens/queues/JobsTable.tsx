@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import type { JobListFilters } from "../../api/queues";
 import type {
   BulkPromoteResultDto,
@@ -6,6 +6,7 @@ import type {
   BulkRetryResultDto,
   JobCountsDto,
   JobDto,
+  JobWorkerDto,
 } from "../../api/types";
 import type { StateTab } from "./jobFilters";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -20,6 +21,7 @@ import {
   mutationInvalidations,
   queueKeys,
 } from "../../api/queues";
+import { workerPath } from "../../api/workers";
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CopyButton } from "../../components/CopyButton";
@@ -34,12 +36,19 @@ import { Table } from "../../components/Table";
 import { UrlTabs } from "../../components/Tabs";
 import { useToast } from "../../components/toast";
 import { useApiClient } from "../../context";
-import { displayText, formatNumber, plural, STATE_LABELS } from "../../format";
+import {
+  displayText,
+  formatNumber,
+  plural,
+  STATE_HINTS,
+  STATE_LABELS,
+} from "../../format";
 import { useApiMutation } from "../../hooks/useApiMutation";
 import { useUrlTab } from "../../hooks/useUrlTab";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useMeta } from "../../meta/hooks";
 import { Link } from "../../router";
+import { useWorkerPagesRouted } from "../workers/routed";
 import { useCanMutate } from "./gating";
 import {
   ALL_STATES,
@@ -82,6 +91,7 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
     ...JOB_STATES.map((state) => ({
       value: state as StateTab,
       label: STATE_LABELS[state],
+      title: STATE_HINTS[state],
       count: counts?.[state],
     })),
   ];
@@ -91,7 +101,13 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
 
   const jobs = useQuery({
     queryKey: queueKeys.jobs(queue, filters),
-    queryFn: ({ signal }) => listJobs(api, queue, filters, signal),
+    // Newest added first on every tab where the backend can sort by
+    // `createdAt`; elsewhere each tab's natural order (the flag's absence
+    // means the API refuses `sort=createdAt`).
+    queryFn: ({ signal }) =>
+      listJobs(api, queue, filters, signal, {
+        createdOrder: meta.features.addedByState,
+      }),
     refetchInterval,
     placeholderData: keepPreviousData,
   });
@@ -120,9 +136,10 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
         key={`${params.get("name") ?? ""}|${filters.search}`}
         filters={filters}
         searchIndexed={meta.features.search}
+        createdOrder={meta.features.addedByState}
         onApply={(patch) => update({ ...patch, offset: null })}
         onOrder={(order) =>
-          update({ order: order === "desc" ? "desc" : null, offset: null })
+          update({ order: order === "asc" ? "asc" : null, offset: null })
         }
         onTotal={(total) => update({ total: total ? "1" : null })}
       />
@@ -167,23 +184,37 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
 }
 
 /** Props of {@link JobFiltersBar}. */
-interface JobFiltersBarProps {
+export interface JobFiltersBarProps {
   /** The filters in effect. */
   filters: JobListFilters;
   /** Whether the backend searches with an index (else the API scans). */
   searchIndexed: boolean;
+  /**
+   * Whether pages are sorted by creation time on every tab
+   * (`features.addedByState`). With it on, the "Count total" toggle says that
+   * a counted page keeps the tab's natural order instead. Defaults to `false`.
+   */
+  createdOrder?: boolean;
   /** Applies the name and search filters. */
   onApply: (patch: { name: string | null; search: string | null }) => void;
   /** Changes the order. */
   onOrder: (order: "asc" | "desc") => void;
-  /** Turns counting the total on or off. */
-  onTotal: (total: boolean) => void;
+  /**
+   * Turns counting the total on or off. Omit it and the "Count total" toggle
+   * is not offered (a worker page never counts: its range is what keeps the
+   * read fast).
+   */
+  onTotal?: (total: boolean) => void;
 }
 
-/** The name filter, the id/name search, the order and the total toggle. */
-function JobFiltersBar({
+/**
+ * The name filter, the id/name search, the order and the total toggle. The
+ * queue's jobs table and a worker page's jobs section share it.
+ */
+export function JobFiltersBar({
   filters,
   searchIndexed,
+  createdOrder = false,
   onApply,
   onOrder,
   onTotal,
@@ -246,38 +277,73 @@ function JobFiltersBar({
         <Select
           id={orderId}
           options={[
-            { value: "asc", label: "Oldest first" },
             { value: "desc", label: "Newest first" },
+            { value: "asc", label: "Oldest first" },
           ]}
           value={filters.order}
           onChange={onOrder}
         />
       </span>
-      <Checkbox
-        checked={filters.total}
-        onChange={onTotal}
-        label="Count total"
-        className="jobs-total"
-      />
+      {onTotal && (
+        <Checkbox
+          checked={filters.total}
+          onChange={onTotal}
+          label="Count total"
+          hint={
+            createdOrder && filters.total
+              ? "While counting, a one-state tab keeps its own order, not creation order."
+              : undefined
+          }
+          className="jobs-total"
+        />
+      )}
     </form>
   );
 }
 
 /** Props of {@link JobRows}. */
-interface JobRowsProps {
+export interface JobRowsProps {
   /** The queue listed. */
   queue: string;
   /** The page's jobs. */
   items: readonly JobDto[];
+  /** The table's accessible name. Defaults to "Jobs in <queue>". */
+  label?: string;
+  /**
+   * Whether each id links to its job screen. Defaults to `true`; pass
+   * `false` where the job screen is not routed (no Queues nav entry).
+   */
+  linkJobs?: boolean;
+  /** What an empty page shows. Defaults to "No jobs" for the queue's filters. */
+  empty?: ReactNode;
+  /**
+   * Whether to offer the "Processed by" column (`JobDto.processedBy`, the
+   * worker that ran each job's last attempt). Defaults to `true`; it shows
+   * only where `features.jobAttribution` is also true. A worker page passes
+   * `false`: every row there names that page's own key.
+   */
+  processedBy?: boolean;
 }
 
 /** Which bulk confirmation is open. */
 type BulkDialog = "remove" | null;
 
-/** The table, its selection, and the bulk actions over it. */
-function JobRows({ queue, items }: JobRowsProps) {
+/**
+ * The table, its selection, and the bulk actions over it. The queue's jobs
+ * table and a worker page's jobs section share it.
+ */
+export function JobRows({
+  queue,
+  items,
+  label,
+  linkJobs = true,
+  empty,
+  processedBy = true,
+}: JobRowsProps) {
   const api = useApiClient();
   const meta = useMeta();
+  const workersRouted = useWorkerPagesRouted();
+  const showProcessedBy = processedBy && meta.features.jobAttribution;
   const toast = useToast();
   const canMutate = useCanMutate();
   const max = meta.limits.maxBulkIds;
@@ -397,10 +463,12 @@ function JobRows({ queue, items }: JobRowsProps) {
 
   if (items.length === 0) {
     return (
-      <EmptyState
-        title="No jobs"
-        description="No job in this queue matches the state and filters."
-      />
+      empty ?? (
+        <EmptyState
+          title="No jobs"
+          description="No job in this queue matches the state and filters."
+        />
+      )
     );
   }
 
@@ -468,7 +536,7 @@ function JobRows({ queue, items }: JobRowsProps) {
           )}
         </div>
       )}
-      <Table label={`Jobs in ${queue}`}>
+      <Table label={label ?? `Jobs in ${queue}`}>
         <thead>
           <tr>
             {bulk && (
@@ -503,6 +571,16 @@ function JobRows({ queue, items }: JobRowsProps) {
             </th>
             <th scope="col">Created</th>
             <th scope="col">Processed</th>
+            {showProcessedBy && (
+              <th
+                scope="col"
+                className="job-processed-by-col"
+                title="The worker that ran the job's last attempt"
+                data-testid="jobs-processed-by-header"
+              >
+                Processed by
+              </th>
+            )}
             <th scope="col">Finished</th>
             <th scope="col">Failure</th>
           </tr>
@@ -532,7 +610,11 @@ function JobRows({ queue, items }: JobRowsProps) {
                   scope="row"
                   className="job-id"
                 >
-                  <Link to={jobPath(queue, job.id)}>{job.id}</Link>
+                  {linkJobs ? (
+                    <Link to={jobPath(queue, job.id)}>{job.id}</Link>
+                  ) : (
+                    job.id
+                  )}
                   <CopyButton
                     text={job.id}
                     label="Copy"
@@ -554,6 +636,13 @@ function JobRows({ queue, items }: JobRowsProps) {
                 <td>
                   <RelativeTime value={job.processedOn} />
                 </td>
+                {showProcessedBy && (
+                  <ProcessedByCell
+                    queue={queue}
+                    worker={job.processedBy}
+                    linked={workersRouted}
+                  />
+                )}
                 <td>
                   <RelativeTime value={job.finishedOn} />
                 </td>
@@ -579,5 +668,72 @@ function JobRows({ queue, items }: JobRowsProps) {
         onConfirm={() => remove.mutateAsync(ids)}
       />
     </>
+  );
+}
+
+/** Props of {@link ProcessedByCell}. */
+interface ProcessedByCellProps {
+  /** The job's queue: a worker page is addressed by it and the key. */
+  queue: string;
+  /** `JobDto.processedBy`: the worker that ran the last attempt, or `null` when none is recorded. */
+  worker: JobWorkerDto | null;
+  /** Whether the key links to its worker page (the Workers pages are routed for this caller). */
+  linked: boolean;
+}
+
+/**
+ * One job's "Processed by" cell: the stable key (linked to its worker page
+ * when those are routed), the incarnation id as plain text when only the id
+ * was recorded, and "—" when no worker is.
+ */
+function ProcessedByCell({ queue, worker, linked }: ProcessedByCellProps) {
+  if (worker === null) {
+    return (
+      <td
+        className="job-processed-by-col muted"
+        title="No worker recorded: the job was never claimed, or was claimed before this backend recorded who ran a job."
+        data-testid="jobs-processed-by-none"
+      >
+        —
+      </td>
+    );
+  }
+  if (worker.key === undefined) {
+    return (
+      <td
+        className="job-processed-by-col"
+        title={`Worker incarnation ${worker.id} (no stable key recorded)`}
+      >
+        <code
+          className="job-processed-by-text"
+          data-testid="jobs-processed-by-id"
+        >
+          {worker.id}
+        </code>
+      </td>
+    );
+  }
+  return (
+    <td
+      className="job-processed-by-col"
+      title={`${worker.key} (incarnation ${worker.id})`}
+    >
+      {linked ? (
+        <Link
+          to={workerPath(queue, worker.key)}
+          className="job-processed-by-text"
+          data-testid="jobs-processed-by-key"
+        >
+          {worker.key}
+        </Link>
+      ) : (
+        <span
+          className="job-processed-by-text"
+          data-testid="jobs-processed-by-key"
+        >
+          {worker.key}
+        </span>
+      )}
+    </td>
   );
 }

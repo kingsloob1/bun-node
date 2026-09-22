@@ -5,10 +5,17 @@ import type { BunJobs, BunRunner } from "@kingsleyweb/bun-jobs";
  *
  * | Runner     | Schedule          | What you see                                   |
  * |------------|-------------------|------------------------------------------------|
- * | `backup`   | every 30 s        | runs often, a growing history                  |
+ * | `backup`   | every 30 s        | spawned: runs in a child process               |
  * | `sync-crm` | every minute      | fails about half the time (`lastError`)        |
  * | `archive`  | Sundays 04:30     | paused: Resume… instead of Pause               |
- * | `reindex`  | none              | only runs when you press Trigger…              |
+ * | `reindex`  | none              | spawned; only runs when you press Trigger…     |
+ * | `ping`     | every 10 s        | times out about half the time, throws 1 in 5   |
+ *
+ * `backup` and `reindex` run in a child process; the others in-process. Every
+ * run's log holds its `stdout` and `stderr` as well as its `ctx.log()` lines,
+ * whichever way it runs: a spawned run's through its pipes, an in-process
+ * run's because capture attributes each `console` call to the run that made
+ * it. So an in-process run's `console.warn` lands on `stderr` in its own log.
  */
 
 /** The started runners, and how to stop them. */
@@ -27,7 +34,8 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
   const backup = jobs.runner({
     id: "backup",
     file: WORK,
-    executionMode: "in-process",
+    // A child process: its stdout and stderr are captured from its pipes.
+    executionMode: "spawn",
     schedule: { every: 30_000 },
     waitToExit: false,
   });
@@ -49,11 +57,25 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
   const reindex = jobs.runner({
     id: "reindex",
     file: WORK,
-    executionMode: "in-process",
+    executionMode: "spawn",
     waitToExit: false,
   });
 
-  const runners = [backup, syncCrm, archive, reindex];
+  // The Overview's Runners section counts a run that threw (`failed`) apart
+  // from one that timed out or was killed. This one does all of it often
+  // enough to see within a minute: its work takes 2–8 s against a 5 s
+  // timeout, and one run in five that beats the clock throws.
+  const ping = jobs.runner({
+    id: "ping",
+    file: WORK,
+    executionMode: "in-process",
+    schedule: { every: 10_000 },
+    timeout: 5_000,
+    args: { failRate: 0.2 },
+    waitToExit: false,
+  });
+
+  const runners = [backup, syncCrm, archive, reindex, ping];
   for (const runner of runners) {
     await runner.start();
   }

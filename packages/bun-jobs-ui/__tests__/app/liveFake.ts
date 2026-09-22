@@ -6,6 +6,7 @@ import type {
   JobsApiGapMessage,
   QueueEventName,
   RunnerEventName,
+  WorkerEventName,
 } from "../../app/api/types";
 import type * as LiveModule from "../../app/live";
 import type { LiveStatus, LiveSubscription } from "../../app/live";
@@ -204,6 +205,14 @@ export function eventChannels(event: EventWire): string[] {
   if (event.kind === "runner") {
     return ["all", "runners", real.liveChannels.runner(event.target)];
   }
+  // Worker events are off `all` and `queues`: only the worker channels carry
+  // them, and their target is the queue the worker consumes.
+  if (event.kind === "worker") {
+    return [
+      real.liveChannels.workers,
+      real.liveChannels.queueWorkers(event.target),
+    ];
+  }
   const ids = new Set<string>();
   if (event.id !== undefined) {
     ids.add(event.id);
@@ -339,9 +348,9 @@ export function installLiveFake(
 export interface TestEvent<Name extends string> {
   /** The event name. */
   type: Name;
-  /** The queue or runner. */
+  /** The queue or runner (for a worker event, the queue it consumes). */
   target: string;
-  /** The job or run id. */
+  /** The job or run id (for a worker event, the worker's incarnation id). */
   id?: string;
   /** What it carries. */
   payload?: unknown;
@@ -354,6 +363,17 @@ export function queueEvent(fields: TestEvent<QueueEventName>): EventWire {
   return {
     v: 1,
     kind: "queue",
+    at: Date.now(),
+    payload: {},
+    ...fields,
+  } as EventWire;
+}
+
+/** A worker event: `target` is the queue the worker consumes, `id` the worker's incarnation. */
+export function workerEvent(fields: TestEvent<WorkerEventName>): EventWire {
+  return {
+    v: 1,
+    kind: "worker",
     at: Date.now(),
     payload: {},
     ...fields,

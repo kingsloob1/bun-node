@@ -29,9 +29,36 @@ const URL = process.env.BUN_JOBS_TEST_REDIS_URL;
 /** Drivers to close when the suite ends. */
 const drivers: JobsDriver[] = [];
 
+/**
+ * The exact namespaces this file created, purged by name when the suite ends —
+ * never a prefix sweep: other sessions share that server.
+ */
+const namespaces: string[] = [];
+
 afterAll(async () => {
+  // The drivers first, so nothing they still buffer is written back after
+  // the purge.
   await Promise.allSettled(drivers.map((driver) => driver.close()));
+
+  if (URL && namespaces.length > 0) {
+    const janitor = new RedisDriver({ url: URL });
+
+    try {
+      for (const ns of namespaces.splice(0)) {
+        await janitor.purge(ns).catch(() => undefined);
+      }
+    } finally {
+      await janitor.close();
+    }
+  }
 });
+
+/** A queue in a namespace of its own, remembered so it is purged afterwards. */
+function scope(queue: string): { ns: string; queue: string } {
+  const ns = testNamespace();
+  namespaces.push(ns);
+  return { ns, queue };
+}
 
 /**
  * A record with every field set to something distinct and non-default.
@@ -104,7 +131,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it.skipIf(!URL)("round-trips every field through addJob", async () => {
     const driver = new RedisDriver({ url: URL });
     drivers.push(driver);
-    const q = { ns: testNamespace(), queue: "fields" };
+    const q = scope("fields");
     await driver.ensureQueue(q);
 
     const job = fullyPopulated("single");
@@ -118,7 +145,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it.skipIf(!URL)("round-trips every field through addJobs", async () => {
     const driver = new RedisDriver({ url: URL });
     drivers.push(driver);
-    const q = { ns: testNamespace(), queue: "fields" };
+    const q = scope("fields");
     await driver.ensureQueue(q);
 
     // Two at once, so the batch path's per-job cursor arithmetic is exercised:
@@ -137,7 +164,7 @@ describe("Redis add scripts: the positional wire format", () => {
     async () => {
       const driver = new RedisDriver({ url: URL });
       drivers.push(driver);
-      const q = { ns: testNamespace(), queue: "fields" };
+      const q = scope("fields");
       await driver.ensureQueue(q);
 
       // The stride differs per job — nine values then twenty-two — so a batch
@@ -158,7 +185,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it.skipIf(!URL)("reads a hash written before `blob` existed", async () => {
     const driver = new RedisDriver({ url: URL });
     drivers.push(driver);
-    const q = { ns: testNamespace(), queue: "legacy" };
+    const q = scope("legacy");
     await driver.ensureQueue(q);
 
     // Nothing rewrites a hash in place, so an upgraded deployment's jobs still
@@ -216,7 +243,7 @@ describe("Redis add scripts: the positional wire format", () => {
   it.skipIf(!URL)("places a record by the state it arrived with", async () => {
     const driver = new RedisDriver({ url: URL });
     drivers.push(driver);
-    const q = { ns: testNamespace(), queue: "placed" };
+    const q = scope("placed");
     await driver.ensureQueue(q);
 
     // The script now reads `state` out of ARGV rather than reading back the

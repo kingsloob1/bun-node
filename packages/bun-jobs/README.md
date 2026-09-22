@@ -38,11 +38,17 @@ shipped declaration imports either.
 The package is being assembled in phases. What has landed on this branch, and
 is documented below:
 
-- the runner, with `BunRunnerManager`
+- the runner, with `BunRunnerManager` and per-run captured logs
 - the queue and worker, including repeatable jobs, debounce and throttle,
   limits, dead letters, flows, isolated processors and job logs
 - the `BunJobs` context, the job registry and the builder with dates in words
 - `JobsNotifier`, one event stream per namespace
+- remote control from any process: pausing, stopping, starting and
+  reconfiguring workers, and overriding a runner's executor and overlap
+  settings
+- analytics: per-second and per-minute series of every queue's jobs, each
+  runner's runs and durations, and each worker's jobs and busyness, served by
+  the management API
 - the memory, file, SQL, MongoDB and Redis drivers, with schema sync for SQL
   and MongoDB
 
@@ -62,15 +68,18 @@ reference.
   - [Job options](#job-options)
   - [Queue options](#queue-options)
   - [Queue methods](#queue-methods)
+  - [Queue job defaults](#queue-job-defaults)
 - [Workers](#workers)
   - [Worker options](#worker-options)
   - [Retries and backoff](#retries-and-backoff)
   - [Rate and concurrency limits](#rate-and-concurrency-limits)
   - [Dead letters](#dead-letters)
   - [Pause, resume and shutdown](#pause-resume-and-shutdown)
+  - [Controlling workers from another process](#controlling-workers-from-another-process)
   - [Stalled jobs](#stalled-jobs)
 - [The job API](#the-job-api)
   - [Failing a job](#failing-a-job)
+  - [Clearing a job's log](#clearing-a-jobs-log)
 - [The BunJobs registry and builder](#the-bunjobs-registry-and-builder)
   - [BunJobs options](#bunjobs-options)
   - [Defining and adding jobs](#defining-and-adding-jobs)
@@ -84,14 +93,26 @@ reference.
 - [Debounce and throttle](#debounce-and-throttle)
 - [Flows](#flows)
 - [Reading a queue: search, totals, workers and throughput](#reading-a-queue-search-totals-workers-and-throughput)
+- [Who ran a job: worker attribution](#who-ran-a-job-worker-attribution)
+- [Jobs added in a range, and sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
 - [Isolated processors](#isolated-processors)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Triggers and run modes](#triggers-and-run-modes)
   - [Handlers, messages and kills](#handlers-messages-and-kills)
+  - [Run logs](#run-logs)
   - [Introspection](#introspection)
+  - [Clearing run history](#clearing-run-history)
+  - [Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely)
   - [BunRunnerManager](#bunrunnermanager)
 - [Events and JobsNotifier](#events-and-jobsnotifier)
+- [Analytics](#analytics)
+  - [The `metrics` option](#the-metrics-option)
+  - [What is recorded](#what-is-recorded)
+  - [Analytics per driver](#analytics-per-driver)
+  - [Analytics in a driver of your own](#analytics-in-a-driver-of-your-own)
+- [Management API](#management-api)
+  - [Analytics routes](#analytics-routes)
 - [Drivers](#drivers)
   - [Choosing a driver](#choosing-a-driver)
   - [Driver configs](#driver-configs)
@@ -119,7 +140,7 @@ if you use them:
 
 | Peer | Range | Needed for |
 |---|---|---|
-| `mongodb` | `>=6` | the MongoDB driver. Imported only when that driver connects. Needs **MongoDB 4.2 or later**. |
+| `mongodb` | `>=6` | the MongoDB driver. Imported only when that driver connects. Needs **MongoDB 4.2 or later**, with a raised [open-file limit](#open-file-limits). |
 | `chrono-node` | `>=2.7.0 <3` | reading **dates** in words (`"tomorrow at 9am"`, `"every 2 weeks starting 1st december"`). Durations (`"5 minutes"`) and cron do not need it. You can also supply your own [`dateParser`](#dates-in-words). |
 | `@types/bun` | `>=1.4.2` | types. The package ships raw `.ts`, so your project compiles it. |
 
@@ -303,8 +324,18 @@ forms:
 
 - `true` removes the job immediately;
 - `false` keeps it forever;
-- a number keeps that many jobs;
+- a number keeps that many jobs. On the SQL driver a count of 20 or more is
+  enforced once every tenth of it (at most every 500 settles) per process,
+  per queue and state, rather than on every settle, so up to that many extra
+  jobs can be kept between sweeps (`removeOnComplete: 1000` keeps at most
+  about 1,099 per process). A smaller count is exact;
 - `{ count, ttl }` does both.
+
+A `ttl` is enforced by the workers' maintenance: every minute a worker sweeps
+expired jobs in batches of 100 while batches come back full, up to 5,000 jobs
+or 500 ms per tick, and runs a catch-up pass a second later while a backlog
+remains. On Redis the sweep also reaches expired jobs queued behind
+long-lived ones, resuming from a saved cursor.
 
 A flow child is never removed before its parent has recorded its outcome.
 
@@ -436,6 +467,7 @@ or the one you originally supplied — so removing the stale one is
 | `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where jobs live. A config is built and closed here; an instance is shared. |
 | `logger` | `LoggerLike` | no-op | See [Logging](#logging). |
 | `defaultJobOptions` | `JobOptions` | | Merged under every `add()`. |
+| `jobDefaultsRefreshInterval` | `number` | `1000` | How long the queue's stored job defaults are trusted before being re-read, in ms: how long a saved change takes to reach this producer, plus one read. `0` reads them on every add. See [Queue job defaults](#queue-job-defaults). |
 | `subscribe` | `boolean` | `false` | Re-emit events published by other processes, so a producer can watch jobs a worker elsewhere runs. Costs a subscription. |
 | `publish` | `boolean` | value of `subscribe` | Publish this queue's events for other processes. |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. `BunJobs` sets it so events are not lost while its notifiers subscribe. |
@@ -452,8 +484,9 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `addBulk([{ name, data, opts? }])` | Adds several jobs in one call. Entries with `repeat` are added one at a time. |
 | `addFlow(node)` | Adds a job together with the jobs it waits on. See [Flows](#flows). |
 | `getJob(id)` | Returns one job, or `null`. |
-| `list(state \| states, { offset, limit = 100, order = "asc" })` | Returns jobs in the given state or states. |
+| `list(state \| states, { offset, limit = 100, order = "asc", sort = "natural" })` | Returns jobs in the given state or states. Also takes `name`, `search`, and the worker and finish-time filters `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. See [Who ran a job](#who-ran-a-job-worker-attribution). `sort: "createdAt"` orders by creation time on memory, SQL and MongoDB; see [sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `count()` / `count(state)` | Returns counts for every state, or for one. |
+| `countAdded({ from, to })` | Of the jobs added in `[from, to)`, how many are in each state now. Memory, SQL and MongoDB only; see [Jobs added in a range](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `update(id, { data?, priority?, runAt?, onlyIn? })` | Patches a stored job. `runAt` moves only a waiting or delayed job. `onlyIn` makes the change conditional on the job's state. |
 | `remove(id)` | Removes a job. Refused while the job is active. |
 | `retry(id, { resetAttempts = true })` | Returns a finished job to the queue. |
@@ -461,14 +494,159 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `retryAll(state, { name?, reason?, filter?, limit?, resetAttempts? })` | Re-drives every matching `dead`, `failed` or `completed` job, walking the state one page at a time. |
 | `promote(id)` | Makes a delayed or retry-pending job claimable now. |
 | `getJobLogs(id, { offset, limit, order })` | Returns a page of a job's log. |
+| `clearJobLogs(id)` | Empties a job's log, and answers `{ status: "cleared", removed }`, `{ status: "active" }` (refused, nothing removed) or `{ status: "missing" }`. See [Clearing a job's log](#clearing-a-jobs-log). |
 | `pause()` / `resume()` / `isPaused()` | Pauses or resumes claiming for every worker in every process. |
 | `drain({ delayed = false })` | Drops pending jobs and returns the count. It never touches jobs that are running. |
 | `clean(state, { olderThan, limit = 1000 })` | Removes jobs in `state` older than `olderThan` ms. |
 | `setLimits(limits \| null)` / `getLimits()` | Cluster-wide limits. See [Rate and concurrency limits](#rate-and-concurrency-limits). |
+| `getJobDefaults()` | The queue's job defaults: `code`, the stored `override`, `effective`, `overridden`, `seq`. See [Queue job defaults](#queue-job-defaults). |
+| `setJobDefaults(patch, { expectedSeq? })` / `resetJobDefaults({ expectedSeq? })` | Merges into, or clears, the queue's stored job defaults. `null` clears one key. |
+| `applyJobDefaults({ seq, keys?, states?, limit?, cursor?, dryRun?, includeUnmarked? })` | Rewrites jobs already pending with the stored job defaults, one bounded call of a resumable walk. |
 | `cleanWindows({ limit = 1000 })` | Removes stale debounce and throttle pointers. Workers also do this once a minute. |
 | `listRepeatables()` / `removeRepeatable(key)` | Lists repeat series, each with `disabled`, or removes one along with its scheduled occurrence. Removing a series clears its disabled flag. |
 | `disableRepeatable(key)` / `enableRepeatable(key)` | Stops a series without removing it, or restarts it. See [Disabling a series](#disabling-a-series). |
 | `close()` | Closes the subscription, and the driver if the queue built it. |
+
+### Queue job defaults
+
+A queue's job options can be changed while it runs: store an override on the
+queue, and every producer in every process adds under it. The override lives
+in queue state, beside [limits](#rate-and-concurrency-limits), so every
+built-in driver can hold one.
+
+```ts
+await queue.setJobDefaults({
+  attempts: 5,
+  backoff: { type: "exponential", delay: 1_000, max: 60_000 },
+  removeOnComplete: { count: 1_000 },
+});
+await queue.setJobDefaults({ attempts: null }); // one key back to the code's value
+await queue.resetJobDefaults(); // all of them
+```
+
+**Precedence**, highest first, key by key:
+
+1. an option passed explicitly on the job's own `add()`;
+2. the stored override;
+3. a [`define()`](#defining-and-adding-jobs) definition's options, for its
+   name;
+4. the queue's `defaultJobOptions`;
+5. the built-ins.
+
+The override beats a `define()` default: only `add()` wins. Each key is
+replaced whole — an override's `backoff` replaces the code's whole object.
+The editable keys are `attempts`, `backoff`, `timeout`, `priority`,
+`removeOnComplete`, `removeOnFail`, `keepLogs` and `keepStacktraces`
+(`JOB_DEFAULT_KEYS`). Each is bounded by `JOB_DEFAULTS_BOUNDS`: `attempts`
+1–1,000, `timeout` at most a day, `keepLogs` at least 1 (a stored override
+cannot turn on "keep every line"), `keepStacktraces` at most 100, a retention
+`ttl` at most a year. `backoff` may name only `fixed` or `exponential`, which
+need no strategy registered on the worker. A value outside them is a
+`ConfigError`, and nothing is written.
+
+`getJobDefaults()` answers `code` (this instance's `defaultJobOptions` over
+the built-ins), the stored `override`, `effective` (what a job passing none of
+the options gets), `overridden`, `seq` and `updatedAt`. The writes take
+`expectedSeq` for a safe read-modify-write: a write that finds the override
+moved on changes nothing and answers `contended: true`. A reset stores an
+empty override rather than deleting it, so `seq` keeps rising.
+
+**Propagation.** A producer trusts its read for `jobDefaultsRefreshInterval`
+(1,000 ms by default), then reads again before its next add. A producer
+adding steadily renews that read in the background once three quarters of the
+interval have passed, so its adds do not wait for it; nothing older than the
+interval is ever used. So a change
+reaches every producer within about a second, plus one read, on every driver.
+The instance that wrote it uses it at once. A warm add reads nothing, and
+`addBulk` reads at most once per call. A worker reads the override the same
+way, to build a repeat series' next occurrence. A job added inside that
+window keeps the old values.
+
+**Explicit options are recorded.** Every job added from this version on
+stores which of the editable options its own `add()` passed. The management
+API shows them as `opts.explicit`, key names in `JOB_DEFAULT_KEYS` order. A
+job added before this version has no record, and no `explicit`.
+
+#### Rewriting jobs already pending
+
+A save changes only jobs added afterwards. `applyJobDefaults()` rewrites the
+backlog with the stored override's values:
+
+```ts
+const { seq } = await queue.getJobDefaults();
+let cursor: string | null = null;
+do {
+  const step = await queue.applyJobDefaults({ seq, cursor, limit: 1_000 });
+  console.log(step.rewritten, step.exhausted);
+  cursor = step.next;
+} while (cursor !== null);
+```
+
+- **States.** It walks `waiting`, `delayed`, `failed` (retry pending) and
+  `waiting-children`, in claim order (`states` narrows them). Never `active`:
+  its worker already holds its own copy. Never `completed` or `dead`.
+- **Keys.** It writes only keys the override sets (`keys` narrows them), and
+  never a key the job's own `add()` passed: a job with an explicit `priority`
+  keeps it and still gets the new `attempts`. A job all of whose changing keys
+  are explicit is counted `skippedExplicit`.
+- **Older jobs.** A job added before the explicit record existed is skipped
+  and counted `skippedUnmarked`, unless `includeUnmarked: true`, which treats
+  every option of it as defaulted, including ones its `add()` may have passed.
+- **`attempts` below `attemptsMade`** is written, not clamped. The job runs
+  once more, and dies if that attempt fails. Such jobs are counted
+  `exhausted`, within `rewritten`.
+- **`priority`** reorders the backlog as the walk goes, keeping FIFO among
+  equals.
+- **Pinned.** Each call re-reads the override and throws
+  `JobDefaultsChangedError` (API: 409 `DEFAULTS_CHANGED`) when its `seq` is no
+  longer the one passed, writing nothing. A walk of many calls applies one
+  version, or stops.
+- **Bounded and resumable.** One call examines at most `limit` jobs (default
+  1,000) and answers `next`; pass it back as `cursor`. A cursor names the walk
+  that issued it: one from another namespace or queue, another `seq`, or other
+  `keys` or `states` is a `ConfigError` (API: 400 `INVALID_ARGUMENT`), never
+  resumed.
+- **Atomic per job.** A job claimed meanwhile is skipped, never half-written:
+  its options, `maxAttempts` and priority change in one write that re-checks
+  its state.
+- **`dryRun: true`** walks and counts exactly as a real call, and writes
+  nothing.
+- An override that sets nothing, or `keys` naming one it does not set, is a
+  `ConfigError`.
+
+**It is irreversible.** A rewritten job's earlier values are not kept, and
+the server never knows the code's values, which live in each producer. So a
+reset changes new jobs only: the jobs a walk rewrote keep the override's
+values, and after a reset the override sets nothing, so there is nothing left
+to apply.
+
+`examined` can exceed the backlog: a job whose new priority moves it later in
+the walk is met again, and counted `unchanged`. On Redis that can reach about
+twice the backlog. `moved` counts jobs that left the walked states between a
+batch's read and its write. It is a lower bound, since drivers that lock or
+run a batch atomically never see one.
+
+What one rewrite costs, per driver (measured on a loaded development machine;
+the SQL figures on 20,000 waiting jobs):
+
+| Driver | Unit of work | Per job | Against claims |
+|---|---|---|---|
+| memory | the whole call, in one synchronous pass | in-process | atomic: it runs without yielding |
+| Redis | one Lua script per batch of at most 200 jobs, and at most 1 MiB of stored job blobs | about 15 µs (200 small jobs ≈ 3 ms a script) | a script blocks every client while it runs, so a claim waits at most one script |
+| Postgres, MySQL, MariaDB | one transaction per 500 jobs, on the claim index (MySQL and MariaDB force it with `FORCE INDEX`, and fall back when it is missing) | 38–57 µs | row locks, which a claim skips (`SKIP LOCKED`) rather than waits on |
+| SQLite | one transaction per 200 jobs | 7–12 µs | the transaction is the database's write lock, so claims wait for each batch |
+| MongoDB | one `find` of 500 jobs on the claim index, then one unordered `bulkWrite` of compare-and-set updates | not measured | nothing locked; a job changed between the read and the write fails its filter and counts `moved` |
+| file | each job under its own hold, 16 in flight | about a millisecond or more, growing with the queue (a single job update measured 0.9–5 ms) | a claim finding a job held moves on to the next |
+
+A dry run costs 3–8 µs per job on SQL. A `priority` change also moves each
+job it writes in the claim index.
+
+In the management API these are `GET`, `PUT` and `DELETE
+/queues/:queue/job-defaults` and `POST /queues/:queue/job-defaults/apply`.
+Saving (`queues.defaults`) and applying (`queues.applyDefaults`) are separate
+actions, both off by default, so a host can let operators tune defaults for
+new work without letting them rewrite a backlog. `limits.maxApplyDefaults`
+caps one call's `limit`.
 
 ## Workers
 
@@ -510,9 +688,13 @@ Examples:
 | `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where jobs live. |
 | `logger` | `LoggerLike` | no-op | Logger. |
 | `id` | `string` | fresh id | Identifies the worker in job records and logs. |
+| `key` | `string` | `[service.]queue[.name\|.ordinal]`, or `id` when one is given | The worker's **stable** identity: a remote configuration override is keyed by it, so the override survives restarts and redeploys and reaches every replica. Analytics record under it too. Set it to name a worker something an operator will recognise. |
+| `service` | `string` | `BunJobs`'s `service` | The service the worker belongs to: reported in its record, and the first segment of the derived `key`. |
+| `name` | `string` | | What to call the worker within its queue when a service runs more than one there, so they can be configured apart. The last segment of the derived `key`; prefer it over the ordinal `BunJobs` assigns, which shifts once a worker's creation becomes conditional. |
 | `concurrency` | `number` | `1` | Jobs processed at once. Can also be set at runtime via `worker.concurrency`. |
 | `lockDuration` | `number` | `30000` | How long a claim's lock lives. |
 | `heartbeatInterval` | `number` | `lockDuration / 3` (min 250) | How often the lock is renewed. |
+| `reportInterval` | `number` | `10000` | How often the worker writes its heartbeat record, which `queue.listWorkers()` and the management API's worker routes read: once per interval, and on start, pause, resume and a concurrency change, never per job. A record lapses three intervals after its last write. `0` turns reporting off. See [Workers](#reading-a-queue-search-totals-workers-and-throughput). |
 | `stalledInterval` | `number` | `30000` | How often to sweep for jobs whose worker died. |
 | `maxStalledCount` | `number` | `1` | How many stalls a job may have before it is buried. |
 | `pollInterval` | `number` | `1000` | Wait between claim attempts on a polling driver. |
@@ -525,9 +707,14 @@ Examples:
 | `backoffStrategies` | `BackoffStrategies \| Record<string, BackoffStrategy>` | | Named custom backoffs. |
 | `deadLetterQueue` | `string` | | The dead-letter queue for jobs that do not name their own. |
 | `limitsRefreshInterval` | `number` | `1000` | How long stored limits are trusted before being re-read. |
+| `jobDefaultsRefreshInterval` | `number` | `1000` | How long the queue's stored job defaults are trusted before being re-read. The worker reads them only to build a repeat series' next occurrence. See [Queue job defaults](#queue-job-defaults). |
 | `waitToExit` | `boolean` | `true` | Keep the process alive while waiting for work. `false` lets a script exit when its own work is done. The Redis, Postgres and MongoDB clients hold the process on their own, so close the driver in that case. |
 | `publish` | `boolean` | `false` | Publish job events (active, progress, completed, failed, stalled, and so on) for other processes. |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
+| `remoteControl` | `boolean \| WorkerRemoteControlOptions` | `false`; `true` for a worker `BunJobs` builds | Obey pause, resume, stop, start and configuration overrides written by another process, such as the [management API](#routes). `true` subscribes where the driver pushes events and polls where it does not (one change counter per queue per driver instance every `interval`, shared by all its workers there; a worker reads its own instructions only when that counter moves); `{ enabled, subscribe, interval }` overrides either choice, `interval` defaulting to `2000`. The heartbeat re-reads the stored instructions too, so a lost event costs at most one `reportInterval`. On a driver without queue state the worker reports `control.enabled: false` and simply runs. |
+| `stopPersistence` | `"process" \| "key"` | `"process"` | How long a remote `stop` lasts. `"process"` records it against this incarnation, so a restart brings the worker back running; `"key"` also records it against `key`, so every worker with that key applies it at startup until somebody starts it. |
+| `stopPersistenceOverridable` | `boolean` | `false` | Whether one instruction may ask for the other `stopPersistence`. Off, the process rather than the caller decides whether a stop outlives it. On, the worker also obeys a stop recorded against its key at startup (as a `persist: "key"` stop writes), and any start clears that record. |
+| `metrics` | `MetricsOptions` | everything on | What this worker records for [analytics](#analytics): its jobs completed and failed, under its stable key, and a busyness sample on each heartbeat report. `{ workers: false }` stops both, whatever the driver, and is the first lever for a large fleet. `resolution` and `secondRetentionMs` reach only a driver built here from a config. See [The `metrics` option](#the-metrics-option). |
 
 The worker's events are:
 
@@ -651,11 +838,144 @@ Example:
   is left to expire, so another worker recovers it as stalled instead of the
   job being lost. `close()` holds the process open until it finishes, so it is
   safe to await in a `SIGTERM` handler.
+- `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
+  claiming and running maintenance, drains its jobs in flight, and keeps
+  heartbeating, so `worker.start()` (or a
+  [remote `start`](#controlling-workers-from-another-process)) can bring it
+  back. `run()` stays pending while it is parked. `timeout` abandons the jobs
+  still running after that many milliseconds, which `close()` also does.
+  `worker.state` reads `running`, `paused`, `stopping`, `stopped` or
+  `restarting` (a moment while a configuration override is applied), and
+  `worker.isStopped()` is true while stopping or stopped.
 
 Examples:
 
 - [`09-integrations/graceful-shutdown.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/graceful-shutdown.ts)
 - [`06-failures/timeouts-and-cancellation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/06-failures/timeouts-and-cancellation.ts)
+
+### Controlling workers from another process
+
+`jobs.workers.remote(queue)` returns a `RemoteWorker`, which pauses, resumes,
+stops and starts the workers of one queue, and overrides their settings,
+wherever they run. It works the way [`RemoteRunner`](#bunrunnermanager) does:
+each call stores what it asks for in the driver and publishes a worker
+`control` event, and the worker applies it when it hears the event, at its
+next control poll, or at its next heartbeat report if the event is lost. No
+worker has to be reachable for the call to succeed.
+
+```ts
+const jobs = new BunJobs({ namespace: "shop", driver, service: "billing" });
+jobs.worker("mail", sendMail); // key "billing.mail"
+
+// In any process sharing the driver and namespace:
+const mail = jobs.workers.remote("mail");
+
+await mail.pause({ key: "billing.mail" }); // every replica with that key
+await mail.resume({ key: "billing.mail" });
+
+const [oldest] = await mail.list();
+if (oldest) {
+  await mail.stop({ id: oldest.id }, { timeout: 60_000 }); // one process only
+  await mail.start({ id: oldest.id });
+}
+
+export const stored = await mail.setConfig("billing.mail", { concurrency: 16 });
+await mail.resetConfig("billing.mail"); // back to what the code asks for
+```
+
+A worker has two identities, and the two kinds of call use different ones:
+
+- **Pause, resume, stop and start** take a `WorkerTarget`: `{ id }` for one
+  incarnation, or `{ key }`, which reaches every live worker carrying that
+  stable key. The instruction records the incarnation it was written for, so
+  the process that replaces a worker never applies it: a deployment comes
+  back running. A stop outlives a restart only when it is recorded against
+  the key: on a worker whose `stopPersistence` is `"key"`, or one sent with
+  `persist: "key"` to a worker whose `stopPersistenceOverridable` is on (see
+  [Worker options](#worker-options)).
+- **Configuration** is stored against the stable key alone, so it survives
+  restarts and reaches every replica, including one started tomorrow. The
+  key is `[service.]queue[.name|.ordinal]` unless you set `key`; `BunJobs`'s
+  `service` option supplies the first segment.
+
+| Method | What it does |
+|---|---|
+| `list()` | Every live worker on the queue, oldest first, as `WorkerInfo` records carrying `key`, `service`, `state`, `config` and `control`. Throws `NotSupportedError` on a driver that keeps neither worker records nor queue state, as `queue.listWorkers()` does. |
+| `get(id)` | One live worker by its incarnation id, or `null`. |
+| `listConfigs()` | Every override stored on the queue, including those whose workers are gone. |
+| `getConfig(key)` | The override stored for one key: `{ queue, key, values, seq, updatedAt }`, with `values: {}` and `seq: 0` when there is none. |
+| `pause(target)` | Stops the target claiming. Jobs in flight carry on. Throws `WorkerStateConflictError` (code `WORKER_STATE_CONFLICT`), and writes nothing, when a target worker is `stopped` or `stopping`: start it first. For a `{ key }` target, one parked replica refuses the whole call, so address the running ones by id. |
+| `resume(target)` | Resumes a paused target. Refused the same way from `stopped` or `stopping`: use `start()`, which also clears `paused` and calls off a stop still draining. |
+| `stop(target, { persist?, timeout? })` | Parks the target, as `worker.stop()` does. `timeout` (ms, at most `WORKER_STOP_TIMEOUT_MAX`, one hour) abandons the jobs still running when it expires: their locks lapse and another worker runs them again from the start as stalled jobs, which is why waiting is the default. A worker ignores a timeout outside that range, stops anyway, and says why in `control.lastError`. `persist` asks for the other `stopPersistence`, and only a worker whose `stopPersistenceOverridable` is on honours it. |
+| `start(target)` | Brings a parked target back and clears `paused`. A stop still draining is called off. |
+| `setConfig(key, values, { expectedSeq? })` | Merges `values` into the key's override, and a field given as `null` is removed. With `expectedSeq`, it writes nothing and reports `contended: true` if the stored version is no longer that one. Without it, two callers editing different fields both land. An unknown key, or a value outside `WORKER_CONFIG_BOUNDS` (or a fraction for `concurrency`/`maxStalledCount`), throws a `ConfigError` naming the key and the bound, and nothing is written. |
+| `resetConfig(key)` | Empties the key's override, so its workers go back to their own options. |
+
+The lifecycle calls resolve to a `WorkerControlResult`,
+`{ desired, instances: [{ id, seq, applied }] }`, and the configuration calls
+to a `WorkerConfigResult`,
+`{ queue, key, values, seq, updatedAt, contended, instances: [{ id, applied }] }`.
+`applied` says whether the worker had **already** reported that version, so
+right after a call it is usually `false`. To confirm, read the worker again and
+compare its `control.appliedSeq` (lifecycle) or `control.configSeq`
+(configuration) with `seq`.
+
+An override may set the settings in `WORKER_CONFIG_KEYS`: `concurrency`,
+`pollInterval`, `maxBlock`, `lockDuration`, `heartbeatInterval`,
+`stalledInterval`, `maxStalledCount`, `reportInterval` and `drainDelay`, each
+within `WORKER_CONFIG_BOUNDS`. A worker applies it in place, without a
+restart. `setConfig()` refuses a value outside those bounds. The worker still
+drops any stored field it cannot accept (a `heartbeatInterval` over half its
+effective `lockDuration`, or an entry written by hand or by a newer version),
+keeps its own value for that field, and reports why in `control.lastError`. An override never stops a worker from
+running.
+
+**`RemoteWorker` checks less than the [management API](#routes).** It is the
+lower-level call, and the API's checks sit on top of it:
+
+- A target that matches no live worker is not an error: `instances` is empty.
+  The API answers 404 `WORKER_NOT_FOUND`.
+- It does not check that the worker obeys. One built with `remoteControl`
+  off never applies the instruction, and its record says
+  `control.enabled: false`. The API answers 409 `WORKER_NOT_CONTROLLABLE`.
+- `pause()` and `resume()` refuse a `stopped` or `stopping` worker with
+  `WorkerStateConflictError`, before writing anything, as the API answers
+  409 `WORKER_STATE_CONFLICT`. A parked worker comes back through `start()`.
+- `setConfig()` refuses an unknown key or an out-of-bounds value with a
+  `ConfigError`. The API answers 400 `VALIDATION`, with the issue on the
+  field, before it gets that far.
+
+Every call except `list()`, `get()`, `listConfigs()` and `getConfig()` throws
+`NotSupportedError` on a driver without queue state (`getQueueState`,
+`setQueueState` and `listQueueState`). Every built-in driver has it.
+
+**On the worker's side.** A worker obeys only with `remoteControl` on, which
+`BunJobs` turns on for every worker it builds (`workerRemoteControl: false`
+opts a context out) and which is off for a `BunQueueWorker` you construct. It
+subscribes to its instructions where the driver pushes events (Redis,
+memory) and polls every `remoteControl.interval` elsewhere. It exposes:
+
+- `key`, `service` and `processStartedAt`, the start time that identifies
+  this incarnation;
+- `state` and `isStopped()`;
+- `config`: `effective`, `code` (what its own options asked for),
+  `overridden`, `derived` (settings whose code value was computed rather
+  than given: `heartbeatInterval` when the options left it out), `seq` and
+  `updatedAt`;
+- `control`: `enabled`, `mode` (`"subscribe"` or `"poll"`), `appliedSeq`,
+  `configSeq`, `pending`, `stopPersistence`, `stopPersistenceOverridable` and
+  `lastError`;
+- `syncControl()`, which reads its stored instructions now instead of
+  waiting for the next event or poll. A `RemoteWorker` in the same process
+  calls it after each lifecycle call.
+
+A worker with `publish` on (or `publishEvents` on its `BunJobs`) publishes a
+worker `state` event on each change of state and a `config` event when it
+adopts an override. A first start is not announced as a `state` event: a new
+worker appears through its first heartbeat. The `control` events are always
+published. A
+`JobsNotifier` hears worker events only for the queues in its
+[`workers`](#events-and-jobsnotifier) option.
 
 ### Stalled jobs
 
@@ -663,6 +983,9 @@ A worker that dies while holding a job stops renewing its lock. Every
 `stalledInterval`, some worker's maintenance returns jobs with expired locks
 to the queue and emits `stalled` with their ids. A job that has stalled more
 than `maxStalledCount` times is buried in `dead` instead.
+
+A recovered job keeps the dead worker's [`processedBy`](#who-ran-a-job-worker-attribution)
+until another worker claims it, so you can still see which worker died holding it.
 
 ## The job API
 
@@ -677,9 +1000,11 @@ with a job answer `this` type, or `null`: a job narrowed by a
 | `processedOn`, `finishedOn`, `expiresAt` | Timestamps (epoch ms), or `null`. |
 | `attemptsMade`, `maxAttempts`, `stalledCount` | Attempt bookkeeping. |
 | `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. `progress` is a `RunProgress` (a number or a record), or `null`. Errors are rehydrated as `Error`s. |
-| `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. |
+| `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. `workerId` is the worker holding the job right now: set while `active`, `null` once the attempt settles. |
+| `processedBy` | The worker that claimed the current or last attempt, as `{ id, key?, host?, pid? }`. It is kept after the job settles, and it is `null` for a job never claimed. See [Who ran a job](#who-ran-a-job-worker-attribution). |
 | `updateProgress(value)` | Records a number or an object, and emits `progress`. |
 | `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. |
+| `clearLogs()` | Empties the log, as `queue.clearJobLogs(id)` does. Refused while the job is active. See [Clearing a job's log](#clearing-a-jobs-log). |
 | `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
 | `setPriority(n)` | Changes the priority. A waiting job moves in claim order. |
 | `reschedule(when)` / `schedule(when)` | Moves a waiting or delayed job to a `Date`, epoch ms, or words (`"in 10 minutes"`). The two are one method. |
@@ -729,6 +1054,35 @@ await job?.fail("customer cancelled"); // dead now; no more attempts
 In an isolated processor, `fail()` is kept by the child and sent as the
 attempt's error when it settles.
 
+### Clearing a job's log
+
+`queue.clearJobLogs(id)` and `job.clearLogs()` delete every line a job has
+logged, for good. Afterwards the log reads as one never written: `getLogs()`
+counts `0`, the next `job.log()` answers `1`, and `keepLogs` trims from that
+new first line. The job itself, its state, its data and every counter,
+throughput figure and analytics series are untouched, and no event is sent.
+
+```ts
+const result = await queue.clearJobLogs(id);
+// { status: "cleared", removed: 12 } | { status: "active" } | { status: "missing" }
+if (result.status === "active") {
+  // a worker is running it: nothing was removed; try again once it settles
+}
+```
+
+- **Refused while the job is active**, with `{ status: "active" }` and nothing
+  removed: its worker is still writing the log, and clearing it would leave a
+  log that looks whole while missing its start. The driver checks the state in
+  the same step as the removal, so a job claimed after you read it is refused
+  too. `remove()` refuses an active job by the same rule.
+- `{ status: "missing" }` for a job that does not exist.
+- A driver without `clearJobLogs` throws `NotSupportedError`; nothing falls
+  back to anything else.
+
+In an isolated processor, `clearLogs()` is unavailable, as the other methods
+that act on a job from outside its attempt are. Over the management API it is
+`DELETE /queues/:queue/jobs/:id/logs` — see [Routes](#routes).
+
 ## The BunJobs registry and builder
 
 ```ts
@@ -759,6 +1113,9 @@ Examples:
 | `dateParser` | `DateParser` | `chrono-node` | Reads dates in words for every queue created here. |
 | `publishEvents` | `boolean` | `false` | Every queue, worker and runner created here publishes its events. A `publish` option on an individual object still wins. |
 | `processEvery` | `number \| string` | | How often the registry worker looks for due work. The same as calling `processEvery()` before `start()`. See [Registry polling](#registry-polling). |
+| `service` | `string` | | What this service is called. Every worker created here reports it, and it is the first segment of each worker's stable key, `[service.]queue[.name\|.ordinal]`. Set it whenever several services share a backend and a namespace: otherwise a [configuration override](#controlling-workers-from-another-process) written for `mail` reaches whichever of them consumes a queue called `mail`. |
+| `workerRemoteControl` | `boolean` | `true` | Whether the workers created here obey pause, resume, stop, start and configuration overrides written by another process. It is passed as each worker's `remoteControl`, and a worker's own `remoteControl` option wins. On by default here, unlike on a `BunQueueWorker` you construct. It costs one subscription per worker where the driver pushes events, and, where it does not, one read per queue per driver instance every `remoteControl.interval` (2 seconds by default), plus each worker's two reads only when an instruction or override was written. See [Controlling workers from another process](#controlling-workers-from-another-process). |
+| `metrics` | `MetricsOptions` | everything on, per-second, 5 minutes of it | What is recorded for [analytics](#analytics). Handed to the driver the context builds from a config (a config naming its own `metrics` wins), and merged field by field under every runner and worker created here, whose own `metrics` wins. See [The `metrics` option](#the-metrics-option). |
 
 The context has these members:
 
@@ -768,7 +1125,9 @@ The context has these members:
 | `driver` | The backend everything here shares. |
 | `logger` | The context's logger. |
 | `driverConfig` | The config form of the backend, if the context was built from one. |
+| `service` | The `service` option, or `undefined`. |
 | `runners` | The context's [`BunRunnerManager`](#bunrunnermanager). |
+| `workers` | The context's `RemoteWorkerManager`: `workers.remote(queue)` returns the [`RemoteWorker`](#controlling-workers-from-another-process) for that queue's workers, in any process. |
 | `queue(name, opts?)` | The queue by that name. |
 | `worker(name, processor, opts?)` | Creates a worker on a queue. |
 | `runner(opts)` | Creates a runner. |
@@ -786,6 +1145,7 @@ The context has these members:
 | `drain({ delayed? })` | Drops pending jobs from the registry's queue. |
 | `notifier(opts?)` | Opens a [`JobsNotifier`](#events-and-jobsnotifier). |
 | `listQueues()` / `listRunners()` | Queue names and runner ids the backend knows about in this namespace. |
+| `listWorkers()` | The workers consuming any queue in this namespace, from any process. See [Reading a queue](#reading-a-queue-search-totals-workers-and-throughput). |
 | `purge()` | Deletes everything in this namespace, and nothing outside it. |
 | `close({ timeout? })` | Stops runners and workers, closes queues, then the driver if the context built it. |
 
@@ -1288,8 +1648,10 @@ parent in `waiting-children` until its children settle.
 
 **Healing.** Recording a child on its parent and applying the child's
 retention are two separate steps, and both are safe to repeat. A delivery that
-fails is retried within a few seconds by the worker that started it. Workers'
-maintenance (every `stalledInterval`) finishes whatever a crash left half done:
+fails is retried within a few seconds by the worker that started it. One
+worker per queue (whichever holds the queue's heal lease, handed over within
+two `stalledInterval`s when it stops or dies) finishes, every
+`stalledInterval`, whatever a crash left half done:
 
 - a parent waiting on a child that settled without the parent knowing is told
   again;
@@ -1305,7 +1667,23 @@ any size is covered over successive passes.
 
 **Backend notes:**
 
-- **MongoDB** needs 4.2 or later for flows.
+- **MongoDB** needs 4.2 or later for flows. It keeps every child's result on
+  the parent's document, which MongoDB caps at 16 MB. A child whose result
+  would take the parent past that can never be recorded, however often it is
+  delivered, so rather than leave the parent waiting forever the driver buries
+  it in `dead` with a `ChildFailedError` naming the child: its message says the
+  result would take the parent past MongoDB's 16 MB document limit, and its
+  `context` carries `limit: "16MB"` and `bytes`, the result's size as JSON.
+  The same goes for the failure an `ignoreFailure` child records. From there
+  it is an ordinary buried parent, and it travels up the flow. A parent already buried that cannot keep
+  such a result for its retry stores nothing: a retry waits on that child
+  again, and its delivery then buries the parent the same way. In a wide
+  flow, return a reference to a large result rather than the result itself.
+- **Redis in cluster mode**, with a child on another queue than its parent:
+  whether a child's failure is stale (the child was retried, or already
+  recorded) is read one round trip before the script that would bury the
+  parent, not inside it, because the child's hash is in another slot.
+  Everywhere else that check is inside the same atomic step.
 - **SQL** stores a flow in one `flow` column. A table created before flows
   needs [`syncSchema()`](#schema-sync) before a flow can be added, and the
   error says so.
@@ -1376,7 +1754,8 @@ Unfiltered totals are counts on every driver: `COUNT(*)`, `ZCARD`, a directory
 listing.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
-concurrency, jobs in flight, paused, started, last heartbeat — when it starts,
+concurrency, jobs in flight, jobs completed and failed since it started,
+paused, started, last heartbeat — when it starts,
 every `reportInterval` (10 seconds by default; `0` turns it off), and on pause,
 resume or a concurrency change. **Never per job.** A record lapses three
 intervals after its last write, so a worker that dies drops out of the list
@@ -1436,6 +1815,299 @@ in queue state; without `countJobsByQueue`, counted queue by queue; and when
 that gathers counts in memory implements `flushThroughput`, which a closing
 worker or queue awaits. Only throughput has no fallback — counts that were
 never kept cannot be rebuilt.
+
+Throughput is a minute per bucket, for one queue at a time. Per-second
+buckets, the namespace total in one read, and series for runners and
+workers are [analytics](#analytics).
+
+## Who ran a job: worker attribution
+
+Every job records the worker that claimed its current or last attempt as
+`processedBy`: the worker's incarnation `id`, its stable `key`, and the `host`
+and `pid` it ran on. The claim writes it in the statement or script it already
+runs, so it costs no round trip of its own, and nothing that settles the job
+clears it. It lasts as long as the job is retained.
+
+```ts
+const job = await mail.getJob("a41");
+export const ranOn = job?.processedBy; // { id, key, host, pid }, or null
+
+// What one worker key finished in the last hour, most recent first.
+export const lastHour = await mail.list("completed", {
+  workerKey: "mail.sender",
+  finishedFrom: Date.now() - 3_600_000,
+  order: "desc",
+});
+
+// Two incarnations over one day, with a total.
+export const { jobs: day, total: dayTotal } = await mail.page(["completed", "dead"], {
+  workerId: ["w-1a2b", "w-3c4d"],
+  finishedFrom: new Date("2026-09-21T00:00:00Z"),
+  finishedTo: new Date("2026-09-22T00:00:00Z"),
+});
+```
+
+**What it means.**
+
+- **Last attempt only.** Each claim replaces the whole stamp, so a job that
+  failed on worker A and then completed on worker B names B alone. "The jobs a
+  key processed" means the jobs whose last attempt it ran. While a retry is
+  pending, the stamp names the worker whose attempt just failed.
+- **A stalled job keeps the dead worker's stamp** until its next claim
+  replaces it. "Last touched by the worker that died" is the diagnostic.
+- **`null`** for a job that was never claimed, and for one last claimed
+  before attribution existed.
+- **A rolling upgrade can misattribute, for a while.** The stamp is a field
+  of its own, and a worker still on an older version neither writes nor
+  clears it. A job such a worker claims keeps whatever an earlier claim
+  stored, so if a newer worker ran an earlier attempt, `processedBy` names
+  that worker, which did not run the last attempt. Upgrade a queue's workers
+  together, or treat attribution as reliable only once every worker runs the
+  new version.
+- **`workerId` means only "holding it right now", as it always has.** It is
+  set while the job is `active` and `null` once the attempt settles, stalls or
+  is released, so a finished job's `workerId` is `null` on every driver. To
+  find who ran a finished job, read `processedBy`, which is new.
+- The management API hides `host` and `pid` under `serialize.exposeHosts:
+  false`, as it does on worker records. The driver stores them either way:
+  the switch is about exposure, not recording.
+
+**Which jobs have a `finishedOn`.** Only `completed` and `dead` ones. A
+`failed` job is waiting to retry, so it has not finished and has no
+`finishedOn`. The same is true of waiting, delayed, active and
+waiting-children jobs.
+
+**The four filters.** `queue.list()` and `queue.page()` take them alongside
+`name` and `search`, and they AND with each other and with the states asked
+for:
+
+| Option | Matches |
+|---|---|
+| `workerKey` | `processedBy.key`, exactly: one key or an array. A job never claimed, or stamped without a key, never matches. An empty array matches nothing. |
+| `workerId` | `processedBy.id`, exactly: one incarnation or an array. An empty array matches nothing. |
+| `finishedFrom` | `finishedOn` at or after this instant (**inclusive**), as a `Date` or epoch ms. |
+| `finishedTo` | `finishedOn` before this instant (**exclusive**), as a `Date` or epoch ms. |
+
+Only `completed` and `dead` jobs can match a range, because no other state has
+a `finishedOn`. Both filter families narrow the jobs before the page is cut,
+so `offset` counts matches.
+
+Three mistakes throw a `ConfigError` rather than answer an empty page, which
+would read as "that worker ran nothing". They are the requests the management
+API refuses with 400 `INVALID_ARGUMENT`:
+
+- a bound that is not a valid date or timestamp;
+- a range whose end is not after its start, an inverted or empty range. A
+  range one millisecond wide is fine;
+- `workerKey` or `workerId` on a driver whose `capabilities.jobAttribution`
+  is `false`, since no job there carries a stamp to match. The message says to
+  run `syncSchema()` on SQL. A range alone needs no stamp and works on every
+  driver.
+
+The API's cap of 100 values per worker filter is the API's alone: it bounds
+what one request may ask, and `queue.list()` takes any number.
+
+**Pair `workerKey` with a date range.** No backend indexes the key, and a
+queue usually has one key shared by all its replicas, so a key alone reads
+every job in the states asked for. A range narrows that to finished jobs in the
+window first:
+
+| Driver | A worker filter | A `finishedOn` range |
+|---|---|---|
+| memory | one pass over the queue | the same pass |
+| file | reads each record in those states | lists only the finished markers whose names fall in the window, and opens those |
+| sql | `processed_by_key`/`processed_by_id IN (…)` within the `(ns, queue, state)` index range | `finished_on` bounds on `completed`/`dead` only. On SQLite a partial index on finished jobs serves them; elsewhere they are conditions within the same range |
+| mongodb | `processedBy.key`/`processedBy.id` `$in`, within the same index range | a bounded scan of the existing `(ns, queue, state, finishedOn)` index |
+| redis | matched in Lua, 500 jobs a call, reading only the fields it needs | a rank window on the completed and dead sorted sets, found with two `ZCOUNT`s |
+
+**Where the stamp is stored.**
+
+- **SQL**: four nullable columns, `processed_by_id`, `processed_by_key`,
+  `processed_by_host` and `processed_by_pid`. `worker_id` stays holder-only
+  and is still cleared on settle. A table created before those columns needs
+  [`syncSchema()`](#schema-sync) before anything is stamped (see below).
+- **Redis**: one packed hash field, `wk`, holding the id, key, host and pid
+  with a length prefix on each part, so no character in a key or host can
+  move a boundary. One field rather than four because a hash stores every
+  field name beside its value, and on Redis that is RAM paid by every
+  retained job. The `workerId` field stays holder-only.
+- **MongoDB**: a `processedBy` sub-document on the job, set whole by the
+  claim. `workerId` stays holder-only.
+- **File**: in the job's record, beside everything else.
+- **Memory**: on the record.
+
+**SQL tables from before attribution.** The driver's
+`capabilities.jobAttribution` is **live** on SQL. It reads `false` until
+connecting has confirmed the four columns, so it is `false` before
+`connect()`, and stays `false` on a jobs table without them. It turns `true`
+once `syncSchema()` adds them, whether on connect (`syncSchema: true`) or
+explicitly. While it is `false`, claims run without the stamp and nothing is
+recorded. A process that did not run the sync itself notices another
+process's sync within about 60 seconds. Until then, `queue.list()` and
+`queue.page()` throw a `ConfigError` on a worker filter, and the management
+API refuses one with a 400. Both tell you to run the sync. A `finishedOn`
+range is answered throughout.
+
+**Custom drivers.** Declaring `capabilities.jobAttribution: true` promises
+three things, which the shared driver contract checks:
+
+- every claim path, singular and plural, stores `processedBy` from
+  `ClaimOptions.workerId` and `ClaimOptions.worker`, in the write the claim
+  already makes;
+- no settle, stall recovery or retry clears it, and only the next claim
+  replaces it. A record added with a stamp, restored from elsewhere, keeps it;
+- `findJobs` honours `workerKeys`, `workerIds`, `finishedFrom` and
+  `finishedTo` exactly as the built-in drivers do.
+
+Without the declaration, a query using any of the four is never handed to the
+driver's `findJobs`, since one written before them would ignore them and return
+every job. `workerKey` and `workerId` throw a `ConfigError`, because such a
+driver has no stamp to match, and a `finishedOn` range is answered by a scan,
+which is correct but linear. The
+package root exports the definitions the built-in drivers share, so a
+driver of your own matches exactly as they do: `JobWorkerRef`,
+`attributionOf` (the stamp a claim writes), `matchesAttribution` (the one
+definition every backend is compared against), `attributionFilter` and
+`AttributionFilter`, `usesAttribution`, `supportsAttributionQuery`,
+`matchesNothing` (answer without a read), `canMatchState`, `hasRange`,
+`inFinishedRange`, `FINISHED_STATES`, and `holderOf`, which reports
+`workerId` as the holder for a driver that keeps the claimer's id after a
+settle.
+
+## Jobs added in a range, and sorting by creation time
+
+Two reads by **when a job was added** (`createdAt`), for a dashboard that asks
+"of what came in this hour, where is it now?" and a job list that shows the
+newest arrivals first on every tab:
+
+```ts
+// Of the jobs added in the last hour, how many are in each state now.
+export const added = await mail.countAdded({
+  from: Date.now() - 3_600_000,
+  to: Date.now(),
+});
+// { waiting: 3, delayed: 1, active: 1, completed: 40, failed: 0, dead: 2, "waiting-children": 0 }
+
+// One state, newest arrival first, rather than in that state's own order.
+export const newest = await mail.list("delayed", {
+  sort: "createdAt",
+  order: "desc",
+});
+```
+
+Both are served on the **memory, SQL and MongoDB** drivers, and on neither the
+Redis nor the file driver: their stored order and markers are by priority,
+due time or finish time, so the only answer there is reading every job, which a
+dashboard polling it must not do. `/meta.features.addedByState` says which,
+and one flag covers both reads because the same backends serve both.
+
+**What the counts mean.**
+
+- The range is **`createdAt` in `[from, to)`**: `from` inclusive, `to`
+  exclusive. Each state is the one the job is in **now**, so `active` and
+  `waiting` move on every read.
+- Only jobs **still stored** are counted. A job removed since, by
+  `removeOnComplete`/`removeOnFail` retention or a remove, clean or drain, is
+  not, so on a queue that removes finished jobs `completed` and `dead`
+  undercount and the states sum to less than what was added. The defaults
+  lose nothing in a range no older than a day: a completed job is kept a day
+  after it finishes (`removeOnComplete: { ttl: 24h }`), and a dead one until
+  removed (`removeOnFail: false`).
+- They are **not** the [analytics](#analytics) series and never add up to it.
+  The series counts completions and **failed attempts** when they happen, by
+  **finish** time, over every job whenever it was added — retention or not.
+  Here `failed` is the **state**: an attempt failed and a retry is waiting.
+  `dead` is the jobs that gave up. So label the series' figure "failed
+  attempts" and the state "retrying" (or "failed, will retry"), and show the
+  two apart.
+- A job scheduled for later counts as added **when it was added**, in
+  `delayed`: a `delay`ed job, and a repeatable's next run, which is created
+  ahead of its run time — so tomorrow's scheduled instance of a series can
+  appear in today's range.
+- `createdAt` is the **producer's clock**: a job added from a host whose clock
+  is off lands in the range that clock says. A re-add with an existing id adds
+  nothing, so the counts are distinct stored ids.
+
+`queue.countAdded({ from, to })` takes `Date`s or epoch ms and throws a
+`ConfigError` for a bound that is not a valid time or a `to` not after `from`,
+and a `NotSupportedError` (a `ConfigError` too) on a driver without the read.
+It has no span limit; the management API caps its routes at a day.
+
+**From the management API.** `GET /overview/added` (`metrics.read`) sums
+every queue the caller may see — the `queues` allowlist and, under
+`listQueues: "authorized"`, only the queues `authorize` allows `queues.read`
+on; a queue the caller may not see is never counted. It is one grouped read
+whatever the queue count, so nothing is truncated. `GET
+/queues/:queue/counts/added` (`queues.read`) is one queue's. Both take `from`
+and `to` as epoch ms or RFC 3339 date-times, `to` defaulting to now and `from`
+to an hour before `to`; `to` not after `from`, a span over a day
+(`MAX_ADDED_BY_STATE_SPAN_MS`) or under a second (`MIN_ANALYTICS_SPAN_MS`) is
+400 `INVALID_ARGUMENT`. There are no buckets and no retention clamp. Both
+answer an `AddedByStateDto`:
+
+```ts
+import type { AddedByStateDto } from "@kingsleyweb/bun-jobs/api/contract";
+
+// GET /overview/added?from=2026-09-21T10:00:00Z&to=2026-09-21T11:00:00Z
+export const body: AddedByStateDto = {
+  from: 1_789_984_800_000, // inclusive, epoch ms
+  to: 1_789_988_400_000, // exclusive
+  at: 1_789_988_412_345, // when the states were read
+  counts: {
+    waiting: 3,
+    delayed: 1,
+    active: 1,
+    completed: 40,
+    failed: 0,
+    dead: 2,
+    "waiting-children": 0,
+  },
+  total: 47, // the sum of counts: added in the range and still stored
+  queues: 4, // queues summed; 1 on the per-queue route
+};
+```
+
+Where `features.addedByState` is `false` both routes are pruned (a JSON 404,
+never a 501).
+
+**The sort.** `ListJobsOptions.sort` (the API's `?sort=`) is one of
+`JOB_LIST_SORTS`:
+
+- `"natural"`, the default, is each state's own order, the one the list has
+  always used: `waiting` by priority then `createdAt` (claim order),
+  `delayed` and `failed` by `runAt` (when they are due), `active` by lock
+  expiry, `completed` and `dead` by `finishedOn`, `waiting-children` by
+  `createdAt`. Several states, or every state, are by `createdAt`.
+- `"createdAt"` is by `createdAt` whatever the states, ties within a
+  millisecond broken by `id` (by code point), so "newest first" means the same
+  on every tab. `order: "desc"` reverses both keys.
+
+`list()` and `page()` throw a `ConfigError` for `sort: "createdAt"` on a driver
+that cannot serve it (Redis, file) rather than return a page in the natural
+order, and the management API answers it with 400 `INVALID_ARGUMENT` and a
+`detail` saying why. `"natural"` is accepted everywhere.
+
+**What it costs.** Memory walks the queue's jobs in process. SQL and MongoDB
+answer the counts from the index the claim already uses —
+`(ns, queue, state, priority, created_at)` — with `created_at` as a filter, so
+a count reads every job the namespace (or the queue) stores in that index: the
+same cost as the counts `/overview` already reads, and no new index is added
+on enqueue. For the same reason a **`createdAt` sort over one large state**
+(`completed`, `dead`) is a top-N sort over every job in that state rather than
+an index walk: keep its pages modest. Several states cost what they always
+did, since that view is already by `createdAt`. From the management API, poll
+the counts every **15–30 seconds**, not at the overview's pace.
+
+**Custom drivers.** Implementing the optional `countAddedJobs(ns, range,
+queue?)` is a promise to honour `sort: "createdAt"` in `findJobs` too; without
+the method, the count routes are pruned and the sort is refused. Implement it
+only where an index or memory bounds the read. The package root exports the
+definitions the built-in drivers share: `AddedRange`, `countAdded` (the read
+made whole, every state of every queue present), `countAddedByScan` (the one
+definition every backend is compared against), `inAddedRange`,
+`rangeMatchesNothing`, `emptyAddedCounts`, `compareCreated`, `sortByCreated`,
+`sortsByCreated` and `supportsCreatedSort`, beside `JOB_LIST_SORTS`,
+`JobListSort` and `MAX_ADDED_BY_STATE_SPAN_MS`.
 
 ## Isolated processors
 
@@ -1533,7 +2205,7 @@ Examples:
 | `lockTtl` | `number` | `30000` | How long the single-run lock lives. |
 | `heartbeatInterval` | `number` | `lockTtl / 3` (min 1000) | How often the lock is renewed. |
 | `onLockLost` | `"abort" \| "continue"` | `"abort"` | What to do when the lock is lost mid-run. |
-| `keepHistory` | `number` | `50` | Run records kept. |
+| `keepHistory` | `number` | `50` | Run records kept — and, since a run's log is kept for exactly as long as its record, how many runs keep a log. |
 | `maxResultBytes` | `number` | `16384` | Cap on a stored run result. |
 | `driver` | `JobsDriver \| DriverConfig` | a new memory driver | Where state lives. Memory cannot coordinate across processes. |
 | `childDriver` | `DriverConfig` | `driver`, when that is a config | Handed to handlers as `ctx.driverConfig`. |
@@ -1543,12 +2215,27 @@ Examples:
 | `startPaused` | `boolean` | `false` | Start paused. |
 | `syncInterval` | `number` | `30000` | How often to re-read the shared paused flag and schedule. |
 | `forwardLogs` | `boolean` | `false` | Forward a child's `ctx.logger` calls to the parent's `log` event. |
-| `publish` | `boolean` | `false` | Publish `started`, `succeeded`, `failed`, `timeout`, `killed`, `queued` and `skipped` for other processes. |
+| `captureLogs` | `boolean \| RunLogCaptureOptions` | `true` | Store each run's output per run, so the history row has a log to link to. See [Run logs](#run-logs) — it also changes the default stdio of a spawned run. |
+| `publish` | `boolean` | `false` | Publish `started`, `succeeded`, `failed`, `timeout`, `killed`, `queued` and `skipped` for other processes, and the `logs` hint while a run's log grows (see [Following a run's log live](#following-a-runs-log-live)). |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
-| `remoteControl` | `boolean` | `false` | Subscribe to `control` events, so a change made through `BunRunnerManager.remote()` applies within the driver's event latency instead of at the next `syncInterval`. Off by default, because a subscription holds a poll, a change stream or a pub/sub connection per runner. |
-| `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"inherit"` by default, or `"pipe"`/`"ignore"`), and `startTimeout` (`10000`). |
+| `metrics` | `MetricsOptions` | everything on | What this runner records for [analytics](#analytics): its runs by outcome and their durations, each run in the bucket it finished in. `runners: false` stops the series and `durations: false` the durations, whatever the driver; `resolution` and `secondRetentionMs` reach only a driver built here from a config. The lifetime `stats()` counters are kept either way. See [The `metrics` option](#the-metrics-option). |
+| `remoteControl` | `boolean \| "auto"` | `"auto"` | Subscribe to `control` events, so a change made through `BunRunnerManager.remote()` applies within the driver's event latency instead of at the next `syncInterval`. `"auto"` listens where it is cheap — on a driver whose events are pushed (Redis) or held in this process (memory) — and not on one that polls (SQL, MongoDB, the file driver), where a subscription is a query every few dozen milliseconds per runner on the file driver, and on SQL and MongoDB one more channel in the namespace's shared poll (one query per `pollInterval` per namespace, however many subscribe). `true` subscribes on every backend, `false` on none. The sync adopts every change either way, so this decides latency, never whether remote control works. |
+| `remoteConfig` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"spawn"` and `"worker"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
+| `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). |
 | `worker` | `WorkerOptions` | | `smol`, `name`, `env`, `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
+
+**Upgrading: two runner defaults changed.**
+
+- `remoteControl` was `false` and is now `"auto"`, so a runner on Redis or
+  memory subscribes to its `control` events without being asked. Pass
+  `remoteControl: false` for the old behaviour. On SQL, MongoDB and the file
+  driver nothing changes.
+- `spawn.stdout` and `spawn.stderr` were `"inherit"` and are now `"pipe"`
+  while `captureLogs` is on, which it is by default. The output still reaches
+  this process's stdout and stderr. See
+  [It changes the default stdio of a spawned run](#it-changes-the-default-stdio-of-a-spawned-run).
+  Pass `captureLogs: false`, or `"inherit"` for either stream, to go back.
 
 ### Triggers and run modes
 
@@ -1577,7 +2264,8 @@ leaves the queue exactly as it is, in order, until `resume()` drains it.
 - A paused runner with nothing it may run does not take the lock.
 - The drainer goes by the paused flag as it last read it, the same one
   `trigger()` checks. A pause set in another process applies at its next
-  sync, or at once with `remoteControl`.
+  sync, or at once where the runner subscribes to `control` events — on Redis
+  and memory by default, elsewhere with `remoteControl: true`.
 - `resume()` drains the held-back triggers, oldest first, before a
   `triggerNow` run, which queues behind them.
 
@@ -1614,6 +2302,8 @@ A handler receives a `RunContext` with these fields:
 - `args`
 - `signal`
 - `logger`
+- `log(message, { level?, fields? })`, and `flushLogs()` — see
+  [Run logs](#run-logs)
 - `progress(value)`
 - `send(message)`
 - `onMessage(listener)`
@@ -1650,6 +2340,8 @@ Runner events:
 - `skipped`
 - `queued`, `dequeued`
 - `lockLost`
+- `configured`, when a [configuration override](#changing-a-runners-configuration-remotely)
+  changes a value this instance runs with
 - `paused`, `resumed`
 - `stopped`
 - `error`
@@ -1660,18 +2352,429 @@ Examples:
 - [`07-runner/execution-modes.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/execution-modes.ts)
 - [`07-runner/runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts)
 
+### Run logs
+
+A runner retains its runs' output the way a queue retains a job's logs:
+captured as it is produced, stored against the run id, and read back a page at
+a time. It is on by default, on every backend that can store run logs.
+
+```ts
+const runner = new BunRunner({
+  id: "reindex",
+  namespace: "app",
+  file: "./reindex.ts",
+  captureLogs: { maxLines: 5000, maxLineBytes: 4096 },
+});
+await runner.start();
+```
+
+`captureLogs` is `true` (the default), `false`, or a `RunLogCaptureOptions`
+object setting the caps, console capture and redaction. Each of the four
+numeric caps is **`0` means unbounded**, the convention `keep` takes throughout the package, and a
+negative or non-finite one is a `ConfigError` at construction.
+
+| Cap | Default | Bounds |
+|---|---|---|
+| `enabled` | `true` | Whether to capture at all. A driver with no run-log storage captures nothing whatever this says. |
+| `maxLines` | `1000` | Lines one run's log keeps; the oldest go first. |
+| `maxBytes` | `1048576` | Bytes of line text one run's log keeps, counted as UTF-8 bytes of the text alone — not the stream, the timestamp, the level or whatever framing the backend stores around them, so every backend bounds the same number. |
+| `maxLineBytes` | `8192` | The longest a single line may be, in UTF-8 bytes. A longer one is cut on a character boundary and marked `truncated`, never dropped: a megabyte written without a newline — a progress bar, a base64 blob — would otherwise spend the whole per-run byte cap by itself. |
+| `captureBytes` | `8388608` | The most one run may hand to the store over its whole life. The three caps above bound what is *kept*; this bounds what is *written*, so a run in a hot loop costs the backend a bounded number of writes instead of one per line of the million it produced. At the ceiling capture stops and stores one last `log` line saying so. |
+| `console` | `true` | Whether an `in-process` or `worker` run's `console.log`, `info` and `debug` (stored as `stdout`) and `warn` and `error` (stored as `stderr`) are captured. A spawned run's console is captured through its pipes whatever this says. See [What is captured](#what-is-captured). |
+| `redact` | `true` | How secrets are scrubbed from each line before it is stored: `true` for the built-in rules, `false` to store lines verbatim, or `{ keys?, patterns?, defaults?, replacement? }`. Applied before any cap counts the line. See [Secrets are redacted](#secrets-are-redacted). |
+
+**There is no `keepRuns`.** How many runs keep a log is the runner's
+`keepHistory`, deliberately, so that a run in the history and a run with a log
+are the same set; `clearHistory()` removes the log of every run it removes,
+and leaves a run still in progress with its log whole (see
+[Clearing run history](#clearing-run-history)).
+
+The caps are applied by the store on every append, not by a sweeper — there is
+no background task to schedule and nothing to forget to run, and a log cannot
+be over its cap at a moment a reader could observe it. **They are also honest
+about what they cut.** Lines are numbered from one per run and the numbering
+survives a trim, so how many a run has lost is known exactly and reported as
+`dropped`: a reader is told its log is a tail rather than shown a silently
+short one. A line the per-line cap cut carries `truncated: true` rather than
+passing for a whole line.
+
+#### Writing a line
+
+```ts
+export default defineHandler(async (ctx) => {
+  ctx.log("rebuilding the index", { level: "info", fields: { shard: 3 } });
+  await rebuild(ctx.signal);
+  await ctx.flushLogs();
+});
+```
+
+`ctx.log(message, options?)` writes one line to the `log` stream, beside the
+`stdout` and `stderr` lines a spawned run's pipes produce. It is **fire and
+forget**: it returns `void`, never throws and is never awaited, so a store
+that is down, a run past its `captureBytes` ceiling and a driver that cannot
+hold run logs at all each drop the line quietly. Nothing a handler writes can
+fail its run, which is the whole reason it is not a promise.
+
+`options.level` is one of the logger's six levels and is stored alongside the
+line; `options.fields` are rendered onto the end of the text as `key=value`
+pairs in the order given, so
+
+```ts
+ctx.log("done", { fields: { rows: 12, note: "a b" } });
+```
+
+stores `done rows=12 note="a b"`. A value with whitespace, a quote or an `=`
+is JSON-quoted, and anything that is not a string is JSON. They are rendered
+rather than stored apart because a run log is a log, not a table: one text
+column is what every backend holds and what a reader greps. In `spawn` and
+`worker` mode the call crosses the existing IPC `log` channel, so it also
+surfaces as the runner's `log` event — whether or not `forwardLogs` is on.
+
+`ctx.flushLogs()` resolves once the buffered lines have reached the store, and
+never rejects. It is rarely needed: capture flushes on its own thresholds and
+again when the run settles. It is there for a handler about to do something
+drastic — `process.exit`, a deliberate crash — that wants its last words
+stored first. **What it waits for depends on the mode, and the honest version
+is worth knowing.** In `in-process` mode it awaits the append itself. In
+`spawn` and `worker` mode the lines are stored by the *parent*, so it resolves
+once they are on the ordered IPC channel rather than on an acknowledgement
+from the store — the parent has them before the run's outcome reaches it, and
+the flush at settle stores them.
+
+#### It changes the default stdio of a spawned run
+
+Capture needs the pipes, so with `captureLogs` on, `spawn.stdout` and
+`spawn.stderr` default to `"pipe"` instead of `"inherit"`. **Nothing
+disappears:** every piped chunk is written straight through to this process's
+own stdout and stderr as well as captured, so a child's output still lands in
+your terminal and your log collector. An explicit `spawn.stdout: "inherit"` or
+`"ignore"` still wins, and that stream is then simply not captured.
+
+#### What is captured
+
+Everywhere, anything the handler writes with `ctx.log()`. Beyond that it
+depends on where the run executes:
+
+- a **`spawn`** run's `stdout` and `stderr` are captured line by line from its
+  pipes;
+- a **`worker`** or **`in-process`** run has no pipes of its own, so its
+  console is captured instead: `console.log`, `console.info` and
+  `console.debug` are stored as `stdout`, and `console.warn` and
+  `console.error` as `stderr` — the streams Bun itself writes them to. Each
+  call is formatted the way the console formats it, so an object logged after
+  a message stays on that line. The console still prints exactly as before;
+  capture is a copy, never a redirect. `captureLogs.console: false` turns this
+  off and keeps the rest.
+
+An in-process run shares this process's `console` with the host and with every
+other in-process run, so the patch is process-wide and each call is
+**attributed by async context**: a call made by the run's code, or by anything
+it scheduled — a timer, a callback, the next step after an `await` — lands in
+that run's log, and a call from outside every run, including the host
+application, is never captured. Two runs at once each get their own lines.
+The patch is installed by a runner's first captured in-process run and stays
+in place until the runner stops; between runs it passes every call straight
+through, and nothing is captured. A
+listener the run triggers synchronously counts as code the run caused: a
+`progress` listener that calls `console.log` is attributed to that run. Output
+from work the run scheduled that outlives it is dropped, because its capture
+has closed. A worker run has a realm of its own and only that run in it, so
+everything its console prints while the run is live is that run's; no async
+context is needed there.
+
+Captured console lines go to the store only; they do not surface as the
+runner's `output` event, which stays "a child wrote to a piped stream".
+
+What still escapes, and reaches only the terminal:
+
+- `process.stdout.write`, `process.stderr.write` and `Bun.write` to the
+  standard streams;
+- native code writing to file descriptors 1 and 2 directly;
+- a program the handler launches with its own stdio;
+- console methods other than those five — `console.trace`, `console.dir`,
+  `console.table` and the rest;
+- a reference to a console method taken before the patch was installed
+  (in-process, before the runner's first captured run), such as a
+  `const log = console.log` at host start-up that the run then calls.
+
+#### Secrets are redacted
+
+A run's output is a place secrets end up by accident — a config dumped at
+start-up, a connection string in an error, an `Authorization` header in a
+debug line — and a stored log outlives the run and is served over the
+management API. So capture scrubs every line, on every stream, before it is
+stored. It is **on by default**.
+
+The built-in rules below err on the side of hiding a value: a harmless number
+hidden is cheaper than a secret stored. To depend on exactly what is caught,
+pin your own rules with `defaults: false`.
+
+- **Sensitive keys.** A key whose name contains one of these words, in any
+  case, has its value replaced: `password`, `passwd`, `pwd`, `secret`,
+  `token`, `apikey`, `api_key`, `api-key`, `authorization`, `auth`,
+  `credential`, `cookie`, `session`, `private_key`, `privatekey`,
+  `access_key`, `accesskey` (`DEFAULT_REDACT_KEYS`). A substring match, so
+  `DB_PASSWORD`, `x-api-key`, `githubToken` and `client_secret` all count.
+  `key` alone is not on the list; it would take every `cacheKey` with it.
+- **Value forms.** `key=value` and `key: value` (an unquoted value runs to
+  whitespace or one of `, ; & " ' } ]`), `key="…"` and `key='…'` (quotes
+  kept), and JSON's `"key": "…"` and `"key": 123`. The key and separator stay.
+  An auth scheme stays readable: `Authorization: Bearer abc` becomes
+  `Authorization: Bearer [REDACTED]` (Bearer, Basic, Token, Digest). A quoted
+  value with no closing quote is scrubbed to the end of the line.
+- **Whole-line patterns.** A bare `Bearer <token>` anywhere; the password in a
+  URL's credentials, `scheme://user:pass@host` becoming
+  `scheme://user:[REDACTED]@host`; and a JSON Web Token (`eyJ….….…`)
+  anywhere.
+
+What is not caught: a secret in prose ("the password is hunter2"), token
+shapes other than a JWT, and in an unquoted `key=value`, the words after the
+first space. Add your own shapes with `patterns`.
+
+Matching keys by substring accepts some false positives in exchange for not
+leaking: `max_tokens=100`, `author=ada` and `session_count=3` are scrubbed
+too.
+
+```ts
+const billing = new BunRunner({
+  id: "billing",
+  namespace: "app",
+  file: "./billing.ts",
+  captureLogs: {
+    redact: {
+      keys: ["ssn"],               // added to the built-in words
+      patterns: [/sk_live_\w+/],   // every match replaced, whole
+      // defaults: false,          // drop the built-in rules, keep only yours
+      // replacement: "***",       // default "[REDACTED]"
+    },
+  },
+});
+await billing.start();
+```
+
+`redact: false` stores lines verbatim. A `patterns` entry gets the `g` flag
+when it lacks one, so every match on a line is scrubbed. It runs on every
+captured line, so keep it free of heavy backtracking. The built-in expressions
+run in time linear in the line.
+
+Redaction runs **before** the caps. `maxLineBytes`, `maxBytes` and
+`captureBytes` measure a line exactly as it is stored, and a long line is cut
+after its secrets are gone rather than before, when the cut could leave half a
+secret behind. If redaction itself fails on a line, the line is not stored as
+it was: it becomes `[bun-jobs] line withheld: redaction failed`. The run is
+never failed by it.
+
+#### Following a run's log live
+
+A runner that publishes (`publish: true`, or `publishEvents` on its `BunJobs`)
+also publishes a `logs` event while a run's stored log grows. It is a **hint,
+never the lines**: its payload is `{ runId, lastSeq }`, the run and the `seq`
+of the last line the store now holds, and no text. On the management API's
+socket it arrives on `runner/{runner}`, `runners` and `all`, like every runner
+event.
+
+It is throttled per run to one every 500 ms (`RUN_LOG_HINT_MS`): the first
+growth is announced at once, and later ones inside the window collapse into
+one carrying the newest `lastSeq`. One more goes out when the run ends, so the
+final `lastSeq` is always announced. A growth the store did not keep
+announces nothing.
+
+To tail a run, hold the last `seq` you have, and on each hint re-read
+`GET /runners/:runner/runs/:runId/logs?since=<that seq>`. Because the hint
+carries a position and not content, a hint that is missed or dropped costs
+only delay: the next one, or the one at the end, still leads to every line.
+The runner's own emitter does not raise it; it is published for other
+processes.
+
+#### Where they are stored, and how to read them
+
+All eight backends store run logs: memory, file, SQL (SQLite, Postgres, MySQL,
+MariaDB), Redis and MongoDB. A run's log never rides its `RunRecord` — a
+runner's history is one document on the file, SQL and MongoDB drivers, and
+lines kept on it would be rewritten with every history append — so it lives in
+its own table (`run_logs`) or collection (`runLogs`), keyed by run id alone.
+
+A run's record carries `logLines` and `logsDropped` once it settles — the
+store's own counters, written with the rest of the outcome, so the history row
+and the log agree. Both are **absent** on a backend that stores no run logs and
+`0` when the run was simply quiet, which are different facts and so are two
+different answers rather than one defaulted number.
+
+The management API serves the lines at
+`GET /runners/:runner/runs/:runId/logs` — see [Routes](#routes).
+
 ### Introspection
 
 - `history(limit?)` returns run records, newest first.
 - `stats()` returns lifetime counters (`success`, `failed`, `timeout`,
   `killed`, `skipped`, `queued`, `total`). `resetStats()` zeroes them.
+- `clearHistory({ staleAfter? })` removes the finished runs, record and log,
+  and keeps the ones in progress. See
+  [Clearing run history](#clearing-run-history).
 - `info()` returns a snapshot that merges this process's view with the
   driver's. Its `isRunning` and `runningOn` (`{ host, pid, runId, since }`)
   describe the whole cluster.
 - `status`, `activeRuns`, `schedule` and `nextRunAt()` describe this instance.
+- `config` describes this instance's executor and overlap settings: what it
+  runs with, what its code asked for, and which settings an override
+  replaces. See
+  [Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely).
 
 Example:
 [`07-runner/scheduled-runner.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/scheduled-runner.ts).
+
+### Clearing run history
+
+`runner.clearHistory()` removes every **finished** run — its history record
+and its run log — and leaves every run **still in progress** untouched, record
+and log whole. A live run's log keeps growing after the clear and never loses
+its start, and when the run settles its record is updated as usual.
+
+```ts
+const { removed, kept } = await runner.clearHistory();
+// removed: runs deleted, each with its log; kept: the run ids still in progress
+logger.info("history cleared", { removed, kept });
+
+// From any process sharing the driver and namespace:
+const remote = await jobs.runners.remote("cleanup");
+await remote.clearHistory({ staleAfter: 3 * 86_400_000 });
+```
+
+`RemoteRunner.clearHistory()` works on a runner registered in **another
+process**: it acts on what the backend stores, so it needs no owner to be
+reachable — unlike `kill()`, which only the executing process can do. For a
+runner registered here it delegates to the runner itself.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `staleAfter` | `number` | `86400000` (`DEFAULT_STALE_RUN_AFTER`, one day) | How long, in ms, a run whose record still says `running` counts as in progress when nothing else vouches for it. Negative, `NaN` or `Infinity` is a `ConfigError`. |
+
+**Which runs are in progress.** A run is kept when any of these holds:
+
+1. this process is executing it — known only where the runner is registered,
+   and kept however old it is;
+2. its record says `running` and the runner's lock is held with the run as its
+   `lastRunId` — a single-mode run's holder renews the lock for as long as the
+   run lasts;
+3. its record says `running` and it started less than `staleAfter` ago.
+
+Everything else is removed: every settled run, and a `running` record nothing
+vouches for. That is **a run whose process crashed**: its record never
+settles, so it would otherwise say `running` for good. It stops being vouched
+for once it is older than `staleAfter` and — if it was the lock holder's run —
+once the lock expires, `lockTtl` after the crash; the next clear removes it.
+(Like any record, it also leaves once `keepHistory` newer runs push it out.)
+`planHistoryClear()` is the rule on its own, pure, if you want to preview a
+clear.
+
+**The limit: a long parallel run in another process.** A `parallel` run holds
+no lock, so from outside its process the stored status and its age are all
+there is. **A live parallel run in another process that started more than
+`staleAfter` ago is cleared, and when it settles it finds no record to
+update** — its outcome still reaches the lifetime counters and analytics, but
+not the history. Raise `staleAfter` above your longest run for such runners
+(the management API accepts up to thirty days). A run executing in the process
+that does the clear is never affected, and neither is a single-mode run under
+a live lock.
+
+The lifetime counters (`stats()`), the analytics series and the runner's
+state — paused flag, schedule, lock, queued triggers — are untouched:
+resetting the counters is `resetStats()`. A driver without `removeRuns` throws
+`NotSupportedError`; it never falls back to the driver's `clearHistory`, which
+would drop the runs in progress too. Over the management API it is
+`DELETE /runners/:runner/history` — see [Routes](#routes).
+
+### Changing a runner's configuration remotely
+
+A runner's executor and overlap settings, `executionMode`, `runMode` and
+`maxConcurrency`, can be overridden without changing its code or restarting
+it. The override is stored in the driver against the runner's id, so every
+process that owns the runner adopts it, and so does one started later.
+
+```ts
+const report = jobs.runner({
+  id: "report",
+  file: "./jobs/report.ts",
+  remoteConfig: { executionModes: ["spawn", "worker"] }, // never in-process
+});
+await report.start();
+
+// In any process sharing the driver and namespace:
+const remote = await jobs.runners.remote("report");
+await remote.updateConfig({ executionMode: "worker" });
+await remote.updateConfig({ concurrency: { runMode: "parallel", maxConcurrency: 3 } });
+export const config = await remote.config(); // effective, code, overridden, seq, ...
+await remote.resetConfig(); // back to what the code asks for
+```
+
+`updateConfig(patch)` takes a merge patch: a field left out is untouched, and
+`null` clears that override.
+
+- `executionMode` is `"spawn"`, `"worker"` or `"in-process"`, and must be one
+  the runner's `remoteConfig.executionModes` permits.
+- `concurrency` writes `runMode` and `maxConcurrency` together, because a cap
+  only means something in `parallel` mode: `{ runMode: "single" }`, or
+  `{ runMode: "parallel", maxConcurrency }` with a whole number from 1 to 1000,
+  or `null` for unlimited.
+
+`resetConfig()` clears every override. Both resolve to a `RunnerConfigInfo`:
+
+| Field | Meaning |
+|---|---|
+| `effective` | What the owner runs with now: `{ executionMode, runMode, maxConcurrency }`, `null` meaning unlimited. |
+| `code` | What the owner's own options asked for. |
+| `overridden` | Which settings an override is stored for, including one the owner refused. |
+| `allowed` | The execution modes the owner's `remoteConfig` permits. |
+| `seq` | The override's version, `0` when nothing was ever stored. |
+| `appliedSeq` | The version an owner has adopted. Below `seq`, no owner has picked it up yet. |
+| `error` | `{ at, message }`, when an owner refused part of the override. |
+| `updatedAt` | When the override was last written, epoch ms. |
+
+The same three members are on `BunRunner` itself: `runner.updateConfig(patch)`
+and `runner.resetConfig()` store the override, adopt it in this process at
+once, and publish the same `control` event a `RemoteRunner` does, so owners in
+other processes adopt it as described under **When it applies**.
+`runner.config` is this instance's own view, read without a driver round trip.
+`jobs.runners.remote(id)` on a local runner delegates to it and publishes
+nothing more. On a `RemoteRunner`, `config()` is a method and reads what the
+owners stored. It resolves to `undefined` for a runner no owner has started
+since remote configuration shipped.
+
+**When it applies.** An owner adopts an override at its next sync
+(`syncInterval`, 30 seconds by default), or as soon as it hears the `control`
+event, which `remoteControl: "auto"` means on Redis and memory. It applies from
+the **next** run. A run in flight keeps the mode it started with, a lower
+`maxConcurrency` only holds back new runs, and switching from `parallel` to
+`single` never kills a run. That switch is not immediate across processes
+either, because a parallel run holds no lock. Pause the runner first when
+exclusivity matters.
+
+**What an owner refuses.** An owner that cannot honour a field drops it, keeps
+its code's value, records why in `error`, and logs a warning. That happens for
+a mode its `remoteConfig` does not permit, and for `"spawn"` or `"worker"` on a
+runner built from a driver instance with no `childDriver`, whose handler would
+then reach no backend. Both are refused up front by `updateConfig()` and the
+management API (the owner publishes only the modes it can adopt), so an owner
+meets them only in an override stored before it started. Moving an `"in-process"` handler out of the process
+also costs it `ctx.driver`, which the owner logs as a warning.
+
+**Errors.** A refused call throws a `ConfigError` whose `context.reason` says
+why:
+
+- `"empty"`: the patch sets neither field (`updateConfig()`);
+- `"invalid"`: an unknown mode or `runMode`, or a `maxConcurrency` out of
+  bounds (`updateConfig()`);
+- `"not-allowed"`: an execution mode the runner's `remoteConfig` forbids, or
+  one it cannot adopt for want of a `childDriver` (`updateConfig()`);
+- `"not-configurable"`: from a `RemoteRunner` for a runner registered in
+  another process, when no owner has started since remote configuration
+  shipped, so nothing would ever adopt the override (`updateConfig()` and
+  `resetConfig()`).
+
+A `RemoteRunner` for a runner the backend does not know throws
+`RunnerNotFoundError`. Over the management API this is
+`PUT` and `DELETE /runners/:runner/config`, with the action `runners.configure`,
+which is off by default. See [Routes](#routes).
 
 ### BunRunnerManager
 
@@ -1715,16 +2818,21 @@ How each call reaches the process that owns the runner:
 | Call | What it does | When the owner acts on it |
 |---|---|---|
 | `info()` | Reads the persisted configuration, paused flag and schedule, the lock (`runningOn`: host, pid, run id, since when), the queue depth, the counters and the last run. | Nothing to act on. |
-| `pause()`, `resume()` | Write the shared paused flag. | At its next sync (`syncInterval`, 30s by default). With `remoteControl: true`, within the driver's event latency: about 25ms on the file driver, 50ms on SQL and MongoDB, immediately on Redis and memory. |
+| `pause()`, `resume()` | Write the shared paused flag. | Immediately on Redis and memory, where `remoteControl: "auto"` subscribes. Elsewhere at its next sync (`syncInterval`, 30s by default), or with `remoteControl: true` within the driver's event latency: about 25ms on the file driver, 50ms on SQL and MongoDB. |
 | `updateSchedule(schedule)` | Validates the schedule, then writes it. | Same as `pause()`. The owner re-arms its ticker. |
-| `trigger({ args?, force? })` | Pushes a trigger onto the runner's queue in the driver, whatever `queueRuns` says, up to the owner's `maxQueuedRuns`. Resolves to `queued`, or `skipped` with `paused` or `queue-full`. | An idle owner drains it at its next sync, or at once with `remoteControl`. A busy one drains it when its run finishes. The run has source `queued` and the owner's default `args` when none are given. |
+| `trigger({ args?, force? })` | Pushes a trigger onto the runner's queue in the driver, whatever `queueRuns` says, up to the owner's `maxQueuedRuns`. Resolves to `queued`, or `skipped` with `paused` or `queue-full`. | An idle owner drains it at once where it subscribes to `control` events (Redis and memory by default, elsewhere with `remoteControl: true`), and otherwise at its next sync. A busy one drains it when its run finishes. The run has source `queued` and the owner's default `args` when none are given. |
 | `history(limit?)`, `stats()` | Read the shared history and counters. | Nothing to act on. |
+| `clearHistory({ staleAfter? })` | Removes the finished runs, record and log, keeping those in progress. See [Clearing run history](#clearing-run-history). | Nothing to act on: it works on what the backend stores. A run the owner is executing stays in progress by its record — `running`, under the live lock or younger than `staleAfter`. |
+| `updateConfig(patch)`, `resetConfig()` | Validate the patch against the modes the owner permits, then write the override (or clear it). See [Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely). | Same as `pause()`. The owner applies it from its next run. |
+| `config()` | Reads the configuration the owners persisted, or `undefined` when no owner has started since remote configuration shipped. | Nothing to act on. |
 
 The calls publish a `control` runner event, whether or not the runner
-publishes its own. An owner started with `remoteControl` re-reads its state
-when it hears one. Every owner also re-reads at each sync and drains triggers
-queued while it was idle. It does the same on `start()`, so a trigger queued
-while no owner was running waits for one to start.
+publishes its own. An owner subscribed to them re-reads its state when it
+hears one — which `remoteControl: "auto"`, the default, means on Redis and
+memory, and `remoteControl: true` means everywhere. Every owner also re-reads
+at each sync and drains triggers queued while it was idle. It does the same on
+`start()`, so a trigger queued while no owner was running waits for one to
+start.
 
 Limits:
 
@@ -1776,7 +2884,8 @@ for await (const event of notifier) {
 |---|---|---|---|
 | `queues` | `"all" \| string[]` | `"all"` | Which queues to follow. |
 | `runners` | `"all" \| string[]` | `"all"` | Which runners to follow. |
-| `discoveryInterval` | `number` | `2000` | How often to look for new queues and runners, with `"all"`. |
+| `workers` | `"all" \| string[]` | `[]` (none) | Which queues' **worker** events to follow, by queue name: `control`, `state` and `config` (see [Controlling workers from another process](#controlling-workers-from-another-process)). Off unless asked for, because it is a second subscription per queue: on the file driver, a second query every few dozen milliseconds per queue; on SQL and MongoDB, one more channel in the namespace's single shared poll. |
+| `discoveryInterval` | `number` | `2000` | How often to look for new queues and runners, with `"all"` in any of the three lists. |
 | `bufferSize` | `number` | `10000` | How many events an async iterator buffers for a slow consumer before dropping the oldest. `dropped` counts the losses. |
 
 - **Constructing and lifecycle.** Construct a notifier directly with
@@ -1800,10 +2909,20 @@ for await (const event of notifier) {
   `ns`, `target`, `at`, `origin` and `payload`. A `switch` on `kind`, then
   `type`, narrows the payload.
 - **Control events.** A runner event of type `control` (`payload.action`:
-  `pause`, `resume`, `schedule` or `trigger`) is published by
+  `pause`, `resume`, `schedule`, `trigger` or `config`) is published by
   `BunRunnerManager.remote()` whenever it changes a runner. It is addressed
-  to the runner's owners, which follow it with `remoteControl`; a notifier
-  following that runner hears it too.
+  to the runner's owners, which follow it wherever `remoteControl` subscribes:
+  on Redis and memory by default, elsewhere with `true`. A notifier following
+  that runner hears it too.
+- **Worker events.** An event with `kind: "worker"` has the queue as its
+  `target` and one of three types: `control` (`payload.action`: `pause`,
+  `resume`, `stop`, `start`, `config` or `reset`, with the `worker` id or the
+  `key` it is addressed to), `state` (`worker`, `key`, `state`, `previous`,
+  `reason?`, `at`) and `config` (`worker`, `key`, `seq`, `overridden`, `error?`).
+  A worker's first start is not announced as a `state` event; it appears
+  through its first heartbeat (see [Routes](#routes)). Only a notifier whose
+  `workers` option names the queue, or `"all"`, hears them.
+  `follow("worker", queue)` and `hold("worker", queue)` also work.
 - **Discovery has a gap.** Anything a newly used queue published before the
   next discovery pass is missed. Name the queues and runners, or `follow()`
   them, to hear every event from the start. Objects created by the same
@@ -1814,6 +2933,222 @@ Examples:
 - [`02-queues/events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/02-queues/events.ts)
 - [`09-integrations/live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts)
 - [`10-options/notifier.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/notifier.ts)
+
+## Analytics
+
+Every queue's jobs, each runner's runs and their durations, and each worker's
+jobs and busyness are counted into time buckets as they happen: a second wide
+and a minute wide, on every built-in driver. The management API's
+[analytics routes](#analytics-routes) read them back as series over a range
+you choose; a queue, worker or runner has no reading method of its own.
+
+Recording is on by default, and what it costs grows with the number of
+**entities** — queues, workers, runners — not with the job rate. Counts are
+gathered in memory and written once a second onto one bucket per series, so a
+second in which one job finished and a second in which five thousand did cost
+the same write. No round trip is added per job or per run; on Redis a
+queue's own count is one more `HINCRBY` inside the script that already settles
+the job.
+
+### The `metrics` option
+
+`BunJobs`, `BunRunner`, `BunQueueWorker` and every `DriverConfig` take the
+same `MetricsOptions`, and every field is on unless you turn it off:
+
+```ts
+import { BunJobs } from "@kingsleyweb/bun-jobs";
+
+export const jobs = new BunJobs({
+  namespace: "shop",
+  driver: { type: "redis", url: "redis://localhost:6379/0" },
+  metrics: {
+    secondRetentionMs: 15 * 60_000, // the most there is
+    workers: false, // a large fleet: no per-worker series
+  },
+});
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `resolution` | `"second"` | The finest width counts are written at. Every count is written at a second **and** a minute — a dual write, never a background roll-up that would need a leader and lose a minute when it died. `"minute"` turns the per-second buckets off. The file driver keeps minutes whatever this says. |
+| `secondRetentionMs` | `300000` (5 minutes) | How long per-second buckets are kept: at least a second, at most `900000` (15 minutes, `MAX_SECOND_RETENTION_MS`). Minute buckets are kept for a day, and that is not configurable. |
+| `workers` | `true` | Per-worker series: the jobs each worker finished, and its busyness. **The first lever for a large fleet** — workers are the term that grows with the fleet, so a namespace with 300 workers pays most of its analytics cost here. |
+| `runners` | `true` | Per-runner series of runs by outcome. |
+| `durations` | `true` | Run durations, and the histograms their percentiles come from. |
+
+Five minutes is deliberately short. It covers the 60-second and 5-minute
+views, which are what per-second buckets are for; a 10-minute range then comes
+back at 60 seconds, with `clamped: true` and `reason: "retention"` saying so.
+The retention, not the job rate, is what the storage is made of: a namespace
+of 20 queues and 40 workers holds about 19,500 buckets at five minutes and
+about 58,500 at fifteen.
+
+**Where each field takes effect.**
+
+- **On a driver.** `resolution` and `secondRetentionMs` belong to whoever
+  builds the driver. A component passes its `metrics` to a driver it builds
+  from a config — a config naming its own `metrics` wins — and to the memory
+  driver it builds when given none. A driver **instance** you pass in keeps
+  whatever it was constructed with (`new SqlDriver({ url, metrics })`).
+- **On a runner or worker.** `runners`, `durations` and `workers` also gate
+  the component's own writes, so they work on a shared driver instance too:
+  `workers: false` on a worker stops it writing either of its series, whatever
+  the driver.
+- **Through `BunJobs`.** The context's `metrics` goes to the driver it builds,
+  and is merged **field by field** under every runner and worker it creates:
+  the context's, then `runnerDefaults.metrics` for a runner, then the
+  component's own, the more specific winning. So a context's
+  `{ workers: false }` is not undone by a worker that only asked for
+  `resolution: "minute"`. A field given as `undefined` does not hide the one
+  beneath it.
+
+What is in force is reported as `GET /meta` →
+`analytics.recording`.
+
+### What is recorded
+
+| Series | Counts | Keyed by | Written by |
+|---|---|---|---|
+| queue jobs | `completed`, `failed` | the queue | the driver, as each job settles — the same events as [throughput](#reading-a-queue-search-totals-workers-and-throughput) |
+| runner runs | `started`, `succeeded`, `failed`, `timeout`, `killed`, `skipped` | the runner's id | the runner |
+| runner durations | `count`, min, max, mean, a 25-bin histogram | the runner's id | the runner, with the outcome |
+| worker jobs | `completed`, `failed` | the queue and the worker's **stable key** | the worker, from memory, once a second |
+| worker busyness | jobs in flight against `concurrency`, per sample | the queue and the worker's stable key | the worker, on each heartbeat report |
+| namespace roll-up | queue jobs, runner runs, worker jobs | the namespace | every per-entity count, in the same write |
+
+**A jobs series' `failed` is failed attempts, not the `failed` state.** It
+counts every attempt that failed, including one that will be retried and one
+that later succeeds, by when it failed. The `failed` *state* is a job whose
+attempt failed and whose retry is waiting, and `dead` a job that gave up — the
+states [the added-by-state counts](#jobs-added-in-a-range-and-sorting-by-creation-time)
+report. Label the series' figure "failed attempts" and the state "retrying",
+so the two are never read as one number.
+
+**Runs.** A run counts in `started` in the bucket it started in, and in its
+outcome and its duration in the bucket it **finished** in. A series' `failed`
+means the run **threw**; a timeout counts in `timeout` and a kill in `killed`
+only. That is unlike the lifetime `stats().failed`, which counts timeouts and
+kills as failures too — so do not add the two together. The lifetime counters
+are kept exactly as before: cumulative and resettable is a different thing from
+a series.
+
+**Durations.** `minMs`, `maxMs` and `meanMs` are exact. `p50Ms` and `p95Ms`
+are read off a fixed log histogram, 24 edges doubling from 1 ms to 2²³ ms
+(about 2.3 hours) plus an overflow bin, interpolated inside the bin: always
+within a factor of 2 of the truth, typically 20–30%. A fixed histogram is what
+lets two processes' buckets merge by adding them.
+
+**Workers.** A worker's series is keyed by its stable `key`, never its
+per-incarnation `id` (the id, only when a record has no key): keyed by
+incarnation, a rolling redeploy would shred it into a new series per replica.
+`failed` counts every failed attempt whose write landed, retried or not. A job
+the worker lost the lock on, a job buried from outside, and a parent buried
+by a failed child are not this worker's attempts, and do not count. The worker
+buffers its counts itself and writes once a second while it is busy — never
+while it is idle.
+
+**Busyness.** Sampled, not counted: each heartbeat report (`reportInterval`,
+10 seconds by default) that lands also records the jobs in flight and
+`concurrency`, and the driver writes the sample with the rest of that second's
+counts, so it adds no round trip of its own. There is deliberately
+no second timer — an idle worker would then write once a second forever.
+With reporting off (`reportInterval: 0`), no busyness is recorded. Because a
+sample comes only every report interval, a busyness series is never
+served finer than that (`meta.analytics.busynessIntervalMs`): at today's widths
+of one second and one minute, it comes back a minute per bucket. A bucket with
+`samples: 0` means the worker was not reporting, not that it was idle.
+
+**Totals on the worker record.** The heartbeat record also carries
+`completed` and `failed` — this incarnation's jobs completed and attempts
+failed since it started — as `WorkerInfo` and the API's `WorkerDto`. They ride
+a write that happens anyway, so they cost nothing and are written whatever
+`metrics` says. They restart from `0` with the worker, and are absent on a
+record written by an older version; the series that survives restarts is the
+one keyed by `key`.
+
+**Recording never changes a job or a run.** A driver without the analytics
+methods records nothing, and one whose write throws is logged once and
+ignored. A runner, worker or queue that closes writes what it had gathered —
+even on a driver it does not own, since a process sharing one driver may exit
+without ever closing it.
+
+### Analytics per driver
+
+| Driver | Widths kept | How counts reach the backend | How old buckets go |
+|---|---|---|---|
+| memory | 1 s, 60 s | straight into the driver's maps; no buffer | a sweep by range, once a minute |
+| file | **60 s only** | a JSONL line per series per flush, once a second per process | a sweep by range, once a minute per process |
+| sql | 1 s, 60 s | gathered in memory; once a second, one multi-row upsert per table onto **one shared row** per series and bucket, however many processes counted | `DELETE … WHERE bucket < cutoff` per table and width, once a minute per process |
+| mongodb | 1 s, 60 s | gathered in memory; once a second, one `bulkWrite` of upserts onto one shared document per series and bucket | one `deleteMany` by range per width, once a minute per process |
+| redis | 1 s, 60 s | a queue's own jobs inside the existing `COMPLETE`/`FAIL` script; everything else gathered in memory and written once a second | each hash expires itself (`PEXPIREAT`); nothing to sweep |
+
+Old buckets are removed **by range**, not per series: a sweep driven by new
+writes would never reach a worker that stopped, whose buckets would then stay
+for good.
+
+**The file driver keeps minutes only.** Per-second buckets there would mean a
+directory listing per queue on every flush and hundreds of file opens per
+read, so the driver serves 60-second buckets whatever `resolution` asks for,
+and reports it: `meta.analytics.resolutions` is `[60]` and
+`recording.resolution` is `"minute"`. A request for one-second buckets comes
+back at a minute, with `reason: "driver"`.
+
+**The Redis namespace roll-up is up to a second behind.** A queue's own counts
+ride the script that settles the job, but the namespace keys sit outside every
+queue's hash tag, and one script may not touch both — in Cluster that is
+cross-slot, and refused. So the roll-up is gathered in memory and written once
+a second, like every buffered backend, and a process killed outright loses the
+second it had not written. An overview refreshed on a timer never notices; a
+test that settles a job and reads the roll-up in the same tick calls
+`driver.flushMetrics()` first.
+
+**SQL** adds three tables — `queue_metrics`, `worker_metrics` and
+`runner_metrics` — created on connect like the rest, each keeping the
+namespace roll-up under an empty entity rather than in a table of its own. A
+run's duration histogram is 25 integer columns, which the upsert adds together;
+no portable SQL can add two JSON arrays. The grouped worker read behind
+`GET /analytics/workers` and `GET /overview` uses a window function, which sets
+this package's
+[minimum versions](#minimum-database-versions): MySQL 8, MariaDB 10.2,
+SQLite 3.25. **MongoDB** adds one collection, `metrics`, with an index for
+reads and one for the sweep.
+
+### Analytics in a driver of your own
+
+Every analytics method is optional on the driver contract, and a driver with
+none of them simply has every analytics route pruned — never a 501:
+
+| Methods | Half | What they enable |
+|---|---|---|
+| `getMetricsSupport`, `getNamespaceMetrics`, `getQueueMetrics` | both; `getQueueMetrics` queue only | every analytics route; without all three, `meta.analytics` is `null` |
+| `countRunnerRun`, `getRunnerMetrics` | runner | runner analytics (`features.runnerMetrics`) |
+| `countWorkerJobs`, `getWorkerMetrics` | queue | worker analytics (`features.workerMetrics`), on a driver that also keeps worker records |
+| `sampleWorkerBusyness` | queue | busyness; without it a worker's series carries its jobs only |
+| `getRunnerMetricsTotals`, `getRunnerMetricsMany`, `getWorkerMetricsTotals`, `getWorkerMetricsMany` | runner, queue | the grouped reads, used only when **all four** are present: a roll-up in a fixed number of reads, and the Runners and Workers sections of `GET /overview` |
+| `flushMetrics` | both | writing what is gathered in memory; awaited by a closing runner, worker or queue |
+
+The rules the built-in five keep, and a sixth must too:
+
+- **Count only a write that took effect, and never add a round trip per job or
+  per run.** Gather in memory and write once a second.
+- **Write every width the driver records, and the namespace roll-up, in the
+  same batch.** Second and minute are a dual write.
+- **Remove old buckets by range**, once a minute, not per series.
+- **There is no fallback.** Counts that were never kept cannot be rebuilt.
+
+The package root exports what the built-in drivers share, so a driver of your
+own buckets, merges and resolves a range exactly as they do:
+`MetricsBuffer` and `PendingBuffer` (the once-a-second buffers),
+`MetricsPruneClock` and `metricsPruneCutoff`, `resolveMetricsOptions` and
+`metricsSupportOf`, `resolveAnalyticsRange`, `bucketStart`, `fillBuckets`, the
+`merge*Buckets` and `merge*Stats` helpers, `durationBin`, `histogramQuantile`,
+`readDurations`, `readBusyness`, `NAMESPACE_ENTITY`, and for the grouped reads
+`runnerTotalsOf`, `workerTotalsOf`, `hasMetricBuckets`, `workerMetricsEntity`,
+`splitWorkerMetricsEntity` and `uniqueWorkerRefs` — with their types
+(`MetricsOptions`, `MetricsSupport`, `MetricsQuery`, `RunnerMetricsTotals`,
+`WorkerMetricsTotals`, …) and the contract's constants (`ANALYTICS_RESOLUTIONS`,
+`DURATION_HISTOGRAM_BOUNDS`, `MAX_ANALYTICS_BUCKETS`, …). Each method's JSDoc
+states exactly what it must return.
 
 ## Management API
 
@@ -1941,6 +3276,8 @@ export type Authorize = (
     jobId?: string;
     jobIds?: readonly string[];
     runner?: string;
+    worker?: string;
+    workerKey?: string;
     channel?: string;
     route?: { method: string; path: string };
   },
@@ -1977,8 +3314,16 @@ asked about with no target.
 | `queues.drain` | mutation | |
 | `queues.clean` | mutation | |
 | `queues.limits` | mutation | |
+| `queues.defaults` | mutation | off by default |
+| `queues.applyDefaults` | mutation | off by default |
 | `metrics.read` | read | |
 | `workers.list` | read | |
+| `workers.read` | read | |
+| `workers.pause` | mutation | |
+| `workers.resume` | mutation | |
+| `workers.stop` | mutation | |
+| `workers.start` | mutation | |
+| `workers.configure` | mutation | off by default |
 | `jobs.list` | read | |
 | `jobs.read` | read | |
 | `jobs.logs` | read | |
@@ -1987,6 +3332,7 @@ asked about with no target.
 | `jobs.retry` | mutation | |
 | `jobs.retryAll` | mutation | |
 | `jobs.remove` | mutation | |
+| `jobs.clearLogs` | mutation | |
 | `jobs.promote` | mutation | |
 | `jobs.fail` | mutation | |
 | `repeatables.list` | read | |
@@ -1996,18 +3342,25 @@ asked about with no target.
 | `definitions.list` | read | |
 | `runners.list` | read | |
 | `runners.read` | read | |
+| `runners.logs` | read | |
 | `runners.trigger` | mutation | |
 | `runners.pause` | mutation | |
 | `runners.resume` | mutation | |
 | `runners.kill` | mutation | |
 | `runners.reschedule` | mutation | |
 | `runners.resetStats` | mutation | |
+| `runners.clearHistory` | mutation | |
+| `runners.configure` | mutation | off by default |
 | `events.connect` | read | |
 | `events.subscribe` | read | |
 
 **`actions` is an allow-list, not a list of extras.** Left unset, it
-defaults to every action except `jobs.add` and `jobs.update`
-(`JOBS_API_OPT_IN_ACTIONS`), which write payloads your handlers trust. Once
+defaults to every action except `jobs.add` and `jobs.update`, which write
+payloads your handlers trust, `workers.configure` and `runners.configure`,
+which reconfigure a process from outside it, and `queues.defaults` and
+`queues.applyDefaults`, where one write changes the retries, timeout and
+retention of every job every producer adds to a queue, or of its whole
+backlog (`JOBS_API_OPT_IN_ACTIONS`). Once
 you pass it, *only* the actions it names are enabled: `actions: ["jobs.add",
 "jobs.update"]` alone turns those two on and every other action — reads,
 `meta.read` and `docs.read` included — off. To enable the two on top of the
@@ -2088,9 +3441,13 @@ absent everywhere: wrong mode, a mutation under `readOnly`, an action outside
 needs a `jobs` source without one. A pruned route answers the API's JSON 404,
 never a 405.
 
-`/meta` reports what the backend supports (`features.logs`, `update`,
-`limits`, `flows`, `search`, `workers`, `throughput`), so a UI can explain a
-missing button rather than hide it silently.
+`/meta` reports what the backend supports and this API serves
+(`features.logs`, `update`, `limits`, `flows`, `search`, `workers`,
+`workerControl`, `throughput`, `runnerLogs`, `runnerMetrics`, `workerMetrics`,
+and `analytics` beside `features` for what the analytics routes can serve), so
+a UI can explain a missing button rather than hide it silently. A feature
+whose routes the mode prunes reads `false`; see
+[Features that need driver support](#features-that-need-driver-support).
 
 ### Routes
 
@@ -2104,18 +3461,36 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/openapi.json` | `docs.read` | no |
 | GET | `/asyncapi.json` | `docs.read` | no |
 | GET | `/overview` | `metrics.read` | no |
+| GET | `/overview/added` | `metrics.read` | no |
 | GET | `/queues` | `queues.list` | no |
 | GET | `/queues/:queue` | `queues.read` | no |
 | GET | `/queues/:queue/counts` | `queues.read` | no |
+| GET | `/queues/:queue/counts/added` | `queues.read` | no |
 | POST | `/queues/:queue/pause` | `queues.pause` | yes |
 | POST | `/queues/:queue/resume` | `queues.resume` | yes |
 | POST | `/queues/:queue/drain` | `queues.drain` | yes |
 | POST | `/queues/:queue/clean` | `queues.clean` | yes |
 | GET | `/queues/:queue/limits` | `queues.read` | no |
 | PUT | `/queues/:queue/limits` | `queues.limits` | yes |
+| GET | `/queues/:queue/job-defaults` | `queues.read` | no |
+| PUT | `/queues/:queue/job-defaults` | `queues.defaults` | yes |
+| DELETE | `/queues/:queue/job-defaults` | `queues.defaults` | yes |
+| POST | `/queues/:queue/job-defaults/apply` | `queues.applyDefaults` | yes |
 | GET | `/queues/:queue/workers` | `workers.list` | no |
 | GET | `/workers` | `workers.list` | no |
+| GET | `/queues/:queue/workers/:worker` | `workers.read` | no |
+| POST | `/queues/:queue/workers/:worker/pause` | `workers.pause` | yes |
+| POST | `/queues/:queue/workers/:worker/resume` | `workers.resume` | yes |
+| POST | `/queues/:queue/workers/:worker/stop` | `workers.stop` | yes |
+| POST | `/queues/:queue/workers/:worker/start` | `workers.start` | yes |
+| GET | `/queues/:queue/worker-configs` | `workers.read` | no |
+| PUT | `/queues/:queue/worker-configs/:key` | `workers.configure` | yes |
+| DELETE | `/queues/:queue/worker-configs/:key` | `workers.configure` | yes |
 | GET | `/queues/:queue/throughput` | `metrics.read` | no |
+| GET | `/queues/:queue/analytics/jobs` | `metrics.read` | no |
+| GET | `/queues/:queue/analytics/workers/:key` | `metrics.read` | no |
+| GET | `/analytics/jobs` | `metrics.read` | no |
+| GET | `/analytics/workers` | `metrics.read` | no |
 | GET | `/queues/:queue/jobs` | `jobs.list` | no |
 | POST | `/queues/:queue/jobs/lookup` | `jobs.read` | no |
 | GET | `/queues/:queue/jobs/:id` | `jobs.read` | no |
@@ -2123,6 +3498,7 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/queues/:queue/jobs/:id/children` | `jobs.read` | no |
 | PATCH | `/queues/:queue/jobs/:id` | `jobs.update` | yes |
 | DELETE | `/queues/:queue/jobs/:id` | `jobs.remove` | yes |
+| DELETE | `/queues/:queue/jobs/:id/logs` | `jobs.clearLogs` | yes |
 | POST | `/queues/:queue/jobs/:id/retry` | `jobs.retry` | yes |
 | POST | `/queues/:queue/jobs/:id/promote` | `jobs.promote` | yes |
 | POST | `/queues/:queue/jobs/:id/fail` | `jobs.fail` | yes |
@@ -2139,17 +3515,280 @@ driver support is present. Paths are relative to `basePath`.
 | GET | `/runners` | `runners.list` | no |
 | GET | `/runners/:runner` | `runners.read` | no |
 | GET | `/runners/:runner/history` | `runners.read` | no |
+| DELETE | `/runners/:runner/history` | `runners.clearHistory` | yes |
+| GET | `/runners/:runner/runs/:runId/logs` | `runners.logs` | no |
 | GET | `/runners/:runner/stats` | `runners.read` | no |
+| GET | `/runners/:runner/analytics` | `metrics.read` | no |
+| GET | `/analytics/runners` | `metrics.read` | no |
 | POST | `/runners/:runner/trigger` | `runners.trigger` | yes |
 | POST | `/runners/:runner/pause` | `runners.pause` | yes |
 | POST | `/runners/:runner/resume` | `runners.resume` | yes |
 | PUT | `/runners/:runner/schedule` | `runners.reschedule` | yes |
 | POST | `/runners/:runner/kill` | `runners.kill` | yes |
 | POST | `/runners/:runner/stats/reset` | `runners.resetStats` | yes |
+| PUT | `/runners/:runner/config` | `runners.configure` | yes |
+| DELETE | `/runners/:runner/config` | `runners.configure` | yes |
 
 Runner routes reach runners registered in *any* process sharing the driver
 and namespace; `kill` and `stats/reset` are local-only and answer 409
-`RUNNER_NOT_LOCAL` for a runner owned elsewhere.
+`RUNNER_NOT_LOCAL` for a runner owned elsewhere. `DELETE
+/runners/:runner/history` is not: it works on what the backend stores.
+
+**The two clear routes.** Both are mutations, on by default (`readOnly`
+removes them, and an `actions` list must name them), and both delete for good.
+
+- `DELETE /queues/:queue/jobs/:id/logs` (`clearJobLogs`, action
+  `jobs.clearLogs`) empties a job's log and answers 200 `{ removed }`, the
+  number of lines it held; the next line the job logs is its first. It is 409
+  `JOB_ACTIVE` while a worker runs the job — the same rule and code as
+  `DELETE /queues/:queue/jobs/:id` — with nothing removed, and 404
+  `JOB_NOT_FOUND` for a job that does not exist. `authorize` sees `queue` and
+  `jobId`. See [Clearing a job's log](#clearing-a-jobs-log).
+- `DELETE /runners/:runner/history` (`clearRunnerHistory`, action
+  `runners.clearHistory`) removes the finished runs, each with its log, keeps
+  the runs in progress, and answers 200 `{ removed, kept }`, `kept` being the
+  run ids left in place, newest first. It works for a runner registered in
+  another process, answers 404 `RUNNER_NOT_FOUND` for an unknown one, and
+  `authorize` sees `runner`. `?staleAfter=` (ms) raises how long an unvouched
+  `running` record counts as in progress: at least one day, which is also the
+  default, and at most thirty days; out of range is 400 `VALIDATION`. The API
+  cannot lower it, so no caller can clear a live run sooner than the library's
+  default would. See [Clearing run history](#clearing-run-history) for which
+  runs are kept, and the limit on long parallel runs in another process.
+
+Neither touches a counter or an analytics series. A backend without the
+driver method each needs — `clearJobLogs`, `removeRuns` — has the route
+pruned, so it is absent from `GET /meta/permissions` and never answers 501.
+
+`PUT /runners/:runner/config` overrides a runner's executor and overlap
+settings from outside its process, as a merge patch: a field left out is
+untouched, and `null` clears that override. `DELETE` drops every override, so
+the runner goes back to what its own code asks for. Each owner adopts the
+override when it hears of it and applies it from the **next** run, so a run in
+flight is never killed. An execution mode the runner's code does not permit is
+409 `CONFIG_NOT_ALLOWED`, and a runner no owner has started since remote
+configuration shipped is 409 `RUNNER_NOT_CONFIGURABLE`. Both routes need
+`runners.configure`, which is off by default, and a driver that keeps runner
+state; every built-in driver does. See
+[Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely).
+
+A worker is listed by `GET /workers` from its first heartbeat, written when it
+starts: at once on a queue the API already knows, and within
+`limits.queueCacheMs` (2 s by default) on a queue the API has not seen yet.
+Its row then refreshes every `reportInterval` (10 s by default). A first start
+is not announced as a `state` event.
+
+Worker routes reach workers in any process too. `:worker` is one
+**incarnation**, the id a worker's record carries, and `authorize` sees it as
+`worker`; `:key` on the configuration routes is the **stable key**, which
+reaches every replica carrying it, and `authorize` sees it as `workerKey`.
+Both come with `queue`. A lifecycle action is stored and announced rather
+than applied in place, so it reaches the worker within milliseconds when the
+worker subscribes to its instructions, within `remoteControl.interval` (2
+seconds by default) when it polls, and within one `reportInterval` even if
+the announcement is lost; `?wait=` (ms) waits for the acknowledgement and answers 200 once it
+lands, or 202 when the wait runs out. A worker built without `remoteControl`
+answers 409 `WORKER_NOT_CONTROLLABLE` (`BunJobs` turns it on for the workers
+it builds). `workers.configure` is off by default, like `jobs.add`: one write
+reaches every replica, and its lock settings decide whether a job can run
+twice. The library call underneath is
+[`RemoteWorker`](#controlling-workers-from-another-process), which makes
+fewer of these checks.
+
+`GET /runners/:runner/runs/:runId/logs` serves one run's captured output — see
+[Run logs](#run-logs) for what is captured and what bounds it. It is a read,
+`runners.logs`, enabled by default like every other read, and it is authorized
+on the *runner*: `AuthorizeTarget` has no run field, and `POST
+/runners/:runner/kill`, the only other route naming a run, authorizes the same
+way. It answers `{ items, page, dropped, capped, live, lastSeq }`:
+
+- each item is a `RunLogLineDto`: `seq` (the line's 1-based place in the
+  run's output, never reused), `at` (epoch ms), `stream` (`stdout`, `stderr`
+  or `log`), `message`, the line's text with its trailing newline removed
+  (the field is `message`, not `text`), `level` on a `log` line that carried
+  one, and `truncated`.
+- `?since=` is an **exclusive** lower bound on `seq`. Send the previous page's
+  `lastSeq` back to tail without repeating a line or skipping one.
+- `dropped` and `lastSeq` are the run's own, never filtered by `since` or
+  `stream`, which is what lets a filtered tail resume correctly. `dropped`
+  tells a reader its page is a tail of a longer log rather than leaving it to
+  read a silently short one, and a line the per-line cap cut carries
+  `truncated: true`.
+- `capped` and `live` are derived by the route, not stored: `live` is the
+  run's status, and `capped` is `dropped` in the present tense — a cap
+  dropping the oldest lines *as new ones arrive*, so what you are holding is a
+  moving tail.
+- `?stream=` narrows to `stdout`, `stderr` or `log`; `?order=desc` reads
+  newest first; a page is at most `limits.maxLogPage` lines.
+
+**409 `LOGS_NOT_RETAINED` is not the same as a 200 with no items.** The 409
+says this backend keeps no log for this run to read at all —
+`meta.features.runnerLogs` is `false`. A 200 with an empty `items` says the
+run is known, its log is retained, and it simply logged nothing. A run neither
+the history nor the log store has heard of is 404 `RUN_NOT_FOUND`, as `kill`
+answers for one. A backend that cannot read run logs at all has the route
+pruned, so it never answers 501.
+
+### Analytics routes
+
+Seven reads serve the [analytics](#analytics) series. Every one is
+`metrics.read` — no new action, so a host passing an `actions` allow-list
+loses nothing — and `authorize` sees the target the path names, so a host can
+still split them by `queue`, `runner` or `workerKey`. Each is pruned where the
+backend cannot serve it, never answered with a 501.
+
+| Route | Answers | Authorized with |
+|---|---|---|
+| `GET /analytics/jobs` | jobs completed and attempts failed across the namespace | |
+| `GET /queues/:queue/analytics/jobs` | one queue's; supersedes `/queues/:queue/throughput` | `queue` |
+| `GET /analytics/runners` | every runner's outcomes summed, a row per runner, and `?ids=` series | |
+| `GET /runners/:runner/analytics` | one runner's runs by outcome, its durations, and `runningNow` | `runner` |
+| `GET /analytics/workers` | every worker's jobs summed, a row per worker key, and `?keys=` series | |
+| `GET /queues/:queue/analytics/workers/:key` | one worker key's jobs and busyness | `queue`, `workerKey` |
+| `GET /overview` | its `analytics` block, beside what it always answered | |
+
+**The range.** Every one takes `from`, `to` and `resolution`:
+
+- `from` is **inclusive**, `to` is **exclusive**. Each is epoch milliseconds or
+  an RFC 3339 date-time. `to` defaults to now and `from` to an hour before `to`.
+- `resolution` is `1` or `60` seconds — anything else is 400 `VALIDATION`. It
+  is a **hint and an upper bound on fineness**: the answer is never finer, and
+  may be coarser. Left out, the answer is the finest the backend can give.
+- `to` not after `from`, a span over a day (`MAX_ANALYTICS_SPAN_MS`) or under a
+  second is 400 `INVALID_ARGUMENT`.
+
+The response describes what it actually covers in `range`:
+
+```ts
+import type { AnalyticsRangeDto } from "@kingsleyweb/bun-jobs/api/contract";
+
+// GET /analytics/jobs?from=2026-09-21T10:00:00Z&to=2026-09-21T10:05:00Z&resolution=60
+export const range: AnalyticsRangeDto = {
+  resolution: 60, // what was served, in seconds
+  interval: 60_000, // the same, in ms
+  from: Date.parse("2026-09-21T10:00:00Z"), // the first bucket's start
+  to: Date.parse("2026-09-21T10:04:00Z"), // the LAST bucket's start
+  end: Date.parse("2026-09-21T10:05:00Z"), // the exclusive end: to + interval
+  requested: {
+    from: Date.parse("2026-09-21T10:00:00Z"),
+    to: Date.parse("2026-09-21T10:05:00Z"),
+    resolution: 60,
+  },
+  clamped: false,
+};
+```
+
+**The request's `to` is exclusive; the response's `range.to` is the start of
+the last bucket, and `range.end` the exclusive end.** It is the easiest thing
+here to get wrong. An axis runs `range.from` to `range.end`, with the last
+bucket plotted at `range.to`; a five-minute request at a minute is five
+buckets, not six. Buckets are contiguous — an interval in which nothing
+happened is present, with zeros.
+
+**One resolution per response.** The served width is the finest the backend
+keeps for the **whole** span within 1,500 buckets (`MAX_ANALYTICS_BUCKETS`). A
+span reaching past the per-second retention is served entirely at a minute,
+never half and half, since mixed widths cannot be plotted honestly. When the
+answer differs from the request, `clamped` is `true` and `reason` says why:
+
+| `reason` | Means |
+|---|---|
+| `retention` | The bucket `from` falls in is older than the finer width is kept for, so the range was served coarser, or its first bucket was moved forward to the oldest bucket kept. It is compared by bucket, not by instant: "the last 24 hours" asked for by a clock a few ms behind the server's is not clamped. |
+| `maxBuckets` | The finer width would have held more than 1,500 buckets. |
+| `resolution` | The series cannot be observed that finely — busyness, which is sampled on the heartbeat. |
+| `driver` | The backend does not record that width at all — the file driver, asked for seconds. |
+
+**Partly retained is clamped; wholly unretained is an error.** A range whose
+first bucket is older than the oldest bucket kept is clamped forward, `reason:
+"retention"`. A range **entirely** older is 400 `RANGE_NOT_RETAINED`, with
+`context.retainedFrom` (the oldest instant kept) and `context.resolution`:
+a 200 with an empty series would read as "nothing happened", and only one of
+the two is true.
+
+**Rows and batches.** `GET /analytics/runners` and `GET /analytics/workers`
+answer a summed `series`, a row of totals per runner or per worker key, and on
+request the series for the page on screen:
+
+- `rows` holds at most 100 (`MAX_ANALYTICS_ROWS`), with `truncated` saying
+  when there were more and `totalRows` how many. Runner rows are sorted by
+  runs started, descending, then id; worker rows by `completed`, descending,
+  then key. Every reachable runner, and every live worker key, has a row —
+  zeros when it did nothing in the range. On a backend with the grouped reads
+  (below), a worker key **no longer live that still has counts in the range
+  keeps its row**: the rows answer "who did the work in this window", and a
+  worker that has since stopped did some of it.
+- `?ids=` (runners) or `?keys=` (worker keys) names up to 20 series
+  (`MAX_ANALYTICS_SERIES`, reported as `meta.analytics.maxSeries`), repeated
+  or comma-separated, which come back in `seriesByRunner` or `seriesByKey` in
+  the order asked. More than 20 is 400 `BULK_LIMIT` — naming series is an
+  explicit ask, so it is refused rather than cut short. A key on two queues
+  comes back twice; an id or key the API cannot reach is left out.
+- `series` is the namespace roll-up — one read, whatever the fleet — when the
+  caller sees the whole namespace. Under a restriction (a `queues` list or
+  `listQueues: "authorized"` for workers, a fixed runner list for runners) the
+  roll-up would count what the caller may not see, so the visible entities are
+  summed instead. `GET /analytics/jobs` follows the same rule.
+
+**What a roll-up costs.** On a backend with the four grouped reads — every
+built-in driver — the rows are **one** read of every entity's totals, a
+restricted series one more, and a batch **exactly one** read of its kind,
+however many runners or workers there are: 20 sparklines are one request and
+one read. A backend without them keeps a read per listed runner or live worker
+key, and serves the batch from those same reads.
+
+**`runningNow`** is state, not a bucket, so no series holds it. For each
+runner it is one read of the runner's lock, together with the runs a runner
+registered in this process holds in memory: at least this many, since a
+`parallel` run in another process holds no lock to see. `GET /analytics/runners`
+reads locks only for the rows it returns (at most 100); its envelope's
+`runningNow` adds the in-process runs of local runners beyond that cap, and
+reads no remote runner beyond it.
+
+**One worker key.** `GET /queues/:queue/analytics/workers/:key` answers by the
+stable key, so a key with nothing counted reads as zeros, not 404 — a worker
+that has since stopped still has its history. `jobs` resolves like any series;
+`busyness` carries **its own `range`**, never finer than the heartbeat, so
+usually a minute per bucket while `jobs` is a second. `busyness` is absent
+where the backend records none.
+
+**`/overview`.** Beside what it always answered, `GET /overview` carries
+`analytics`: its `range`, and `jobs`, the namespace's jobs series — one read
+from the roll-up, whatever the queue count, or the queues summarised summed
+under a restriction. On a backend with the grouped reads it also carries
+`runners` and `workers`, the roll-ups `GET /analytics/runners` and
+`GET /analytics/workers` answer, without a batch. Each costs a fixed number of
+reads whatever the fleet, plus a lock read per runner row returned, so a
+namespace with 5 workers and one with 200 cost the overview the same metrics
+reads. Without them the two sections are left out, because each row would
+cost a read on every poll. `analytics` is absent where the backend records no
+analytics.
+
+**`minutes` is deprecated.** `/overview` and `/queues/:queue/throughput`
+accept `from`, `to` and `resolution` too, and when `from` or `to` is given it
+decides the window instead — clamped to what is kept, and 400
+`RANGE_NOT_RETAINED` when wholly older. Their `throughput` and
+`throughputSeries` stay a minute per bucket, as they always were.
+`/queues/:queue/analytics/jobs` is the same count at the width the range
+resolves to.
+
+**`GET /meta` → `analytics`** says what can be asked for, and is `null` when
+the backend serves no analytics:
+
+| Field | Meaning |
+|---|---|
+| `resolutions` | The widths served, in seconds: `[1, 60]`, or `[60]` on the file driver. |
+| `retentionMs` | How long each width is kept, keyed `"1"` and `"60"`. |
+| `maxSpanMs` | The longest span one request may cover: a day. A range picker clamps itself to this. |
+| `maxBuckets` | The most buckets one series may hold: 1,500. |
+| `maxSeries` | The most series `ids=`/`keys=` may name: 20. Also the page size for a Runners or Workers table, so one page's sparklines are one request. |
+| `recording` | What is being recorded: `resolution`, `secondRetentionMs`, `workers`, `runners`, `durations` — the [`metrics` option](#the-metrics-option) in force. |
+| `busynessIntervalMs` | How often busyness is sampled: 10,000, the workers' default `reportInterval`. |
+
+The contract exports the same caps and the range presets a picker offers:
+`ANALYTICS_RESOLUTIONS`, `ANALYTICS_PRESETS`, `DEFAULT_ANALYTICS_PRESET`,
+`MAX_ANALYTICS_SPAN_MS`, `MAX_ANALYTICS_BUCKETS`, `MAX_ANALYTICS_SERIES`,
+`MAX_ANALYTICS_ROWS`, `DEFAULT_SECOND_RETENTION_MS`, `MAX_SECOND_RETENTION_MS`
+and `DURATION_HISTOGRAM_BOUNDS`.
 
 ### Pagination, filtering and `include`
 
@@ -2158,6 +3797,39 @@ Lists are offset-based: `?offset=0&limit=20`, answering
 only when you need a count — it costs a second query. Jobs can be filtered by
 `state` (repeated or comma-separated), by `name`, and by `search` (a substring
 of id or name, never the payload).
+
+Jobs can also be filtered by
+[who ran them and when they finished](#who-ran-a-job-worker-attribution):
+`workerKey`, `workerId`, `finishedFrom` and `finishedTo`, as on
+`queue.list()`. `workerKey` and `workerId` take at most 100 values each,
+repeated or split at commas, so a key containing a comma cannot be sent as a
+single value. `finishedFrom` and `finishedTo` are epoch ms or RFC 3339
+date-times, `finishedFrom` inclusive and `finishedTo` exclusive, and only
+`completed` and `dead` jobs match a range. The API refuses two requests with
+400 `INVALID_ARGUMENT` rather than answer an empty page that would read as
+"this worker ran nothing". `queue.list()` and `queue.page()` refuse the same
+two with a `ConfigError`; the 100-value cap is the API's alone:
+
+- a `finishedTo` that is not after `finishedFrom`, an inverted or empty range;
+- a `workerKey` or `workerId` when `/meta.features.jobAttribution` is
+  `false`, because the backend has no stamp to match. The `detail` says to run
+  `syncSchema()` on a SQL backend.
+
+A range alone is answered on every backend. Pair `workerKey` with one: a queue
+usually has one key shared by its replicas, and no backend indexes it.
+
+`sort` orders the page: `natural` (the default) is each state's own order, and
+`createdAt` is by creation time whatever the states, ties by `id`, so
+`order=desc` is newest first on every tab. `sort=createdAt` is served where
+`/meta.features.addedByState` is `true` (memory, SQL, MongoDB) and is 400
+`INVALID_ARGUMENT` with a `detail` elsewhere — never a page silently in the
+natural order. See
+[sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
+for each state's natural order and the cost on SQL and MongoDB.
+
+Every job, listed or read, carries `processedBy`, the worker that claimed its
+current or last attempt (`{ id, key?, host?, pid? }`, or `null`), and
+`host` and `pid` are left out under `serialize.exposeHosts: false`.
 
 `GET /queues` pages the same way (`?offset=&limit=`, `limit` at most and by
 default `limits.maxQueues`) and answers `page` beside `items`; `truncated` is
@@ -2223,17 +3895,25 @@ at that field. A cron expression or time zone the scheduler refuses is 400
 | `RUNNER_NOT_FOUND` | 404 | | `INVALID_JSON` | 400 |
 | `RUN_NOT_FOUND` | 404 | | `INVALID_SCHEDULE` | 400 |
 | `REPEATABLE_NOT_FOUND` | 404 | | `BULK_LIMIT` | 400 |
-| `ROUTE_NOT_FOUND` | 404 | | `ARGS_NOT_ALLOWED` | 400 |
+| `WORKER_NOT_FOUND` | 404 | | `ARGS_NOT_ALLOWED` | 400 |
+| `ROUTE_NOT_FOUND` | 404 | | `RANGE_NOT_RETAINED` | 400 |
+| `WORKER_GONE` | 410 | | `UNSUPPORTED_SUBPROTOCOL` | 400 |
 | `JOB_STATE_CONFLICT` | 409 | | `NAME_NOT_ADDABLE` | 403 |
 | `JOB_ACTIVE` | 409 | | `CSRF_REJECTED` | 403 |
 | `RUNNER_NOT_LOCAL` | 409 | | `ORIGIN_REJECTED` | 403 |
 | `OPERATION_IN_PROGRESS` | 409 | | `UNSUPPORTED_MEDIA_TYPE` | 415 |
 | `LIMITS_CONTENDED` | 409 | | `PAYLOAD_TOO_LARGE` | 413 |
-| `RUNNER_STOPPED` | 409 | | `NOT_SUPPORTED` | 501 |
-| `LOCK_UNAVAILABLE` | 409 | | `QUEUE_CLOSED` | 503 |
-| `LOCK_LOST` | 409 | | `WORKER_CLOSED` | 503 |
-| `INTERNAL` | 500 | | `QUEUE_FULL` | 503 |
-| | | | `DRIVER_ERROR` | 503 |
+| `RUNNER_STOPPED` | 409 | | `CONNECTION_LIMIT` | 429 |
+| `LOCK_UNAVAILABLE` | 409 | | `NOT_SUPPORTED` | 501 |
+| `LOCK_LOST` | 409 | | `QUEUE_CLOSED` | 503 |
+| `LOGS_NOT_RETAINED` | 409 | | `WORKER_CLOSED` | 503 |
+| `WORKER_STATE_CONFLICT` | 409 | | `QUEUE_FULL` | 503 |
+| `WORKER_NOT_CONTROLLABLE` | 409 | | `DRIVER_ERROR` | 503 |
+| `WORKER_PERSISTENCE_NOT_ALLOWED` | 409 | | `DEFAULTS_CHANGED` | 409 |
+| `CONTROL_CONTENDED` | 409 | | | |
+| `CONFIG_NOT_ALLOWED` | 409 | | | |
+| `RUNNER_NOT_CONFIGURABLE` | 409 | | | |
+| `INTERNAL` | 500 | | | |
 
 ### Live events
 
@@ -2390,7 +4070,9 @@ mirror re-encodes anything — or leave the pages off and use the JSON.
 - **Redact with the `serialize` hooks.** `lockToken`, event `origin` tokens,
   `driverConfig` and handler functions are never serialised; stacks
   (`exposeStacks`), runner file paths (`exposeRunnerFiles`) and worker
-  host/pid (`exposeHosts`) are switches.
+  host/pid (`exposeHosts`, on worker records and on a job's `processedBy`
+  alike) are switches. Run-log lines are scrubbed earlier,
+  as they are captured (see [Secrets are redacted](#secrets-are-redacted)).
 - **Keep `docs.ui` off in production** unless the prefix is private.
 
 ### Limits
@@ -2405,11 +4087,12 @@ served slowly. Override any of them through `limits`.
 | `maxBulkIds` | `1000` | ids in a bulk body |
 | `maxRetryAll` | `10000` | jobs one `retry-all` may move |
 | `maxClean` | `10000` | largest `clean` limit |
-| `maxLogPage` | `500` | largest log page |
+| `maxLogPage` | `500` | largest log page, for a job's logs and a run's alike |
 | `maxHistory` | `200` | largest runner history page |
 | `maxQueues` | `500` | queues summarised by `/queues` and `/overview` |
 | `queueCacheMs` | `2000` | how long the known-queue list is cached; a queue missing from it is checked against the backend once more (at most once per window) before a 404 |
 | `maxJobDataBytes` | `1048576` | body accepted by `jobs.add`/`jobs.update` |
+| `maxApplyDefaults` | `1000` | largest `limit` of one `job-defaults/apply` call; at most `10000` |
 
 The socket has its own (`websocket`): `maxConnections` `1000`,
 `maxSubscriptions` `50` per connection, `maxMessageBytes` `16384`,
@@ -2437,7 +4120,13 @@ answers with (`1000`; past it `ids` holds the first `1000` and `truncated` is
   `null` for any name, `[]` when adding is not routed, else the list (by
   default, the names of `jobs.definitions()`);
 - `runnerTriggerArgs` — whether a trigger may carry `args`;
-- `websocket.port` — present when the socket has its own port.
+- `analytics` — what the [analytics routes](#analytics-routes) can serve, or
+  `null` when the backend records none;
+- `websocket.port` — present when the socket has its own port;
+- `driver.capabilities` — `blockingWait`, `events`, `multiProcess`,
+  `multiHost` and `jobAttribution`, which is required. They are picked field
+  by field, so a capability this version does not know, from a newer or
+  custom driver, is not echoed.
 
 `GET /meta/permissions?channel=queue/mail` previews a WebSocket subscription:
 the channel is parsed and checked as a `subscribe` frame's would be, and
@@ -2488,21 +4177,63 @@ socket.addEventListener("open", () => console.log(queues.page.total));
 ### Features that need driver support
 
 Some routes exist only where the backend can serve them, and `/meta.features`
-says which:
+says which. A flag is `true` only where this API serves every route in its
+row, by the same test that prunes the router: under `mode: "jobs"` the runner
+features read `false`, and under `mode: "runner"` the queue ones do. `readOnly`
+and `actions` do not turn a flag off. They are permissions, which
+`/meta.readOnly` and `/meta/permissions` answer, so a UI can tell "this backend
+cannot" from "you may not":
 
 | Feature | Routes | Needs |
 |---|---|---|
 | `logs` | `/jobs/:id/logs` | `getJobLogs` |
+| `runnerLogs` | `/runners/:runner/runs/:runId/logs` | `appendRunLog` and `getRunLog` |
 | `update` | `PATCH /jobs/:id` | `updateJob` |
 | `limits` | `/queues/:queue/limits` | queue state |
 | `flows` | `/jobs/:id/children` | `recordChild` |
 | `search` | `?search=` on job lists | `findJobs` |
-| `workers` | `/workers`, `/queues/:queue/workers` | worker records |
+| `workers` | `/workers`, `/queues/:queue/workers`, `/queues/:queue/workers/:worker` | worker records |
+| `workerControl` | `/queues/:queue/workers/:worker/pause`, `resume`, `stop` and `start`; `/queues/:queue/worker-configs` and `/queues/:queue/worker-configs/:key` | worker records and queue state (`getQueueState`, `setQueueState`, `listQueueState`) |
 | `throughput` | `/queues/:queue/throughput`, `/overview` | `getThroughput` |
+| `runnerMetrics` | `/analytics/runners`, `/runners/:runner/analytics`, `/overview`'s `analytics.runners` | `countRunnerRun` and `getRunnerMetrics`, plus the three every analytics route needs |
+| `workerMetrics` | `/analytics/workers`, `/queues/:queue/analytics/workers/:key`, `/overview`'s `analytics.workers` | `countWorkerJobs` and `getWorkerMetrics` and worker records, plus the three every analytics route needs |
+| `jobAttribution` | `processedBy` on every job, and `?workerKey=` and `?workerId=` on `/queues/:queue/jobs` | `capabilities.jobAttribution: true` (on SQL, the stamp columns `syncSchema()` adds) |
+| `addedByState` | `/overview/added`, `/queues/:queue/counts/added`, and `?sort=createdAt` on `/queues/:queue/jobs` | `countAddedJobs` (memory, SQL and MongoDB; not Redis or file) |
+| `jobDefaults` | `GET`, `PUT` and `DELETE /queues/:queue/job-defaults` | queue state (`getQueueState`, `setQueueState`); every built-in driver |
+| `jobDefaultsApply` | `POST /queues/:queue/job-defaults/apply` | queue state and `rewritePendingOptions`; every built-in driver |
+
+`jobAttribution` has no route of its own, like `search`: it is a field on
+every job and two filters on the job list, so it reads `false` under
+`mode: "runner"`, where the list is not served. It follows the driver's
+declared capability, not a list of methods, since `findJobs` exists on drivers
+that record nothing. On SQL it is read on every request, so it turns `true`
+once a sync adds the stamp's columns, without a restart. While it is `false`,
+the job list is still served, a job nothing stamped reads `processedBy:
+null`, `?finishedFrom=` and `?finishedTo=` still work (by scanning the states
+asked for), and
+`?workerKey=` and `?workerId=` are 400 `INVALID_ARGUMENT`.
 
 `POST /jobs/:id/fail` also needs `buryJob`, and the repeatable `disable` and
 `enable` routes need queue state; every built-in driver has both, so neither
-has a feature flag.
+has a feature flag. `DELETE /jobs/:id/logs` needs `clearJobLogs` and
+`DELETE /runners/:runner/history` needs `removeRuns`; every built-in driver
+has both too, so neither has a flag. A custom driver without one has that
+route pruned, and whether the action appears in `GET /meta/permissions`
+answers it.
+
+The two analytics jobs routes, `/analytics/jobs` and
+`/queues/:queue/analytics/jobs`, have no flag of their own: every analytics
+route needs `getMetricsSupport`, `getNamespaceMetrics` and `getQueueMetrics`,
+and `meta.analytics` is `null` exactly when those are missing — which means
+every analytics route is pruned. `/overview`'s `analytics.runners` and
+`analytics.workers` also need the four grouped reads (see
+[Analytics routes](#analytics-routes)). Every built-in driver has all of them.
+
+`runnerLogs` is the one feature whose route is pruned on less than it reports.
+The route needs only `getRunLog`, so a backend that can read run logs but never
+write them keeps it — and answers 409 `LOGS_NOT_RETAINED`, which is exactly
+what `runnerLogs: false` means, rather than an empty page a client would read
+as "the run was quiet". All eight built-in backends have both methods.
 
 A route whose support is missing is not registered, not documented, and
 answers the API's JSON 404 — so a UI can ask `/meta` once and explain the
@@ -2579,10 +4310,26 @@ queue's wake list and hears about a job in about a millisecond. It is also the
 only driver whose events are pushed rather than polled.
 
 Each driver reports these figures as
-`driver.capabilities`: `{ blockingWait, events, multiProcess, multiHost }`.
+`driver.capabilities`: `{ blockingWait, events, multiProcess, multiHost }`,
+plus `jobAttribution`, which is `true` on every built-in driver: it records
+[who ran each job](#who-ran-a-job-worker-attribution). On SQL it is live: it
+reads `false` until connecting has confirmed the stamp's columns, so before
+`connect()` and on a jobs table from before attribution until `syncSchema()`
+adds them.
 
 The file driver's `multiHost` is `false` on purpose: its guarantees rest on
 POSIX `rename` and `O_EXCL`, which network filesystems do not reliably provide.
+
+**The file driver survives a process crash, not a power cut.** It never calls
+`fsync`. Every record is written to a temporary file and renamed into place,
+and every job moves between states by renaming a marker, so a process killed
+at any point leaves each record whole and every half-finished move is repaired
+the next time the job is touched. What a rename or a create cannot promise is
+that the data has reached the disk. After a power loss or a kernel crash, a
+job added or finished in the last few seconds can be missing, or back in its
+previous state, and a newly created record can come back empty, which the
+driver treats as never written. If an acknowledged add must survive power
+loss, use Redis with AOF `fsync`, or a SQL backend.
 
 **Custom drivers.** A driver of your own implements `JobsDriver`. Its
 queued-trigger methods include **`peekQueuedTrigger(ns, key)`, which is
@@ -2604,6 +4351,74 @@ the same id, exactly one gets the record. The built-in drivers do it with a
 synchronous check-and-shift (memory), the state lock file (file), a locked
 transaction (SQL), a Lua script (Redis) and a conditional `$pop` on the exact
 head (MongoDB).
+
+#### Minimum database versions
+
+Some backends need a server at least this new; the rest state no minimum.
+
+| Backend | Minimum | Why |
+|---|---|---|
+| MongoDB | 4.2 | See [Installation](#installation). |
+| MySQL | 8.0 | A window function (`MAX(…) OVER (PARTITION BY …)`) in the grouped worker read with busyness, behind the management API's `GET /analytics/workers` and `GET /overview` (see [Analytics per driver](#analytics-per-driver)). |
+| MariaDB | 10.2 | The same window function. |
+| SQLite | 3.25 | The same window function. |
+
+#### Open-file limits
+
+**MongoDB needs a raised open-file limit.** WiredTiger keeps each collection
+and each index in a file of its own, and a queue's collections carry several
+indexes each. At the soft limit of 1,024 that Docker gives a container by
+default, a few test runs in a row were enough: WiredTiger failed with
+"Too many open files" (errno 24), panicked, and `mongod` aborted. MongoDB
+recommends at least **64,000** open files and warns at startup below that. We
+use 65,536. Measured here: the test database holds about 1,800 WiredTiger
+files, and `mongod` held 1,286 descriptors after three back-to-back runs of
+the MongoDB suites.
+
+The SQL servers did not hit the limit here, and raising theirs as well does no
+harm:
+
+- **Postgres** limits itself. Each server process keeps at most
+  `max_files_per_process` files open (default 1,000) and closes others as it
+  needs to, so it stays under 1,024 on its own.
+- **MySQL** raises its own limit. It works out how many files it needs from
+  `max_connections` and `table_open_cache` (8,161 with the `mysql:8.4`
+  defaults) and raised the limit from Docker's 1,024 to that. Given 65,536,
+  it kept 65,536.
+- **MariaDB** raises its own limit too. In the `mariadb:11` image it went
+  from Docker's 1,024 to 32,198, and `open_files_limit` read 32,198 again
+  with 65,536 available.
+
+How to set it:
+
+```bash
+# Docker
+docker run --ulimit nofile=65536:65536 … mongo:7
+```
+
+```yaml
+# Docker Compose
+services:
+  mongodb:
+    image: mongo:7
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+```
+
+```ini
+# systemd, for a native install: a drop-in (systemctl edit mongod)
+[Service]
+LimitNOFILE=64000
+```
+
+Docker applies `--ulimit` only when it creates a container. A container that
+already exists has to be recreated to pick it up, and `--volumes-from` on the
+old one keeps its data. For a native install, MongoDB's documentation
+recommends `LimitNOFILE=64000` in the `mongod` unit; don't assume a package
+set it. Check what a running server actually got with
+`grep "open files" /proc/<pid>/limits`.
 
 ### Driver configs
 
@@ -2646,6 +4461,7 @@ export const drivers: DriverConfig[] = [
 | `sql` | `url`, `connection`, `adapter`, `tablePrefix`, `tables`, `notify`, `syncSchema` | See below. |
 | `redis` | `url`, `connection`, `cluster`, `keyPrefix` | See below. |
 | `mongodb` | `url`, `connection`, `database`, `collectionPrefix`, `collections`, `syncSchema` | See below. |
+| every type | `metrics` | What the driver records for analytics, and how long it keeps per-second buckets. See [The `metrics` option](#the-metrics-option). |
 
 The `sql` fields:
 
@@ -2653,25 +4469,47 @@ The `sql` fields:
   `mysql`, `mariadb`, or `sqlite`/`file`. A bare path or `:memory:` is also
   SQLite. With `connection` fields, `adapter` is required.
 - `tablePrefix` defaults to `bun_jobs_`.
-- `tables` gives exact names for `jobs`, `locks`, `kv`, `events` and `logs`;
-  these ignore the prefix.
+- `tables` gives exact names for `jobs`, `locks`, `kv`, `events`, `logs`,
+  `run_logs`, `workers`, `metrics`, `queue_metrics`, `worker_metrics` and
+  `runner_metrics`; these ignore the prefix. `metrics` holds the per-minute
+  [throughput](#reading-a-queue-search-totals-workers-and-throughput); the
+  three after it hold the [analytics](#analytics-per-driver) series.
 - `notify` (Postgres `LISTEN`/`NOTIFY`) is on by default, with polling
   underneath.
-- `syncSchema` is off by default.
+- Events (the API socket, `BunQueue` subscriptions, worker control) are read
+  from the `events` table by one poll per namespace per driver, every
+  `pollInterval`, however many channels it follows — not one query per
+  subscription.
+- `syncSchema` is off by default. Without it, an existing table gets no new
+  columns or indexes after an upgrade. See [Schema sync](#schema-sync).
 
 The `redis` fields:
 
 - The host defaults to `127.0.0.1:6379`; `rediss` is used with TLS.
 - `keyPrefix` defaults to `bun-jobs`.
 - `cluster: true` hash-tags keys per queue and per runner.
+- Each driver opens up to two extra connections, only once used: one blocking
+  connection serving every queue it waits on (one per queue name with
+  `cluster: true`), and one for pub/sub. In Cluster the add path writes the
+  namespace's queue list beside its script, so every queue script stays in
+  one slot.
+- `drain()` and `clean()` on pending states work in bounded batches of 1,000,
+  so a large queue never stalls the server for long; a job added while a
+  drain runs may or may not be removed with it.
+- A count retention (`removeOnComplete: 10`) that was lowered trims at most
+  100 jobs past the cap per completion, so the excess clears over the next
+  few completions.
 
 The `mongodb` fields:
 
 - `database` defaults to the URL's path, then to `bun_jobs`.
 - `collectionPrefix` defaults to `bun_jobs_`.
-- `collections` gives exact names for `jobs`, `locks`, `kv`, `events` and
-  `jobLogs`.
+- `collections` gives exact names for `jobs`, `locks`, `kv`, `events`,
+  `jobLogs`, `runLogs` and `metrics`, which holds the
+  [analytics](#analytics-per-driver) series.
 - `syncSchema` is off by default.
+- The server needs an open-file limit of at least 64,000. At Docker's default
+  of 1,024 it crashes. See [Open-file limits](#open-file-limits).
 
 Constructing a driver class directly (`new SqlDriver`, `new RedisDriver`,
 `new MongoDriver`, `new FileDriver`) accepts everything a config does, plus
@@ -2681,9 +4519,9 @@ options that cannot be JSON or are rarely needed:
 |---|---|---|---|
 | `sql` | SQL | | An already-open `Bun.SQL` to share. |
 | `client` | Redis | | An already-connected `RedisClient` for commands. `url` is still required, for the blocking and pub/sub connections. |
-| `client`, `clientOptions` | MongoDB | | A shared `MongoClient`, or options for the client the driver creates. |
-| `maxBlockSeconds` | Redis | `5` | Longest blocking wait. |
-| `pollInterval` | SQL, MongoDB / file | `50` / `25` ms | How often a wait re-checks. |
+| `client`, `clientOptions` | MongoDB | | A shared `MongoClient`, or options for the client the driver creates. Every collection is read from the primary, whatever the client's `readPreference`: the reads that decide a write (a failure checking the lock, a flow delivery) must not see a lagging secondary. On a standalone server this changes nothing. |
+| `maxBlockSeconds` | Redis | `5` | Longest blocking wait: it bounds each wait, and the shared blocking pop. |
+| `pollInterval` | SQL, MongoDB / file | `50` / `25` ms | How often a wait re-checks. On SQL and MongoDB it also paces event subscriptions, and every subscription a driver holds in one namespace shares one poll: one query per interval, however many channels it follows. |
 | `eventRetentionMs` | SQL, MongoDB, file | one hour | How long stored events are kept. `0` keeps everything. |
 
 ### Connection fields
@@ -2726,19 +4564,51 @@ for (const change of plan) {
 
 | Option | Default | Meaning |
 |---|---|---|
-| `add` | `true` | Add missing columns and indexes. |
+| `add` | `true` | Add missing columns and indexes. On SQL this is the only way a table that already exists gets a new index: connect builds indexes only with a table it creates. |
 | `indexes` | `true` | Drop indexes the driver no longer defines, and rebuild any whose predicate changed. Only touches indexes the driver named. |
 | `alterColumns` | `false` | Change column types. This rewrites the table under a lock that blocks every reader and writer. |
 | `dryRun` | `false` | Report every change without applying any. |
 
-It is **safe by default**:
+It is **safe by default**, SQLite's index builds aside:
 
-- Adding columns and dropping or rebuilding indexes cannot stall a running
-  queue. On Postgres the index work is `CONCURRENTLY`.
+- Adding columns and dropping indexes cannot stall a running queue. Building
+  an index cannot either on Postgres, where it is `CONCURRENTLY`, or on MySQL
+  and MariaDB, where InnoDB builds it online. There it takes a brief lock at
+  the start and end, which waits for a transaction still open on the table,
+  and statements arriving meanwhile wait with it.
+- On **SQLite** an index build locks out writers until it finishes, since
+  SQLite has one writer and no concurrent build. Its `create-index` changes
+  report `blocking: true`. The default sync still makes them. Run it in a
+  quiet moment, or plan first with `dryRun`.
 - A type change is reported with `blocking: true` and `applied: false` unless
   `alterColumns` asks for it.
 - Every `SchemaChange` comes back either way, with fields `kind`, `table`,
   `target`, `statement`, `reason`, `blocking` and `applied`.
+
+**Connect creates tables, and indexes only with them.** On SQL, connect runs
+`CREATE TABLE IF NOT EXISTS` for every table and builds a table's indexes only
+when it has just created that table. An index a new version defines on a table
+that already exists is left to `syncSchema()`, which reports it as a
+`create-index` change and builds it without blocking writes on Postgres
+(`CONCURRENTLY`), MySQL and MariaDB (online). Connect never does this,
+because a plain `CREATE INDEX` on Postgres or SQLite blocks every write to a
+large, busy table for the whole build, and the first upgraded process to
+connect would do it before anyone asked. This applies to **every** index, not
+only new ones for a particular feature. **A deployment that never runs
+`syncSchema()` won't get new indexes**, only new tables. Turn on
+`syncSchema: true`, or run it once per upgrade. SQLite has no concurrent build
+and locks out writers while an index is built, so its `create-index` changes
+report `blocking: true`.
+
+The same goes for columns. The four `processed_by_*` columns that record
+[who ran a job](#who-ran-a-job-worker-attribution) reach an existing jobs
+table only through a sync. Until then the driver reports
+`capabilities.jobAttribution: false` and stamps nothing. It reads `false`
+before `connect()` too, until connecting has confirmed the columns. It notices a sync run
+by another process within about 60 seconds. The partial index on finished jobs
+that serves a `finishedOn` range exists on **SQLite only**. On Postgres it cost
+25-35% of completion throughput when completed jobs are kept, and MySQL and
+MariaDB have no partial indexes.
 
 It also **never drops what it did not create**:
 
@@ -2746,6 +4616,23 @@ It also **never drops what it did not create**:
 - MongoDB has no column types, so `alterColumns` means nothing there. It drops
   only indexes on an explicit retired list, because an index it no longer
   defines is indistinguishable from one somebody added by hand.
+- MongoDB's retired list names six indexes, each with a successor. Connect
+  creates the successors, so after an upgrade both generations exist, and
+  every write pays for both, until a sync (`indexes`, on by default) drops the
+  old ones:
+
+  | Retired | Replaced by |
+  |---|---|
+  | `jobs` `ns_1_queue_1_state_1_priority_1_createdAt_1` | `ns_1_queue_1_state_1_priority_1_createdAt_1__id_1` |
+  | `jobs` `ns_1_queue_1_state_1_runAt_1` | `ns_1_queue_1_state_1_runAt_1__id_1` |
+  | `jobs` `ns_1_queue_1_state_1_lockExpiresAt_1` | `ns_1_queue_1_state_1_lockExpiresAt_1__id_1` |
+  | `jobs` `ns_1_queue_1_state_1_finishedOn_1` | `ns_1_queue_1_state_1_finishedOn_1__id_1` |
+  | `jobs` `expiresAt_1` (global) | `ns_1_queue_1_expiresAt_1` |
+  | `events` `ns_1_channel_1__id_1` | `ns_1_at_1` (the age prune); channels are followed by `ns_1_channel_1_seq_1` |
+
+  With `_id` in the key, a claim and a page sorted by `runAt`,
+  `lockExpiresAt` or `finishedOn` walk the index instead of sorting the whole
+  state in memory.
 - A column whose declared type does not match what the engine reports back
   is exempt from retyping. For example, `BIGSERIAL` comes back as `bigint`.
 
@@ -2781,7 +4668,9 @@ so a caller can add to them but never overwrite them.
 | `QueueClosedError` | `QUEUE_CLOSED` | A queue was used after `close()`. |
 | `WorkerClosedError` | `WORKER_CLOSED` | A worker was used after `close()`. |
 | `QueueFullError` | `QUEUE_FULL` | A bounded queue of triggers or jobs is full (`what`, `max`). |
+| `JobDefaultsChangedError` | `DEFAULTS_CHANGED` | `queue.applyJobDefaults()` was asked to apply a `seq` that is no longer the stored one (`queue`, `expectedSeq`, `seq`). Nothing was written. |
 | `SerializationError` | `SERIALIZATION` | A value (job data, a result) is not JSON-serialisable. |
+| `WorkerStateConflictError` | `WORKER_STATE_CONFLICT` | `RemoteWorker.pause()` or `resume()` addressed a worker that is `stopped` or `stopping` (`action`, and `workers`: each refused worker's `id` and `state`). Nothing was written. The management API answers 409 `WORKER_STATE_CONFLICT`. |
 | `ProtocolError` | `PROTOCOL` | A message between processes did not have the shape its protocol promises, such as a malformed job-channel reply. It means the two sides disagree (a rolling upgrade, a bug), not that the operation failed. |
 
 `ErrorContext<Reserved>` types the extra detail you can pass to the

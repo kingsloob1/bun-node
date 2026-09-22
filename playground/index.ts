@@ -20,11 +20,13 @@ import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
   BunJobs,
+  createDriver,
   createJobsApi,
   JOBS_API_ACTIONS,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
 import { playgroundBackend, playgroundDriver } from "./backend";
+import { startMailer } from "./mailer";
 import { startRunners } from "./runners";
 import { startSimulation } from "./simulation";
 
@@ -33,15 +35,31 @@ const port = Number(process.env.PORT ?? 4000);
 /** How often the simulation adds a job (`PLAYGROUND_INTERVAL_MS`, default 2000; 0 = never). */
 const intervalMs = Number(process.env.PLAYGROUND_INTERVAL_MS ?? 2_000);
 
+/**
+ * The one driver both contexts share. It is an instance, not a config: with
+ * `memory` each context would otherwise build its own `Map`s and the two
+ * services would not see each other's queues.
+ */
+const driver = createDriver(playgroundDriver());
+
 const jobs = new BunJobs({
   namespace: "playground",
-  driver: playgroundDriver(),
+  // Names this process in the worker inventory and in every worker's stable
+  // key, so the Workers page groups by it: `api.emails`, `api.reports`, …
+  service: "api",
+  driver,
   // Every queue, worker and runner publishes its events, so the UI goes live.
   publishEvents: true,
   logger: noopLogger,
 });
 
 const simulation = await startSimulation(jobs, { intervalMs });
+// A second service on the same backend, so the Workers page has two to group.
+const mailer = await startMailer({
+  namespace: "playground",
+  driver,
+  logger: noopLogger,
+});
 const { stop: stopRunners } = await startRunners(jobs);
 
 const api = createJobsApi({
@@ -63,7 +81,16 @@ const api = createJobsApi({
   limits: { queueCacheMs: 0 },
   logger: noopLogger,
 });
-const ui = jobsUi({ api, title: "bun-node playground", logger: noopLogger });
+const ui = jobsUi({
+  api,
+  title: "bun-node playground",
+  logger: noopLogger,
+  // Always build the app from the source on disk. Unset, `jobsUi()` prefers a
+  // prebuilt `dist/` whenever one exists — and packing the package (`prepack`,
+  // which the consumer check runs) leaves one behind, so the playground then
+  // served a stale snapshot and hid every UI change made after it.
+  dev: true,
+});
 
 const app = new BunHttpAdapter();
 app.use(api.basePath, api.router);
@@ -80,6 +107,7 @@ bun-node playground (${playgroundBackend()} driver)
 
   UI            ${origin}${ui.basePath}
   Queues        ${origin}${ui.basePath}/queues
+  Workers       ${origin}${ui.basePath}/workers
   Runners       ${origin}${ui.basePath}/runners
   Events        ${origin}${ui.basePath}/events
   API docs      ${origin}${ui.basePath}/docs
@@ -97,6 +125,7 @@ async function shutdown(): Promise<void> {
   stopping = true;
   console.log("\nstopping…");
   await simulation.stop();
+  await mailer.stop();
   await stopRunners();
   await api.close();
   await app.close();

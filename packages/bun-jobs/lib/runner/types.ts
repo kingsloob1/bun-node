@@ -3,6 +3,8 @@ import type {
   DriverConfig,
   ExecutionMode,
   JobsDriver,
+  MetricsOptions,
+  ResolvedMetricsOptions,
   RunRecord,
   RunSource,
   RunStatus,
@@ -21,6 +23,24 @@ import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
 
 // Defined in `shared`, so a job's progress can name the same type.
 export type { RunProgress };
+
+/** What {@link RunContext.log} may say about a line beyond its message. */
+export interface RunLogOptions {
+  /**
+   * The level to store the line with, shown by a reader that colours by
+   * level. Omitted, the line is stored without one — which is how a `stdout`
+   * or `stderr` line is stored too, since those have no level.
+   */
+  level?: LogLevel;
+  /**
+   * Structured fields, rendered onto the end of the line as `key=value` pairs
+   * in the order given. A value with whitespace, a quote or an `=` is
+   * JSON-quoted; anything that is not a string is JSON. They are rendered
+   * rather than stored apart because a run log is a log, not a table: one
+   * text column is what every backend holds and what a reader greps.
+   */
+  fields?: LogFields;
+}
 
 /** What a runner's file must default-export. */
 export type RunnerHandler<
@@ -94,6 +114,41 @@ export interface RunContext<
   signal: AbortSignal;
   /** Logger bound to this run's ids. */
   logger: Logger;
+  /**
+   * Writes one line to this run's captured log — the `log` stream, beside the
+   * `stdout` and `stderr` lines a spawned run's pipes produce.
+   *
+   * **Fire and forget.** It returns `void`, never throws and is never awaited:
+   * a store that is down, a run past its capture ceiling or a driver that
+   * cannot hold run logs at all each drop the line quietly. Nothing a handler
+   * writes here can fail its run, which is the whole reason it is not a
+   * promise.
+   *
+   * The message and its fields are rendered to one line of text at capture
+   * (`message key=value …`); `options.level` is stored alongside it. In
+   * `spawn` and `worker` mode the call crosses the existing IPC `log` channel,
+   * so it also surfaces as the runner's `log` event — whether or not
+   * `forwardLogs` is on.
+   *
+   * ```ts
+   * ctx.log("rebuilding the index", { level: "info", fields: { shard } });
+   * ```
+   */
+  log: (message: string, options?: RunLogOptions) => void;
+  /**
+   * Resolves once this run's buffered log lines have reached the store.
+   *
+   * Rarely needed: capture flushes on its own thresholds and again when the
+   * run settles. It is here for a handler that wants its last words stored
+   * before it does something drastic — `process.exit`, a deliberate crash.
+   *
+   * **What it waits for depends on the mode.** In `in-process` mode it awaits
+   * the append itself. In `spawn` and `worker` mode the lines are stored by
+   * the *parent*, so it resolves once they are on the ordered IPC channel: the
+   * parent has them before the run's outcome reaches it, and the flush at
+   * settle stores them. It never rejects, in any mode.
+   */
+  flushLogs: () => Promise<void>;
   /** Reports progress; surfaces as the runner's `progress` event. */
   progress: (value: RunProgress) => void;
   /** Sends a message to the parent; surfaces as the `message` event. */
@@ -165,8 +220,14 @@ export interface RunnerInfo {
   runMode: "parallel" | "single";
   /** Whether triggers are queued when a run is already in flight. */
   queueRuns: boolean;
-  /** Concurrency cap in `parallel` mode. */
+  /** Concurrency cap in `parallel` mode; `Infinity` when unlimited. */
   maxConcurrency: number;
+  /**
+   * The three fields above with their code/override split: what the owner's
+   * options asked for, what a remote override replaced, and whether this
+   * instance adopted it.
+   */
+  config: RunnerConfigInfo;
   /** This instance's status. */
   status: RunnerStatus;
   /** Whether it is paused — a persisted flag, shared across processes. */
@@ -192,6 +253,106 @@ export interface RunnerInfo {
 
 /** What a runner instance is doing. */
 export type RunnerStatus = "idle" | "running" | "paused" | "stopped";
+
+/**
+ * One runner setting a remote override may replace. Restated from the
+ * contract's `RUNNER_CONFIG_KEYS` so the runtime does not depend on the API
+ * layer for a union; `__tests__/runner-config.type-test.ts` pins the two
+ * together.
+ */
+export type RunnerConfigKey = "executionMode" | "runMode" | "maxConcurrency";
+
+/** A runner's executor and overlap settings, as one set of values. */
+export interface RunnerConfigValues {
+  /** Where a run executes. */
+  executionMode: ExecutionMode;
+  /** Whether runs may overlap. */
+  runMode: "parallel" | "single";
+  /**
+   * Most concurrent runs in `parallel`, or `null` for unlimited — which is
+   * `Number.POSITIVE_INFINITY` in `BunRunnerOptions.maxConcurrency`, a value
+   * no override can carry over JSON. Meaningless in `single`.
+   */
+  maxConcurrency: number | null;
+}
+
+/**
+ * A merge patch for a runner's remote configuration: a field left out is
+ * untouched, and `null` clears that override so the runner goes back to what
+ * its own code asked for.
+ */
+export interface RunnerConfigPatch {
+  /**
+   * Where runs execute, from the *next* run on: a run already in flight keeps
+   * the mode it started with. Refused when the owner's `remoteConfig`
+   * does not permit it.
+   */
+  executionMode?: ExecutionMode | null;
+  /**
+   * The overlap policy. `maxConcurrency` only means anything in `parallel`,
+   * so the two are written together and `null` clears both.
+   *
+   * `parallel` → `single` is not immediate across processes: a parallel run
+   * holds no lock, so an owner that has adopted `single` can start while
+   * another process's parallel run is still going. Pause the runner first
+   * when exclusivity matters.
+   */
+  concurrency?:
+    | {
+        /** One run at a time, cluster-wide, held by the runner's lock. */
+        runMode: "single";
+      }
+    | {
+        /** Runs may overlap. */
+        runMode: "parallel";
+        /** Most concurrent runs (1 … 1000), or `null` for unlimited. Lowering it never kills a run in flight. */
+        maxConcurrency: number | null;
+      }
+    | null;
+}
+
+/**
+ * A runner's configuration: what it runs with, what its code asked for, and
+ * whether an owner has adopted the stored override yet.
+ */
+export interface RunnerConfigInfo {
+  /** In force now — what the owner adopted, not necessarily what is stored. */
+  effective: RunnerConfigValues;
+  /** What the owner's own options asked for; absent until an owner has started since remote configuration shipped. */
+  code?: RunnerConfigValues;
+  /**
+   * Which settings an override is **stored** for, in
+   * `executionMode, runMode, maxConcurrency` order. An override an owner
+   * refused is still listed — {@link RunnerConfigInfo.error} says why.
+   */
+  overridden: RunnerConfigKey[];
+  /** The execution modes the owner's code permits (its `remoteConfig.executionModes`). */
+  allowed?: ExecutionMode[];
+  /** The override's version; `0` when nothing is stored. */
+  seq: number;
+  /** The version an owner has adopted; below `seq` means it has not been picked up yet. */
+  appliedSeq?: number;
+  /** Why an owner refused part of the override; absent when the last one was adopted whole. */
+  error?: {
+    /** When it was refused, epoch ms. */
+    at: number;
+    /** A safe message naming each refused setting. */
+    message: string;
+  };
+  /** When the override was last written, epoch ms; absent when there is none. */
+  updatedAt?: number;
+}
+
+/** What a remote controller may change about a runner. */
+export interface RunnerRemoteConfigOptions {
+  /**
+   * The execution modes an override may choose. Defaults to all three, so a
+   * code author forbids `in-process` on a shared API process by listing only
+   * the other two. Persisted as the runner's `config:allowed`, so a
+   * controller in another process can refuse before writing.
+   */
+  executionModes?: ExecutionMode[];
+}
 
 /**
  * What `maxResultBytes` stores in place of a result too large to keep: the
@@ -249,8 +410,15 @@ export interface RemoteRunnerInfo<TResult = unknown> {
   queueRuns?: boolean;
   /** The trigger queue's cap. */
   maxQueuedRuns?: number;
-  /** Concurrency cap in `parallel` mode. */
+  /** Concurrency cap in `parallel` mode; `Infinity` when unlimited. */
   maxConcurrency?: number;
+  /**
+   * Its executor and overlap configuration, with the code/effective split and
+   * any stored override. Absent when no owner has started since remote
+   * configuration shipped — treat that as not configurable, because such an
+   * owner would store the override and never adopt it.
+   */
+  config?: RunnerConfigInfo;
   /** Whether it is paused. */
   isPaused: boolean;
   /** Whether any process holds its single-run lock. */
@@ -309,9 +477,15 @@ export interface SpawnOptions {
   args?: string[];
   /** Executable to run. Defaults to the current `bun` binary. */
   execPath?: string;
-  /** Where the child's stdout goes. Defaults to `"inherit"`. */
+  /**
+   * Where the child's stdout goes. Defaults to `"pipe"` while
+   * {@link BunRunnerOptions.captureLogs} is on — a piped stream is written
+   * through to this process's stdout as well as captured — and `"inherit"`
+   * when it is off. Setting it explicitly wins, and a stream that is not
+   * piped is not captured.
+   */
   stdout?: "inherit" | "pipe" | "ignore";
-  /** Where the child's stderr goes. Defaults to `"inherit"`. */
+  /** Where the child's stderr goes. Defaults exactly as `stdout` does. */
   stderr?: "inherit" | "pipe" | "ignore";
   /** How long the child has to report readiness before the run fails. */
   startTimeout?: number;
@@ -327,6 +501,136 @@ export interface WorkerOptions {
   env?: Record<string, string>;
   /** Arguments exposed to the worker as `process.argv`. */
   argv?: string[];
+}
+
+/**
+ * Options accepted by {@link BunRunnerOptions.captureLogs}: whether a run's
+ * output is stored, and what bounds it.
+ *
+ * The caps are the same three the store applies (`RunLogCaps`) plus the two
+ * capture applies before it, and every one of them is "0 means unbounded",
+ * the convention `keep` takes throughout the package.
+ *
+ * `keepRuns` is deliberately not here: it is the runner's `keepHistory`, so
+ * that a run in the history and a run with a log are the same set.
+ */
+export interface RunLogCaptureOptions {
+  /**
+   * Whether to capture at all. Defaults to `true` — but only where the driver
+   * can store run logs (`appendRunLog`); on one that cannot, nothing is
+   * captured whatever this says.
+   */
+  enabled?: boolean;
+  /**
+   * How many lines one run's log keeps; the oldest go first. Defaults to
+   * `DEFAULT_RUN_LOG_MAX_LINES` (1,000). Applied by the store on every append,
+   * so a log is never over its cap at a moment a reader could see it.
+   */
+  maxLines?: number;
+  /**
+   * How many bytes of line text one run's log keeps, counted as UTF-8 bytes
+   * of the text alone. Defaults to `DEFAULT_RUN_LOG_MAX_BYTES` (1 MiB).
+   */
+  maxBytes?: number;
+  /**
+   * The longest a single captured line may be, in UTF-8 bytes. Defaults to
+   * `DEFAULT_RUN_LOG_MAX_LINE_BYTES` (8 KiB). A longer line is cut on a
+   * character boundary and marked `truncated`, never dropped — a megabyte
+   * written without a newline (a progress bar, a base64 blob) would otherwise
+   * spend the whole per-run byte cap by itself.
+   */
+  maxLineBytes?: number;
+  /**
+   * The most one run may hand to the store over its whole life, in UTF-8
+   * bytes of line text. Defaults to `DEFAULT_RUN_LOG_CAPTURE_BYTES` (8 MiB).
+   *
+   * The caps above bound what is *kept*; this bounds what is *written*, so a
+   * run in a hot loop costs the backend a bounded number of writes rather than
+   * one per line of the million it produced. At the ceiling capture stops and
+   * stores one last `log` line saying so, so the log ends with a reason
+   * instead of just ending.
+   */
+  captureBytes?: number;
+  /**
+   * Whether an `in-process` or `worker` run's `console.log`, `info`, `debug`
+   * (stored as `stdout`) and `warn`, `error` (stored as `stderr`) calls are
+   * captured. Defaults to `true`. A spawned run's console is captured through
+   * its pipes whatever this says.
+   *
+   * These runs share a `console` — an in-process run shares this process's
+   * with the host and with every other in-process run — so the patch is
+   * process-wide and each call is attributed to its run by async context: a
+   * call made by the run's code, or by anything it scheduled, lands in that
+   * run's log; a call from outside every run is never captured. The console
+   * still prints exactly as before. What escapes: `process.stdout.write`,
+   * native code writing to the file descriptors, a program the handler
+   * launches with its own stdio, other console methods, and a reference to a
+   * console method taken before the run began.
+   */
+  console?: boolean;
+  /**
+   * How secrets are scrubbed from captured lines before they are stored.
+   * Defaults to `true`: the built-in rules (values of keys that look like a
+   * password, secret, token, API key, authorization, cookie or session, bearer
+   * tokens, credentials in a URL, JWTs). `false` stores lines verbatim; a
+   * {@link RunLogRedactOptions} object adds keys and patterns, or replaces the
+   * built-in rules.
+   *
+   * Applied before any cap counts the line, so `maxLineBytes`, `maxBytes` and
+   * `captureBytes` all measure a line exactly as it is stored.
+   */
+  redact?: boolean | RunLogRedactOptions;
+}
+
+/**
+ * Options accepted by {@link RunLogCaptureOptions.redact}.
+ *
+ * ```ts
+ * captureLogs: { redact: { keys: ["ssn"], patterns: [/sk_live_\w+/] } }
+ * ```
+ */
+export interface RunLogRedactOptions {
+  /**
+   * More key words: a key whose name contains one, case-insensitively, has its
+   * value scrubbed, in every form the built-in keys are (`k=v`, `k: v`,
+   * quoted, JSON). Added to the built-in list unless `defaults` is `false`.
+   */
+  keys?: readonly string[];
+  /**
+   * More patterns: every match is replaced, whole, by `replacement`. The `g`
+   * flag is added when missing, so every match on a line is scrubbed, not just
+   * the first. Keep them linear — a pattern that backtracks runs on every
+   * captured line.
+   */
+  patterns?: readonly RegExp[];
+  /**
+   * Whether the built-in keys and patterns apply. Defaults to `true`; `false`
+   * leaves only `keys` and `patterns`.
+   */
+  defaults?: boolean;
+  /** What a scrubbed value becomes. Defaults to `"[REDACTED]"`. */
+  replacement?: string;
+}
+
+/** A runner's capture settings with every default applied. */
+export interface ResolvedRunLogCaptureOptions {
+  /** Whether to capture at all. */
+  enabled: boolean;
+  /** How many lines one run's log keeps; `0` is unbounded. */
+  maxLines: number;
+  /** How many bytes of line text one run's log keeps; `0` is unbounded. */
+  maxBytes: number;
+  /** The longest a single stored line may be, in UTF-8 bytes; `0` is unbounded. */
+  maxLineBytes: number;
+  /** The most one run may hand to the store, in UTF-8 bytes; `0` is unbounded. */
+  captureBytes: number;
+  /** Whether an `in-process` or `worker` run's console calls are captured. */
+  console: boolean;
+  /**
+   * The compiled redactor every line passes through before it is measured
+   * and stored, or `null` when redaction is off.
+   */
+  redact: ((text: string) => string) | null;
 }
 
 /** Options accepted by {@link BunRunnerOptions.inProcess}. */
@@ -417,6 +721,52 @@ export interface BunRunnerOptions<TArgs = unknown> {
   /** Forward a child's `ctx.logger` calls to the parent's `log` event. */
   forwardLogs?: boolean;
   /**
+   * Whether a run's output is captured and stored per run, so the history row
+   * can link to its log. `true` (the default) or `false`, or a
+   * {@link RunLogCaptureOptions} object to set the caps.
+   *
+   * What is captured depends on where the run executes. A `spawn` run's
+   * `stdout` and `stderr` are captured line by line from its pipes, plus
+   * anything it wrote with `ctx.log()`. A `worker` or `in-process` run shares
+   * this process's stdio, so its `ctx.log()` lines are captured, and so are
+   * its `console.log/info/debug` (as `stdout`) and `console.warn/error` (as
+   * `stderr`) calls, attributed to the run by async context (see
+   * {@link RunLogCaptureOptions.console}). Output written by native code,
+   * with `process.stdout.write`, or by a program the handler itself launched
+   * with its own stdio, reaches neither.
+   *
+   * Every line is scrubbed of secrets before it is stored
+   * ({@link RunLogCaptureOptions.redact}, on by default).
+   *
+   * **Gotcha: it changes the default stdio of a spawned run.** Capture needs
+   * the pipes, so `spawn.stdout`/`spawn.stderr` default to `"pipe"` instead of
+   * `"inherit"` while it is on. The child's output is still written straight
+   * through to this process's own stdout and stderr, so nothing disappears —
+   * but an explicit `spawn.stdout: "inherit"` is respected, and that stream is
+   * then not captured.
+   *
+   * Nothing here can fail a run: a driver without run-log storage, a store
+   * that throws and a run past its `captureBytes` ceiling each drop lines
+   * quietly.
+   */
+  captureLogs?: boolean | RunLogCaptureOptions;
+  /**
+   * What this runner records into the analytics buckets: a series of its runs
+   * by outcome (`started`, `succeeded`, `failed`, `timeout`, `killed`,
+   * `skipped`) and a duration histogram, one write per settled run into the
+   * bucket the run **finished** in. On by default, at per-second resolution.
+   *
+   * `runners: false` stops this runner writing its series and
+   * `durations: false` its durations, whatever the driver; `resolution` and
+   * `secondRetentionMs` reach only a driver built here from a config (one
+   * that names its own `metrics` wins), never an instance passed in. The
+   * lifetime counters in {@link RunnerStats} are kept either way.
+   *
+   * Recording never changes a run: a driver without the analytics methods
+   * records nothing, and one that throws is logged once and ignored.
+   */
+  metrics?: MetricsOptions;
+  /**
    * Whether this runner publishes its events — started, succeeded, failed,
    * timeout, killed, queued, skipped — for listeners in other processes, such
    * as a `JobsNotifier` behind a dashboard. Defaults to `false`: publishing
@@ -433,12 +783,27 @@ export interface BunRunnerOptions<TArgs = unknown> {
   /**
    * Subscribe to `control` events, so a change made through
    * `BunRunnerManager.remote()` in another process — pause, resume, a new
-   * schedule, a queued trigger — applies within the driver's event latency
-   * (tens of milliseconds on every backend) instead of at the next
-   * `syncInterval`. Defaults to `false`: a subscription holds a poll, a
-   * change stream or a pub/sub connection per runner, depending on the backend.
+   * schedule, a configuration override, a queued trigger — applies within the
+   * driver's event latency (tens of milliseconds on every backend) instead of
+   * at the next `syncInterval`.
+   *
+   * `"auto"`, the default, listens where it is cheap: on a driver whose
+   * events are pushed (Redis) or held in this process (memory), and not on one
+   * that polls (SQL, MongoDB, the file driver), where a subscription is a
+   * query every few dozen milliseconds **per runner**. `true` subscribes on
+   * every backend and `false` on none; the sync adopts every change either
+   * way, so the choice is about latency, never about whether remote control
+   * works. It is the rule `BunQueueWorker` already resolves its
+   * `remoteControl.subscribe` with.
    */
-  remoteControl?: boolean;
+  remoteControl?: boolean | "auto";
+  /**
+   * What a remote controller may change about this runner's executor and
+   * overlap settings. Only `executionModes` today; it defaults to all three,
+   * and the owner persists it so a controller elsewhere can refuse a mode
+   * before writing it.
+   */
+  remoteConfig?: RunnerRemoteConfigOptions;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */
@@ -473,9 +838,23 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
     | "syncInterval"
     | "forwardLogs"
     | "publish"
-    | "remoteControl"
   >
 > {
+  /**
+   * Whether this runner subscribes to its `control` events, with `"auto"`
+   * already decided against the driver: `true` where its events are pushed
+   * (Redis) or local (memory), `false` where they are polled (SQL, MongoDB,
+   * the file driver).
+   */
+  remoteControl: boolean;
+  /** Run-log capture, with `true`/`false` expanded and every cap filled in. */
+  captureLogs: ResolvedRunLogCaptureOptions;
+  /**
+   * The `metrics` option with every default applied. Only `runners` and
+   * `durations` govern what this runner writes; the rest describes the driver
+   * it would build from a config, and says nothing about an instance.
+   */
+  metrics: ResolvedMetricsOptions;
   /** The resolved absolute path (or URL string) of the handler file. */
   file: string;
   /** The normalised schedule. */
@@ -484,6 +863,8 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
   args?: TArgs;
   /** Driver config for children, when one is available. */
   childDriver?: DriverConfig;
+  /** Remote-configuration limits, with the execution-mode allow-list filled in. */
+  remoteConfig: Required<RunnerRemoteConfigOptions>;
   /** Child-process options with defaults applied. */
   spawn: Required<Pick<SpawnOptions, "stdout" | "stderr" | "startTimeout">> &
     SpawnOptions;
@@ -512,7 +893,7 @@ export type BunRunnerEvents<
   progress: (run: RunRecord, value: RunProgress) => void;
   /** A run sent a message with `ctx.send()`. */
   message: (run: RunRecord, data: TFromHandler) => void;
-  /** A run logged something, when `forwardLogs` is on. */
+  /** A run called `ctx.log()`, or logged with `forwardLogs` on. */
   log: (
     run: RunRecord,
     level: LogLevel,
@@ -537,6 +918,13 @@ export type BunRunnerEvents<
   dequeued: (trigger: { id: string; args?: TArgs }) => void;
   /** The single-run lock was lost mid-run. */
   lockLost: (run: RunRecord) => void;
+  /**
+   * The runner adopted a configuration change: its executor, overlap policy
+   * or concurrency cap now differs from what it was running with. Emitted
+   * only when a value actually changed, so a sync that finds the same
+   * override again is silent.
+   */
+  configured: (config: RunnerConfigInfo) => void;
   /** The runner was paused. */
   paused: () => void;
   /** The runner was resumed. */

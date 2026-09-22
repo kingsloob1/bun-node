@@ -200,8 +200,12 @@ await driver.syncSchema({ alterColumns: true })    // including the rewrite
 ```
 
 **Safe by default, and the split is the point.** Adding a column, dropping an
-index or rebuilding one cannot stall a running queue — on Postgres the index
-work is `CONCURRENTLY`. Changing a column's *type* rewrites the table under a
+index or rebuilding one cannot stall a running queue on Postgres (the index
+work is `CONCURRENTLY`) or on MySQL/MariaDB (InnoDB builds online, apart from a
+brief metadata lock). **SQLite is the exception:** an index build locks out
+writers until it finishes (measured ~1.7 s of blocked inserts on a 2M-row
+table), so its `create-index` changes report `blocking: true` — the default
+sync still makes them. Changing a column's *type* rewrites the table under a
 lock that blocks every reader and writer, so it is reported with
 `blocking: true` and `applied: false` unless `alterColumns` asks for it. Every
 change comes back either way, so `dryRun` is a plan.

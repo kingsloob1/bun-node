@@ -1,4 +1,5 @@
 import type {
+  AddedRange,
   JobPage,
   JobQuery,
   JobRecord,
@@ -9,6 +10,29 @@ import type {
   ThroughputBucket,
   WorkerInfo,
 } from "./driver";
+import type { BufferWriteResult } from "./metrics";
+import { NotSupportedError } from "../shared/errors";
+import { compareCodePoints } from "../shared/strings";
+import {
+  emptyAddedCounts,
+  rangeMatchesNothing,
+  sortByCreated,
+  sortsByCreated,
+  supportsCreatedSort,
+} from "./added";
+import {
+  attributionFilter,
+  matchesAttribution,
+  matchesNothing,
+  supportsAttributionQuery,
+  usesAttribution,
+} from "./attribution";
+import {
+  bucketStart,
+  JOB_COUNTERS,
+  mergeCounterBuckets,
+  PendingBuffer,
+} from "./metrics";
 
 /**
  * What a management UI reads, and the fallbacks that make each read work on a
@@ -20,9 +44,20 @@ import type {
  * queue never calls the optional method directly — it calls the function here,
  * which takes the native path when there is one and a correct, slower one when
  * there is not.
+ *
+ * The throughput pieces at the end are the minute-resolution special case of
+ * the general bucket machinery in `metrics.ts`, and are built on it: the same
+ * flooring, the same merge and the same buffer, with the width fixed at a
+ * minute and the counters fixed at completed and failed.
  */
 
-/** How long one throughput bucket is: a minute. */
+/**
+ * How long one throughput bucket is: a minute.
+ *
+ * Written out rather than taken from the contract's `MINUTE_BUCKET_MS`, which
+ * is the same number: `__tests__/api/api-contract.test.ts` holds the two equal
+ * so that neither can drift, and a reference would make that test say nothing.
+ */
 export const THROUGHPUT_BUCKET_MS = 60_000;
 
 /**
@@ -79,7 +114,7 @@ export function emptyCounts(): Record<JobState, number> {
 
 /** The start of the minute `now` falls in. */
 export function throughputBucket(now: number): number {
-  return Math.floor(now / THROUGHPUT_BUCKET_MS) * THROUGHPUT_BUCKET_MS;
+  return bucketStart(now, THROUGHPUT_BUCKET_MS);
 }
 
 /* ------------------------------------------------------------------ *
@@ -151,21 +186,37 @@ export function escapeRegExp(value: string): string {
 /**
  * A page of jobs matching a query, with a total when asked for.
  *
- * The native {@link QueueDriver.findJobs} when the driver has it. Otherwise:
+ * The native {@link QueueDriver.findJobs} when the driver has it — and, for a
+ * query using the attribution filters (`workerKeys`, `workerIds`,
+ * `finishedFrom`, `finishedTo`), only when it also declares
+ * `capabilities.jobAttribution`: a `findJobs` written before those fields
+ * would ignore them and return every job as a match. Likewise `sort:
+ * "createdAt"` only when the driver implements `countAddedJobs`, its promise
+ * to honour it. Otherwise:
  *
  * - **no filter** is one `listJobs`, and a total is the sum of those states'
  *   counts, so an unfiltered page costs what it always did plus one count;
  * - **a filter** walks the states in their natural order a page of
  *   {@link SCAN_PAGE} at a time, skipping `offset` matches and keeping `limit`.
  *   Linear in the jobs in those states — it stops early unless a total is
- *   wanted, which has to see every one.
+ *   wanted, which has to see every one;
+ * - **`sort: "createdAt"`** reads every match, sorts them by `compareCreated`
+ *   and cuts the page: correct, but linear in the jobs in those states and
+ *   holding every match at once. The queue refuses the sort on a driver that
+ *   would land here for that reason; the scan still serves it for a driver
+ *   that promises the sort but routes here for another field (an attribution
+ *   filter without the capability, or no `findJobs` at all).
  */
 export async function findJobPage(
   driver: QueueDriver,
   q: QueueRef,
   query: JobQuery,
 ): Promise<JobPage> {
-  if (driver.findJobs) {
+  if (
+    driver.findJobs &&
+    (!usesAttribution(query) || supportsAttributionQuery(driver)) &&
+    (!sortsByCreated(query) || supportsCreatedSort(driver))
+  ) {
     return await driver.findJobs(q, query);
   }
 
@@ -179,10 +230,21 @@ export async function findJobsByScan(
   query: JobQuery,
 ): Promise<JobPage> {
   const filter = jobFilter(query);
+  const attribution = attributionFilter(query);
   const offset = Math.max(0, Math.floor(query.offset));
   const limit = Math.max(0, Math.floor(query.limit));
 
-  if (!filter) {
+  if (attribution && matchesNothing(attribution, query.states)) {
+    return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+  }
+
+  if (sortsByCreated(query)) {
+    const matches = (record: JobRecord): boolean =>
+      matchesScan(filter, attribution, record);
+    return await scanByCreated(driver, q, query, matches);
+  }
+
+  if (!filter && !attribution) {
     const jobs =
       limit === 0
         ? []
@@ -212,7 +274,7 @@ export async function findJobsByScan(
     });
 
     for (const record of page) {
-      if (!matchesFilter(filter, record.id, record.name)) {
+      if (!matchesScan(filter, attribution, record)) {
         continue;
       }
 
@@ -233,6 +295,63 @@ export async function findJobsByScan(
   }
 
   return query.total ? { jobs, total } : { jobs };
+}
+
+/** Whether a record passes a scan's name/search filter and its attribution filter. */
+function matchesScan(
+  filter: JobFilter | null,
+  attribution: ReturnType<typeof attributionFilter>,
+  record: JobRecord,
+): boolean {
+  return (
+    (!filter || matchesFilter(filter, record.id, record.name)) &&
+    (!attribution || matchesAttribution(attribution, record))
+  );
+}
+
+/**
+ * The scan behind `sort: "createdAt"`: every job in the states, in pages of
+ * {@link SCAN_PAGE}, kept when it matches, then sorted by `compareCreated` and
+ * cut to the page. It cannot stop early — the newest match may come last in
+ * the natural order — so it always knows the total.
+ */
+async function scanByCreated(
+  driver: QueueDriver,
+  q: QueueRef,
+  query: JobQuery,
+  matches: (record: JobRecord) => boolean,
+): Promise<JobPage> {
+  const offset = Math.max(0, Math.floor(query.offset));
+  const limit = Math.max(0, Math.floor(query.limit));
+  const matching: JobRecord[] = [];
+  let from = 0;
+
+  for (;;) {
+    const page = await driver.listJobs(q, query.states, {
+      offset: from,
+      limit: SCAN_PAGE,
+      order: "asc",
+    });
+
+    for (const record of page) {
+      if (matches(record)) {
+        matching.push(record);
+      }
+    }
+
+    if (page.length < SCAN_PAGE) {
+      break;
+    }
+
+    from += page.length;
+  }
+
+  const jobs = sortByCreated(matching, query.order).slice(
+    offset,
+    offset + limit,
+  );
+
+  return query.total ? { jobs, total: matching.length } : { jobs };
 }
 
 /** The sum of the counts of some states, each counted once. */
@@ -505,6 +624,42 @@ export async function countQueues(
   return new Map([...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
+/**
+ * Of the jobs added in a range, how many are in each state now, per queue:
+ * {@link QueueDriver.countAddedJobs}, with its answer made whole — every state
+ * of every queue present. With `queue`, the answer has exactly that key, zeros
+ * when none of its jobs is in the range; without, every queue that has one.
+ *
+ * No fallback: a driver without the method is asked for something it cannot
+ * answer cheaply, so this throws {@link NotSupportedError} (a `ConfigError`).
+ * Check {@link supportsCreatedSort} first to branch instead.
+ */
+export async function countAdded(
+  driver: Pick<QueueDriver, "countAddedJobs"> & {
+    /** The driver's name, for the error. */
+    readonly name: string;
+  },
+  ns: string,
+  range: AddedRange,
+  queue?: string,
+): Promise<Record<string, Record<JobState, number>>> {
+  if (!driver.countAddedJobs) {
+    throw new NotSupportedError(driver.name, "countAddedJobs");
+  }
+
+  const grouped = rangeMatchesNothing(range)
+    ? {}
+    : await driver.countAddedJobs(ns, range, queue);
+  const names = queue === undefined ? Object.keys(grouped) : [queue];
+  const result: Record<string, Record<JobState, number>> = {};
+
+  for (const name of names.sort(compareCodePoints)) {
+    result[name] = { ...emptyAddedCounts(), ...grouped[name] };
+  }
+
+  return result;
+}
+
 /* ------------------------------------------------------------------ *
  * Throughput
  * ------------------------------------------------------------------ */
@@ -513,28 +668,16 @@ export async function countQueues(
  * Buckets summed by minute, oldest first, dropping any outside `[from, to]`
  * and any with nothing in them. For a backend that stores a minute in more
  * than one row — one per process, so writers never contend on a row.
+ *
+ * {@link mergeCounterBuckets} at the minute, over the two throughput counters:
+ * the same merge every analytics series uses, so a backend cannot answer one
+ * of them differently from the other.
  */
 export function sumBuckets(
   rows: Iterable<{ at: number; completed: number; failed: number }>,
   range: { from: number; to: number },
 ): ThroughputBucket[] {
-  const byMinute = new Map<number, ThroughputBucket>();
-
-  for (const row of rows) {
-    const at = Number(row.at);
-    if (at < range.from || at > range.to) {
-      continue;
-    }
-
-    const bucket = byMinute.get(at) ?? { at, completed: 0, failed: 0 };
-    bucket.completed += Number(row.completed) || 0;
-    bucket.failed += Number(row.failed) || 0;
-    byMinute.set(at, bucket);
-  }
-
-  return [...byMinute.values()]
-    .filter((bucket) => bucket.completed > 0 || bucket.failed > 0)
-    .sort((a, b) => a.at - b.at);
+  return mergeCounterBuckets(rows, range, JOB_COUNTERS);
 }
 
 /** Counts gathered for one queue and minute, waiting to be written. */
@@ -552,9 +695,9 @@ export interface PendingThroughput {
 /**
  * What a throughput writer answers with: the counts that did not land, and why
  * — so only those are written again, and the failure still reaches whoever
- * asked for the write.
+ * asked for the write. {@link BufferWriteResult} over the throughput entry.
  */
-export interface ThroughputWriteResult {
+export interface ThroughputWriteResult extends BufferWriteResult<PendingThroughput> {
   /** Counts that did not land, to be written again on the next tick. */
   unwritten: PendingThroughput[];
   /**
@@ -582,19 +725,15 @@ export interface ThroughputWriteResult {
  *
  * The timer is unref'd and started only once something is counted, so an idle
  * driver holds no process open and does no work.
+ *
+ * All of that is {@link PendingBuffer}, which this is a thin naming of: the
+ * minute as the width, a queue as the entity, completed and failed as the
+ * counters. The analytics buffers are the same engine with other widths and
+ * other counters, so a fix to either reaches both.
  */
 export class ThroughputBuffer {
-  /** Writes one batch, answering with the counts that did not land. */
-  readonly #write: (
-    batch: PendingThroughput[],
-  ) => Promise<ThroughputWriteResult>;
-
-  /** What has been counted and not yet written, by queue and minute. */
-  #pending = new Map<string, PendingThroughput>();
-  /** The flush timer, while one is armed. */
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  /** The write in flight, so flushes never overlap. */
-  #flushing: Promise<void> | undefined;
+  /** The gathering and flushing engine, keyed by queue and minute. */
+  readonly #buffer: PendingBuffer<PendingThroughput>;
 
   constructor(
     /**
@@ -604,7 +743,16 @@ export class ThroughputBuffer {
      */
     write: (batch: PendingThroughput[]) => Promise<ThroughputWriteResult>,
   ) {
-    this.#write = write;
+    this.#buffer = new PendingBuffer<PendingThroughput>({
+      write,
+      key: (entry) => `${entry.q.ns}\n${entry.q.queue}\n${entry.at}`,
+      merge: (into, from) => {
+        into.completed += from.completed;
+        into.failed += from.failed;
+      },
+      ns: (entry) => entry.q.ns,
+      flushMs: THROUGHPUT_FLUSH_MS,
+    });
   }
 
   /** Counts one completion or failure for a queue at `now`. */
@@ -613,33 +761,12 @@ export class ThroughputBuffer {
       return;
     }
 
-    const at = throughputBucket(now);
-    const key = `${q.ns}\n${q.queue}\n${at}`;
-    const entry = this.#pending.get(key);
-
-    if (entry) {
-      entry.completed += completed;
-      entry.failed += failed;
-    } else {
-      this.#pending.set(key, { q, at, completed, failed });
-    }
-
-    if (!this.#timer) {
-      this.#timer = setTimeout(() => {
-        this.#timer = undefined;
-        void this.flush().catch(() => undefined);
-      }, THROUGHPUT_FLUSH_MS);
-      this.#timer.unref?.();
-    }
+    this.#buffer.add({ q, at: throughputBucket(now), completed, failed });
   }
 
   /** Forgets everything counted for a namespace, as purging it must. */
   forget(ns: string): void {
-    for (const [key, entry] of this.#pending) {
-      if (entry.q.ns === ns) {
-        this.#pending.delete(key);
-      }
-    }
+    this.#buffer.forget(ns);
   }
 
   /**
@@ -647,64 +774,11 @@ export class ThroughputBuffer {
    * first. Resolves once nothing counted before the call is still pending.
    */
   async flush(): Promise<void> {
-    // A write another caller started failing is that caller's to hear about:
-    // this one only needs it finished before taking what is left.
-    while (this.#flushing) {
-      await this.#flushing.catch(() => undefined);
-    }
-
-    if (this.#pending.size === 0) {
-      return;
-    }
-
-    const batch = [...this.#pending.values()];
-    this.#pending = new Map();
-
-    this.#flushing = (async () => {
-      let result: ThroughputWriteResult;
-
-      try {
-        result = await this.#write(batch);
-      } catch (error) {
-        // A writer that throws says nothing about what landed.
-        this.#restore(batch);
-        throw error;
-      }
-
-      this.#restore(result.unwritten);
-
-      // Only the counts that failed go back, but the failure is still this
-      // caller's to hear about: swallowed, a write failing the same way every
-      // second would look, from outside, like a queue with nothing to count.
-      if (result.error !== undefined) {
-        throw result.error;
-      }
-    })().finally(() => {
-      this.#flushing = undefined;
-    });
-
-    await this.#flushing;
-  }
-
-  /** Puts counts that did not land back, for the next tick to write. */
-  #restore(entries: PendingThroughput[]): void {
-    for (const entry of entries) {
-      this.add(entry.q, entry.at, entry.completed, entry.failed);
-    }
+    await this.#buffer.flush();
   }
 
   /** Stops the timer and writes what is left. */
   async close(): Promise<void> {
-    if (this.#timer) {
-      clearTimeout(this.#timer);
-      this.#timer = undefined;
-    }
-
-    await this.flush().catch(() => undefined);
-
-    if (this.#timer) {
-      clearTimeout(this.#timer);
-      this.#timer = undefined;
-    }
+    await this.#buffer.close();
   }
 }

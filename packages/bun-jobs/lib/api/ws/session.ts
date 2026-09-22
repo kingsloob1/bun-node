@@ -248,8 +248,13 @@ export class Session implements HubSubscriber {
    * Notifier holds this session took, by the channel that needed them: each
    * is released when the channel is left or the session ends, so names a
    * client invents are not followed forever.
+   *
+   * A list per channel, because the broad `workers` channel holds the worker
+   * kind for every queue it discovers — the notifier follows no queue's
+   * workers by default, since one subscription per queue is a poll per queue
+   * on a driver that cannot push.
    */
-  readonly #holds = new Map<string, { kind: EventKind; target: string }>();
+  readonly #holds = new Map<string, { kind: EventKind; target: string }[]>();
   /** Tokens left in the rate bucket. */
   #tokens: number;
   /** When the bucket was last refilled. */
@@ -498,10 +503,11 @@ export class Session implements HubSubscriber {
   }
 
   /**
-   * Holds, on the notifier, every queue and runner these channels name and it
-   * is meant to follow, and waits until each is live — so an event on a queue
-   * its discovery pass has not found yet is not lost. One hold per channel,
-   * released with it. A failure is logged, and discovery remains the fallback.
+   * Holds, on the notifier, every queue, runner and worker channel these
+   * channels name and it is meant to follow, and waits until each is live —
+   * so an event on a queue its discovery pass has not found yet is not lost.
+   * Released with the channel. A failure is logged, and discovery remains the
+   * fallback.
    */
   async #follow(channels: readonly ParsedChannel[]): Promise<void> {
     const notifier = this.#ctx.hub.notifier;
@@ -509,33 +515,94 @@ export class Session implements HubSubscriber {
       return;
     }
     await Promise.all(
-      channels.map(async ({ key, target }) => {
-        const [kind, name] =
-          target.runner !== undefined
-            ? (["runner", target.runner] as const)
-            : target.queue !== undefined
-              ? (["queue", target.queue] as const)
-              : [undefined, undefined];
-        if (
-          kind === undefined ||
-          this.#holds.has(key) ||
-          !notifier.wants(kind, name)
-        ) {
+      channels.map(async ({ key, def, target }) => {
+        if (this.#holds.has(key)) {
           return;
         }
-        // Recorded before the await, so a session ending meanwhile releases it.
-        this.#holds.set(key, { kind, target: name });
-        try {
-          await notifier.hold(kind, name);
-        } catch (error) {
-          this.#ctx.config.logger.warn("jobs api could not follow a target", {
-            error,
-            kind,
-            target: name,
-          });
+        const wanted = await this.#wantedHolds(def, target);
+        if (wanted.length === 0) {
+          return;
         }
+        // Recorded before the await, so a session ending meanwhile releases
+        // every one of them.
+        this.#holds.set(key, wanted);
+        await Promise.all(
+          wanted.map(async (hold) => {
+            try {
+              await notifier.hold(hold.kind, hold.target);
+            } catch (error) {
+              this.#ctx.config.logger.warn(
+                "jobs api could not follow a target",
+                { error, ...hold },
+              );
+            }
+          }),
+        );
       }),
     );
+  }
+
+  /**
+   * What one channel must hold for its events to arrive.
+   *
+   * A named queue or runner holds that one target, and only when the notifier
+   * is meant to follow it at all. The worker channels are the exception on
+   * both counts: the notifier's `workers` list is empty by default — one
+   * subscription per queue is a poll per queue on a driver that cannot push —
+   * so a worker channel always holds, and the broad one holds every queue the
+   * API can reach, which is as far as "every queue" can be resolved at
+   * subscribe time.
+   */
+  async #wantedHolds(
+    def: ParsedChannel["def"],
+    target: ParsedChannel["target"],
+  ): Promise<{ kind: EventKind; target: string }[]> {
+    const notifier = this.#ctx.hub.notifier;
+    if (!notifier) {
+      return [];
+    }
+    if (def.receives === "worker") {
+      const queues =
+        target.queue === undefined
+          ? await this.#reachableQueues()
+          : [target.queue];
+      return queues.map((queue) => ({
+        kind: "worker" as const,
+        target: queue,
+      }));
+    }
+    const [kind, name] =
+      target.runner !== undefined
+        ? (["runner", target.runner] as const)
+        : target.queue !== undefined
+          ? (["queue", target.queue] as const)
+          : [undefined, undefined];
+    return kind !== undefined && notifier.wants(kind, name)
+      ? [{ kind, target: name }]
+      : [];
+  }
+
+  /**
+   * The queues the broad `workers` channel follows: the configured list, or
+   * what the backend knows. A queue created after the subscription is not
+   * among them — the same limit the notifier's own discovery has, and the
+   * reason a dashboard watching one queue should name it.
+   */
+  async #reachableQueues(): Promise<string[]> {
+    const { config } = this.#ctx;
+    if (config.queues !== "all") {
+      return [...config.queues.keys()];
+    }
+    try {
+      return config.jobs
+        ? await config.jobs.listQueues()
+        : await config.driver.listQueues(config.namespace);
+    } catch (error) {
+      config.logger.warn("jobs api could not list queues to follow workers", {
+        error,
+      });
+      return [];
+    }
   }
 
   /**
@@ -829,21 +896,23 @@ export class Session implements HubSubscriber {
     });
   }
 
-  /** Releases the notifier hold a channel took, if it took one. */
+  /** Releases every notifier hold a channel took, if it took any. */
   #release(channel: string): void {
-    const hold = this.#holds.get(channel);
-    if (!hold) {
+    const holds = this.#holds.get(channel);
+    if (!holds) {
       return;
     }
     this.#holds.delete(channel);
-    this.#ctx.hub.notifier
-      ?.unfollow(hold.kind, hold.target)
-      .catch((error: unknown) => {
-        this.#ctx.config.logger.warn("jobs api could not release a target", {
-          error,
-          ...hold,
+    for (const hold of holds) {
+      this.#ctx.hub.notifier
+        ?.unfollow(hold.kind, hold.target)
+        .catch((error: unknown) => {
+          this.#ctx.config.logger.warn("jobs api could not release a target", {
+            error,
+            ...hold,
+          });
         });
-      });
+    }
   }
 
   /** Forgets the per-target decisions made for one broad channel. */
@@ -880,9 +949,12 @@ export class Session implements HubSubscriber {
         action: "events.subscribe",
         transport: "ws",
         channel,
-        ...(event.kind === "queue"
-          ? { queue: event.target }
-          : { runner: event.target }),
+        // A worker event's target is the queue its workers consume, so a host
+        // deciding by queue answers it exactly as it answers that queue's own
+        // events.
+        ...(event.kind === "runner"
+          ? { runner: event.target }
+          : { queue: event.target }),
       })
         .then(
           (decision) => {

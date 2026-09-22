@@ -44,7 +44,7 @@ export function PermissionScope({ target, children }: PermissionScopeProps) {
 
 /** Props of {@link QueuePermissionScope}. */
 export interface QueuePermissionScopeProps {
-  /** The screen, routed under `/queues/:queue`. */
+  /** The screen, routed under `/queues/:queue` or `/workers/:queue/:key`. */
   children: ReactNode;
 }
 

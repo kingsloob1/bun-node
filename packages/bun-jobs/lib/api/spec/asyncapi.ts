@@ -11,7 +11,7 @@ import {
   isWebSocketEnabled,
   MULTI_JOB_EVENTS,
 } from "../ws/channels";
-import { QUEUE_EVENTS, RUNNER_EVENTS } from "../ws/events";
+import { QUEUE_EVENTS, RUNNER_EVENTS, WORKER_EVENTS } from "../ws/events";
 import {
   AckMessageSchema,
   ErrorMessageSchema,
@@ -79,7 +79,7 @@ function eventEnvelope(descriptor: EventDescriptor): Schema<unknown> {
 
 /** Event envelopes, built once: named schemas must keep one identity per name. */
 const EVENT_ENVELOPES = new Map<EventDescriptor, Schema<unknown>>(
-  [...QUEUE_EVENTS, ...RUNNER_EVENTS].map((descriptor) => [
+  [...QUEUE_EVENTS, ...RUNNER_EVENTS, ...WORKER_EVENTS].map((descriptor) => [
     descriptor,
     eventEnvelope(descriptor),
   ]),
@@ -163,7 +163,9 @@ function eventsOf(def: ChannelDef): readonly EventDescriptor[] {
     ? QUEUE_EVENTS
     : def.receives === "runner"
       ? RUNNER_EVENTS
-      : [...QUEUE_EVENTS, ...RUNNER_EVENTS];
+      : def.receives === "worker"
+        ? WORKER_EVENTS
+        : [...QUEUE_EVENTS, ...RUNNER_EVENTS];
 }
 
 /** Every close code the server sends, for `x-bun-jobs-close-codes`. */
@@ -413,7 +415,11 @@ export function generateAsyncApi(
   const carried = new Set<EventDescriptor>(
     channelsEnabled.flatMap((def) => [...eventsOf(def)]),
   );
-  for (const descriptor of [...QUEUE_EVENTS, ...RUNNER_EVENTS]) {
+  for (const descriptor of [
+    ...QUEUE_EVENTS,
+    ...RUNNER_EVENTS,
+    ...WORKER_EVENTS,
+  ]) {
     if (!carried.has(descriptor)) {
       continue;
     }
@@ -527,9 +533,10 @@ export function generateAsyncApi(
 
   for (const def of channelsEnabled) {
     const events = eventsOf(def);
+    const label = def.label ?? pascal(def.kind);
     channels[def.kind] = {
       address: def.address,
-      title: pascal(def.kind),
+      title: label,
       description: `${def.description} A logical channel: subscribe with its name over the connection.`,
       ...(def.parameters.length > 0
         ? {
@@ -548,7 +555,7 @@ export function generateAsyncApi(
     operations[`receive${pascal(def.kind)}Events`] = {
       action: "receive",
       channel: channelRef(def.kind),
-      title: `Receive ${def.kind} events`,
+      title: `Receive ${label[0]!.toLowerCase()}${label.slice(1)} events`,
       summary: def.description,
       messages: events.map((event) =>
         channelMessageRef(def.kind, event.messageName),

@@ -1,4 +1,6 @@
 import type {
+  ClearJobLogsResult,
+  EditableJobOptionKey,
   JobQuery,
   JobRecord,
   JobRef,
@@ -17,9 +19,16 @@ import type {
 import type { DateParser } from "../shared/humanTime";
 import type { Logger } from "../shared/logger";
 import type { JobEvent, JobHooks } from "./Job";
+import type {
+  JobDefaultsPatch,
+  JobDefaultsUpdate,
+  StoredJobDefaults,
+} from "./jobDefaults";
 import type { QueueLimits, StoredLimits } from "./limits";
 import type {
   AdHocJobName,
+  ApplyJobDefaultsOptions,
+  ApplyJobDefaultsResult,
   BulkEntriesOf,
   BulkJobsOf,
   BunQueueEvents,
@@ -29,6 +38,9 @@ import type {
   FlowResult,
   JobAddArgs,
   JobDataOf,
+  JobDefaultsInfo,
+  JobDefaultsWriteOptions,
+  JobDefaultsWriteResult,
   JobMap,
   JobMapData,
   JobMapOf,
@@ -51,11 +63,21 @@ import type {
 import type { DebouncePointer } from "./windows";
 import { deserializeError, sleep } from "@kingsleyweb/bun-common";
 import {
+  JOB_DEFAULT_KEYS,
+  JOB_DEFAULTS_APPLY_STATES,
+  JOB_LIST_SORTS,
+} from "../api/contract/constants";
+import {
+  attributionFilter,
+  countAdded,
   findJobPage,
   findJobsByScan,
   getJobsByIds,
+  jobFilter,
   listWorkerRecords,
   resolveDriver,
+  sortsByCreated,
+  supportsCreatedSort,
   supportsWorkers,
   THROUGHPUT_BUCKET_MS,
   THROUGHPUT_RETENTION_MS,
@@ -64,6 +86,7 @@ import {
 import { TypedEmitterBase } from "../shared/emitter";
 import {
   ConfigError,
+  JobsError,
   NotSupportedError,
   QueueClosedError,
 } from "../shared/errors";
@@ -75,6 +98,18 @@ import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Job } from "./Job";
+import {
+  describeJobDefaults,
+  isJobDefaultKey,
+  JobDefaultsCache,
+  openWalkCursor,
+  overriddenKeys,
+  readJobDefaults,
+  resetJobDefaults,
+  sealWalkCursor,
+  supportsJobDefaults,
+  writeJobDefaults,
+} from "./jobDefaults";
 import { LIMITS_STATE, normalizeLimits, QueueLimiter } from "./limits";
 import {
   assertJobId,
@@ -83,6 +118,7 @@ import {
   DERIVED_NAME_LIMITS,
   displayRepeatKey,
   resolveJobOptions,
+  resolveLayeredJobOptions,
   resolveRunAt,
   shortenJobId,
 } from "./options";
@@ -140,6 +176,109 @@ const RETRY_PAGE = 200;
 /** How many retries `retryJobs` and `retryAll` send the driver at once. */
 const RETRY_CONCURRENCY = 16;
 
+/** How many jobs one `applyJobDefaults()` call examines when the caller names no `limit`. */
+const DEFAULT_APPLY_LIMIT = 1_000;
+
+/**
+ * `queue.applyJobDefaults()` was asked to apply an override version that is
+ * no longer the stored one: somebody saved or reset the queue's job defaults
+ * since the caller read them. Nothing was written. Read them again, confirm,
+ * and start the walk over with the new `seq`.
+ *
+ * The management API answers it with 409 `DEFAULTS_CHANGED`.
+ */
+export class JobDefaultsChangedError extends JobsError {
+  /** The queue, the `seq` the caller asked to apply, and the `seq` stored now. */
+  declare readonly context: {
+    queue: string;
+    expectedSeq: number;
+    seq: number;
+  };
+
+  constructor(
+    /** The queue whose defaults moved on. */
+    queue: string,
+    /** The version the caller asked to apply. */
+    expectedSeq: number,
+    /** The version stored now. */
+    seq: number,
+  ) {
+    super(
+      `The job defaults of queue "${queue}" changed since they were confirmed (applying seq ${expectedSeq}, stored seq ${seq})`,
+      "DEFAULTS_CHANGED",
+      { queue, expectedSeq, seq },
+    );
+  }
+}
+
+/**
+ * Splits a `define()` definition's options into the layer a stored override
+ * may replace — its editable job options (`JOB_DEFAULT_KEYS`) — and the rest
+ * (`delay`, `runAt`, `repeat`, `deadLetter`, …), which describe the job and
+ * stay merged under the call's options as before.
+ *
+ * The first is passed to {@link addDefinedJob} as `definition`, so a
+ * definition's `attempts: 5` is a default a queue's stored override beats
+ * (decision D3), not an option recorded as explicit.
+ */
+export function splitDefinitionDefaults(defaults: JobOptions): {
+  /** The editable options, a layer under the override. */
+  definition: JobOptions;
+  /** Everything else, to merge under the call's own options. */
+  rest: JobOptions;
+} {
+  const definition: Record<string, unknown> = {};
+  const rest: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(defaults)) {
+    if (isJobDefaultKey(key)) {
+      definition[key] = value;
+    } else {
+      rest[key] = value;
+    }
+  }
+
+  return { definition: definition as JobOptions, rest: rest as JobOptions };
+}
+
+/** Set by `BunQueue`'s static block: its private add, reachable from {@link addDefinedJob}. */
+let addWithDefinition: (
+  queue: BunQueue<unknown, unknown, string>,
+  name: string,
+  data: unknown,
+  options: JobOptions | undefined,
+  definition: JobOptions,
+) => Promise<Job<unknown, unknown>>;
+
+/**
+ * Adds a job to `queue` with a `define()` definition's editable options as
+ * their own layer — under the queue's stored override, over its
+ * `defaultJobOptions` — rather than merged into the call's options, where
+ * they would count as explicit. `options` are the call's own (with the
+ * definition's other options already under them; see
+ * {@link splitDefinitionDefaults}).
+ *
+ * How `JobBuilder` and `BunJobs` add a defined job. Internal: not re-exported
+ * from the package.
+ */
+export async function addDefinedJob<TData, TResult>(
+  queue: BunQueue<TData, TResult, string>,
+  name: string,
+  data: TData,
+  options: JobOptions | undefined,
+  definition: JobOptions,
+): Promise<Job<TData, TResult>> {
+  // The queue's own type parameters only constrain its public overloads;
+  // the private add underneath takes any payload.
+  return (await addWithDefinition(
+    queue as unknown as BunQueue<unknown, unknown, string>,
+    name,
+    data,
+    options,
+    definition,
+  )) as Job<TData, TResult>;
+}
+
 /** One node of a flow once it has been checked, with its queue and id fixed. */
 interface PlannedFlowNode {
   /** The node as the caller gave it. */
@@ -196,6 +335,42 @@ export class BunQueue<
   readonly #ownsDriver: boolean;
   /** Defaults merged under every `add()`. */
   readonly #defaults?: JobOptions;
+  /** How long a read of a queue's stored job defaults is trusted, ms. */
+  readonly #jobDefaultsRefreshMs: number;
+  /**
+   * The stored job defaults as this producer last read them, one cache per
+   * queue it adds to: its own, and any other queue a flow puts a node in.
+   */
+  readonly #jobDefaults = new Map<string, JobDefaultsCache>();
+  /**
+   * The last values read from each of those caches and until when they may
+   * be used without asking the cache again — the synchronous fast path of
+   * the add, so a warm add awaits nothing it did not await before.
+   */
+  readonly #freshDefaults = new Map<
+    string,
+    {
+      /** The stored override's values. */
+      values: JobDefaultsPatch;
+      /** Epoch ms after which they must be read again. */
+      until: number;
+      /**
+       * Epoch ms after which an add starts a background read ahead of
+       * `until` — three quarters through the interval — so a busy producer
+       * renews the answer before it expires and never awaits the read (C14).
+       */
+      renewAt: number;
+    }
+  >();
+
+  /** Queues whose read-ahead is in flight, so an add starts at most one. */
+  readonly #renewing = new Set<string>();
+  /**
+   * Bumped per queue by every prime (a write's own answer), so a read-ahead
+   * that started before one cannot replace what it set when it lands.
+   */
+  readonly #primes = new Map<string, number>();
+
   /** Logger bound to this queue. */
   readonly #logger: Logger;
   /** Whether to re-emit other processes' events. */
@@ -222,6 +397,15 @@ export class BunQueue<
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#defaults = options.defaultJobOptions;
+    // Built now, so a bad interval is refused by the constructor rather than
+    // by the first add.
+    const ownDefaults = new JobDefaultsCache(
+      driver,
+      { ns: this.namespace, queue: this.name },
+      options.jobDefaultsRefreshInterval,
+    );
+    this.#jobDefaultsRefreshMs = ownDefaults.refreshMs;
+    this.#jobDefaults.set(this.name, ownDefaults);
     this.dateParser =
       options.dateParser === undefined
         ? undefined
@@ -256,6 +440,20 @@ export class BunQueue<
   }
 
   /**
+   * How long this queue trusts the stored job defaults it last read, ms
+   * (`BunQueueOptions.jobDefaultsRefreshInterval`): how long a saved change
+   * may take to reach its adds.
+   */
+  get jobDefaultsRefreshInterval(): number {
+    return this.#jobDefaultsRefreshMs;
+  }
+
+  static {
+    addWithDefinition = async (queue, name, data, options, definition) =>
+      await queue.#add(name, data, options, definition);
+  }
+
+  /**
    * Connects the driver and, when asked, subscribes to other processes'
    * events. Called automatically by every method, so it is rarely needed
    * directly; idempotent either way.
@@ -270,6 +468,12 @@ export class BunQueue<
     }
 
     await this.driver.connect();
+    // Started, not awaited, beside `ensureQueue`: the first add then finds
+    // the stored job defaults already read (or joins the read in flight)
+    // instead of adding a round trip of its own between its caller and the
+    // job being stored. A failure here is the first add's to report, when it
+    // reads again.
+    void this.#readStoredDefaults(this.name).catch(() => undefined);
     await this.driver.ensureQueue(this.ref);
     this.#connected = true;
 
@@ -372,6 +576,8 @@ export class BunQueue<
     jobName: TName,
     payload: TData,
     options?: JobOptions,
+    /** A `define()` definition's editable options, as their own layer; see `addDefinedJob`. */
+    definition?: JobOptions,
   ): Promise<Job<TData, TResult>> {
     await this.connect();
 
@@ -388,14 +594,14 @@ export class BunQueue<
     }
 
     if (options?.debounce || options?.throttle) {
-      return await this.#addWindowed(jobName, payload, options);
+      return await this.#addWindowed(jobName, payload, options, definition);
     }
 
     if (options?.repeat) {
-      return await this.#addRepeatable(jobName, payload, options);
+      return await this.#addRepeatable(jobName, payload, options, definition);
     }
 
-    return await this.#addSimple(jobName, payload, options);
+    return await this.#addSimple(jobName, payload, options, definition);
   }
 
   /**
@@ -409,8 +615,18 @@ export class BunQueue<
     name: TName,
     data: TData,
     options?: JobOptions,
+    /** A `define()` definition's editable options, as their own layer. */
+    definition?: JobOptions,
+    /** The stored job defaults, when the caller has already read them. */
+    storedDefaults?: JobDefaultsPatch,
   ): Promise<Job<TData, TResult>> {
-    const record = this.#buildRecord(name, data, options);
+    const read = storedDefaults ?? this.#storedDefaults(this.name);
+    // Awaited only when it is a read: a warm add awaits nothing new.
+    const override = read instanceof Promise ? await read : read;
+    const record = this.#buildRecord(name, data, options, undefined, {
+      definition,
+      override,
+    });
     const { job, added } = await this.driver.addJob(this.ref, record);
     const view = this.#view(job, added);
 
@@ -481,8 +697,13 @@ export class BunQueue<
       return added;
     }
 
+    // One read of the stored defaults for the whole batch, at most.
+    const read = this.#storedDefaults(this.name);
+    const override = read instanceof Promise ? await read : read;
     const records = entries.map((entry) =>
-      this.#buildRecord(entry.name, entry.data, entry.opts),
+      this.#buildRecord(entry.name, entry.data, entry.opts, undefined, {
+        override,
+      }),
     );
     const results = await this.driver.addJobs(this.ref, records);
 
@@ -526,11 +747,22 @@ export class BunQueue<
    * ```ts
    * await queue.list("dead", { name: "sendEmail", limit: 20 });
    * await queue.list(["waiting", "delayed"], { search: "invoice-42" });
+   * await queue.list("completed", { workerKey: "emails", finishedFrom: Date.now() - 3_600_000 });
+   * await queue.list("delayed", { sort: "createdAt", order: "desc" }); // newest first
    * ```
    *
-   * Without `name` or `search` this is exactly the read it always was. With
-   * them, `offset` and `limit` count matching jobs. See {@link ListJobsOptions}
-   * for what a search costs.
+   * Without a filter (`name`, `search`, `workerKey`, `workerId`,
+   * `finishedFrom`, `finishedTo`) or `sort: "createdAt"` this is exactly the
+   * read it always was. With one, `offset` and `limit` count matching jobs.
+   * See {@link ListJobsOptions} for what each costs.
+   *
+   * Throws a `ConfigError`, rather than answering an empty page, for an empty
+   * or inverted `finishedFrom`/`finishedTo` range, for `workerKey` or
+   * `workerId` on a driver without `capabilities.jobAttribution` (a custom
+   * one, or a SQL table from before the stamp's columns until `syncSchema()`
+   * adds them), and for `sort: "createdAt"` on a driver that does not
+   * implement `countAddedJobs` (Redis, file) — rather than a page silently in
+   * the natural order.
    */
   async list(
     state: JobState | JobState[],
@@ -539,20 +771,17 @@ export class BunQueue<
     await this.connect();
 
     const states = Array.isArray(state) ? state : [state];
+    const query = this.#query(states, options);
     const records =
-      options?.name === undefined && options?.search === undefined
+      jobFilter(query) === null &&
+      attributionFilter(query) === null &&
+      !sortsByCreated(query)
         ? await this.driver.listJobs(this.ref, states, {
             offset: options?.offset ?? 0,
             limit: options?.limit ?? 100,
             order: options?.order ?? "asc",
           })
-        : (
-            await findJobPage(
-              this.driver,
-              this.ref,
-              this.#query(states, options),
-            )
-          ).jobs;
+        : (await findJobPage(this.driver, this.ref, query)).jobs;
 
     return records.map((record) => this.#typed(this.#view(record)));
   }
@@ -567,6 +796,7 @@ export class BunQueue<
    *
    * The total costs one count on top of the page: with no filter it is the
    * states' counts, and with one every job in those states is looked at.
+   * Refuses the same filters {@link list} does.
    */
   async page(
     state: JobState | JobState[],
@@ -597,19 +827,89 @@ export class BunQueue<
     };
   }
 
-  /** A driver query from a caller's list options. */
+  /**
+   * A driver query from a caller's list options. Each of these is a
+   * `ConfigError` rather than an empty page, which would read as "nothing
+   * matched" — the answers the API gives the same filters as 400s:
+   *
+   * - a bound that is not a valid date or timestamp;
+   * - an empty or inverted range (`finishedTo` not after `finishedFrom`);
+   * - `workerKey` or `workerId` on a driver without
+   *   `capabilities.jobAttribution`, which has no stamp to match. A range
+   *   alone needs no stamp and is answered everywhere;
+   * - a `sort` that is not one of `JOB_LIST_SORTS`, and `"createdAt"` on a
+   *   driver that does not implement `countAddedJobs` — the method whose
+   *   presence promises the sort. Its `findJobs` would answer in the natural
+   *   order, and the scan that could sort instead reads every job in the
+   *   states on every page.
+   *
+   * Read after `connect()`: a SQL driver's capability is live, and settled by
+   * connecting.
+   */
   #query(states: JobState[], options: ListJobsOptions | undefined): JobQuery {
     const name = options?.name;
+    const sort = options?.sort;
+    const workerKey = options?.workerKey;
+    const workerId = options?.workerId;
+    const finishedFrom = listBound(options?.finishedFrom, "finishedFrom");
+    const finishedTo = listBound(options?.finishedTo, "finishedTo");
+
+    if (
+      finishedFrom !== undefined &&
+      finishedTo !== undefined &&
+      finishedTo <= finishedFrom
+    ) {
+      throw new ConfigError(
+        "finishedTo must be later than finishedFrom; finishedTo is exclusive, so an equal or earlier one is a range no job can finish in",
+        { finishedFrom, finishedTo },
+      );
+    }
+
+    if (
+      (workerKey !== undefined || workerId !== undefined) &&
+      this.driver.capabilities.jobAttribution !== true
+    ) {
+      throw new ConfigError(
+        `This backend does not record which worker ran a job (driver "${this.driver.name}" reports capabilities.jobAttribution as false), so list() and page() cannot filter by workerKey or workerId: no job carries a stamp to match. On a SQL backend, run driver.syncSchema(), or construct the driver with syncSchema: true, to add the columns it needs.`,
+        { driver: this.driver.name, capabilities: { jobAttribution: false } },
+      );
+    }
+
+    if (
+      sort !== undefined &&
+      !(JOB_LIST_SORTS as readonly unknown[]).includes(sort)
+    ) {
+      throw new ConfigError(
+        `sort must be one of ${JOB_LIST_SORTS.map((each) => `"${each}"`).join(", ")}`,
+        { sort },
+      );
+    }
+
+    if (sort === "createdAt" && !supportsCreatedSort(this.driver)) {
+      throw new ConfigError(
+        `This backend cannot order jobs by creation time (driver "${this.driver.name}" does not implement countAddedJobs, whose presence promises sort: "createdAt"), so list() and page() cannot take sort: "createdAt": its pages would come back in the natural order. Leave sort unset, or "natural", for the state's own order.`,
+        { driver: this.driver.name, sort, needs: "countAddedJobs" },
+      );
+    }
 
     return {
       states,
       offset: options?.offset ?? 0,
       limit: options?.limit ?? 100,
       order: options?.order ?? "asc",
+      ...(sort === "createdAt" ? { sort } : {}),
       ...(name === undefined
         ? {}
         : { names: Array.isArray(name) ? name : [name] }),
       ...(options?.search === undefined ? {} : { search: options.search }),
+      ...(workerKey === undefined
+        ? {}
+        : { workerKeys: Array.isArray(workerKey) ? workerKey : [workerKey] }),
+      ...(workerId === undefined
+        ? {}
+        : { workerIds: Array.isArray(workerId) ? workerId : [workerId] }),
+      ...(finishedFrom === undefined ? {} : { finishedFrom }),
+      ...(finishedTo === undefined ? {} : { finishedTo }),
     };
   }
 
@@ -716,6 +1016,54 @@ export class BunQueue<
       completed,
       failed,
     };
+  }
+
+  /**
+   * Of the jobs **added** to this queue in a range — created at or after
+   * `from` and before `to` — how many are in each state **now**. Every state
+   * is present, zero when none is in it.
+   *
+   * ```ts
+   * const hour = await queue.countAdded({ from: Date.now() - 3_600_000, to: Date.now() });
+   * // { waiting: 3, active: 1, completed: 40, dead: 2, ... }
+   * ```
+   *
+   * **Only jobs still stored**: one retention (`removeOnComplete`,
+   * `removeOnFail`) or a remove, clean or drain has deleted is not counted,
+   * so on a queue that removes finished jobs `completed` and `dead`
+   * undercount. `failed` is the state — failed, a retry pending — not failed
+   * attempts; `getThroughput()` counts those, by when they happened.
+   *
+   * A `ConfigError` for a bound that is not a valid date or timestamp, or a
+   * `to` not after `from`; a {@link NotSupportedError} (a `ConfigError` too)
+   * on a driver without `countAddedJobs` (Redis, file). No span limit here:
+   * the management API caps its routes at `MAX_ADDED_BY_STATE_SPAN_MS`.
+   */
+  async countAdded(range: {
+    /** Start, **inclusive**: a `Date` or epoch ms. */
+    from: Date | number;
+    /** End, **exclusive**: a `Date` or epoch ms. Must be after `from`. */
+    to: Date | number;
+  }): Promise<Record<JobState, number>> {
+    await this.connect();
+    const from = addedBound(range.from, "from");
+    const to = addedBound(range.to, "to");
+
+    if (to <= from) {
+      throw new ConfigError(
+        "to must be later than from; to is exclusive, so an equal or earlier one is a range no job can be added in",
+        { from, to },
+      );
+    }
+
+    const counts = await countAdded(
+      this.#requireDriver("countAdded()", "countAddedJobs"),
+      this.ref.ns,
+      { from, to },
+      this.ref.queue,
+    );
+
+    return counts[this.ref.queue]!;
   }
 
   /** How many jobs are in each state, or in one state. */
@@ -908,10 +1256,17 @@ export class BunQueue<
     }
 
     // Built after the children are in, so its `createdAt` follows theirs.
-    const base = this.#buildRecord(node.name as TName, node.data as TData, {
-      ...node.opts,
-      jobId: id,
-    });
+    // With the stored defaults of the node's own queue: a flow reaching k
+    // queues reads at most k of them.
+    const read = this.#storedDefaults(queue);
+    const override = read instanceof Promise ? await read : read;
+    const base = this.#buildRecord(
+      node.name as TName,
+      node.data as TData,
+      { ...node.opts, jobId: id },
+      undefined,
+      { override },
+    );
     const record: JobRecord = {
       ...base,
       state: children.length > 0 ? "waiting-children" : base.state,
@@ -1192,6 +1547,27 @@ export class BunQueue<
     });
   }
 
+  /**
+   * Empties a job's log, answering how many lines went.
+   *
+   * Refused while the job is `active` — `{ status: "active" }`, nothing
+   * removed — for the reason removing an active job is: its worker is still
+   * writing the log, and clearing it would leave one that looks whole while
+   * missing its start. The driver checks that in the same step as the
+   * removal, so there is no window between a read and the clear. An unknown
+   * id is `{ status: "missing" }`.
+   *
+   * Afterwards the log reads as never written: `getJobLogs` counts `0`, the
+   * next `job.log()` answers `1`, and `keepLogs` trims from there. The job
+   * itself, its state and every counter are untouched, and no event is sent.
+   * Throws `NotSupportedError` on a driver without `clearJobLogs`.
+   */
+  async clearJobLogs(id: string): Promise<ClearJobLogsResult> {
+    await this.connect();
+    const driver = this.#requireDriver("clearJobLogs()", "clearJobLogs");
+    return await driver.clearJobLogs!(this.ref, id);
+  }
+
   /** Makes a delayed or retry-pending job claimable now. */
   async promote(id: string): Promise<boolean> {
     await this.connect();
@@ -1272,6 +1648,330 @@ export class BunQueue<
     }
 
     return this.driver;
+  }
+
+  /* --- job defaults --------------------------------------------------- */
+
+  /**
+   * The queue's job defaults: what this queue's code asks for
+   * (`defaultJobOptions` over the built-ins), the stored override every
+   * producer adds under, and what a job passing none of the options gets.
+   *
+   * Always reads the stored override afresh (and refreshes this queue's
+   * cache with it). On a driver without queue state there is never an
+   * override: `seq` is `0` and `override` `{}`.
+   */
+  async getJobDefaults(): Promise<JobDefaultsInfo> {
+    await this.connect();
+    const stored = await readJobDefaults(this.driver, this.ref);
+    this.#primeStoredDefaults(this.name, stored);
+    return this.#describeJobDefaults(stored);
+  }
+
+  /**
+   * Merges `update` into the queue's stored job defaults: a key left out is
+   * untouched, `null` clears it so the code's value applies again. Every
+   * producer on every process adds under the result within its
+   * `jobDefaultsRefreshInterval` (this queue at once). An option passed
+   * explicitly on an `add()` still wins over it.
+   *
+   * Jobs already pending keep what they were given; `applyJobDefaults()`
+   * rewrites them. An unknown key or a value outside `JOB_DEFAULTS_BOUNDS` is
+   * a `ConfigError`, before anything is written; a driver without queue state
+   * throws `NotSupportedError`. With `expectedSeq`, a write that finds the
+   * override moved on changes nothing and answers `contended: true`.
+   */
+  async setJobDefaults(
+    update: Readonly<JobDefaultsUpdate>,
+    options?: JobDefaultsWriteOptions,
+  ): Promise<JobDefaultsWriteResult> {
+    await this.connect();
+    const { stored, contended } = await writeJobDefaults(
+      this.driver,
+      this.ref,
+      update,
+      {
+        ...(options?.expectedSeq === undefined
+          ? {}
+          : { expectedSeq: options.expectedSeq }),
+        ...(options?.by === undefined ? {} : { by: options.by }),
+      },
+    );
+    this.#primeStoredDefaults(this.name, stored);
+    return { ...this.#describeJobDefaults(stored), contended };
+  }
+
+  /**
+   * Clears every key of the queue's stored job defaults, so jobs added from
+   * now on get the code's values again. Stored as an empty override rather
+   * than deleted, so `seq` keeps rising. **Jobs already pending keep what they
+   * were given** — including jobs `applyJobDefaults()` rewrote, whose earlier
+   * values nothing kept.
+   */
+  async resetJobDefaults(
+    options?: JobDefaultsWriteOptions,
+  ): Promise<JobDefaultsWriteResult> {
+    await this.connect();
+    const { stored, contended } = await resetJobDefaults(
+      this.driver,
+      this.ref,
+      {
+        ...(options?.expectedSeq === undefined
+          ? {}
+          : { expectedSeq: options.expectedSeq }),
+        ...(options?.by === undefined ? {} : { by: options.by }),
+      },
+    );
+    this.#primeStoredDefaults(this.name, stored);
+    return { ...this.#describeJobDefaults(stored), contended };
+  }
+
+  /**
+   * Rewrites jobs already pending with the stored override's values — one
+   * bounded call of a resumable walk: loop on the answer's `next` until it is
+   * `null`. Irreversible: a rewritten job's earlier values are not kept.
+   *
+   * - Each call re-reads the stored override and throws
+   *   {@link JobDefaultsChangedError} when its `seq` is no longer `options.seq`,
+   *   writing nothing — so a walk of many calls applies one version or stops.
+   * - Only keys the override sets are written (`keys` narrows them), never a
+   *   key a job's own `add()` passed, and never a job without the explicit
+   *   record unless `includeUnmarked`.
+   * - Walks `waiting`, `delayed`, `failed` and `waiting-children` (or
+   *   `states`) in claim order; `active`, `completed` and `dead` never.
+   *
+   * Throws `ConfigError` when the override sets nothing (or `keys` names a key
+   * it does not set), and `NotSupportedError` when the driver has no queue
+   * state or no `rewritePendingOptions`.
+   */
+  async applyJobDefaults(
+    options: ApplyJobDefaultsOptions,
+  ): Promise<ApplyJobDefaultsResult> {
+    await this.connect();
+
+    if (!supportsJobDefaults(this.driver)) {
+      throw new NotSupportedError(this.driver.name, "setQueueState", {
+        needs: "applyJobDefaults()",
+      });
+    }
+
+    const driver = this.#requireDriver(
+      "applyJobDefaults()",
+      "rewritePendingOptions",
+    );
+
+    if (!Number.isInteger(options.seq) || options.seq < 0) {
+      throw new ConfigError("seq must be a whole number, 0 or more", {
+        seq: options.seq,
+      });
+    }
+
+    const stored = await readJobDefaults(driver, this.ref);
+    this.#primeStoredDefaults(this.name, stored);
+
+    if (stored.seq !== options.seq) {
+      throw new JobDefaultsChangedError(this.name, options.seq, stored.seq);
+    }
+
+    const overridden = overriddenKeys(stored.values);
+
+    if (overridden.length === 0) {
+      throw new ConfigError(
+        `The job defaults of queue "${this.name}" override nothing, so there is nothing to apply`,
+        { queue: this.name, seq: stored.seq },
+      );
+    }
+
+    let keys: EditableJobOptionKey[] = overridden;
+
+    if (options.keys !== undefined) {
+      for (const key of options.keys) {
+        if (!isJobDefaultKey(key)) {
+          throw new ConfigError(
+            `"${String(key)}" is not an editable job option`,
+            {
+              key,
+              keys: JOB_DEFAULT_KEYS,
+            },
+          );
+        }
+
+        if (!overridden.includes(key)) {
+          throw new ConfigError(
+            `The job defaults of queue "${this.name}" do not override "${key}", so it cannot be applied`,
+            { key, overridden },
+          );
+        }
+      }
+
+      keys = overridden.filter((key) => options.keys!.includes(key));
+
+      if (keys.length === 0) {
+        throw new ConfigError("keys must name at least one overridden key", {
+          keys: options.keys,
+          overridden,
+        });
+      }
+    }
+
+    const values: JobDefaultsPatch = {};
+    for (const key of keys) {
+      (values as Record<string, unknown>)[key] = stored.values[key];
+    }
+
+    const dryRun = options.dryRun ?? false;
+    const states = options.states
+      ? [...options.states]
+      : [...JOB_DEFAULTS_APPLY_STATES];
+    // The cursor handed out names this walk, and one from any other walk —
+    // another queue's, another version's, other states or keys — is refused
+    // rather than resumed from a position that means nothing here (B15).
+    const walk = {
+      ns: this.namespace,
+      queue: this.name,
+      seq: stored.seq,
+      states,
+      keys,
+    };
+    const result = await driver.rewritePendingOptions!(this.ref, {
+      states,
+      values,
+      cursor:
+        options.cursor === undefined || options.cursor === null
+          ? null
+          : openWalkCursor(walk, options.cursor),
+      limit: options.limit ?? DEFAULT_APPLY_LIMIT,
+      includeUnmarked: options.includeUnmarked ?? false,
+      dryRun,
+      now: Date.now(),
+    });
+
+    return {
+      ...result,
+      next: result.next === null ? null : sealWalkCursor(walk, result.next),
+      seq: stored.seq,
+      keys,
+      dryRun,
+    };
+  }
+
+  /**
+   * The stored job defaults of `queue` (this one, or a flow node's): the
+   * values themselves, synchronously, while this queue's last read is
+   * fresh — so a warm add pays no round trip **and no extra await**, and
+   * keeps exactly the timing it had before job defaults existed — otherwise
+   * a promise of one read through the queue's {@link JobDefaultsCache}.
+   */
+  #storedDefaults(queue: string): JobDefaultsPatch | Promise<JobDefaultsPatch> {
+    const fresh = this.#freshDefaults.get(queue);
+
+    if (fresh !== undefined) {
+      const now = Date.now();
+
+      if (now < fresh.until) {
+        if (now >= fresh.renewAt && !this.#renewing.has(queue)) {
+          this.#renewStoredDefaults(queue, now);
+        }
+
+        return fresh.values;
+      }
+    }
+
+    return this.#readStoredDefaults(queue);
+  }
+
+  /**
+   * Reads `queue`'s stored job defaults ahead of expiry, in the background,
+   * and makes the answer the fresh one. Never awaited by an add; a read that
+   * fails leaves the current answer to expire, and the add after that reads
+   * (and reports) as it always has.
+   */
+  #renewStoredDefaults(queue: string, now: number): void {
+    this.#renewing.add(queue);
+    const primes = this.#primes.get(queue) ?? 0;
+    void this.#jobDefaultsFor(queue)
+      .refresh(now)
+      .then((stored) => {
+        if ((this.#primes.get(queue) ?? 0) === primes) {
+          this.#freshDefaults.set(queue, this.#freshEntry(stored.values, now));
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.#renewing.delete(queue);
+      });
+  }
+
+  /** A fast-path entry for values read at `now`. */
+  #freshEntry(
+    values: JobDefaultsPatch,
+    now: number,
+  ): { values: JobDefaultsPatch; until: number; renewAt: number } {
+    const refresh = this.#jobDefaultsRefreshMs;
+    return {
+      values,
+      until: now + refresh,
+      renewAt: now + Math.floor((refresh * 3) / 4),
+    };
+  }
+
+  /**
+   * One read of `queue`'s stored job defaults through its cache (which
+   * shares a read in flight), remembered for the synchronous path until the
+   * refresh interval has passed since the read began.
+   */
+  async #readStoredDefaults(queue: string): Promise<JobDefaultsPatch> {
+    const now = Date.now();
+    const values = await this.#jobDefaultsFor(queue).get(now);
+
+    if (this.#jobDefaultsRefreshMs > 0) {
+      this.#freshDefaults.set(queue, this.#freshEntry(values, now));
+    }
+
+    return values;
+  }
+
+  /**
+   * Replaces `queue`'s cached stored job defaults with what a write (or a
+   * fresh read) just returned, so this queue's own adds use it at once.
+   */
+  #primeStoredDefaults(queue: string, stored: StoredJobDefaults): void {
+    const now = Date.now();
+    this.#primes.set(queue, (this.#primes.get(queue) ?? 0) + 1);
+    this.#jobDefaultsFor(queue).prime(stored, now);
+
+    if (this.#jobDefaultsRefreshMs > 0) {
+      this.#freshDefaults.set(queue, this.#freshEntry(stored.values, now));
+    } else {
+      this.#freshDefaults.delete(queue);
+    }
+  }
+
+  /** The cache of `queue`'s stored job defaults, made on first use. */
+  #jobDefaultsFor(queue: string): JobDefaultsCache {
+    let cache = this.#jobDefaults.get(queue);
+
+    if (!cache) {
+      cache = new JobDefaultsCache(
+        this.driver,
+        { ns: this.namespace, queue },
+        this.#jobDefaultsRefreshMs,
+      );
+      this.#jobDefaults.set(queue, cache);
+    }
+
+    return cache;
+  }
+
+  /** `stored` described against this queue's own code defaults. */
+  #describeJobDefaults(stored: StoredJobDefaults): JobDefaultsInfo {
+    return {
+      ...describeJobDefaults(
+        resolveJobOptions(this.#defaults, undefined),
+        stored,
+      ),
+      propagationMs: this.#jobDefaultsRefreshMs,
+    };
   }
 
   /** Stops every worker on every process from claiming. */
@@ -1478,6 +2178,13 @@ export class BunQueue<
     } catch (error) {
       this.#logger.warn("Could not write throughput counts", { error });
     }
+    // The analytics buckets the driver counted beside them, for the same
+    // reason: a queue's per-second and per-minute job series live there.
+    try {
+      await this.driver.flushMetrics?.();
+    } catch (error) {
+      this.#logger.warn("Could not write analytics counts", { error });
+    }
 
     if (this.#ownsDriver) {
       await this.driver.close();
@@ -1507,6 +2214,8 @@ export class BunQueue<
     name: TName,
     data: TData,
     options: JobOptions,
+    /** A `define()` definition's editable options, as their own layer. */
+    definition?: JobOptions,
   ): Promise<Job<TData, TResult>> {
     const kind = options.debounce ? "debounce" : "throttle";
     const window = (options.debounce ?? options.throttle)!;
@@ -1563,6 +2272,12 @@ export class BunQueue<
       `${kind === "debounce" ? DEBOUNCE_PREFIX : THROTTLE_PREFIX}${window.id}`,
       DERIVED_NAME_LIMITS,
     );
+    // Read before the pointer can move, never between moving it and storing
+    // the job it names: other producers read a moved pointer whose job is not
+    // there yet as "not yet written" and retry, so that gap must stay as
+    // short as it was.
+    const read = this.#storedDefaults(this.name);
+    const override = read instanceof Promise ? await read : read;
 
     for (let attempt = 0; attempt < WINDOW_ATTEMPTS; attempt++) {
       const now = Date.now();
@@ -1645,17 +2360,23 @@ export class BunQueue<
         continue;
       }
 
-      const added = await this.#addSimple(name, data, {
-        ...rest,
-        jobId,
-        ...(kind === "debounce"
-          ? { runAt: now + ttl }
-          : options.runAt !== undefined
-            ? { runAt: options.runAt }
-            : options.delay !== undefined
-              ? { delay: options.delay }
-              : {}),
-      });
+      const added = await this.#addSimple(
+        name,
+        data,
+        {
+          ...rest,
+          jobId,
+          ...(kind === "debounce"
+            ? { runAt: now + ttl }
+            : options.runAt !== undefined
+              ? { runAt: options.runAt }
+              : options.delay !== undefined
+                ? { delay: options.delay }
+                : {}),
+        },
+        definition,
+        override,
+      );
 
       if (kind === "debounce") {
         // The job exists now, so confirm the pointer that named it before it
@@ -1825,15 +2546,35 @@ export class BunQueue<
     await this.#publish("retried", { ids });
   }
 
-  /** Builds the record a driver stores, applying defaults and validation. */
+  /**
+   * Builds the record a driver stores, applying defaults and validation.
+   *
+   * The options resolve from every layer, highest first: the call's own
+   * `options`, the queue's stored `override`, the `define()` `definition`,
+   * this queue's `defaultJobOptions`, the built-ins — and record which of
+   * the editable ones the call passed itself (`opts.explicit`).
+   */
   #buildRecord(
     name: string,
     data: TData,
     options: JobOptions | undefined,
     overrides?: Partial<JobRecord>,
+    layers?: {
+      /** A `define()` definition's editable options. */
+      definition?: JobOptions;
+      /** The queue's stored job defaults, as read for this add. */
+      override?: JobDefaultsPatch;
+    },
   ): JobRecord {
     const now = Date.now();
-    const opts = resolveJobOptions(this.#defaults, options);
+    const opts = resolveLayeredJobOptions(
+      {
+        code: this.#defaults,
+        definition: layers?.definition,
+        override: layers?.override,
+      },
+      options,
+    );
     const runAt = resolveRunAt({ ...this.#defaults, ...options }, now);
 
     if (typeof name !== "string" || name.length === 0) {
@@ -1886,9 +2627,20 @@ export class BunQueue<
     name: TName,
     data: TData,
     options: JobOptions,
+    /** A `define()` definition's editable options, as their own layer. */
+    definition?: JobOptions,
   ): Promise<Job<TData, TResult>> {
     const now = Date.now();
-    const opts = resolveJobOptions(this.#defaults, options);
+    // The series stores the code's layers and the explicit mask, never the
+    // stored override: each occurrence takes the override current when it is
+    // built (the worker overlays it), so a later save or reset reaches every
+    // future occurrence.
+    const opts = resolveLayeredJobOptions(
+      { code: this.#defaults, definition },
+      options,
+    );
+    const read = this.#storedDefaults(this.name);
+    const override = read instanceof Promise ? await read : read;
     const given = options.repeat!;
     // A caller's own key is namespaced so it can never equal a generated one
     // (`<name>|<schedule>|<start>`) and take that series over.
@@ -1897,7 +2649,7 @@ export class BunQueue<
         ? given
         : // Checked in `add()`, before anything was written.
           { ...given, key: `${CALLER_REPEAT_KEY_PREFIX}${given.key}` };
-    const definition = toRepeatRecord(
+    const series = toRepeatRecord(
       this.ref,
       name,
       data,
@@ -1907,10 +2659,10 @@ export class BunQueue<
       this.dateParser,
     );
 
-    const existing = await this.driver.getRepeat(this.ref, definition.key);
+    const existing = await this.driver.getRepeat(this.ref, series.key);
     const merged: RepeatRecord = existing
-      ? { ...definition, count: existing.count, createdAt: existing.createdAt }
-      : definition;
+      ? { ...series, count: existing.count, createdAt: existing.createdAt }
+      : series;
 
     const firstRunAt = repeat.immediately ? now : nextOccurrence(merged, now);
 
@@ -1923,8 +2675,8 @@ export class BunQueue<
       });
 
       throw new ConfigError(
-        `The repeat "${definition.key}" has no occurrences left to schedule`,
-        { key: definition.key },
+        `The repeat "${series.key}" has no occurrences left to schedule`,
+        { key: series.key },
       );
     }
 
@@ -1943,6 +2695,7 @@ export class BunQueue<
       data,
       { ...options, jobId, runAt: firstRunAt },
       { repeatKey: merged.key },
+      { definition, override },
     );
 
     // A disabled series stays disabled when it is added again: the definition
@@ -1963,14 +2716,23 @@ export class BunQueue<
       return this.#view(record, false);
     }
 
-    const { job, added } = await this.driver.addJob(this.ref, record);
-
+    // The definition is written *before* its first occurrence, never after.
+    // A worker schedules the next occurrence the moment it claims one, from
+    // the definition it reads then, and reads a missing definition as a series
+    // removed while its occurrence was queued — so it schedules nothing more.
+    // An `immediately()` occurrence is claimable as soon as it is added, and a
+    // fast claim (the file driver's batch claim, measured) landed in the gap
+    // before a definition written afterwards: the series ran once and stopped.
+    // An occurrence whose add then fails is not lost either: the definition
+    // names it, and the worker's repeat heal adds it back.
     await this.driver.upsertRepeat(this.ref, {
       ...merged,
       nextRunAt: firstRunAt,
       nextJobId: jobId,
       updatedAt: now,
     });
+
+    const { job, added } = await this.driver.addJob(this.ref, record);
 
     // The key as the caller named it, here and on the wire: the prefix is
     // storage, not contract.
@@ -2171,4 +2933,41 @@ export class BunQueue<
         );
     }
   }
+}
+
+/** A `countAdded()` bound as epoch ms, or a `ConfigError` naming it. */
+function addedBound(value: Date | number, option: "from" | "to"): number {
+  const ms = value instanceof Date ? value.getTime() : value;
+
+  if (typeof ms !== "number" || !Number.isFinite(ms)) {
+    throw new ConfigError(`${option} must be a valid date or timestamp`, {
+      [option]: value,
+    });
+  }
+
+  return ms;
+}
+
+/**
+ * A list option's `finishedFrom`/`finishedTo` as epoch ms, or `undefined`
+ * when absent. Anything that is not a valid date or timestamp is a
+ * `ConfigError`, as `update()` treats `runAt`.
+ */
+function listBound(
+  value: Date | number | undefined,
+  option: "finishedFrom" | "finishedTo",
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const ms = value instanceof Date ? value.getTime() : value;
+
+  if (typeof ms !== "number" || !Number.isFinite(ms)) {
+    throw new ConfigError(`${option} must be a valid date or timestamp`, {
+      [option]: value,
+    });
+  }
+
+  return ms;
 }

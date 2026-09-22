@@ -233,8 +233,15 @@ export class QueueLimiter {
   readonly #ref: QueueRef;
   /** This worker's id, which names its leases. */
   readonly #holder: string;
-  /** How long a lease lives unless renewed. */
-  readonly #leaseMs: number;
+  /**
+   * How long a lease lives unless renewed: the worker's lock duration.
+   *
+   * Not `readonly`, because the lock duration is one of the settings a
+   * running worker can be reconfigured with. A lease that kept the old
+   * duration after the change would expire out of step with the locks it is
+   * meant to shadow.
+   */
+  #leaseMs: number;
   /** How long stored limits are trusted. */
   readonly #refreshMs: number;
   /** The limits, and when they were read. */
@@ -245,6 +252,8 @@ export class QueueLimiter {
     names: {},
   };
 
+  /** The background read-ahead of the limits, while one is in flight. */
+  #readingAhead: Promise<void> | undefined;
   /** Renews this worker's leases while it holds any. */
   #renewal: ReturnType<typeof setInterval> | undefined;
 
@@ -265,6 +274,28 @@ export class QueueLimiter {
     this.#holder = holder;
     this.#leaseMs = leaseMs;
     this.#refreshMs = refreshMs;
+  }
+
+  /**
+   * Changes how long this worker's leases live, and re-arms the renewal timer
+   * so it keeps firing three times per lease.
+   *
+   * The next `reserve`, `commit` or renewal writes the new expiry; nothing is
+   * written here, because a lease already held is renewed within a third of
+   * its *old* duration, which is sooner than the change can matter.
+   */
+  setLeaseMs(leaseMs: number): void {
+    if (leaseMs === this.#leaseMs) {
+      return;
+    }
+
+    this.#leaseMs = leaseMs;
+
+    if (this.#renewal) {
+      clearInterval(this.#renewal);
+      this.#renewal = undefined;
+      this.#startRenewal();
+    }
   }
 
   /** Whether a driver can hold shared limits at all. */
@@ -296,8 +327,8 @@ export class QueueLimiter {
 
     let reservation: Reservation = emptyReservation();
 
-    const written = await this.#update(now, (state) => {
-      const holder = this.#ownHolder(state, now);
+    const written = await this.#update(now, (state, at) => {
+      const holder = this.#ownHolder(state, at);
       let grant = slots;
       let retryAfter: number | undefined;
       let windowStart: number | undefined;
@@ -307,12 +338,12 @@ export class QueueLimiter {
       }
 
       if (limits.rate) {
-        const window = windowFor(state, "", limits.rate, now);
+        const window = windowFor(state, "", limits.rate, at);
         const left = limits.rate.max - window.count;
         windowStart = window.start;
 
         if (left <= 0) {
-          retryAfter = window.start + limits.rate.duration - now;
+          retryAfter = window.start + limits.rate.duration - at;
         }
 
         grant = Math.min(grant, left);
@@ -332,7 +363,7 @@ export class QueueLimiter {
         }
 
         if (nameLimits.rate) {
-          const window = windowFor(state, name, nameLimits.rate, now);
+          const window = windowFor(state, name, nameLimits.rate, at);
           room = Math.min(room, nameLimits.rate.max - window.count);
         }
 
@@ -364,7 +395,7 @@ export class QueueLimiter {
           }
 
           if (nameLimits.rate) {
-            const window = windowFor(state, name, nameLimits.rate, now);
+            const window = windowFor(state, name, nameLimits.rate, at);
             window.count += grant;
             tentative.windows[name] = window.start;
           }
@@ -404,8 +435,8 @@ export class QueueLimiter {
     const limits = this.#limits?.value ?? null;
     const unused = reservation.grant - names.length;
 
-    await this.#update(now, (state) => {
-      const holder = this.#ownHolder(state, now);
+    await this.#update(now, (state, at) => {
+      const holder = this.#ownHolder(state, at);
       holder.total = Math.max(0, holder.total - unused);
 
       const queueWindow = state.windows[""];
@@ -454,19 +485,39 @@ export class QueueLimiter {
     this.#pending.names[name] = (this.#pending.names[name] ?? 0) + 1;
   }
 
-  /** Writes pending releases and renews this worker's leases now. */
+  /**
+   * Writes pending releases and renews this worker's leases now.
+   *
+   * Once the limits were last read as gone and this worker holds nothing,
+   * the renewal stops: it used to go on for the worker's lifetime after
+   * limits were set once, a read and a write every third of a lease, for
+   * nothing. The next grant (limits set again) starts it afresh.
+   */
   async renew(now: number): Promise<void> {
-    await this.#update(now, (state) => {
-      this.#ownHolder(state, now);
+    let holds = true;
+    const written = await this.#update(now, (state, at) => {
+      holds = this.#ownHolder(state, at).total > 0;
     });
+
+    if (
+      written &&
+      !holds &&
+      this.#pending.total === 0 &&
+      this.#limits !== undefined &&
+      this.#limits.value === null
+    ) {
+      this.#stopRenewal();
+    }
+  }
+
+  /** Whether the lease renewal timer is running. */
+  get renewing(): boolean {
+    return this.#renewal !== undefined;
   }
 
   /** Gives back everything this worker holds, and stops renewing. */
   async close(): Promise<void> {
-    if (this.#renewal) {
-      clearInterval(this.#renewal);
-      this.#renewal = undefined;
-    }
+    this.#stopRenewal();
 
     if (!this.#limits?.value) {
       return;
@@ -487,11 +538,41 @@ export class QueueLimiter {
    * along.
    */
   knownUnlimited(now: number): boolean {
-    return (
+    const known =
       this.#limits !== undefined &&
       this.#limits.value === null &&
-      now - this.#limits.readAt < this.#refreshMs
-    );
+      now - this.#limits.readAt < this.#refreshMs;
+
+    // Read ahead once three quarters of the interval have passed, in the
+    // background, so a busy worker renews the answer before it expires and
+    // its claim never awaits the read (C14). Nothing older than the interval
+    // is ever trusted, so the propagation bound is unchanged.
+    if (
+      known &&
+      this.#readingAhead === undefined &&
+      now - this.#limits!.readAt >= (this.#refreshMs * 3) / 4
+    ) {
+      this.#readingAhead = this.#readAhead(now).finally(() => {
+        this.#readingAhead = undefined;
+      });
+    }
+
+    return known;
+  }
+
+  /** Reads the stored limits now; never throws (the awaited path reports). */
+  async #readAhead(now: number): Promise<void> {
+    try {
+      const entry = await this.#driver.getQueueState!(this.#ref, LIMITS_STATE);
+      const value = (entry?.value as StoredLimits | undefined) ?? null;
+
+      // A read that started earlier than the one cached must not replace it.
+      if (!this.#limits || this.#limits.readAt <= now) {
+        this.#limits = { value, readAt: now };
+      }
+    } catch {
+      // Left to expire; the next claim reads, awaited, and reports.
+    }
   }
 
   /** The stored limits, read at most once per refresh interval. */
@@ -510,16 +591,27 @@ export class QueueLimiter {
    * Reads the counters, applies `mutate` along with pending releases and lease
    * pruning, and writes them back — retrying from a fresh read when another
    * worker wrote first. Answers whether it wrote.
+   *
+   * `mutate` is handed `at`, the moment of *this attempt*, and must judge
+   * windows and leases by it rather than by `now`. `now` is when the caller
+   * started, and between then and a write that lands there are awaits — the
+   * limits read, the counters read, and after a lost race a random pause, up
+   * to a dozen times over. Charging a grant to the window `now` fell in
+   * charged it, whenever a boundary passed meanwhile, to a window that had
+   * already ended: the jobs started in the new one, which then admitted its
+   * full rate on top of them. `now` stays a floor, so time never runs
+   * backwards for a caller.
    */
   async #update(
     now: number,
-    mutate: (state: LimiterState) => void,
+    mutate: (state: LimiterState, at: number) => void,
   ): Promise<boolean> {
     for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
       const entry = await this.#driver.getQueueState!(this.#ref, LIMITER_STATE);
       const state: LimiterState = entry
         ? structuredClone(entry.value as LimiterState)
         : { holders: {}, windows: {} };
+      const at = Math.max(now, Date.now());
 
       // A copy, not the object. `release()` adds to `#pending` in place, so
       // holding the live object let a release noted while this write was in
@@ -531,9 +623,9 @@ export class QueueLimiter {
         total: this.#pending.total,
         names: { ...this.#pending.names },
       };
-      pruneHolders(state, now, this.#holder);
+      pruneHolders(state, at, this.#holder);
       applyReleases(state, this.#holder, pending);
-      mutate(state);
+      mutate(state, at);
 
       const version = await this.#driver.setQueueState!(
         this.#ref,
@@ -566,6 +658,14 @@ export class QueueLimiter {
     });
     holder.expiresAt = now + this.#leaseMs;
     return holder;
+  }
+
+  /** Stops the lease renewal timer, if it runs. */
+  #stopRenewal(): void {
+    if (this.#renewal) {
+      clearInterval(this.#renewal);
+      this.#renewal = undefined;
+    }
   }
 
   /** Keeps this worker's leases alive while it may be holding some. */

@@ -1,13 +1,36 @@
 import type { ReactNode } from "react";
-import type { JobCounts, Overview, QueueSummaryDto } from "../api/types";
+import type { TimeRange } from "../analytics/range";
+import type { JobState } from "../api/contract";
+import type {
+  AnalyticsSeriesDto,
+  JobCounts,
+  JobsBucketDto,
+  JobsTotalsDto,
+  Overview,
+  QueueSummaryDto,
+} from "../api/types";
+import type { SectionProps } from "./overview/sections";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useId } from "react";
+import { AnalyticsError } from "../analytics/AnalyticsError";
+import { RangeCaption } from "../analytics/RangeCaption";
+import { RangePicker } from "../analytics/RangePicker";
+import { useAnalyticsRange } from "../analytics/useAnalyticsRange";
+import { useRange, useRangeScope } from "../analytics/useRange";
+import {
+  analyticsKeys,
+  describeResolution,
+  getJobsAnalytics,
+  getQueueJobsAnalytics,
+  isRangeNotRetained,
+} from "../api/analytics";
 import { JOB_STATES } from "../api/contract";
 import { queryKeys } from "../api/queryKeys";
 import { Badge } from "../components/Badge";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorView } from "../components/ErrorView";
+import { Checkbox } from "../components/inputs";
 import { Sparkline } from "../components/Sparkline";
 import { Spinner } from "../components/Spinner";
 import { StateBadge } from "../components/StateBadge";
@@ -18,19 +41,19 @@ import { useInView } from "../hooks/useInView";
 import { SEARCH_SHORTCUT } from "../layout/shortcuts";
 import { createLimiter } from "../limiter";
 import { usePollInterval } from "../live";
-import { useCan, useFeature } from "../meta/hooks";
+import { useCan, useFeature, useMeta } from "../meta/hooks";
 import { POLL_INTERVAL_MS } from "../queryClient";
 import { Link } from "../router";
 import { useQueryParam } from "../routing";
+import { AddedByStateGroup, RunnersSection, WorkersSection } from "./lazy";
+import { useAnalyticsGate } from "./overview/gate";
 import { useOverviewLive } from "./queues/live";
+import "./overview/sections.css";
 
-/** Minutes of throughput each row's sparkline covers. */
-const SPARKLINE_MINUTES = 60;
-
-/** Most throughput requests in flight at once, however many rows are visible. */
+/** Most per-queue analytics requests in flight at once, however many rows are visible. */
 const SPARKLINE_CONCURRENCY = 4;
 
-/** Sparklines refresh slower than counts: their buckets are a minute wide. No event announces a bucket, so they poll at this rate even while live. */
+/** Sparklines refresh slower than counts: no event announces a bucket, so they poll at this rate even while live. */
 const SPARKLINE_REFETCH_MS = 30_000;
 
 /** Shared across rows so the cap is global. */
@@ -57,8 +80,112 @@ function Stat({
   );
 }
 
-/** The namespace-wide totals. */
-export function OverviewSummary({ overview }: { overview: Overview }) {
+/**
+ * The "Over the range" tile: what happened to jobs in the range on screen, as
+ * a compact label/number list rather than one headline, so several figures
+ * fit one tile at a readable size.
+ *
+ * Two groups, never merged: "Finished in range" from the analytics series (by
+ * finish time; failed *attempts*), and — only where `features.addedByState`
+ * is true — the jobs added in the range by the state they are in now (by
+ * creation time; still stored). They answer different questions, so they
+ * are not expected to agree.
+ */
+function RangeStat({
+  jobs,
+  added,
+}: {
+  /** `GET /analytics/jobs` over the range on screen, once it has answered. */
+  jobs?: AnalyticsSeriesDto<JobsBucketDto, JobsTotalsDto>;
+  /** The range the added-by-state group is read over, or absent for no group. */
+  added?: TimeRange;
+}) {
+  const rows: { label: string; value: number; state: JobState }[] = jobs
+    ? [
+        {
+          label: "Completed",
+          value: jobs.totals.completed,
+          state: "completed",
+        },
+        // Failed ATTEMPTS, not failed jobs: the series counts every attempt
+        // that threw, including ones a retry later completed. Named so it
+        // cannot be read as the `failed` state, which reads "Retrying"
+        // (STATE_LABELS).
+        {
+          label: "Failed attempts",
+          value: jobs.totals.failed,
+          state: "failed",
+        },
+      ]
+    : [];
+  return (
+    <section
+      className="range-band"
+      aria-label="Over the range"
+      data-testid="range-stat"
+    >
+      <p className="range-band-head">
+        <span className="range-band-title">Over the range</span>
+        {jobs && (
+          <span className="muted">in {describeResolution(jobs.range)}</span>
+        )}
+      </p>
+      <div className="range-band-groups">
+        {jobs && (
+          <div className="range-group">
+            {/* Named only beside the added group; alone it needs no name. */}
+            {added && <p className="range-group-title">Finished in range</p>}
+            <dl className="range-cells">
+              {rows.map((row) => (
+                <div
+                  key={row.state}
+                  className={`range-cell state-${row.state}`}
+                >
+                  <dt>{row.label}</dt>
+                  <dd>{formatNumber(row.value)}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+        {added && (
+          <div
+            className="range-group range-group-wide"
+            data-testid="range-stat-added"
+          >
+            <AddedByStateGroup range={added} />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Props of {@link OverviewSummary}. */
+export interface OverviewSummaryProps {
+  /** `GET /overview`: the counts, which no range applies to. */
+  overview: Overview;
+  /**
+   * `GET /analytics/jobs` over the range on screen, when it has answered.
+   * Its totals replace the deprecated `overview.throughput` window, and its
+   * `range.resolution` is what the figure is labelled from.
+   */
+  jobs?: AnalyticsSeriesDto<JobsBucketDto, JobsTotalsDto>;
+  /**
+   * The range to count the jobs added in, by their state now
+   * (`GET /overview/added`). Pass it only where `features.addedByState` is
+   * true: absent, the tile shows the analytics series alone and reads nothing
+   * more.
+   */
+  added?: TimeRange;
+}
+
+/** The namespace-wide totals: counts from `/overview`, throughput from the analytics series. */
+export function OverviewSummary({
+  overview,
+  jobs,
+  added,
+}: OverviewSummaryProps) {
   return (
     <div className="overview-summary">
       <dl
@@ -94,14 +221,24 @@ export function OverviewSummary({ overview }: { overview: Overview }) {
             value={formatNumber(overview.workers)}
           />
         )}
-        {overview.throughput && (
-          <Stat
-            label={`Last ${plural(overview.throughput.minutes, "minute")}`}
-            value={`${formatNumber(overview.throughput.completed)} completed`}
-            hint={`${formatNumber(overview.throughput.failed)} failed`}
-          />
-        )}
+        {/*
+          Throughput belongs to the range the page is showing, so there is no
+          fixed-window tile: with no analytics (`meta.analytics` is `null` and
+          every analytics route is pruned) the figure is simply absent, rather
+          than a "last 60 minutes" that contradicts the range picker above it.
+        */}
       </dl>
+      {/*
+        Its own full-width band, not a tile in the totals grid: inside the grid
+        its many figures stacked into one tall column and stretched every
+        other tile to match.
+      */}
+      {(jobs || added) && (
+        <RangeStat
+          jobs={jobs}
+          added={added}
+        />
+      )}
       {overview.truncated && (
         <p
           className="notice"
@@ -115,15 +252,24 @@ export function OverviewSummary({ overview }: { overview: Overview }) {
   );
 }
 
+/** Props of {@link QueueSparkline}. */
+export interface QueueSparklineProps {
+  /** The queue. */
+  queue: string;
+  /** The range it covers; the response says at what resolution it was served. */
+  range: TimeRange;
+}
+
 /** A queue's throughput sparkline, fetched once its row scrolls into view. */
-export function QueueSparkline({ queue }: { queue: string }) {
+export function QueueSparkline({ queue, range }: QueueSparklineProps) {
   const api = useApiClient();
   const [ref, inView] = useInView<HTMLSpanElement>();
+  const { key, request } = useAnalyticsRange(range);
   const query = useQuery({
-    queryKey: queryKeys.queueThroughput(queue, SPARKLINE_MINUTES),
+    queryKey: analyticsKeys.queueJobs(queue, key),
     queryFn: ({ signal }) =>
       throughputLimiter.run(() =>
-        api.getQueueThroughput(queue, SPARKLINE_MINUTES, signal),
+        getQueueJobsAnalytics(api, queue, request(), signal),
       ),
     enabled: inView,
     refetchInterval: SPARKLINE_REFETCH_MS,
@@ -139,14 +285,14 @@ export function QueueSparkline({ queue }: { queue: string }) {
         <Sparkline
           values={data.buckets.map((bucket) => bucket.completed)}
           secondary={data.buckets.map((bucket) => bucket.failed)}
-          label={`${queue}: ${formatNumber(data.completed)} completed, ${formatNumber(data.failed)} failed in the last ${plural(SPARKLINE_MINUTES, "minute")}`}
+          label={`${queue}: ${formatNumber(data.totals.completed)} completed, ${formatNumber(data.totals.failed)} failed, in ${describeResolution(data.range)}`}
         />
       ) : query.isError ? (
         <span
           className="muted"
           title={query.error.message}
         >
-          unavailable
+          {isRangeNotRetained(query.error) ? "not kept" : "unavailable"}
         </span>
       ) : (
         <span
@@ -162,12 +308,15 @@ export function QueueSparkline({ queue }: { queue: string }) {
 export interface QueueTableProps {
   /** The queues. */
   items: readonly QueueSummaryDto[];
-  /** Whether to render the throughput column. */
+  /** Whether to render the throughput column. Needs a `range`. */
   sparklines: boolean;
+  /** The range each sparkline covers; required when `sparklines` is on. */
+  range?: TimeRange;
 }
 
 /** Queues with their per-state counts. */
-export function QueueTable({ items, sparklines }: QueueTableProps) {
+export function QueueTable({ items, sparklines, range }: QueueTableProps) {
+  const withSparklines = sparklines && range !== undefined;
   return (
     <Table label="Queues">
       <thead>
@@ -188,7 +337,7 @@ export function QueueTable({ items, sparklines }: QueueTableProps) {
           >
             Total
           </th>
-          {sparklines && <th scope="col">Throughput</th>}
+          {withSparklines && <th scope="col">Throughput</th>}
         </tr>
       </thead>
       <tbody>
@@ -221,9 +370,12 @@ export function QueueTable({ items, sparklines }: QueueTableProps) {
               />
             ))}
             <td className="num total">{formatNumber(queue.total)}</td>
-            {sparklines && (
+            {withSparklines && (
               <td>
-                <QueueSparkline queue={queue.name} />
+                <QueueSparkline
+                  queue={queue.name}
+                  range={range}
+                />
               </td>
             )}
           </tr>
@@ -250,10 +402,13 @@ function CountCell({
 }
 
 /** The queue list card: search box, table, truncated notice, empty states. */
-function QueuesCard() {
+function QueuesCard({ range, picker }: SectionProps) {
   const api = useApiClient();
   const canMetrics = useCan("metrics.read");
   const throughput = useFeature("throughput");
+  // Every analytics route is pruned when the backend records nothing, so a
+  // sparkline would be a 404 per row.
+  const analytics = useMeta().analytics ?? null;
   const [search, setSearch] = useQueryParam("q");
   const deferredSearch = useDeferredValue(search);
   const searchId = useId();
@@ -269,27 +424,28 @@ function QueuesCard() {
   return (
     <Card
       title="Queues"
-      actions={
-        <div className="search">
-          <label
-            htmlFor={searchId}
-            className="visually-hidden"
-          >
-            Filter queues by name
-          </label>
-          <input
-            id={searchId}
-            type="search"
-            className="input"
-            placeholder="Filter queues"
-            {...SEARCH_SHORTCUT}
-            value={search}
-            maxLength={200}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </div>
-      }
+      actions={picker}
     >
+      {/* Under the title rather than beside it: the filter belongs to the
+          table below, and the header carries the range control. */}
+      <div className="search queues-search">
+        <label
+          htmlFor={searchId}
+          className="visually-hidden"
+        >
+          Filter queues by name
+        </label>
+        <input
+          id={searchId}
+          type="search"
+          className="input"
+          placeholder="Filter queues"
+          {...SEARCH_SHORTCUT}
+          value={search}
+          maxLength={200}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
       {queues.isPending ? (
         <Spinner
           label="Loading queues"
@@ -317,7 +473,8 @@ function QueuesCard() {
         <>
           <QueueTable
             items={queues.data.items}
-            sparklines={throughput && canMetrics}
+            sparklines={throughput && canMetrics && analytics !== null}
+            range={range}
           />
           {queues.data.truncated && (
             <p
@@ -335,18 +492,38 @@ function QueuesCard() {
   );
 }
 
-/** The namespace-wide totals card. */
-function SummaryCard() {
+/** The namespace-wide totals card, read over `range`. */
+function SummaryCard({ range, picker }: SectionProps) {
   const api = useApiClient();
+  // Where the backend cannot count by creation time the route does not
+  // exist, so nothing is read and the tile keeps the series alone.
+  const addedByState = useFeature("addedByState");
   const refetchInterval = usePollInterval(POLL_INTERVAL_MS);
+  const { analytics, key, request } = useAnalyticsRange(range);
   useOverviewLive({ overview: true, search: null });
+  // The counts are a snapshot, not a window, so `/overview` is read without
+  // the deprecated `minutes`; everything the range applies to comes from the
+  // analytics series below.
   const overview = useQuery({
     queryKey: queryKeys.overview(),
     queryFn: ({ signal }) => api.getOverview(undefined, signal),
     refetchInterval,
   });
+  const jobs = useQuery({
+    queryKey: analyticsKeys.jobs(key),
+    queryFn: ({ signal }) => getJobsAnalytics(api, request(), signal),
+    enabled: analytics !== null,
+    refetchInterval,
+  });
   return (
-    <Card title="Jobs">
+    <Card
+      title="Jobs"
+      actions={picker}
+    >
+      <RangeCaption
+        range={jobs.data?.range}
+        testId="jobs-range-caption"
+      />
       {overview.isPending ? (
         <Spinner
           label="Loading the overview"
@@ -359,24 +536,116 @@ function SummaryCard() {
           onRetry={() => void overview.refetch()}
         />
       ) : (
-        <OverviewSummary overview={overview.data} />
+        <>
+          <OverviewSummary
+            overview={overview.data}
+            jobs={jobs.data}
+            added={addedByState ? range : undefined}
+          />
+          {jobs.isError ? (
+            <AnalyticsError
+              error={jobs.error}
+              title="Could not load job analytics"
+              onRetry={() => void jobs.refetch()}
+              testId="jobs-range-not-retained"
+            />
+          ) : (
+            jobs.data && (
+              <div
+                className="overview-jobs-chart"
+                data-testid="jobs-series"
+              >
+                <Sparkline
+                  values={jobs.data.buckets.map((bucket) => bucket.completed)}
+                  secondary={jobs.data.buckets.map((bucket) => bucket.failed)}
+                  label={`Every queue: ${formatNumber(jobs.data.totals.completed)} completed, ${formatNumber(jobs.data.totals.failed)} failed, in ${describeResolution(jobs.data.range)}`}
+                  width={240}
+                />
+              </div>
+            )
+          )}
+        </>
       )}
     </Card>
   );
 }
 
-/** The start page: namespace-wide counts, and the queue table. */
+/** The start page: namespace-wide counts, and the queue table, over a chosen range. */
 export function OverviewScreen() {
   const canMetrics = useCan("metrics.read");
   const canQueues = useCan("queues.list");
+  // What this API can actually serve; an older one reports none and the
+  // picker falls back to the contract's ceiling.
+  const maxSpan = useMeta().analytics?.maxSpanMs;
+  const [applyToPage, setApplyToPage] = useRangeScope();
+  const [pageRange, setPageRange] = useRange("range");
+  const [jobsRange, setJobsRange] = useRange("jobsRange");
+  const [queuesRange, setQueuesRange] = useRange("queuesRange");
+  const [runnersRange, setRunnersRange] = useRange("runnersRange");
+  const [workersRange, setWorkersRange] = useRange("workersRange");
+  // Decided here, outside the sections, so a deployment recording nothing
+  // never fetches their chunk.
+  const canRunnerMetrics = useAnalyticsGate("runners");
+  const canWorkerMetrics = useAnalyticsGate("workers");
+
+  /** One section's range and its own control, by whether the page-wide one is in force. */
+  const section = (
+    range: TimeRange,
+    set: (next: TimeRange) => void,
+    label: string,
+  ): SectionProps => ({
+    range: applyToPage ? pageRange : range,
+    picker: applyToPage ? null : (
+      <RangePicker
+        range={range}
+        onChange={set}
+        label={label}
+        maxSpan={maxSpan}
+      />
+    ),
+  });
+
   return (
     <div
       className="screen"
       data-testid="overview"
     >
-      <h1 className="screen-title">Overview</h1>
-      {canMetrics && <SummaryCard />}
-      {canQueues && <QueuesCard />}
+      <div className="overview-header">
+        <h1 className="screen-title">Overview</h1>
+        <div className="overview-range">
+          {applyToPage && (
+            <RangePicker
+              range={pageRange}
+              onChange={setPageRange}
+              label="Range for every section"
+              maxSpan={maxSpan}
+            />
+          )}
+          <Checkbox
+            className="range-scope"
+            checked={applyToPage}
+            onChange={setApplyToPage}
+            label="Apply date filter to page"
+            hint="One range for every section, so the numbers are comparable. Off: each section has its own."
+          />
+        </div>
+      </div>
+      {canMetrics && (
+        <SummaryCard {...section(jobsRange, setJobsRange, "Jobs range")} />
+      )}
+      {canQueues && (
+        <QueuesCard {...section(queuesRange, setQueuesRange, "Queues range")} />
+      )}
+      {canRunnerMetrics && (
+        <RunnersSection
+          {...section(runnersRange, setRunnersRange, "Runners range")}
+        />
+      )}
+      {canWorkerMetrics && (
+        <WorkersSection
+          {...section(workersRange, setWorkersRange, "Workers range")}
+        />
+      )}
       {!canMetrics && !canQueues && (
         <EmptyState
           title="Nothing to show"

@@ -103,6 +103,26 @@
   white-space: nowrap;
 }
 
+/*
+ * "Processed by": a fixed width, never wrapping, so a page of long keys (or
+ * the column's cells changing as jobs are claimed) does not reflow the table —
+ * the runners table's `.runners-status` reasoning. A long key is cut with an
+ * ellipsis; the cell's title has it in full.
+ */
+.job-processed-by-col {
+  width: 12rem;
+  white-space: nowrap;
+}
+
+.job-processed-by-text {
+  display: inline-block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .job-failure {
   max-width: 24rem;
   color: var(--text-muted);

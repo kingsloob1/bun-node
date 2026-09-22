@@ -68,6 +68,12 @@ export interface SerializableContext<TArgs = unknown> {
   /** Whether the child's logger should be forwarded to the parent. */
   forwardLogs: boolean;
   /**
+   * Whether the child should capture its handler's console calls and send
+   * them as `output` messages. Set only for a `worker` run, which shares no
+   * pipe with its parent; absent means no.
+   */
+  captureConsole?: boolean;
+  /**
    * What the child runs: a runner handler called with a run context (the
    * default), or a queue job processor called with a job and its context.
    */
@@ -188,6 +194,14 @@ export type ChildToParent =
       level: LogLevel;
       message: string;
       fields: LogFields;
+    }
+  // One console call a `worker` run made, formatted and newline-terminated;
+  // sent only when the context asked for `captureConsole`.
+  | {
+      t: "output";
+      runId: string;
+      stream: "stdout" | "stderr";
+      chunk: string;
     }
   // The handler's return value, after a JSON round trip: nothing about its
   // type survives the crossing.

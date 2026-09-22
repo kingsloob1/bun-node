@@ -6,9 +6,25 @@ import type {
   JobRef,
   JobsDriver,
   QueueRef,
+  RepeatRecord,
+  StoredJobOptions,
+  WorkerConfigInfo,
+  WorkerControlInfo,
 } from "../drivers/index";
-import type { QueueEventName, QueueEventPayloads } from "../shared/events";
+import type {
+  QueueEventName,
+  QueueEventPayloads,
+  WorkerEventPayloads,
+} from "../shared/events";
 import type { Logger } from "../shared/logger";
+import type {
+  WorkerConfigKey,
+  WorkerConfigPatch,
+  WorkerConfigValues,
+  WorkerEventName,
+  WorkerState,
+  WorkerStopPersistence,
+} from "../shared/workers";
 import type { JobEvent } from "./Job";
 import type { Reservation } from "./limits";
 import type {
@@ -21,6 +37,7 @@ import type {
   ProcessorContext,
   WorkerEventsOf,
 } from "./types";
+import type { WorkerControlEntry } from "./workerControl";
 import process from "node:process";
 import {
   createDeferred,
@@ -34,9 +51,11 @@ import { awaitsDelivery, flowKey } from "../drivers/flow";
 import {
   claimJobBatch,
   CompletionBatcher,
+  listWorkerRecords,
   registerWorkerRecord,
   removeWorkerRecord,
   resolveDriver,
+  resolveMetricsOptions,
   supportsWorkers,
 } from "../drivers/index";
 import {
@@ -45,6 +64,7 @@ import {
   DEFAULT_MAX_STALLED,
   DEFAULT_POLL_INTERVAL,
   DEFAULT_STALLED_INTERVAL,
+  JOBS_VERSION,
 } from "../shared/constants";
 import { TypedEmitterBase } from "../shared/emitter";
 import {
@@ -54,16 +74,22 @@ import {
   LockLostError,
   UnrecoverableJobError,
 } from "../shared/errors";
-import { queueEvent } from "../shared/events";
+import { queueEvent, workerEvent } from "../shared/events";
 import { HOST, newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
-import { waitForAny } from "../shared/wait";
+import { Pulse, waitForAny } from "../shared/wait";
+import {
+  WORKER_CONFIG_KEYS,
+  workerConfigCrossFieldIssue,
+  workerConfigIssue,
+} from "../shared/workers";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { addDeadLetter, selfLetterError } from "./deadLetter";
 import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
+import { JobDefaultsCache, overlayJobDefaults } from "./jobDefaults";
 import { QueueLimiter } from "./limits";
 import { displayRepeatKey, shortenJobId } from "./options";
 import { nextOccurrence, repeatJobId } from "./repeat";
@@ -72,10 +98,65 @@ import {
   occurrenceRecord,
   removePendingOccurrence,
 } from "./repeatControl";
-import { supportsWindowSweep, sweepWindows } from "./windows";
+import {
+  RESERVED_STATE_PREFIX,
+  setReservedState,
+  supportsWindowSweep,
+  sweepWindows,
+} from "./windows";
+import {
+  readWorkerConfig,
+  readWorkerControl,
+  readWorkerStop,
+  removeWorkerControl,
+  supportsWorkerControl,
+  sweepWorkerControls,
+  watchWorkerChanges,
+  WORKER_CONTROL_GRACE_LIFETIMES,
+  writeWorkerStop,
+} from "./workerControl";
+import { WorkerMetricsRecorder } from "./workerMetrics";
+
+/**
+ * The queue-state entry naming the one worker that heals the queue's flows:
+ * `{ holder, until }`, taken by compare-and-set (C12).
+ */
+const FLOW_HEAL_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
 
 /** How many jobs one maintenance sweep touches. */
 const MAINTENANCE_BATCH = 100;
+
+/**
+ * The most batches of expired jobs one prune pass removes, back to back, while
+ * each comes back full. With {@link MAINTENANCE_BATCH} that is 5,000 jobs: one
+ * batch a minute capped the whole sweep at 100 jobs a minute, so a queue
+ * finishing more than about 1.7 jobs a second under the default 24-hour
+ * retention fell behind for good and its finished jobs grew without bound.
+ *
+ * The batch itself stays at 100 because it is one unit of work on the backend
+ * — one Lua script on Redis, which blocks the server while it runs, and one
+ * `SELECT` plus a statement per row on SQL — so it is repeated rather than
+ * enlarged.
+ */
+const PRUNE_MAX_BATCHES = 50;
+
+/**
+ * How long one prune pass may keep going, in milliseconds, whatever
+ * {@link PRUNE_MAX_BATCHES} still allows. Short enough that a slow backend,
+ * or the memory driver's in-process scan, never holds a worker's maintenance
+ * — or its event loop — for long.
+ */
+const PRUNE_TIME_BUDGET_MS = 500;
+
+/**
+ * How soon, in milliseconds, a prune pass that stopped on its budget with
+ * expired jobs still left runs again, rather than waiting for the next
+ * minute's maintenance. The pause is what keeps a backlog from turning the
+ * sweep into a busy loop: one {@link PRUNE_TIME_BUDGET_MS} pass at most per
+ * {@link PRUNE_CATCH_UP_MS} pause, so a third of the time at worst, and only
+ * while there is a backlog to clear.
+ */
+const PRUNE_CATCH_UP_MS = 1_000;
 
 /**
  * How long a parent may list a child that does not exist before the child is
@@ -171,8 +252,91 @@ function assertPositiveMs(value: number, what: string): number {
   return value;
 }
 
-/** How often a worker writes its heartbeat record, unless told otherwise. */
-const DEFAULT_REPORT_INTERVAL = 10_000;
+/**
+ * How often a worker writes its heartbeat record, unless told otherwise, in
+ * milliseconds: 10,000. It is also how often a worker's busyness is sampled,
+ * since the sample rides the report. Exported so the management API's
+ * `DEFAULT_BUSYNESS_INTERVAL_MS` can be pinned to it by a test: the API cannot
+ * see another process's `reportInterval`, so it reports this default.
+ */
+export const DEFAULT_REPORT_INTERVAL = 10_000;
+
+/** How often a worker reads its stored instructions when it cannot subscribe. */
+const DEFAULT_CONTROL_INTERVAL = 2_000;
+
+/**
+ * What a worker is doing, before its `paused` flag is folded in.
+ *
+ * `paused` is kept separate because it is the one part of the state a worker
+ * can be in *while* running — it has a loop, timers and jobs in flight, and a
+ * resume is immediate. The three phases here are the ones that change what
+ * the worker is, not just whether it claims.
+ */
+type WorkerPhase = "running" | "stopping" | "stopped" | "restarting";
+
+/**
+ * A worker's stable key, as it is derived when none was given:
+ * `[service.]queue[.name]`, with the ordinal standing in for a name from the
+ * second worker a context builds on one queue.
+ *
+ * The ordinal is the weakest of the three and deliberately last: it shifts the
+ * moment a worker's creation becomes conditional, and an override then follows
+ * the wrong worker. `name` exists so nobody has to rely on it.
+ */
+export function deriveWorkerKey(parts: {
+  /** The service, when the worker belongs to one. */
+  service?: string;
+  /** The queue it consumes. */
+  queue: string;
+  /** What it is called within the queue, when it was named. */
+  name?: string;
+  /** Its ordinal among a context's workers on that queue, from `1`. */
+  ordinal?: number;
+}): string {
+  const segments = parts.service ? [parts.service, parts.queue] : [parts.queue];
+
+  if (parts.name !== undefined) {
+    segments.push(parts.name);
+  } else if (parts.ordinal !== undefined && parts.ordinal > 1) {
+    segments.push(String(parts.ordinal));
+  }
+
+  return segments.join(".");
+}
+
+/**
+ * How many workers this process has built, so two of them can never derive
+ * the same id.
+ *
+ * The obvious tag — host, pid and start time — is unique among live
+ * processes* and nothing more, so two workers built here under one key (two
+ * replicas of a shard in one process, or simply two plain
+ * `new BunQueueWorker("mail", ...)`) collided on it. They would then share a
+ * heartbeat record, a lock token and a limiter lease, which is the very
+ * corruption the derived id exists to make impossible.
+ */
+let workerSerial = 0;
+
+/**
+ * Eight base-36 characters standing for one worker of one incarnation of a
+ * process.
+ *
+ * Derived rather than random so it can be computed in the constructor, which
+ * is what keeps `readonly id` possible: the lock token and the limiter's lease
+ * holder are fixed there, and deferring them to `run()` would be a far larger
+ * change.
+ */
+export function incarnationTag(
+  host: string,
+  pid: number,
+  processStartedAt: number,
+  serial: number,
+): string {
+  return Bun.hash(`${host}:${pid}:${processStartedAt}:${serial}`)
+    .toString(36)
+    .padStart(8, "0")
+    .slice(-8);
+}
 
 /** How many report intervals a heartbeat record outlives its last write by. */
 const REPORT_LIFETIMES = 3;
@@ -263,8 +427,24 @@ export class BunQueueWorker<
   WorkerEventsOf<TData, TResult, TJobs>,
   BunQueueWorkerEvents<TData, TResult>
 > {
-  /** Identifies this worker in job records and logs. */
+  /**
+   * Identifies this worker in job records and logs: its **incarnation**,
+   * unique among live workers and new every time the process starts unless
+   * an explicit id was given. Lifecycle control is addressed by it.
+   */
   readonly id: string;
+  /**
+   * The **stable** identity a configuration override is keyed by, so an
+   * override survives restarts and reaches every replica of this worker.
+   */
+  readonly key: string;
+  /** The service it belongs to, when its context named one. */
+  readonly service: string | undefined;
+  /**
+   * When this process started, in epoch milliseconds — `performance.timeOrigin`
+   * rounded. What tells one incarnation from the next when the id is stable.
+   */
+  readonly processStartedAt: number;
   /** The queue it consumes. */
   readonly queueName: string;
   /** The namespace it consumes from. */
@@ -304,7 +484,26 @@ export class BunQueueWorker<
    * This worker's side of the queue's stored limits, when the driver can hold
    * them. It costs one cached read a second on a queue with none.
    */
+  /**
+   * The attribution every claim stamps (`ClaimOptions.worker`): built once,
+   * since none of it changes for a worker's lifetime, rather than per claim.
+   */
+  readonly #workerRef: { key: string; host: string; pid: number };
   readonly #limiter: QueueLimiter | undefined;
+  /**
+   * Ids of the running jobs claimed under a limiter reservation — the only
+   * ones whose end is a release. A job claimed while the queue had no limits
+   * was never counted, and releasing it anyway took it off a lease still
+   * holding jobs that were counted, so limits set again later under-counted
+   * this worker and admitted more than their cap (B7).
+   */
+  readonly #reservedIds = new Set<string>();
+  /**
+   * The queue's stored job defaults as this worker last read them — read
+   * only to build a repeat series' next occurrence, trusted for
+   * `jobDefaultsRefreshInterval`.
+   */
+  readonly #jobDefaults: JobDefaultsCache;
   /** Where the next sweep of debounce and throttle pointers resumes. */
   #windowCursor: string | undefined;
   /**
@@ -365,8 +564,20 @@ export class BunQueueWorker<
   #emptySince: number | undefined;
   /** Whether `drained` has been emitted for the current quiet spell. */
   #drainedAnnounced = false;
+  /**
+   * Whether the last wait for work ended within a millisecond and nothing has
+   * been claimed since. `#idle` sleeps its 1ms floor only on the second such
+   * wait in a row: the first is usually a job that arrived a moment ago.
+   */
+  #instantIdle = false;
   /** Jobs in flight, by id. */
   readonly #active = new Map<string, Promise<void>>();
+  /**
+   * Fired each time a running job leaves `#active`, so a full or limited
+   * worker waits on one signal rather than on every running job's promise —
+   * those left a reaction per wait on each still-running job (B1).
+   */
+  readonly #slotFreed = new Pulse();
   /** Controllers for the jobs in flight, so they can be aborted. */
   readonly #aborts = new Map<string, AbortController>();
   /** Completion writes still in flight, so `close()` does not abandon one. */
@@ -375,6 +586,69 @@ export class BunQueueWorker<
   readonly #publishing = new Set<Promise<void>>();
   /** Batches finished jobs, so a burst settles in one round trip. */
   readonly #completions: CompletionBatcher;
+
+  /**
+   * What this worker's own code asked for, before any override — every
+   * setting an override may replace, kept as the code said it so
+   * {@link BunQueueWorker.config} can show both, and so removing an override
+   * restores what the process actually configured.
+   *
+   * A local setter (`worker.concurrency = 8`, `jobs.processEvery(...)`)
+   * changes *this*, not what is in force: the effective value stays
+   * `override ?? code`, and the setter warns when an override shadows it.
+   */
+  readonly #codeConfig: WorkerConfigValues;
+  /** The settings a stored override currently replaces. */
+  #override: WorkerConfigPatch = {};
+  /** The version of the override in force; `0` when there is none. */
+  #configSeq = 0;
+  /** When that override was written, epoch ms; unset when there is none. */
+  #configUpdatedAt: number | undefined;
+  /** Settings whose code value was derived rather than given. */
+  readonly #derivedConfig: WorkerConfigKey[];
+  /** How this worker hears about instructions, and how often it looks. */
+  readonly #remote: {
+    /** Whether it listens at all. */
+    enabled: boolean;
+    /** Whether it subscribes rather than only polling. */
+    subscribe: boolean;
+    /** How often it reads the entries when it does not subscribe, in ms. */
+    interval: number;
+  };
+
+  /** How long a stop given to this worker lasts. */
+  readonly #stopPersistence: WorkerStopPersistence;
+  /** Whether one instruction may ask for the other persistence. */
+  readonly #stopPersistenceOverridable: boolean;
+  /** What the worker is, before `paused` is folded in. */
+  #phase: WorkerPhase = "running";
+  /** The state last announced, so only a real change raises an event. */
+  #announcedState: WorkerState = "running";
+  /** Resolved by `start()` to call off a stop that is still draining. */
+  #stopCancel: ReturnType<typeof createDeferred<void>> | undefined;
+  /** Instruction applications chained, so the latest wins rather than a queue of stale steps. */
+  #controlChain: Promise<void> = SETTLED;
+  /** Whether an adoption is running, so a report does not start another. */
+  #adopting = false;
+  /** Whether an instruction has been accepted and is still being carried out. */
+  #controlPending = false;
+  /** The version of the lifecycle instruction this worker has applied. */
+  #appliedSeq = 0;
+  /** The last instruction that could not be applied, and why. */
+  #controlError: WorkerControlInfo["lastError"] | undefined;
+  /**
+   * Stops following the queue's control change counter, when this worker
+   * polls rather than subscribes. The counter is read once per process per
+   * queue (`watchWorkerChanges`); this worker reads its own entries only
+   * when it moves (C7).
+   */
+  #controlUnwatch: (() => void) | undefined;
+  /** Closes the worker-channel subscription, when there is one. */
+  #controlUnsubscribe: (() => Promise<void>) | undefined;
+  /** Where the next sweep of dead workers' instructions resumes. */
+  #controlSweepCursor: string | undefined;
+  /** Whether the heartbeat has yet looked for another worker using this id. */
+  #checkedDuplicateId = false;
 
   /** How many jobs to process at once; settable at runtime. */
   #concurrency: number;
@@ -392,14 +666,37 @@ export class BunQueueWorker<
   #keepAlive: ReturnType<typeof setInterval> | undefined;
   /** Aborted to wake the loop out of a wait. */
   #wake = new AbortController();
-  /** Each running job's lock-renewal timer, by job id. */
-  readonly #heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+  /**
+   * Each running job's lock renewal, by job id: the timer, and what it needs
+   * to renew with.
+   *
+   * The record and the controller are kept beside the timer because a
+   * configuration change has to re-arm every renewal in flight — at the new
+   * cadence, and with an immediate renewal at the new duration — and it can
+   * only do that if it can call `#heartbeat` for a job it did not start.
+   */
+  readonly #heartbeats = new Map<
+    string,
+    {
+      /** The renewal timer. */
+      timer: ReturnType<typeof setInterval>;
+      /** The job being renewed. */
+      record: JobRecord;
+      /** Its abort controller, so a lost lock can end the attempt. */
+      controller: AbortController;
+    }
+  >();
+
   /** Maintenance timers, cleared on close. */
   readonly #timers = new Set<ReturnType<typeof setInterval>>();
   /** Cached queue-paused flag and when it was read. */
   #pauseCache: { paused: boolean; at: number } = { paused: false, at: 0 };
-  /** How often the heartbeat record is written, in milliseconds; `0` for never. */
-  readonly #reportInterval: number;
+  /**
+   * How often the heartbeat record is written, in milliseconds; `0` for never.
+   * Not `readonly`: it is one of the settings an override may replace, and
+   * changing it re-arms the timer.
+   */
+  #reportInterval: number;
   /** When `run()` last started consuming, for the heartbeat record. */
   #startedAt = 0;
   /** The timer writing the heartbeat record, while the worker runs. */
@@ -417,6 +714,12 @@ export class BunQueueWorker<
    * and on an unreachable backend, wait — for nothing.
    */
   #reported = false;
+  /**
+   * This worker's analytics: the outcomes it counts under its stable key, the
+   * busyness each report samples, and the cumulative counts the heartbeat
+   * record carries. Built in the constructor, once the logger exists.
+   */
+  readonly #metrics: WorkerMetricsRecorder;
 
   constructor(
     queueName: string,
@@ -453,10 +756,41 @@ export class BunQueueWorker<
         options.isolationOptions,
       );
     }
-    this.id = options.id ?? newId();
+    this.processStartedAt = Math.round(performance.timeOrigin);
+    this.service =
+      options.service === undefined
+        ? undefined
+        : assertSegment(options.service, "service");
+    this.key =
+      options.key === undefined
+        ? (options.id ??
+          deriveWorkerKey({
+            ...(this.service === undefined ? {} : { service: this.service }),
+            queue: this.queueName,
+            ...(options.name === undefined
+              ? {}
+              : { name: assertSegment(options.name, "worker name") }),
+            ...(options.keyOrdinal === undefined
+              ? {}
+              : { ordinal: options.keyOrdinal }),
+          }))
+        : assertSegment(options.key, "worker key");
+    // Derived rather than random, so two live workers cannot collide by
+    // chance and a supervisor reading a log can tell which process a worker
+    // belongs to. `newId()` is still the fallback for the impossible case of
+    // an empty key.
+    this.id =
+      options.id ??
+      `${this.key || newId()}.${incarnationTag(
+        HOST,
+        process.pid,
+        this.processStartedAt,
+        ++workerSerial,
+      )}`;
     this.#token = newToken(this.id);
+    this.#workerRef = { key: this.key, host: HOST, pid: process.pid };
 
-    const { driver, owned } = resolveDriver(options.driver);
+    const { driver, owned } = resolveDriver(options.driver, options.metrics);
     this.driver = driver;
     this.#ownsDriver = owned;
     this.#completions = new CompletionBatcher(driver, this.ref, this.#token);
@@ -486,6 +820,44 @@ export class BunQueueWorker<
     }
     this.#reportInterval = reportInterval;
 
+    this.#derivedConfig =
+      options.heartbeatInterval === undefined ? ["heartbeatInterval"] : [];
+    this.#codeConfig = {
+      concurrency: this.#concurrency,
+      pollInterval: this.#options.pollInterval,
+      maxBlock: this.#options.maxBlock,
+      lockDuration: this.#options.lockDuration,
+      heartbeatInterval: this.#options.heartbeatInterval,
+      stalledInterval: this.#options.stalledInterval,
+      maxStalledCount: this.#options.maxStalledCount,
+      reportInterval,
+      drainDelay: this.#options.drainDelay,
+    };
+
+    const remote = options.remoteControl ?? false;
+    const remoteOptions =
+      typeof remote === "object" ? remote : { enabled: remote };
+    this.#remote = {
+      enabled: remoteOptions.enabled ?? true,
+      // A subscription on a driver that polls is one query every few dozen
+      // milliseconds per queue, so it is opt-in there and automatic where the
+      // backend pushes. Either way the heartbeat re-reads the entries, so the
+      // choice is about latency, never about whether control works.
+      subscribe:
+        remoteOptions.subscribe ?? driver.capabilities.events !== "poll",
+      interval: Math.max(
+        100,
+        remoteOptions.interval ??
+          Math.min(
+            DEFAULT_CONTROL_INTERVAL,
+            reportInterval || DEFAULT_CONTROL_INTERVAL,
+          ),
+      ),
+    };
+    this.#stopPersistence = options.stopPersistence ?? "process";
+    this.#stopPersistenceOverridable =
+      options.stopPersistenceOverridable ?? false;
+
     this.#publishes = options.publish ?? false;
     this.#publishGate = options.publishGate;
     this.#waitToExit = options.waitToExit ?? true;
@@ -499,6 +871,11 @@ export class BunQueueWorker<
           options.limitsRefreshInterval,
         )
       : undefined;
+    this.#jobDefaults = new JobDefaultsCache(
+      driver,
+      this.ref,
+      options.jobDefaultsRefreshInterval,
+    );
     this.#deadLetterQueue =
       options.deadLetterQueue === undefined
         ? undefined
@@ -506,9 +883,24 @@ export class BunQueueWorker<
 
     this.#logger = createJobsLogger(
       options.logger,
-      { namespace: this.namespace, queue: this.queueName, workerId: this.id },
+      {
+        namespace: this.namespace,
+        queue: this.queueName,
+        workerId: this.id,
+        workerKey: this.key,
+      },
       `worker:${this.queueName}`,
     );
+    this.#metrics = new WorkerMetricsRecorder({
+      driver,
+      ref: this.ref,
+      // The stable key, never the incarnation's id: a rolling redeploy must
+      // continue the series, not start one per replica. The id only stands in
+      // for a key that is somehow empty.
+      key: this.key || this.id,
+      metrics: resolveMetricsOptions(options.metrics),
+      logger: this.#logger,
+    });
 
     if (options.autorun) {
       void this.run().catch((error: unknown) => {
@@ -529,9 +921,23 @@ export class BunQueueWorker<
     return this.#concurrency;
   }
 
-  /** Changes the concurrency at runtime; takes effect on the next claim. */
+  /**
+   * Changes the concurrency at runtime; takes effect on the next claim.
+   *
+   * It changes what this worker's **code** asks for. A stored override of
+   * `concurrency` still wins — that is the point of an override — and the
+   * call is then recorded and logged rather than silently obeyed or silently
+   * dropped. Remove the override to hand the setting back to the process.
+   */
   set concurrency(value: number) {
-    this.#concurrency = Math.max(1, Math.floor(value));
+    const next = Math.max(1, Math.floor(value));
+    this.#codeConfig.concurrency = next;
+
+    if (this.#shadowed("concurrency", next)) {
+      return;
+    }
+
+    this.#concurrency = next;
     this.#wake.abort();
     void this.#report();
   }
@@ -559,6 +965,12 @@ export class BunQueueWorker<
    */
   set pollInterval(value: number) {
     const ms = assertPositiveMs(value, "pollInterval");
+    this.#codeConfig.pollInterval = ms;
+
+    if (this.#shadowed("pollInterval", ms)) {
+      return;
+    }
+
     const before = promotionCadence(this.#options.pollInterval);
 
     this.#options.pollInterval = ms;
@@ -581,8 +993,32 @@ export class BunQueueWorker<
    * on a blocking one the new value applies from the next wait.
    */
   set maxBlock(value: number) {
-    this.#options.maxBlock = assertPositiveMs(value, "maxBlock");
+    const ms = assertPositiveMs(value, "maxBlock");
+    this.#codeConfig.maxBlock = ms;
+
+    if (this.#shadowed("maxBlock", ms)) {
+      return;
+    }
+
+    this.#options.maxBlock = ms;
     this.#wakeForNewInterval();
+  }
+
+  /**
+   * Whether a stored override replaces `key`, so a local set of it changes
+   * only what the code asks for. Says so once per call, because a change
+   * quietly ignored is the kind of thing somebody debugs for an afternoon.
+   */
+  #shadowed(key: WorkerConfigKey, value: number): boolean {
+    if (this.#override[key] === undefined) {
+      return false;
+    }
+
+    this.#logger.warn(
+      `${key} was set locally but a stored override is in force, so it did not take effect`,
+      { setting: key, requested: value, effective: this.#override[key] },
+    );
+    return true;
   }
 
   /**
@@ -604,6 +1040,81 @@ export class BunQueueWorker<
   /** Whether the claim loop is running. */
   get isRunning(): boolean {
     return this.#running;
+  }
+
+  /**
+   * What this worker is doing — the same five values a management API
+   * reports. `paused` is folded in here: it is a thing a *running* worker is.
+   */
+  get state(): WorkerState {
+    if (this.#phase !== "running") {
+      return this.#phase;
+    }
+
+    return this.#paused ? "paused" : "running";
+  }
+
+  /**
+   * Whether it is parked: not claiming, not doing maintenance, still
+   * heartbeating so a controller can reach it — and `run()` still pending, so
+   * a supervisor awaiting it is not told the worker shut down.
+   */
+  isStopped(): boolean {
+    return this.#phase === "stopping" || this.#phase === "stopped";
+  }
+
+  /** Every setting in force, and what this worker's own code asked for. */
+  get config(): WorkerConfigInfo {
+    return {
+      effective: this.#liveConfig(),
+      code: { ...this.#codeConfig },
+      overridden: WORKER_CONFIG_KEYS.filter(
+        (key) => this.#override[key] !== undefined,
+      ),
+      ...(this.#derivedConfig.length > 0
+        ? { derived: [...this.#derivedConfig] }
+        : {}),
+      seq: this.#configSeq,
+      ...(this.#configUpdatedAt === undefined
+        ? {}
+        : { updatedAt: this.#configUpdatedAt }),
+    };
+  }
+
+  /** What this worker says about being controlled from another process. */
+  get control(): WorkerControlInfo {
+    return {
+      enabled: this.#controlEnabled(),
+      mode: this.#remote.subscribe ? "subscribe" : "poll",
+      appliedSeq: this.#appliedSeq,
+      configSeq: this.#configSeq,
+      pending: this.#controlPending,
+      stopPersistence: this.#stopPersistence,
+      stopPersistenceOverridable: this.#stopPersistenceOverridable,
+      ...(this.#controlError === undefined
+        ? {}
+        : { lastError: this.#controlError }),
+    };
+  }
+
+  /** The settings actually in force, read off the fields that hold them. */
+  #liveConfig(): WorkerConfigValues {
+    return {
+      concurrency: this.#concurrency,
+      pollInterval: this.#options.pollInterval,
+      maxBlock: this.#options.maxBlock,
+      lockDuration: this.#options.lockDuration,
+      heartbeatInterval: this.#options.heartbeatInterval,
+      stalledInterval: this.#options.stalledInterval,
+      maxStalledCount: this.#options.maxStalledCount,
+      reportInterval: this.#reportInterval,
+      drainDelay: this.#options.drainDelay,
+    };
+  }
+
+  /** Whether this worker listens for instructions, and can reach where they live. */
+  #controlEnabled(): boolean {
+    return this.#remote.enabled && supportsWorkerControl(this.driver);
   }
 
   /** The worker's logger. */
@@ -647,6 +1158,11 @@ export class BunQueueWorker<
     // seen. A worker is listed moments after `ready`, not necessarily by it.
     void this.#report();
     this.#armReports();
+
+    // Before the loop turns, never after: a worker whose stop was recorded
+    // against its key must not claim one job on the way to finding that out.
+    await this.#adoptControl({ initial: true });
+    this.#armControl();
     this.safeEmit("ready");
 
     // Held only once the worker is actually running: a `run()` that failed to
@@ -661,6 +1177,7 @@ export class BunQueueWorker<
     this.#paused = true;
     this.#wake.abort();
     this.safeEmit("paused");
+    this.#announceState();
     void this.#report();
 
     if (options?.waitActive) {
@@ -673,12 +1190,181 @@ export class BunQueueWorker<
     this.#paused = false;
     this.#wake.abort();
     this.safeEmit("resumed");
+    this.#announceState();
     void this.#report();
   }
 
   /** Whether this worker is locally paused. */
   isPaused(): boolean {
     return this.#paused;
+  }
+
+  /**
+   * Parks the worker: stops claiming, disarms maintenance, waits for the jobs
+   * in flight and gives back its share of the queue's limits — but keeps the
+   * loop, the heartbeat record and `run()`'s promise alive, so
+   * {@link BunQueueWorker.start} can bring it back.
+   *
+   * That is the whole difference from `close()`, and it is deliberate.
+   * `await worker.run()` is the documented supervisor pattern, so resolving
+   * it would make a stop look like a shutdown and the process would exit;
+   * and a worker that unregistered could never be told to start again,
+   * because nothing would know it was there.
+   *
+   * Jobs in flight are not aborted unless `timeout` says to. An abandoned
+   * job's lock lapses and another worker recovers it as stalled, which is a
+   * delay rather than a loss — but it is a second run of work that had
+   * already started, so it is never the default.
+   *
+   * A {@link BunQueueWorker.start} while this is still draining calls it off,
+   * and this resolves without having parked.
+   */
+  async stop(options?: {
+    /** Abandon jobs still running after this many milliseconds. */
+    timeout?: number;
+    /** Why, for the `state` event. */
+    reason?: string;
+  }): Promise<void> {
+    if (this.#closing || this.isStopped()) {
+      return;
+    }
+
+    this.#setPhase("stopping", options?.reason);
+    this.#wake.abort();
+    this.#disarmMaintenance();
+    void this.#report();
+
+    const cancel = createDeferred<void>();
+    this.#stopCancel = cancel;
+
+    try {
+      if (this.#active.size > 0) {
+        const races: Promise<"done" | "started" | "timeout">[] = [
+          Promise.allSettled([...this.#active.values()]).then(
+            () => "done" as const,
+          ),
+          cancel.promise.then(() => "started" as const),
+        ];
+
+        if (options?.timeout !== undefined) {
+          races.push(
+            sleep(options.timeout, { unref: true }).then(
+              () => "timeout" as const,
+            ),
+          );
+        }
+
+        if ((await Promise.race(races)) === "timeout") {
+          this.#abandonActive();
+        }
+      }
+    } finally {
+      if (this.#stopCancel === cancel) {
+        this.#stopCancel = undefined;
+      }
+    }
+
+    // `start()` landed while the jobs were draining, so this stop is off.
+    if (this.#phase !== "stopping" || this.#closing) {
+      return;
+    }
+
+    // Held capacity goes back now rather than at its lease's expiry: a
+    // stopped worker counted against a queue's concurrency limit would hold
+    // slots its peers could be using for as long as it is parked.
+    await this.#limiter
+      ?.close()
+      .catch((error: unknown) => this.#emitError(error, "limits"));
+
+    this.#setPhase("stopped");
+    await this.#report();
+  }
+
+  /**
+   * Brings a parked worker back: re-arms maintenance and the promotion sweep,
+   * clears `paused`, and wakes the loop. A stop still draining is called off,
+   * so the worker simply carries on with the jobs it already had.
+   */
+  start(): void {
+    if (this.#closing) {
+      return;
+    }
+
+    if (this.#phase === "running") {
+      if (this.#paused) {
+        this.resume();
+      }
+      return;
+    }
+
+    this.#stopCancel?.resolve();
+    this.#stopCancel = undefined;
+    this.#paused = false;
+    this.#setPhase("running");
+
+    // A deliberate start lifts a stop recorded against the key too, so the
+    // next replacement does not come up stopped (B14). Only where one can be
+    // honoured, and only with remote control, which is what writes them.
+    if (this.#controlEnabled() && this.#honoursKeyStop) {
+      this.#clearKeyStop();
+    }
+
+    if (this.#running) {
+      this.#armMaintenance();
+      this.#armReports();
+    }
+
+    this.#wake.abort();
+    void this.#report();
+  }
+
+  /**
+   * Moves to a phase and announces the state if it changed. Every transition
+   * goes through here, so a `state` event is raised exactly once per real
+   * change — never for a stop that was asked for twice.
+   */
+  #setPhase(phase: WorkerPhase, reason?: string): void {
+    this.#phase = phase;
+    this.#controlPending = phase === "stopping" || phase === "restarting";
+    this.#announceState(reason);
+  }
+
+  /**
+   * Emits and publishes the worker's state, if it has changed since the last
+   * announcement.
+   */
+  #announceState(reason?: string): void {
+    const state = this.state;
+
+    if (state === this.#announcedState) {
+      return;
+    }
+
+    const previous = this.#announcedState;
+    this.#announcedState = state;
+    this.#publishWorker("state", {
+      worker: this.id,
+      key: this.key,
+      state,
+      previous,
+      ...(reason === undefined ? {} : { reason }),
+      at: Date.now(),
+    });
+  }
+
+  /**
+   * Clears the maintenance and promotion timers a parked worker must not run.
+   * The heartbeat timer is deliberately left alone — a stopped worker that
+   * stopped reporting would vanish from the registry and could never be
+   * started again.
+   */
+  #disarmMaintenance(): void {
+    for (const timer of this.#timers) {
+      clearInterval(timer);
+    }
+    this.#timers.clear();
+    this.#promotionTimer = undefined;
+    this.#maintenanceArmed = false;
   }
 
   /**
@@ -724,6 +1410,21 @@ export class BunQueueWorker<
       this.#reportTimer = undefined;
     }
 
+    this.#controlUnwatch?.();
+    this.#controlUnwatch = undefined;
+
+    // A stop still draining would otherwise wait out its jobs a second time,
+    // behind the close that is already waiting for them.
+    this.#stopCancel?.resolve();
+    this.#stopCancel = undefined;
+
+    const unsubscribe = this.#controlUnsubscribe;
+    this.#controlUnsubscribe = undefined;
+    await unsubscribe?.().catch((error: unknown) =>
+      this.#emitError(error, "control"),
+    );
+    await this.#controlChain.catch(() => undefined);
+
     if (options?.force) {
       this.#abandonActive();
 
@@ -732,6 +1433,7 @@ export class BunQueueWorker<
       // the job to the queue, so the work is delayed rather than lost.
       await this.#unregister();
       await this.#flushThroughput();
+      await this.#metrics.close();
       await this.#closeDeadLetters();
       await this.#limiter
         ?.close()
@@ -783,6 +1485,7 @@ export class BunQueueWorker<
 
     await this.#unregister();
     await this.#flushThroughput();
+    await this.#metrics.close();
     await this.#closeDeadLetters();
     await this.#limiter
       ?.close()
@@ -811,8 +1514,8 @@ export class BunQueueWorker<
       controller.abort();
     }
 
-    for (const heartbeat of this.#heartbeats.values()) {
-      clearInterval(heartbeat);
+    for (const running of this.#heartbeats.values()) {
+      clearInterval(running.timer);
     }
     this.#heartbeats.clear();
   }
@@ -882,6 +1585,14 @@ export class BunQueueWorker<
 
   /** One pass of the claim loop. */
   async #iterate(): Promise<void> {
+    if (this.isStopped()) {
+      // Parked. The loop keeps turning — that is what keeps `run()` pending
+      // and `start()` able to wake it — but it claims nothing and asks the
+      // driver nothing, so a stopped worker costs a timer and its heartbeat.
+      await this.#sleepUntilWake(this.#options.pollInterval);
+      return;
+    }
+
     if (this.#paused || (await this.#queuePaused())) {
       // Waiting *for work* is the wrong question while paused — there may be
       // plenty, and none of it claimable — so this is a plain sleep that
@@ -899,15 +1610,14 @@ export class BunQueueWorker<
       // so a worker that is never idle for long would never reset at all.
       this.#emptySince = undefined;
       this.#drainedAnnounced = false;
+      this.#instantIdle = false;
     }
 
     if (this.#active.size >= this.#concurrency && this.#active.size > 0) {
       // Full: wait for a slot rather than spinning on a claim that cannot
       // succeed — or for a wake, so `close()` is not left waiting on a loop
       // that is itself waiting on a job that may never finish.
-      await this.#sleepUntilWake(this.#options.lockDuration, [
-        ...this.#active.values(),
-      ]);
+      await this.#sleepUntilWake(this.#options.lockDuration, true);
       return;
     }
 
@@ -921,7 +1631,7 @@ export class BunQueueWorker<
       // not announce a drain that did not happen.
       const wait = this.#limitedFor;
       this.#limitedFor = undefined;
-      await this.#sleepUntilWake(wait, [...this.#active.values()]);
+      await this.#sleepUntilWake(wait, this.#active.size > 0);
       return;
     }
 
@@ -1090,6 +1800,7 @@ export class BunQueueWorker<
         this.ref,
         {
           workerId: this.id,
+          worker: this.#workerRef,
           token: this.#token,
           lockMs: this.#options.lockDuration,
           now,
@@ -1130,7 +1841,13 @@ export class BunQueueWorker<
       }
     }
 
+    const reserved = reservation !== null && reservation.grant > 0;
+
     for (const record of records) {
+      if (reserved) {
+        this.#reservedIds.add(record.id);
+      }
+
       // Schedule the series' next occurrence *before* running this one, so a
       // crash mid-job cannot end the series.
       if (record.repeatKey) {
@@ -1140,6 +1857,7 @@ export class BunQueueWorker<
       const running = this.#process(record).finally(() => {
         this.#active.delete(record.id);
         this.#aborts.delete(record.id);
+        this.#slotFreed.notify();
       });
 
       this.#active.set(record.id, running);
@@ -1226,7 +1944,7 @@ export class BunQueueWorker<
       void this.#heartbeat(record, controller);
     }, this.#options.heartbeatInterval);
     heartbeat.unref?.();
-    this.#heartbeats.set(record.id, heartbeat);
+    this.#heartbeats.set(record.id, { timer: heartbeat, record, controller });
 
     // Built on first use: most processors never log, and a child logger is an
     // object and a copy of its bindings for every job.
@@ -1301,9 +2019,14 @@ export class BunQueueWorker<
       // — very often the processor's own way of stopping once it had failed.
       await this.#recordFailure(job, record, failedWith ?? error);
     } finally {
-      clearInterval(heartbeat);
+      // The map's timer, not `heartbeat`: a configuration change may have
+      // replaced it, and clearing the one this call created would leave the
+      // replacement renewing a lock for a job that has finished.
+      clearInterval(this.#heartbeats.get(record.id)?.timer ?? heartbeat);
       this.#heartbeats.delete(record.id);
-      this.#limiter?.release(record.name);
+      if (this.#reservedIds.delete(record.id)) {
+        this.#limiter?.release(record.name);
+      }
     }
   }
 
@@ -1378,6 +2101,9 @@ export class BunQueueWorker<
     /** Reports the outcome once the write has answered. */
     const settled = (kept: boolean) => {
       if (kept) {
+        // Counted only once the write landed: a lost lock means someone else
+        // owns the outcome, and counting it here would count it twice.
+        this.#metrics.count("completed");
         this.safeEmitScoped("completed", record.name, job, result);
         void this.#publish("completed", {
           id: record.id,
@@ -1789,8 +2515,54 @@ export class BunQueueWorker<
       await this.#redeliver(key);
     }
 
+    // The walks below read the queue's shared state, so one worker per queue
+    // does them rather than every worker on it (C12). A redelivery above is
+    // this worker's own and always runs.
+    if (!(await this.#holdsFlowHealLease())) {
+      return;
+    }
+
     await this.#healParents();
     await this.#healChildren();
+  }
+
+  /**
+   * Takes or renews the queue's flow-heal lease, answering whether this
+   * worker holds it. The lease lasts two stalled intervals, so a holder that
+   * dies hands over within about a minute at the defaults; a driver without
+   * queue state has no lease and every worker heals, as before.
+   */
+  async #holdsFlowHealLease(): Promise<boolean> {
+    if (
+      typeof this.driver.getQueueState !== "function" ||
+      typeof this.driver.setQueueState !== "function"
+    ) {
+      return true;
+    }
+
+    const now = Date.now();
+    const entry = await this.driver.getQueueState(this.ref, FLOW_HEAL_LEASE);
+    const lease = entry?.value as { holder?: unknown; until?: unknown } | null;
+
+    if (
+      lease &&
+      lease.holder !== this.id &&
+      typeof lease.until === "number" &&
+      lease.until > now
+    ) {
+      return false;
+    }
+
+    const version = await setReservedState(
+      this.driver,
+      this.ref,
+      FLOW_HEAL_LEASE,
+      { holder: this.id, until: now + 2 * this.#options.stalledInterval },
+      entry?.version ?? null,
+    );
+
+    // Lost the race to another worker taking it at the same moment.
+    return version !== null;
   }
 
   /** Step 2 of {@link #healFlows}: parents waiting on children. */
@@ -2019,6 +2791,7 @@ export class BunQueueWorker<
           return;
         }
 
+        this.#metrics.count("failed");
         this.safeEmitScoped("failed", record.name, job, failure);
         this.safeEmitScoped("retrying", record.name, job, failure, runAt);
         void this.#publish("failed", { id: record.id, error: serialized });
@@ -2056,6 +2829,7 @@ export class BunQueueWorker<
         return;
       }
 
+      this.#metrics.count("failed");
       this.safeEmitScoped("failed", record.name, job, failure);
       this.safeEmitScoped("dead", record.name, job, failure);
       void this.#publish("failed", { id: record.id, error: serialized });
@@ -2264,6 +3038,7 @@ export class BunQueueWorker<
       );
       await this.driver.addJob(this.ref, {
         ...record,
+        ...(await this.#occurrenceOptions(definition, record)),
         id: jobId,
         state: next > now ? "delayed" : "waiting",
         runAt: next,
@@ -2293,6 +3068,42 @@ export class BunQueueWorker<
     } catch (error) {
       this.#emitError(error, "scheduleNextRepeat");
     }
+  }
+
+  /**
+   * The options of a repeat series' next occurrence: the series' own (the
+   * code's layers and its explicit mask, as `add()` stored them) with the
+   * queue's stored job defaults over every key its `add()` did not pass — so
+   * a saved override reaches every future occurrence within
+   * `jobDefaultsRefreshInterval`, and a reset takes effect on the next one.
+   *
+   * A series stored before the mask existed has nothing to say which of its
+   * options were explicit, so it keeps what `previous` (the finished
+   * occurrence, or the series' own record) carries, exactly as before. A
+   * failed read of the stored defaults is reported and the occurrence built
+   * without them, rather than not scheduled at all.
+   */
+  async #occurrenceOptions(
+    definition: RepeatRecord,
+    previous: JobRecord,
+  ): Promise<Pick<JobRecord, "opts" | "priority" | "maxAttempts">> {
+    const own = definition.opts as StoredJobOptions;
+
+    if (typeof own.explicit !== "number") {
+      return {
+        opts: previous.opts,
+        priority: previous.priority,
+        maxAttempts: previous.maxAttempts,
+      };
+    }
+
+    const override = await this.#jobDefaults.get().catch((error: unknown) => {
+      this.#emitError(error, "jobDefaults");
+      return {};
+    });
+    const opts = overlayJobDefaults(own, override);
+
+    return { opts, priority: opts.priority, maxAttempts: opts.attempts };
   }
 
   /**
@@ -2329,6 +3140,490 @@ export class BunQueueWorker<
     }
 
     return disabled;
+  }
+
+  /* --- remote control ---------------------------------------------------------- */
+
+  /**
+   * Reads what has been asked of this worker and does it, now.
+   *
+   * The same pass the subscription, the control poll and the heartbeat all
+   * run, exposed so a controller in this process can save its own worker the
+   * round trip — and so a test can be deterministic instead of waiting out an
+   * interval. Resolves once the instruction has been *accepted*; a stop, which
+   * drains, goes on in the background.
+   */
+  async syncControl(): Promise<void> {
+    await this.#adoptControl();
+  }
+
+  /**
+   * Starts listening for instructions: a subscription where the driver pushes
+   * events, a short poll where it does not, and in both cases the heartbeat
+   * as the fallback that makes a lost event cost at most one report interval.
+   */
+  #armControl(): void {
+    if (!this.#controlEnabled() || this.#closing) {
+      return;
+    }
+
+    if (this.#remote.subscribe) {
+      void this.#subscribeControl();
+      return;
+    }
+
+    this.#controlUnwatch = watchWorkerChanges(
+      this.driver,
+      this.ref,
+      this.#remote.interval,
+      () => {
+        if (!this.#closing) {
+          void this.#adoptControl();
+        }
+      },
+    );
+  }
+
+  /**
+   * Follows the queue's worker channel.
+   *
+   * One subscription per queue per process would be ideal and this is one per
+   * worker; that is the cost of a worker owning its own control, and a
+   * process rarely runs many workers on one queue. The event is only a hint —
+   * every one of them re-reads the stored entries — so a missed or duplicated
+   * delivery costs nothing but latency.
+   */
+  async #subscribeControl(): Promise<void> {
+    try {
+      const unsubscribe = await this.driver.subscribe(
+        this.namespace,
+        "worker",
+        this.queueName,
+        (event) => {
+          if (event.type !== "control" || this.#closing) {
+            return;
+          }
+
+          const { worker, key } = event.payload;
+
+          // Addressed to one incarnation, to one stable key, or to the whole
+          // queue. Anything else on this channel is another worker's news.
+          if (
+            worker !== undefined
+              ? worker !== this.id
+              : key !== undefined && key !== this.key
+          ) {
+            return;
+          }
+
+          void this.#adoptControl();
+        },
+      );
+
+      if (this.#closing) {
+        await unsubscribe();
+        return;
+      }
+
+      this.#controlUnsubscribe = unsubscribe;
+    } catch (error) {
+      this.#emitError(error, "control");
+    }
+  }
+
+  /**
+   * Reads what has been asked of this worker and does it — chained, so an
+   * instruction arriving mid-apply is coalesced into "apply the latest"
+   * rather than replayed as a sequence of stale steps.
+   */
+  async #adoptControl(options?: {
+    /** The first pass, at `run()`: a persistent stop is honoured here. */
+    initial?: boolean;
+  }): Promise<void> {
+    if (!this.#controlEnabled()) {
+      return;
+    }
+
+    const previous = this.#controlChain;
+    const adopting = (async () => {
+      await previous.catch(() => undefined);
+
+      if (this.#closing) {
+        return;
+      }
+
+      this.#adopting = true;
+      try {
+        await this.#adoptOnce(options?.initial === true);
+      } catch (error) {
+        this.#emitError(error, "control");
+      } finally {
+        this.#adopting = false;
+      }
+    })();
+
+    this.#controlChain = adopting;
+    await adopting;
+  }
+
+  /** One pass of {@link BunQueueWorker.#adoptControl}. */
+  async #adoptOnce(initial: boolean): Promise<void> {
+    let changed = false;
+
+    // A stop recorded against the stable key, read once at startup. It is
+    // written and cleared by the worker itself when it applies a stop or a
+    // start, so nothing else has to know how this worker is configured.
+    if (initial && this.#honoursKeyStop) {
+      const stopped = await readWorkerStop(this.driver, this.ref, this.key);
+
+      if (stopped) {
+        this.#setPhase("stopped", "stopped persistently");
+        this.#disarmMaintenance();
+        changed = true;
+      }
+    }
+
+    const stored = await readWorkerConfig(this.driver, this.ref, this.key);
+    const seq = stored?.seq ?? 0;
+
+    if (seq !== this.#configSeq || (initial && seq > 0)) {
+      this.#applyOverride(stored?.value.values ?? {}, seq, stored?.value.at);
+      changed = true;
+    }
+
+    const instruction = await readWorkerControl(this.driver, this.ref, this.id);
+
+    if (instruction) {
+      if (instruction.value.incarnation !== this.processStartedAt) {
+        // Written to the process this one replaced. Lifecycle intent never
+        // survives a restart — a deploy must come back running — so it goes,
+        // conditionally on the version, in case a controller wrote a real one
+        // between the read and here.
+        await removeWorkerControl(
+          this.driver,
+          this.ref,
+          this.id,
+          instruction.seq,
+        );
+      } else if (instruction.seq !== this.#appliedSeq) {
+        // A stop with nothing to drain finishes in a moment, so it is
+        // acknowledged only once it has: the records written on the way say
+        // `stopping` under the old `appliedSeq`, and the acknowledgement a
+        // `?wait=` caller reads says `stopped`, not pending (B18). A stop that
+        // drains is acknowledged at once, as `stopping`, as it always was.
+        const idleStop =
+          instruction.value.state === "stopped" && this.#active.size === 0;
+        if (!idleStop) {
+          this.#appliedSeq = instruction.seq;
+        }
+        // Part of it was unusable — a nonsense stop timeout, say. The
+        // instruction is still obeyed, and the reason is reported rather
+        // than swallowed, so a caller can see that what they sent did not
+        // arrive whole.
+        this.#controlError =
+          instruction.issue === undefined
+            ? this.#controlError
+            : {
+                at: Date.now(),
+                message: instruction.issue,
+                action:
+                  instruction.value.state === "stopped" ? "stop" : "start",
+                seq: instruction.seq,
+              };
+        const settling = this.#applyDesired(instruction.value);
+        if (idleStop) {
+          await settling;
+          this.#appliedSeq = instruction.seq;
+        }
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await this.#report();
+    }
+  }
+
+  /**
+   * Does what an instruction asks.
+   *
+   * A stop is started rather than awaited, deliberately: draining can take as
+   * long as the longest job in flight, and the chain has to stay free to
+   * receive the `start` that calls it off. Its promise is returned (never
+   * rejecting) so a caller that knows there is nothing to drain may await it.
+   */
+  #applyDesired(instruction: WorkerControlEntry): Promise<void> | undefined {
+    const persist =
+      this.#stopPersistenceOverridable && instruction.persist !== undefined
+        ? instruction.persist
+        : this.#stopPersistence;
+
+    switch (instruction.state) {
+      case "stopped":
+        if (persist === "key") {
+          void writeWorkerStop(this.driver, this.ref, this.key, true).catch(
+            (error: unknown) => this.#emitError(error, "control"),
+          );
+        }
+        return this.stop({
+          reason: "stopped remotely",
+          // Absent — including when the stored one was refused — means wait
+          // for the jobs in flight rather than abandon them.
+          ...(instruction.timeout === undefined
+            ? {}
+            : { timeout: instruction.timeout }),
+        }).catch((error: unknown) => this.#emitError(error, "control"));
+
+      case "paused":
+        this.start();
+        void this.pause().catch((error: unknown) =>
+          this.#emitError(error, "control"),
+        );
+        return;
+
+      default:
+        // Whatever this instruction's own `persist`: a worker that can hold
+        // a key stop clears it on any start, or the next replacement would
+        // come up stopped again after a deliberate start (B14).
+        if (persist === "key" || this.#honoursKeyStop) {
+          this.#clearKeyStop();
+        }
+        this.start();
+    }
+  }
+
+  /**
+   * Whether this worker obeys a stop recorded against its key at startup:
+   * one configured with `stopPersistence: "key"`, or one whose
+   * `stopPersistenceOverridable` lets a single instruction ask for it. A
+   * non-overridable `"process"` worker never does — the process, not the
+   * caller, decides whether a stop outlives it (B14).
+   */
+  get #honoursKeyStop(): boolean {
+    return this.#stopPersistence === "key" || this.#stopPersistenceOverridable;
+  }
+
+  /** Removes the stop recorded against this worker's key, if any; never throws. */
+  #clearKeyStop(): void {
+    void writeWorkerStop(this.driver, this.ref, this.key, false).catch(
+      (error: unknown) => this.#emitError(error, "control"),
+    );
+  }
+
+  /**
+   * Adopts a stored override: merges it over what the code asked for, drops
+   * any field it cannot accept, and applies the result in place.
+   *
+   * A field that is out of bounds — or a pair that cannot hold together after
+   * a code change moved the other half — is dropped one at a time rather than
+   * refused wholesale. The worker keeps its own value for that field, says so
+   * in `control.lastError` and in the `config` event, and goes on running:
+   * an override written months ago must never be able to stop a deployment.
+   */
+  #applyOverride(
+    values: WorkerConfigPatch,
+    seq: number,
+    updatedAt: number | undefined,
+  ): void {
+    this.#configSeq = seq;
+    this.#configUpdatedAt =
+      updatedAt === undefined || updatedAt === 0 ? undefined : updatedAt;
+
+    const merged: WorkerConfigValues = { ...this.#codeConfig };
+    const accepted: WorkerConfigPatch = {};
+    let refusal: string | undefined;
+
+    for (const key of WORKER_CONFIG_KEYS) {
+      const value = values[key];
+
+      if (value === undefined) {
+        continue;
+      }
+
+      const issue = workerConfigIssue(key, value);
+
+      if (issue === null) {
+        merged[key] = value;
+        accepted[key] = value;
+      } else {
+        refusal ??= issue;
+      }
+    }
+
+    // The one rule that spans two fields. Whichever half is overridden gives
+    // way to the code's value, because the code's pair was consistent when
+    // the worker started.
+    for (const key of ["heartbeatInterval", "lockDuration"] as const) {
+      const cross = workerConfigCrossFieldIssue(merged);
+
+      if (cross === null) {
+        break;
+      }
+
+      refusal ??= cross.message;
+
+      if (accepted[key] !== undefined) {
+        delete accepted[key];
+        merged[key] = this.#codeConfig[key];
+      }
+    }
+
+    this.#override = accepted;
+    this.#controlError =
+      refusal === undefined
+        ? undefined
+        : { at: Date.now(), message: refusal, action: "config", seq };
+
+    this.#applyValues(merged);
+    this.#publishWorker("config", {
+      worker: this.id,
+      key: this.key,
+      seq,
+      overridden: WORKER_CONFIG_KEYS.filter(
+        (key) => accepted[key] !== undefined,
+      ),
+      ...(refusal === undefined ? {} : { error: refusal }),
+    });
+  }
+
+  /**
+   * Puts a set of settings into force on a running worker, without dropping a
+   * claim or a job.
+   *
+   * Every one of the nine can be applied in place, which is why there is no
+   * drain-and-rebuild here: on a queue with ten-minute jobs, restarting to
+   * change `concurrency` would stop claiming for ten minutes on every replica
+   * at once. The subtle one is the pair of lock settings — a lock renewed at
+   * the old cadence can lapse under a shortened duration, and the stalled
+   * sweep would then run a job that is still running — so every renewal in
+   * flight is re-armed *and* renewed immediately at the new duration.
+   */
+  #applyValues(next: WorkerConfigValues): void {
+    const before = this.#liveConfig();
+    const running = this.#phase === "running";
+
+    if (running) {
+      this.#setPhase("restarting");
+    }
+
+    this.#concurrency = next.concurrency;
+
+    if (next.pollInterval !== before.pollInterval) {
+      this.#options.pollInterval = next.pollInterval;
+
+      if (
+        promotionCadence(next.pollInterval) !==
+        promotionCadence(before.pollInterval)
+      ) {
+        this.#armPromotion();
+      }
+    }
+
+    this.#options.maxBlock = next.maxBlock;
+
+    if (next.lockDuration !== before.lockDuration) {
+      this.#options.lockDuration = next.lockDuration;
+      this.#limiter?.setLeaseMs(next.lockDuration);
+    }
+
+    this.#options.heartbeatInterval = next.heartbeatInterval;
+
+    if (
+      next.lockDuration !== before.lockDuration ||
+      next.heartbeatInterval !== before.heartbeatInterval
+    ) {
+      this.#rearmJobHeartbeats();
+    }
+
+    // Read live by the sweep and by `#announceDrained`, so setting them is
+    // all there is to do.
+    this.#options.maxStalledCount = next.maxStalledCount;
+    this.#options.drainDelay = next.drainDelay;
+
+    if (next.stalledInterval !== before.stalledInterval) {
+      this.#options.stalledInterval = next.stalledInterval;
+
+      if (this.#maintenanceArmed) {
+        this.#disarmMaintenance();
+        this.#armMaintenance();
+      }
+    }
+
+    if (next.reportInterval !== before.reportInterval) {
+      this.#reportInterval = next.reportInterval;
+
+      if (this.#reportTimer) {
+        clearInterval(this.#reportTimer);
+        this.#reportTimer = undefined;
+      }
+
+      this.#armReports();
+    }
+
+    if (running) {
+      this.#setPhase("running");
+    }
+
+    this.#wake.abort();
+  }
+
+  /**
+   * Re-arms every running job's lock renewal at the current cadence, and
+   * renews each one now.
+   *
+   * The immediate renewal is the half that matters: a timer re-armed for
+   * later still leaves the lock at its old expiry, and a shortened
+   * `lockDuration` can pass before the new timer's first tick.
+   */
+  #rearmJobHeartbeats(): void {
+    for (const [id, running] of this.#heartbeats) {
+      clearInterval(running.timer);
+
+      const timer = setInterval(() => {
+        void this.#heartbeat(running.record, running.controller);
+      }, this.#options.heartbeatInterval);
+      timer.unref?.();
+      this.#heartbeats.set(id, { ...running, timer });
+
+      void this.#heartbeat(running.record, running.controller);
+    }
+  }
+
+  /**
+   * Announces something about this worker to other processes, when the worker
+   * publishes at all. Tracked like a job event, so `close()` waits for it.
+   */
+  #publishWorker<Name extends WorkerEventName>(
+    type: Name,
+    payload: WorkerEventPayloads[Name],
+  ): void {
+    if (!this.#publishes) {
+      return;
+    }
+
+    const publishing = (async () => {
+      await this.#publishGate?.();
+
+      try {
+        await this.driver.publish(
+          workerEvent(
+            {
+              ns: this.namespace,
+              target: this.queueName,
+              type,
+              origin: this.#token,
+            },
+            payload,
+          ),
+        );
+      } catch (error) {
+        this.#logger.warn("Could not publish a worker event", { error, type });
+      }
+    })().finally(() => {
+      this.#publishing.delete(publishing);
+    });
+
+    this.#publishing.add(publishing);
   }
 
   /* --- worker inventory ------------------------------------------------------- */
@@ -2374,21 +3669,50 @@ export class BunQueueWorker<
 
       const now = Date.now();
 
+      if (!this.#checkedDuplicateId) {
+        this.#checkedDuplicateId = true;
+        await this.#detectDuplicateId(now);
+      }
+
+      const active = this.#active.size;
+      const concurrency = this.#concurrency;
+
       try {
         await registerWorkerRecord(this.driver, this.ref, {
           id: this.id,
+          key: this.key,
+          ...(this.service === undefined ? {} : { service: this.service }),
           queue: this.queueName,
           host: HOST,
           pid: process.pid,
-          concurrency: this.#concurrency,
-          active: this.#active.size,
+          concurrency,
+          active,
           paused: this.#paused,
+          state: this.state,
           startedAt: this.#startedAt,
+          processStartedAt: this.processStartedAt,
           heartbeatAt: now,
           expiresAt: now + this.#reportInterval * REPORT_LIFETIMES,
+          version: JOBS_VERSION,
+          completed: this.#metrics.completed,
+          failed: this.#metrics.failed,
+          config: this.config,
+          control: this.control,
         });
+        // The busyness sample rides the heartbeat — this tick, the values the
+        // record just carried — so it costs no timer of its own: a second
+        // timer would have an idle worker writing forever. Only after a
+        // report that landed, so a sample always means the worker reported.
+        this.#metrics.sample({ active, concurrency }, now);
       } catch (error) {
         this.#emitError(error, "report");
+      }
+
+      // The always-on fallback. A subscription that failed, an event a
+      // transport dropped, a poll driver with no subscription at all: every
+      // one of them converges here, within one report interval.
+      if (this.#controlEnabled() && !this.#adopting) {
+        void this.#adoptControl();
       }
     })();
 
@@ -2397,6 +3721,49 @@ export class BunQueueWorker<
 
     if (this.#reporting === write) {
       this.#reporting = undefined;
+    }
+  }
+
+  /**
+   * Looks, once, for another live worker registered under this worker's id.
+   *
+   * Sharing an id is already a latent corruption — the id names the heartbeat
+   * record, the lock token and the limiter's lease holder — and the derived
+   * id makes it impossible by accident. It is still possible on purpose, by
+   * passing the same explicit `id` twice, so the first report says so rather
+   * than letting two workers quietly overwrite each other's records.
+   *
+   * A failure here is swallowed: the report that follows reports it properly,
+   * and a check that cannot run must not stop a worker from starting.
+   */
+  async #detectDuplicateId(now: number): Promise<void> {
+    try {
+      const others = await listWorkerRecords(this.driver, this.ref, now);
+      const clash = others.find(
+        (worker) =>
+          worker.id === this.id &&
+          (worker.host !== HOST ||
+            worker.pid !== process.pid ||
+            (worker.processStartedAt ?? this.processStartedAt) !==
+              this.processStartedAt),
+      );
+
+      if (!clash) {
+        return;
+      }
+
+      const message = `another live worker is registered as "${this.id}" (${clash.host}:${clash.pid}); two workers sharing an id corrupt job locks and concurrency limits`;
+      this.#controlError = { at: now, message };
+      this.#emitError(
+        new ConfigError(message, {
+          id: this.id,
+          host: clash.host,
+          pid: clash.pid,
+        }),
+        "duplicate-id",
+      );
+    } catch {
+      // The write that follows reports a backend that cannot be read.
     }
   }
 
@@ -2467,11 +3834,83 @@ export class BunQueueWorker<
     this.#armPromotion();
 
     this.#every(60_000, async () => {
-      await this.driver.pruneExpired(this.ref, Date.now(), MAINTENANCE_BATCH);
+      await this.#pruneExpired();
       await this.#healRepeats();
       await this.#sweepWindows();
+      await this.#sweepWorkerControls();
     });
   }
+
+  /**
+   * Removes expired jobs in batches of {@link MAINTENANCE_BATCH}, for as long
+   * as each batch comes back full, up to {@link PRUNE_MAX_BATCHES} batches or
+   * {@link PRUNE_TIME_BUDGET_MS}, whichever comes first. A pass that stops on
+   * that budget with a full last batch has more to do, and runs again after
+   * {@link PRUNE_CATCH_UP_MS} rather than a minute later, so the sweep keeps
+   * up with a queue finishing thousands of jobs a second.
+   *
+   * A batch short of full means the backend found nothing more it could
+   * remove, which ends the pass. Only one pass runs at a time: the catch-up
+   * and the minute's maintenance would otherwise race over the same jobs.
+   */
+  async #pruneExpired(): Promise<void> {
+    if (this.#pruning) {
+      return;
+    }
+
+    this.#pruning = true;
+    let backlog = false;
+    try {
+      const deadline = Date.now() + PRUNE_TIME_BUDGET_MS;
+
+      for (let batch = 0; batch < PRUNE_MAX_BATCHES; batch++) {
+        if (this.#closing || !this.#maintenanceArmed) {
+          return;
+        }
+
+        const removed = await this.driver.pruneExpired(
+          this.ref,
+          Date.now(),
+          MAINTENANCE_BATCH,
+        );
+
+        backlog = removed >= MAINTENANCE_BATCH;
+        if (!backlog || Date.now() >= deadline) {
+          break;
+        }
+      }
+    } finally {
+      this.#pruning = false;
+    }
+
+    if (backlog) {
+      this.#pruneSoon();
+    }
+  }
+
+  /** Runs {@link #pruneExpired} again after {@link PRUNE_CATCH_UP_MS}. */
+  #pruneSoon(): void {
+    if (this.#closing || !this.#maintenanceArmed) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      if (this.#closing || !this.#maintenanceArmed) {
+        return;
+      }
+      void this.#pruneExpired().catch((error: unknown) => {
+        this.#emitError(error, "maintenance");
+      });
+    }, PRUNE_CATCH_UP_MS);
+    timer.unref?.();
+    // In the set every other maintenance timer is in, so parking the worker
+    // or closing it clears this one too.
+    this.#timers.add(timer);
+  }
+
+  /** Whether a prune pass is running, so another does not start beside it. */
+  #pruning = false;
 
   /**
    * Arms — or re-arms, replacing the timer it armed before — the sweep that
@@ -2540,6 +3979,40 @@ export class BunQueueWorker<
   }
 
   /**
+   * Removes a page of lifecycle instructions left behind by workers that are
+   * gone.
+   *
+   * They are keyed by incarnation, so every one of them becomes garbage when
+   * its process ends and nothing else would ever remove it. Bounded like
+   * every other pass, resuming where the last one stopped.
+   */
+  async #sweepWorkerControls(): Promise<void> {
+    if (!supportsWorkerControl(this.driver) || !supportsWorkers(this.driver)) {
+      return;
+    }
+
+    const now = Date.now();
+    const live = new Set(
+      (await listWorkerRecords(this.driver, this.ref, now)).map(
+        (worker) => worker.id,
+      ),
+    );
+
+    const sweep = await sweepWorkerControls(this.driver, this.ref, {
+      now,
+      liveIds: live,
+      graceMs:
+        (this.#reportInterval || DEFAULT_REPORT_INTERVAL) *
+        WORKER_CONTROL_GRACE_LIFETIMES,
+      ...(this.#controlSweepCursor !== undefined
+        ? { after: this.#controlSweepCursor }
+        : {}),
+    });
+
+    this.#controlSweepCursor = sweep.next;
+  }
+
+  /**
    * Runs `work` now and then on an interval, reporting failures rather than
    * throwing.
    *
@@ -2601,7 +4074,11 @@ export class BunQueueWorker<
         continue;
       }
 
-      const record = occurrenceRecord(definition, next, now);
+      const built = occurrenceRecord(definition, next, now);
+      const record: JobRecord = {
+        ...built,
+        ...(await this.#occurrenceOptions(definition, built)),
+      };
       await this.driver.addJob(this.ref, record);
 
       await this.driver.upsertRepeat(this.ref, {
@@ -2654,9 +4131,17 @@ export class BunQueueWorker<
    * Waits for work, a wake, or the budget — whichever comes first.
    *
    * A driver may legitimately answer at once (there is work, someone else
-   * took it), so the wait is floored at a millisecond: without that, a claim
-   * that keeps coming back empty turns this loop into a spin that starves the
-   * event loop it is running on.
+   * took it), so a wait that keeps answering at once is floored at a
+   * millisecond: without that, a claim that keeps coming back empty turns this
+   * loop into a spin that starves the event loop it is running on.
+   *
+   * Only the second instant answer in a row, with nothing claimed in between,
+   * pays the floor. The first is nearly always a job that arrived between the
+   * empty claim and the wait — a producer adding the next job just as the
+   * last one finishes — and charging it a millisecond put a 1ms tail on a
+   * third of the memory driver's round trips (p90 92µs -> 1.15ms), on a
+   * backend with no I/O at all. A spinning driver still gets at most two
+   * passes per millisecond.
    */
   async #idle(ms: number): Promise<void> {
     if (this.#closing) {
@@ -2682,20 +4167,26 @@ export class BunQueueWorker<
       return;
     }
 
-    if (Date.now() - startedAt < 1) {
-      await sleep(1, { unref: true }).catch(() => {});
+    if (Date.now() - startedAt >= 1) {
+      this.#instantIdle = false;
+      return;
     }
+
+    if (!this.#instantIdle) {
+      this.#instantIdle = true;
+      return;
+    }
+
+    await sleep(1, { unref: true }).catch(() => {});
   }
 
   /**
-   * Sleeps until `ms` pass, `resume()` or `close()` wakes the worker, or any of
-   * `alsoWhen` settles — whichever comes first — and leaves nothing behind on
-   * the wake signal, which lives as long as the worker. See `waitForAny`.
+   * Sleeps until `ms` pass, `resume()` or `close()` wakes the worker, or —
+   * with `untilSlotFrees` — one of its running jobs finishes, whichever comes
+   * first, and leaves nothing behind on the wake signal or the slot pulse,
+   * both of which live as long as the worker. See `waitForAny`.
    */
-  async #sleepUntilWake(
-    ms: number,
-    alsoWhen: Promise<unknown>[] = [],
-  ): Promise<void> {
+  async #sleepUntilWake(ms: number, untilSlotFrees = false): Promise<void> {
     if (this.#closing) {
       return;
     }
@@ -2706,7 +4197,10 @@ export class BunQueueWorker<
     }
 
     const wake = this.#wake;
-    await waitForAny(ms, { signal: wake.signal, others: alsoWhen });
+    await waitForAny(ms, {
+      signal: wake.signal,
+      ...(untilSlotFrees ? { pulse: this.#slotFreed } : {}),
+    });
 
     if (wake.signal.aborted) {
       this.#wake = new AbortController();

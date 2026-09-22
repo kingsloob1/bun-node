@@ -14,6 +14,8 @@ export interface TabItem<V extends string> {
   count?: number;
   /** Not selectable. */
   disabled?: boolean;
+  /** A tooltip on the tab (its `title`), e.g. what a state's label means. Omitted when `undefined`. */
+  title?: string;
 }
 
 /** Props of {@link Tabs}. */
@@ -118,6 +120,7 @@ export function Tabs<V extends string>({
               aria-controls={children !== undefined ? panelId : undefined}
               tabIndex={tabStop ? 0 : -1}
               disabled={tab.disabled}
+              title={tab.title}
               onClick={() => onChange(tab.value)}
               onKeyDown={onKeyDown}
             >

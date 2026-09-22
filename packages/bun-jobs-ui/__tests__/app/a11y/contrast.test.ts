@@ -73,7 +73,12 @@ const PAIRS: readonly Pair[] = [
     use: "danger buttons",
   },
   // Badge tones, notices, banners, the current nav item.
-  { fg: "neutral-text", bg: "neutral-bg", min: AA.text, use: "neutral badge" },
+  {
+    fg: "neutral-text",
+    bg: "neutral-bg",
+    min: AA.text,
+    use: "neutral badge, the Events console's worker kind",
+  },
   { fg: "info-text", bg: "info-bg", min: AA.text, use: "info badge, nav" },
   { fg: "success-text", bg: "success-bg", min: AA.text, use: "success badge" },
   { fg: "warning-text", bg: "warning-bg", min: AA.text, use: "warning badge" },

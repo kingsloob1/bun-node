@@ -53,6 +53,8 @@ export const API_ERROR_STATUS = {
   RUNNER_NOT_FOUND: 404,
   RUN_NOT_FOUND: 404,
   REPEATABLE_NOT_FOUND: 404,
+  WORKER_NOT_FOUND: 404,
+  WORKER_GONE: 410,
   ROUTE_NOT_FOUND: 404,
   INVALID_NAME: 400,
   INVALID_JSON: 400,
@@ -60,8 +62,17 @@ export const API_ERROR_STATUS = {
   JOB_STATE_CONFLICT: 409,
   JOB_ACTIVE: 409,
   RUNNER_NOT_LOCAL: 409,
+  WORKER_STATE_CONFLICT: 409,
+  WORKER_NOT_CONTROLLABLE: 409,
+  WORKER_PERSISTENCE_NOT_ALLOWED: 409,
+  CONTROL_CONTENDED: 409,
+  CONFIG_NOT_ALLOWED: 409,
+  RUNNER_NOT_CONFIGURABLE: 409,
+  LOGS_NOT_RETAINED: 409,
   OPERATION_IN_PROGRESS: 409,
+  DEFAULTS_CHANGED: 409,
   BULK_LIMIT: 400,
+  RANGE_NOT_RETAINED: 400,
   ARGS_NOT_ALLOWED: 400,
   NAME_NOT_ADDABLE: 403,
   CSRF_REJECTED: 403,
@@ -100,6 +111,8 @@ const TITLES: Record<string, string> = {
   RUNNER_NOT_FOUND: "Runner not found",
   RUN_NOT_FOUND: "Run not found",
   REPEATABLE_NOT_FOUND: "Repeatable job not found",
+  WORKER_NOT_FOUND: "Worker not found",
+  WORKER_GONE: "Worker is no longer running",
   ROUTE_NOT_FOUND: "Route not found",
   INVALID_NAME: "Invalid name",
   INVALID_JSON: "Malformed JSON body",
@@ -107,8 +120,18 @@ const TITLES: Record<string, string> = {
   JOB_STATE_CONFLICT: "Job is not in a state that allows this",
   JOB_ACTIVE: "Job is active",
   RUNNER_NOT_LOCAL: "Runner is not registered in this process",
+  WORKER_STATE_CONFLICT: "Worker is not in a state that allows this",
+  WORKER_NOT_CONTROLLABLE: "Worker cannot be controlled remotely",
+  WORKER_PERSISTENCE_NOT_ALLOWED:
+    "Worker does not allow the stop persistence to be overridden",
+  CONTROL_CONTENDED: "Control state changed concurrently",
+  CONFIG_NOT_ALLOWED: "Configuration is not allowed for this runner",
+  RUNNER_NOT_CONFIGURABLE: "Runner cannot be configured remotely",
+  LOGS_NOT_RETAINED: "Run logs are not retained",
   OPERATION_IN_PROGRESS: "Operation already in progress",
+  DEFAULTS_CHANGED: "Job defaults changed since they were confirmed",
   BULK_LIMIT: "Too many ids",
+  RANGE_NOT_RETAINED: "Range is older than the backend keeps",
   ARGS_NOT_ALLOWED: "Arguments are not allowed",
   NAME_NOT_ADDABLE: "Job name may not be added",
   CSRF_REJECTED: "Cross-site request rejected",
@@ -141,6 +164,7 @@ const STATUS_TITLES: Record<number, string> = {
   404: "Not found",
   405: "Method not allowed",
   409: "Conflict",
+  410: "Gone",
   413: "Payload too large",
   415: "Unsupported media type",
   422: "Unprocessable content",
@@ -266,13 +290,22 @@ function isValidationError(error: unknown): error is ValidationError {
  *   describes the caller's payload (400, with its message), not a server fault.
  * - `"limitsInput"`: a `ConfigError` from `normalizeLimits()` describes the
  *   caller's limits (400, with its message).
+ * - `"jobDefaults"`: a `ConfigError` from `queue.setJobDefaults()` or
+ *   `queue.applyJobDefaults()` describes the caller's request — a value out of
+ *   bounds, an unknown or un-overridden key, an override with nothing to
+ *   apply, a malformed cursor or states list (400, with its message). Their
+ *   messages are written from the request and the stored override alone.
  *
  * These are the only places a `ConfigError`'s message reaches a client: its
  * text is known to describe input there. Anywhere else it may name internals
  * — a connection string, a driver's configuration — so it is answered with
  * the generic title.
  */
-export type ProblemCallSite = "setLimits" | "jobInput" | "limitsInput";
+export type ProblemCallSite =
+  | "setLimits"
+  | "jobInput"
+  | "limitsInput"
+  | "jobDefaults";
 
 /**
  * Narrows an error by where it was thrown. Returns an {@link ApiError} when the
@@ -298,7 +331,7 @@ export function mapCallSiteError(
     return new ApiError("SERIALIZATION", 400, error.message, { cause: error });
   }
   if (
-    (site === "jobInput" || site === "limitsInput") &&
+    (site === "jobInput" || site === "limitsInput" || site === "jobDefaults") &&
     error instanceof ConfigError &&
     !isNotSupportedError(error)
   ) {
@@ -402,6 +435,32 @@ function classify(error: unknown): Classified {
   }
   if (error instanceof SerializationError) {
     return { status: 500, code: "SERIALIZATION" };
+  }
+  if (error instanceof JobsError && error.code === "WORKER_STATE_CONFLICT") {
+    // `WorkerStateConflictError` from `RemoteWorker.pause()`/`resume()`, when
+    // a worker changed state between a lifecycle route's own check and the
+    // call — answered as that check answers: 409, naming the first worker.
+    const workers = (
+      error.context as { workers?: { id: string; state: string }[] }
+    ).workers;
+    const first = workers?.[0];
+    return {
+      status: 409,
+      code: "WORKER_STATE_CONFLICT",
+      detail: error.message,
+      ...(first ? { context: { worker: first.id, state: first.state } } : {}),
+    };
+  }
+  if (error instanceof JobsError && error.code === "DEFAULTS_CHANGED") {
+    // `JobDefaultsChangedError`, matched by its code so this module need not
+    // load the queue. Its message names only the queue and the two versions,
+    // all of them the caller's own request or what it may read.
+    return {
+      status: 409,
+      code: "DEFAULTS_CHANGED",
+      detail: error.message,
+      context: error.context,
+    };
   }
   if (error instanceof QueueClosedError) {
     return {

@@ -164,6 +164,9 @@ const ROUTES: readonly { path: string; ready: string }[] = [
     path: `/queues/${QUEUE}?panel=repeatables`,
     ready: '[data-testid^="job-row-"]',
   },
+  // The Workers page: audited with whatever workers this API has, so an
+  // empty namespace audits its empty state rather than being skipped.
+  { path: "/workers", ready: '[data-testid="workers-list"]' },
   {
     path: `/queues/${QUEUE}/jobs/missing-job`,
     ready: '[data-testid="job-not-found"]',

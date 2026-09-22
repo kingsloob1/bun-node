@@ -24,6 +24,8 @@ export type ChannelKind =
   | "queues"
   | "queue"
   | "job"
+  | "workers"
+  | "queueWorkers"
   | "runners"
   | "runner";
 
@@ -38,9 +40,15 @@ export interface ChannelDef {
   /** An extra condition on the configuration. */
   enabledWhen?: (config: ResolvedJobsApiConfig) => boolean;
   /** Which events it carries. */
-  receives: "all" | "queue" | "runner";
+  receives: "all" | "queue" | "runner" | "worker";
   /** Address parameters, in order. */
   parameters: readonly ("queue" | "jobId" | "runner")[];
+  /**
+   * A human name for the documents, used for the AsyncAPI channel's `title`
+   * and in its operation's. Defaults to the kind, capitalised — which only
+   * reads well while the kind is one word, so a camel-cased kind sets it.
+   */
+  label?: string;
   /** Human description, for the documents. */
   description: string;
 }
@@ -82,6 +90,25 @@ export const CHANNELS: readonly ChannelDef[] = [
     parameters: ["queue", "jobId"],
     description:
       "Every event about one job, including a `stalled`, `retried` or `cleaned` event listing it among several. The job id is `encodeURIComponent`-escaped; a lone UTF-16 surrogate, which `encodeURIComponent` cannot encode, is written `%uXXXX`.",
+  },
+  {
+    kind: "workers",
+    address: "workers",
+    mode: "jobs",
+    receives: "worker",
+    parameters: [],
+    description:
+      "Every worker event, on every queue: a controller's instruction, a worker changing state, and a worker adopting or refusing a configuration override.",
+  },
+  {
+    kind: "queueWorkers",
+    address: "queue/{queue}/workers",
+    mode: "jobs",
+    receives: "worker",
+    parameters: ["queue"],
+    label: "Queue workers",
+    description:
+      "Every worker event of one queue. Worker events are grouped per queue, never per worker, so a process with several workers on a queue shares one subscription and none of them see the queue's job firehose.",
   },
   {
     kind: "runners",
@@ -194,6 +221,11 @@ export function jobChannel(queue: string, jobId: string): string {
   return `queue/${queue}/job/${encodeJobId(jobId)}`;
 }
 
+/** The canonical name of one queue's worker channel. */
+export function queueWorkersChannel(queue: string): string {
+  return `queue/${queue}/workers`;
+}
+
 /** A rejection for a malformed name. */
 function invalid(detail: string): {
   ok: false;
@@ -249,17 +281,26 @@ export function parseChannel(
   let jobId: string | undefined;
   let runner: string | undefined;
 
-  if (parts.length === 1 && ["all", "queues", "runners"].includes(parts[0]!)) {
+  if (
+    parts.length === 1 &&
+    ["all", "queues", "workers", "runners"].includes(parts[0]!)
+  ) {
     kind = parts[0] as ChannelKind;
   } else if (
     parts[0] === "queue" &&
-    (parts.length === 2 || parts.length === 4)
+    (parts.length === 2 || parts.length === 3 || parts.length === 4)
   ) {
     queue = segment(parts[1]!, "queue name");
     if (queue === undefined) {
       return invalid(`"${raw}" names an invalid queue`);
     }
     kind = "queue";
+    if (parts.length === 3) {
+      if (parts[2] !== "workers") {
+        return invalid(`"${raw}" is not a channel`);
+      }
+      kind = "queueWorkers";
+    }
     if (parts.length === 4) {
       if (parts[2] !== "job" || parts[3] === "") {
         return invalid(`"${raw}" is not a channel`);
@@ -286,9 +327,11 @@ export function parseChannel(
       ? jobChannel(queue!, jobId!)
       : kind === "queue"
         ? `queue/${queue}`
-        : kind === "runner"
-          ? `runner/${runner}`
-          : kind;
+        : kind === "queueWorkers"
+          ? queueWorkersChannel(queue!)
+          : kind === "runner"
+            ? `runner/${runner}`
+            : kind;
 
   const def = BY_KIND.get(kind)!;
   if (!isChannelEnabled(def, config)) {
@@ -352,6 +395,7 @@ export function parseChannel(
 export const BROAD_CHANNELS: ReadonlySet<string> = new Set([
   "all",
   "queues",
+  "workers",
   "runners",
 ]);
 
@@ -364,6 +408,12 @@ export const BROAD_CHANNELS: ReadonlySet<string> = new Set([
 export function channelKeysFor(event: DriverEvent): string[] {
   if (event.kind === "runner") {
     return ["all", "runners", `runner/${event.target}`];
+  }
+  if (event.kind === "worker") {
+    // Not on `all`: that channel is every queue's and runner's *work*, and a
+    // dashboard following it should not have to filter out control traffic it
+    // never asked for. The two worker channels are opt-in.
+    return ["workers", queueWorkersChannel(event.target)];
   }
   const keys = ["all", "queues", `queue/${event.target}`];
   for (const id of jobIdsOf(event)) {

@@ -1,10 +1,21 @@
 import type { BunJobs, JobsDriver } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { resolveConfig } from "../../lib/api/config";
 import { createJobsApi } from "../../lib/api/createJobsApi";
 import {
+  FEATURE_ROUTES,
+  probeFeatures,
+  servedFeatures,
+  supportsJobAttribution,
+} from "../../lib/api/routes/meta";
+import {
   BunQueueWorker,
+  FileDriver,
   MemoryDriver,
+  MongoDriver,
   NotSupportedError,
+  RedisDriver,
+  SqlDriver,
 } from "../../lib/index";
 import { waitFor } from "../helpers";
 import {
@@ -59,6 +70,46 @@ function without(driver: JobsDriver, methods: readonly string[]): JobsDriver {
       return typeof key === "string" && hidden.has(key)
         ? false
         : Reflect.has(target, key);
+    },
+  }) as JobsDriver;
+}
+
+/** A driver with some optional methods added, as a newer one would have them. */
+function withMethods(
+  driver: JobsDriver,
+  methods: readonly string[],
+): JobsDriver {
+  const added = new Set(methods);
+  return new Proxy(driver, {
+    get(target, key, receiver) {
+      // Never called: only `typeof … === "function"` is asked of them.
+      if (typeof key === "string" && added.has(key)) {
+        return () => undefined;
+      }
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+    has(target, key) {
+      return (
+        (typeof key === "string" && added.has(key)) || Reflect.has(target, key)
+      );
+    },
+  }) as JobsDriver;
+}
+
+/** A driver declaring extra capabilities, as a newer one would. */
+function withCapabilities(
+  driver: JobsDriver,
+  extra: Record<string, unknown>,
+): JobsDriver {
+  const capabilities = { ...driver.capabilities, ...extra };
+  return new Proxy(driver, {
+    get(target, key, receiver) {
+      if (key === "capabilities") {
+        return capabilities;
+      }
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
     },
   }) as JobsDriver;
 }
@@ -379,6 +430,417 @@ describe("pruning the read routes", () => {
 
     const meta = await h.call("GET", "/meta");
     expect(meta.body.features.throughput).toBe(false);
+  });
+
+  it("reports run logs only where the driver can both write and read them", async () => {
+    const full = harness({
+      jobs: jobsContext("api-reads-runlogs", new MemoryDriver()),
+    });
+    expect((await full.call("GET", "/meta")).body.features.runnerLogs).toBe(
+      true,
+    );
+
+    // A driver that can read a log it can never write has nothing to serve,
+    // so either method missing turns the flag off.
+    for (const missing of ["appendRunLog", "getRunLog"] as const) {
+      const h = harness({
+        jobs: jobsContext(
+          `api-reads-runlogs-${missing}`,
+          without(new MemoryDriver(), [missing]),
+        ),
+      });
+      const meta = await h.call("GET", "/meta");
+      expect({ missing, runnerLogs: meta.body.features.runnerLogs }).toEqual({
+        missing,
+        runnerLogs: false,
+      });
+    }
+  });
+
+  it("reports runner and worker metrics only where the driver can both write and read them", async () => {
+    /** The two methods behind `features.runnerMetrics`: the write, then the read. */
+    const RUNNER_METRICS = ["countRunnerRun", "getRunnerMetrics"] as const;
+    /** The two behind `features.workerMetrics`. */
+    const WORKER_METRICS = ["countWorkerJobs", "getWorkerMetrics"] as const;
+
+    /** `/meta`'s two analytics flags, for one driver. */
+    async function flags(
+      namespace: string,
+      driver: JobsDriver,
+    ): Promise<{ runnerMetrics: boolean; workerMetrics: boolean }> {
+      const h = harness({ jobs: jobsContext(namespace, driver) });
+      const { features } = (await h.call("GET", "/meta")).body;
+      return {
+        runnerMetrics: features.runnerMetrics,
+        workerMetrics: features.workerMetrics,
+      };
+    }
+
+    // The memory driver records both kinds, so both flags are on for it —
+    // this was `false`/`false` while no driver implemented the methods, and
+    // moved the day the recording landed, which is the flag doing its job.
+    expect(await flags("api-reads-metrics-none", new MemoryDriver())).toEqual({
+      runnerMetrics: true,
+      workerMetrics: true,
+    });
+
+    // A driver with none of the methods — an older one, or one that will
+    // never record — says so, and that is not a placeholder: there is no
+    // series for either route to serve.
+    expect(
+      await flags(
+        "api-reads-metrics-bare",
+        without(new MemoryDriver(), [...RUNNER_METRICS, ...WORKER_METRICS]),
+      ),
+    ).toEqual({ runnerMetrics: false, workerMetrics: false });
+
+    // Given both pairs, both flags follow.
+    expect(
+      await flags(
+        "api-reads-metrics-both",
+        withMethods(new MemoryDriver(), [...RUNNER_METRICS, ...WORKER_METRICS]),
+      ),
+    ).toEqual({ runnerMetrics: true, workerMetrics: true });
+
+    // And either method missing turns its own flag off — the counter as much
+    // as the read, since a series that can be read but never written is an
+    // empty chart, not a feature.
+    for (const missing of [...RUNNER_METRICS, ...WORKER_METRICS]) {
+      const driver = without(
+        withMethods(new MemoryDriver(), [...RUNNER_METRICS, ...WORKER_METRICS]),
+        [missing],
+      );
+      const runner = (RUNNER_METRICS as readonly string[]).includes(missing);
+      expect({
+        missing,
+        ...(await flags(`api-reads-metrics-${missing}`, driver)),
+      }).toEqual({
+        missing,
+        runnerMetrics: !runner,
+        workerMetrics: runner,
+      });
+    }
+
+    // Worker series are keyed by the worker's stable key and their rows are
+    // the worker listing, so the counters alone serve no route: no single
+    // method list says that, which is why `probeFeatures` overrides this one
+    // the way it overrides `workerControl`. Runners come from the namespace,
+    // not the driver, so that flag is unaffected.
+    expect(
+      await flags(
+        "api-reads-metrics-noworkers",
+        without(
+          withMethods(new MemoryDriver(), [
+            ...RUNNER_METRICS,
+            ...WORKER_METRICS,
+          ]),
+          [...NATIVE_WORKERS, ...STATE_WORKERS],
+        ),
+      ),
+    ).toEqual({ runnerMetrics: true, workerMetrics: false });
+
+    // Every analytics route also needs the three methods a range is resolved
+    // against, so a driver with both pairs but one of those three missing has
+    // its runner and worker routes pruned, and its flags must say so. They
+    // once read `true` here, each checking only its own pair, and advertised
+    // routes that answered 404.
+    for (const missing of [
+      "getMetricsSupport",
+      "getNamespaceMetrics",
+      "getQueueMetrics",
+    ]) {
+      const h = harness({
+        jobs: jobsContext(
+          `api-reads-metrics-base-${missing}`,
+          without(new MemoryDriver(), [missing]),
+        ),
+      });
+      const { features } = (await h.call("GET", "/meta")).body;
+      const routed = new Set(h.api.routes.map((route) => route.operationId));
+      expect({
+        missing,
+        runnerMetrics: features.runnerMetrics,
+        workerMetrics: features.workerMetrics,
+        runnersRouted: routed.has("getRunnersAnalytics"),
+        workersRouted: routed.has("getWorkersAnalytics"),
+      }).toEqual({
+        missing,
+        runnerMetrics: false,
+        workerMetrics: false,
+        runnersRouted: false,
+        workersRouted: false,
+      });
+    }
+
+    // And with nothing missing, each flag and its routes agree the other way.
+    const full = harness({
+      jobs: jobsContext("api-reads-metrics-routed", new MemoryDriver()),
+    });
+    const routed = new Set(full.api.routes.map((route) => route.operationId));
+    const { features } = (await full.call("GET", "/meta")).body;
+    expect({
+      runnerMetrics: features.runnerMetrics,
+      workerMetrics: features.workerMetrics,
+    }).toEqual({
+      runnerMetrics:
+        routed.has("getRunnersAnalytics") && routed.has("getRunnerAnalytics"),
+      workerMetrics:
+        routed.has("getWorkersAnalytics") && routed.has("getWorkerAnalytics"),
+    });
+    expect(features.runnerMetrics && features.workerMetrics).toBe(true);
+  });
+
+  it("reports each feature exactly where its routes are registered, in every mode", async () => {
+    // Every mode, on a driver that supports everything: each flag must be
+    // `true` exactly when every route it describes is registered. Before
+    // flags took the mode into account, `runnerMetrics` read `true` in
+    // `jobs` mode while `/analytics/runners` answered 404.
+    const seen: Record<string, Record<string, boolean>> = {};
+    for (const mode of ["jobs", "runner", "both"] as const) {
+      const driver = new MemoryDriver();
+      const h = harness({
+        jobs: jobsContext(`api-reads-served-${mode}`, driver),
+        mode,
+      });
+      const { features } = (await h.call("GET", "/meta")).body as {
+        features: Record<keyof typeof FEATURE_ROUTES, boolean>;
+      };
+      const routed = new Set(h.api.routes.map((route) => route.operationId));
+      for (const [feature, ids] of Object.entries(FEATURE_ROUTES)) {
+        const registered = ids.every((id) => routed.has(id));
+        expect({
+          mode,
+          feature,
+          flag: features[feature as keyof typeof FEATURE_ROUTES],
+        }).toEqual({
+          mode,
+          feature,
+          // Attribution is the one flag a driver declares rather than one a
+          // method implies, so "supports everything" is its capability.
+          flag:
+            registered &&
+            (feature !== "jobAttribution" || supportsJobAttribution(driver)),
+        });
+      }
+      seen[mode] = features;
+    }
+    // And the answers themselves, so a mapping that made every flag `false`
+    // (or named no route) could not pass the loop above vacuously.
+    expect(Object.values(seen.both!).every(Boolean)).toBe(true);
+    expect(seen.jobs).toMatchObject({
+      addedByState: true,
+      jobAttribution: true,
+      throughput: true,
+      workers: true,
+      workerMetrics: true,
+      runnerLogs: false,
+      runnerMetrics: false,
+    });
+    expect(seen.runner).toMatchObject({
+      addedByState: false,
+      jobAttribution: false,
+      logs: false,
+      update: false,
+      limits: false,
+      flows: false,
+      search: false,
+      workers: false,
+      workerControl: false,
+      throughput: false,
+      workerMetrics: false,
+      runnerLogs: true,
+      runnerMetrics: true,
+    });
+  });
+
+  it("reports job attribution from the driver's capability, narrowed by the mode", async () => {
+    // The memory driver records attribution, so the flag is `true` wherever
+    // the job list is served and `false` in runner mode, which serves none —
+    // through `/meta`, valid against its schema, and echoed as the driver's
+    // own capability in every mode.
+    for (const mode of ["jobs", "runner", "both"] as const) {
+      const h = harness({
+        jobs: jobsContext(`api-reads-attribution-${mode}`, new MemoryDriver()),
+        mode,
+      });
+      const { features, driver } = (await h.call("GET", "/meta")).body;
+      expect({
+        mode,
+        jobAttribution: features.jobAttribution,
+        capability: driver.capabilities.jobAttribution,
+      }).toEqual({
+        mode,
+        jobAttribution: mode !== "runner",
+        capability: true,
+      });
+    }
+
+    // It tracks the capability: a driver that does not declare it reads
+    // `false` everywhere, both as the feature and as the echoed capability,
+    // and `/meta` still validates.
+    const silent = withCapabilities(new MemoryDriver(), {
+      jobAttribution: false,
+    });
+    expect(probeFeatures(silent).jobAttribution).toBe(false);
+    const quiet = harness({
+      jobs: jobsContext("api-reads-attribution-silent", silent),
+    });
+    const quietMeta = (await quiet.call("GET", "/meta")).body;
+    expect(quietMeta.features.jobAttribution).toBe(false);
+    expect(quietMeta.driver.capabilities.jobAttribution).toBe(false);
+    const served = Object.fromEntries(
+      (["jobs", "runner", "both"] as const).map((mode) => [
+        mode,
+        servedFeatures(
+          resolveConfig(
+            apiConfig({
+              jobs: jobsContext(
+                `api-reads-attribution-cap-${mode}`,
+                new MemoryDriver(),
+              ),
+              mode,
+              websocket: false,
+            }),
+          ),
+        ).jobAttribution,
+      ]),
+    );
+    expect(served).toEqual({ jobs: true, runner: false, both: true });
+
+    // Only `true` itself counts: a truthy non-boolean, or the flag's absence,
+    // is not a declaration.
+    for (const value of [undefined, false, "yes", 1]) {
+      expect({
+        value,
+        supported: supportsJobAttribution(
+          withCapabilities(new MemoryDriver(), { jobAttribution: value }),
+        ),
+      }).toEqual({ value, supported: false });
+    }
+  });
+
+  it("reports reads by creation time per driver: served where countAddedJobs is, in jobs and both modes only", async () => {
+    // `features.addedByState` covers the two added-by-state routes and
+    // `sort=createdAt`. The method's presence is the backend's promise
+    // (memory, SQL and MongoDB implement it; Redis and file do not), and the
+    // routes are pruned without it — so the flag is the method, narrowed to
+    // the modes that register the routes.
+    const without = new Proxy(new MemoryDriver(), {
+      get(target, key, receiver) {
+        if (key === "countAddedJobs") {
+          return undefined;
+        }
+        const value = Reflect.get(target, key, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as JobsDriver;
+    expect(probeFeatures(new MemoryDriver()).addedByState).toBe(true);
+    expect(probeFeatures(without).addedByState).toBe(false);
+    // The built-in drivers, by their prototypes: no instance, no connection.
+    expect({
+      memory: typeof MemoryDriver.prototype.countAddedJobs,
+      sql: typeof SqlDriver.prototype.countAddedJobs,
+      mongo: typeof MongoDriver.prototype.countAddedJobs,
+      redis: typeof (RedisDriver.prototype as Partial<JobsDriver>)
+        .countAddedJobs,
+      file: typeof (FileDriver.prototype as Partial<JobsDriver>).countAddedJobs,
+    }).toEqual({
+      memory: "function",
+      sql: "function",
+      mongo: "function",
+      redis: "undefined",
+      file: "undefined",
+    });
+    for (const mode of ["jobs", "runner", "both"] as const) {
+      for (const [label, driver, supported] of [
+        ["memory", new MemoryDriver(), true],
+        ["without", without, false],
+      ] as const) {
+        const h = harness({
+          jobs: jobsContext(`api-reads-added-${label}-${mode}`, driver),
+          mode,
+        });
+        const routed = new Set(h.api.routes.map((route) => route.operationId));
+        const { features } = (await h.call("GET", "/meta")).body;
+        const served = mode !== "runner" && supported;
+        expect({
+          mode,
+          label,
+          addedByState: features.addedByState,
+          routes: FEATURE_ROUTES.addedByState.filter((id) => routed.has(id)),
+        }).toEqual({
+          mode,
+          label,
+          addedByState: served,
+          routes:
+            mode === "runner"
+              ? []
+              : supported
+                ? ["getAddedByState", "getQueueAddedByState", "listJobs"]
+                : ["listJobs"],
+        });
+      }
+    }
+  });
+
+  it("reads job attribution live: a capability that changes under a running API is reported at once", async () => {
+    // The SQL driver's capability turns on when a sync adds the stamp's
+    // columns. `/meta` must not have cached the old answer.
+    const memory = new MemoryDriver();
+    let recording = false;
+    const live = new Proxy(memory, {
+      get(target, key, receiver) {
+        if (key === "capabilities") {
+          return { ...target.capabilities, jobAttribution: recording };
+        }
+        const value = Reflect.get(target, key, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as JobsDriver;
+    const h = harness({
+      jobs: jobsContext("api-reads-attribution-live", live),
+    });
+    const before = (await h.call("GET", "/meta")).body;
+    expect(before.features.jobAttribution).toBe(false);
+    expect(before.driver.capabilities.jobAttribution).toBe(false);
+    recording = true;
+    const after = (await h.call("GET", "/meta")).body;
+    expect(after.features.jobAttribution).toBe(true);
+    expect(after.driver.capabilities.jobAttribution).toBe(true);
+  });
+
+  it("answers /meta when a driver declares a capability this version does not know", async () => {
+    // `/meta` picks the capabilities it names rather than spreading them: the
+    // schema admits no other key, so a spread would fail response validation.
+    const h = harness({
+      jobs: jobsContext(
+        "api-reads-unknown-capability",
+        withCapabilities(new MemoryDriver(), { teleport: true }),
+      ),
+    });
+    const response = await h.call("GET", "/meta");
+    expect(response.status).toBe(200);
+    expect(response.body.driver.capabilities).not.toHaveProperty("teleport");
+  });
+
+  it("keeps a feature flag on under readOnly and a narrow `actions`: those are permissions, not support", async () => {
+    const h = harness({
+      jobs: jobsContext("api-reads-served-readonly", new MemoryDriver()),
+      readOnly: true,
+      actions: ["meta.read"],
+    });
+    const { features } = (await h.call("GET", "/meta")).body;
+    const routed = new Set(h.api.routes.map((route) => route.operationId));
+    // The routes are gone — `readOnly` prunes the mutations, `actions` the
+    // rest — but the backend still has the features, and a UI tells "you may
+    // not" from `readOnly` and `/meta/permissions`, not from these flags.
+    expect(routed.has("updateJob")).toBe(false);
+    expect(routed.has("getRunnersAnalytics")).toBe(false);
+    expect(features).toMatchObject({
+      update: true,
+      workerControl: true,
+      runnerMetrics: true,
+    });
   });
 
   it("never lets a routed read answer 501", async () => {

@@ -1,20 +1,32 @@
 import type { RunRecord } from "../../drivers/index";
-import type { RunnerStatus } from "../../runner/types";
+import type { RunnerConfigInfo, RunnerStatus } from "../../runner/types";
 import type { ScheduleInput } from "../../shared/schedule";
 import type { ResolvedJobsApiConfig } from "../config";
 import type { Infer } from "../schema/builder";
+import type { RunnerConfigDto } from "../serialize";
 import type { AnyRouteDef } from "./define";
+import { supportsRunnerConfig } from "../../runner/config";
 import { validateCron } from "../../shared/cron";
 import { ConfigError, NotSupportedError } from "../../shared/errors";
+import { runnerKey } from "../../shared/keys";
 import { normalizeSchedule } from "../../shared/schedule";
-import { MAX_DATE_MS } from "../contract/constants";
+import { MAX_DATE_MS, RUNNER_CONFIG_BOUNDS } from "../contract/constants";
 import { ApiError } from "../errors";
+import { s } from "../schema/builder";
 import {
+  ClearHistoryQuerySchema,
+  ClearHistoryResultSchema,
   historyQuerySchema,
   HistorySchema,
   KillBodySchema,
   KillResultSchema,
   ResumeBodySchema,
+  RunIdSchema,
+  RunLogPageSchema,
+  runLogsQuerySchema,
+  RunnerConfigBodySchema,
+  RunnerConfigSchema,
+  RunnerIdSchema,
   RunnerInfoSchema,
   RunnerListSchema,
   RunnerPausedSchema,
@@ -24,7 +36,12 @@ import {
   TriggerBodySchema,
   TriggerOutcomeSchema,
 } from "../schemas/runners";
-import { toRunnerInfoDto, toRunRecordDto } from "../serialize";
+import {
+  toRunLogLineDto,
+  toRunnerConfigDto,
+  toRunnerInfoDto,
+  toRunRecordDto,
+} from "../serialize";
 import { defineRoute } from "./define";
 import {
   mapBounded,
@@ -36,6 +53,14 @@ import {
 
 /** Errors every route naming a runner can answer with. */
 const RUNNER_ERRORS = ["INVALID_NAME", "RUNNER_NOT_FOUND"] as const;
+
+/**
+ * `:runner/runs/:runId`. Declared here rather than beside {@link RunnerParams}
+ * because the run id is the runner routes' alone.
+ */
+const RunParams = s.query(
+  s.object({ runner: RunnerIdSchema, runId: RunIdSchema }),
+);
 
 /** A time from a schedule body, as the `Date` `updateSchedule` is given. */
 function toScheduleTime(value: number | string): Date {
@@ -108,6 +133,118 @@ export function scheduleIssuePath(
     normaliserRefuses({ every: 1, anchor: toScheduleTime(schedule.anchor) })
     ? "schedule.anchor"
     : "schedule.every";
+}
+
+/** Errors both configuration routes can answer with. */
+const CONFIG_ERRORS = [
+  ...RUNNER_ERRORS,
+  "CONFIG_NOT_ALLOWED",
+  "RUNNER_NOT_CONFIGURABLE",
+] as const;
+
+/**
+ * Where each overridable setting sits in `RunnerConfigBody`, so a refusal the
+ * runtime blames on a *state field* is reported against the field the client
+ * actually sent. `runMode` and `maxConcurrency` are one body property.
+ */
+const CONFIG_ISSUE_PATH: Record<string, string> = {
+  executionMode: "executionMode",
+  runMode: "concurrency.runMode",
+  maxConcurrency: "concurrency.maxConcurrency",
+};
+
+/**
+ * How soon a configuration change reaches the owners, for the route
+ * descriptions.
+ */
+const CONFIG_LATENCY_NOTE = `The override is stored and announced. Each owner adopts it when it hears — as soon as it is published where it listens for \`control\` events (\`remoteControl: "auto"\`, the default, does on Redis and memory), and at its next sync otherwise — and reports back through \`appliedSeq\`. It applies from the **next** run: a run in flight keeps the mode it started with, and lowering \`maxConcurrency\` or switching \`parallel\` → \`single\` never kills one. An owner that cannot honour a field drops it, keeps its code's value and says why in \`error\`.`;
+
+/**
+ * Turns the runtime's `ConfigError` into the right problem, by its
+ * `context.reason` and never by its message.
+ *
+ * - `"empty"` / `"invalid"` — the client's body: 400 `VALIDATION`, with the
+ *   issue on the body property `context.field` came from.
+ * - `"not-allowed"` — the runner's code forbids that execution mode: 409
+ *   `CONFIG_NOT_ALLOWED`, naming the modes it does permit, since that is what
+ *   the caller needs to choose again.
+ * - `"not-configurable"` — no owner has started since remote configuration
+ *   shipped, so nothing would ever adopt the override: 409
+ *   `RUNNER_NOT_CONFIGURABLE`.
+ *
+ * Anything else is re-thrown: a `ConfigError` from elsewhere may name
+ * internals, and the error handler answers those generically.
+ *
+ * Exported so the table can be asserted directly: the schema refuses a bad
+ * enum or an out-of-range cap before the runtime ever sees it, so `"invalid"`
+ * cannot be reached over HTTP — it is the guard for a patch that arrives any
+ * other way.
+ */
+export function configError(error: unknown, runner: string): unknown {
+  if (!(error instanceof ConfigError) || error instanceof NotSupportedError) {
+    return error;
+  }
+  const context = error.context ?? {};
+  const reason = context.reason;
+  const field = typeof context.field === "string" ? context.field : undefined;
+
+  if (reason === "empty" || reason === "invalid") {
+    return new ApiError("VALIDATION", 400, error.message, {
+      cause: error,
+      issues: [
+        {
+          target: "body",
+          path: (field && CONFIG_ISSUE_PATH[field]) ?? "",
+          message: error.message,
+        },
+      ],
+    });
+  }
+  if (reason === "not-allowed") {
+    const allowed = Array.isArray(context.allowed)
+      ? (context.allowed as string[])
+      : [];
+    return new ApiError(
+      "CONFIG_NOT_ALLOWED",
+      409,
+      `Runner "${runner}" does not permit executionMode "${String(
+        context.executionMode,
+      )}"${allowed.length > 0 ? `; it permits ${allowed.join(", ")}` : ""}`,
+      {
+        cause: error,
+        context: {
+          runner,
+          ...(context.executionMode === undefined
+            ? {}
+            : { executionMode: context.executionMode }),
+          allowed,
+        },
+      },
+    );
+  }
+  if (reason === "not-configurable") {
+    return new ApiError("RUNNER_NOT_CONFIGURABLE", 409, error.message, {
+      cause: error,
+      context: { runner },
+    });
+  }
+  return error;
+}
+
+/**
+ * Runs one configuration write and shapes what it answers, mapping the
+ * runtime's refusals to problems. Both writes return the configuration they
+ * produced, so nothing is re-read.
+ */
+async function writeConfig(
+  runner: string,
+  write: () => Promise<RunnerConfigInfo>,
+): Promise<RunnerConfigDto> {
+  try {
+    return toRunnerConfigDto(await write());
+  } catch (error) {
+    throw configError(error, runner);
+  }
 }
 
 /**
@@ -217,6 +354,146 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
                 services.config.serialize,
               ),
             ),
+          },
+        };
+      },
+    }),
+    defineRoute({
+      method: "DELETE",
+      path: "/runners/:runner/history",
+      operationId: "clearRunnerHistory",
+      action: "runners.clearHistory",
+      mode: "runner",
+      requires: ["removeRuns"],
+      summary: "Remove the runner's finished runs, keeping those in progress",
+      description:
+        "Removes every finished run — its history record and its run log — and leaves each run still in progress untouched, record and log whole, so a live run's log keeps growing and never loses its start. **Works for a runner registered in another process**: unlike `POST /runners/{runner}/stats/reset` and `POST /runners/{runner}/kill` it needs no owner, because it acts on what the backend stores. A run is in progress when the serving process is executing it (the runner is registered here), when the runner's live lock holder is executing it, or when its record still says `running` and it started less than `staleAfter` ago. A `running` record none of those vouch for is a run whose process crashed, and is removed with the finished ones. The limit: a parallel run holds no lock, so a live parallel run in another process older than `staleAfter` is removed too, and when it settles it finds no record to update — raise `staleAfter` for runners whose runs last longer than a day. The lifetime counters (`GET /runners/{runner}/stats`) and the analytics series are untouched. A backend that cannot remove individual runs has this route pruned, so it never answers 501 and never falls back to dropping the runs in progress.",
+      tags: ["Runners"],
+      params: RunnerParams,
+      query: ClearHistoryQuerySchema,
+      responses: { 200: ClearHistoryResultSchema },
+      errors: RUNNER_ERRORS,
+      target: ({ params }) => runnerTarget(params.runner),
+      handler: async ({ params, query, services }) => {
+        const { controller } = await services.runners.resolve(params.runner);
+        // The controller's `clearHistory` — the runner's own when it is
+        // registered here, so its executing runs are kept — never the
+        // driver's, which would drop the runs in progress with the rest.
+        const { removed, kept } = await controller.clearHistory({
+          staleAfter: query.staleAfter,
+        });
+        return { body: { removed, kept } };
+      },
+    }),
+    defineRoute({
+      method: "GET",
+      path: "/runners/:runner/runs/:runId/logs",
+      operationId: "getRunLogs",
+      action: "runners.logs",
+      mode: "runner",
+      requires: ["getRunLog"],
+      summary: "A page of one run's captured output",
+      description: `Lines are numbered from one by the store, and the numbering survives a trim — so a gap means the caps dropped those lines. \`since\` is an **exclusive** lower bound on \`seq\`: send the previous page's \`lastSeq\` back to tail. \`dropped\` and \`lastSeq\` are the run's own, never filtered by \`since\` or \`stream\`, which is what lets a filtered tail resume correctly. At most \`limits.maxLogPage\` lines a page.
+
+**409 \`LOGS_NOT_RETAINED\` is not a 200 with no items.** The 409 says no log is kept for this run to read: either the backend keeps none at all (\`meta.features.runnerLogs\` is \`false\`) or this run's log has aged out of the retained set while its history record survived — the record is settled and its \`logLines\` is absent. A 200 with an empty \`items\` says the run is known, its log is retained, and it simply logged nothing (\`logLines\` is \`0\`) — or that it is **still running** and has not flushed a line yet, which is \`live: true\` with no counters on the record, since capture writes those when the run settles. A run neither the history nor the log store has heard of is 404 \`RUN_NOT_FOUND\`, as \`POST /runners/{runner}/kill\` answers one. A backend that cannot read run logs at all has this route pruned, so it never answers 501.`,
+      tags: ["Runners"],
+      params: RunParams,
+      query: runLogsQuerySchema(limits.maxLogPage),
+      responses: { 200: RunLogPageSchema },
+      errors: [...RUNNER_ERRORS, "RUN_NOT_FOUND", "LOGS_NOT_RETAINED"],
+      // The run is not part of the target: `AuthorizeTarget` has no run field,
+      // and the kill route — the other one naming a run — authorizes on the
+      // runner too. A host deciding by run reads `req` itself.
+      target: ({ params }) => runnerTarget(params.runner),
+      handler: async ({ params, query, services }) => {
+        const { id, controller } = await services.runners.resolve(
+          params.runner,
+        );
+        const { driver, namespace } = controller;
+        // `requires` prunes the route on a *configured* driver that cannot
+        // read run logs; this is the controller's own, which a runner may have
+        // been registered with. A backend that can read but never write keeps
+        // no log for any run — it is exactly `features.runnerLogs === false`,
+        // which `GET /meta` reports — so it says so rather than answering an
+        // empty page a client would read as "the run was quiet".
+        if (!driver.getRunLog || !driver.appendRunLog) {
+          throw new ApiError(
+            "LOGS_NOT_RETAINED",
+            409,
+            `This backend keeps no run logs, so run "${params.runId}" has none to read`,
+            { context: { runner: id, runId: params.runId } },
+          );
+        }
+        const [page, history] = await Promise.all([
+          driver.getRunLog(namespace, runnerKey(id), params.runId, {
+            offset: query.offset,
+            limit: query.limit,
+            order: query.order,
+            ...(query.since === undefined ? {} : { since: query.since }),
+            ...(query.stream === undefined ? {} : { stream: query.stream }),
+          }),
+          // The run's own record, for whether it exists and whether it is
+          // still going. The log store cannot answer either: it is keyed by
+          // run id alone and reads an unknown run as an empty log.
+          controller.history(limits.maxHistory),
+        ]);
+        const record = history.find((run) => run.runId === params.runId);
+        // Nothing in the store for this run. Three different facts read the
+        // same way here, and the run's own record tells them apart:
+        //
+        // - no record at all: nobody has heard of this run     -> 404;
+        // - a record without `logLines`: a retained run whose log is gone,
+        //   because the counter is written by capture and survives with the
+        //   record — so its absence means the log was never kept or has
+        //   aged out of `keepRuns` ahead of the history                -> 409;
+        // - a record with `logLines` (`0` included): the log IS retained and
+        //   the run was simply quiet                                   -> 200.
+        //
+        // …except while the run is still going, which is the one case where a
+        // missing counter means neither: capture writes the counters onto the
+        // record when the run settles, so a run in flight has none yet and its
+        // store is legitimately empty until the first flush. That is a quiet
+        // live run — 200 and `live: true` — never an aged-out one.
+        //
+        // Gated on the store being empty, so a record predating the counters
+        // whose lines are still there is served rather than hidden.
+        if (page.lastSeq === 0 && page.dropped === 0) {
+          if (!record) {
+            throw new ApiError(
+              "RUN_NOT_FOUND",
+              404,
+              `Run "${params.runId}" was not found`,
+              { context: { runner: id, runId: params.runId } },
+            );
+          }
+          if (record.logLines === undefined && record.status !== "running") {
+            throw new ApiError(
+              "LOGS_NOT_RETAINED",
+              409,
+              `No log is kept for run "${params.runId}"; it was never captured or has aged out`,
+              { context: { runner: id, runId: params.runId } },
+            );
+          }
+        }
+        // `live` and `capped` are the route's, not the store's. `live` is the
+        // run's status: the store knows nothing about the run. `capped` is
+        // `dropped` in the present tense — a cap is dropping the oldest lines
+        // *as new ones arrive*, which needs both a cap that has already bitten
+        // and a run still producing, so what is here is a moving tail.
+        const live = record?.status === "running";
+        return {
+          body: {
+            items: page.lines.map(toRunLogLineDto),
+            page: {
+              offset: query.offset,
+              limit: query.limit,
+              total: page.count,
+              hasMore: query.offset + page.lines.length < page.count,
+            },
+            dropped: page.dropped,
+            capped: live && page.dropped > 0,
+            live,
+            lastSeq: page.lastSeq,
           },
         };
       },
@@ -410,6 +687,55 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           });
         });
         return { status: 202, body: { runIds } };
+      },
+    }),
+    defineRoute({
+      method: "PUT",
+      path: "/runners/:runner/config",
+      operationId: "configureRunner",
+      action: "runners.configure",
+      mode: "runner",
+      enabledWhen: (resolved) => supportsRunnerConfig(resolved.driver),
+      summary: "Override the runner's executor and overlap settings",
+      description: `A **merge patch**: a field left out is untouched, and \`null\` clears that override so the runner goes back to what its own code asked for. \`maxConcurrency\` only means anything under \`runMode: "parallel"\`, so the two are sent together as \`concurrency\`; it must be a whole number between ${RUNNER_CONFIG_BOUNDS.maxConcurrency.min} and ${RUNNER_CONFIG_BOUNDS.maxConcurrency.max} (400 \`VALIDATION\` at \`concurrency.maxConcurrency\` otherwise), or \`null\` for unlimited, which is not bounded. An execution mode the runner's code does not permit is 409 \`CONFIG_NOT_ALLOWED\`, listing the ones it does; a runner no owner has started since remote configuration shipped is 409 \`RUNNER_NOT_CONFIGURABLE\`, because the override would be stored and never adopted. ${CONFIG_LATENCY_NOTE}`,
+      tags: ["Runners"],
+      params: RunnerParams,
+      body: RunnerConfigBodySchema,
+      responses: { 200: RunnerConfigSchema },
+      errors: CONFIG_ERRORS,
+      target: ({ params }) => runnerTarget(params.runner),
+      handler: async ({ params, body, services }) => {
+        const { controller } = await services.runners.resolve(params.runner);
+        return {
+          body: await writeConfig(
+            params.runner,
+            async () => await controller.updateConfig(body),
+          ),
+        };
+      },
+    }),
+    defineRoute({
+      method: "DELETE",
+      path: "/runners/:runner/config",
+      operationId: "resetRunnerConfig",
+      action: "runners.configure",
+      mode: "runner",
+      enabledWhen: (resolved) => supportsRunnerConfig(resolved.driver),
+      summary: "Drop every override, back to what the runner's code asks for",
+      description: `Clears all three settings at once. The version keeps counting up rather than restarting, so an owner that had adopted version 3 still sees a newer one — which is why this answers 200 with the configuration rather than 204. ${CONFIG_LATENCY_NOTE}`,
+      tags: ["Runners"],
+      params: RunnerParams,
+      responses: { 200: RunnerConfigSchema },
+      errors: CONFIG_ERRORS,
+      target: ({ params }) => runnerTarget(params.runner),
+      handler: async ({ params, services }) => {
+        const { controller } = await services.runners.resolve(params.runner);
+        return {
+          body: await writeConfig(
+            params.runner,
+            async () => await controller.resetConfig(),
+          ),
+        };
       },
     }),
     defineRoute({

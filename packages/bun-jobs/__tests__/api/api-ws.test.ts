@@ -40,7 +40,7 @@ import {
   ServerMessageSchema,
 } from "../../lib/api/ws/protocol";
 import { BunJobs, ConfigError, MemoryDriver } from "../../lib/index";
-import { queueEvent, runnerEvent } from "../../lib/shared/events";
+import { queueEvent, runnerEvent, workerEvent } from "../../lib/shared/events";
 import { testNamespace, waitFor } from "../helpers";
 import { apiConfig, ECHO_HANDLER, openContexts } from "./fixtures";
 
@@ -918,6 +918,66 @@ describe("events", () => {
     );
     expect(succeeded.subscriptions).toEqual(["runner/echo"]);
     expect(client.invalid).toEqual([]);
+  });
+
+  it("announces a run's log growth on runner/{runner} as a hint with no content, which a ?since= read then follows", async () => {
+    const h = await served();
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["runner/drip"] });
+    await client.next("ack");
+
+    const marker = `WS-CONTENT-${crypto.randomUUID()}`;
+    const runner = h.jobs.runner({
+      id: "drip",
+      file: new URL("../fixtures/handlers/drip.ts", import.meta.url).pathname,
+      executionMode: "in-process",
+      waitToExit: false,
+      syncInterval: 0,
+      args: { count: 6, gap: 5, text: `${marker} password=hunter2` },
+    });
+    await runner.start();
+    await runner.trigger();
+
+    const last = await client.next(
+      "event",
+      (frame) =>
+        frame.event.kind === "runner" &&
+        frame.event.type === "logs" &&
+        (frame.event.payload as { lastSeq: number }).lastSeq === 6,
+    );
+    expect(last.subscriptions).toEqual(["runner/drip"]);
+    const runId = (last.event.payload as { runId: string }).runId;
+    expect(last.event.id).toBe(runId);
+
+    const hints = client
+      .all("event")
+      .filter((frame) => frame.event.type === "logs");
+    for (const frame of hints) {
+      // The run and a number: never a line, whatever the run wrote.
+      expect(Object.keys(frame.event.payload).sort()).toEqual([
+        "lastSeq",
+        "runId",
+      ]);
+    }
+    for (const text of client.raw) {
+      expect(text).not.toContain(marker);
+      expect(text).not.toContain("hunter2");
+    }
+    expect(client.invalid).toEqual([]);
+
+    // The hint's number is what a `since` read catches up to — and the read
+    // is where the (redacted) lines live.
+    const response = await fetch(
+      `${h.origin}/admin/jobs/runners/drip/runs/${runId}/logs?since=0`,
+    );
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as {
+      items: { seq: number; message: string }[];
+      lastSeq: number;
+    };
+    expect(page.lastSeq).toBe(6);
+    expect(page.items.at(-1)!.seq).toBe(6);
+    expect(page.items[0]!.message).toBe(`${marker} password=[REDACTED] 1`);
   });
 
   it("applies a subscription's event-type filter", async () => {
@@ -2591,5 +2651,190 @@ describe("split resumes", () => {
     ]);
     await Bun.sleep(20);
     expect(client.all("event")).toHaveLength(2);
+  });
+});
+
+describe("worker channels", () => {
+  /** A worker `state` event on a queue, as a worker publishes one. */
+  function stateEvent(queue: string, worker = "mail.1") {
+    return workerEvent(
+      { ns: "n", target: queue, type: "state", origin: "o" },
+      {
+        worker,
+        key: queue,
+        state: "paused",
+        previous: "running",
+        at: 1_000,
+      },
+    );
+  }
+
+  it("parses both names, and keeps worker events off the job channels", () => {
+    const config = resolveConfig(apiConfig());
+    expect(parseChannel("workers", config)).toMatchObject({
+      ok: true,
+      channel: { key: "workers", target: { channel: "workers" } },
+    });
+    expect(parseChannel("queue/mail/workers", config)).toMatchObject({
+      ok: true,
+      channel: {
+        key: "queue/mail/workers",
+        target: { channel: "queue/mail/workers", queue: "mail" },
+      },
+    });
+    expect(parseChannel("queue/mail/nonsense", config)).toMatchObject({
+      ok: false,
+      rejection: { code: "INVALID_CHANNEL" },
+    });
+
+    // A worker event reaches its two channels and no others: `all` and
+    // `queues` are the queues' own work, which a dashboard follows without
+    // asking for control traffic.
+    expect(channelKeysFor(stateEvent("mail"))).toEqual([
+      "workers",
+      "queue/mail/workers",
+    ]);
+  });
+
+  it("delivers a queue's worker events, holding the worker kind while it does", async () => {
+    const jobs = publishingJobs("ws-workers");
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({ jobs });
+    await jobs.queue("mail").add("n", {});
+    const client = await connect(h.url);
+    client.send({
+      op: "subscribe",
+      id: "s",
+      channels: ["queue/mail/workers"],
+    });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+
+    // The notifier follows no queue's workers by default — one subscription
+    // per queue is a poll per queue on a driver that cannot push — so the
+    // channel has to hold it, or nothing would arrive.
+    expect(notifier.following).toContain("worker:mail");
+
+    await jobs.driver.publish(
+      workerEvent(
+        { ns: jobs.namespace, target: "mail", type: "state", origin: "o" },
+        {
+          worker: "mail.1",
+          key: "mail",
+          state: "paused",
+          previous: "running",
+          at: 1_000,
+        },
+      ),
+    );
+
+    const frame = await client.next("event");
+    expect(frame.event).toMatchObject({
+      kind: "worker",
+      type: "state",
+      target: "mail",
+      id: "mail.1",
+      payload: { worker: "mail.1", key: "mail", state: "paused" },
+    });
+    expect(frame.subscriptions).toEqual(["queue/mail/workers"]);
+    expect(client.invalid).toEqual([]);
+
+    // And the hold goes when the channel does.
+    client.send({
+      op: "unsubscribe",
+      id: "u",
+      channels: ["queue/mail/workers"],
+    });
+    await client.next("ack", (ack) => ack.id === "u");
+    await waitFor(() => !notifier.following.includes("worker:mail"));
+  });
+
+  it("follows every queue it can reach on the broad channel, and lets them all go", async () => {
+    const jobs = publishingJobs("ws-workers-broad");
+    const opened = spyOn(jobs, "notifier");
+    const h = await served({ jobs });
+    await jobs.queue("mail").add("n", {});
+    await jobs.queue("reports").add("n", {});
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["workers"] });
+    await client.next("ack");
+    const notifier = (await opened.mock.results[0]!.value) as JobsNotifier;
+
+    expect(notifier.following).toContain("worker:mail");
+    expect(notifier.following).toContain("worker:reports");
+
+    await jobs.driver.publish(
+      workerEvent(
+        { ns: jobs.namespace, target: "reports", type: "control", origin: "o" },
+        { worker: "reports.1", action: "stop", seq: 3 },
+      ),
+    );
+    const frame = await client.next("event");
+    expect(frame.event).toMatchObject({
+      kind: "worker",
+      type: "control",
+      target: "reports",
+      payload: { worker: "reports.1", action: "stop", seq: 3 },
+    });
+
+    client.send({ op: "unsubscribe", id: "u", channels: ["workers"] });
+    await client.next("ack", (ack) => ack.id === "u");
+    await waitFor(
+      () => !notifier.following.some((key) => key.startsWith("worker:")),
+    );
+  });
+
+  it("authorizes each queue on the broad channel, and drops the ones refused", async () => {
+    const calls: Parameters<JobsApiAuthorize>[1][] = [];
+    const jobs = publishingJobs("ws-workers-authz");
+    const h = await served({
+      jobs,
+      authorize: (_req, context) => {
+        if (context.action === "events.subscribe") {
+          calls.push(context);
+        }
+        return context.queue !== "secret";
+      },
+    });
+    await jobs.queue("mail").add("n", {});
+    await jobs.queue("secret").add("n", {});
+    const client = await connect(h.url);
+    client.send({ op: "subscribe", id: "s", channels: ["workers"] });
+    await client.next("ack");
+
+    await jobs.driver.publish(
+      workerEvent(
+        { ns: jobs.namespace, target: "secret", type: "control", origin: "o" },
+        { key: "secret", action: "pause", seq: 1 },
+      ),
+    );
+    await jobs.driver.publish(
+      workerEvent(
+        { ns: jobs.namespace, target: "mail", type: "control", origin: "o" },
+        { key: "mail", action: "pause", seq: 1 },
+      ),
+    );
+
+    const frame = await client.next("event");
+    await Bun.sleep(30);
+    // Only the allowed queue's event was sent, and the refusal was asked with
+    // the broad channel and that queue — exactly as `queues` asks.
+    expect(frame.event.target).toBe("mail");
+    expect(client.all("event")).toHaveLength(1);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ channel: "workers", queue: "secret" }),
+    );
+  });
+
+  it("is a jobs-side channel: a runner-only API does not serve it", () => {
+    const config = resolveConfig(apiConfig({ mode: "runner" }));
+    expect(parseChannel("workers", config)).toMatchObject({
+      ok: false,
+      rejection: { code: "CHANNEL_NOT_AVAILABLE", status: 404 },
+    });
+    expect(parseChannel("queue/mail/workers", config)).toMatchObject({
+      ok: false,
+      rejection: { code: "CHANNEL_NOT_AVAILABLE" },
+    });
   });
 });

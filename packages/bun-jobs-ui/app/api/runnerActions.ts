@@ -1,7 +1,10 @@
 import type { ApiClient } from "./client";
 import type {
+  ClearRunnerHistoryResultDto,
   KillResultDto,
   KillRunnerBody,
+  RunnerConfigBody,
+  RunnerConfigDto,
   RunnerPausedDto,
   ScheduleResultDto,
   ScheduleRunnerBody,
@@ -77,7 +80,46 @@ export function killRunner(
   });
 }
 
+/**
+ * `PUT /runners/:runner/config`: a **merge patch** of the runner's executor
+ * and overlap settings. A key left out is untouched; `null` clears that
+ * override, so the runner goes back to what its own code asked for. Answers
+ * the configuration after the write, whose `appliedSeq` may still trail
+ * `seq` until an owner adopts it.
+ */
+export function configureRunner(
+  api: ApiClient,
+  id: string,
+  body: RunnerConfigBody,
+): Promise<RunnerConfigDto> {
+  return api.request<RunnerConfigDto>("PUT", base(id, "/config"), { body });
+}
+
+/** `DELETE /runners/:runner/config`: drops every override at once, back to the runner's code. */
+export function resetRunnerConfig(
+  api: ApiClient,
+  id: string,
+): Promise<RunnerConfigDto> {
+  return api.request<RunnerConfigDto>("DELETE", base(id, "/config"));
+}
+
 /** `POST /runners/:runner/stats/reset` (bodiless, 204). Local runners only. */
 export function resetRunnerStats(api: ApiClient, id: string): Promise<void> {
   return api.request<void>("POST", base(id, "/stats/reset"));
+}
+
+/**
+ * `DELETE /runners/:runner/history`: removes every finished run (record and
+ * log) and keeps each run still in progress, naming them in `kept`. Works for
+ * a runner registered in another process; the lifetime counters are
+ * untouched (that is {@link resetRunnerStats}).
+ */
+export function clearRunnerHistory(
+  api: ApiClient,
+  id: string,
+): Promise<ClearRunnerHistoryResultDto> {
+  return api.request<ClearRunnerHistoryResultDto>(
+    "DELETE",
+    base(id, "/history"),
+  );
 }

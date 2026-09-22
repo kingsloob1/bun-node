@@ -134,11 +134,17 @@ function contender(backend: Backend, label: string): QueueContender {
           worker = new BunQueueWorker<JobPayload>(
             ctx.name,
             (job) => {
-              ctx.onComplete(job.data);
+              ctx.onReceive(job.data);
             },
             { namespace, driver, concurrency, autorun: false },
           );
           worker.on("error", ctx.onError);
+          // Emitted once the completion write has landed — the worker records
+          // completions off the critical path, so this trails the handler.
+          worker.on("completed", (job) => ctx.onCompleted(job.data));
+          worker.on("lockLost", (job) => {
+            ctx.onError(new Error(`lost the lock on job ${job.id}`));
+          });
           void worker.run();
           await Bun.sleep(20);
         },

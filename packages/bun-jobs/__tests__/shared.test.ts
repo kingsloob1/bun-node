@@ -7,9 +7,15 @@ import {
   ChildExitError,
   ChildFailedError,
   ConfigError,
+  DEFAULT_KEEP_HISTORY,
+  DEFAULT_RUN_LOG_CAPTURE_BYTES,
+  DEFAULT_RUN_LOG_MAX_BYTES,
+  DEFAULT_RUN_LOG_MAX_LINE_BYTES,
+  DEFAULT_RUN_LOG_MAX_LINES,
   DriverError,
   HOST,
   InvalidHandlerError,
+  JOBS_VERSION,
   JobsError,
   JobTimeoutError,
   LockLostError,
@@ -22,6 +28,11 @@ import {
   QueueClosedError,
   QueueFullError,
   queueKey,
+  RUN_LOG_FLUSH_BYTES,
+  RUN_LOG_FLUSH_LINES,
+  RUN_LOG_FLUSH_MS,
+  RUN_LOG_GRACE_MS,
+  RUN_LOG_STREAMS,
   RunKilledError,
   runnerKey,
   RunnerStoppedError,
@@ -411,5 +422,43 @@ describe("TypedEmitterBase", () => {
 
     expect(subject.listenerCount("started")).toBe(20);
     expect(subject.getMaxListeners()).toBe(0);
+  });
+});
+
+describe("the package's own version", () => {
+  it("matches the manifest, so a worker never reports a stale one", async () => {
+    // Written down in `shared/constants.ts` rather than imported, because the
+    // package ships its sources and a `package.json` import would have to
+    // resolve from wherever they landed in a consumer's tree. This is what
+    // keeps the two from drifting.
+    const manifest = (await Bun.file(
+      new URL("../package.json", import.meta.url),
+    ).json()) as { version: string };
+
+    expect(JOBS_VERSION).toBe(manifest.version);
+  });
+});
+
+describe("run-log constants", () => {
+  it("exports every default, at the value the API and the runner assume", () => {
+    // Pinned rather than merely present. Three consumers agree on these
+    // numbers without referring to each other — the capture in the runner, the
+    // caps the driver enforces, and the page size the route advertises — so a
+    // value edited on a whim is a silent behaviour change in all three.
+    expect(DEFAULT_RUN_LOG_MAX_LINES).toBe(1_000);
+    expect(DEFAULT_RUN_LOG_MAX_BYTES).toBe(1024 * 1024);
+    expect(DEFAULT_RUN_LOG_MAX_LINE_BYTES).toBe(8 * 1024);
+    expect(DEFAULT_RUN_LOG_CAPTURE_BYTES).toBe(8 * 1024 * 1024);
+    expect(RUN_LOG_FLUSH_LINES).toBe(64);
+    expect(RUN_LOG_FLUSH_BYTES).toBe(64 * 1024);
+    expect(RUN_LOG_FLUSH_MS).toBe(250);
+    expect(RUN_LOG_GRACE_MS).toBe(1_000);
+
+    // The streams a line may claim, in the order a reader lists them.
+    expect(RUN_LOG_STREAMS).toEqual(["stdout", "stderr", "log"]);
+
+    // Exported alongside them because `keepRuns` defaults to it: a run in the
+    // history and a run with a log have to be the same set.
+    expect(DEFAULT_KEEP_HISTORY).toBe(50);
   });
 });

@@ -71,11 +71,27 @@ describe("the HTTP reference", () => {
     const tags = within(nav)
       .getAllByRole("heading", { level: 2 })
       .map((heading) => heading.textContent);
-    expect(tags).toEqual(["Meta", "Docs", "Queues", "Jobs", "Runners"]);
+    expect(tags).toEqual([
+      "Meta",
+      "Docs",
+      "Queues",
+      "Workers",
+      "Jobs",
+      "Runners",
+      // The analytics routes (bun-jobs' `metrics.read` series), a tag of
+      // their own at the end of the document's list.
+      "Analytics",
+    ]);
     const pause = nav.querySelector('a[data-operation="pauseQueue"]')!;
     expect(pause.querySelector(".http-method")!.textContent).toBe("POST");
     expect(pause.textContent).toContain("/queues/{queue}/pause");
     expect(pause.getAttribute("href")).toBe("/jobs/docs/http/pauseQueue");
+    const stopWorker = nav.querySelector('a[data-operation="stopWorker"]')!;
+    expect(stopWorker.querySelector(".http-method")!.textContent).toBe("POST");
+    expect(stopWorker.textContent).toContain(
+      "/queues/{queue}/workers/{worker}/stop",
+    );
+    expect(stopWorker.getAttribute("href")).toBe("/jobs/docs/http/stopWorker");
   });
 
   it("shows the info header with the relative server resolved", async () => {
@@ -97,9 +113,15 @@ describe("the HTTP reference", () => {
     const nav = await page().findByRole("navigation", { name: "Operations" });
     const links = () =>
       Array.from(nav.querySelectorAll<HTMLAnchorElement>("a.http-op-link"));
+    // In the document's tag order. `resumeWorker` and `startWorker` are here
+    // because their summaries say "paused" / "pause" — the search reads the
+    // summary as well as the method and id.
     await waitFor(() =>
       expect(links().map((link) => link.dataset.operation)).toEqual([
         "pauseQueue",
+        "pauseWorker",
+        "resumeWorker",
+        "startWorker",
         "pauseRunner",
       ]),
     );

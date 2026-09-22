@@ -29,7 +29,9 @@ export function readJobFilters(
       intParam(params, "limit", limits.defaultPageSize),
       limits.maxPageSize,
     ),
-    order: params.get("order") === "desc" ? "desc" : "asc",
+    // Newest first by default: the most recent job is what a person looks
+    // for. Only the exception, `order=asc`, is written into the URL.
+    order: params.get("order") === "asc" ? "asc" : "desc",
     names: splitList(params.get("name") ?? ""),
     search: params.get("search") ?? "",
     total: params.get("total") === "1",

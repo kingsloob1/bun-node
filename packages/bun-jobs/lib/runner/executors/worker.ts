@@ -154,6 +154,9 @@ export class WorkerExecutor implements Executor {
         case "log":
           options.events.onLog(message.level, message.message, message.fields);
           break;
+        case "output":
+          options.events.onConsole?.(message.stream, message.chunk);
+          break;
         case "done":
           // A timeout or a kill already decided how this run ended; a worker
           // that unwinds afterwards does not undo that.

@@ -128,6 +128,7 @@ describe("trigger", () => {
           maxRetryAll: 10000,
           maxRetryAllIds: 1000,
           maxClean: 10000,
+          maxApplyDefaults: 1000,
           defaultClean: 1000,
           maxLogPage: 500,
           maxHistory: 200,

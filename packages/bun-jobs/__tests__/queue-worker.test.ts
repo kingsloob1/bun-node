@@ -61,12 +61,15 @@ describe("BunQueueWorker: processing", () => {
       doubled: (job.data as { n: number }).n * 2,
     }));
 
-    void worker.run();
-    const added = await queue.add("double", { n: 21 });
-
-    const completed = await new Promise<Job<any, any>>((resolve) => {
+    // Listening before the add: a fast worker can complete the job before
+    // `add()` resolves, and a listener attached after would wait forever.
+    const completing = new Promise<Job<any, any>>((resolve) => {
       worker.once("completed", resolve);
     });
+
+    void worker.run();
+    const added = await queue.add("double", { n: 21 });
+    const completed = await completing;
 
     expect(completed.id).toBe(added.id);
     const stored = await queue.getJob(added.id);

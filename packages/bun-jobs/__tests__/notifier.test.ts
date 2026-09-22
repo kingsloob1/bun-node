@@ -452,3 +452,74 @@ describe("follows", () => {
     expect(gated.live()).toBe(0);
   });
 });
+
+describe("the worker kind", () => {
+  it("is opt-in, unlike queues and runners", async () => {
+    const { driver, namespace, notifier } = await setup();
+
+    // A worker channel is a second subscription per queue — and on a driver
+    // that polls, a second query every few dozen milliseconds — so nobody who
+    // is not watching workers should be paying for one.
+    expect(notifier.wants("worker", "mail")).toBe(false);
+    expect(notifier.following).not.toContain("worker:mail");
+
+    const watching = new JobsNotifier(driver, namespace, {
+      queues: [],
+      runners: [],
+      workers: "all",
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => watching.close());
+
+    expect(watching.wants("worker", "mail")).toBe(true);
+    await watching.hold("worker", "mail");
+    expect(watching.following).toEqual(["worker:mail"]);
+  });
+
+  it("delivers a worker's events without the queue's", async () => {
+    const driver = new MemoryDriver();
+    const namespace = testNamespace();
+    const heard: DriverEvent[] = [];
+
+    const notifier = new JobsNotifier(driver, namespace, {
+      queues: [],
+      runners: [],
+      workers: ["mail"],
+      discoveryInterval: 60_000,
+    });
+    closers.push(() => notifier.close());
+    notifier.on("event", (event) => heard.push(event));
+    await notifier.start();
+
+    const worker = new BunQueueWorker("mail", async () => null, {
+      namespace,
+      driver,
+      publish: true,
+      remoteControl: true,
+      reportInterval: 200,
+      pollInterval: 10,
+      waitToExit: false,
+    });
+    closers.push(() => worker.close({ force: true }));
+    void worker.run();
+    await waitFor(() => worker.isRunning, { message: "the worker never ran" });
+    await worker.pause();
+
+    // A job event on the same target must not arrive on this subscription.
+    const queue = new BunQueue<unknown, unknown>("mail", {
+      namespace,
+      driver,
+      publish: true,
+    });
+    closers.push(() => queue.close());
+    await queue.add("ignored", {});
+
+    await waitFor(() => heard.length > 0, { message: "nothing was heard" });
+    await Bun.sleep(30);
+
+    expect(heard.every((event) => event.kind === "worker")).toBe(true);
+    expect(
+      heard.some((event) => event.kind === "worker" && event.type === "state"),
+    ).toBe(true);
+  });
+});

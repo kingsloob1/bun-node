@@ -1,7 +1,8 @@
 /**
- * A runner's actions: trigger, pause/resume, reschedule, kill and reset stats,
- * with their dialogs. The runner screen mounts {@link RunnerActions} in its
- * header; this props interface is the contract between the two, so keep it.
+ * A runner's actions: trigger, pause/resume, reschedule, edit its settings,
+ * kill, reset stats and clear the run history, with their dialogs. The runner screen mounts
+ * {@link RunnerActions} in its header; this props interface is the contract
+ * between the two, so keep it.
  */
 import type { RunnerInfoDto } from "../../../api/types";
 import { useState } from "react";
@@ -13,6 +14,7 @@ import { useToast } from "../../../components/toast";
 import { useApiClient } from "../../../context";
 import { useApiMutation } from "../../../hooks/useApiMutation";
 import { useCanMutate } from "../../queues/gating";
+import { ConfigEditorDialog } from "./ConfigEditorDialog";
 import { explainRunnerError } from "./explain";
 import { runnerActionGates } from "./gating";
 import { KillDialog, ResetStatsDialog, ResumeDialog } from "./RunnerDialogs";
@@ -27,13 +29,21 @@ export interface RunnerActionsProps {
 }
 
 /** Which dialog is open. */
-type OpenDialog = "trigger" | "resume" | "schedule" | "kill" | "reset" | null;
+type OpenDialog =
+  | "trigger"
+  | "resume"
+  | "schedule"
+  | "config"
+  | "kill"
+  | "reset"
+  | null;
 
 /**
  * The action buttons (and their dialogs) for one runner, each present only
  * when the runner-scoped permission is held and the API is not read-only.
  * Kill and reset stats exist only for a runner registered in the API's
- * process; for a remote one a hint says why they are absent.
+ * process; for a remote one a hint says why they are absent. Clearing the
+ * history works on any runner.
  */
 export function RunnerActions({ runner }: RunnerActionsProps) {
   const api = useApiClient();
@@ -64,6 +74,7 @@ export function RunnerActions({ runner }: RunnerActionsProps) {
     gates.pause ||
     gates.resume ||
     gates.reschedule ||
+    gates.configure ||
     gates.kill ||
     gates.resetStats;
   if (!any && !gates.remoteOnly) {
@@ -98,6 +109,9 @@ export function RunnerActions({ runner }: RunnerActionsProps) {
       )}
       {gates.reschedule && (
         <Button onClick={() => setOpen("schedule")}>Reschedule…</Button>
+      )}
+      {gates.configure && (
+        <Button onClick={() => setOpen("config")}>Settings…</Button>
       )}
       {gates.resetStats && (
         <Button
@@ -140,6 +154,13 @@ export function RunnerActions({ runner }: RunnerActionsProps) {
       {open === "schedule" && (
         <ScheduleEditorDialog
           runner={runner}
+          onClose={close}
+        />
+      )}
+      {open === "config" && runner.config !== undefined && (
+        <ConfigEditorDialog
+          runner={runner}
+          config={runner.config}
           onClose={close}
         />
       )}

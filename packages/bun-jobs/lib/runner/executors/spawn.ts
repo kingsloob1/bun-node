@@ -292,6 +292,9 @@ export class SpawnExecutor implements Executor {
       name: "stdout" | "stderr",
     ): void => {
       if (!stream || typeof stream === "number") {
+        // Asked for a pipe and given a descriptor: there is nothing to read,
+        // and saying so beats leaving a reader waiting out its grace window.
+        options.events.onOutputEnd?.(name);
         return;
       }
 
@@ -310,6 +313,10 @@ export class SpawnExecutor implements Executor {
           }
         } catch {
           // The stream ends when the child does; nothing to report.
+        } finally {
+          // Reported however the loop left, so a reader waiting for the tail
+          // of a crashed child's output is never left waiting.
+          options.events.onOutputEnd?.(name);
         }
       })();
     };
@@ -344,6 +351,7 @@ export function toSerializable<TArgs>(
     file: options.file,
     closeTimeout: options.closeTimeout,
     forwardLogs: options.forwardLogs ?? false,
+    ...(options.captureConsole ? { captureConsole: true } : {}),
     ...(options.kind === "job" && options.job
       ? { kind: "job" as const, job: options.job }
       : {}),

@@ -1,6 +1,12 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type { JobState } from "../drivers/driver";
 import type { RunProgress } from "./progress";
+import type {
+  WorkerConfigKey,
+  WorkerControlAction,
+  WorkerEventName,
+  WorkerState,
+} from "./workers";
 
 /**
  * What crosses a process boundary, and what shape it has.
@@ -80,9 +86,16 @@ export interface QueueEventPayloads {
 
 /**
  * What a `control` event says changed: a remote controller paused, resumed or
- * rescheduled a runner, or queued a trigger for it.
+ * rescheduled a runner, queued a trigger for it, or changed its executor and
+ * overlap configuration (`config`, written and reset through
+ * `RemoteRunner.updateConfig`/`resetConfig`).
  */
-export type RunnerControlAction = "pause" | "resume" | "schedule" | "trigger";
+export type RunnerControlAction =
+  | "pause"
+  | "resume"
+  | "schedule"
+  | "trigger"
+  | "config";
 
 /** What each runner event carries on the wire, by name. */
 export interface RunnerEventPayloads {
@@ -90,7 +103,10 @@ export interface RunnerEventPayloads {
    * A controller (`BunRunnerManager.remote()`) changed the runner's persisted
    * state or queued a trigger. Published whatever the runner's `publish`
    * option says, because it is addressed to the processes that own the
-   * runner: one started with `remoteControl` re-reads its state on hearing it.
+   * runner: one subscribed to them re-reads its state on hearing it, which
+   * `remoteControl: "auto"` — the default — means on a driver whose events
+   * are not polled. An owner that does not subscribe adopts the change at its
+   * next `syncInterval` instead.
    */
   control: { action: RunnerControlAction };
   /** A run began. */
@@ -107,6 +123,81 @@ export interface RunnerEventPayloads {
   timeout: { runId: string };
   /** A run was stopped on request, with the reason it was given. */
   killed: { runId: string; reason: string };
+  /**
+   * A run's stored log grew. A **hint, never the lines**: a subscriber
+   * tailing the run re-reads `GET /runners/:runner/runs/:runId/logs?since=`
+   * from the last `seq` it holds. Throttled per run to one per
+   * `RUN_LOG_HINT_MS` (the newest `lastSeq` wins), plus one when the run
+   * settles, so a missed hint costs latency, never lines.
+   *
+   * **Not a state change.** `logs` announces log growth only and changes no
+   * runner state, so a client caching runner detail, stats or history should
+   * not invalidate them on it; re-read the run's log with `?since=` instead.
+   */
+  logs: {
+    /** The run whose log grew. */
+    runId: string;
+    /** The `seq` of the last line the store now holds for it. */
+    lastSeq: number;
+  };
+}
+
+/**
+ * What each worker event carries on the wire, by name.
+ *
+ * A worker event's `target` is the **queue**, never a worker id: one channel
+ * per queue lets a process with several workers on it share one subscription,
+ * and keeps the worker traffic out of the queue's job firehose — which a
+ * worker would otherwise have to subscribe to, and poll, to hear about
+ * itself.
+ *
+ * As with a runner's `control`, an event is only ever a **hint**: the
+ * receiver re-reads the stored entry, which is the truth.
+ */
+export interface WorkerEventPayloads {
+  /**
+   * A controller asked for something. Addressed to the workers that own the
+   * queue rather than to dashboards, so it is published whatever the
+   * publisher's `publish` option says.
+   */
+  control: {
+    /** The incarnation it is addressed to, when it is addressed to one. */
+    worker?: string;
+    /** The stable key it is addressed to, when it is addressed to one. */
+    key?: string;
+    /** What was asked for. */
+    action: WorkerControlAction;
+    /** The version of the entry the controller wrote. */
+    seq: number;
+  };
+  /** A worker changed what it is doing. */
+  state: {
+    /** The worker's incarnation id. */
+    worker: string;
+    /** Its stable key. */
+    key: string;
+    /** What it is now. */
+    state: WorkerState;
+    /** What it was. */
+    previous: WorkerState;
+    /** Why, where there is anything to add. */
+    reason?: string;
+    /** When it changed, epoch ms. */
+    at: number;
+  };
+  /** A worker adopted — or refused part of — a configuration override. */
+  config: {
+    /** The worker's incarnation id. */
+    worker: string;
+    /** Its stable key. */
+    key: string;
+    /** The version of the override it applied. */
+    seq: number;
+    /** Which settings the override replaces, after any refusal. */
+    overridden: WorkerConfigKey[];
+    /** Why a field was refused, when one was. */
+    error?: string;
+  };
 }
 
 /** The name of any queue event. */
@@ -114,6 +205,16 @@ export type QueueEventName = keyof QueueEventPayloads;
 
 /** The name of any runner event. */
 export type RunnerEventName = keyof RunnerEventPayloads;
+
+/**
+ * The name of any worker event.
+ *
+ * Re-exported from `shared/workers.ts`, where the names are declared as a
+ * runtime list the browser-safe contract mirrors, so that all three kinds can
+ * be named from one module beside {@link QueueEventName} and
+ * {@link RunnerEventName}.
+ */
+export type { WorkerEventName } from "./workers";
 
 /** Fields every envelope carries, whatever it is about. */
 interface EventEnvelope {
@@ -157,8 +258,31 @@ export type RunnerDriverEvent = {
   };
 }[RunnerEventName];
 
+/**
+ * One worker event, with the payload its name implies.
+ *
+ * `target` is the queue the worker consumes, and `id` — where the event is
+ * about one worker — its incarnation id, so a transport that indexes on `id`
+ * indexes on something meaningful, as it does for jobs and runs.
+ */
+export type WorkerDriverEvent = {
+  [Name in WorkerEventName]: EventEnvelope & {
+    /** Which subsystem emitted it. */
+    kind: "worker";
+    /** The event name, which selects the payload's shape. */
+    type: Name;
+    /** The worker this event is about, where it is about one. */
+    id?: string;
+    /** What this event carries. */
+    payload: WorkerEventPayloads[Name];
+  };
+}[WorkerEventName];
+
 /** Anything a driver may be asked to publish or deliver. */
-export type DriverEvent = QueueDriverEvent | RunnerDriverEvent;
+export type DriverEvent =
+  | QueueDriverEvent
+  | RunnerDriverEvent
+  | WorkerDriverEvent;
 
 /** Which subsystem an event came from. */
 export type EventKind = DriverEvent["kind"];
@@ -239,12 +363,54 @@ export function runnerEvent<Name extends RunnerEventName>(
 }
 
 /**
+ * Builds a worker event, with the payload checked against its name — the
+ * worker's counterpart of {@link queueEvent}.
+ *
+ * `target` is the **queue**, not the worker: that is the channel workers of a
+ * queue share. Which worker it is about, if any, travels in the payload.
+ */
+export function workerEvent<Name extends WorkerEventName>(
+  event: {
+    /** The namespace it belongs to. */
+    ns: string;
+    /** The queue whose workers it is about. */
+    target: string;
+    /** The event name. */
+    type: Name;
+    /** Token of the emitting process. */
+    origin: string;
+    /** When it happened; defaults to now. */
+    at?: number;
+  },
+  payload: WorkerEventPayloads[Name],
+): WorkerDriverEvent {
+  const worker = (payload as { worker?: string }).worker;
+
+  return {
+    v: 1,
+    ns: event.ns,
+    kind: "worker",
+    target: event.target,
+    type: event.type,
+    ...(worker === undefined ? {} : { id: worker }),
+    at: event.at ?? Date.now(),
+    origin: event.origin,
+    payload,
+  } as WorkerDriverEvent;
+}
+
+/**
  * Whether a decoded message is an envelope this version understands.
  *
  * A driver reads these off a wire it does not control — a Redis channel, a
  * table, a file another process appends to — so a malformed or
  * future-versioned message has to be dropped rather than delivered as a
  * half-typed object.
+ *
+ * An unknown `kind` is dropped for the same reason, which is what makes
+ * adding one safe during a rolling upgrade: a process running the older
+ * version ignores a `worker` event rather than mis-delivering it to a queue
+ * subscriber.
  */
 export function isDriverEvent(value: unknown): value is DriverEvent {
   if (typeof value !== "object" || value === null) {
@@ -256,7 +422,9 @@ export function isDriverEvent(value: unknown): value is DriverEvent {
   return (
     event.v === 1 &&
     typeof event.ns === "string" &&
-    (event.kind === "queue" || event.kind === "runner") &&
+    (event.kind === "queue" ||
+      event.kind === "runner" ||
+      event.kind === "worker") &&
     typeof event.target === "string" &&
     typeof event.type === "string" &&
     typeof event.at === "number" &&

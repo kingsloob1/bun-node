@@ -47,8 +47,21 @@ export interface QueueSetupContext {
   url: string;
   /** Bytes of filler per job payload. Zero means no `pad` field at all. */
   payloadBytes: number;
-  /** Called once per completed job, with the payload the processor received. */
-  onComplete: (payload: JobPayload) => void;
+  /**
+   * Called from inside the processor, once per job, with the payload it
+   * received: the moment the handler runs. The exactly-once check counts
+   * these, and the round-trip scenario stops its clock here — it measures
+   * dispatch, not bookkeeping.
+   */
+  onReceive: (payload: JobPayload) => void;
+  /**
+   * Called once per job the library reports as completed *and recorded*: its
+   * own completion signal, fired after the write that marks the job done has
+   * been acknowledged by the backend. The drain scenarios stop their clock at
+   * the last of these. Contenders whose library has no such signal never call
+   * it and implement {@link QueueHandle.outstanding} instead.
+   */
+  onCompleted: (payload: JobPayload) => void;
   /** Called when a contender's own machinery reports an error, so a run cannot look fast by failing. */
   onError: (error: unknown) => void;
 }
@@ -65,6 +78,19 @@ export interface QueueHandle {
   addBulk: (payloads: JobPayload[]) => Promise<void>;
   /** Starts consuming at the given concurrency. Resolves once the consumer is live. */
   startWorker: (concurrency: number) => Promise<void>;
+  /**
+   * How many of this run's jobs the backend still holds as not yet completed,
+   * read from the backend itself.
+   *
+   * Only for a library that reports no per-job completion after its write
+   * lands (graphile-worker fires its events before the write; pg-boss has no
+   * completion event outside its test spies). A drain then stops its clock at
+   * the answer of the first read that finds none outstanding, polled only once
+   * every job has reached a handler, so the reads never compete with the
+   * drain. Contenders that call {@link QueueSetupContext.onCompleted} leave it
+   * undefined.
+   */
+  outstanding?: () => Promise<number>;
   /** Stops consuming and waits for in-flight work to settle. */
   stopWorker: () => Promise<void>;
   /** Deletes every job this contender can see, so the next scenario starts empty. */

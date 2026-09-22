@@ -18,6 +18,10 @@ export const DriverCapabilitiesSchema = s.object({
   events: s.enum(["push", "poll", "local"]),
   multiProcess: s.boolean(),
   multiHost: s.boolean(),
+  jobAttribution: s.boolean({
+    description:
+      "Whether the backend records the worker that ran each job's last attempt and filters on it. `false` when the driver does not declare it.",
+  }),
 });
 
 /** The CSRF rules mutations are held to. Mirrors `MetaCsrfDto`. */
@@ -97,12 +101,74 @@ export const MetaLimitsSchema = s.named(
         description:
           "Most queues /overview summarises, and the largest `limit` of GET /queues.",
       }),
+      maxApplyDefaults: s.integer({
+        minimum: 1,
+        description:
+          "Most jobs one POST /queues/{queue}/job-defaults/apply call examines: its largest `limit`.",
+      }),
     },
     {
       description:
         "The caps the routes enforce, as configured: each is the value the route itself reads.",
     },
   ),
+);
+
+/** The analytics block of `/meta`. Mirrors `MetaAnalyticsDto`. */
+const MetaAnalyticsSchema = s.object(
+  {
+    // A union of literals, not an integer: the resolutions are a closed set,
+    // and a client's picker is built from exactly these.
+    resolutions: s.array(s.union(s.literal(1), s.literal(60)), {
+      description:
+        "Bucket widths this deployment can serve, in seconds, finest first.",
+    }),
+    // Named properties rather than a free record, so the document says which
+    // two keys exist. JSON object keys are strings, hence "1" and "60".
+    retentionMs: s.object(
+      {
+        "1": s.optional(s.integer({ minimum: 0 })),
+        "60": s.optional(s.integer({ minimum: 0 })),
+      },
+      {
+        description:
+          "How long each resolution is kept, in ms, keyed by the resolution in seconds. A resolution this deployment does not keep is absent.",
+      },
+    ),
+    maxSpanMs: s.integer({
+      minimum: 1,
+      description: "Longest span one request may ask for, in ms.",
+    }),
+    maxBuckets: s.integer({
+      minimum: 1,
+      description:
+        "Most buckets one series may hold; a longer span is served at a coarser resolution.",
+    }),
+    maxSeries: s.integer({
+      minimum: 1,
+      description:
+        "Most series one batch read returns; an explicit over-ask is 400 BULK_LIMIT.",
+    }),
+    recording: s.object(
+      {
+        resolution: s.enum(["minute", "second"]),
+        secondRetentionMs: s.integer({ minimum: 0 }),
+        workers: s.boolean(),
+        runners: s.boolean(),
+        durations: s.boolean(),
+      },
+      { description: "Which kinds are being recorded right now." },
+    ),
+    busynessIntervalMs: s.integer({
+      minimum: 1,
+      description:
+        "The busyness sample interval, in ms — the workers' report interval, not a bucket width.",
+    }),
+  },
+  {
+    description:
+      "What the analytics routes can serve here. `null` when the driver records none of it.",
+  },
 );
 
 /** `GET /meta`. Mirrors `MetaDto`. */
@@ -125,7 +191,27 @@ export const MetaSchema = s.named(
         flows: s.boolean(),
         search: s.boolean(),
         workers: s.boolean(),
+        workerControl: s.boolean(),
         throughput: s.boolean(),
+        runnerLogs: s.boolean(),
+        runnerMetrics: s.boolean(),
+        workerMetrics: s.boolean(),
+        jobAttribution: s.boolean({
+          description:
+            "The backend records the worker that ran each job's last attempt (`processedBy`), and the job list serves `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. `false` in `runner` mode, and wherever `processedBy` is always `null`.",
+        }),
+        addedByState: s.boolean({
+          description:
+            "The backend serves reads by creation time from an index or memory: `GET /overview/added` and `GET /queues/{queue}/counts/added` exist, and the job list accepts `sort=createdAt` (400 `INVALID_ARGUMENT`, with a detail, where this is `false`). `false` on the Redis and file drivers, and in `runner` mode.",
+        }),
+        jobDefaults: s.boolean({
+          description:
+            "The backend can store a queue's job defaults (it has queue state), so `GET`/`PUT`/`DELETE /queues/{queue}/job-defaults` exist and producers on this version add under them. `true` on every built-in driver; `false` in `runner` mode.",
+        }),
+        jobDefaultsApply: s.boolean({
+          description:
+            "The backend can rewrite pending jobs with them, so `POST /queues/{queue}/job-defaults/apply` exists. `true` on every built-in driver; `false` in `runner` mode and on a custom driver without `rewritePendingOptions`.",
+        }),
       }),
       events: s.enum(["push", "poll", "local"]),
       publishing: s.nullable(s.boolean()),
@@ -154,6 +240,7 @@ export const MetaSchema = s.named(
       ),
       csrf: MetaCsrfSchema,
       limits: MetaLimitsSchema,
+      analytics: s.nullable(MetaAnalyticsSchema),
       addableNames: s.nullable(
         s.array(s.string(), {
           description:

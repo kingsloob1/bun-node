@@ -1,8 +1,16 @@
 import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
+  JobDefaultsApplyState,
+  JobListSort,
+} from "../api/contract/constants";
+import type { JobDefaultsValues } from "../api/contract/types";
+import type {
   DriverConfig,
+  EditableJobOptionKey,
   JobsDriver,
   JobState,
+  MetricsOptions,
+  PendingOptionsRewriteResult,
   RepeatRecord,
   Retention,
   ThroughputBucket,
@@ -10,6 +18,7 @@ import type {
 import type { DateParser } from "../shared/humanTime";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { RunProgress } from "../shared/progress";
+import type { WorkerStopPersistence } from "../shared/workers";
 import type {
   BackoffStrategies,
   BackoffStrategy,
@@ -17,6 +26,7 @@ import type {
 } from "./backoff";
 import type { IsolationMode, IsolationOptions } from "./isolation";
 import type { Job } from "./Job";
+import type { JobDefaultsPatch } from "./jobDefaults";
 
 /**
  * The queue's public types.
@@ -820,6 +830,17 @@ export interface BunQueueOptions {
   /** Defaults merged under every `add()`. */
   defaultJobOptions?: JobOptions;
   /**
+   * How long this queue trusts the queue's stored job defaults
+   * (`setJobDefaults()`, or the management API) before reading them again, in
+   * milliseconds: the bound on how long a saved change takes to reach this
+   * producer, plus one read. A whole number, `0` or more; `0` reads them on
+   * every add (one extra round trip per add). Defaults to `1000`.
+   *
+   * While the read is fresh an add costs nothing extra; `addBulk` reads at
+   * most once per call.
+   */
+  jobDefaultsRefreshInterval?: number;
+  /**
    * Re-emit events from other processes, so a producer can watch jobs a
    * worker elsewhere is running. Off by default: it costs a subscription.
    */
@@ -858,6 +879,33 @@ export interface BunQueueOptions {
 }
 
 /** Options for a {@link BunQueueWorker}. */
+/**
+ * How a worker hears about instructions written by another process, when the
+ * defaults are not what you want.
+ */
+export interface WorkerRemoteControlOptions {
+  /** Listen at all. Defaults to `true` when the object form is given. */
+  enabled?: boolean;
+  /**
+   * Subscribe to the queue's worker channel, rather than only polling for
+   * instructions.
+   *
+   * Defaults to whether the driver pushes events — true on Redis and the
+   * memory driver, false on SQL, MongoDB and the file driver, where a
+   * subscription is one query every few dozen milliseconds per queue. Turn it
+   * on there to trade that cost for control that lands in tens of
+   * milliseconds rather than seconds.
+   */
+  subscribe?: boolean;
+  /**
+   * How often to read the stored instructions when not subscribing, in
+   * milliseconds. Defaults to `2000`, or the report interval when that is
+   * shorter. Ignored while subscribed, where the heartbeat is the only
+   * fallback needed.
+   */
+  interval?: number;
+}
+
 export interface BunQueueWorkerOptions {
   /**
    * Publish this worker's job events for other processes to receive.
@@ -884,8 +932,82 @@ export interface BunQueueWorkerOptions {
   driver?: JobsDriver | DriverConfig;
   /** Logger, or anything `resolveLogger` accepts. */
   logger?: LoggerLike;
-  /** Identifies this worker in job records and logs. Defaults to a fresh id. */
+  /**
+   * Identifies this worker in job records and logs — its **incarnation**.
+   * Defaults to `` `${key}.${tag}` ``, where the tag is derived from the host,
+   * the pid and when the process started, so it is unique among live workers
+   * and new on every restart.
+   *
+   * Give one only if you can guarantee no two live workers share it: it names
+   * the heartbeat record, the lock token and the concurrency limiter's lease,
+   * and two workers sharing it corrupt all three. An explicit id also becomes
+   * the default {@link BunQueueWorkerOptions.key}.
+   */
   id?: string;
+  /**
+   * The **stable** identity a remote configuration override is keyed by, so
+   * an override survives restarts and redeploys and reaches every replica.
+   *
+   * Defaults to `[service.]queue[.name|.ordinal]`, or to an explicit
+   * {@link BunQueueWorkerOptions.id} when one was given. Set it directly to
+   * name a worker something an operator will recognise.
+   */
+  key?: string;
+  /**
+   * The service this worker belongs to — normally `BunJobs`'s `service`
+   * option, which passes it down. Reported in the worker's record, and the
+   * first segment of the derived {@link BunQueueWorkerOptions.key}.
+   */
+  service?: string;
+  /**
+   * What to call this worker within its queue, when a service runs more than
+   * one on the same queue and they should be configurable apart. Becomes the
+   * last segment of the derived key.
+   *
+   * Prefer it over the ordinal `BunJobs` assigns: an ordinal shifts the
+   * moment a worker's creation becomes conditional, and the override then
+   * follows the wrong worker.
+   */
+  name?: string;
+  /**
+   * The ordinal of this worker among those a context created for the same
+   * queue, used in the derived key from the second one on. `BunJobs` sets it;
+   * there is rarely a reason to.
+   */
+  keyOrdinal?: number;
+  /**
+   * Whether this worker obeys instructions written by another process —
+   * pause, resume, stop, start and configuration overrides.
+   *
+   * `false` by default for a worker built directly, and `true` for one
+   * `BunJobs` builds, which is where a management UI's workers come from.
+   * `true` uses a driver subscription where the driver pushes events
+   * (`capabilities.events` is `"push"` or `"local"`) and a short poll where it
+   * does not; the object form overrides either choice. In every case the
+   * worker's own heartbeat re-reads the stored entries, so a lost event costs
+   * at most one `reportInterval`.
+   *
+   * It needs a driver with queue state; on one without, the worker reports
+   * `control.enabled: false` and simply runs.
+   */
+  remoteControl?: boolean | WorkerRemoteControlOptions;
+  /**
+   * How long a remote `stop` lasts.
+   *
+   * - `"process"` (the default) — the stop is recorded against this
+   *   incarnation, so a process restart brings the worker back running. A
+   *   deployment must not come back with every worker silently stopped.
+   * - `"key"` — the stop is also recorded against
+   *   {@link BunQueueWorkerOptions.key}, and a worker with that key applies it
+   *   at startup, across restarts and replicas, until somebody starts it.
+   */
+  stopPersistence?: WorkerStopPersistence;
+  /**
+   * Whether one instruction may ask for the other
+   * {@link BunQueueWorkerOptions.stopPersistence}. `false` by default, so the
+   * process rather than the caller decides whether a stop outlives it.
+   */
+  stopPersistenceOverridable?: boolean;
   /** How many jobs to process at once. Defaults to `1`. */
   concurrency?: number;
   /** How long a claim's lock lives. Defaults to 30000. */
@@ -924,6 +1046,28 @@ export interface BunQueueWorkerOptions {
    * still a worker.
    */
   reportInterval?: number;
+  /**
+   * What this worker records into the analytics buckets, under its stable
+   * {@link BunQueueWorkerOptions.key} so a restart or a rolling redeploy
+   * continues one series rather than starting a new one: the jobs it
+   * completed and the attempts it failed, written once a second while it is
+   * busy and never while it is idle, and a busyness sample (jobs in flight
+   * against `concurrency`) riding each heartbeat report — so busyness is
+   * recorded at `reportInterval`, and not at all with reporting off. On by
+   * default, at per-second resolution.
+   *
+   * **`{ workers: false }` is the first lever for a large fleet**: workers are
+   * the term that grows with the fleet, and it stops this worker writing
+   * either series whatever the driver. `resolution` and `secondRetentionMs`
+   * reach only a driver built here from a config (one naming its own
+   * `metrics` wins), never an instance passed in. The cumulative `completed`
+   * and `failed` on the worker's heartbeat record are written either way:
+   * they ride a write that happens anyway.
+   *
+   * Recording never changes a job: a driver without the analytics methods
+   * records nothing, and one that throws is logged once and ignored.
+   */
+  metrics?: MetricsOptions;
   /**
    * Where a processor *file* runs each attempt:
    *
@@ -964,6 +1108,15 @@ export interface BunQueueWorkerOptions {
    * every worker within this. Defaults to `1000`.
    */
   limitsRefreshInterval?: number;
+  /**
+   * How long the queue's stored job defaults are trusted before this worker
+   * reads them again, in milliseconds. The worker reads them only to build a
+   * repeat series' next occurrence, which takes the stored override over the
+   * series' own options (never over one its `add()` passed explicitly). A
+   * whole number, `0` or more; `0` reads on every occurrence. Defaults to
+   * `1000`.
+   */
+  jobDefaultsRefreshInterval?: number;
   /**
    * Whether a running worker keeps the process alive while it waits for work.
    * Defaults to `true`, as `BunRunner`'s option of the same name does.
@@ -1395,8 +1548,31 @@ export interface ListJobsOptions {
   offset?: number;
   /** The most jobs to return. Defaults to `100`. */
   limit?: number;
-  /** `asc` is the state's natural order, the default; `desc` its reverse. */
+  /**
+   * `asc` is the order `sort` names, the default; `desc` its exact reverse,
+   * tie-breaks included.
+   */
   order?: "asc" | "desc";
+  /**
+   * What the jobs are ordered by. Defaults to `"natural"`:
+   *
+   * - `"natural"` — the order these reads have always used: one state by its
+   *   own key (`waiting` by priority then creation, `delayed` and `failed` by
+   *   when they are due, `active` by lock expiry, `completed` and `dead` by
+   *   when they finished), several states by creation;
+   * - `"createdAt"` — by creation whatever the states, jobs created in the
+   *   same millisecond by id, so `order: "desc"` is "newest first" on every
+   *   state alike.
+   *
+   * `"createdAt"` is a `ConfigError` on a driver that does not implement
+   * `countAddedJobs` (the Redis and file drivers, and a custom driver written
+   * before it): those can only sort by reading every job in the states, and a
+   * page silently in the natural order would be worse. On SQL and MongoDB a
+   * page of one large state (`completed`, `dead`) sorted this way is a top-N
+   * sort over that state rather than an index walk, so keep such pages
+   * modest.
+   */
+  sort?: JobListSort;
   /**
    * Only jobs with this name, or one of these names, exactly. An empty array
    * matches nothing.
@@ -1409,6 +1585,38 @@ export interface ListJobsOptions {
    * large backlog pair it with a state that is small, or a name.
    */
   search?: string;
+  /**
+   * Only jobs whose last attempt was claimed by a worker with this stable
+   * key, or one of these keys (`processedBy.key`), exactly. A job never
+   * claimed, or claimed before attribution was recorded, never matches; an
+   * empty array matches nothing. **Last attempt only**: a job that failed on
+   * one worker and was retried on another matches the second.
+   *
+   * Not indexed on any backend, so on a large queue pair it with
+   * `finishedFrom`/`finishedTo`. A `ConfigError` on a driver without the
+   * job-attribution capability (`capabilities.jobAttribution`), which has no
+   * stamp to match: on SQL, until `syncSchema()` adds the columns.
+   */
+  workerKey?: string | string[];
+  /**
+   * Only jobs whose last attempt was claimed by this worker incarnation, or
+   * one of these (`processedBy.id`), exactly. An empty array matches nothing.
+   * Refused like `workerKey` without the job-attribution capability.
+   */
+  workerId?: string | string[];
+  /**
+   * Only jobs that finished at or after this instant (`finishedOn`,
+   * **inclusive**). Only `completed` and `dead` jobs can match a range: a
+   * waiting, delayed, active or retry-pending job has not finished.
+   */
+  finishedFrom?: Date | number;
+  /**
+   * Only jobs that finished before this instant (`finishedOn`,
+   * **exclusive**). Not after `finishedFrom` is a `ConfigError`: a range no
+   * job can finish in is a caller's mistake, not an empty result. A range
+   * needs no attribution stamp and works on every driver.
+   */
+  finishedTo?: Date | number;
 }
 
 /**
@@ -1458,4 +1666,111 @@ export interface QueueSummary {
   total: number;
   /** Whether claiming is paused across every process. */
   paused: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * Queue job defaults
+ * ------------------------------------------------------------------ */
+
+/**
+ * A queue's job defaults, as `queue.getJobDefaults()` answers: what the code
+ * asks for, the stored override, and what a job passing none of the options
+ * gets.
+ *
+ * Precedence, highest first: an option passed explicitly on the job's own
+ * `add()`; the stored override; the code's defaults (a `define()`
+ * definition's for its name, then the queue's `defaultJobOptions`); the
+ * built-ins.
+ */
+export interface JobDefaultsInfo {
+  /**
+   * What the code asks for before any override: this queue instance's
+   * `defaultJobOptions` over the built-ins. Another producer built with
+   * different `defaultJobOptions` asks for its own; the override replaces
+   * both alike.
+   */
+  code: JobDefaultsValues;
+  /** What a job added now, passing none of these options, gets. */
+  effective: JobDefaultsValues;
+  /** The stored override itself; `{}` when there is none. */
+  override: JobDefaultsPatch;
+  /** The keys the override replaces, in `JOB_DEFAULT_KEYS` order; `[]` when none. */
+  overridden: EditableJobOptionKey[];
+  /** The stored override's version: pass it as `expectedSeq`, and as `seq` to apply it. `0` when nothing was ever stored. */
+  seq: number;
+  /** When the override was last written, epoch ms; absent when it never was. */
+  updatedAt?: number;
+  /**
+   * How long a producer may keep adding jobs with the previous defaults after
+   * a change, in ms: this queue's `jobDefaultsRefreshInterval`. Another
+   * process may be configured otherwise.
+   */
+  propagationMs: number;
+}
+
+/** What `queue.setJobDefaults()` and `queue.resetJobDefaults()` answer. */
+export interface JobDefaultsWriteResult extends JobDefaultsInfo {
+  /**
+   * Whether the write was refused because the stored override had moved on
+   * from `expectedSeq` (or kept moving under a compare-and-set), so nothing
+   * changed. The rest of the answer is then what somebody else stored.
+   */
+  contended: boolean;
+}
+
+/** Options for `queue.setJobDefaults()` and `queue.resetJobDefaults()`. */
+export interface JobDefaultsWriteOptions {
+  /**
+   * Refuse — `contended: true`, nothing changed — unless the stored override
+   * is still at this `seq` (`0`: nothing stored yet). Omit it for a
+   * last-writer-wins write, key by key.
+   */
+  expectedSeq?: number;
+  /**
+   * Who is writing. Stored with the entry and returned by `readJobDefaults()`
+   * as `by`; never interpreted, and not surfaced by `getJobDefaults()` or the
+   * management API (a follow-up could add it to `JobDefaultsInfo`/`JobDefaultsDto`).
+   */
+  by?: string;
+}
+
+/** Options for `queue.applyJobDefaults()`: one bounded call of a resumable walk. */
+export interface ApplyJobDefaultsOptions {
+  /**
+   * The override version being applied — the `seq` the caller read and
+   * confirmed. Required: when the stored override has moved on, the call
+   * throws `JobDefaultsChangedError` and writes nothing, so a walk of many
+   * calls applies one version or stops.
+   */
+  seq: number;
+  /**
+   * Which overridden keys to write. Defaults to every key the override sets;
+   * naming one it does not set is a `ConfigError`.
+   */
+  keys?: EditableJobOptionKey[];
+  /** Which states to walk, in this order. Defaults to all of `JOB_DEFAULTS_APPLY_STATES`. */
+  states?: JobDefaultsApplyState[];
+  /** Most jobs to examine in this call, a whole number of at least 1. Defaults to `1000`. */
+  limit?: number;
+  /** The previous call's `next`, to continue a walk. Opaque; a foreign one is a `ConfigError`. */
+  cursor?: string | null;
+  /** Examine and count exactly as a real call would, but write nothing. Defaults to `false`. */
+  dryRun?: boolean;
+  /**
+   * Also rewrite jobs added before bun-jobs recorded which options were
+   * explicit, treating every option of theirs as defaulted — which may replace
+   * a value their `add()` did pass. Defaults to `false`: they are counted in
+   * `skippedUnmarked` and left alone.
+   */
+  includeUnmarked?: boolean;
+}
+
+/** What one `queue.applyJobDefaults()` call did. */
+export interface ApplyJobDefaultsResult extends PendingOptionsRewriteResult {
+  /** The override version applied. */
+  seq: number;
+  /** The keys written (in a dry run: that would have been), in `JOB_DEFAULT_KEYS` order. */
+  keys: EditableJobOptionKey[];
+  /** Whether this was a dry run, in which "rewritten" means "would be". */
+  dryRun: boolean;
 }

@@ -9,6 +9,7 @@ import {
   parseWhen,
   readRecurrence,
 } from "../shared/humanTime";
+import { addDefinedJob, splitDefinitionDefaults } from "./BunQueue";
 import { assertTimeZone } from "./repeat";
 
 /**
@@ -572,7 +573,13 @@ export class JobBuilder<
    * The only method that does anything. Everything before it describes.
    */
   async start(): Promise<TJob> {
-    const options: JobOptions = { ...this.#defaults, ...this.#options };
+    // The definition's editable options (attempts, backoff, timeout, …) are
+    // not merged into the call's: they go to the queue as a layer of their
+    // own, under its stored job defaults, so an override saved for the queue
+    // reaches defined names too and only what this builder was told counts
+    // as explicit. The rest of the definition sits under the builder, as ever.
+    const { definition, rest } = splitDefinitionDefaults(this.#defaults);
+    const options: JobOptions = { ...rest, ...this.#options };
     // Worked on as a copy, so starting the same builder twice reads its
     // phrases twice rather than inheriting the first reading.
     let repeat: RepeatOptions | undefined = this.#repeat
@@ -611,7 +618,13 @@ export class JobBuilder<
       }
     }
 
-    const job = await this.#queue.add(this.#name, this.#data as TData, options);
+    const job = await addDefinedJob(
+      this.#queue,
+      this.#name,
+      this.#data as TData,
+      options,
+      definition,
+    );
 
     // The job the queue built; `TJob` only says, where a typed context made
     // this builder, which name that job was added under.

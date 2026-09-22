@@ -1,0 +1,47 @@
+/* One worker's action buttons and their dialogs. */
+
+.worker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.worker-actions-hint {
+  display: inline-block;
+  max-width: 24rem;
+  font-size: var(--text-sm);
+}
+
+/* The settings form: one row per setting, the code value beside the input. */
+.worker-config-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.worker-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.worker-config-row > .field {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.worker-config-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}
+
+.worker-config-instances {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}

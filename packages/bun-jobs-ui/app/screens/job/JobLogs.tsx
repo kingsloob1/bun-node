@@ -11,6 +11,8 @@ import { Spinner } from "../../components/Spinner";
 import { useApiClient } from "../../context";
 import { formatNumber } from "../../format";
 import { useMeta } from "../../meta/hooks";
+import { LogLines } from "../logs/LogLines";
+import { ClearLogsButton } from "./ClearLogsButton";
 import {
   defaultLogLimit,
   LOG_PAGE_SIZES,
@@ -38,6 +40,7 @@ export interface JobLogsProps {
 /**
  * A job's log lines: paged (at most `limits.maxLogPage` a page), oldest or
  * newest first, refreshing every few seconds while the job can still log.
+ * "Clear logs…" sits beside the order when `jobs.clearLogs` is granted.
  */
 export function JobLogs({ queue, id, state }: JobLogsProps) {
   const api = useApiClient();
@@ -66,15 +69,24 @@ export function JobLogs({ queue, id, state }: JobLogsProps) {
     <Card
       title="Logs"
       actions={
-        <span className="job-logs-order">
-          <label htmlFor={orderId}>Order</label>
-          <Select
-            id={orderId}
-            options={ORDER_OPTIONS}
-            value={view.order}
-            onChange={(order) =>
-              setView((current) => ({ ...current, order, offset: 0 }))
-            }
+        <span className="job-logs-controls">
+          <span className="job-logs-order">
+            <label htmlFor={orderId}>Order</label>
+            <Select
+              id={orderId}
+              options={ORDER_OPTIONS}
+              value={view.order}
+              onChange={(order) =>
+                setView((current) => ({ ...current, order, offset: 0 }))
+              }
+            />
+          </span>
+          <ClearLogsButton
+            queue={queue}
+            id={id}
+            state={state}
+            total={data ? total : null}
+            onCleared={() => setView((current) => ({ ...current, offset: 0 }))}
           />
         </span>
       }
@@ -114,26 +126,15 @@ export function JobLogs({ queue, id, state }: JobLogsProps) {
               {total === 0 ? "No log lines yet." : "No lines on this page."}
             </p>
           ) : (
-            <ol
-              className="job-logs"
-              aria-label="Log lines"
-            >
-              {data.items.map((line, index) => (
-                <li
-                  // Lines are positional; the number is their identity.
-                  key={lineNumber(index)}
-                  className="job-log-line"
-                >
-                  <span
-                    className="job-log-number"
-                    aria-hidden="true"
-                  >
-                    {lineNumber(index)}
-                  </span>
-                  <code className="job-log-text">{line}</code>
-                </li>
-              ))}
-            </ol>
+            <LogLines
+              label="Log lines"
+              items={data.items.map((line, index) => ({
+                // Lines are positional; the number is their identity.
+                id: lineNumber(index),
+                number: lineNumber(index),
+                text: line,
+              }))}
+            />
           )}
           <Pager
             label="Log pages"

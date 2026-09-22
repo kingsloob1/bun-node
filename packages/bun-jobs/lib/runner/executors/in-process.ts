@@ -10,6 +10,7 @@ import type {
 import process from "node:process";
 import { serializeError, withTimeout } from "@kingsleyweb/bun-common";
 import { JobTimeoutError, RunKilledError } from "../../shared/errors";
+import { installConsoleCapture, runWithConsoleSink } from "../consoleCapture";
 import { toHandler } from "./executor";
 
 /**
@@ -27,6 +28,20 @@ export class InProcessExecutor implements Executor {
 
   /** Bumped per run when `reloadOnEachRun` is on, to bust the module cache. */
   #reload = 0;
+
+  /**
+   * This executor's hold on the console patch, taken by its first capturing
+   * run and kept until {@link close} — not taken and released per run, which
+   * rewrote five console methods twice for every run. Between runs the patch
+   * is a pass-through: no async context carries a sink.
+   */
+  #consoleHold: (() => void) | undefined;
+
+  /** Capturing runs of this executor not yet settled. */
+  #capturing = 0;
+
+  /** Set by {@link close}: release the hold as soon as no capturing run is live. */
+  #closing = false;
 
   constructor(
     /** In-process specific options. */
@@ -67,7 +82,27 @@ export class InProcessExecutor implements Executor {
 
     /** Why the run was asked to stop, once it has been. */
     let stopReason: string | undefined;
-    const done = this.#run(options, context, controller, () => stopReason);
+    const run = () => this.#run(options, context, controller, () => stopReason);
+
+    // Console capture: the handler shares this process's `console` with every
+    // other run and with the host, so its calls are told apart by async
+    // context — everything `#run` starts, including the module's first import,
+    // carries this run's sink. The patch stays installed across runs, until
+    // `close()`; a detached run that keeps logging after it settled reaches a
+    // closed capture, which drops it.
+    const onConsole = options.events.onConsole;
+    let done: Promise<RunOutcome>;
+    if (options.captureConsole && onConsole) {
+      this.#closing = false;
+      this.#consoleHold ??= installConsoleCapture();
+      this.#capturing++;
+      done = runWithConsoleSink(onConsole, run).finally(() => {
+        this.#capturing--;
+        this.#releaseIfIdle();
+      });
+    } else {
+      done = run();
+    }
 
     return {
       done,
@@ -87,6 +122,25 @@ export class InProcessExecutor implements Executor {
         return true;
       },
     };
+  }
+
+  /**
+   * Releases this executor's hold on the console patch — at once when no
+   * capturing run is live, otherwise when the last one settles. The runner
+   * calls it on `stop()` and when it replaces the executor. A later capturing
+   * run takes the hold again.
+   */
+  close(): void {
+    this.#closing = true;
+    this.#releaseIfIdle();
+  }
+
+  /** Drops the console hold once closing and no capturing run is live. */
+  #releaseIfIdle(): void {
+    if (this.#closing && this.#capturing === 0 && this.#consoleHold) {
+      this.#consoleHold();
+      this.#consoleHold = undefined;
+    }
   }
 
   /** Imports the handler, runs it under the timeout, and classifies the end. */

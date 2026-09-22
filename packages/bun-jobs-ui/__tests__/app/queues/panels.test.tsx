@@ -100,6 +100,54 @@ describe("the limits editor", () => {
     );
   });
 
+  it("describes every input: what it limits, across every worker, and that empty means none", async () => {
+    renderQueue();
+    const form = await limitsForm();
+    /** The hint wired to an input as its description. */
+    const hintOf = (label: string) => {
+      const input = within(form).getByLabelText(label);
+      const id = input.getAttribute("aria-describedby") ?? "";
+      return id
+        .split(" ")
+        .map((part) => document.getElementById(part)?.textContent ?? "")
+        .join(" ");
+    };
+    expect(hintOf("Queue: rate max")).toContain("START in one rate window");
+    expect(hintOf("Queue: rate max")).toContain("jobs on this queue");
+    expect(hintOf("Queue: rate window")).toContain("“1 minute”");
+    // The queue-wide cap is not a worker's own concurrency; say both apply.
+    expect(hintOf("Queue: concurrency")).toContain("across every worker");
+    expect(hintOf("Queue: concurrency")).toContain("each worker's own");
+    expect(hintOf("Queue: concurrency")).toContain("Empty means no limit");
+  });
+
+  it("names the job in a per-name row's hints, and explains the name field", async () => {
+    renderQueue();
+    const form = await limitsForm();
+    fireEvent.click(within(form).getByRole("button", { name: "Add a name" }));
+    // Unnamed, the row's hints still say what they limit.
+    const unnamed = within(form).getByLabelText("Name 1: rate max");
+    expect(
+      document.getElementById(
+        unnamed.getAttribute("aria-describedby")?.split(" ")[0] ?? "",
+      )?.textContent,
+    ).toContain("jobs with this name");
+    type(within(form).getByLabelText("Name 1"), "send");
+    const sendRate = within(form).getByLabelText("send: rate max");
+    const rateHint =
+      document.getElementById(
+        sendRate.getAttribute("aria-describedby")?.split(" ")[0] ?? "",
+      )?.textContent ?? "";
+    expect(rateHint).toContain("jobs named “send”");
+    const nameInput = within(form).getByLabelText("Name 1");
+    const nameHint =
+      document.getElementById(
+        nameInput.getAttribute("aria-describedby")?.split(" ")[0] ?? "",
+      )?.textContent ?? "";
+    expect(nameHint).toContain("on top of the queue's own");
+    expect(nameHint).toContain("skipped, not waited behind");
+  });
+
   it("removes every limit with PUT null after a confirmation", async () => {
     const { calls } = renderQueue({
       handlers: { "PUT /queues/emails/limits": { body: null } },
@@ -305,6 +353,7 @@ describe("the other panels", () => {
     renderQueue();
     expect(await panelLabels()).toEqual([
       "Limits",
+      "Job defaults",
       "Workers",
       "Throughput",
       "Repeatables",
@@ -322,6 +371,7 @@ describe("the other panels", () => {
       },
     });
     expect(await panelLabels()).toEqual([
+      "Job defaults",
       "Workers",
       "Throughput",
       "Repeatables",
@@ -333,6 +383,7 @@ describe("the other panels", () => {
     renderQueue({ handlers: { "GET /queues/emails": { body: detail } } });
     await waitFor(async () =>
       expect(await panelLabels()).toEqual([
+        "Job defaults",
         "Workers",
         "Throughput",
         "Repeatables",
@@ -353,7 +404,11 @@ describe("the other panels", () => {
         },
       },
     });
-    expect(await panelLabels()).toEqual(["Limits", "Repeatables"]);
+    expect(await panelLabels()).toEqual([
+      "Limits",
+      "Job defaults",
+      "Repeatables",
+    ]);
   });
 
   it("drops throughput without the feature, and repeatables without repeatables.list", async () => {
@@ -372,7 +427,7 @@ describe("the other panels", () => {
         },
       },
     });
-    expect(await panelLabels()).toEqual(["Limits"]);
+    expect(await panelLabels()).toEqual(["Limits", "Job defaults"]);
   });
 
   it("renders no panels at all when none is allowed", async () => {
@@ -385,6 +440,7 @@ describe("the other panels", () => {
               limits: false,
               workers: false,
               throughput: false,
+              jobDefaults: false,
             },
           }),
         },

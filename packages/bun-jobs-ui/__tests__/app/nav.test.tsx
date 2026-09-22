@@ -26,13 +26,21 @@ function ids(overrides: Partial<NavInputs> = {}, denied: JobsApiAction[] = []) {
 
 describe("buildNav", () => {
   it("shows every section in mode both with every permission", () => {
-    expect(ids()).toEqual(["overview", "queues", "runners", "events", "docs"]);
+    expect(ids()).toEqual([
+      "overview",
+      "queues",
+      "workers",
+      "runners",
+      "events",
+      "docs",
+    ]);
   });
 
   it("drops the runner side in mode jobs, and the jobs side in mode runner", () => {
     expect(ids({ meta: metaFixture({ mode: "jobs" }) })).toEqual([
       "overview",
       "queues",
+      "workers",
       "events",
       "docs",
     ]);
@@ -46,11 +54,13 @@ describe("buildNav", () => {
   it("drops an entry whose action is absent or false", () => {
     expect(ids({}, ["queues.list"])).toEqual([
       "overview",
+      "workers",
       "runners",
       "events",
       "docs",
     ]);
     expect(ids({}, ["queues.list", "metrics.read"])).toEqual([
+      "workers",
       "runners",
       "events",
       "docs",
@@ -58,6 +68,7 @@ describe("buildNav", () => {
     expect(ids({}, ["runners.list", "events.connect", "docs.read"])).toEqual([
       "overview",
       "queues",
+      "workers",
     ]);
     // Present but false behaves like absent.
     expect(
@@ -71,14 +82,43 @@ describe("buildNav", () => {
     ).not.toContain("docs");
   });
 
+  it("shows Workers only with a worker registry and workers.list, in jobs mode", () => {
+    expect(ids({}, ["workers.list"])).not.toContain("workers");
+    const noRegistry = metaFixture();
+    noRegistry.features = { ...noRegistry.features, workers: false };
+    expect(ids({ meta: noRegistry })).not.toContain("workers");
+    expect(ids({ meta: metaFixture({ mode: "runner" }) })).not.toContain(
+      "workers",
+    );
+  });
+
   it("keeps Overview with metrics.read alone", () => {
     expect(ids({}, ["queues.list"])).toContain("overview");
   });
 
   it("drops Events without a socket and docs when meta.docs is null", () => {
     expect(ids({ meta: metaFixture({ websocket: null, docs: null }) })).toEqual(
-      ["overview", "queues", "runners"],
+      ["overview", "queues", "workers", "runners"],
     );
+  });
+
+  it("nests HTTP API under API docs, and WebSocket API only with a socket", () => {
+    /** The docs entry's children, as ids and paths. */
+    const children = (meta = metaFixture()) => {
+      const docs = buildNav({
+        meta,
+        sections: { manage: true, docs: true },
+        can: () => true,
+      }).find((item) => item.id === "docs");
+      return docs?.children?.map((child) => [child.id, child.to]);
+    };
+    expect(children()).toEqual([
+      ["docs-http", "/docs/http"],
+      ["docs-ws", "/docs/ws"],
+    ]);
+    expect(
+      children(metaFixture({ docs: { openapi: "/jobs-api/openapi.json" } })),
+    ).toEqual([["docs-http", "/docs/http"]]);
   });
 
   it("honours the mount's sections", () => {
@@ -86,6 +126,7 @@ describe("buildNav", () => {
     expect(ids({ sections: { manage: true, docs: false } })).toEqual([
       "overview",
       "queues",
+      "workers",
       "runners",
       "events",
     ]);
@@ -116,8 +157,11 @@ describe("the rendered layout", () => {
     expect(sidebarLinks()).toEqual([
       "Overview",
       "Queues",
+      "Workers",
       "Events",
       "API docs",
+      "HTTP API",
+      "WebSocket API",
     ]);
     const header = page().getByRole("banner");
     expect(header.textContent).toContain("Shop jobs");
@@ -157,6 +201,49 @@ describe("the rendered layout", () => {
     await page().findByTestId("app-ready");
     expect(page().getByText("Nothing to show")).toBeTruthy();
     expect(sidebarLinks()).toEqual([]);
+  });
+
+  it("marks exactly one docs link current: the parent on /docs, a child below it", async () => {
+    /** The names of the sidebar links marked current. */
+    const current = () =>
+      [
+        ...page()
+          .getByRole("navigation", { name: "Sections" })
+          .querySelectorAll('a[aria-current="page"]'),
+      ].map((a) => a.textContent);
+
+    visit("/jobs/docs");
+    const home = renderApp();
+    await page().findByTestId("docs-home");
+    expect(current()).toEqual(["API docs"]);
+    home.unmount();
+
+    visit("/jobs/docs/ws");
+    renderApp();
+    await page().findByTestId("app-ready");
+    await waitFor(() => expect(current()).toEqual(["WebSocket API"]));
+  });
+
+  it("drops the WebSocket API link when the API documents no socket", async () => {
+    renderApp({
+      handlers: {
+        "GET /meta": {
+          body: metaFixture({
+            websocket: null,
+            docs: { openapi: "/jobs-api/openapi.json" },
+          }),
+        },
+      },
+    });
+    await page().findByTestId("app-ready");
+    expect(sidebarLinks()).toEqual([
+      "Overview",
+      "Queues",
+      "Workers",
+      "Runners",
+      "API docs",
+      "HTTP API",
+    ]);
   });
 
   it("shows the read-only chip", async () => {

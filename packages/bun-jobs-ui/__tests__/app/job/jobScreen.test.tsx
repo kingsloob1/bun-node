@@ -1,6 +1,7 @@
 import type { JobState } from "../../../app/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { JOB_STATES } from "../../../app/api/contract";
+import { STATE_LABELS } from "../../../app/format";
 import { ProgressValue } from "../../../app/screens/job/JobScreen";
 import {
   act,
@@ -64,6 +65,15 @@ describe("the job screen", () => {
         .getByRole("heading", { level: 1 })
         .querySelector(".state-badge");
       expect(badge?.className).toContain(`state-${state}`);
+      // The label: `failed` reads "Retrying", titled with what it means.
+      expect(badge?.textContent).toBe(
+        state === "failed" ? "Retrying" : STATE_LABELS[state],
+      );
+      if (state === "failed") {
+        expect(badge?.getAttribute("title")).toContain("waiting to retry");
+      } else {
+        expect(badge?.hasAttribute("title")).toBe(false);
+      }
       expect(page().getByTestId("job-id").textContent).toBe(AWKWARD_ID);
       expect(page().getByRole("button", { name: "Copy job id" })).toBeTruthy();
 
@@ -73,7 +83,12 @@ describe("the job screen", () => {
         `${job.attemptsMade} of ${job.maxAttempts}`,
       );
       expect(summaryValue("Stalled")).toBe("0");
-      expect(summaryValue("Worker")).toBe(job.workerId ?? "—");
+      // The holder, only while the attempt runs; never who ran a finished job.
+      expect(summaryValue("Held by")).toBe(
+        state === "active" ? (job.workerId ?? "—") : "",
+      );
+      // The shared meta has no job attribution, so no "Processed by" line.
+      expect(summaryValue("Processed by")).toBe("");
 
       // Data and options are always shown; the return value only when there is one.
       const data = page().getByRole("region", { name: "Data" });

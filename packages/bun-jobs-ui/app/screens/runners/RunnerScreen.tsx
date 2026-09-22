@@ -15,6 +15,11 @@ import { useCan, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
 import { RunnerActions } from "./actions";
+import {
+  describeAdoption,
+  describeOverridden,
+  describeOverride,
+} from "./actions/config";
 import { useRunnerLive, useRunnerRefetchInterval } from "./live";
 import {
   describeConcurrency,
@@ -137,8 +142,16 @@ export function RunnerSummary({ runner }: RunnerSummaryProps) {
               </>
             ) : undefined,
         },
-        { label: "Execution mode", value: runner.executionMode },
-        { label: "Run mode", value: runner.runMode },
+        {
+          label: "Execution mode",
+          value: runner.executionMode,
+          hint: describeOverride(runner.config, "executionMode"),
+        },
+        {
+          label: "Run mode",
+          value: runner.runMode,
+          hint: describeOverride(runner.config, "runMode"),
+        },
         { label: "Queues triggers", value: describeQueueing(runner) },
         {
           label: "Max concurrency",
@@ -147,6 +160,17 @@ export function RunnerSummary({ runner }: RunnerSummaryProps) {
               {describeConcurrency(runner.maxConcurrency)}
             </span>
           ),
+          hint: describeOverride(runner.config, "maxConcurrency"),
+        },
+        runner.config !== undefined && {
+          label: "Settings override",
+          key: "configOverride",
+          value: (
+            <span data-testid="runner-config-override">
+              {describeOverridden(runner.config)}
+            </span>
+          ),
+          hint: describeAdoption(runner.config),
         },
         {
           label: "Queued triggers",
@@ -313,6 +337,7 @@ function RunnerDetail({
       <RunnerHistory
         runner={runner.id}
         enabled={historyEnabled}
+        info={runner}
       />
     </>
   );

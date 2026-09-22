@@ -85,6 +85,8 @@ export function jobFixture(
   return {
     queue: QUEUE,
     id: AWKWARD_ID,
+    // Who ran the last attempt: none recorded, as on a backend without attribution.
+    processedBy: null,
     name: "send-welcome",
     state,
     priority: 5,

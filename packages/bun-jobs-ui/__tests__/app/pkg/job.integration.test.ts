@@ -160,7 +160,7 @@ describe("the job UI against a real createJobsApi", () => {
     expect(before?.attemptsMade).toBe(1);
 
     const view = await ui.openJob("billing", "invoice 9");
-    expect(view.heading).toContain("Failed");
+    expect(view.heading).toContain("Retrying");
     await ui.retry();
     const after = await jobs.queue("billing").getJob("invoice 9");
     expect(after?.state).toBe("waiting");

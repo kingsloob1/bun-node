@@ -25,6 +25,11 @@
  * verify step fails when a declaration importing a peer is reachable from any
  * entry (the root above all) that does not list it. See `checkPeerScopes`.
  *
+ * Imports are found by parsing each declaration with the TypeScript compiler
+ * (`moduleSpecifiers`), never by matching text: a doc comment reading `tell
+ * "x" from "y"` or a type like `Pick<T, "from" | "to">` is not an import, and a
+ * text scan read both as one and failed the build.
+ *
  * Nothing here is specific to this package: it reads the output directory from
  * `tsconfig.build.json`, the manifest from `package.json` and the entries'
  * `peers` from `consumer-check.json`, so another package can copy it unchanged.
@@ -34,6 +39,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { builtinModules, createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import process from "node:process";
+import ts from "typescript";
 
 /** The package root; this script lives in `<root>/scripts`. */
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
@@ -41,15 +47,93 @@ const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 /** The emit config. */
 const BUILD_CONFIG = join(PACKAGE_ROOT, "tsconfig.build.json");
 
-/**
- * A module specifier in a declaration: `from "x"`, `import("x")`,
- * `require("x")` or a bare `import "x"`. Group 2 is the specifier.
- */
-const SPECIFIER =
-  /(\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(["'])([^"']+)\2/gm;
+/** One module specifier found in a declaration. */
+export interface ModuleSpecifier {
+  /** The specifier itself, unquoted: `./utils/native`, `busboy`. */
+  text: string;
+  /** Offset of the specifier's first character (inside the quotes). */
+  start: number;
+  /** Offset just past its last character (before the closing quote). */
+  end: number;
+  /**
+   * Where it came from: an `import`/`export … from`/`import x = require()`
+   * statement, an `import("x")` type or call, a `require("x")` call, a
+   * `declare module "x"` augmentation, or a `/// <reference types="x" />`.
+   */
+  kind: "statement" | "import-type" | "call" | "augmentation" | "reference";
+}
 
-/** `/// <reference types="x" />`; group 2 is the package. */
-const REFERENCE_TYPES = /\/\/\/\s*<reference\s+types=(["'])([^"']+)\1/g;
+/**
+ * Every module specifier `text` really contains, found by parsing it, in
+ * source order. Comments and string literal types are never specifiers,
+ * however much they read like `from "x"`; every syntactic form of a real one
+ * is: `import`/`import type`/`export … from`/`export * from`, a bare
+ * `import "x"`, `import x = require("x")`, `import("x").T` in a type, an
+ * `import()`/`require()` call, a module augmentation (`declare module "x"` in
+ * a module; in a script it declares `x` rather than importing it) and
+ * `/// <reference types="x" />`.
+ */
+export function moduleSpecifiers(
+  text: string,
+  fileName = "declaration.d.ts",
+): ModuleSpecifier[] {
+  const source = ts.createSourceFile(
+    fileName,
+    text,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const found: ModuleSpecifier[] = [];
+  const add = (literal: ts.Node, kind: ModuleSpecifier["kind"]) => {
+    if (!ts.isStringLiteralLike(literal)) return;
+    found.push({
+      text: literal.text,
+      start: literal.getStart(source) + 1,
+      end: literal.end - 1,
+      kind,
+    });
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      if (node.moduleSpecifier) add(node.moduleSpecifier, "statement");
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      add(node.moduleReference.expression, "statement");
+    } else if (ts.isImportTypeNode(node)) {
+      if (ts.isLiteralTypeNode(node.argument))
+        add(node.argument.literal, "import-type");
+    } else if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const [first] = node.arguments;
+      if (
+        first &&
+        (callee.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(callee) && callee.text === "require"))
+      )
+        add(first, "call");
+    } else if (
+      ts.isModuleDeclaration(node) &&
+      ts.isStringLiteral(node.name) &&
+      ts.isExternalModule(source)
+    ) {
+      add(node.name, "augmentation");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  for (const ref of source.typeReferenceDirectives) {
+    found.push({
+      text: ref.fileName,
+      start: ref.pos,
+      end: ref.end,
+      kind: "reference",
+    });
+  }
+  return found.sort((a, b) => a.start - b.start);
+}
 
 /** The subset of `package.json` this script reads. */
 export interface Manifest {
@@ -108,16 +192,15 @@ export async function rewrite(outDir: string): Promise<number> {
   let count = 0;
   for (const file of listFiles(outDir, ".d.ts")) {
     const original = await readFile(file, "utf8");
-    const updated = original.replace(
-      SPECIFIER,
-      (whole, lead: string, quote: string, spec: string) => {
-        if (!spec.startsWith(".")) return whole;
-        const next = explicit(dirname(file), spec);
-        if (next === null) return whole;
-        count++;
-        return `${lead}${quote}${next}${quote}`;
-      },
-    );
+    let updated = original;
+    // Back to front, so an edit never moves the offsets of one still to come.
+    for (const spec of moduleSpecifiers(original, file).reverse()) {
+      if (spec.kind === "reference" || !spec.text.startsWith(".")) continue;
+      const next = explicit(dirname(file), spec.text);
+      if (next === null) continue;
+      count++;
+      updated = updated.slice(0, spec.start) + next + updated.slice(spec.end);
+    }
     if (updated !== original) await writeFile(file, updated);
   }
   return count;
@@ -256,21 +339,30 @@ export function checkPeerScopes(
   return [...problems];
 }
 
-/**
- * Every way a built tree can be unpublishable without anything failing
- * loudly; one line per problem, empty when it is fine.
- */
-export async function verify(outDir: string): Promise<string[]> {
-  const problems: string[] = [];
-  const manifest = (await Bun.file(
-    join(PACKAGE_ROOT, "package.json"),
-  ).json()) as Manifest;
-  const published = manifest.files ?? [];
-  const isPublished = (path: string) =>
-    published.some(
-      (f) => path === f || path.startsWith(`${f.replace(/\/$/, "")}/`),
-    );
+/** What `checkImports` found. */
+export interface ImportCheck {
+  /** One line per import a consumer could not follow. */
+  problems: string[];
+  /** Declaration -> the declarations it imports (relative, or by the package's own name). */
+  edges: Map<string, Set<string>>;
+  /** Declaration -> the optional peers it imports; judged by `checkPeerScopes`. */
+  peerImports: Map<string, Set<string>>;
+}
 
+/**
+ * Checks every import in `declarations` (absolute path -> text): a relative
+ * one must be explicit and name an emitted declaration, a bare one must be the
+ * environment's, the package's own, or something every consumer has (a
+ * dependency, a required peer, or its `@types`). Optional peers are collected
+ * rather than judged here, since whether one is allowed depends on which
+ * entries reach the file.
+ */
+export function checkImports(
+  manifest: Manifest,
+  declarations: Map<string, string>,
+  exists: (path: string) => boolean = existsSync,
+): ImportCheck {
+  const problems: string[] = [];
   // A consumer is guaranteed only its dependencies and required peers.
   const guaranteed = new Set([
     manifest.name,
@@ -286,17 +378,13 @@ export async function verify(outDir: string): Promise<string[]> {
     s === "bun-types" ||
     builtinModules.includes(s);
 
-  /** Declaration -> the declarations it imports (relative, or by the package's own name). */
+  /** Declaration -> the declarations it imports. */
   const edges = new Map<string, Set<string>>();
   /** Declaration -> the optional peers it imports. */
   const peerImports = new Map<string, Set<string>>();
-  for (const file of listFiles(outDir, ".d.ts")) {
+  for (const [file, text] of declarations) {
     const where = relative(PACKAGE_ROOT, file);
-    const text = await readFile(file, "utf8");
-    const specs = [
-      ...[...text.matchAll(SPECIFIER)].map((m) => m[3]!),
-      ...[...text.matchAll(REFERENCE_TYPES)].map((m) => m[2]!),
-    ];
+    const specs = moduleSpecifiers(text, file).map((s) => s.text);
     const imported = new Set<string>();
     edges.set(file, imported);
     for (const spec of specs) {
@@ -305,7 +393,7 @@ export async function verify(outDir: string): Promise<string[]> {
         // An extensionless one resolves to nothing under node16, silently.
         if (!/\.(?:js|json)$/.test(spec))
           problems.push(`${where}: "${spec}" has no extension`);
-        else if (!existsSync(target) && !spec.endsWith(".json"))
+        else if (!exists(target) && !spec.endsWith(".json"))
           problems.push(`${where}: "${spec}" names no emitted declaration`);
         else imported.add(target);
         continue;
@@ -334,6 +422,32 @@ export async function verify(outDir: string): Promise<string[]> {
       }
     }
   }
+  return { problems, edges, peerImports };
+}
+
+/**
+ * Every way a built tree can be unpublishable without anything failing
+ * loudly; one line per problem, empty when it is fine.
+ */
+export async function verify(outDir: string): Promise<string[]> {
+  const problems: string[] = [];
+  const manifest = (await Bun.file(
+    join(PACKAGE_ROOT, "package.json"),
+  ).json()) as Manifest;
+  const published = manifest.files ?? [];
+  const isPublished = (path: string) =>
+    published.some(
+      (f) => path === f || path.startsWith(`${f.replace(/\/$/, "")}/`),
+    );
+
+  const declarations = new Map<string, string>();
+  for (const file of listFiles(outDir, ".d.ts"))
+    declarations.set(file, await readFile(file, "utf8"));
+  const { edges, peerImports, ...imports } = checkImports(
+    manifest,
+    declarations,
+  );
+  problems.push(...imports.problems);
   const checkConfig = join(PACKAGE_ROOT, "consumer-check.json");
   problems.push(
     ...checkPeerScopes(

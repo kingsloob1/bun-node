@@ -11,6 +11,7 @@ import type {
   JobsApiUnsubscribeMessage,
   QueueEventWire,
   RunnerEventWire,
+  WorkerEventWire,
 } from "../contract/ws";
 import type { EventDescriptor } from "../ws/events";
 import { encodeJobId } from "../contract/constants";
@@ -287,6 +288,64 @@ const RUNNER_EVENT_EXAMPLES: {
     at: AT + 60_010,
     payload: { runId: RUN_ID, reason: "killed" },
   },
+  logs: {
+    ...RUNNER_BASE,
+    type: "logs",
+    id: RUN_ID,
+    at: AT + 750,
+    payload: { runId: RUN_ID, lastSeq: 42 },
+  },
+};
+
+/** The worker the worker examples are about. */
+const WORKER_ID = "billing.mail.7f3a1c";
+
+/** That worker's stable key: the one every replica of it carries. */
+const WORKER_KEY = "billing.mail";
+
+/** The fields every worker event example shares: the target is the queue. */
+const WORKER_BASE = { v: 1, kind: "worker", target: QUEUE } as const;
+
+/**
+ * An example worker event of each type. The target is the queue, never the
+ * worker — worker events are grouped per queue — and `id`, where the event is
+ * about one worker, is its incarnation id.
+ */
+const WORKER_EVENT_EXAMPLES: {
+  [K in WorkerEventWire["type"]]: Extract<WorkerEventWire, { type: K }>;
+} = {
+  control: {
+    ...WORKER_BASE,
+    type: "control",
+    at: AT,
+    payload: { worker: WORKER_ID, action: "pause", seq: 4 },
+  },
+  state: {
+    ...WORKER_BASE,
+    type: "state",
+    id: WORKER_ID,
+    at: AT + 30,
+    payload: {
+      worker: WORKER_ID,
+      key: WORKER_KEY,
+      state: "paused",
+      previous: "running",
+      reason: "control",
+      at: AT + 30,
+    },
+  },
+  config: {
+    ...WORKER_BASE,
+    type: "config",
+    id: WORKER_ID,
+    at: AT + 60,
+    payload: {
+      worker: WORKER_ID,
+      key: WORKER_KEY,
+      seq: 9,
+      overridden: ["concurrency", "pollInterval"],
+    },
+  },
 };
 
 /** The job channel of the single-job examples, as a client names it. */
@@ -411,8 +470,15 @@ export function isControlMessageId(id: string): id is ControlMessageId {
 export function eventMessageExamples(
   descriptor: EventDescriptor,
 ): AsyncApiMessageExample[] {
-  const table: Record<string, QueueEventWire | RunnerEventWire> =
-    descriptor.kind === "queue" ? QUEUE_EVENT_EXAMPLES : RUNNER_EVENT_EXAMPLES;
+  const table: Record<
+    string,
+    QueueEventWire | RunnerEventWire | WorkerEventWire
+  > =
+    descriptor.kind === "queue"
+      ? QUEUE_EVENT_EXAMPLES
+      : descriptor.kind === "runner"
+        ? RUNNER_EVENT_EXAMPLES
+        : WORKER_EVENT_EXAMPLES;
   const event = table[descriptor.type];
   if (event === undefined) {
     return [];
@@ -422,7 +488,11 @@ export function eventMessageExamples(
     seq: 43,
     epoch: EPOCH,
     subscriptions: [
-      descriptor.kind === "queue" ? `queue/${QUEUE}` : `runner/${RUNNER}`,
+      descriptor.kind === "queue"
+        ? `queue/${QUEUE}`
+        : descriptor.kind === "runner"
+          ? `runner/${RUNNER}`
+          : `queue/${QUEUE}/workers`,
     ],
     event: structuredClone(event),
   };

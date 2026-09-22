@@ -177,6 +177,7 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
     maxHistory: 9,
     maxJobDataBytes: 2048,
     maxQueues: 2,
+    maxApplyDefaults: 10,
   };
 
   it("reports the defaults when none are configured", async () => {
@@ -193,6 +194,7 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
       maxHistory: 200,
       maxJobDataBytes: 1_048_576,
       maxQueues: 500,
+      maxApplyDefaults: 1000,
     });
   });
 
@@ -355,6 +357,23 @@ describe("G2: limits in /meta, each the one the routes enforce", () => {
           truncated: true,
         });
         expect(over.body.ids).toHaveLength(reported.maxRetryAllIds);
+      },
+      maxApplyDefaults: async () => {
+        const { seq } = await queue.setJobDefaults({ attempts: 4 });
+        await edge(
+          () =>
+            h.call("POST", "/queues/mail/job-defaults/apply", {
+              seq,
+              limit: reported.maxApplyDefaults,
+            }),
+          () =>
+            h.call("POST", "/queues/mail/job-defaults/apply", {
+              seq,
+              limit: reported.maxApplyDefaults + 1,
+            }),
+          400,
+          "VALIDATION",
+        );
       },
       maxClean: () =>
         edge(

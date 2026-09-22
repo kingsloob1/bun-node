@@ -9,12 +9,15 @@ import { AppProviders } from "../../app/providers";
 import { createQueryClient } from "../../app/queryClient";
 import { render } from "./dom";
 import {
+  jobsSeriesFixture,
   metaFixture,
   overviewFixture,
   permissionsFixture,
   queueListFixture,
+  runnersAnalyticsFixture,
   throughputFixture,
   uiConfig,
+  workersAnalyticsFixture,
   workersFixture,
 } from "./fixtures";
 import { mockFetch } from "./mockFetch";
@@ -29,6 +32,22 @@ export function defaultHandlers(): Record<string, MockHandler | MockReply> {
     "GET /queues/emails/throughput": { body: throughputFixture() },
     "GET /queues/reports/throughput": { body: throughputFixture() },
     "GET /workers": { body: workersFixture },
+    // The analytics routes. The roll-ups answer the rows; the same route with
+    // `ids=` / `keys=` answers one series per name, which is how a visible
+    // page gets its sparklines in a single request.
+    "GET /analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /queues/emails/analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /queues/reports/analytics/jobs": { body: jobsSeriesFixture() },
+    "GET /analytics/runners": (call) => ({
+      body: runnersAnalyticsFixture(undefined, {
+        ids: call.query.getAll("ids"),
+      }),
+    }),
+    "GET /analytics/workers": (call) => ({
+      body: workersAnalyticsFixture(undefined, {
+        keys: call.query.getAll("keys"),
+      }),
+    }),
   };
 }
 

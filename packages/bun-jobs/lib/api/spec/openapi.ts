@@ -28,6 +28,10 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   Queues: "Queues: counts, pausing, draining, cleaning and limits.",
   Jobs: "Jobs: listing, reading, retrying, removing and promoting.",
   Runners: "Runners: status, history, triggering and scheduling.",
+  Workers:
+    "Workers: which processes are consuming each queue, pausing, resuming, stopping and starting them, and the configuration overrides they adopt.",
+  Analytics:
+    "Analytics: jobs, runner and worker series over a time range. Every range read shares one rule — the request's `to` is exclusive, while a response's `range.to` is the start of the last bucket and `range.end` the exclusive end.",
 };
 
 /** Reason phrases for success statuses. */

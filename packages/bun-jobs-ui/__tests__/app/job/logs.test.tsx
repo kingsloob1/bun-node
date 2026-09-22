@@ -40,14 +40,14 @@ async function renderLogs(
 
 /** The visible log lines' text. */
 function lines(): string[] {
-  return Array.from(document.querySelectorAll(".job-log-text")).map(
+  return Array.from(document.querySelectorAll(".log-text")).map(
     (line) => line.textContent ?? "",
   );
 }
 
 /** The visible line numbers. */
 function numbers(): string[] {
-  return Array.from(document.querySelectorAll(".job-log-number")).map(
+  return Array.from(document.querySelectorAll(".log-number")).map(
     (number) => number.textContent ?? "",
   );
 }

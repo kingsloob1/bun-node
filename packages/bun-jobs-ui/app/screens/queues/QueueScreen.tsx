@@ -19,9 +19,11 @@ import { useCan, useMeta, usePermissionsSettled } from "../../meta/hooks";
 import { Link } from "../../router";
 import { useParams } from "../../routing";
 import { AddJobDialog } from "../job";
+import { JobDefaultsPanel } from "../lazy";
 import { canAddJobs, useCanMutate } from "./gating";
 import { JobsTable } from "./JobsTable";
 import { useQueueLive, useRefreshInterval } from "./live";
+import { useJobDefaultsGate } from "./panels/jobDefaultsGate";
 import { LimitsPanel } from "./panels/LimitsPanel";
 import { RepeatablesPanel } from "./panels/RepeatablesPanel";
 import { ThroughputPanel } from "./panels/ThroughputPanel";
@@ -30,7 +32,12 @@ import { QueueActions } from "./QueueActions";
 import "./queues.css";
 
 /** A panel below the jobs table. */
-export type PanelId = "limits" | "workers" | "throughput" | "repeatables";
+export type PanelId =
+  | "limits"
+  | "job-defaults"
+  | "workers"
+  | "throughput"
+  | "repeatables";
 
 /** `/queues/:queue`: header and actions, the jobs table, and the panels. */
 export function QueueScreen() {
@@ -179,6 +186,7 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
   const canWorkers = useCan("workers.list");
   const canMetrics = useCan("metrics.read");
   const canRepeatables = useCan("repeatables.list");
+  const jobDefaults = useJobDefaultsGate();
 
   const panels: { value: PanelId; label: string; render: () => ReactNode }[] =
     [];
@@ -199,6 +207,19 @@ function QueuePanels({ queue, limits, detailLoading }: QueuePanelsProps) {
             editable={canMutate("queues.limits")}
           />
         ),
+    });
+  }
+  if (jobDefaults.shown) {
+    panels.push({
+      value: "job-defaults",
+      label: "Job defaults",
+      render: () => (
+        <JobDefaultsPanel
+          queue={queue}
+          canEdit={jobDefaults.canEdit}
+          canApply={jobDefaults.canApply}
+        />
+      ),
     });
   }
   if (meta.features.workers && canWorkers) {

@@ -12,7 +12,11 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { resolveConfig } from "../../lib/api/config";
 import { createJobsApi } from "../../lib/api/createJobsApi";
 import { parseChannel } from "../../lib/api/ws/channels";
-import { QUEUE_EVENTS, RUNNER_EVENTS } from "../../lib/api/ws/events";
+import {
+  QUEUE_EVENTS,
+  RUNNER_EVENTS,
+  WORKER_EVENTS,
+} from "../../lib/api/ws/events";
 import { apiConfig, openContexts } from "./fixtures";
 
 /**
@@ -173,7 +177,7 @@ describe("G20: an example on every message", () => {
         "heartbeat",
         "pong",
         "error",
-        ...[...QUEUE_EVENTS, ...RUNNER_EVENTS].map(
+        ...[...QUEUE_EVENTS, ...RUNNER_EVENTS, ...WORKER_EVENTS].map(
           (event) => event.messageName,
         ),
       ].sort(),
@@ -198,8 +202,9 @@ describe("G20: an example on every message", () => {
         }
       }
     }
-    // jobs: 9 control + 21 queue; runner: 9 + 8; both: 9 + 29.
-    expect(checked).toBe(30 + 17 + 38);
+    // jobs: 9 control + 21 queue + 3 worker; runner: 9 + 9 (`logs`, the
+    // run-log hint, is the ninth runner event); both: 9 + 33.
+    expect(checked).toBe(33 + 18 + 42);
   });
 
   it("is checked against the message's own schema, not any frame's (the controls)", async () => {
@@ -325,6 +330,37 @@ describe("G22: the name rule on queue and runner parameters", () => {
         name,
         schema: parseChannel(`queue/${name}`, config).ok,
       });
+    }
+  });
+});
+
+describe("the `logs` runner event says it is not a state change", () => {
+  // A client that invalidates cached runner state on every runner event would
+  // re-read the runner's detail, stats, history and open logs on each `logs`
+  // hint, up to twice a second per run. The document is where a client
+  // author reads what an event means, so it says so in the message itself.
+  // A deliberate pin: change the summary and this has to change with it.
+  const NOT_A_STATE_CHANGE =
+    "Not a state change: it changes no runner state, so a client caching runner detail, stats or history should not invalidate them on it; re-read the run's log with `?since=` instead.";
+
+  it("in the message summary, in every mode that carries runner events", async () => {
+    for (const mode of ["runner", "both"] as const) {
+      const message = (await documentFor({ mode })).components.messages[
+        "runner.logs"
+      ] as MessageDoc & { summary: string };
+      expect({ mode, summary: message.summary }).toEqual({
+        mode,
+        summary: expect.stringContaining(NOT_A_STATE_CHANGE),
+      });
+    }
+  });
+
+  it("on no other runner event (the control)", () => {
+    for (const descriptor of RUNNER_EVENTS) {
+      expect({
+        type: descriptor.type,
+        says: descriptor.summary.includes("Not a state change"),
+      }).toEqual({ type: descriptor.type, says: descriptor.type === "logs" });
     }
   });
 });

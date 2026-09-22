@@ -321,6 +321,20 @@ describe("the generated document", () => {
     expect(custom.info).toMatchObject({ title: "Ops", version: "9.9.9" });
     expect(custom.servers).toEqual([{ url: "https://ops.example/jobs" }]);
   });
+
+  it("describes every tag it declares, so no group's blurb is blank", () => {
+    // A tag added to a route but not to TAG_DESCRIPTIONS renders as an empty
+    // paragraph in the reference; the Workers group did exactly that.
+    const document = createJobsApi(
+      apiConfig({ mode: "both" }),
+    ).openapi() as OpenApiDocument & {
+      tags: { name: string; description?: string }[];
+    };
+    expect(document.tags.map((tag) => tag.name)).toContain("Workers");
+    expect(
+      document.tags.filter((tag) => (tag.description ?? "").length === 0),
+    ).toEqual([]);
+  });
 });
 
 describe("generator guards", () => {
@@ -627,6 +641,34 @@ describe("the generated AsyncAPI document", () => {
     expect(danglingRefs(broken)).toContain("#/components/messages/queue.added");
   });
 
+  it("titles every channel and operation in prose, not in the kind's camel case", () => {
+    // `queueWorkers` was titled "QueueWorkers" beside siblings like "Job";
+    // the kind stays the id, the `label` is what the documents show.
+    const document = asyncDocumentFor({ mode: "both" })!;
+    const titles = Object.entries(
+      document.channels as Record<string, { title: string }>,
+    ).map(([kind, channel]) => [kind, channel.title] as const);
+    expect(titles).toContainEqual(["queueWorkers", "Queue workers"]);
+    for (const [kind, title] of titles)
+      expect({ kind, title }).toEqual({
+        kind,
+        title: expect.stringMatching(/^[A-Z][a-z]*(?: [a-z]+)*$/),
+      });
+
+    const operationTitles = Object.entries(
+      document.operations as Record<string, { title: string }>,
+    ).map(([id, operation]) => [id, operation.title] as const);
+    expect(operationTitles).toContainEqual([
+      "receiveQueueWorkersEvents",
+      "Receive queue workers events",
+    ]);
+    for (const [id, title] of operationTitles)
+      expect({ id, title }).toEqual({
+        id,
+        title: expect.stringMatching(/^[A-Z][a-z]*(?: [a-z]+)*$/),
+      });
+  });
+
   it("prunes channels, operations, messages and schemas by mode", () => {
     const channelsOf = (document: Record<string, any>) =>
       Object.keys(document.channels).sort();
@@ -641,23 +683,35 @@ describe("the generated AsyncAPI document", () => {
       "connection",
       "job",
       "queue",
+      "queueWorkers",
       "queues",
       "runner",
       "runners",
+      "workers",
     ]);
     expect(messagesOf(both)).toEqual(
       expect.arrayContaining([
         "queue.repeatScheduled",
         "runner.killed",
+        "runner.logs",
         "subscribe",
       ]),
     );
+    // 21 queue events, 9 runner events (`logs`, the run-log hint, is the
+    // ninth) and 3 worker events.
     expect(messagesOf(both).filter((name) => name.includes("."))).toHaveLength(
-      21 + 8,
+      21 + 9 + 3,
     );
 
     const jobs = asyncDocumentFor({ mode: "jobs" })!;
-    expect(channelsOf(jobs)).toEqual(["connection", "job", "queue", "queues"]);
+    expect(channelsOf(jobs)).toEqual([
+      "connection",
+      "job",
+      "queue",
+      "queueWorkers",
+      "queues",
+      "workers",
+    ]);
     expect(messagesOf(jobs).some((name) => name.startsWith("runner."))).toBe(
       false,
     );
@@ -671,7 +725,15 @@ describe("the generated AsyncAPI document", () => {
     expect(messagesOf(runner).some((name) => name.startsWith("queue."))).toBe(
       false,
     );
+    // The worker channels are jobs-side, so a runner document has neither
+    // them nor their messages.
+    expect(messagesOf(runner).some((name) => name.startsWith("worker."))).toBe(
+      false,
+    );
     expect(schemasOf(runner).some((name) => name.startsWith("Queue"))).toBe(
+      false,
+    );
+    expect(schemasOf(runner).some((name) => name.startsWith("Worker"))).toBe(
       false,
     );
     expect(runner.channels.runner.parameters).toEqual({
