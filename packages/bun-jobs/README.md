@@ -648,6 +648,9 @@ actions, both off by default, so a host can let operators tune defaults for
 new work without letting them rewrite a backlog. `limits.maxApplyDefaults`
 caps one call's `limit`.
 
+Example:
+[`10-options/job-defaults.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-defaults.ts).
+
 ## Workers
 
 ```ts
@@ -977,6 +980,9 @@ published. A
 `JobsNotifier` hears worker events only for the queues in its
 [`workers`](#events-and-jobsnotifier) option.
 
+Example:
+[`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
+
 ### Stalled jobs
 
 A worker that dies while holding a job stops renewing its lock. Every
@@ -1082,6 +1088,9 @@ if (result.status === "active") {
 In an isolated processor, `clearLogs()` is unavailable, as the other methods
 that act on a job from outside its attempt are. Over the management API it is
 `DELETE /queues/:queue/jobs/:id/logs` — see [Routes](#routes).
+
+Example:
+[`10-options/run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts).
 
 ## The BunJobs registry and builder
 
@@ -1640,6 +1649,9 @@ parent in `waiting-children` until its children settle.
   its parent is still buried has its result kept there. A failure that has
   already buried the parent once does not bury the retried parent again.
 
+  Example:
+  [`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
+
   A failed child that has since been removed counts as unsettled, so
   maintenance fails the parent again (see below).
 - **Retention waits for delivery.** A child's `removeOnComplete` or
@@ -1974,6 +1986,9 @@ definition every backend is compared against), `attributionFilter` and
 `workerId` as the holder for a driver that keeps the claimer's id after a
 settle.
 
+Example:
+[`10-options/analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts).
+
 ## Jobs added in a range, and sorting by creation time
 
 Two reads by **when a job was added** (`createdAt`), for a dashboard that asks
@@ -2108,6 +2123,9 @@ definition every backend is compared against), `inAddedRange`,
 `rangeMatchesNothing`, `emptyAddedCounts`, `compareCreated`, `sortByCreated`,
 `sortsByCreated` and `supportsCreatedSort`, beside `JOB_LIST_SORTS`,
 `JobListSort` and `MAX_ADDED_BY_STATE_SPAN_MS`.
+
+Example:
+[`10-options/analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts).
 
 ## Isolated processors
 
@@ -2398,6 +2416,9 @@ survives a trim, so how many a run has lost is known exactly and reported as
 short one. A line the per-line cap cut carries `truncated: true` rather than
 passing for a whole line.
 
+Example:
+[`10-options/run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts).
+
 #### Writing a line
 
 ```ts
@@ -2586,6 +2607,9 @@ only delay: the next one, or the one at the end, still leads to every line.
 The runner's own emitter does not raise it; it is published for other
 processes.
 
+Example:
+[`10-options/run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts).
+
 #### Where they are stored, and how to read them
 
 All eight backends store run logs: memory, file, SQL (SQLite, Postgres, MySQL,
@@ -2684,6 +2708,9 @@ resetting the counters is `resetStats()`. A driver without `removeRuns` throws
 would drop the runs in progress too. Over the management API it is
 `DELETE /runners/:runner/history` — see [Routes](#routes).
 
+Example:
+[`10-options/run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts).
+
 ### Changing a runner's configuration remotely
 
 A runner's executor and overlap settings, `executionMode`, `runMode` and
@@ -2775,6 +2802,9 @@ A `RemoteRunner` for a runner the backend does not know throws
 `RunnerNotFoundError`. Over the management API this is
 `PUT` and `DELETE /runners/:runner/config`, with the action `runners.configure`,
 which is off by default. See [Routes](#routes).
+
+Example:
+[`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
 
 ### BunRunnerManager
 
@@ -2949,6 +2979,9 @@ second in which one job finished and a second in which five thousand did cost
 the same write. No round trip is added per job or per run; on Redis a
 queue's own count is one more `HINCRBY` inside the script that already settles
 the job.
+
+Example:
+[`10-options/analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts).
 
 ### The `metrics` option
 
@@ -4747,7 +4780,7 @@ configurations are kept comparable.
 
 | Project | What it covers |
 |---|---|
-| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 12 option tours that assert every option. |
+| [`examples/bun-jobs`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs) | This package: queues, workers, the registry, scheduling, flow control, failures, the runner, every driver, integrations, and 20 option tours that assert every option. |
 | [`examples/bun-common`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common) | The HTTP layer: routing, the HTTP adapter, requests and responses, validation, CORS and static files, multipart uploads, WebSockets, logging and utilities, with option tours. |
 | [`examples/bun-nest`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-nest) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, with option tours. |
 
@@ -4854,6 +4887,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
 | [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job |
+| [`job-methods.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-methods.ts) | `job.fail()` inside a processor and from outside (a pending job buried at once, an active one's worker aborting at its next heartbeat); `schedule()`, `update()` and `this \| null`; `disable()` / `enable()` on an occurrence; the queue's `disableRepeatable()` / `enableRepeatable()`; `remove()` / `promote()` / `retry()` emitting and publishing; `progress` as `RunProgress \| null` and `extendLock()` only from the processor's view |
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, saving twice; `processEvery` and a worker's runtime `pollInterval` / `maxBlock`, per driver |
@@ -4865,6 +4899,10 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`ids-and-keys.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/ids-and-keys.ts) | job ids and repeat keys at every entry point: what is refused, derived ids fitted to the tightest store, repeat keys as listed and removed, debounce and throttle windows, per-engine name limits |
 | [`jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts) | every `createJobsApi` option: construction `ConfigError`s, `mode` / `readOnly` / `actions` / capability pruning against `/meta` and `/meta/permissions`, RFC 9457 problems, `authorize` asked once, a request failing a check still against the target its path names, `limits`, `cors` / `csrf` / `trustProxy`, `serialize`, `docs` |
 | [`jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts) | every `websocket` option, per-channel subscribe refusals, replay and resume, coalesced progress, the client limits and every close code |
+| [`job-defaults.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-defaults.ts) | queue job defaults: the stored override and its precedence, propagation, the `applyJobDefaults()` walk and its refusals, and the four API routes with their opt-ins |
+| [`analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts) | the `metrics` option, what is recorded, range resolution and every clamp reason, the analytics routes; `processedBy` and the worker filters; `countAdded()` and `sort: "createdAt"`, and their fallbacks per driver |
+| [`run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts) | run-log capture per execution mode, the `logs` hint, the caps and redaction; clearing a job's log and a runner's history, on every driver |
+| [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts) | `RemoteWorker` lifecycle and configuration, how long a stop lasts, the API's 409s, a runner's configuration changed by one owner and adopted by another; a buried flow retried in either order |
 
 Supporting files for the tours:
 
