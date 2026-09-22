@@ -298,6 +298,20 @@ const REWRITE_BATCH: Record<SqlAdapter, number> = {
 const REWRITE_CURSOR_KEY = ["number", "number", "string"] as const;
 
 /** The columns of a pending job the rewrite reads. */
+/** One column a {@link SqlDriver} point update sets, as its match read checks it. */
+interface MatchedAssignment {
+  /** The column written. */
+  column: string;
+  /** The value bound for it, already encoded (`jsonIn` for a JSON column). */
+  value: unknown;
+  /**
+   * Whether the column holds JSON, so MySQL's match read compares it as JSON
+   * rather than as text. MariaDB stores JSON as text and compares it so.
+   * Default `false`.
+   */
+  json?: boolean;
+}
+
 interface RewriteRow {
   /** The job's id. */
   id: string;
@@ -1667,13 +1681,17 @@ export class SqlDriver implements JobsDriver {
 
     // Otherwise take it only if it is ours or has lapsed — one conditional
     // update, so two contenders cannot both succeed.
-    const { bind, values } = this.#binder();
-    const taken = await this.#runPoint(
-      `UPDATE ${this.#tables.locks}
-         SET token = ${bind(token)}, expires_at = ${bind(expiresAt)}
-       WHERE ns = ${bind(ns)} AND lock_key = ${bind(key)}
+    // A holder re-acquiring to the expiry it already has changes nothing,
+    // which MySQL and MariaDB count as 0 — see #updateMatched.
+    const taken = await this.#updateMatched(
+      this.#tables.locks,
+      [
+        { column: "token", value: token },
+        { column: "expires_at", value: expiresAt },
+      ],
+      (bind) =>
+        `ns = ${bind(ns)} AND lock_key = ${bind(key)}
          AND (expires_at <= ${bind(now)} OR token = ${bind(token)})`,
-      values,
     );
 
     return taken > 0;
@@ -1688,13 +1706,13 @@ export class SqlDriver implements JobsDriver {
   ): Promise<boolean> {
     await this.connect();
 
-    const { bind, values } = this.#binder();
-    const renewed = await this.#runPoint(
-      `UPDATE ${this.#tables.locks}
-         SET expires_at = ${bind(now + ttlMs)}
-       WHERE ns = ${bind(ns)} AND lock_key = ${bind(key)}
+    // Renewed twice in one millisecond, the second writes what is there.
+    const renewed = await this.#updateMatched(
+      this.#tables.locks,
+      [{ column: "expires_at", value: now + ttlMs }],
+      (bind) =>
+        `ns = ${bind(ns)} AND lock_key = ${bind(key)}
          AND token = ${bind(token)} AND expires_at > ${bind(now)}`,
-      values,
     );
 
     return renewed > 0;
@@ -2909,12 +2927,14 @@ export class SqlDriver implements JobsDriver {
   ): Promise<boolean> {
     await this.connect();
 
-    const { bind, values } = this.#binder();
-    const extended = await this.#runPoint(
-      `UPDATE ${this.#tables.jobs} SET lock_expires_at = ${bind(now + lockMs)}
-        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
+    // `touch()`, `extendLock()` and the heartbeat all land here, and two in
+    // one millisecond write the same expiry — see #updateMatched.
+    const extended = await this.#updateMatched(
+      this.#tables.jobs,
+      [{ column: "lock_expires_at", value: now + lockMs }],
+      (bind) =>
+        `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}
           AND state = 'active' AND lock_token = ${bind(token)}`,
-      values,
     );
 
     return extended > 0;
@@ -3280,11 +3300,18 @@ export class SqlDriver implements JobsDriver {
   ): Promise<boolean> {
     await this.connect();
 
-    const { bind, values } = this.#binder();
-    const updated = await this.#runPoint(
-      `UPDATE ${this.#tables.jobs} SET progress = ${bind(this.dialect.jsonIn(progress))}
-        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
-      values,
+    // The same progress twice changes nothing — see #updateMatched.
+    const updated = await this.#updateMatched(
+      this.#tables.jobs,
+      [
+        {
+          column: "progress",
+          value: this.dialect.jsonIn(progress),
+          json: true,
+        },
+      ],
+      (bind) =>
+        `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)} AND id = ${bind(id)}`,
     );
 
     return updated > 0;
@@ -6848,6 +6875,60 @@ export class SqlDriver implements JobsDriver {
    */
   async #runPoint(text: string, params: unknown[], tx?: SQL): Promise<number> {
     return await this.#run(text, params, tx, true);
+  }
+
+  /**
+   * A point `UPDATE` of `table` that may legitimately leave its row as it was,
+   * answering how many rows it *matched*: 1 or 0.
+   *
+   * MySQL and MariaDB count rows changed, so a lock renewed to the expiry it
+   * already holds — a `touch()` and an `extendLock()`, or either and the
+   * heartbeat, in one millisecond — counts 0, and was answered "lock lost".
+   * There, and only when the write counted 0, one point read asks whether the
+   * row matches `where` *and* already holds every assigned value. If so, the
+   * write was a no-op, and answering 1 is exactly as if it ran at that read.
+   * A write that changed its row stays one round trip.
+   *
+   * `where` is called once per statement, with that statement's binder, so it
+   * must bind its values in the order they appear in the text.
+   */
+  async #updateMatched(
+    table: string,
+    assignments: readonly MatchedAssignment[],
+    where: (bind: (value: unknown) => string) => string,
+  ): Promise<number> {
+    const write = this.#binder();
+    const set = assignments
+      .map(({ column, value }) => `${column} = ${write.bind(value)}`)
+      .join(", ");
+    const changed = await this.#runPoint(
+      `UPDATE ${table} SET ${set} WHERE ${where(write.bind)}`,
+      write.values,
+    );
+
+    if (changed > 0 || !this.dialect.countsChangedRows) {
+      return changed;
+    }
+
+    // Placeholders are positional here, so the condition binds first.
+    const read = this.#binder();
+    const condition = where(read.bind);
+    const holds = assignments
+      .map(({ column, value, json }) => {
+        const placeholder = read.bind(value);
+        return `${column} <=> ${
+          json && this.adapter === "mysql"
+            ? `CAST(${placeholder} AS JSON)`
+            : placeholder
+        }`;
+      })
+      .join(" AND ");
+    const row = await this.#one<{ hit: unknown }>(
+      `SELECT 1 AS hit FROM ${table} WHERE ${condition} AND ${holds} LIMIT 1`,
+      read.values,
+    );
+
+    return row ? 1 : 0;
   }
 
   /**

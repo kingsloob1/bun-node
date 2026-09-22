@@ -1717,7 +1717,9 @@ export class MongoDriver implements JobsDriver {
         { upsert: true },
       );
 
-      return result.modifiedCount > 0 || result.upsertedCount > 0;
+      // Matched, not modified: a holder re-acquiring to the expiry it already
+      // has sets nothing new, and `modifiedCount` would call that a refusal.
+      return result.matchedCount > 0 || result.upsertedCount > 0;
     } catch (error) {
       if (isDuplicateKey(error)) {
         return false;

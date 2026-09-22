@@ -170,6 +170,31 @@ export function driverContract(
         expect(info?.expiresAt).toBe(now + 5000);
       });
 
+      // A write that leaves the row exactly as it was still lands. MySQL and
+      // MariaDB count rows *changed*, not matched, so a renewal repeated within
+      // the same millisecond used to report a lock its holder still had as lost.
+      it("answers true for a holder re-acquiring or renewing to the same expiry", async () => {
+        const key = runnerKey("lock-same-expiry");
+        const now = Date.now();
+        const mine = newToken();
+
+        expect(await driver.acquireLock(ns, key, mine, 5000, now)).toBe(true);
+        expect(await driver.acquireLock(ns, key, mine, 5000, now)).toBe(true);
+        expect(await driver.renewLock(ns, key, mine, 5000, now)).toBe(true);
+        expect(await driver.renewLock(ns, key, mine, 5000, now)).toBe(true);
+        // …and still refuses everyone else, the same expiry or not.
+        expect(await driver.acquireLock(ns, key, newToken(), 5000, now)).toBe(
+          false,
+        );
+        expect(await driver.renewLock(ns, key, newToken(), 5000, now)).toBe(
+          false,
+        );
+        expect((await driver.getLock(ns, key, now))?.token).toBe(mine);
+
+        await driver.releaseLock(ns, key, mine);
+        expect(await driver.renewLock(ns, key, mine, 5000, now)).toBe(false);
+      });
+
       it("treats an expired lock as free", async () => {
         const key = runnerKey("lock-expiry");
         const now = Date.now();
@@ -2970,6 +2995,46 @@ export function driverContract(
           order: "desc",
         });
         expect(descending.map((job) => job.id)).toEqual(["c2", "c1"]);
+      });
+
+      // `job.touch()` and `job.extendLock()` — or either and the worker's
+      // heartbeat — landing in the same millisecond write the same expiry. On
+      // MySQL and MariaDB that matched-but-unchanged row used to count as 0, so
+      // the second answered false and a heartbeat aborted a live job.
+      it("answers true for an extension or progress write that changes nothing", async () => {
+        const q = scope("same-value");
+        const now = Date.now();
+        const token = newToken();
+        await driver.addJob(q, makeJob({ id: "same", runAt: now }));
+        await driver.claimJob(q, { workerId: "w1", token, lockMs: 500, now });
+
+        expect(await driver.extendJobLock(q, "same", token, 5000, now)).toBe(
+          true,
+        );
+        expect(await driver.extendJobLock(q, "same", token, 5000, now)).toBe(
+          true,
+        );
+        expect(
+          await driver.extendJobLock(q, "same", newToken(), 5000, now),
+        ).toBe(false);
+        expect((await driver.getJob(q, "same"))?.lockExpiresAt).toBe(
+          now + 5000,
+        );
+
+        expect(await driver.updateProgress(q, "same", { pct: 50 })).toBe(true);
+        expect(await driver.updateProgress(q, "same", { pct: 50 })).toBe(true);
+        expect(await driver.updateProgress(q, "same", 7)).toBe(true);
+        expect(await driver.updateProgress(q, "same", 7)).toBe(true);
+        expect((await driver.getJob(q, "same"))?.progress).toBe(7);
+
+        // Once the lock is gone, the same write is refused again.
+        expect(
+          await driver.completeJob(q, "same", token, null, true, now),
+        ).toBe(true);
+        expect(await driver.extendJobLock(q, "same", token, 5000, now)).toBe(
+          false,
+        );
+        expect(await driver.updateProgress(q, "same-missing", 7)).toBe(false);
       });
 
       it("records progress", async () => {
