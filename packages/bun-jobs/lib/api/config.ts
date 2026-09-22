@@ -209,11 +209,12 @@ export interface JobsApiLimits {
   /** Most queues summarised by `/queues` and `/overview`. Defaults to `500`. */
   maxQueues?: number;
   /**
-   * How long the known-queue (and known-runner) list is cached for 404 checks,
-   * in ms. `0` disables caching. Defaults to `2000`. A queue missing from a
-   * cached list is checked against the backend once more before a 404 — at
-   * most once per this window, however many misses — so a queue created since
-   * (by another process, say) is found without waiting for the cache to expire.
+   * How long the known-queue and known-runner lists are cached for 404 checks,
+   * in ms. `0` disables caching. Defaults to `2000`. A queue name or runner id
+   * missing from a cached list is checked against the backend once more before
+   * a 404 — at most once per this window, however many misses — so one created
+   * since (by another process, say) is found without waiting for the cache to
+   * expire.
    */
   queueCacheMs?: number;
   /** Largest request body accepted for `jobs.add`/`jobs.update`, in bytes. Defaults to `1048576`. */

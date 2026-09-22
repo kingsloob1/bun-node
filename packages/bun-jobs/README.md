@@ -4162,7 +4162,7 @@ served slowly. Override any of them through `limits`.
 | `maxLogPage` | `500` | largest log page, for a job's logs and a run's alike |
 | `maxHistory` | `200` | largest runner history page |
 | `maxQueues` | `500` | queues summarised by `/queues` and `/overview` |
-| `queueCacheMs` | `2000` | how long the known-queue list is cached; a queue missing from it is checked against the backend once more (at most once per window) before a 404, and a queue a live worker consumes is re-read whenever it is missing |
+| `queueCacheMs` | `2000` | how long the known-queue and known-runner lists are cached; a queue name or runner id missing from one is checked against the backend once more (at most once per window) before a 404, so a runner another process started is found at once, and a queue a live worker consumes is re-read whenever it is missing |
 | `maxJobDataBytes` | `1048576` | body accepted by `jobs.add`/`jobs.update` |
 | `maxApplyDefaults` | `1000` | largest `limit` of one `job-defaults/apply` call; at most `10000` |
 

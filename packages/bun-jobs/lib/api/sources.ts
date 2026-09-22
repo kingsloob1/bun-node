@@ -404,8 +404,13 @@ export class RunnerSource {
    *
    * A runner in another process is looked up in the same cached discovery
    * {@link list} uses (`limits.queueCacheMs`), not with a backend read per
-   * request. `RemoteRunner` still checks the runner exists on each call it
-   * makes; that check is the runner package's, not this cache's.
+   * request — but an id missing from a cached discovery is checked against the
+   * backend once more before it is refused, at most one such re-read per cache
+   * window however many misses arrive (`TtlSet.has`), so a runner another
+   * process started a moment ago is not a 404 for the rest of the window and
+   * an id nothing knows still cannot turn into a backend read per request.
+   * `RemoteRunner` still checks the runner exists on each call it makes; that
+   * check is the runner package's, not this cache's.
    */
   async resolve(value: unknown): Promise<ResolvedRunner> {
     const id = parseSegment(value, "runner");
@@ -425,7 +430,7 @@ export class RunnerSource {
           }),
         };
       }
-      if (!manager.driver || !(await this.#discovered!.get()).has(id)) {
+      if (!manager.driver || !(await this.#discovered!.has(id))) {
         throw notFound(id);
       }
       return {
