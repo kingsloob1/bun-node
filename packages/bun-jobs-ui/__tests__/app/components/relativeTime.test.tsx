@@ -20,6 +20,27 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 describe("formatRelativeTime", () => {
+  it("reads an instant just ahead of the cached clock as now", () => {
+    const rtf = new Intl.RelativeTimeFormat(undefined, {
+      numeric: "auto",
+      style: "narrow",
+    });
+    // Every relative time renders against `useNow`'s shared clock, which
+    // ticks every NOW_TICK_MS; a heartbeat written since its last tick is
+    // ahead of it. It reads "now", not "in 2s".
+    expect(formatRelativeTime(NOW + 2_000, NOW)).toBe(rtf.format(0, "second"));
+    expect(formatRelativeTime(NOW + NOW_TICK_MS, NOW)).toBe(
+      rtf.format(0, "second"),
+    );
+    // Beyond one tick it is a real future time, shown as one.
+    expect(formatRelativeTime(NOW + NOW_TICK_MS + 1_000, NOW)).toBe(
+      rtf.format(11, "second"),
+    );
+    expect(formatRelativeTime(NOW + 5 * MIN, NOW)).toBe(
+      rtf.format(5, "minute"),
+    );
+  });
+
   it("picks the unit and direction", () => {
     const rtf = new Intl.RelativeTimeFormat(undefined, {
       numeric: "auto",

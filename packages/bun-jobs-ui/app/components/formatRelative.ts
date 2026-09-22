@@ -1,3 +1,5 @@
+import { NOW_TICK_MS } from "../hooks/useNow";
+
 /** Units from the smallest up, with how many seconds each spans. */
 const UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
   ["second", 1],
@@ -39,15 +41,27 @@ function formatter(locale: string | undefined): Intl.RelativeTimeFormat {
 }
 
 /**
+ * How far ahead of `now` an instant may be and still read "now": one tick of
+ * the shared clock. Every relative time in the app is rendered against that
+ * cached clock, so anything recorded since its last tick is legitimately
+ * ahead of it — a worker's heartbeat written a moment ago rendered as
+ * "in 2s" until the clock caught up. Beyond a tick it is a real future time
+ * (a delayed job, a next run) and is shown as one.
+ */
+const FUTURE_TOLERANCE_S = NOW_TICK_MS / 1_000;
+
+/**
  * `ms` relative to `now`: "3m ago", "in 2h", "now", "yesterday". The unit
- * is the largest that keeps the number at or above 1.
+ * is the largest that keeps the number at or above 1. An instant up to
+ * {@link FUTURE_TOLERANCE_S} ahead reads "now".
  */
 export function formatRelativeTime(
   ms: number,
   now: number,
   locale?: string,
 ): string {
-  const seconds = (ms - now) / 1000;
+  const ahead = (ms - now) / 1000;
+  const seconds = ahead > 0 && ahead <= FUTURE_TOLERANCE_S ? 0 : ahead;
   const abs = Math.abs(seconds);
   for (let i = 0; i < UNITS.length; i++) {
     const [unit, span] = UNITS[i]!;

@@ -456,7 +456,13 @@ function GapRow({ row, gap }: { row: LogRow; gap: JobsApiGapMessage }) {
       <td colSpan={4}>
         <strong>gap: {gap.reason}</strong>{" "}
         <span className="muted">
-          events {gap.fromSeq}–{gap.toSeq} may be missing
+          {/*
+            A gap on a connection that has carried no sequenced event yet
+            (`queue-discovered` right after subscribing) is 0–0, which reads
+            as a range of nothing; there the range is left out.
+          */}
+          {gap.toSeq > 0 ? `events ${gap.fromSeq}–${gap.toSeq} ` : "events "}
+          may be missing
           {gap.channels ? ` on ${gap.channels.join(", ")}` : ""}
         </span>
       </td>
