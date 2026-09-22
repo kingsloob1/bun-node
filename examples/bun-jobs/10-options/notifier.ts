@@ -10,8 +10,9 @@
  *
  * Covers every `JobsNotifierOptions` field — `queues` and `runners` (`"all"`
  * and a list), `discoveryInterval`, `bufferSize` — and every member: `start`,
- * `close`, `for await`, `on("event" | "subscribed" | "error")`, `following`,
- * `wants`, `follow`, `hold`, `unfollow`, `dropped`, `namespace`. Then what it
+ * `close`, `for await`, `on("event" | "subscribed" | "followed" | "error")`,
+ * `following`, `followedForGood`, `wants`, `follow`, `hold`, `unfollow`,
+ * `dropped`, `namespace`. Then what it
  * hears: each queue and runner event with its payload, nothing from producers
  * that do not publish, events from another process, and nothing from another
  * namespace.
@@ -35,6 +36,7 @@ import type {
   DriverEvent,
   JobsDriver,
   JobsNotifierEvents,
+  NotifierFollowSource,
 } from "@kingsleyweb/bun-jobs";
 import type { Subprocess } from "bun";
 import type { NotifierHandlerArgs } from "./helpers/notifier-handler";
@@ -140,6 +142,21 @@ async function runnerEvent<TType extends RunnerEvent["type"]>(
   return find()!;
 }
 
+/**
+ * Collects a notifier's `followed` events as `<kind>:<target> <source>`:
+ * each target that became followed **for good** — by a discovery pass or the
+ * configured lists (`"discovery"`), or by `follow()`, which is also what a
+ * `BunJobs` calls for a queue or runner it creates (`"follow"`). Emitted once
+ * per target, before its subscription is live; a `hold()` never raises it.
+ */
+function recordFollowed(target: JobsNotifier): string[] {
+  const seen: string[] = [];
+  target.on("followed", (kind, name, source: NotifierFollowSource) => {
+    seen.push(`${kind}:${name} ${source}`);
+  });
+  return seen;
+}
+
 /** Events that are about one job or run, by its id. */
 function about(events: DriverEvent[], id: string): DriverEvent[] {
   return events.filter((event) => event.id === id);
@@ -173,6 +190,8 @@ const ready = new Set<string>();
 notifier.on("subscribed", (kind, name) => {
   ready.add(`${kind}:${name}`);
 });
+/** The main notifier's `followed` events. */
+const followedMain = recordFollowed(notifier);
 
 /** Resolves once the main notifier's subscription to one target is in place. */
 async function subscribedTo(key: string): Promise<void> {
@@ -216,6 +235,16 @@ check(
   "no gap: an add made the moment its queue was created is heard",
   heardFirstAdd,
   about(heard, firstAdd.id),
+);
+checkEqual(
+  'followed: a queue its own context created is source "follow"',
+  followedMain.filter((entry) => entry.startsWith("queue:orders ")),
+  ["queue:orders follow"],
+);
+check(
+  "followedForGood(kind) lists it",
+  notifier.followedForGood("queue").includes("orders"),
+  notifier.followedForGood("queue"),
 );
 
 // From here the subscription is known to be in place.
@@ -686,7 +715,17 @@ discovering.on("event", (event) => {
 discovering.on("subscribed", (kind, name) => {
   subscribed.push([kind, name]);
 });
+const followedByDiscovery = recordFollowed(discovering);
 await discovering.start();
+check(
+  'followed: what start() found is source "discovery", once each',
+  ["orders", "parked", "burst"].every(
+    (name) =>
+      followedByDiscovery.filter((entry) => entry === `queue:${name} discovery`)
+        .length === 1,
+  ),
+  followedByDiscovery,
+);
 check(
   "start() subscribed to the queues already there",
   ["orders", "parked", "burst"].every((name) =>
@@ -717,6 +756,12 @@ check(
   foundIn,
 );
 
+checkEqual(
+  "followed: the late queue, found by a later pass",
+  followedByDiscovery.filter((entry) => entry.startsWith("queue:late ")),
+  ["queue:late discovery"],
+);
+
 const afterDiscovery = await lateQueue.add("second", {});
 await queueEvent(discovered, "added", (e) => e.id === afterDiscovery.id);
 check("events from a discovered queue arrive", true);
@@ -729,6 +774,18 @@ checkEqual(
   subscribed.filter(([kind, name]) => kind === "queue" && name === "not-yet")
     .length,
   1,
+);
+checkEqual(
+  'followed: follow() is source "follow", raised once however often it is called',
+  followedByDiscovery.filter((entry) => entry.startsWith("queue:not-yet ")),
+  ["queue:not-yet follow"],
+);
+check(
+  "followedForGood: discovered and follow()ed alike",
+  ["late", "not-yet", "orders"].every((name) =>
+    discovering.followedForGood("queue").includes(name),
+  ),
+  discovering.followedForGood("queue"),
 );
 const newcomer = new BunQueue("not-yet", { namespace, driver, publish: true });
 const opener = await newcomer.add("hello", {});
@@ -754,11 +811,17 @@ const listed = new JobsNotifier(driver, namespace, {
   runners: ["reports"],
   discoveryInterval: 10,
 });
+const followedListed = recordFollowed(listed);
 await listed.start();
 checkEqual("lists follow exactly the named targets", listed.following, [
   "queue:late",
   "runner:reports",
 ]);
+checkEqual(
+  'followed: a configured list counts as "discovery"',
+  followedListed.sort(),
+  ["queue:late discovery", "runner:reports discovery"],
+);
 await Bun.sleep(300); // an observation window: many 10ms passes, were there any
 checkEqual("…and discover nothing more", listed.following, [
   "queue:late",
@@ -839,6 +902,7 @@ const holdSubscribed: string[] = [];
 holding.on("subscribed", (kind, name) => {
   holdSubscribed.push(`${kind}:${name}`);
 });
+const followedHolding = recordFollowed(holding);
 await holding.start();
 
 // `following` lists live subscriptions only — not one still being set up.
@@ -859,6 +923,13 @@ check(
 );
 
 await holding.hold("queue", "held");
+check(
+  "a hold is not for good: no followed event, not in followedForGood",
+  !followedHolding.some((entry) => entry.startsWith("queue:held ")) &&
+    !holding.followedForGood("queue").includes("held") &&
+    holding.following.includes("queue:held"),
+  { followedHolding, forGood: holding.followedForGood("queue") },
+);
 checkEqual(
   "two holds, one subscription",
   holdSubscribed.filter((key) => key === "queue:held").length,
@@ -898,6 +969,11 @@ check(
   holding.following.includes("queue:promoted"),
   holding.following,
 );
+checkEqual(
+  "  followed fired at the follow(), not at the hold()",
+  followedHolding.filter((entry) => entry.startsWith("queue:promoted ")),
+  ["queue:promoted follow"],
+);
 
 // A held name that a discovery pass later finds becomes permanent too.
 await holding.hold("queue", "found-later");
@@ -921,6 +997,11 @@ check(
   "a held name discovery found stays followed after its last unfollow",
   holding.following.includes("queue:found-later"),
   holding.following,
+);
+checkEqual(
+  '  followed fired when discovery found it: source "discovery"',
+  followedHolding.filter((entry) => entry.startsWith("queue:found-later ")),
+  ["queue:found-later discovery"],
 );
 
 const configured = new JobsNotifier(driver, namespace, {

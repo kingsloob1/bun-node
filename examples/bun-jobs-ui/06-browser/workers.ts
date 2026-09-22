@@ -11,7 +11,8 @@
  * it from each worker row, the queue's Workers panel and "Processed by", and
  * two hosts that refuse worker actions: one that lets a caller list workers
  * but change nothing (and hides hosts), and one that refuses `workers.*`
- * altogether. Every action is read back from the API or the worker object,
+ * altogether; and a new worker showing at once, from its first start or
+ * from another process's new queue. Every action is read back from the API or the worker object,
  * not from the page.
  *
  * ```bash
@@ -51,11 +52,21 @@
  *   reproduces that honestly: it holds the page's worker reads (as a slow
  *   network would) while another caller stops the worker, so the row still
  *   offers Resume when it is clicked.
+ * - **A new worker shows at once.** The page follows the `workers` channel
+ *   and re-reads on a worker's first start (a `state` event with no
+ *   `previous`): about 0.3 s, where the safety poll while live is 60 s. A
+ *   queue another process creates (`helpers/remote-worker.ts`, a third
+ *   process) is followed only from the API's next discovery pass
+ *   (`discoveryInterval`, 2 s by default), after that worker's first start
+ *   went unheard, so the API sends a `queue-discovered` gap instead and the
+ *   page re-reads on that. `GET /workers` lists a worker on a queue created a
+ *   moment ago without waiting out its 2 s queue cache.
  * - **Wait on conditions, never on time.** Every page-side helper polls the
  *   DOM with a deadline, and every API check polls the API.
  */
 import type { JobsApiAuthorize, WorkerDto } from "@kingsleyweb/bun-jobs";
 import type { Subprocess } from "bun";
+import type { RemoteProcess } from "./helpers/remote-process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +98,7 @@ import {
   toast,
   typeInto,
 } from "./helpers/page";
+import { startRemoteWorker } from "./helpers/remote-process";
 
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
@@ -111,6 +123,26 @@ const KEY = {
   /** `mailer`'s worker on `emails`, run by this process and by the replica. */
   mailer: "mailer.emails.send",
 } as const;
+
+/** A queue nobody uses until the last step, when this process's API context starts a worker on it. */
+const FIRST_START_QUEUE = "first-start";
+/** A queue another process (`helpers/remote-worker.ts`) creates in the last step. */
+const DISCOVERED_QUEUE = "discovered";
+/**
+ * How soon the Workers page must show a worker after its first start: it
+ * re-reads on the `state` event (about 0.3 s measured), and while live its
+ * safety poll is 60 s, so anything well under 5 s is the event's doing.
+ */
+const FIRST_START_BOUND_MS = 2_000;
+/** How soon `GET /workers` must list a worker on a brand-new queue: well under the API's 2 s queue cache. */
+const QUEUE_CACHE_BOUND_MS = 1_000;
+/**
+ * How soon the page must show a worker another process starts on a queue of
+ * its own: the API's discovery pass (`discoveryInterval`, 2 s by default),
+ * then the re-read the `queue-discovered` gap causes (about 1.1 s measured
+ * in all), plus a margin for a loaded machine.
+ */
+const DISCOVERY_BOUND_MS = 2_000 + 1_500;
 
 /** What a job asks its worker to do. */
 interface JobData {
@@ -265,9 +297,22 @@ async function serveHost(options: {
   };
 }
 
+/** Every channel the page subscribed to on the main host's socket, in order. */
+const workersSubscriptions: string[] = [];
+
 /** Everything allowed, the opt-in `workers.configure` included. */
 const main = await serveHost({
-  authorize: () => true,
+  authorize: (req, ctx) => {
+    if (
+      ctx.transport === "ws" &&
+      ctx.action === "events.subscribe" &&
+      ctx.channel === "workers" &&
+      !req.originalUrl.includes("/meta/permissions")
+    ) {
+      workersSubscriptions.push(ctx.channel);
+    }
+    return true;
+  },
   configure: true,
   observe: true,
 });
@@ -296,6 +341,8 @@ const hosts = [main, viewOnly, noWorkers];
 
 /** The child process running the second mailer. */
 let replica: Subprocess<"pipe", "pipe", "inherit"> | undefined;
+/** The child process that creates a queue of its own, once started. */
+let remote: RemoteProcess | undefined;
 
 /** Winds everything down; safe to call more than once. */
 async function shutdown(view?: Bun.WebView): Promise<void> {
@@ -309,6 +356,7 @@ async function shutdown(view?: Bun.WebView): Promise<void> {
     replica.stdin.end();
     await replica.exited;
   }
+  await remote?.close();
   await mailerJobs.close();
   await apiJobs.close();
 }
@@ -512,6 +560,17 @@ function rowsAre(expected: string[]): string {
       .map((row) => row.dataset.testid.slice("worker-row-".length)).sort();
     return JSON.stringify(shown) === ${JSON.stringify(JSON.stringify([...expected].sort()))} ? shown : null;
   })()`);
+}
+
+/** Page-side: the cells of worker `id`'s row once it shows, or `null` after `ms`. */
+function rowShown(id: string, ms: number): string {
+  return poll(
+    `(() => {
+      const row = document.querySelector(${JSON.stringify(`tr[data-testid="worker-row-${id}"]`)});
+      return row ? [...row.children].map((cell) => cell.textContent.trim()) : null;
+    })()`,
+    ms,
+  );
 }
 
 /** Page-side: the rows shown now, sorted (for a failure's detail). */
@@ -1845,6 +1904,125 @@ try {
     ],
     [false, false],
   );
+
+  /* ---------------------------------------------------------------- */
+  step(
+    "A new worker shows at once: its first start, or a queue-discovered gap",
+  );
+
+  const beforeSubscribe = workersSubscriptions.length;
+  await open("/workers");
+  await view.evaluate(rowsAre(Object.values(ids)));
+  check(
+    "the page is live, so it re-reads on events (its safety poll is 60 s)",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="live-status"][data-state="live"]'),
+    ),
+    pageConsole,
+  );
+  await waitFor(
+    "the page to subscribe to workers",
+    () => workersSubscriptions.length > beforeSubscribe,
+  );
+
+  // A worker of the API's own context, on a queue nobody has used yet. Its
+  // first run() publishes one `state` with no `previous`, and the page
+  // re-reads on it. The list was read a moment ago, so the API's 2 s queue
+  // cache predates the queue: GET /workers must still list the worker.
+  await listed();
+  const firstStart = apiJobs.worker<JobData, string>(
+    FIRST_START_QUEUE,
+    handle,
+    {
+      ...WORKER_OPTIONS,
+      publish: true,
+    },
+  );
+  const firstFrom = mark();
+  const ranAt = Date.now();
+  void firstStart.run();
+  const apiListedAfter = (async () => {
+    await waitFor(
+      `GET /workers to list ${firstStart.id}`,
+      async () => (await record(firstStart.id)) !== undefined,
+    );
+    return Date.now() - ranAt;
+  })();
+  const firstShown = await view.evaluate<string[] | null>(
+    rowShown(firstStart.id, FIRST_START_BOUND_MS),
+  );
+  const firstShownAfter = Date.now() - ranAt;
+  show(`${firstStart.id} on the page`, {
+    after: firstShownAfter,
+    row: firstShown,
+  });
+  check(
+    `the Workers page shows ${FIRST_START_QUEUE}'s new worker, running, well inside ${FIRST_START_BOUND_MS} ms (about 0.3 s)`,
+    firstShown?.join(" ").includes("Running") === true &&
+      firstShownAfter < FIRST_START_BOUND_MS,
+    { after: firstShownAfter, row: firstShown },
+  );
+  check(
+    "by a re-read of GET /workers sent after run()",
+    /^GET \/jobs-api\/workers(?:\?|$)/.test(
+      await requestSince(firstFrom, /^GET \/jobs-api\/workers(?:\?|$)/),
+    ),
+  );
+  const listedAfter = await apiListedAfter;
+  check(
+    `GET /workers lists it ${listedAfter} ms after run(), well under the 2 s queue cache`,
+    listedAfter < QUEUE_CACHE_BOUND_MS,
+    { listedAfter },
+  );
+
+  // A worker another process starts, on a queue it creates: the API finds
+  // the queue on its next discovery pass (2 s by default), too late for the
+  // worker's first start, so the page hears a `queue-discovered` gap on
+  // `workers` instead, and re-reads on that.
+  const discoveredFrom = mark();
+  remote = await startRemoteWorker({
+    root: ROOT,
+    namespace: NAMESPACE,
+    queue: DISCOVERED_QUEUE,
+    service: "elsewhere",
+  });
+  const discoveredShown = await view.evaluate<string[] | null>(
+    rowShown(remote.id, DISCOVERY_BOUND_MS),
+  );
+  const discoveredAfter = Date.now() - remote.readyAt;
+  show(`${remote.id} on the page`, {
+    after: discoveredAfter,
+    row: discoveredShown,
+  });
+  check(
+    `the page shows the other process's worker on ${DISCOVERED_QUEUE}, within discoveryInterval plus a margin (${DISCOVERY_BOUND_MS} ms; about 1.1 s)`,
+    discoveredShown !== null && discoveredAfter < DISCOVERY_BOUND_MS,
+    { after: discoveredAfter, row: discoveredShown },
+  );
+  check(
+    "under a service group of its own, elsewhere",
+    await view.evaluate<boolean>(
+      waitForSelector(
+        `[data-testid="worker-service-elsewhere"] [data-testid="worker-row-${remote.id}"]`,
+        0,
+      ),
+    ),
+  );
+  checkEqual(
+    "and GET /workers agrees: the other process's pid, service and queue",
+    await record(remote.id).then(
+      (worker) => worker && [worker.pid, worker.service, worker.queue],
+    ),
+    [remote.pid, "elsewhere", DISCOVERED_QUEUE],
+  );
+  check(
+    "the page re-read GET /workers for it",
+    /^GET \/jobs-api\/workers(?:\?|$)/.test(
+      await requestSince(discoveredFrom, /^GET \/jobs-api\/workers(?:\?|$)/),
+    ),
+  );
+  await remote.close();
+  await firstStart.close();
 
   checkEqual(
     "no CSP violation on the way",
