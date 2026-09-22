@@ -1006,7 +1006,7 @@ describe("file driver: names on a case-insensitive filesystem", () => {
           })
         ).map((job) => job.id),
       ).toEqual([id]);
-      expect(await driver.promoteDelayed(q, now, 10)).toBe(1);
+      expect((await driver.promoteDelayed(q, now, 10)).promoted).toBe(1);
 
       const claimed = await driver.claimJob(q, {
         workerId: "w",

@@ -5,6 +5,7 @@ import type {
   JobRecord,
   JobRef,
   JobsDriver,
+  PromotionRead,
   QueueRef,
   RepeatRecord,
   StoredJobOptions,
@@ -52,6 +53,7 @@ import {
   claimJobBatch,
   CompletionBatcher,
   listWorkerRecords,
+  readPromotion,
   registerWorkerRecord,
   removeWorkerRecord,
   resolveDriver,
@@ -87,6 +89,7 @@ import {
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { addDeadLetter, selfLetterError } from "./deadLetter";
+import { noteScheduled, scheduleEpoch } from "./delayedHints";
 import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { JobDefaultsCache, overlayJobDefaults } from "./jobDefaults";
@@ -676,6 +679,20 @@ export class BunQueueWorker<
   #keepAlive: ReturnType<typeof setInterval> | undefined;
   /** Aborted to wake the loop out of a wait. */
   #wake = new AbortController();
+  /**
+   * When the queue's next delayed job is due, as the last promotion reported
+   * it (`null`: nothing scheduled), and the `scheduleEpoch` it was read under.
+   *
+   * While it stands — `at` still in the future, and no writer in this process
+   * has scheduled anything on the queue since — an empty pass skips its
+   * promotion and budgets its wait from it. A job *another* process (or
+   * another driver instance) schedules earlier is not seen by it: the
+   * promotion sweep, which runs every `promotionCadence` (at most a second)
+   * whatever this holds, promotes that one and wakes the loop, so it is at
+   * most that much late. Cleared by any wake. `undefined`: not known, so the
+   * next empty pass promotes.
+   */
+  #nextDue: { at: number | null; epoch: number } | undefined;
   /**
    * Each running job's lock renewal, by job id: the timer, and what it needs
    * to renew with.
@@ -1671,12 +1688,25 @@ export class BunQueueWorker<
     // one. Moving it here removes that cost without slowing a retry down: a
     // job whose backoff has elapsed is picked up on the next empty pass rather
     // than waiting out the 1Hz maintenance sweep.
-    if (this.#options.maintenance && (await this.#promoteDue())) {
-      return;
+    //
+    // Unless the last promotion said nothing more comes due before a known
+    // time, and that time has not come: then the promotion would find nothing
+    // — bar a job another process scheduled earlier since, which the sweep
+    // still promotes within a second. See `#nextDue`.
+    let nextDueAt: number | null | undefined;
+    if (this.#options.maintenance) {
+      nextDueAt = this.#knownNextDue(Date.now());
+      if (nextDueAt === undefined) {
+        const pass = await this.#promoteDue();
+        if (pass && pass.promoted > 0) {
+          return;
+        }
+        nextDueAt = pass?.nextDueAt;
+      }
     }
 
     this.#announceDrained();
-    await this.#idle(await this.#waitBudget());
+    await this.#idle(await this.#waitBudget(nextDueAt));
   }
 
   /**
@@ -1918,23 +1948,52 @@ export class BunQueueWorker<
   }
 
   /**
-   * Promotes whatever has come due, reporting whether anything moved.
+   * Promotes whatever has come due, reporting how many moved and when the
+   * next is due (remembered in `#nextDue`), or `null` when it failed.
    *
-   * A `true` sends the loop straight back to claiming instead of idling.
+   * Anything promoted sends the loop straight back to claiming instead of
+   * idling.
    */
-  async #promoteDue(): Promise<boolean> {
+  async #promoteDue(): Promise<PromotionRead | null> {
     try {
-      return (
-        (await this.driver.promoteDelayed(
-          this.ref,
-          Date.now(),
-          MAINTENANCE_BATCH,
-        )) > 0
-      );
+      return await this.#promote();
     } catch (error) {
       this.#emitError(error, "promote");
-      return false;
+      return null;
     }
+  }
+
+  /**
+   * One `promoteDelayed`, with its next due time remembered for the empty
+   * passes after it. The epoch is read *before* the call, so a job this
+   * process schedules while it is in flight invalidates what it answers.
+   */
+  async #promote(): Promise<PromotionRead> {
+    const epoch = scheduleEpoch(this.driver, this.ref);
+    const read = readPromotion(
+      await this.driver.promoteDelayed(this.ref, Date.now(), MAINTENANCE_BATCH),
+    );
+
+    // A driver on the older contract answers the count alone: nothing to
+    // remember, and the wait budget asks `nextDelayedAt` as it always did.
+    this.#nextDue =
+      read.nextDueAt === undefined ? undefined : { at: read.nextDueAt, epoch };
+    return read;
+  }
+
+  /**
+   * The remembered next due time while it still stands — `null` for nothing
+   * scheduled — or `undefined` when the pass must promote: nothing is
+   * remembered, the time has come, or a writer in this process has scheduled
+   * a job on the queue since it was read.
+   */
+  #knownNextDue(now: number): number | null | undefined {
+    const known = this.#nextDue;
+    if (!known || known.epoch !== scheduleEpoch(this.driver, this.ref)) {
+      return undefined;
+    }
+
+    return known.at !== null && known.at <= now ? undefined : known.at;
   }
 
   /** Runs one job and records how it ended. */
@@ -2366,6 +2425,7 @@ export class BunQueueWorker<
     if (parent?.state === "waiting") {
       await this.#publish("waiting", { id }, ref.queue);
     } else if (parent?.state === "delayed") {
+      noteScheduled(this.driver, ref);
       await this.#publish("delayed", { id, runAt: parent.runAt }, ref.queue);
     }
   }
@@ -2813,6 +2873,10 @@ export class BunQueueWorker<
             ),
         );
 
+        // The retry is scheduled now, possibly before whatever this worker
+        // last heard was due next: its empty passes must promote again.
+        noteScheduled(this.driver, this.ref);
+
         if (!written && !(await this.#failureLanded(record, serialized))) {
           this.safeEmit("lockLost", job);
           return;
@@ -3085,6 +3149,9 @@ export class BunQueueWorker<
         // A new occurrence, in no flow, whatever the finished one belonged to.
         flow: null,
       });
+      if (next > now) {
+        noteScheduled(this.driver, this.ref);
+      }
 
       await this.driver.upsertRepeat(this.ref, {
         ...scheduled,
@@ -3962,11 +4029,10 @@ export class BunQueueWorker<
     this.#promotionTimer = this.#every(
       promotionCadence(this.#options.pollInterval),
       async () => {
-        const promoted = await this.driver.promoteDelayed(
-          this.ref,
-          Date.now(),
-          MAINTENANCE_BATCH,
-        );
+        // Runs whatever `#nextDue` says: this sweep is what bounds how late a
+        // job another process schedules can be promoted while the loop trusts
+        // it, and its answer refreshes it.
+        const { promoted } = await this.#promote();
         if (promoted > 0) {
           this.#wake.abort();
         }
@@ -4107,6 +4173,9 @@ export class BunQueueWorker<
         ...(await this.#occurrenceOptions(definition, built)),
       };
       await this.driver.addJob(this.ref, record);
+      if (record.state === "delayed") {
+        noteScheduled(this.driver, this.ref);
+      }
 
       await this.driver.upsertRepeat(this.ref, {
         ...definition,
@@ -4136,14 +4205,21 @@ export class BunQueueWorker<
     }
   }
 
-  /** How long to wait for work: never past the next delayed job's due time. */
-  async #waitBudget(): Promise<number> {
+  /**
+   * How long to wait for work: never past the next delayed job's due time.
+   *
+   * `known` is that time when the pass already has it — from the promotion it
+   * just ran, or from `#nextDue` — so only a driver that did not say (or a
+   * worker with maintenance off) pays a `nextDelayedAt` for it.
+   */
+  async #waitBudget(known?: number | null): Promise<number> {
     const base = this.driver.capabilities.blockingWait
       ? this.#options.maxBlock
       : this.#options.pollInterval;
 
     try {
-      const next = await this.driver.nextDelayedAt(this.ref);
+      const next =
+        known !== undefined ? known : await this.driver.nextDelayedAt(this.ref);
       if (next === null) {
         return base;
       }
@@ -4176,7 +4252,7 @@ export class BunQueueWorker<
     }
 
     if (this.#wake.signal.aborted) {
-      this.#wake = new AbortController();
+      this.#rearmWake();
       return;
     }
 
@@ -4190,7 +4266,7 @@ export class BunQueueWorker<
     }
 
     if (wake.signal.aborted) {
-      this.#wake = new AbortController();
+      this.#rearmWake();
       return;
     }
 
@@ -4219,7 +4295,7 @@ export class BunQueueWorker<
     }
 
     if (this.#wake.signal.aborted) {
-      this.#wake = new AbortController();
+      this.#rearmWake();
       return;
     }
 
@@ -4230,8 +4306,18 @@ export class BunQueueWorker<
     });
 
     if (wake.signal.aborted) {
-      this.#wake = new AbortController();
+      this.#rearmWake();
     }
+  }
+
+  /**
+   * Replaces a spent wake signal, and forgets `#nextDue`: whatever woke the
+   * loop — a resume, a changed setting, a sweep that promoted — may have
+   * changed what is scheduled.
+   */
+  #rearmWake(): void {
+    this.#wake = new AbortController();
+    this.#nextDue = undefined;
   }
 
   /** Reports a failure outside a job, logging it when nobody is listening. */

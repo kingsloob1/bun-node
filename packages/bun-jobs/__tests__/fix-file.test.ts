@@ -469,7 +469,7 @@ describe("file driver: picking by marker name", () => {
 
     // Due at `now` exactly counts; one millisecond later does not. A
     // fractional `now` is floored, like the marker's prefix.
-    expect(await driver.promoteDelayed(q, now + 0.5, 100)).toBe(3);
+    expect((await driver.promoteDelayed(q, now + 0.5, 100)).promoted).toBe(3);
     const states = await Promise.all(
       offsets.map(async (_, i) => (await driver.getJob(q, `d${i}`))?.state),
     );
@@ -483,7 +483,7 @@ describe("file driver: picking by marker name", () => {
       "delayed",
     ]);
     expect(await driver.nextDelayedAt(q)).toBe(now + 1);
-    expect(await driver.promoteDelayed(q, now + 1, 100)).toBe(1);
+    expect((await driver.promoteDelayed(q, now + 1, 100)).promoted).toBe(1);
   });
 
   it("pruneExpired removes expired jobs in batches, and only those", async () => {

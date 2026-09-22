@@ -280,7 +280,7 @@ describe.skipIf(!URL)("MongoDB driver: job attribution", () => {
       ),
     ).toBe(true);
     expect(await raw()).toMatchObject({ workerId: null, processedBy: stamp });
-    expect(await driver.promoteDelayed(q, now + 2, 10)).toBe(1);
+    expect((await driver.promoteDelayed(q, now + 2, 10)).promoted).toBe(1);
     const again = await driver.claimJob(q, {
       token: "t2",
       lockMs: 30_000,

@@ -730,6 +730,25 @@ export interface RunnerDriver {
  * Queue storage
  * ------------------------------------------------------------------ */
 
+/**
+ * What one {@link QueueDriver.promoteDelayed} call did, and when the next
+ * scheduled job comes due.
+ */
+export interface PromoteDelayedResult {
+  /** How many jobs moved to `waiting`. */
+  promoted: number;
+  /**
+   * The earliest `runAt` among the queue's `delayed` and `failed` jobs as the
+   * promotion left them, or `null` when none is scheduled — the answer
+   * {@link QueueDriver.nextDelayedAt} would give straight afterwards.
+   *
+   * It can be at or before `now`: when more than `limit` jobs were due, the
+   * ones left behind are still scheduled, and a caller should promote again
+   * rather than wait.
+   */
+  nextDueAt: number | null;
+}
+
 /** Identifies one queue: a namespace plus a name. */
 export interface QueueRef {
   /** The namespace the queue lives in. */
@@ -2391,8 +2410,26 @@ export interface QueueDriver {
   ) => Promise<boolean>;
   /** Makes a delayed or retry-pending job claimable now. */
   promoteJob: (q: QueueRef, id: string, now: number) => Promise<boolean>;
-  /** Promotes every job whose `runAt` has passed, up to `limit`. */
-  promoteDelayed: (q: QueueRef, now: number, limit: number) => Promise<number>;
+  /**
+   * Promotes every `delayed` or `failed` job whose `runAt` has passed, up to
+   * `limit`, and reports when the next one comes due.
+   *
+   * Every driver in this package resolves a {@link PromoteDelayedResult}: the
+   * count, plus the earliest `runAt` still scheduled once the promotion is
+   * done, read in the same round trip where the backend allows it. That is
+   * what lets an idle worker budget its wait without a separate
+   * {@link QueueDriver.nextDelayedAt} call.
+   *
+   * A plain `number` (the count alone) is still accepted, for a driver
+   * written against the older contract: the worker then asks
+   * `nextDelayedAt` itself, as it always did. `readPromotion` reads either
+   * shape.
+   */
+  promoteDelayed: (
+    q: QueueRef,
+    now: number,
+    limit: number,
+  ) => Promise<number | PromoteDelayedResult>;
   /**
    * Recovers jobs whose worker died holding them: back to `waiting`, or to
    * `dead` once they have stalled `maxStalledCount` times. Clears the lock

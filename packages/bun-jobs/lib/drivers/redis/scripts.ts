@@ -1081,9 +1081,13 @@ return buried
 `;
 
 /**
- * Moves whatever has come due into the wait set.
+ * Moves whatever has come due into the wait set, and reports when the next
+ * scheduled job comes due.
  *
- * ARGV: prefix, now, limit. Returns how many moved.
+ * ARGV: prefix, now, limit. Returns { how many moved, the lowest score left
+ * in the delayed and failed sets, or '' when both are empty }. The second is
+ * two \`ZRANGE 0 0\` inside the script the promotion already runs, so an idle
+ * worker learns its wait budget without a round trip of its own.
  */
 export const PROMOTE_DELAYED = `${QUEUE_PRELUDE}
 local now, limit = tonumber(ARGV[2]), tonumber(ARGV[3])
@@ -1103,7 +1107,15 @@ if moved > 0 then
   wake(moved)
 end
 
-return moved
+local next = ''
+for _, set in ipairs({ DELAYED, FAILED }) do
+  local head = redis.call('ZRANGE', set, 0, 0, 'WITHSCORES')
+  if head[2] and (next == '' or tonumber(head[2]) < tonumber(next)) then
+    next = head[2]
+  end
+end
+
+return { moved, next }
 `;
 
 /**

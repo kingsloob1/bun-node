@@ -29,6 +29,7 @@ import type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
@@ -2659,15 +2660,21 @@ export class RedisDriver implements JobsDriver {
     q: QueueRef,
     now: number,
     limit: number,
-  ): Promise<number> {
+  ): Promise<PromoteDelayedResult> {
     await this.connect();
 
-    const moved = await this.#runQueue(q, scripts.PROMOTE_DELAYED, [
+    const reply = (await this.#runQueue(q, scripts.PROMOTE_DELAYED, [
       String(now),
       String(Math.max(1, Math.floor(limit))),
-    ]);
+    ])) as [number | string, string] | null;
 
-    return Number(moved ?? 0);
+    const [moved, next] = reply ?? [0, ""];
+    const nextDueAt = next === "" || next === undefined ? null : Number(next);
+
+    return {
+      promoted: Number(moved ?? 0),
+      nextDueAt: Number.isFinite(nextDueAt) ? nextDueAt : null,
+    };
   }
 
   async recoverStalled(

@@ -59,6 +59,7 @@ export type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueueDriver,
   QueuedTrigger,
   QueueRef,
@@ -186,6 +187,7 @@ export {
   type UpdateFilterLike,
   type UpdateResultLike,
 } from "./mongo/mongo-driver";
+export { type PromotionRead, readPromotion } from "./promotion";
 export {
   countAdded,
   countQueues,

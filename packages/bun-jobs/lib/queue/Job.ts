@@ -21,6 +21,7 @@ import {
 import { parseWhen } from "../shared/humanTime";
 import { assertJsonSafe } from "../shared/json";
 import { fileBuriedLetter } from "./deadLetter";
+import { noteScheduled } from "./delayedHints";
 import { displayRepeatKey } from "./options";
 import { disableRepeatSeries, enableRepeatSeries } from "./repeatControl";
 import { retryJob } from "./retry";
@@ -582,6 +583,10 @@ export class Job<TData = unknown, TResult = unknown> {
   ): Promise<this | null> {
     const driver = this.#require("updateJob", what);
     const record = await driver.updateJob!(this.#ref, this.id, patch, now);
+    if (record?.state === "delayed") {
+      // Its due time may now be earlier than a local worker expects.
+      noteScheduled(driver, this.#ref);
+    }
 
     return record ? this.#view(record, false) : null;
   }

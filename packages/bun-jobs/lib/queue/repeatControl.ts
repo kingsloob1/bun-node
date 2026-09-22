@@ -7,6 +7,7 @@ import type {
 } from "../drivers/index";
 import { NotSupportedError } from "../shared/errors";
 import { fitName } from "../shared/fit";
+import { noteScheduled } from "./delayedHints";
 import { overlayJobDefaults, readJobDefaults } from "./jobDefaults";
 import {
   CALLER_REPEAT_KEY_PREFIX,
@@ -334,6 +335,9 @@ async function scheduleFromNow(
     occurrenceRecord(definition, next, now),
   );
   await driver.addJob(q, record);
+  if (record.state === "delayed") {
+    noteScheduled(driver, q);
+  }
   await driver.upsertRepeat(q, {
     ...definition,
     nextRunAt: next,
