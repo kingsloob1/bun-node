@@ -419,6 +419,12 @@ async function waitForPort(port: number, timeoutMs = 60_000): Promise<boolean> {
  * Docker mode
  * ------------------------------------------------------------------ */
 
+/**
+ * The open-file limit, soft and hard, every container is created with. Above
+ * MongoDB's documented minimum of 64,000.
+ */
+const OPEN_FILE_LIMIT = 65_536;
+
 /** What a container needs to exist. */
 interface ContainerSpec {
   /** Container name, also how an existing one is recognised. */
@@ -435,6 +441,47 @@ interface ContainerSpec {
   containerPort?: number;
   /** Environment the image reads when it first initialises itself. */
   env: Record<string, string>;
+}
+
+/**
+ * Warns when an existing container was created without the open-file limit.
+ * Docker fixes ulimits at creation, so an older container keeps the daemon's
+ * default until it is recreated; this only reports, and changes nothing.
+ */
+async function checkContainerLimit(name: string): Promise<void> {
+  const inspected = await run([
+    "docker",
+    "container",
+    "inspect",
+    "--format",
+    "{{json .HostConfig.Ulimits}}",
+    name,
+  ]);
+
+  // No such container, or no Docker: nothing to check.
+  if (!inspected.ok) {
+    return;
+  }
+
+  /** One entry of `docker inspect`'s `HostConfig.Ulimits`; the list is `null` when none are set. */
+  type Ulimits = Array<{ Name: string; Soft: number }> | null;
+  let limits: Ulimits;
+  try {
+    // Cast to the named type: `typeof limits` here would read the narrowed
+    // type of a variable not yet assigned, not its declaration.
+    limits = JSON.parse(inspected.stdout.trim()) as Ulimits;
+  } catch {
+    return;
+  }
+
+  const soft = limits?.find((limit) => limit.Name === "nofile")?.Soft;
+  if (soft !== undefined && soft >= OPEN_FILE_LIMIT) {
+    return;
+  }
+
+  log.warn(
+    `container ${name} has ${soft === undefined ? "the Docker daemon's default open-file limit" : `an open-file limit of ${soft}`}; recreate it to get --ulimit nofile=${OPEN_FILE_LIMIT}:${OPEN_FILE_LIMIT} (keep its data with --volumes-from)`,
+  );
 }
 
 /** Starts a container, reusing one that already exists. */
@@ -456,7 +503,12 @@ async function ensureContainer(
 
   if (state === "running") {
     log.skip(`container ${spec.name} is already running`);
+    await checkContainerLimit(spec.name);
     return true;
+  }
+
+  if (state) {
+    await checkContainerLimit(spec.name);
   }
 
   if (state) {
@@ -487,6 +539,14 @@ async function ensureContainer(
     // Loopback only: a test database has no business being reachable.
     "--publish",
     `127.0.0.1:${spec.port}:${spec.containerPort ?? spec.port}`,
+    // The Docker daemon's default soft open-file limit can be as low as 1,024.
+    // MongoDB's WiredTiger opens files per collection and index, and at 1,024
+    // a few test runs in a row exhausted it: errno 24, a panic, a crashed
+    // server. MongoDB's documented minimum is 64,000. Every container gets
+    // it, so a database added later does too. Docker cannot change this on
+    // an existing container; it applies when one is created.
+    "--ulimit",
+    `nofile=${OPEN_FILE_LIMIT}:${OPEN_FILE_LIMIT}`,
     ...Object.entries(spec.env).flatMap(([key, value]) => [
       "--env",
       `${key}=${value}`,
@@ -956,6 +1016,8 @@ async function setupService(
   // Usable already? Then there is nothing to install and nothing to configure.
   if (await plan.configured(options)) {
     log.skip("already installed, running and reachable");
+    // It may be one of this script's containers, created before the limit.
+    await checkContainerLimit(plan.container(options).name);
     return { service: plan.service, ready: true, note: "already set up" };
   }
 
