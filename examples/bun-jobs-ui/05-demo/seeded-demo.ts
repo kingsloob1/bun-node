@@ -1,6 +1,7 @@
 /**
- * A seeded demo of the queue, runner and Events screens: several queues with
- * jobs in every state and runners in every state, served with the UI and its
+ * A seeded demo of the Overview, queue, worker, runner and Events screens:
+ * several queues with jobs in every state, workers with stable keys in two
+ * services, and runners in every state, served with the UI and its
  * live-events socket so you can click through it and watch it change.
  *
  * ```bash
@@ -17,8 +18,10 @@
  * `cause`, failed and waiting to retry, running and logging, delayed, a flow's
  * parent, and one whose id holds a `/`; then the runner list and each runner
  * (see `helpers/runners.ts`): one idle on a schedule, one paused, one with a
- * run in flight and a history, one whose run failed, and one registered by
- * another process; then the Events console on three channels. While it
+ * run in flight and a history, one whose run failed, one whose run logged
+ * (its log open), and one registered by another process; then the worker
+ * list and each worker's page, the Overview over a range, and the Events
+ * console on five channels, the two worker scopes among them. While it
  * serves, a delivery is added to `webhooks` every 3 s and the running job
  * logs a line every 2 s, so there is always something happening.
  *
@@ -48,6 +51,19 @@
  * - **Kill… and Reset stats… need the runner in this process.** The remote
  *   runner offers neither, and says why; `digest` offers Kill… while its run
  *   is in flight.
+ * - **A worker's stable key is `service.queue.name`.** The context runs as
+ *   service `api`, and its workers are named, so the keys are
+ *   `api.mail.send` and `api.webhooks.deliver`; a second context on the
+ *   same backend, service `mailer`, adds a paused `mailer.webhooks.deliver`.
+ *   The key is what the Workers page groups and links by, and what a job's
+ *   "Processed by" names (`features.jobAttribution`).
+ * - **Analytics are recorded** (`metrics`, all on and per-second, which is
+ *   also the default): the Overview's range, its Runners and Workers
+ *   sections, and a worker page's throughput read them.
+ * - **Job lists are newest first**, by creation time where the backend has
+ *   `features.addedByState` (`sort=createdAt`).
+ * - **`reports` has stored job defaults its jobs predate**, so its Job
+ *   defaults panel (`?panel=job-defaults`) offers Apply to 45 pending jobs….
  * - **Every action is allowed here.** `04-screens/permissions.ts` shows a host
  *   that decides per queue and per runner, and what the screens then hide.
  */
@@ -79,7 +95,13 @@ import {
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title } from "../shared/console";
 import { DEMO_RUNNERS, seedRunners } from "./helpers/runners";
-import { DEMO_IDS, EXPECTED_COUNTS, seedDemo } from "./helpers/seed";
+import {
+  DEMO_IDS,
+  DEMO_JOB_DEFAULTS,
+  DEMO_WORKERS,
+  EXPECTED_COUNTS,
+  seedDemo,
+} from "./helpers/seed";
 
 /** Keep serving after the checks, for a browser. */
 const serve = process.argv.includes("--serve");
@@ -91,7 +113,19 @@ step("Seeding the queues");
 
 const jobs = new BunJobs({
   namespace: exampleNamespace("examples-ui-demo"),
+  // The first segment of every worker's stable key, and the Workers page's
+  // grouping.
+  service: DEMO_WORKERS.service,
   driver: exampleDriver(),
+  // Analytics for the Overview's range and its Runners and Workers
+  // sections: per-second series of jobs, runs and each worker. All of it is
+  // the default, spelled out.
+  metrics: {
+    resolution: "second",
+    workers: true,
+    runners: true,
+    durations: true,
+  },
   // Live events for the API's socket: the badge, the Events console, and
   // the screens refreshing on events.
   publishEvents: true,
@@ -144,6 +178,9 @@ async function read<T>(path: string): Promise<T> {
 
 /** A job's path segment: the id percent-encoded as one segment. */
 const idSegment = (id: string) => encodeURIComponent(id);
+
+/** What the backend can do: the screens decide what to show from it. */
+const meta = await read<MetaDto>("/meta");
 
 /* ------------------------------------------------------------------ */
 step("/queues — the queue list");
@@ -208,6 +245,19 @@ checkEqual("reports, ?name=weekly-report", named.items.length, 15);
 const newest = await read<{ items: JobDto[] }>(
   "/queues/mail/jobs?state=completed&order=desc&search=invoice",
 );
+if (meta.features.addedByState) {
+  // What the jobs table sends by default: newest added first.
+  const byCreation = await read<{ items: JobDto[] }>(
+    "/queues/mail/jobs?order=desc&sort=createdAt",
+  );
+  const created = byCreation.items.map((job) => job.createdAt);
+  check(
+    "mail, every state, ?order=desc&sort=createdAt: newest added first",
+    created.length > 1 &&
+      created.every((at, index) => index === 0 || created[index - 1]! >= at),
+    created,
+  );
+}
 checkEqual(
   "mail, completed, ?search=invoice&order=desc",
   newest.items.map((job) => job.id),
@@ -215,9 +265,10 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("/queues/:queue?panel=… — limits, workers, throughput, repeatables");
+step(
+  "/queues/:queue?panel=… — limits, workers, throughput, repeatables, job defaults",
+);
 
-const meta = await read<MetaDto>("/meta");
 show("features", meta.features);
 
 /* ------------------------------------------------------------------ */
@@ -246,14 +297,64 @@ if (meta.features.limits) {
 }
 if (meta.features.workers) {
   const workers = await read<{
-    items: { queue: string; concurrency: number }[];
+    items: {
+      queue: string;
+      concurrency: number;
+      key?: string;
+      service?: string;
+      paused: boolean;
+    }[];
   }>("/workers");
   checkEqual(
-    "panel=workers: one worker each on mail and webhooks",
-    workers.items.map((worker) => [worker.queue, worker.concurrency]).sort(),
+    "/workers and panel=workers: each worker's service, queue, stable key, concurrency and paused",
+    workers.items
+      .map((worker) => [
+        worker.service,
+        worker.queue,
+        worker.key,
+        worker.concurrency,
+        worker.paused,
+      ])
+      .sort(),
     [
-      ["mail", 1],
-      ["webhooks", 2],
+      [DEMO_WORKERS.service, "mail", DEMO_WORKERS.mail, 1, false],
+      [DEMO_WORKERS.service, "webhooks", DEMO_WORKERS.webhooks, 2, false],
+      [
+        DEMO_WORKERS.otherService,
+        "webhooks",
+        DEMO_WORKERS.pausedWebhooks,
+        1,
+        true,
+      ],
+    ],
+  );
+  const oneKey = await read<{ items: { key?: string }[] }>(
+    `/workers?queue=mail&key=${encodeURIComponent(DEMO_WORKERS.mail)}&includeOffline=true`,
+  );
+  checkEqual(
+    `/workers/mail/${DEMO_WORKERS.mail}: the page's instances read`,
+    oneKey.items.map((worker) => worker.key),
+    [DEMO_WORKERS.mail],
+  );
+}
+if (meta.features.jobDefaults) {
+  const defaults = await read<{
+    overridden: string[];
+    override: Record<string, unknown>;
+    effective: Record<string, unknown>;
+  }>("/queues/reports/job-defaults");
+  show("reports' stored override", defaults.override);
+  checkEqual(
+    "panel=job-defaults: reports overrides attempts and timeout, and runs with them",
+    [
+      [...defaults.overridden].sort(),
+      defaults.effective.attempts,
+      defaults.effective.timeout,
+    ],
+    [
+      ["attempts", "timeout"],
+      DEMO_JOB_DEFAULTS.attempts,
+      DEMO_JOB_DEFAULTS.timeout,
     ],
   );
 }
@@ -342,6 +443,26 @@ if (meta.features.logs) {
   );
 }
 
+if (meta.features.jobAttribution) {
+  // The job screen's "Processed by": the worker that ran the last attempt.
+  // "Held by" (`workerId`) is shown only while the job is active.
+  const completed = await read<JobDto>(
+    `/queues/mail/jobs/${idSegment(DEMO_IDS.completed)}`,
+  );
+  const running = await read<JobDto>(
+    `/queues/mail/jobs/${idSegment(DEMO_IDS.active)}`,
+  );
+  checkEqual(
+    `Processed by: ${DEMO_WORKERS.mail} ran the completed job and holds the active one`,
+    [
+      completed.processedBy?.key,
+      running.processedBy?.key,
+      typeof running.workerId,
+    ],
+    [DEMO_WORKERS.mail, DEMO_WORKERS.mail, "string"],
+  );
+}
+
 const slashed = await read<JobDto>(
   `/queues/mail/jobs/${idSegment(DEMO_IDS.slashed)}`,
 );
@@ -400,7 +521,7 @@ const runnerList = await read<RunnerListDto>("/runners");
 // Active from `isPaused`, and a "Run in flight" badge beside either whenever
 // `isRunning` is true: here, beside digest only.
 checkEqual(
-  "the list: the four local runners by status, then the remote one; isPaused and isRunning on each",
+  "the list: the five local runners by status, then the remote one; isPaused and isRunning on each",
   runnerList.items.map((item) => [
     item.id,
     item.isLocal,
@@ -413,6 +534,7 @@ checkEqual(
     [DEMO_RUNNERS.paused, true, "paused", true, false],
     [DEMO_RUNNERS.busy, true, "running", false, true],
     [DEMO_RUNNERS.failing, true, "running", false, false],
+    [DEMO_RUNNERS.logged, true, "running", false, false],
     [DEMO_RUNNERS.remote, false, null, false, false],
   ],
 );
@@ -494,6 +616,32 @@ checkEqual(
   ],
 );
 
+if (meta.features.runnerLogs) {
+  // What a history row's log shows (`?logs=<runId>`): every line the run
+  // wrote, with its stream.
+  const log = await read<{
+    items: { stream: string; text?: string; message?: string }[];
+    dropped: number;
+    live: boolean;
+  }>(`/runners/${DEMO_RUNNERS.logged}/runs/${runners.loggedRunId}/logs`);
+  show("export's run log", log.items);
+  checkEqual(
+    "export: its finished run's log has log, stdout and stderr lines, nothing dropped",
+    [
+      [...new Set(log.items.map((line) => line.stream))].sort(),
+      log.items.length,
+      log.dropped,
+      log.live,
+    ],
+    [["log", "stderr", "stdout"], 7, 0, false],
+  );
+  check(
+    "and the made-up apiKey is stored redacted",
+    !JSON.stringify(log.items).includes(`pk_demo_${DEMO_RUNNERS.logged}`),
+    log.items,
+  );
+}
+
 const remote = await runnerScreen(DEMO_RUNNERS.remote);
 checkEqual(
   "partner-feed: remote, so no local block (no active runs, Kill… or Reset stats…)",
@@ -502,15 +650,66 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("/ — the Overview over a range: analytics and added by state");
+
+show("meta.analytics.recording", meta.analytics?.recording);
+if (meta.analytics) {
+  checkEqual(
+    "analytics are recorded for jobs, runners and workers, per second",
+    [
+      meta.analytics.recording.resolution,
+      meta.analytics.recording.runners,
+      meta.analytics.recording.workers,
+    ],
+    ["second", true, true],
+  );
+}
+if (meta.analytics && meta.features.workerMetrics) {
+  const workerSeries = await read<{
+    rows: { key: string }[];
+    truncated: boolean;
+  }>("/analytics/workers");
+  checkEqual(
+    "the Workers section: a row per key that did work or is live",
+    workerSeries.rows.map((row) => row.key).sort(),
+    [
+      DEMO_WORKERS.mail,
+      DEMO_WORKERS.webhooks,
+      DEMO_WORKERS.pausedWebhooks,
+    ].sort(),
+  );
+}
+if (meta.features.addedByState) {
+  const added = await read<{ counts: Record<JobState, number> }>(
+    "/overview/added",
+  );
+  show("added in range, where they are now", added);
+  const total = Object.values(EXPECTED_COUNTS)
+    .flatMap((counts): number[] => Object.values(counts))
+    .reduce((sum, count) => sum + count, 0);
+  checkEqual(
+    "Over the range, added by state: every seeded job, counted where it is now",
+    Object.values(added.counts).reduce((sum, count) => sum + count, 0),
+    total,
+  );
+}
+
+/* ------------------------------------------------------------------ */
 step("The UI serves every screen's URL");
 
 /** The screens worth opening, by what they show. */
 const screens: [string, string][] = [
+  ["the Overview", "/"],
+  ["overview: the last hour", "/?range=3600s"],
+  [
+    "overview: a range per section",
+    "/?rangeScope=section&jobsRange=300s&workersRange=3600s",
+  ],
   ["the queue list", "/queues"],
   ["the queue list, searched", "/queues?search=re"],
   ["mail: every state", "/queues/mail"],
   [
-    "mail: failed tab, workers panel",
+    "mail: Retrying tab (state=failed), workers panel",
     "/queues/mail?state=failed&panel=workers",
   ],
   ["mail: limits panel", "/queues/mail?panel=limits"],
@@ -523,7 +722,11 @@ const screens: [string, string][] = [
     "reports: paused, page 3 with the total",
     "/queues/reports?offset=40&limit=20&total=1",
   ],
-  ["webhooks: newest first", "/queues/webhooks?order=desc"],
+  ["webhooks: oldest first", "/queues/webhooks?order=asc"],
+  [
+    "reports: job defaults (Apply to 45 pending jobs…)",
+    "/queues/reports?panel=job-defaults",
+  ],
   [
     "job: completed, with logs",
     `/queues/mail/jobs/${idSegment(DEMO_IDS.completed)}`,
@@ -550,6 +753,20 @@ const screens: [string, string][] = [
     `/queues/webhooks/jobs/${idSegment(DEMO_IDS.webhookDead)}`,
   ],
   ["job: an id with a /", `/queues/mail/jobs/${idSegment(DEMO_IDS.slashed)}`],
+  ["the worker list, by service", "/workers"],
+  ["the worker list, paused only", "/workers?state=paused"],
+  [
+    `worker: ${DEMO_WORKERS.mail}, its jobs`,
+    `/workers/mail/${DEMO_WORKERS.mail}`,
+  ],
+  [
+    `worker: ${DEMO_WORKERS.webhooks}, dead jobs, last 6 hours`,
+    `/workers/webhooks/${DEMO_WORKERS.webhooks}?jobState=dead&finished=21600s`,
+  ],
+  [
+    `worker: ${DEMO_WORKERS.pausedWebhooks}, paused (Resume)`,
+    `/workers/webhooks/${DEMO_WORKERS.pausedWebhooks}`,
+  ],
   ["the runner list", "/runners"],
   ["the runner list, searched", "/runners?search=sync"],
   ["runner: idle on a schedule", `/runners/${DEMO_RUNNERS.scheduled}`],
@@ -558,6 +775,10 @@ const screens: [string, string][] = [
   [
     "runner: a failed run, 10 in the history",
     `/runners/${DEMO_RUNNERS.failing}?history=10`,
+  ],
+  [
+    "runner: a finished run, its log open",
+    `/runners/${DEMO_RUNNERS.logged}?logs=${runners.loggedRunId}`,
   ],
   ["runner: remote", `/runners/${DEMO_RUNNERS.remote}`],
   ["events: everything, live", "/events"],
@@ -568,6 +789,11 @@ const screens: [string, string][] = [
   [
     "events: the busy runner",
     `/events?channel=${encodeURIComponent(`runner/${DEMO_RUNNERS.busy}`)}`,
+  ],
+  ["events: every worker", "/events?channel=workers"],
+  [
+    "events: webhooks' workers",
+    `/events?channel=${encodeURIComponent("queue/webhooks/workers")}`,
   ],
 ];
 for (const [, path] of screens) {

@@ -45,9 +45,10 @@
  *   "screen-error"` ("This screen failed to show") in its place, while the
  *   header, nav and badge keep working, and offers "Reload this screen".
  *   The crash is made from outside: a host middleware answers one job's
- *   read with a `workerId` that is an object, which React cannot render
+ *   read with a `repeatKey` that is an object, which React cannot render
  *   (the client's shape check looks only at `id`, `name`, `queue` and
- *   `state`). With the host answering truthfully again, the button resets
+ *   `state`, and the job screen draws a set `repeatKey` whatever the job's
+ *   state — unlike `workerId`, drawn as "Held by" only while it is active). With the host answering truthfully again, the button resets
  *   the screen's cached answers and mounts it afresh: the job is drawn after
  *   exactly one new read of it, and no `/meta` or `/meta/permissions` read.
  * - **An answer of the wrong shape is an error state, not a crash or an
@@ -85,7 +86,7 @@ const chromePath = chromeOrSkip();
 const QUEUE = "mail";
 /** Its job. */
 const JOB_ID = "welcome-ada";
-/** A job whose read the host garbles (a `workerId` React cannot draw) until told to stop. */
+/** A job whose read the host garbles (a `repeatKey` React cannot draw) until told to stop. */
 const GARBLED_ID = "garbled";
 /** A queue holding the jobs whose answers are the wrong shape. */
 const ODD = "odd";
@@ -217,11 +218,14 @@ const odd = jobs.queue(ODD);
 await odd.add("send-email", { to: "bob@example.com" }, { jobId: SHAPELESS_ID });
 await odd.add("send-email", { to: "eve@example.com" }, { jobId: NAMELESS_ID });
 
-// The garbling, keyed by job id. A worker id that is an object passes the
+// The garbling, keyed by job id. A repeat key that is an object passes the
 // client's shape check (it checks only `id`, `name`, `queue` and `state`),
 // and React throws drawing it ("Objects are not valid as a React child"):
-// a render crash, which is what the per-screen error boundary is for.
-garbleJob.set(GARBLED_ID, (real) => ({ ...real, workerId: { host: "a" } }));
+// a render crash, which is what the per-screen error boundary is for. It is
+// the repeat key because the job screen draws that for a job in any state;
+// a worker id is drawn ("Held by") only while the job is active, and this
+// job is waiting, so garbling that would crash nothing.
+garbleJob.set(GARBLED_ID, (real) => ({ ...real, repeatKey: { host: "a" } }));
 // A body that is not a job at all: the shape check turns it into an error.
 garbleJob.set(SHAPELESS_ID, () => ({}));
 // A name that is not text: the jobs table draws "(invalid)", and the job's

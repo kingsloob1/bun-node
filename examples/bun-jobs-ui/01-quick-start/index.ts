@@ -18,8 +18,9 @@
  * - **Mount each router at its own `basePath`**: `app.use(api.basePath,
  *   api.router)` and `app.use(ui.basePath, ui.router)`. The UI's config and
  *   every asset URL are built from `ui.basePath`, so the two must agree.
- * - **Every screen is real**: the Overview, Queues, Runners, Events and the
- *   API docs (`/jobs/docs`, the app's own OpenAPI and AsyncAPI viewer). For
+ * - **Every screen is real**: the Overview, Queues, Workers, Runners, Events
+ *   and the API docs (`/jobs/docs`, the app's own OpenAPI and AsyncAPI
+ *   viewer, with HTTP API and WebSocket API entries under it in the nav). For
  *   screens with something in every state, run
  *   `05-demo/seeded-demo.ts --serve`.
  * - **Inside this repo there is no `dist/`**, so the first request bundles the

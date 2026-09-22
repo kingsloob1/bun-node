@@ -526,8 +526,12 @@ checkEqual(
     kv: "app_kv",
     events: "legacy_event_log",
     logs: "app_logs",
+    run_logs: "app_run_logs",
     workers: "app_workers",
     metrics: "app_metrics",
+    queue_metrics: "app_queue_metrics",
+    worker_metrics: "app_worker_metrics",
+    runner_metrics: "app_runner_metrics",
   },
 );
 checkEqual(
@@ -547,12 +551,29 @@ checkEqual(
   [...SQL_TABLES],
   // `workers` holds each worker's heartbeat record and `metrics` the
   // per-minute throughput counts, both read by the queue's read APIs.
-  ["jobs", "locks", "kv", "events", "logs", "workers", "metrics"],
+  // `run_logs` holds a runner run's captured output, and the three
+  // `*_metrics` tables the analytics buckets per queue, worker and runner.
+  [
+    "jobs",
+    "locks",
+    "kv",
+    "events",
+    "logs",
+    "run_logs",
+    "workers",
+    "metrics",
+    "queue_metrics",
+    "worker_metrics",
+    "runner_metrics",
+  ],
 );
 checkEqual(
   "MONGO_COLLECTIONS",
   [...MONGO_COLLECTIONS],
-  ["jobs", "locks", "kv", "events", "jobLogs"],
+  // `runLogs` holds a runner run's captured output. `metrics` is the
+  // analytics buckets — unlike SQL's `metrics`, which is per-minute
+  // throughput.
+  ["jobs", "locks", "kv", "events", "jobLogs", "runLogs", "metrics"],
 );
 
 checkEqual(
@@ -659,6 +680,7 @@ await checkContract("memory", memory, {
   events: "local",
   multiProcess: false,
   multiHost: false,
+  jobAttribution: true,
 });
 check(
   "memory: stores no events and has no schema, so neither optional method",
@@ -681,6 +703,7 @@ await checkContract("file", file, {
   events: "poll",
   multiProcess: true,
   multiHost: false,
+  jobAttribution: true,
 });
 check(
   "file: has no schema to sync",
@@ -766,6 +789,10 @@ checkEqual(
     `${EXAMPLE_PREFIX}locks`,
     `${EXAMPLE_PREFIX}logs`,
     `${EXAMPLE_PREFIX}metrics`,
+    `${EXAMPLE_PREFIX}queue_metrics`,
+    `${EXAMPLE_PREFIX}run_logs`,
+    `${EXAMPLE_PREFIX}runner_metrics`,
+    `${EXAMPLE_PREFIX}worker_metrics`,
     `${EXAMPLE_PREFIX}workers`,
   ],
 );
@@ -778,6 +805,7 @@ await checkContract("sqlite", sqlite, {
   events: "poll",
   multiProcess: true,
   multiHost: false,
+  jobAttribution: true,
 });
 
 await checkRejects(
@@ -1081,6 +1109,7 @@ if (!postgresUrl) {
     events: "poll",
     multiProcess: true,
     multiHost: true,
+    jobAttribution: true,
   });
 
   const tableRows = await probe.unsafe<{ table_name: string }[]>(
@@ -1099,6 +1128,10 @@ if (!postgresUrl) {
       `${SERVER_PREFIX}locks`,
       `${SERVER_PREFIX}logs`,
       `${SERVER_PREFIX}metrics`,
+      `${SERVER_PREFIX}queue_metrics`,
+      `${SERVER_PREFIX}run_logs`,
+      `${SERVER_PREFIX}runner_metrics`,
+      `${SERVER_PREFIX}worker_metrics`,
       `${SERVER_PREFIX}workers`,
     ],
   );
@@ -1243,6 +1276,7 @@ if (!redisUrl) {
     events: "push",
     multiProcess: true,
     multiHost: true,
+    jobAttribution: true,
   });
   check(
     "redis: stores no events and has no schema, so neither optional method",
@@ -1435,6 +1469,8 @@ if (!mongoUrl) {
       kv: `${SERVER_PREFIX}kv`,
       events: mongoEvents,
       jobLogs: `${SERVER_PREFIX}jobLogs`,
+      runLogs: `${SERVER_PREFIX}runLogs`,
+      metrics: `${SERVER_PREFIX}metrics`,
     },
   );
   checkEqual(
@@ -1454,6 +1490,7 @@ if (!mongoUrl) {
     events: "poll",
     multiProcess: true,
     multiHost: true,
+    jobAttribution: true,
   });
 
   const inspectMongo = new MongoClient(mongoUrl);
@@ -1464,9 +1501,11 @@ if (!mongoUrl) {
   )
     .map((entry) => entry.name)
     .filter((name) => name.startsWith(SERVER_PREFIX));
+  // Every one of them, `runLogs` and `metrics` included: connecting creates
+  // their indexes, and an index brings its collection into being.
   check(
     "mongodb: the collections exist under those names",
-    [`${SERVER_PREFIX}jobs`, mongoEvents].every((name) =>
+    Object.values(mongo.collections).every((name) =>
       collectionNames.includes(name),
     ),
     collectionNames,

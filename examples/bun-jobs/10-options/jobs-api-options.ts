@@ -389,7 +389,16 @@ checkEqual(
   both.api.mode,
   "both",
 );
-checkEqual("every action, every route", both.api.routes.length, 47);
+// Two routes read how many jobs were added per state — `getAddedByState` and
+// `getQueueAddedByState` — and a backend that keeps no such counts (the file
+// and Redis drivers) prunes both. Every count below is two lower there.
+const bothFeatures = (await both.call("GET", "/meta")).body.features;
+const addedByState = bothFeatures.addedByState ? 2 : 0;
+checkEqual(
+  "every action, every route",
+  both.api.routes.length,
+  70 + addedByState,
+);
 checkEqual(
   "fail, disable and enable are among them, each a mutation",
   jobMethodRoutes(both.api),
@@ -450,13 +459,13 @@ step("mode prunes both halves, and /meta reports which");
 
 const jobsOnly = mount({ mode: "jobs", actions: [...JOBS_API_ACTIONS] });
 const runnerOnly = mount({ mode: "runner", actions: [...JOBS_API_ACTIONS] });
-checkEqual("mode: jobs", jobsOnly.api.routes.length, 37);
+checkEqual("mode: jobs", jobsOnly.api.routes.length, 54 + addedByState);
 checkEqual(
   "fail, disable and enable belong to the jobs half",
   [jobMethodRoutes(jobsOnly.api), jobMethodRoutes(runnerOnly.api)],
   [[...JOB_METHOD_ROUTES].sort(), []],
 );
-checkEqual("mode: runner", runnerOnly.api.routes.length, 14);
+checkEqual("mode: runner", runnerOnly.api.routes.length, 20);
 checkEqual(
   "the two halves plus the shared routes are the whole API",
   jobsOnly.api.routes.length + runnerOnly.api.routes.length - 4,
@@ -482,7 +491,7 @@ checkEqual(
   readOnly.api.routes.filter((route) => route.mutation).length,
   0,
 );
-checkEqual("what is left", readOnly.api.routes.length, 23);
+checkEqual("what is left", readOnly.api.routes.length, 33 + addedByState);
 const paused = await readOnly.call("POST", "/queues/mail/pause");
 checkEqual("a mutation answers 404, not 403", paused.status, 404);
 checkEqual("with the API's own code", paused.body.code, "ROUTE_NOT_FOUND");
@@ -498,29 +507,57 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("actions: an allow-list, with two opt-ins absent by default");
+step("actions: an allow-list, with six opt-ins absent by default");
 
 const byDefault = mount();
 checkEqual(
   "the defaults are every action but the opt-ins",
   byDefault.api.routes.length,
-  45,
+  61 + addedByState,
 );
 checkEqual(
   "fail, disable and enable are on by default",
   jobMethodRoutes(byDefault.api),
   [...JOB_METHOD_ROUTES].sort(),
 );
-check(
-  "jobs.add and jobs.update are the opt-ins",
-  [...JOBS_API_OPT_IN_ACTIONS].sort().join(",") === "jobs.add,jobs.update",
+// The six write something a host may well want only some callers to: a new
+// or changed job, a queue's job defaults (saving them, and separately
+// rewriting the backlog with them — tuning without a rewrite is a real
+// policy), and a worker's or a runner's remote configuration.
+checkEqual(
+  "the opt-ins: adding and updating jobs, job defaults, and remote config",
   [...JOBS_API_OPT_IN_ACTIONS],
+  [
+    "jobs.add",
+    "jobs.update",
+    "queues.defaults",
+    "queues.applyDefaults",
+    "workers.configure",
+    "runners.configure",
+  ],
+);
+/** The nine routes those six actions authorize. */
+const OPT_IN_ROUTES = [
+  "addJob",
+  "updateJob",
+  "setJobDefaults",
+  "resetJobDefaults",
+  "applyJobDefaults",
+  "configureWorker",
+  "resetWorkerConfig",
+  "configureRunner",
+  "resetRunnerConfig",
+];
+check(
+  "so none of their nine routes is registered",
+  OPT_IN_ROUTES.every((id) => !idsOf(byDefault.api).includes(id)),
+  idsOf(byDefault.api),
 );
 check(
-  "so neither route is registered",
-  !idsOf(byDefault.api).includes("addJob") &&
-    !idsOf(byDefault.api).includes("updateJob"),
-  idsOf(byDefault.api),
+  "while reading job defaults and worker configs is a plain read, on by default",
+  ["getJobDefaults", "listWorkerConfigs"].every((id) =>
+    idsOf(byDefault.api).includes(id),
+  ),
 );
 
 const narrow = mount({ actions: ["meta.read", "jobs.add"] });
@@ -534,7 +571,7 @@ checkEqual(
   (await narrow.call("GET", "/queues")).status,
   404,
 );
-// Not a list of extras on top of the default: naming only the two opt-ins
+// Not a list of extras on top of the default: naming only two opt-ins
 // turns every other action off, `meta.read` included. `[...JOBS_API_ACTIONS]`
 // is the default plus them.
 const onlyOptIns = mount({ actions: ["jobs.add", "jobs.update"] });
@@ -548,9 +585,16 @@ checkEqual(
 );
 const everything = mount({ actions: [...JOBS_API_ACTIONS] });
 checkEqual(
-  "while [...JOBS_API_ACTIONS] is the default and both",
+  "while [...JOBS_API_ACTIONS] is the default and all nine opt-in routes",
+  idsOf(everything.api)
+    .filter((id) => !idsOf(byDefault.api).includes(id))
+    .sort(),
+  [...OPT_IN_ROUTES].sort(),
+);
+checkEqual(
+  "…which is every route",
   everything.api.routes.length,
-  byDefault.api.routes.length + 2,
+  byDefault.api.routes.length + OPT_IN_ROUTES.length,
 );
 
 /* ------------------------------------------------------------------ */
@@ -569,9 +613,29 @@ checkEqual(
   ].sort(),
 );
 checkEqual(
-  "33 actions in total",
-  Object.keys(permissions).length,
-  JOBS_API_ACTIONS.length,
+  "48 actions in total",
+  [Object.keys(permissions).length, JOBS_API_ACTIONS.length],
+  [48, 48],
+);
+/** Actions for job defaults, the worker controls, and the clear routes. */
+const controlActions: JobsApiAction[] = [
+  "queues.defaults",
+  "queues.applyDefaults",
+  "workers.read",
+  "workers.pause",
+  "workers.resume",
+  "workers.stop",
+  "workers.start",
+  "workers.configure",
+  "jobs.clearLogs",
+  "runners.logs",
+  "runners.clearHistory",
+  "runners.configure",
+];
+check(
+  "job defaults, worker control, clearing and run logs are all actions",
+  controlActions.every((action) => action in permissions),
+  controlActions.filter((action) => !(action in permissions)),
 );
 
 // What configuration removed is absent, not merely false.
@@ -615,13 +679,19 @@ step("Driver capability prunes routes, and /meta.features says why");
 
 const fullFeatures = (await both.call("GET", "/meta")).body.features;
 checkEqual(
-  "this backend supports everything the API can use",
-  Object.values(fullFeatures).every(Boolean),
-  true,
+  "this backend supports everything the API can use (bar added-by-state counts on file and Redis)",
+  Object.keys(fullFeatures).filter((feature) => !fullFeatures[feature]),
+  addedByState ? [] : ["addedByState"],
+);
+checkEqual(
+  "job defaults, and applying them to the backlog, among them",
+  [fullFeatures.jobDefaults, fullFeatures.jobDefaultsApply],
+  [true, true],
 );
 
 const olderDriver = without(driver, [
   "getJobLogs",
+  "clearJobLogs",
   "updateJob",
   "getThroughput",
 ]);
@@ -637,7 +707,7 @@ checkEqual(
   idsOf(both.api)
     .filter((id) => !idsOf(older.api).includes(id))
     .sort(),
-  ["getJobLogs", "getQueueThroughput", "updateJob"],
+  ["clearJobLogs", "getJobLogs", "getQueueThroughput", "updateJob"],
 );
 const olderFeatures = (await older.call("GET", "/meta")).body.features;
 checkEqual("features.logs is false", olderFeatures.logs, false);
@@ -649,9 +719,16 @@ checkEqual(
   (await older.call("GET", "/queues/mail/jobs/1/logs")).body.code,
   "ROUTE_NOT_FOUND",
 );
-check(
-  "and it is absent from the OpenAPI document too",
-  !JSON.stringify(older.api.openapi()).includes("/logs"),
+// Reading and clearing a job's log share one path, so the path goes only
+// when both methods do. A run's log is a separate feature (`runnerLogs`,
+// backed by `getRunLog`), which this driver still has.
+const olderPaths = Object.keys(
+  older.api.openapi().paths as Record<string, unknown>,
+).filter((path) => path.endsWith("/logs"));
+checkEqual(
+  "and the job-log path is absent from the OpenAPI document too",
+  olderPaths,
+  ["/runners/{runner}/runs/{runId}/logs"],
 );
 
 /* ------------------------------------------------------------------ */
@@ -1153,6 +1230,17 @@ await checkRejects(
     }),
   { code: "CONFIG", message: /at least 1/ },
 );
+await checkRejects(
+  "maxApplyDefaults above 10000 is refused",
+  () =>
+    createJobsApi({
+      jobs: context("c9a"),
+      basePath: "/admin/jobs",
+      authorize: () => true,
+      limits: { maxApplyDefaults: 10_001 },
+    }),
+  { code: "CONFIG", message: /at most 10000/ },
+);
 
 /* ------------------------------------------------------------------ */
 step("csrf, cors and trustProxy");
@@ -1634,7 +1722,13 @@ checkEqual(
     maxHistory: 6,
     maxJobDataBytes: 64,
     maxQueues: 1,
+    maxApplyDefaults: DEFAULT_JOBS_API_LIMITS.maxApplyDefaults,
   },
+);
+checkEqual(
+  "maxApplyDefaults: 1000 by default, the largest apply limit",
+  DEFAULT_JOBS_API_LIMITS.maxApplyDefaults,
+  1000,
 );
 
 // addableNames: null for any name, [] when nothing can be added, else the

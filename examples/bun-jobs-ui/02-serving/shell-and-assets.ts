@@ -327,7 +327,10 @@ for (const path of [
   "/admin/jobs/",
   "/admin/jobs/overview",
   "/admin/jobs/queues/mail/jobs/42",
+  // The Retrying tab: the `failed` state keeps its value in the URL.
   "/admin/jobs/queues/mail?state=failed",
+  "/admin/jobs/workers",
+  "/admin/jobs/workers/mail/api.mail.send",
 ]) {
   const { response, shell: page } = await fetchShell(app, path);
   checkEqual(

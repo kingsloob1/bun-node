@@ -83,8 +83,12 @@
  *   `/` lands on `/docs`, the badge reads `Live off` (`data-state="off"`),
  *   and a channel's try-it is a note (`ws-try-unavailable`), since there is
  *   no Events console to open.
+ * - **The nav nests two entries under API docs**: HTTP API (`/docs/http`,
+ *   always) and WebSocket API (`/docs/ws`, only when `/meta`'s
+ *   `docs.asyncapi` names a document).
  * - **A host without a socket** has no AsyncAPI document: `/docs` shows no
- *   WebSocket card, and `/docs/ws` says "This API has no live-events socket".
+ *   WebSocket card, the nav no WebSocket API entry, and `/docs/ws` says
+ *   "This API has no live-events socket".
  * - **Wait on conditions, never on time.** Every page-side helper polls the
  *   DOM until what it wants is there.
  */
@@ -1017,9 +1021,13 @@ try {
     await view.evaluate<string>(LOCATION),
   );
   checkEqual(
-    "the nav has the API docs entry and nothing else",
+    "the nav has only API docs, with its HTTP API and WebSocket API entries (this host has a socket)",
     await view.evaluate<string[]>(hrefsIn("nav")),
-    [`${docsOnly.uiBase}/docs`],
+    [
+      `${docsOnly.uiBase}/docs`,
+      `${docsOnly.uiBase}/docs/http`,
+      `${docsOnly.uiBase}/docs/ws`,
+    ],
   );
   check(
     'the badge is data-state="off"',
@@ -1053,6 +1061,16 @@ try {
     "only the HTTP card",
     await view.evaluate<string[]>(hrefsIn('[data-testid="docs-home"]')),
     [`${socketless.uiBase}/docs/http`],
+  );
+  check(
+    "the nav has an HTTP API entry under API docs",
+    await present(`nav a[href="${socketless.uiBase}/docs/http"]`),
+    await view.evaluate<string[]>(hrefsIn("nav")),
+  );
+  check(
+    "and no WebSocket API entry: /meta's docs name no AsyncAPI document",
+    !(await present(`nav a[href="${socketless.uiBase}/docs/ws"]`, 0)),
+    await view.evaluate<string[]>(hrefsIn("nav")),
   );
   await open(socketless, "/docs/ws");
   check(

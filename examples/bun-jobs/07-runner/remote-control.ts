@@ -17,9 +17,11 @@
  * Worth knowing:
  *
  * - **Every call goes through the backend**, never to the owner directly, so
- *   none of them needs the owner to be reachable. The owner started with
- *   `remoteControl: true` hears each change within the driver's event latency;
- *   without it, it adopts them at its next `syncInterval`.
+ *   none of them needs the owner to be reachable. An owner subscribed to
+ *   changes hears each one within the driver's event latency; one that is not
+ *   adopts them at its next `syncInterval`. `remoteControl` defaults to
+ *   `"auto"`: subscribed on a driver whose events are not polled (memory,
+ *   Redis), not on one that would poll for them (SQL, MongoDB, file).
  * - **A remote trigger is queued**, and the owner drains it. The outcome is
  *   `queued`, not `started`.
  * - **There is no remote kill.** Only the process executing a run can stop it.

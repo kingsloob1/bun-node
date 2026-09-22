@@ -31,6 +31,20 @@
  *   Disable and Enable are idempotent, so they ask for no confirmation.
  * - **A numeric progress is a bar** (`role="progressbar"`, with
  *   `aria-valuenow`) and its value as text; an object would be a JSON tree.
+ * - **Job lists are newest first.** A queue's jobs table sends `order=desc`
+ *   and, where `/meta`'s `features.addedByState` is set (the memory driver
+ *   sets it), `sort=createdAt`, so every tab lists the newest job added on
+ *   top; `?order=asc` (Order: Oldest first) turns it round.
+ * - **The `failed` state reads "Retrying"**, on the state tab and every
+ *   badge, with a tooltip saying what it is ("Failed an attempt, waiting to
+ *   retry (the API calls this state failed). …"). The value is still
+ *   `failed`: `?state=failed`, `state-failed`.
+ * - **"Held by" is the current holder, "Processed by" the last runner.** The
+ *   job screen shows `workerId` as "Held by" only while the job is active;
+ *   "Processed by" (where `features.jobAttribution`) names the worker that
+ *   ran the job's last attempt, its stable key (`service.queue.name`)
+ *   linked to that worker's page, `/workers/:queue/:key`. The jobs table
+ *   has the same as a "Processed by" column.
  * - **Wait on conditions, never on time.** Every page-side helper polls the
  *   DOM until what it wants is there, and every API check polls the API.
  */
@@ -68,8 +82,19 @@ const BUSY = "reports";
 const DONE_ID = "report-done";
 /** A job the worker holds active, at 42% progress. */
 const ACTIVE_ID = "report-running";
+/** A job whose first attempt fails, waiting an hour to retry: the `failed` state. */
+const RETRY_ID = "report-retrying";
 /** The progress the held job reports. */
 const PROGRESS = 42;
+/** The service this process runs as: the first segment of its workers' keys. */
+const SERVICE = "billing";
+/** The name of the worker on reports. */
+const WORKER_NAME = "render";
+/** Its stable key, as `service.queue.name`: what "Processed by" links to. */
+const WORKER_KEY = `${SERVICE}.${BUSY}.${WORKER_NAME}`;
+/** The tooltip on the Retrying badge and tab, verbatim. */
+const RETRYING_HINT =
+  "Failed an attempt, waiting to retry (the API calls this state failed). Jobs that gave up are under Dead.";
 /** The repeat series on mail. */
 const SERIES = "weekly-digest";
 
@@ -77,6 +102,8 @@ const SERIES = "weekly-digest";
 
 const jobs = new BunJobs({
   namespace: "examples-ui-job-actions",
+  // Workers take their stable key's first segment from it.
+  service: SERVICE,
   driver: new MemoryDriver(),
   logger: noopLogger,
 });
@@ -94,6 +121,17 @@ const api = createJobsApi({
 });
 const ui = jobsUi({ api, logger: noopLogger });
 const app = new BunHttpAdapter();
+
+/** The query of every jobs-list read of mail the page sent, in order. */
+const mailListQueries: URLSearchParams[] = [];
+// Ahead of the API: records what the jobs table asks for.
+app.use((req, _res, next) => {
+  const url = new URL(req.originalUrl, "http://host");
+  if (url.pathname === `${api.basePath}/queues/${QUEUE}/jobs`) {
+    mailListQueries.push(url.searchParams);
+  }
+  next();
+});
 app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 await app.listen(0);
@@ -103,9 +141,18 @@ const origin = app.url!.replace(/\/$/, "");
 const release = createDeferred<void>();
 
 // Two waiting jobs on mail, and a repeat series (its next occurrence a
-// delayed job). Nothing consumes mail.
+// delayed job). Nothing consumes mail. The second is added a millisecond or
+// more after the first, so newest first has one answer.
 const mail = jobs.queue(QUEUE);
-await mail.add("send-email", { to: "ada@example.com" }, { jobId: WAITING_ID });
+const first = await mail.add(
+  "send-email",
+  { to: "ada@example.com" },
+  { jobId: WAITING_ID },
+);
+await waitFor(
+  "the clock to pass the first job's creation",
+  () => Date.now() > first.createdAt,
+);
 await mail.add("send-email", { to: "ops@example.com" }, { jobId: LONG_ID });
 await mail.add(
   "digest",
@@ -113,22 +160,39 @@ await mail.add(
   { repeat: { every: "1 week", key: SERIES } },
 );
 
-// On reports, a worker completes one job, then holds the next one active
+// On reports, a worker completes one job, fails the first attempt of
+// another (which then waits an hour to retry), then holds a third active
 // after reporting its progress.
 const reports = jobs.queue(BUSY);
-const worker = jobs.worker(BUSY, async (job) => {
-  if (job.id === DONE_ID) {
-    return "sent";
-  }
-  await job.updateProgress(PROGRESS);
-  await release.promise;
-  return "held";
-});
+const worker = jobs.worker(
+  BUSY,
+  async (job) => {
+    if (job.id === DONE_ID) {
+      return "sent";
+    }
+    if (job.id === RETRY_ID) {
+      throw new Error("The renderer timed out");
+    }
+    await job.updateProgress(PROGRESS);
+    await release.promise;
+    return "held";
+  },
+  { name: WORKER_NAME },
+);
 void worker.run();
 await reports.add("report", {}, { jobId: DONE_ID });
 await waitFor(
   "the first report to complete",
   async () => (await reports.count()).completed === 1,
+);
+await reports.add(
+  "report",
+  {},
+  { jobId: RETRY_ID, attempts: 3, backoff: 3_600_000 },
+);
+await waitFor(
+  "the second report to fail its first attempt",
+  async () => (await reports.count()).failed === 1,
 );
 await reports.add("report", {}, { jobId: ACTIVE_ID });
 
@@ -146,6 +210,10 @@ interface JobBody {
   progress: unknown;
   /** Its failure, or `null`. */
   failedReason: { message: string } | null;
+  /** The worker holding it, while it is active. */
+  workerId: string | null;
+  /** The worker that ran its last attempt, or `null`. */
+  processedBy: { id: string; key?: string } | null;
 }
 
 /** `GET /queues/:queue/jobs/:id`. */
@@ -288,6 +356,76 @@ async function typeIntoField(label: string, text: string): Promise<void> {
   await view.type(text);
 }
 
+/**
+ * Page-side: the job summary's rows as `[label, value]` pairs, once the
+ * summary shows (or `null` after `ms`).
+ */
+function summaryRows(ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const rows = document.querySelectorAll(".job-summary .kv-row");
+      if (rows.length > 0) {
+        return resolve([...rows].map((row) => [
+          row.querySelector("dt").textContent.trim(),
+          row.querySelector("dd").textContent.trim(),
+        ]));
+      }
+      if (Date.now() > deadline) return resolve(null);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Page-side: the text and `title` of the state badge inside `scope`, once it shows. */
+function badgeIn(scope: string, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const poll = () => {
+      const badge = document.querySelector(${JSON.stringify(`${scope} .state-badge`)});
+      if (badge) return resolve([badge.textContent.trim(), badge.getAttribute("title")]);
+      if (Date.now() > deadline) return resolve(null);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/**
+ * Page-side: the ids of the jobs table's rows, in order, once it lists
+ * exactly `count` (or what it lists after `ms`).
+ */
+function rowIds(count: number, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const read = () => [...document.querySelectorAll('[data-testid^="job-row-"]')]
+      .map((row) => row.getAttribute("data-testid").slice("job-row-".length));
+    const poll = () => {
+      const ids = read();
+      if (ids.length === ${count} || Date.now() > deadline) return resolve(ids);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** Page-side: every state tab as `[label, title]` pairs, once they show. */
+const STATE_TABS = `new Promise((resolve) => {
+  const deadline = Date.now() + 15000;
+  const poll = () => {
+    const tabs = document.querySelectorAll('[role="tab"] .tab-label');
+    if (tabs.length > 1 || Date.now() > deadline) {
+      return resolve([...tabs].map((label) => [
+        label.textContent.trim(),
+        label.closest('[role="tab"]').getAttribute("title"),
+      ]));
+    }
+    setTimeout(poll, 50);
+  };
+  poll();
+})`;
+
 /** Opens a job's screen and waits for its id to show. */
 async function openJob(queue: string, id: string): Promise<string | null> {
   await view.navigate(
@@ -297,6 +435,138 @@ async function openJob(queue: string, id: string): Promise<string | null> {
 }
 
 try {
+  /* ---------------------------------------------------------------- */
+  step("Job lists are newest first; ?order=asc is oldest first");
+
+  await view.navigate(`${origin}${ui.basePath}/queues/${QUEUE}?state=waiting`);
+  checkEqual(
+    "mail's Waiting tab lists the job added last on top",
+    await view.evaluate<string[]>(rowIds(2)),
+    [LONG_ID, WAITING_ID],
+  );
+  const newestQuery = mailListQueries.at(-1);
+  checkEqual(
+    "its read asked for order=desc and sort=createdAt (features.addedByState)",
+    [newestQuery?.get("order"), newestQuery?.get("sort")],
+    ["desc", "createdAt"],
+  );
+  const readsBefore = mailListQueries.length;
+  await view.navigate(
+    `${origin}${ui.basePath}/queues/${QUEUE}?state=waiting&order=asc`,
+  );
+  checkEqual(
+    "?order=asc lists them the other way round",
+    await view.evaluate<string[]>(rowIds(2)),
+    [WAITING_ID, LONG_ID],
+  );
+  const oldestQuery = mailListQueries.slice(readsBefore).at(-1);
+  checkEqual(
+    "and its read sent no order (ascending is the API's default), still sort=createdAt",
+    [oldestQuery?.get("order") ?? null, oldestQuery?.get("sort")],
+    [null, "createdAt"],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step('The failed state reads "Retrying", with a tooltip');
+
+  await view.navigate(`${origin}${ui.basePath}/queues/${BUSY}?state=failed`);
+  const tabs = await view.evaluate<[string, string | null][]>(STATE_TABS);
+  show(
+    "state tabs",
+    tabs.map(([label]) => label),
+  );
+  checkEqual(
+    'the tab for failed is labelled "Retrying", its title the hint',
+    tabs.find(([label]) => label === "Retrying"),
+    ["Retrying", RETRYING_HINT],
+  );
+  check(
+    'and no tab is labelled "Failed"',
+    !tabs.some(([label]) => label === "Failed"),
+    tabs,
+  );
+  checkEqual(
+    "?state=failed lists the retrying job",
+    await view.evaluate<string[]>(rowIds(1)),
+    [RETRY_ID],
+  );
+  checkEqual(
+    'its row\'s badge reads "Retrying", with the same tooltip',
+    await view.evaluate<[string, string | null] | null>(
+      badgeIn(`[data-testid="job-row-${RETRY_ID}"]`),
+    ),
+    ["Retrying", RETRYING_HINT],
+  );
+  checkEqual(
+    "its Processed by cell links the worker's key to the worker's page",
+    await view.evaluate<[string, string | null][]>(
+      `[...document.querySelectorAll('[data-testid="job-row-${RETRY_ID}"] .job-processed-by-col a[href]')]
+        .map((link) => [link.textContent.trim(), link.getAttribute("href")])`,
+    ),
+    [[WORKER_KEY, `${ui.basePath}/workers/${BUSY}/${WORKER_KEY}`]],
+  );
+  checkEqual(
+    "GET the job → state failed: only the label changed",
+    (await readJob(BUSY, RETRY_ID)).state,
+    "failed",
+  );
+
+  /* ---------------------------------------------------------------- */
+  step('The job screen: "Retrying", no "Held by", and "Processed by"');
+
+  checkEqual(
+    "the job screen shows the retrying job",
+    await openJob(BUSY, RETRY_ID),
+    RETRY_ID,
+  );
+  checkEqual(
+    'the summary\'s State badge reads "Retrying", with the tooltip',
+    await view.evaluate<[string, string | null] | null>(
+      badgeIn(".job-summary"),
+    ),
+    ["Retrying", RETRYING_HINT],
+  );
+  const retryingRows = await view.evaluate<[string, string][] | null>(
+    summaryRows(),
+  );
+  check(
+    'no "Held by" row: the job is not active',
+    retryingRows !== null &&
+      !retryingRows.some(([label]) => label === "Held by"),
+    retryingRows,
+  );
+  check(
+    `a "Processed by" row naming ${WORKER_KEY}`,
+    retryingRows?.some(
+      ([label, value]) =>
+        label === "Processed by" && value.includes(WORKER_KEY),
+    ) === true,
+    retryingRows,
+  );
+  checkEqual(
+    "its key links to the worker's page",
+    await view.evaluate<string | null>(
+      `document.querySelector('a[data-testid="job-processed-by-key"]')?.getAttribute("href") ?? null`,
+    ),
+    `${ui.basePath}/workers/${BUSY}/${WORKER_KEY}`,
+  );
+  await view.evaluate<boolean>(
+    `(document.querySelector('a[data-testid="job-processed-by-key"]')?.click(), true)`,
+  );
+  check(
+    "and clicking it opens that page (data-testid=worker-screen)",
+    await view.evaluate<boolean>(
+      waitForSelector('[data-testid="worker-screen"]'),
+    ),
+    pageConsole,
+  );
+  const processed = (await readJob(BUSY, RETRY_ID)).processedBy;
+  checkEqual(
+    "GET the job → processedBy.key is that key",
+    processed?.key,
+    WORKER_KEY,
+  );
+
   /* ---------------------------------------------------------------- */
   step("Fail… a waiting job: a reason and the typed id, then it is dead");
 
@@ -409,6 +679,20 @@ try {
     ],
     [true, String(PROGRESS), `${PROGRESS}%`],
   );
+  const activeRows = await view.evaluate<[string, string][] | null>(
+    summaryRows(),
+  );
+  const holder = (await readJob(BUSY, ACTIVE_ID)).workerId;
+  checkEqual(
+    'while active, "Held by" shows the worker holding it (GET the job → workerId)',
+    activeRows?.find(([label]) => label === "Held by"),
+    ["Held by", holder ?? "a workerId from the API"],
+  );
+  check(
+    'and there is no "Worker" row any more',
+    activeRows !== null && !activeRows.some(([label]) => label === "Worker"),
+    activeRows,
+  );
   await view.evaluate<boolean>(button(JOB_ACTIONS, "Fail…", true));
   check(
     "the dialog warns: failing it does not stop its code",
@@ -442,6 +726,22 @@ try {
   check(
     "Retry is offered on it",
     await view.evaluate<boolean>(button(JOB_ACTIONS, "Retry", false)),
+  );
+  const doneRows = await view.evaluate<[string, string][] | null>(
+    summaryRows(),
+  );
+  check(
+    'no "Held by" row: a finished job has no holder',
+    doneRows !== null && !doneRows.some(([label]) => label === "Held by"),
+    doneRows,
+  );
+  check(
+    `but "Processed by" names ${WORKER_KEY}, the worker that ran it`,
+    doneRows?.some(
+      ([label, value]) =>
+        label === "Processed by" && value.includes(WORKER_KEY),
+    ) === true,
+    doneRows,
   );
   check(
     "but not Fail…",
