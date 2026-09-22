@@ -3636,6 +3636,9 @@ over HTTP. A new worker in another process is therefore seen within
 on every broad channel: a queue `authorize` refuses is neither followed for
 the session nor announced by a gap.
 
+Example:
+[`11-management-api/live-events-delivery.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events-delivery.ts).
+
 Worker routes reach workers in any process too. `:worker` is one
 **incarnation**, the id a worker's record carries, and `authorize` sees it as
 `worker`; `:key` on the configuration routes is the **stable key**, which
@@ -4042,6 +4045,9 @@ discovery pass found a queue another process created, and what its workers
 published before then was missed. One per pass, however many queues it found;
 a queue created in the server's own process causes none.
 
+Example:
+[`11-management-api/live-events-delivery.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events-delivery.ts).
+
 A resume may be split over several `subscribe`s — a different `events` filter
 per group of channels, or more than 256 channels — each carrying the same
 `resume`. Each one's replay covers its own channels in full, and its `resumed`
@@ -4349,6 +4355,7 @@ Examples:
 
 - [`11-management-api/mounting-and-auth.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/mounting-and-auth.ts)
 - [`11-management-api/live-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events.ts)
+- [`11-management-api/live-events-delivery.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events-delivery.ts)
 - [`11-management-api/openapi-and-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/openapi-and-docs.ts)
 - [`10-options/jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts)
 - [`10-options/jobs-api-socket-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-socket-options.ts)
@@ -4905,7 +4912,9 @@ Each run uses its own namespace and purges it on exit.
 | | [`live-dashboard.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/09-integrations/live-dashboard.ts) | `JobsNotifier`: one live stream of every event in a namespace, from any process |
 | [`11-management-api`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/11-management-api) | [`mounting-and-auth.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/mounting-and-auth.ts) | mounting on a `BunHttpAdapter`, an `authorize` hook with roles, a walk through the route groups, `close()` |
 | | [`live-events.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events.ts) | the socket: several channels at once, `seq` / `epoch`, resuming from the replay ring, two deliberate gaps |
+| | [`live-events-delivery.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/live-events-delivery.ts) | what the socket delivers on any backend: a queue or runner nothing has discovered, `retried` / `cleaned` on a job's channel, broad channels hiding what the host denies, and the `workers` channel following new queues (one `queue-discovered` gap for another process's) |
 | | [`openapi-and-docs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/openapi-and-docs.ts) | `openapi()` / `asyncapi()` and their endpoints; `docs.ui` off and on, pinned and locked down |
+| | [`typed-client.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/11-management-api/typed-client.ts) | a typed client built on `@kingsleyweb/bun-jobs/api/contract` alone: `GET /meta` as its configuration, `/meta/permissions?channel=` before a socket, `encodeJobId` for a job channel, and a browser build proving the contract drags no server code along |
 | [`shared`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/shared) | [`backend.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/backend.ts), [`console.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/console.ts), [`check.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/shared/check.ts) | picking a driver from `EXAMPLE_DRIVER`; printing and waiting on conditions; the assertions the tours use |
 | | [`run-all.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/run-all.ts) | runs every example, or the folders named |
 

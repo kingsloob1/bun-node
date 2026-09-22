@@ -37,6 +37,7 @@ import type {
   BunQueueWorker,
   BunRunnerOptions,
   ConfigError,
+  WorkerEventPayloads,
   WorkerStateConflictError,
 } from "@kingsleyweb/bun-jobs";
 import type { WorkArgs, WorkResult } from "./handlers/runner-work";
@@ -45,15 +46,20 @@ import {
   BunJobs,
   createDriver,
   createJobsApi,
+  describeRunnerConfig,
   EXECUTION_MODES,
   JOBS_API_ACTIONS,
   readWorkerStop,
   RUNNER_CONFIG_BOUNDS,
   RUNNER_CONFIG_KEYS,
+  RUNNER_CONFIG_STATE,
+  runnerKey,
   UnrecoverableJobError,
   BunQueueWorker as Worker,
   WORKER_CONFIG_BOUNDS,
   WORKER_CONFIG_KEYS,
+  writeRunnerConfig,
+  writeWorkerStop,
 } from "@kingsleyweb/bun-jobs";
 import { exampleDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
@@ -479,6 +485,123 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("A worker announces its first start: a `state` with no `previous`");
+
+// Published only by a worker that publishes (`publish`, or `publishEvents`
+// on its context). The first `run()` announces what startup settled —
+// `running`, `paused`, or `stopped` under a stop recorded against its key —
+// and leaves `previous` out; that absence is how a dashboard tells a start
+// from a transition. Nothing is announced before `run()`.
+
+/** Every `state` payload published on the `digest` queue's worker channel. */
+const digestStates: WorkerEventPayloads["state"][] = [];
+const unsubscribeDigest = await driver.subscribe(
+  namespace,
+  "worker",
+  "digest",
+  (event) => {
+    if (event.type === "state") {
+      digestStates.push(event.payload as WorkerEventPayloads["state"]);
+    }
+  },
+);
+
+/** A publishing, remotely controllable worker on `digest`, not yet run. */
+function digestWorker(
+  service: string,
+  options: Parameters<BunJobs["worker"]>[2] = {},
+): BunQueueWorker {
+  return context(service).worker<unknown, unknown>("digest", async () => "ok", {
+    publish: true,
+    remoteControl: { interval: 100 },
+    ...options,
+  });
+}
+
+/** One worker's `state` events, as `first:<state>` or `<previous>-><state>`. */
+function stepsOf(worker: BunQueueWorker): string[] {
+  return digestStates
+    .filter((event) => event.worker === worker.id)
+    .map((event) =>
+      event.previous === undefined
+        ? `first:${event.state}`
+        : `${event.previous}->${event.state}`,
+    );
+}
+
+/** Waits until `worker` has published `count` state events. */
+async function statesFrom(worker: BunQueueWorker, count: number) {
+  await waitFor(
+    `${count} state event(s) from ${worker.id}`,
+    () => stepsOf(worker).length >= count,
+    WAIT,
+  );
+}
+
+const plain = digestWorker("d1");
+void plain.run();
+await statesFrom(plain, 1);
+const plainFirst = digestStates.find((event) => event.worker === plain.id)!;
+checkEqual(
+  "a first run(): state running, and no previous at all",
+  [plainFirst.state, plainFirst.key, Object.hasOwn(plainFirst, "previous")],
+  ["running", "d1.digest", false],
+);
+await plain.pause();
+await statesFrom(plain, 2);
+checkEqual("every later change carries previous", stepsOf(plain), [
+  "first:running",
+  "running->paused",
+]);
+
+const early = digestWorker("d2");
+await early.pause();
+await Bun.sleep(300);
+checkEqual("pause() before run() announces nothing yet", stepsOf(early), []);
+void early.run();
+await statesFrom(early, 1);
+checkEqual(
+  "paused before run(): the first start is announced as paused",
+  stepsOf(early),
+  ["first:paused"],
+);
+
+// A stop recorded against the key, as `stop({ key }, { persist: "key" })`
+// leaves it for a `"key"` worker's replacement.
+await writeWorkerStop(
+  driver,
+  { ns: namespace, queue: "digest" },
+  "d3.digest",
+  true,
+);
+const parked = digestWorker("d3", { stopPersistence: "key" });
+void parked.run();
+await statesFrom(parked, 1);
+const parkedFirst = digestStates.find((event) => event.worker === parked.id)!;
+checkEqual(
+  "under a key stop: stopped, with its reason, and no previous",
+  [
+    parkedFirst.state,
+    parkedFirst.reason,
+    Object.hasOwn(parkedFirst, "previous"),
+  ],
+  ["stopped", "stopped persistently", false],
+);
+await admin.workers.remote("digest").start({ id: parked.id });
+await statesFrom(parked, 2);
+checkEqual("started remotely, it is a transition", stepsOf(parked), [
+  "first:stopped",
+  "stopped->running",
+]);
+checkEqual(
+  "one first start per worker, and only one",
+  [plain, early, parked].map(
+    (worker) => stepsOf(worker).filter((s) => s.startsWith("first:")).length,
+  ),
+  [1, 1, 1],
+);
+
+/* ------------------------------------------------------------------ */
 step("The same rules over the management API");
 
 const api = createJobsApi({
@@ -717,7 +840,22 @@ await waitFor(
     ownerB.config.effective.runMode === "parallel",
   WAIT,
 );
-const remoteView = await remoteReport.config();
+// `config()` reads the store, and an owner adopts a change *before* it
+// writes one: `#adoptConfig` emits `configured` and only then awaits
+// `driver.setState` (BunRunner.ts, around l.1110). So the wait above — on the
+// owners' own fields — does not mean the store has caught up, and a single
+// read here is a race the owners lose under load, MySQL most often, its
+// `setState` being a locking transaction two owners contend for. Wait for the
+// store itself, which is what `config()` documents itself as reading.
+let remoteView = await remoteReport.config();
+await waitFor(
+  "the store to carry what the owners adopted",
+  async () => {
+    remoteView = await remoteReport.config();
+    return remoteView?.effective.runMode === "parallel";
+  },
+  WAIT,
+);
 checkEqual(
   "RemoteRunner.config() reads what the owners stored",
   [
@@ -810,6 +948,135 @@ checkEqual(
   [bareRefusal?.context?.reason, bareRunner.config.overridden],
   ["not-allowed", []],
 );
+
+/* ------------------------------------------------------------------ */
+step("A refusal names the settings it refused: config.error.keys");
+
+// The owner is the last word on an override: it adopts what it can and
+// refuses the rest, and `config.error.keys` names what it refused — in
+// `RUNNER_CONFIG_KEYS` order — so a controller can tell a partial refusal
+// from a whole one without parsing `message`. Every overridden key not listed
+// was adopted.
+//
+// This owner's code permits `worker`, but it was built from a driver instance
+// with no `childDriver`, so it cannot move its handler out of the process.
+// It publishes only `in-process`, so `updateConfig()`, `RemoteRunner` and the
+// API all refuse `worker` up front; the override below is written straight to
+// the store, as an owner that had a `childDriver` — or an older controller —
+// would have stored it before this one started.
+const keysRunner = bare.runner<WorkArgs, WorkResult>({
+  ...reportOptions,
+  id: "keys-report",
+  runMode: "parallel",
+  remoteControl: false,
+  // Polls the store every 100ms rather than every 30 s, so the tour is quick.
+  syncInterval: 100,
+});
+await keysRunner.start();
+/** Where the owner keeps its state, as the store helpers want it. */
+const keysKey = runnerKey("keys-report");
+
+await writeRunnerConfig(driver, namespace, keysKey, {
+  [RUNNER_CONFIG_STATE.executionMode]: "worker",
+  [RUNNER_CONFIG_STATE.runMode]: "single",
+});
+await waitFor(
+  "the owner to refuse part of the override",
+  () => keysRunner.config.error !== undefined,
+  WAIT,
+);
+checkEqual(
+  "a partial refusal: keys names only the refused setting; the rest adopted",
+  [
+    keysRunner.config.overridden,
+    keysRunner.config.error?.keys,
+    keysRunner.config.effective.executionMode,
+    keysRunner.config.effective.runMode,
+  ],
+  [["executionMode", "runMode"], ["executionMode"], "in-process", "single"],
+);
+check(
+  "  and message still says why",
+  /driver config/.test(keysRunner.config.error?.message ?? ""),
+  keysRunner.config.error,
+);
+checkEqual(
+  "  another process reads the same keys (RemoteRunner.config())",
+  (await (await admin.runners.remote("keys-report")).config())?.error?.keys,
+  ["executionMode"],
+);
+// The API finds a runner another context owns through its cached discovery
+// (`limits.queueCacheMs`, 2 s by default), so a runner that new may be 404
+// for up to one cache window.
+let keysOverApi = await call("GET", "/runners/keys-report");
+await waitFor(
+  "the API to discover keys-report",
+  async () =>
+    (keysOverApi = await call("GET", "/runners/keys-report")).status === 200,
+  WAIT,
+);
+checkEqual(
+  "  and so does GET /runners/{id}: config.error.keys",
+  [keysOverApi.status, keysOverApi.body?.config?.error?.keys],
+  [200, ["executionMode"]],
+);
+
+// Every setting overridden, and every one refused: an unusable mode, an
+// overlap policy that does not exist, a cap out of `RUNNER_CONFIG_BOUNDS`.
+await writeRunnerConfig(driver, namespace, keysKey, {
+  [RUNNER_CONFIG_STATE.executionMode]: "worker",
+  [RUNNER_CONFIG_STATE.runMode]: "sometimes",
+  [RUNNER_CONFIG_STATE.maxConcurrency]: "9000",
+});
+await waitFor(
+  "the owner to refuse the whole override",
+  () => keysRunner.config.error?.keys.length === 3,
+  WAIT,
+);
+checkEqual(
+  "a whole refusal: keys names every overridden key, and the code's values stand",
+  [
+    keysRunner.config.error?.keys,
+    keysRunner.config.overridden,
+    keysRunner.config.effective,
+  ],
+  [
+    ["executionMode", "runMode", "maxConcurrency"],
+    ["executionMode", "runMode", "maxConcurrency"],
+    {
+      executionMode: "in-process",
+      runMode: "parallel",
+      maxConcurrency: keysRunner.config.code?.maxConcurrency ?? null,
+    },
+  ],
+);
+checkEqual(
+  "  one message per refused setting",
+  keysRunner.config.error?.message.split("; ").length,
+  3,
+);
+
+// An error an owner stored before `keys` existed reads as `keys: []`: known
+// to be a refusal, of settings nobody recorded.
+const keysState = await driver.getState(namespace, keysKey);
+checkEqual(
+  "an error stored before keys existed reads keys: []",
+  describeRunnerConfig({
+    ...keysState,
+    [RUNNER_CONFIG_STATE.error]: JSON.stringify({
+      at: 123,
+      message: 'executionMode "worker" needs a driver config',
+    }),
+  })?.error,
+  {
+    at: 123,
+    message: 'executionMode "worker" needs a driver config',
+    keys: [],
+  },
+);
+
+await keysRunner.resetConfig();
+checkEqual("once reset, no error at all", keysRunner.config.error, undefined);
 
 /* ------------------------------------------------------------------ */
 step("A buried flow completes whichever order it is retried in");
@@ -911,6 +1178,7 @@ await completes("child first", orderB);
 step("Clean up");
 
 await unsubscribeWorkers();
+await unsubscribeDigest();
 await unsubscribeRunner();
 for (const jobs of contexts.reverse()) {
   await jobs.close();

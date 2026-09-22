@@ -34,7 +34,10 @@
  *   marks each overridden row with what the code asks for instead. "Reset to
  *   code defaults" (`DELETE …/config`) drops every override. An override the
  *   owner refuses reads "Override refused by the owner; it runs what its code
- *   asks for, …" instead.
+ *   asks for, …" instead, on exactly the rows `config.error.keys` names; the
+ *   adopted ones still read "Overridden here…", even one equal to the code's
+ *   value. The Settings override row and the Settings… dialog name the
+ *   refused settings too ("The owner refused Execution mode: …").
  * - **A run's log** sits in its history row's details (and behind the row's
  *   Log button), in the URL as `?logs=<runId>`. The Stream filter
  *   (`?logStream=`) narrows it to `logger`, `stdout` or `stderr`. A live run
@@ -523,7 +526,14 @@ interface RunnerBody {
     /** The execution modes an override may choose. */
     allowed?: string[];
     /** Why the owner refused part of the override, when it did. */
-    error?: { message: string };
+    error?: {
+      /** When it refused, epoch ms. */
+      at: number;
+      /** Its reason. */
+      message: string;
+      /** The refused settings, in executionMode, runMode, maxConcurrency order. */
+      keys: string[];
+    };
   };
 }
 
@@ -620,6 +630,45 @@ function runnerRow(label: string, ready?: string): Promise<SummaryRow | null> {
   return view.evaluate<SummaryRow | null>(
     summaryRow(RUNNER_SUMMARY, label, ready),
   );
+}
+
+/**
+ * Opens Settings… and reads the dialog's refusal note, split around its
+ * relative time: the text before it, the `<time>`'s instant, and the text
+ * after it. `null` when the note never shows. Closes the dialog again.
+ */
+async function refusedNote(): Promise<{
+  prefix: string;
+  when: string | null;
+  suffix: string;
+} | null> {
+  if (
+    !(await view.evaluate<boolean>(button(RUNNER_ACTIONS, "Settings…", true)))
+  ) {
+    return null;
+  }
+  const selector = `${DIALOG} [data-testid="config-refused"]`;
+  const note = (await view.evaluate<boolean>(waitForSelector(selector)))
+    ? await view.evaluate<{
+        prefix: string;
+        when: string | null;
+        suffix: string;
+      } | null>(`(() => {
+        const note = document.querySelector(${JSON.stringify(selector)});
+        const time = note?.querySelector("time");
+        if (!note || !time) return null;
+        const text = note.textContent;
+        const at = text.indexOf(time.textContent);
+        return {
+          prefix: text.slice(0, at),
+          when: time.getAttribute("datetime"),
+          suffix: text.slice(at + time.textContent.length),
+        };
+      })()`)
+    : null;
+  await view.evaluate<boolean>(button(DIALOG, "Cancel", true));
+  await view.evaluate<boolean>(gone(DIALOG));
+  return note;
 }
 
 /** The run log's notes' text, once it includes `text` (else `false`). */
@@ -891,6 +940,11 @@ try {
       'executionMode "worker" needs a driver config for the child, and this runner was built from a driver instance',
     ],
   );
+  checkEqual(
+    "and config.error.keys names executionMode alone: runMode and maxConcurrency were adopted",
+    redeployed.config.error?.keys,
+    ["executionMode"],
+  );
   check(
     "the runner screen shows its summary",
     await openRunner(full, REDEPLOYED),
@@ -900,6 +954,7 @@ try {
     [
       await runnerRow("Execution mode", "row.hint !== null"),
       await runnerRow("Run mode", 'row.value === "parallel"'),
+      await runnerRow("Max concurrency", 'row.value === "2"'),
     ],
     [
       {
@@ -907,24 +962,88 @@ try {
         hint: "Override refused by the owner; it runs what its code asks for, in-process",
       },
       { value: "parallel", hint: "Overridden here; its code asks for single" },
+      { value: "2", hint: "Overridden here; its code asks for unlimited" },
     ],
   );
   checkEqual(
-    "and the Settings override row carries the owner's reason",
+    "and the Settings override row names the refused setting, with the owner's reason",
     (await runnerRow("Settings override", "row.hint !== null"))?.hint,
-    `The owner refused these settings: ${redeployed.config.error?.message}`,
+    `The owner refused Execution mode: ${redeployed.config.error?.message}`,
+  );
+  checkEqual(
+    "the Settings… dialog names it too, and when: The owner refused Execution mode <when>: <reason>",
+    await refusedNote(),
+    {
+      prefix: "The owner refused Execution mode ",
+      when: new Date(redeployed.config.error!.at).toISOString(),
+      suffix: `: ${redeployed.config.error?.message}`,
+    },
+  );
+
+  // An adopted override equal to the code's value: `single` is what this
+  // runner's code asks for. Before the refusal named its keys, a row whose
+  // value matched the code's read as refused; `keys` says it was adopted.
+  // Only `concurrency` is sent: the API now knows this owner allows
+  // in-process alone, so a PUT naming worker would be 409 up front, and the
+  // stored worker is left as it is.
+  const equal = await fetch(`${full.api}/runners/${REDEPLOYED}/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", [CSRF]: "1" },
+    body: JSON.stringify({ concurrency: { runMode: "single" } }),
+  });
+  checkEqual(
+    "PUT concurrency runMode single (the code's own), worker still stored → 200",
+    equal.status,
+    200,
+  );
+  await waitFor("the owner to refuse the new override too", async () => {
+    const { config } = await read<RunnerBody>(full, `/runners/${REDEPLOYED}`);
+    return (
+      config.error !== undefined &&
+      config.appliedSeq === config.seq &&
+      config.seq > redeployed.config.seq
+    );
+  });
+  const same = await read<RunnerBody>(full, `/runners/${REDEPLOYED}`);
+  checkEqual(
+    "GET the runner → executionMode and runMode stored, runMode single in force (as the code asks), keys still [executionMode]",
+    [
+      [...same.config.overridden].sort(),
+      same.config.effective,
+      same.config.error?.keys,
+    ],
+    [
+      ["executionMode", "runMode"],
+      {
+        executionMode: "in-process",
+        runMode: "single",
+        maxConcurrency: null,
+      },
+      ["executionMode"],
+    ],
   );
   check(
-    "the Settings… dialog says the stored settings were refused",
-    (await view.evaluate<boolean>(button(RUNNER_ACTIONS, "Settings…", true))) &&
-      (await view.evaluate<boolean>(
-        textIncludes(
-          `${DIALOG} [data-testid="config-refused"]`,
-          "The owner refused the stored settings",
-        ),
-      )) &&
-      (await view.evaluate<boolean>(button(DIALOG, "Cancel", true))) &&
-      (await view.evaluate<boolean>(gone(DIALOG))),
+    "the runner screen shows its summary",
+    await openRunner(full, REDEPLOYED),
+  );
+  checkEqual(
+    'the Run mode row reads "Overridden here", though its value is the code\'s; Execution mode still refused',
+    [
+      await runnerRow("Execution mode", "row.hint !== null"),
+      await runnerRow("Run mode", 'row.value === "single"'),
+      await runnerRow("Settings override", "row.hint !== null"),
+    ],
+    [
+      {
+        value: "in-process",
+        hint: "Override refused by the owner; it runs what its code asks for, in-process",
+      },
+      { value: "single", hint: "Overridden here; its code asks for single" },
+      {
+        value: "Execution mode, Run mode",
+        hint: `The owner refused Execution mode: ${same.config.error?.message}`,
+      },
+    ],
   );
 
   /* ---------------------------------------------------------------- */

@@ -903,7 +903,7 @@ try {
     [[], [DAY]],
   );
   checkEqual(
-    'a day is not longer than the added count allows: still "Added in range"',
+    "a day, the longest range the page holds: the added count keeps the one title, never cut to a last 24 hours",
     screen.band?.groups[1]?.title,
     "Added in range, where they are now (still stored)",
   );
@@ -1078,6 +1078,26 @@ try {
     "a custom range is sent as given: from and to exactly, a day apart",
     [Number(pastRead.query.get("from")), span(pastRead)],
     [pastTo - DAY, DAY],
+  );
+  screen = await overviewUntil(
+    "the added-by-state group for the past day",
+    (one) =>
+      sent(main, from, "/overview/added").length > 0 &&
+      one.band?.groups[1]?.cells.length === ADDED.length,
+  );
+  checkEqual(
+    "/overview/added reads that same whole day, under the same title",
+    [
+      sent(main, from, "/overview/added").map((one) => [
+        Number(one.query.get("from")),
+        Number(one.query.get("to")),
+      ]),
+      screen.band?.groups[1]?.title,
+    ],
+    [
+      [[pastTo - DAY, pastTo]],
+      "Added in range, where they are now (still stored)",
+    ],
   );
   const past = await replay<{
     range: {

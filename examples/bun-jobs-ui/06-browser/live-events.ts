@@ -1,8 +1,10 @@
 /**
  * Live updates in a real browser: the header's live badge, the Events
- * console tailing a queue as a real worker completes a job, its `types`
- * filter read from the URL, and the badge staying off, with its reason, on
- * hosts that cannot, may not, or need not connect.
+ * console tailing a queue as a real worker completes a job, workers'
+ * first-start and state rows, a `queue-discovered` gap for a queue another
+ * process creates, the console's `types` filter read from the URL, and the
+ * badge staying off, with its reason, on hosts that cannot, may not, or need
+ * not connect.
  *
  * ```bash
  * bun 06-browser/live-events.ts
@@ -14,7 +16,8 @@
  * and **skips** (prints `skipped:` and exits 0) when there is no
  * `Bun.WebView`, no Chrome, or Chrome will not start.
  *
- * Five hosts over one set of jobs, each an API and the UI on its own port:
+ * Five hosts over one set of jobs, and a sixth over a file driver, each an
+ * API and the UI on its own port:
  *
  * | Host        | API                                     | Badge                        |
  * |-------------|-----------------------------------------|------------------------------|
@@ -23,6 +26,7 @@
  * | `refused`   | a socket, but `events.connect` refused  | `off`: may not connect       |
  * | `silent`    | a socket, but nothing publishes events  | `off`: nothing publishes     |
  * | `docsOnly`  | as `live`, but the UI is `sections: { manage: false }` | `off`, "Live off": documentation only |
+ * | `cross`     | as `live`, over a file driver a child process shares | `live`             |
  *
  * What makes it work:
  *
@@ -48,12 +52,21 @@
  * - **Workers have two scopes of their own.** "Every worker (workers)" is
  *   the `workers` channel, "One queue's workers" is `queue/<queue>/workers`;
  *   each carries a worker's `state`, `config` and `control` events (`kind`
- *   `worker`, `target` the queue). A worker publishes a `state` event only
- *   on a change (a pause, a resume, a stop, a restart, a config change),
- *   never on its first `run()`: a new worker appears through its heartbeat
- *   record in `GET /workers` within one `reportInterval`. The rows here come
- *   from a real worker pausing and resuming, and a worker of another queue
- *   never shows on one queue's scope.
+ *   `worker`, `target` the queue). A worker announces its first `run()`
+ *   with one `state` event carrying no `previous`: `running`; `paused` when
+ *   it was paused before `run()`; `stopped` (reason "stopped persistently")
+ *   when a stop recorded against its key holds it. Every later change (a
+ *   pause, a resume, a stop, a restart, a config change) carries
+ *   `previous`. The rows here come from real workers, and a worker of
+ *   another queue never shows on one queue's scope.
+ * - **A queue another process creates arrives as a gap.** The API follows a
+ *   queue its own `BunJobs` creates at once, first start included. One
+ *   another process creates is found by its next discovery pass
+ *   (`discoveryInterval`, 2 s by default), after that worker's first start
+ *   was published unheard, so `workers` subscribers get one `gap` with reason
+ *   `queue-discovered`, shown as `gap: queue-discovered`; the queue's later
+ *   events arrive. The sixth host, `cross`, runs over a file driver so that
+ *   a child process (`helpers/remote-worker.ts`) can share it.
  * - **`types` in the URL takes bare or prefixed names.** `queue.completed`
  *   and `runner.failed` name their family; the console rewrites the URL with
  *   the bare name (`completed`). A name that is no event type, or one the
@@ -76,6 +89,11 @@
  */
 import type { JobsApiAuthorize } from "@kingsleyweb/bun-jobs";
 import type { UiSections } from "@kingsleyweb/bun-jobs-ui";
+import type { RemoteProcess } from "./helpers/remote-process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import process from "node:process";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
@@ -88,6 +106,7 @@ import {
 } from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
+import { startRemoteWorker } from "./helpers/remote-process";
 
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
@@ -113,6 +132,25 @@ const silentJobs = new BunJobs({
   namespace: "examples-ui-live",
   driver,
   logger: noopLogger,
+});
+
+/** The namespace of the cross-process host, over a file driver. */
+const CROSS_NAMESPACE = "examples-ui-live-cross";
+/** Where that file driver keeps it: shared with the child process, removed on exit. */
+const CROSS_ROOT = mkdtempSync(join(tmpdir(), "bun-jobs-ui-example-live-"));
+process.once("exit", () => {
+  rmSync(CROSS_ROOT, { recursive: true, force: true });
+});
+/**
+ * The cross-process host's context. A second process (`remote-worker.ts`)
+ * on the same directory is, to this context's notifier, another process: a
+ * queue it creates is found only by the next discovery pass.
+ */
+const crossJobs = new BunJobs({
+  namespace: CROSS_NAMESPACE,
+  driver: { type: "file", root: CROSS_ROOT },
+  logger: noopLogger,
+  publishEvents: true,
 });
 
 /** One authorize call about the socket, and the URL that caused it. */
@@ -216,15 +254,23 @@ const silent = await serveHost(silentJobs);
 const docsOnly = await serveHost(jobs, {
   sections: { manage: false, docs: true },
 });
-const hosts = [live, socketless, refused, silent, docsOnly];
+// Over a file driver, whose directory a second process shares: the host
+// for a queue another process creates.
+const cross = await serveHost(crossJobs);
+const hosts = [live, socketless, refused, silent, docsOnly, cross];
+
+/** The second process of the cross-process step, once started. */
+let remote: RemoteProcess | undefined;
 
 /** Winds everything down. */
 async function shutdown(view?: Bun.WebView): Promise<void> {
   view?.close();
+  await remote?.close();
   for (const host of hosts) {
     await host.close();
   }
   await silentJobs.close();
+  await crossJobs.close();
   await jobs.close();
 }
 
@@ -383,6 +429,77 @@ function workerRows(count: number, ms = 15_000): string {
   })`;
 }
 
+/** A worker event row as the console shows it, its payload expanded. */
+interface WorkerRow {
+  /** `data-type`: the event's type (`state`, `config`, `control`). */
+  type: string;
+  /** The target cell's text: the worker's queue. */
+  target: string;
+  /** Where the target links. */
+  href: string | null;
+  /** The payload's fields as the page shows them, strings unquoted. */
+  payload: Record<string, string>;
+}
+
+/**
+ * Page-side: the worker event rows about worker `id`, newest first, as
+ * {@link WorkerRow}s, resolving once there are at least `count` (or with what
+ * there is after `ms`). Each row's payload starts collapsed, so this expands
+ * it before reading it.
+ */
+function workerEvents(id: string, count: number, ms = 15_000): string {
+  return `new Promise((resolve) => {
+    const deadline = Date.now() + ${ms};
+    const read = () => {
+      let expanding = false;
+      const rows = [...document.querySelectorAll('[data-testid="event-row"]')]
+        .filter((row) => row.querySelector(".events-kind")?.textContent.trim().startsWith("worker"))
+        .map((row) => {
+          const toggle = row.querySelector('.events-payload .json-toggle[aria-expanded="false"]');
+          if (toggle) {
+            toggle.click();
+            expanding = true;
+          }
+          const payload = Object.fromEntries([...row.querySelectorAll(".events-payload .json-children > .json-row")].map((item) => {
+            const key = item.querySelector(".json-key")?.textContent ?? "";
+            const text = item.textContent.slice(key.length).trim();
+            return [key.replace(/:\\s*$/, ""), item.querySelector(".json-string") ? text.replace(/^"|"$/g, "") : text];
+          }));
+          const link = row.querySelector(".events-target a");
+          return {
+            type: row.dataset.type,
+            target: row.querySelector(".events-target").textContent.trim(),
+            href: link?.getAttribute("href") ?? null,
+            payload,
+          };
+        });
+      return expanding ? null : rows.filter((row) => row.payload.worker === ${JSON.stringify(id)});
+    };
+    const poll = () => {
+      const rows = read();
+      if ((rows && rows.length >= ${count}) || Date.now() > deadline) return resolve(rows ?? []);
+      setTimeout(poll, 50);
+    };
+    poll();
+  })`;
+}
+
+/** The fields `keys` of `row`'s payload that it has, for comparing (absent keys are left out). */
+function payloadOf(
+  row: WorkerRow | undefined,
+  keys: string[],
+): Record<string, string> {
+  return Object.fromEntries(
+    keys.flatMap((key) =>
+      row?.payload[key] === undefined ? [] : [[key, row.payload[key]]],
+    ),
+  );
+}
+
+/** Page-side: the text of every gap row, newest first. */
+const GAP_ROWS = `[...document.querySelectorAll('[data-testid="event-row"][data-type="gap"]')]
+  .map((row) => row.textContent.replace(/\\s+/g, " ").trim())`;
+
 /**
  * The watched worker's `reportInterval`, shorter than the 10 s default so the
  * wait stays short. Its record is written as it starts, so on a queue the API
@@ -392,11 +509,17 @@ function workerRows(count: number, ms = 15_000): string {
  */
 const WORKER_REPORT_MS = 3_000;
 
-/** How long to watch for a state row that must not come, well under the run's budget. */
-const NO_EVENT_WINDOW_MS = 1_500;
-
 /** The queue whose worker must not show on mail's worker scope. */
 const OTHER_QUEUE = "reports";
+
+/** The queue the second process creates on the cross host, new to its API. */
+const REMOTE_QUEUE = "remote-new";
+/** The queue the cross host's own context creates after the page subscribed. */
+const OWN_QUEUE = "own-new";
+/** The API notifier's `discoveryInterval` (its default): how often it looks for queues another process created. */
+const DISCOVERY_INTERVAL_MS = 2_000;
+/** Headroom past a discovery pass for the gap to reach the page, on a loaded machine. */
+const GAP_MARGIN_MS = 1_500;
 
 try {
   /* ---------------------------------------------------------------- */
@@ -567,17 +690,17 @@ try {
     () => subscribes(live, "workers") > beforeWorkers,
   );
 
-  // A worker publishes a `state` event only on a change (paused, resumed,
-  // stopping/stopped, started again, restarting, a config change). Its first
-  // run() is not one: a new worker shows up through its heartbeat record in
-  // GET /workers instead, within one reportInterval.
+  // A worker announces its first start: once run() has settled what it is,
+  // it publishes one `state` event with no `previous` — `running`, `paused`
+  // when it was paused before run(), or `stopped` when a stop recorded
+  // against its key holds it. Every later change carries `previous`.
   const mailWorker = jobs.worker(QUEUE, async () => "sent", {
     name: "watched",
     reportInterval: WORKER_REPORT_MS,
   });
   const startedAt = Date.now();
   void mailWorker.run();
-  // Polled from the moment it runs, alongside the watch for a state row.
+  // Polled from the moment it runs, alongside the watch for its state row.
   const listed = (async () => {
     await waitFor(
       `${mailWorker.key} to be listed by GET /workers`,
@@ -593,46 +716,114 @@ try {
     );
     return Date.now() - startedAt;
   })();
+  const startRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(mailWorker.id, 1),
+  );
+  show("its rows", startRows);
   checkEqual(
-    `its first run() adds no state row (watched for ${NO_EVENT_WINDOW_MS} ms)`,
-    await view.evaluate<[string, string, string | null][]>(
-      workerRows(1, NO_EVENT_WINDOW_MS),
-    ),
-    [],
-  );
-  const listedAfter = await listed;
-  check(
-    `but GET /workers lists it within one reportInterval (${WORKER_REPORT_MS} ms)`,
-    listedAfter <= WORKER_REPORT_MS,
-    { listedAfter },
-  );
-  await mailWorker.pause();
-  const pausedRows = await view.evaluate<[string, string, string | null][]>(
-    workerRows(1),
-  );
-  show("worker rows", pausedRows);
-  checkEqual(
-    "the pause that follows does: one worker state row, its target the queue",
-    pausedRows.map(([type, target]) => [type, target]),
+    "its first run() gives one worker state row, its target the queue",
+    startRows.map((row) => [row.type, row.target]),
     [["state", QUEUE]],
   );
-  await mailWorker.resume();
   checkEqual(
-    "resuming it adds another",
-    (await view.evaluate<[string, string, string | null][]>(workerRows(2))).map(
-      ([type, target]) => [type, target],
-    ),
-    [
-      ["state", QUEUE],
-      ["state", QUEUE],
-    ],
+    "the row's payload: its id and key, state running, and no previous",
+    payloadOf(startRows[0], ["worker", "key", "state", "previous"]),
+    { worker: mailWorker.id, key: mailWorker.key, state: "running" },
   );
   // A worker event's target is a queue, so its link should open the queue.
   checkEqual(
     "the row's target links to the queue, not to a runner",
-    pausedRows[0]?.[2],
+    startRows[0]?.href,
     `${live.uiBase}/queues/${QUEUE}`,
   );
+  const listedAfter = await listed;
+  check(
+    `GET /workers lists it too, within one reportInterval (${WORKER_REPORT_MS} ms)`,
+    listedAfter <= WORKER_REPORT_MS,
+    { listedAfter },
+  );
+
+  await mailWorker.pause();
+  const pausedRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(mailWorker.id, 2),
+  );
+  show("its rows, newest first", pausedRows);
+  checkEqual(
+    "the pause that follows adds one state row, with previous: running",
+    [
+      pausedRows.map((row) => [row.type, row.target]),
+      payloadOf(pausedRows[0], ["state", "previous"]),
+    ],
+    [
+      [
+        ["state", QUEUE],
+        ["state", QUEUE],
+      ],
+      { state: "paused", previous: "running" },
+    ],
+  );
+  mailWorker.resume();
+  const resumedRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(mailWorker.id, 3),
+  );
+  checkEqual(
+    "resuming it adds another, with previous: paused",
+    [resumedRows.length, payloadOf(resumedRows[0], ["state", "previous"])],
+    [3, { state: "running", previous: "paused" }],
+  );
+
+  // Paused before run(): the pause is folded into the first start.
+  const pausedStart = jobs.worker(QUEUE, async () => "sent", {
+    name: "paused-start",
+  });
+  await pausedStart.pause();
+  void pausedStart.run();
+  const pausedStartRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(pausedStart.id, 1),
+  );
+  show("a worker paused before run()", pausedStartRows);
+  checkEqual(
+    "a worker paused before run() announces one row: state paused, no previous",
+    [
+      pausedStartRows.length,
+      payloadOf(pausedStartRows[0], ["state", "previous"]),
+    ],
+    [1, { state: "paused" }],
+  );
+  await pausedStart.close({ timeout: 1_000 });
+
+  // A stop recorded against the key (`stopPersistence: "key"`) outlives the
+  // process that took it: the next worker with that key starts parked.
+  const heldOptions = { name: "held", stopPersistence: "key" } as const;
+  const heldBefore = jobs.worker(QUEUE, async () => "sent", heldOptions);
+  void heldBefore.run();
+  await view.evaluate<WorkerRow[]>(workerEvents(heldBefore.id, 1));
+  await jobs.workers.remote(QUEUE).stop({ id: heldBefore.id });
+  await waitFor(
+    `${heldBefore.key} to stop`,
+    () => heldBefore.state === "stopped",
+  );
+  await heldBefore.close({ timeout: 1_000 });
+  const heldAgain = jobs.worker(QUEUE, async () => "sent", heldOptions);
+  void heldAgain.run();
+  const heldRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(heldAgain.id, 1),
+  );
+  show(`the next ${heldAgain.key}, held by the key stop`, heldRows);
+  checkEqual(
+    'the next worker with that key announces one row: stopped, reason "stopped persistently", no previous',
+    [
+      heldRows.length,
+      payloadOf(heldRows[0], ["key", "state", "reason", "previous"]),
+    ],
+    [
+      1,
+      { key: heldBefore.key, state: "stopped", reason: "stopped persistently" },
+    ],
+  );
+  // Released, so nothing later on this queue inherits the stop.
+  await jobs.workers.remote(QUEUE).start({ id: heldAgain.id });
+  await heldAgain.close({ timeout: 1_000 });
 
   /* ---------------------------------------------------------------- */
   step(`"One queue's workers" (queue/${QUEUE}/workers): only mail's`);
@@ -690,6 +881,124 @@ try {
   );
   await otherWorker.close({ timeout: 1_000 });
   await mailWorker.close({ timeout: 1_000 });
+
+  /* ---------------------------------------------------------------- */
+  step(
+    "A queue another process creates: gap: queue-discovered, then its events",
+  );
+
+  const beforeCross = subscribes(cross, "workers");
+  await view.navigate(`${cross.origin}${cross.uiBase}/events?channel=workers`);
+  check(
+    "the cross host's Events console renders, on the workers channel",
+    (await view.evaluate<boolean>(
+      waitForSelector('[data-testid="events-screen"]'),
+    )) &&
+      (await view.evaluate<string | null>(
+        textOf('[data-testid="events-channel"]'),
+      )) === "workers",
+    pageConsole,
+  );
+  await waitFor(
+    "the page to subscribe to workers on the cross host",
+    () => subscribes(cross, "workers") > beforeCross,
+  );
+  check(
+    "and its badge is live (a file driver's events are not local)",
+    await view.evaluate<boolean>(waitForSelector(badgeIn("live"))),
+    await view.evaluate<Badge>(BADGE),
+  );
+  // A queue another process creates is found by the API's next discovery
+  // pass. The worker's first start is published before that, unheard, so
+  // the `workers` channel sends a gap instead.
+  remote = await startRemoteWorker({
+    root: CROSS_ROOT,
+    namespace: CROSS_NAMESPACE,
+    queue: REMOTE_QUEUE,
+    service: "elsewhere",
+  });
+  const gapRows = await view.evaluate<string[]>(
+    until(
+      GAP_ROWS,
+      "(rows) => rows.length > 0",
+      DISCOVERY_INTERVAL_MS + GAP_MARGIN_MS,
+    ),
+  );
+  const gapAfter = Date.now() - remote.readyAt;
+  show(
+    `gap rows, ${gapAfter} ms after the other process's worker started`,
+    gapRows,
+  );
+  checkEqual(
+    // No range in the wording: this gap carries `fromSeq: 0` and `toSeq: 0`,
+    // the connection having been sent no sequenced event yet, and a row with
+    // nothing to name leaves the range out. A gap with a real range still
+    // reads "events 10–42 may be missing on all".
+    "one gap row, about the workers channel, with no range to name",
+    gapRows.map((text) =>
+      /^.*gap: (\S+) events may be missing on (\S+)$/.exec(text)?.slice(1),
+    ),
+    [["queue-discovered", "workers"]],
+  );
+  check(
+    `within discoveryInterval (${DISCOVERY_INTERVAL_MS} ms) plus ${GAP_MARGIN_MS} ms`,
+    gapAfter <= DISCOVERY_INTERVAL_MS + GAP_MARGIN_MS,
+    { gapAfter },
+  );
+  await remote.send("pause");
+  const remoteRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(remote.id, 1),
+  );
+  show(`${REMOTE_QUEUE}'s worker rows`, remoteRows);
+  // Its first start came before discovery, so it is normally missing here;
+  // only the pause, which came after, is asserted.
+  const remoteNewest = remoteRows[0];
+  checkEqual(
+    "from then on its events arrive: pausing it shows a state row, previous running, target its queue",
+    [
+      [remoteNewest?.type, remoteNewest?.target, remoteNewest?.href],
+      payloadOf(remoteNewest, ["state", "previous"]),
+    ],
+    [
+      ["state", REMOTE_QUEUE, `${cross.uiBase}/queues/${REMOTE_QUEUE}`],
+      { state: "paused", previous: "running" },
+    ],
+  );
+
+  // A queue the API's own BunJobs creates is followed at once: its first
+  // start arrives, and no discovery pass later reports it as a gap.
+  const ownWorker = crossJobs.worker(OWN_QUEUE, async () => "done", {
+    reportInterval: WORKER_REPORT_MS,
+  });
+  const ownStartedAt = Date.now();
+  void ownWorker.run();
+  const ownRows = await view.evaluate<WorkerRow[]>(
+    workerEvents(ownWorker.id, 1),
+  );
+  checkEqual(
+    `a new queue the API's own process creates (${OWN_QUEUE}): its first start arrives, no previous`,
+    [
+      ownRows.map((row) => [row.type, row.target]),
+      payloadOf(ownRows[0], ["state", "previous"]),
+    ],
+    [[["state", OWN_QUEUE]], { state: "running" }],
+  );
+  // Past the next discovery pass, with a margin: had it counted as
+  // discovered, its gap would be here by now.
+  const quietGaps = await view.evaluate<string[]>(
+    until(
+      GAP_ROWS,
+      "(rows) => rows.length > 1",
+      ownStartedAt + DISCOVERY_INTERVAL_MS + GAP_MARGIN_MS - Date.now(),
+    ),
+  );
+  checkEqual(
+    `and no second gap row, ${DISCOVERY_INTERVAL_MS + GAP_MARGIN_MS} ms on`,
+    quietGaps.length,
+    1,
+  );
+  await ownWorker.close({ timeout: 1_000 });
+  await remote.close();
 
   /* ---------------------------------------------------------------- */
   step("types= in the URL: prefixed names written bare, unknown ones named");
