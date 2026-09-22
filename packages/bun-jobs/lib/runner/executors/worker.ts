@@ -53,6 +53,18 @@ export class WorkerExecutor implements Executor {
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
+    // There is deliberately no stdio here, and there cannot be: Bun's global
+    // `Worker` takes no `stdin`/`stdout`/`stderr` option, so a run in a worker
+    // realm shares this process's standard streams and has no pipe of its own.
+    // (Checked against Bun 1.4.3 on 2026-09-22: `Bun.WorkerOptions` declares
+    // none of the three, and passing them anyway leaves `worker.stdout` and
+    // its siblings `undefined` while the worker's `console.log` lands on this
+    // process's stdout.) That is why a `worker` run's output is captured by
+    // patching its realm's console — `realmConsole.ts`, asked for by
+    // `captureConsole` in the context and reported back as `output` messages
+    // through `events.onConsole` — rather than by reading a pipe the way
+    // `SpawnExecutor` does. The patch is the mechanism, not a preference:
+    // remove it and a worker run's console output is simply lost.
     const worker = new Worker(WorkerExecutor.entry, {
       name: this.options.name ?? `${context.runnerId}:${context.runId}`,
       smol: this.options.smol,
