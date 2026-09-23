@@ -686,10 +686,14 @@ interface RunnersRollup {
  * - rows: **one** `getRunnerMetricsTotals`, plus a zero row for each listed
  *   runner the read leaves out (it has nothing in range) — every listed
  *   runner has a row, as on the per-entity path. Through a manager, which
- *   reaches every runner in the namespace, the read is unfiltered, so a
- *   runner that ran in the range and is no longer registered keeps its row
- *   and the rows add up to the series; with a fixed list it is filtered to
- *   the list, and a runner outside it is never counted;
+ *   reaches every runner in the namespace, the read is unfiltered, so **any
+ *   key with counts in the range keeps its row** — including one the manager
+ *   does not list — and the rows add up to the series; with a fixed list it
+ *   is filtered to the list, and a runner outside it is never counted.
+ *   Retiring a runner is *not* how that happens: nothing removes a runner's
+ *   record, so `runners.remove()` unregisters it in its own process only and
+ *   it stays listed and reachable. Counts outlive a registration; a
+ *   registration does not end;
  * - series: the namespace roll-up (one read) through a manager; with a fixed
  *   list, one `getRunnerMetricsMany` over the runners the totals found,
  *   summed (none when it found none);
@@ -726,8 +730,9 @@ async function groupedRunnersRollup(
     if (id === undefined && everyRunner) {
       id = runnerIdOf(row.runner);
       if (id !== undefined) {
-        // A runner no longer registered: reachable from here on, so the
-        // batch serves its series as well.
+        // A key with counts that the manager did not list. Reachable from
+        // here on, so the batch serves its series as well. Not produced by
+        // retiring a runner: nothing removes a runner's record.
         idByKey.set(row.runner, id);
       }
     }
@@ -1263,7 +1268,7 @@ export function analyticsRoutes(): AnyRouteDef[] {
       requires: DRIVER_FEATURES.runnerMetrics,
       summary:
         "Every runner's outcomes summed, a row per runner, and a batch of series",
-      description: `\`series\` is every runner's outcomes summed — the namespace roll-up, one read, when the API reaches the namespace's runners through a manager; the listed runners summed when it was given a fixed list. \`rows\` holds a row per reachable runner — its totals over the range (zeros for one with nothing in it), \`runningNow\` from its lock, and its durations where recorded — and, through a manager on a backend with grouped reads, a row for each runner that ran in the range and is no longer registered, so the rows add up to \`series\`; at most ${MAX_ANALYTICS_ROWS}, sorted by started runs descending then by id; \`truncated\` says when there were more and \`totalRows\` how many.\n\n\`ids\` names up to ${MAX_ANALYTICS_SERIES} runners — the page on screen — whose own series come back in \`seriesByRunner\`, in the order asked; a reachable runner with nothing in range gets zeroed buckets. More than ${MAX_ANALYTICS_SERIES} is 400 \`BULK_LIMIT\`; an id this API cannot reach is left out.\n\n**What it costs.** On a backend with grouped reads (all four of \`getRunnerMetricsTotals\`, \`getRunnerMetricsMany\`, \`getWorkerMetricsTotals\`, \`getWorkerMetricsMany\`) the rows are **one** read of every runner's totals, a fixed list's series one more, and a batch **exactly one** read of its own, whatever the runner count. \`runningNow\` is state no bucket holds, so it is a lock read per row **returned** (at most ${MAX_ANALYTICS_ROWS}); the envelope's \`runningNow\` adds the in-process runs of runners beyond the cap and does not read a remote one beyond it. On a backend without them each runner costs a read of its series and one of its lock, and the batch is served from those same reads.\n\n${RANGE_NOTE}`,
+      description: `\`series\` is every runner's outcomes summed — the namespace roll-up, one read, when the API reaches the namespace's runners through a manager; the listed runners summed when it was given a fixed list. \`rows\` holds a row per reachable runner — its totals over the range (zeros for one with nothing in it), \`runningNow\` from its lock, and its durations where recorded — and, through a manager on a backend with grouped reads, a row for each key with counts in the range that the manager does not list, so the rows add up to \`series\` (retiring a runner does not produce one: nothing removes a runner's record, so \`runners.remove()\` unregisters it in its own process only and it stays listed and reachable); at most ${MAX_ANALYTICS_ROWS}, sorted by started runs descending then by id; \`truncated\` says when there were more and \`totalRows\` how many.\n\n\`ids\` names up to ${MAX_ANALYTICS_SERIES} runners — the page on screen — whose own series come back in \`seriesByRunner\`, in the order asked; a reachable runner with nothing in range gets zeroed buckets. More than ${MAX_ANALYTICS_SERIES} is 400 \`BULK_LIMIT\`; an id this API cannot reach is left out.\n\n**What it costs.** On a backend with grouped reads (all four of \`getRunnerMetricsTotals\`, \`getRunnerMetricsMany\`, \`getWorkerMetricsTotals\`, \`getWorkerMetricsMany\`) the rows are **one** read of every runner's totals, a fixed list's series one more, and a batch **exactly one** read of its own, whatever the runner count. \`runningNow\` is state no bucket holds, so it is a lock read per row **returned** (at most ${MAX_ANALYTICS_ROWS}); the envelope's \`runningNow\` adds the in-process runs of runners beyond the cap and does not read a remote one beyond it. On a backend without them each runner costs a read of its series and one of its lock, and the batch is served from those same reads.\n\n${RANGE_NOTE}`,
       tags: ["Analytics"],
       query: runnersAnalyticsQuerySchema(),
       responses: { 200: RunnersAnalyticsSchema },
