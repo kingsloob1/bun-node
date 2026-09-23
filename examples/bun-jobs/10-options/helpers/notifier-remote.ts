@@ -18,12 +18,19 @@ const jobs = new BunJobs({
   publishEvents: true,
 });
 
+/**
+ * The sweep cadence the parent runs its rescuer at. It has to reach this
+ * process too: a worker holds the queue's stalled-sweep lease for twice its
+ * own cadence, so a killed holder hands over on *this* number. See the parent.
+ */
+const stalledInterval = Number(process.env.STALLED_INTERVAL ?? 200);
+
 if (process.env.ROLE === "hang") {
   const worker = jobs.worker(
     "remote",
     // Takes the job and hangs, until the parent kills this process.
     () => new Promise<never>(() => {}),
-    { lockDuration: 500, pollInterval: 20 },
+    { lockDuration: 500, pollInterval: 20, stalledInterval },
   );
   // `void`, not a top-level await that never settles.
   void worker.run();
@@ -31,7 +38,7 @@ if (process.env.ROLE === "hang") {
   const worker = jobs.worker<{ greeting: string }, { from: number }>(
     "remote",
     async () => ({ from: process.pid }),
-    { pollInterval: 20 },
+    { pollInterval: 20, stalledInterval },
   );
 
   worker.on("completed", () => {

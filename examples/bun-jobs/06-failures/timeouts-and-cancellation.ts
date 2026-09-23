@@ -109,6 +109,13 @@ const shared = new BunQueue<Export, number>("exports", {
 
 const orphan = await shared.add("export", { rows: 5 });
 
+// Both processes take the same short `stalledInterval`, and the child's matters
+// as much as the rescuer's. One worker per queue runs the repair sweeps, under
+// a lease it renews on its own sweep cadence, and the lease lasts twice that
+// cadence. So a holder that is killed hands the sweeps over on *its* cadence —
+// a fast survivor cannot shorten someone else's lease. At the defaults that is
+// 90 seconds, far longer than this example waits, which is why the cadence is
+// set small on both sides rather than only on the rescuer.
 const child = Bun.spawn(
   [
     process.execPath,
@@ -120,6 +127,7 @@ const child = Bun.spawn(
       NAMESPACE: namespace,
       DRIVER_CONFIG: JSON.stringify(sharedConfig),
       LOCK_DURATION: "500",
+      STALLED_INTERVAL: "100",
     },
     stdout: "ignore",
     stderr: "inherit",
