@@ -1006,17 +1006,17 @@ checkEqual(
   ["executionMode"],
 );
 // The API finds a runner another context owns through its cached discovery
-// (`limits.queueCacheMs`, 2 s by default), so a runner that new may be 404
-// for up to one cache window.
-let keysOverApi = await call("GET", "/runners/keys-report");
-await waitFor(
-  "the API to discover keys-report",
-  async () =>
-    (keysOverApi = await call("GET", "/runners/keys-report")).status === 200,
-  WAIT,
-);
+// (`limits.queueCacheMs`, 2 s by default) — and finds it *at once*, however
+// new it is. The guarantee is not that the API stopped reading the backend:
+// `RunnerSource.resolve` still asks it again when the cached discovery has
+// never heard of the id, since an id it does not know may simply be newer
+// than the cache. What is bounded is how often: at most one such re-read per
+// cache window however many misses arrive, shared between concurrent ones
+// (`lib/api/sources.ts`, `TtlSet.has`), so an id nothing knows still cannot
+// turn into a backend read per request.
+const keysOverApi = await call("GET", "/runners/keys-report");
 checkEqual(
-  "  and so does GET /runners/{id}: config.error.keys",
+  "  and so does GET /runners/{id}, at once: config.error.keys",
   [keysOverApi.status, keysOverApi.body?.config?.error?.keys],
   [200, ["executionMode"]],
 );

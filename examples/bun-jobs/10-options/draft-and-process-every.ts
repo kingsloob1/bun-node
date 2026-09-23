@@ -23,6 +23,11 @@
  *   delays a new job.
  * - **A wait in progress** is cut short on a polling driver and left to
  *   finish on a blocking one.
+ * - **An idle worker remembers when the next delayed job is due** and stops
+ *   promoting on every empty pass until then. The bound that buys: a job
+ *   scheduled *earlier* than that, through a driver instance the worker cannot
+ *   hear from, waits for the promotion sweep — `min(pollInterval, 1s)`. A job
+ *   the worker's own instance schedules discards the remembered time instead.
  * - **Series setters** — `limit()`, `tz()`, `endingAt()`, `catchUp()`,
  *   `immediately()` — change one field of the series and leave the rest.
  *   Called before `repeatEvery()` they throw `ConfigError` at once; a later
@@ -54,6 +59,7 @@ import {
   RedisDriver,
 } from "@kingsleyweb/bun-jobs";
 import {
+  crossProcessDriver,
   exampleBackend,
   exampleDriver,
   exampleNamespace,
@@ -120,6 +126,13 @@ async function spiedContext(
     processEvery?: number | string;
     /** A driver instance to use instead of one built from `EXAMPLE_DRIVER`. */
     driver?: JobsDriver;
+    /**
+     * The namespace to use instead of one derived from `base`. Two contexts
+     * that must see each other's jobs need the very same one, and `base`
+     * cannot give them that: {@link exampleNamespace} suffixes it with the
+     * time on every persistent backend.
+     */
+    namespace?: string;
   } = {},
 ): Promise<Spied> {
   const driver = options.driver ?? createDriver(exampleDriver());
@@ -151,7 +164,7 @@ async function spiedContext(
 
   await driver.connect();
   const jobs = new BunJobs({
-    namespace: exampleNamespace(base),
+    namespace: options.namespace ?? exampleNamespace(base),
     driver,
     logger: noopLogger,
     ...(options.processEvery === undefined
@@ -2077,6 +2090,116 @@ step(
   );
   gate.resolve();
   await dispose(ctx);
+}
+
+/* ------------------------------------------------------------------ */
+step(
+  "A remembered next-due time: another instance's earlier job waits one sweep",
+);
+
+{
+  // An idle worker remembers when the next delayed job is due — the
+  // `nextDueAt` its last promotion reported — and stops promoting on every
+  // empty pass until then. That is what makes an idle worker cheap, and it is
+  // also a bound worth knowing: a job scheduled *earlier* than the remembered
+  // time, by something the worker cannot hear from, waits for the promotion
+  // sweep, which runs every `min(pollInterval, 1s)`.
+  //
+  // The remembered time is kept per **driver instance**
+  // (`lib/queue/delayedHints.ts` keys it by the driver), so a second instance
+  // in this same process takes exactly the path a second service on another
+  // machine would: neither can tell the worker its schedule moved earlier.
+  // Two instances on one backend are as unaware of each other as two
+  // processes are — this is not an in-process quirk being worked around.
+  //
+  // One config, built once and used twice, so the two instances really do
+  // share a backend. `crossProcessDriver()` because the memory driver keeps
+  // its state in its own `Map`s (`capabilities.multiProcess: false`): two
+  // instances of *it* would be two separate backends, so on the memory
+  // default this section runs against a temporary SQLite file, as every
+  // cross-process example does.
+  const shared = crossProcessDriver();
+  const sharedNamespace = exampleNamespace("promote-bound");
+  if (exampleBackend() === "memory") {
+    show("memory has no second instance: this section runs on temp SQLite");
+  }
+
+  const mine = await spiedContext("promote-bound", {
+    driver: createDriver(shared),
+    namespace: sharedNamespace,
+  });
+  const theirs = await spiedContext("promote-bound", {
+    driver: createDriver(shared),
+    namespace: sharedNamespace,
+  });
+
+  /** When each marker ran, by marker. */
+  const ran = new Map<string, number>();
+  mine.jobs.define<Mail>("tick", async (job) => {
+    ran.set(job.data.to, Date.now());
+  });
+  // The other side only writes, but a name still needs a definition to be
+  // addressable — its handler is never called, because it starts no worker.
+  theirs.jobs.define<Mail>("tick", async () => null);
+
+  const worker = await mine.jobs.start();
+  /** The sweep's cadence: the poll interval, capped at a second. */
+  const sweep = Math.min(worker.pollInterval, 1_000);
+  checkEqual("the default poll interval puts the sweep at 1s", sweep, 1_000);
+
+  // Arm it: a job far in the future, added through the worker's own instance,
+  // so the next empty pass promotes (its own write invalidates the cache),
+  // finds nothing due and remembers that time.
+  await mine.jobs.now<Mail>("tick", { to: "far" }, { delay: 2 * MINUTE });
+  // Two sweeps, so at least one empty pass has run and remembered it.
+  await Bun.sleep(2 * sweep);
+
+  // Held: the only `promoteDelayed` left is the sweep's, about one a second,
+  // even though the worker is idle and polling just as often.
+  const idlePromotes = await countOver(mine.promotions, 2.2 * sweep);
+  check(
+    "a remembered future time: the empty passes stop promoting",
+    idlePromotes <= 3,
+    { idlePromotes, over: `${2.2 * sweep}ms` },
+  );
+
+  /** How late the job marked `to` ran against `dueAt`, in milliseconds. */
+  const lateness = async (to: string, dueAt: number): Promise<number> => {
+    await waitFor(`the ${to} job`, () => ran.has(to), WAIT);
+    return ran.get(to)! - dueAt;
+  };
+
+  // The other instance schedules something due far earlier than the
+  // remembered time. Nothing tells this worker, so the sweep is what finds it.
+  const soon = 300;
+  await theirs.jobs.now<Mail>("tick", { to: "theirs" }, { delay: soon });
+  const otherDueAt = Date.now() + soon;
+  const otherLate = await lateness("theirs", otherDueAt);
+  show("another instance's job ran late by", `${otherLate}ms`);
+  check(
+    "another instance's earlier job runs within a sweep plus a poll",
+    otherLate < sweep + worker.pollInterval,
+    { otherLate, bound: sweep + worker.pollInterval },
+  );
+
+  // Contrast: the same instance as the worker. `BunQueue` notes every
+  // scheduling write against its driver, so the remembered time is discarded
+  // and the worker's own next empty pass promotes — it never waits on a cache
+  // of its own making. In wall-clock terms both land inside the same bound,
+  // because the sweep is at most `min(pollInterval, 1s)` away and so is the
+  // pass; what the cache saves is the round trip, not the latency.
+  await mine.jobs.now<Mail>("tick", { to: "mine" }, { delay: soon });
+  const sameDueAt = Date.now() + soon;
+  const sameLate = await lateness("mine", sameDueAt);
+  show("the worker's own instance ran late by", `${sameLate}ms`);
+  check(
+    "the same instance is not held back by the remembered time",
+    sameLate < sweep + worker.pollInterval,
+    { sameLate, bound: sweep + worker.pollInterval },
+  );
+
+  await dispose(mine);
+  await dispose(theirs);
 }
 
 /* ------------------------------------------------------------------ */
