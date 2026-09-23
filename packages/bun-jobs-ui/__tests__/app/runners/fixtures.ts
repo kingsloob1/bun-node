@@ -224,6 +224,8 @@ export function historyFixture(
         result: undefined,
       }),
     ],
+    // The route always answers a page; these three runs are the whole history.
+    page: { offset: 0, limit: 50, total: 3, hasMore: false },
     ...overrides,
   };
 }

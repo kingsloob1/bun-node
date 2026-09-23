@@ -221,6 +221,12 @@ export {
 } from "./readApis";
 export { RedisKeys } from "./redis/keys";
 export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
+export {
+  pageRunHistory,
+  readHistoryPage,
+  type RunHistoryPage,
+  type RunHistoryQuery,
+} from "./runHistory";
 export type {
   ColumnRow,
   IndexRow,

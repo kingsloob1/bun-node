@@ -75,6 +75,7 @@ import type {
   WorkerMetricsRef,
 } from "../metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
+import type { RunHistoryPage, RunHistoryQuery } from "../runHistory";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import { jsonClone, serializeError, sleep } from "@kingsleyweb/bun-common";
 import {
@@ -1927,6 +1928,49 @@ export class MongoDriver implements JobsDriver {
     const slice = limit && limit > 0 ? history.slice(0, limit) : history;
 
     return slice.map((entry) => JSON.parse(entry) as RunRecord);
+  }
+
+  async pageHistory(
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ): Promise<RunHistoryPage> {
+    const kv = await this.#kv();
+    const offset = Math.max(0, Math.floor(opts.offset));
+    const limit = Math.max(0, Math.floor(opts.limit));
+    // `$size` and `$slice` in one `$project`, so the count and the page come
+    // from one read of one document — a `countDocuments` beside a `findOne`
+    // would be two, and a run starting between them would size a list the
+    // page never saw. Sliced by the server, so `keepHistory` may be large
+    // without every page transferring the whole array.
+    //
+    // Stored newest first, so `desc` slices as stored and `asc` reverses
+    // first. `$slice` with a negative or over-long `limit` is an error rather
+    // than an empty array, so a zero-limit page skips the read entirely.
+    const source =
+      opts.order === "asc" ? { $reverseArray: "$history" } : "$history";
+    const [document] = await kv
+      .aggregate<{ total?: number; history?: string[] }>([
+        { $match: { _id: this.#stateId(ns, key) } },
+        {
+          $project: {
+            _id: 0,
+            total: { $size: { $ifNull: ["$history", []] } },
+            history:
+              limit > 0
+                ? { $slice: [{ $ifNull: [source, []] }, offset, limit] }
+                : [],
+          },
+        },
+      ])
+      .toArray();
+
+    return {
+      records: (document?.history ?? []).map(
+        (entry) => JSON.parse(entry) as RunRecord,
+      ),
+      total: document?.total ?? 0,
+    };
   }
 
   async clearHistory(ns: string, key: string): Promise<void> {

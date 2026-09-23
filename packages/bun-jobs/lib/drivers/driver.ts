@@ -26,6 +26,7 @@ import type {
   WorkerJobTotals,
   WorkerMetricsRef,
 } from "./metrics";
+import type { RunHistoryPage, RunHistoryQuery } from "./runHistory";
 import type { SchemaChange, SchemaSyncOptions } from "./schemaSync";
 
 /**
@@ -422,6 +423,24 @@ export interface RunnerDriver {
     key: string,
     limit?: number,
   ) => Promise<RunRecord[]>;
+  /**
+   * A page of the history, with the whole list's size.
+   *
+   * Optional, and unlike {@link RunnerDriver.getRunLog} its absence prunes
+   * nothing: a driver without it is paged by reading
+   * {@link RunnerDriver.listHistory} whole and slicing with `pageRunHistory`,
+   * which is correct everywhere because the history is bounded by the runner's
+   * `keepHistory`. Implement it to let the store do the slicing.
+   *
+   * The `total` is exact and must come from the **same read** as the records,
+   * or a page and its count can disagree about a run that started between two
+   * queries.
+   */
+  pageHistory?: (
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ) => Promise<RunHistoryPage>;
   /**
    * Drops the history — **and, on a driver that has them, every run log this
    * runner holds**.

@@ -67,6 +67,7 @@ import type {
   WorkerMetricsRef,
 } from "./metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "./readApis";
+import type { RunHistoryPage, RunHistoryQuery } from "./runHistory";
 import type { StoredRunLogLine } from "./runLogs";
 import { Buffer } from "node:buffer";
 import {
@@ -158,6 +159,7 @@ import {
   THROUGHPUT_RETENTION_MS,
   ThroughputBuffer,
 } from "./readApis";
+import { pageRunHistory } from "./runHistory";
 import {
   emptyRunLog,
   pageRunLog,
@@ -865,6 +867,17 @@ export class FileDriver implements JobsDriver {
   ): Promise<RunRecord[]> {
     const state = await this.#readState(ns, key);
     return limit && limit > 0 ? state.history.slice(0, limit) : state.history;
+  }
+
+  async pageHistory(
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ): Promise<RunHistoryPage> {
+    // Free: `#readState` already parses the whole state document, history and
+    // all, so the count costs no extra read and comes from the same snapshot.
+    const state = await this.#readState(ns, key);
+    return pageRunHistory(state.history, opts);
   }
 
   async clearHistory(ns: string, key: string): Promise<void> {

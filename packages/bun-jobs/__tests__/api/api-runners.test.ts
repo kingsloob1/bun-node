@@ -2,6 +2,7 @@ import type { BunJobs } from "../../lib/index";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { MAX_DATE_MS } from "../../lib/api/contract/constants";
 import { scheduleIssuePath } from "../../lib/api/routes/runners";
+import { runnerKey } from "../../lib/index";
 import { waitFor } from "../helpers";
 import {
   ECHO_HANDLER,
@@ -224,10 +225,228 @@ describe("listing and reading", () => {
     });
     expect((await h.call("GET", "/runners/remote/history")).body).toEqual({
       items: [],
+      // An empty history still carries its page: `total: 0` is what tells a
+      // pager the list is empty rather than merely this window of it.
+      page: { offset: 0, limit: 5, total: 0, hasMore: false },
     });
     expect(
       (await h.call("GET", "/runners/nightly/history?limit=6")).status,
     ).toBe(400);
+  });
+
+  /**
+   * Paging the history over the route.
+   *
+   * `runner-history-paging.test.ts` runs the slicing itself against all eight
+   * backends; what is left for here is the HTTP surface — the `page` envelope,
+   * the defaults, and that `limits.maxHistory` refuses a page rather than
+   * shortening one. The records are written through the driver because this is
+   * about the route's arithmetic, and thirty real runs would take thirty times
+   * as long to say the same thing.
+   */
+  describe("history paging", () => {
+    /** Writes `count` records for a runner only another process registered. */
+    async function seedHistory(
+      h: Awaited<ReturnType<typeof withRunners>>,
+      count: number,
+    ) {
+      const key = runnerKey("remote");
+      for (let n = 1; n <= count; n++) {
+        await h.jobs.driver.appendHistory(
+          h.jobs.namespace,
+          key,
+          {
+            runId: `r${String(n).padStart(2, "0")}`,
+            runnerId: "remote",
+            attempt: 1,
+            source: "manual",
+            mode: "in-process",
+            host: "test",
+            startedAt: 1_700_000_000_000 + n * 1000,
+            finishedAt: 1_700_000_000_500 + n * 1000,
+            durationMs: 500,
+            status: "success",
+          },
+          1000,
+        );
+      }
+    }
+
+    it("pages past the first page, and page two holds the runs page one did not", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, 25);
+
+      const first = await h.call("GET", "/runners/remote/history?limit=10");
+      const second = await h.call(
+        "GET",
+        "/runners/remote/history?limit=10&offset=10",
+      );
+      const third = await h.call(
+        "GET",
+        "/runners/remote/history?limit=10&offset=20",
+      );
+
+      const idsOf = (r: any) => r.body.items.map((run: any) => run.runId);
+      // Newest first by default, as before paging existed.
+      expect(idsOf(first)).toEqual([
+        "r25",
+        "r24",
+        "r23",
+        "r22",
+        "r21",
+        "r20",
+        "r19",
+        "r18",
+        "r17",
+        "r16",
+      ]);
+      // The assertion the feature exists for: disjoint pages that add up.
+      expect(idsOf(second)).toEqual([
+        "r15",
+        "r14",
+        "r13",
+        "r12",
+        "r11",
+        "r10",
+        "r09",
+        "r08",
+        "r07",
+        "r06",
+      ]);
+      expect(idsOf(third)).toEqual(["r05", "r04", "r03", "r02", "r01"]);
+      expect(
+        idsOf(second).filter((id: string) => idsOf(first).includes(id)),
+      ).toEqual([]);
+
+      // The envelope the UI's pager reads: "21–25 of 25" on the last page.
+      expect(first.body.page).toEqual({
+        offset: 0,
+        limit: 10,
+        total: 25,
+        hasMore: true,
+      });
+      expect(second.body.page).toEqual({
+        offset: 10,
+        limit: 10,
+        total: 25,
+        hasMore: true,
+      });
+      expect(third.body.page).toEqual({
+        offset: 20,
+        limit: 10,
+        total: 25,
+        hasMore: false,
+      });
+    });
+
+    it("reaches records the old `limit`-only route could never serve", async () => {
+      // `keepHistory` above `maxHistory`: before paging, runs 1–5 were stored
+      // and no client could ask for them.
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, 15);
+
+      const capped = await h.call("GET", "/runners/remote/history?limit=10");
+      expect(capped.body.items).toHaveLength(10);
+      expect(capped.body.page.total).toBe(15);
+
+      const beyond = await h.call(
+        "GET",
+        "/runners/remote/history?limit=10&offset=10",
+      );
+      expect(beyond.body.items.map((run: any) => run.runId)).toEqual([
+        "r05",
+        "r04",
+        "r03",
+        "r02",
+        "r01",
+      ]);
+    });
+
+    it("orders oldest first on request, paging the same list", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, 12);
+
+      const asc = await h.call(
+        "GET",
+        "/runners/remote/history?limit=4&order=asc",
+      );
+      expect(asc.body.items.map((run: any) => run.runId)).toEqual([
+        "r01",
+        "r02",
+        "r03",
+        "r04",
+      ]);
+      expect(asc.body.page).toEqual({
+        offset: 0,
+        limit: 4,
+        total: 12,
+        hasMore: true,
+      });
+
+      const ascNext = await h.call(
+        "GET",
+        "/runners/remote/history?limit=4&order=asc&offset=8",
+      );
+      expect(ascNext.body.items.map((run: any) => run.runId)).toEqual([
+        "r09",
+        "r10",
+        "r11",
+        "r12",
+      ]);
+      expect(ascNext.body.page.hasMore).toBe(false);
+    });
+
+    it("answers an empty page past the end, still saying how many there are", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, 7);
+
+      const past = await h.call(
+        "GET",
+        "/runners/remote/history?limit=10&offset=7",
+      );
+      expect(past.status).toBe(200);
+      expect(past.body.items).toEqual([]);
+      // Not `total: 0`: the list has seven runs, this window just has none.
+      expect(past.body.page).toEqual({
+        offset: 7,
+        limit: 10,
+        total: 7,
+        hasMore: false,
+      });
+    });
+
+    it("refuses a page over `maxHistory` rather than shortening one, and caps no offset", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, 12);
+
+      // The cap bounds a page…
+      const over = await h.call("GET", "/runners/remote/history?limit=11");
+      expect(over.status).toBe(400);
+      // The schema's own refusal, as every other over-cap `limit` answers.
+      expect(over.body.type).toBe("urn:bun-jobs:error:VALIDATION");
+      expect(
+        (await h.call("GET", "/runners/remote/history?limit=10")).status,
+      ).toBe(200);
+
+      // …and nothing bounds how deep `offset` reads, which is the whole point:
+      // a cap on both is what made stored runs unreachable.
+      const deep = await h.call(
+        "GET",
+        "/runners/remote/history?limit=10&offset=100000",
+      );
+      expect(deep.status).toBe(200);
+      expect(deep.body.page.total).toBe(12);
+    });
   });
 });
 

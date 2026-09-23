@@ -62,6 +62,7 @@ import type {
   RunnerRunCounters,
   WorkerMetricsRef,
 } from "./metrics";
+import type { RunHistoryPage, RunHistoryQuery } from "./runHistory";
 import type { StoredRunLogLine } from "./runLogs";
 import { jsonClone } from "@kingsleyweb/bun-common";
 import { SECOND_BUCKET_MS } from "../api/contract/constants";
@@ -124,6 +125,7 @@ import {
   THROUGHPUT_RETENTION_MS,
   throughputBucket,
 } from "./readApis";
+import { pageRunHistory } from "./runHistory";
 import {
   emptyRunLog,
   pageRunLog,
@@ -672,6 +674,16 @@ export class MemoryDriver implements JobsDriver {
     const history = this.#existingRunner(ns, key)?.history ?? [];
     const slice = limit && limit > 0 ? history.slice(0, limit) : history;
     return slice.map((entry) => ({ ...entry }));
+  }
+
+  async pageHistory(
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ): Promise<RunHistoryPage> {
+    // One synchronous read of the array, so the page and its total describe
+    // the same instant. Free: the array is already here.
+    return pageRunHistory(this.#existingRunner(ns, key)?.history ?? [], opts);
   }
 
   async clearHistory(ns: string, key: string): Promise<void> {

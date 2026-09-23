@@ -185,6 +185,7 @@ describe("clear history on the runner screen", () => {
     let cleared = false;
     const after: RunnerHistoryDto = {
       items: [screenRunFixture({ runId: "run-live", status: "running" })],
+      page: { offset: 0, limit: 50, total: 1, hasMore: false },
     };
     const { calls } = renderRunner({
       handlers: {

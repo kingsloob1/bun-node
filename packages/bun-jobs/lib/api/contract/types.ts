@@ -2529,14 +2529,35 @@ export interface RunnerListDto {
 
 /** `GET /runners/:runner/history` query. */
 export interface HistoryQuery {
-  /** Runs returned. Defaults to `min(50, limits.maxHistory)`; at most `limits.maxHistory`. */
+  /**
+   * Runs skipped before the page. Defaults to `0`, and has no ceiling: a
+   * runner's `keepHistory` may be far larger than `limits.maxHistory`, and
+   * this is what reaches the records past the first page.
+   */
+  offset?: number;
+  /**
+   * Runs on the page. Defaults to `min(50, limits.maxHistory)`; at most
+   * `limits.maxHistory`, which bounds **a page** and not how far back
+   * `offset` may read. More is 400 `VALIDATION`.
+   */
   limit?: number;
+  /**
+   * Which end to read from, by start time. Defaults to `"desc"` — newest
+   * first, the order this route served before it could page.
+   */
+  order?: "asc" | "desc";
 }
 
-/** `GET /runners/:runner/history`, newest first. */
+/** `GET /runners/:runner/history`, newest first unless `order` says otherwise. */
 export interface RunnerHistoryDto {
   /** The runs. */
   items: RunRecordDto[];
+  /**
+   * Where the page sits. Its `total` is always present and exact: the history
+   * is a bounded list every backend holds whole, so counting it costs nothing
+   * the page has not already read.
+   */
+  page: PageInfoDto;
 }
 
 /* --- run logs -------------------------------------------------------- */

@@ -384,6 +384,17 @@ export type RemoteRunRecord<TResult = unknown> = Omit<RunRecord, "result"> & {
 };
 
 /**
+ * A page of run history as a {@link RemoteRunner} reads it: the records typed
+ * as {@link RemoteRunRecord}, beside the whole history's size.
+ */
+export interface RemoteRunHistoryPage<TResult = unknown> {
+  /** The page's records, in the order asked for. */
+  records: RemoteRunRecord<TResult>[];
+  /** How many records the history holds in total, not just on this page. */
+  total: number;
+}
+
+/**
  * A snapshot of a runner assembled from what the backend holds, so it reads
  * the same from any process sharing the driver and namespace.
  *
@@ -700,9 +711,12 @@ export interface BunRunnerOptions<TArgs = unknown> {
   /** What to do when the lock is lost mid-run. Defaults to `"abort"`. */
   onLockLost?: "abort" | "continue";
   /**
-   * How many run records to keep. Defaults to 50. Above the management API's
-   * `limits.maxHistory` (200 by default) the extra records are stored but
-   * never served: `GET /runners/:runner/history` caps its `limit` there.
+   * How many run records to keep. Defaults to 50.
+   *
+   * Above the management API's `limits.maxHistory` (200 by default) this
+   * stores more than that API will serve **in one page** — not more than it
+   * will serve at all: `GET /runners/{runner}/history` takes an uncapped
+   * `offset`, so every record here is reachable by paging.
    */
   keepHistory?: number;
   /** Cap on a stored run result, in bytes. Defaults to 16384. */

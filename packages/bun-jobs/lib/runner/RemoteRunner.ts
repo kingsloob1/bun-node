@@ -1,10 +1,11 @@
-import type { JobsDriver } from "../drivers/index";
+import type { JobsDriver, RunHistoryQuery } from "../drivers/index";
 import type { RunnerControlAction } from "../shared/events";
 import type { Logger, LoggerLike } from "../shared/logger";
 import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
 import type { BunRunner } from "./BunRunner";
 import type { ClearHistoryOptions, ClearHistoryResult } from "./clearHistory";
 import type {
+  RemoteRunHistoryPage,
   RemoteRunnerInfo,
   RemoteRunRecord,
   RunnerConfigInfo,
@@ -12,6 +13,7 @@ import type {
   RunnerStats,
   TriggerOutcome,
 } from "./types";
+import { readHistoryPage } from "../drivers/runHistory";
 import { DEFAULT_LOCK_TTL, DEFAULT_MAX_QUEUED_RUNS } from "../shared/constants";
 import { ConfigError, RunnerNotFoundError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
@@ -382,6 +384,31 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
       this.#key,
       limit,
     )) as RemoteRunRecord<TResult>[];
+  }
+
+  /**
+   * A page of the run history, with the whole history's size, from any
+   * process that ran it.
+   *
+   * What {@link RemoteRunner.history} cannot do: reach past the first `limit`
+   * records, which `keepHistory` may hold far more than.
+   */
+  async historyPage(
+    opts: RunHistoryQuery,
+  ): Promise<RemoteRunHistoryPage<TResult>> {
+    if (this.#local) {
+      return (await this.#local.historyPage(
+        opts,
+      )) as RemoteRunHistoryPage<TResult>;
+    }
+
+    await this.#assertKnown();
+    return (await readHistoryPage(
+      this.driver,
+      this.namespace,
+      this.#key,
+      opts,
+    )) as RemoteRunHistoryPage<TResult>;
   }
 
   /**

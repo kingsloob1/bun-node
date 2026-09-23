@@ -73,6 +73,7 @@ import type {
   RunnerRunCounters,
   WorkerMetricsRef,
 } from "../metrics";
+import type { RunHistoryPage, RunHistoryQuery } from "../runHistory";
 import type { MetricsSeries } from "./keys";
 import type { RenderedScripts } from "./scripts";
 import { Buffer } from "node:buffer";
@@ -907,6 +908,34 @@ export class RedisDriver implements JobsDriver {
     return entries
       .map((entry) => safeJsonParse<RunRecord | null>(entry, null))
       .filter((record): record is RunRecord => record !== null);
+  }
+
+  async pageHistory(
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ): Promise<RunHistoryPage> {
+    await this.connect();
+
+    // One script: the slice and the `LLEN` have to see the same list — see
+    // `PAGE_HISTORY`. Never a whole-list read, so `keepHistory` may be large
+    // without every page paying for it.
+    const [total, ...entries] = (await this.#run(
+      scripts.PAGE_HISTORY,
+      [this.keys.runner(ns, this.#runnerId(key)).history],
+      [
+        String(Math.max(0, Math.floor(opts.offset))),
+        String(Math.max(0, Math.floor(opts.limit))),
+        opts.order,
+      ],
+    )) as [number, ...string[]];
+
+    return {
+      records: entries
+        .map((entry) => safeJsonParse<RunRecord | null>(entry, null))
+        .filter((record): record is RunRecord => record !== null),
+      total: Number(total),
+    };
   }
 
   async clearHistory(ns: string, key: string): Promise<void> {

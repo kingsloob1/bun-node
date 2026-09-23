@@ -816,7 +816,7 @@ export type RunLogLineSerializedOk = Expect<
 >;
 export type HistoryQueryOk = Expect<
   DeepEqual<
-    Defaulted<Contract.HistoryQuery, "limit">,
+    Defaulted<Contract.HistoryQuery, "offset" | "limit" | "order">,
     Infer<ReturnType<typeof historyQuerySchema>>
   >
 >;

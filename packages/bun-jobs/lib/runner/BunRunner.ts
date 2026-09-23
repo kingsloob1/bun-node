@@ -2,6 +2,8 @@ import type {
   ExecutionMode,
   JobsDriver,
   QueuedTrigger,
+  RunHistoryPage,
+  RunHistoryQuery,
   RunnerRunCounters,
   RunnerRunDelta,
   RunRecord,
@@ -38,6 +40,7 @@ import type {
   TriggerOutcome,
 } from "./types";
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
+import { readHistoryPage } from "../drivers/runHistory";
 import { TypedEmitterBase } from "../shared/emitter";
 import { RunnerStoppedError } from "../shared/errors";
 import { runnerEvent } from "../shared/events";
@@ -683,6 +686,27 @@ export class BunRunner<
     } catch (error) {
       this.#emitError(error, "history");
       return [];
+    }
+  }
+
+  /**
+   * A page of the run history, with the whole history's size.
+   *
+   * What {@link BunRunner.history} cannot do: reach past the first `limit`
+   * records. `keepHistory` may be far larger than any one page, and without an
+   * offset those older records are stored but unreadable.
+   */
+  async historyPage(opts: RunHistoryQuery): Promise<RunHistoryPage> {
+    try {
+      return await readHistoryPage(
+        this.driver,
+        this.namespace,
+        this.#key,
+        opts,
+      );
+    } catch (error) {
+      this.#emitError(error, "history");
+      return { records: [], total: 0 };
     }
   }
 

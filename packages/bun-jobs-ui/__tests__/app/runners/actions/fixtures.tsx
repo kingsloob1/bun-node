@@ -57,6 +57,7 @@ export function finishedHistory(): RunnerHistoryDto {
         status: "success",
       }),
     ],
+    page: { offset: 0, limit: 50, total: 1, hasMore: false },
   };
 }
 

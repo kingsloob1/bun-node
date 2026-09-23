@@ -353,23 +353,42 @@ export const RunnerListSchema = s.object({
   ),
 });
 
-/** `GET /runners/:runner/history` query. */
+/** `GET /runners/:runner/history` query. Mirrors `HistoryQuery`. */
 export function historyQuerySchema(maxHistory: number) {
   return s.query(
     s.object({
+      offset: s.optional(
+        s.integer({
+          minimum: 0,
+          default: 0,
+          description:
+            "Records skipped before the page. Deliberately uncapped: `keepHistory` may store far more runs than `limits.maxHistory`, and paging is what makes every one of them reachable.",
+        }),
+      ),
       limit: s.optional(
         s.integer({
           minimum: 1,
           maximum: maxHistory,
           default: Math.min(50, maxHistory),
+          description: `Records on the page, at most \`limits.maxHistory\`. The cap bounds a **page**, not how far back you can read — ask for more and it is 400 \`VALIDATION\`, never a silently shortened page.`,
+        }),
+      ),
+      order: s.optional(
+        s.enum(["asc", "desc"], {
+          default: "desc",
+          description:
+            "By start time: `desc` — the default, and the only order served before paging existed — is newest first; `asc` is oldest first. The same list, paged from opposite ends.",
         }),
       ),
     }),
   );
 }
 
-/** `GET /runners/:runner/history` response, newest first. */
-export const HistorySchema = s.object({ items: s.array(RunRecordSchema) });
+/** `GET /runners/:runner/history` response. Mirrors `RunnerHistoryDto`. */
+export const HistorySchema = s.object({
+  items: s.array(RunRecordSchema),
+  page: PageInfoSchema,
+});
 
 /**
  * The range `DELETE /runners/:runner/history` accepts for `staleAfter`, in
