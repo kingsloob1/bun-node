@@ -86,6 +86,7 @@ import {
   workerConfigCrossFieldIssue,
   workerConfigIssue,
 } from "../shared/workers";
+import { AttemptWrites } from "./attemptWrites";
 import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { addDeadLetter, selfLetterError } from "./deadLetter";
@@ -130,19 +131,23 @@ const FLOW_HEAL_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
 const MAINTENANCE_BATCH = 100;
 
 /**
- * How long a timed-out job's failure record waits for the progress writes its
- * isolated processor already asked for.
+ * How long the failure record of an attempt the worker *gave up on* waits for
+ * the writes that attempt had in flight — its progress, its log lines.
  *
- * Enough for a driver write that is merely slow — a progress write is one
- * statement or one command, single-digit milliseconds even on a loaded
- * database, so this is two orders of magnitude of headroom — and small next to
- * everything it could delay: a hundredth of the default `lockDuration`, and a
- * thirtieth of the budget `#persist` gives the failure write itself, so the
- * failure still lands far inside the lock it is written under. Past it the
- * failure is recorded regardless: a driver that is not answering must not keep
- * a dead job `active` until the stalled sweep takes it.
+ * Enough for a driver write that is merely slow — one statement or one
+ * command, single-digit milliseconds even on a loaded database, so this is two
+ * orders of magnitude of headroom — and small next to everything it could
+ * delay: a hundredth of the default `lockDuration`, and a thirtieth of the
+ * budget `#persist` gives the failure write itself, so the failure still lands
+ * far inside the lock it is written under. Past it the failure is recorded
+ * regardless: a driver that is not answering must not keep a dead job `active`
+ * until the stalled sweep takes it.
+ *
+ * One bound for both kinds of write, but only on that ending: an attempt that
+ * reached its own end is given the ending write's own budget instead, a
+ * quarter of `lockDuration` — see `#awaitWrites` for why they differ.
  */
-const PROGRESS_SETTLE_TIMEOUT = 250;
+const WRITE_SETTLE_TIMEOUT = 250;
 
 /**
  * The most batches of expired jobs one prune pass removes, back to back, while
@@ -2050,11 +2055,23 @@ export class BunQueueWorker<
     let failedWith: UnrecoverableJobError | undefined;
     /** Whether the processor has returned or thrown, so `fail()` is too late. */
     let attemptOver = false;
+    const controller = new AbortController();
+    /**
+     * What this attempt has written about the job but not yet had answered, so
+     * the record of how the job ended can be put behind it whichever way the
+     * attempt ends and wherever the processor ran. It reads the abort signal,
+     * so giving up on an attempt — a deadline, a lost lock, a closing worker —
+     * ends it for its writes too: what the processor reports while it is being
+     * stopped belongs to a job whose ending the worker is already writing, and
+     * must not land on top of it.
+     */
+    const writes = new AttemptWrites(controller.signal);
 
     // The progress hook is how `updateProgress` reaches an emitter: `Job` has
     // none of its own, and the worker is the only thing that sees the call.
     // `onFail` is what makes this view the job's owner.
     const job = new Job<TData, TResult>(this.driver, this.ref, record, true, {
+      writes,
       onProgress: (progress) => {
         this.safeEmitScoped("progress", record.name, job, progress);
         void this.#publish("progress", { id: record.id, progress });
@@ -2071,7 +2088,6 @@ export class BunQueueWorker<
       },
       onEvent: async (event) => await this.#onJobEvent(event),
     });
-    const controller = new AbortController();
     this.#aborts.set(record.id, controller);
 
     const heartbeat = setInterval(() => {
@@ -2105,9 +2121,6 @@ export class BunQueueWorker<
     this.safeEmitScoped("active", record.name, job);
     void this.#publish("active", { id: record.id });
 
-    /** Whether the attempt ended because it outlived `opts.timeout`. */
-    let timedOut = false;
-
     try {
       const running = this.#isolated
         ? this.#isolated.run(
@@ -2127,13 +2140,18 @@ export class BunQueueWorker<
         record.opts.timeout > 0
           ? await withTimeout(running, record.opts.timeout, {
               message: `Job ${record.id} exceeded its ${record.opts.timeout}ms timeout`,
-              onTimeout: () => {
-                timedOut = true;
-                controller.abort();
-              },
+              onTimeout: () => controller.abort(),
             })
           : await running;
       attemptOver = true;
+      // Whatever the processor asked to have written, before the record of how
+      // its job ended. The `if` is the whole cost for a job that wrote nothing
+      // — no promise, no microtask — and this sits immediately in front of the
+      // completion write that is deliberately not awaited.
+      const settling = writes.settle();
+      if (settling) {
+        await this.#awaitWrites(record, settling, controller.signal.aborted);
+      }
 
       // `job.fail()` was called: the attempt ends that way however the
       // processor returned.
@@ -2156,13 +2174,14 @@ export class BunQueueWorker<
     } catch (error) {
       attemptOver = true;
       // A timeout rejects without waiting for the run — the point of a
-      // deadline is not to wait — so the barrier an isolated attempt keeps in
-      // its own `finally`, where the progress it was handed is written, never
-      // runs. Wait for those writes alone here, and briefly, before recording
-      // the failure: the run stays abandoned, and the values the processor
-      // reported still land before the record that says how the job ended.
-      if (timedOut) {
-        await this.#settleIsolatedProgress(record);
+      // deadline is not to wait — and a processor that threw may have left a
+      // write behind it. Wait for those writes here, and only those: the run
+      // itself stays abandoned, its child may be wedged, and none of that is
+      // needed to put the values it already reported before the record that
+      // says how the job ended.
+      const settling = writes.settle();
+      if (settling) {
+        await this.#awaitWrites(record, settling, controller.signal.aborted);
       }
       // A reason given to `job.fail()` wins over whatever was thrown after it
       // — very often the processor's own way of stopping once it had failed.
@@ -2180,35 +2199,69 @@ export class BunQueueWorker<
   }
 
   /**
-   * Waits for the progress an isolated processor asked for before its job's
-   * deadline passed, so those writes land before the failure record.
+   * Waits for the writes an attempt had in flight when it ended — its
+   * progress, its log lines — so they land before the record of how the job
+   * ended.
    *
-   * Only the writes — never the run, which is abandoned precisely because it
-   * overran, and whose child may be wedged. The wait is bounded so a driver
-   * that is not answering cannot hold a failure record hostage: when
-   * `PROGRESS_SETTLE_TIMEOUT` elapses the failure is recorded anyway, and a
-   * write still in flight may land after it, exactly as it did before. The
-   * attempt is marked over either way, so nothing further joins the chain.
+   * Those writes only: never the run, which may have been abandoned for
+   * overrunning its deadline and whose child may be wedged.
+   *
+   * **Always capped**, because a driver that hangs rather than rejects is not
+   * a driver that answers late: nothing else in this method would ever end the
+   * wait, and a worker waiting here is a concurrency slot not taking jobs.
+   * `#persist` is no help — its budget bounds *retries* and rejections, not
+   * one `write()` that never settles — and the ending write it guards is not
+   * awaited either, so before this barrier existed a hung write cost the job
+   * nothing. It must not start costing a slot now.
+   *
+   * How long, though, turns on how the attempt ended, and the two cases are
+   * genuinely not in the same situation:
+   *
+   * - **It reached its own end** — returned, threw, called `job.fail()`. These
+   *   are writes it asked for and, in a processor's own thread, waited for
+   *   itself, so the wait is worth making properly: a quarter of
+   *   `lockDuration`, exactly the budget {@link #persist} gives the ending
+   *   write, and for the same reason — past the lock the job is the stalled
+   *   sweep's to recover, so waiting longer than the lock's own budget buys
+   *   nothing and costs a slot. It is 7.5 s at the default lock, 25× a chain
+   *   of progress writes to a store taking 150 ms each; `WRITE_SETTLE_TIMEOUT`
+   *   would not clear that chain, which is why this is not that number — and
+   *   it is the floor, so a very short lock cannot take the budget to zero,
+   *   which `withTimeout` reads as no budget at all.
+   * - **The worker gave up on it** — a deadline, a lost lock, a closing
+   *   worker. Nobody is waiting for that run any more and the job is already
+   *   dying, so the flat `WRITE_SETTLE_TIMEOUT` applies instead: a dead job
+   *   must not sit `active` for seconds waiting on writes nothing will read.
+   *
+   * Past either cap the ending is recorded anyway and a write still in flight
+   * may land after it, exactly as it did before this existed.
+   *
+   * A job with nothing in flight — the ordinary job — never gets here at all:
+   * its caller sees `settle()` answer `undefined` and skips this.
    */
-  async #settleIsolatedProgress(
-    /** The job whose attempt overran its deadline. */
+  async #awaitWrites(
+    /** The job whose attempt is ending. */
     record: JobRecord,
+    /** What `AttemptWrites.settle()` answered: the writes still in flight. */
+    pending: Promise<void>,
+    /** Whether the worker gave up on the attempt rather than it ending itself. */
+    abandoned: boolean,
   ): Promise<void> {
-    if (!this.#isolated) {
-      return;
-    }
+    const budget = abandoned
+      ? WRITE_SETTLE_TIMEOUT
+      : // Never below the flat cap: an attempt that ended itself should not be
+        // given less patience than one the worker abandoned, and `withTimeout`
+        // reads a budget of zero as "no timeout at all", which is the one
+        // thing this must never be.
+        Math.max(WRITE_SETTLE_TIMEOUT, this.#options.lockDuration / 4);
 
     try {
-      await withTimeout(
-        this.#isolated.settleProgress(record.id),
-        PROGRESS_SETTLE_TIMEOUT,
-        {
-          message: `Job ${record.id}'s progress writes did not land within ${PROGRESS_SETTLE_TIMEOUT}ms of its timeout`,
-        },
-      );
+      await withTimeout(pending, budget, {
+        message: `Job ${record.id}'s writes did not land within ${budget}ms of its attempt ending`,
+      });
     } catch (error) {
       this.#logger.debug(
-        "Recording a timed-out job's failure without waiting for its last progress write",
+        "Recording how a job ended without waiting for its last write",
         { jobId: record.id, error },
       );
     }

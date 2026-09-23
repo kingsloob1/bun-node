@@ -46,19 +46,15 @@ import { ConfigError } from "../shared/errors";
  * Progress is the one of those that is *sent* rather than asked: a child's
  * `job.updateProgress()` does not wait for a reply, so an update costs no
  * round trip however often a processor reports one. What the child's `await`
- * buys instead is ordering — the writes are chained here and awaited before
- * the attempt returns, so every value a processor reported is in the store
- * before the worker records how the job ended, and a reader that waits for
- * `completed` never reads the value before the last one.
- *
- * An attempt the worker *gives up on* — `opts.timeout`, a lost lock, a
- * closing worker — never returns from `run()`, so that barrier would never
- * run. The chain is therefore kept per attempt and reachable from outside, as
- * {@link IsolatedProcessor.settleProgress}: the worker waits for those writes
- * alone, not for the run it has abandoned, and the same ordering holds on the
- * failure record. Aborting ends the attempt for progress too, so a value the
- * child sends while it is being stopped is dropped rather than written over a
- * job that has already failed.
+ * buys instead is ordering, and that is not kept here. Every write a child
+ * asks for — its progress, its log lines — goes through the worker's real
+ * `Job`, which puts it on the attempt's `AttemptWrites`: one record of what a
+ * job has in flight, the same for an attempt in a child and one in the
+ * worker's own thread. The worker settles that record before it writes how the
+ * job ended, including when it gave up on the run and never came back here at
+ * all, and an abort ends the attempt for its writes too — so a value a child
+ * sends while it is being stopped is dropped rather than written over a job
+ * that has already failed.
  */
 
 /** How a job's processor is run. */
@@ -95,26 +91,6 @@ export function defineProcessor<TData = unknown, TResult = unknown>(
   return processor;
 }
 
-/**
- * The progress writes of one in-flight isolated attempt, kept where the worker
- * can reach them: an attempt that timed out is abandoned rather than awaited,
- * and its last values must still be written before its failure record.
- */
-interface AttemptProgress {
-  /**
-   * Whether the attempt is over — the processor settled, or the worker gave up
-   * on it. A value arriving after that is dropped rather than written over the
-   * finished job's own.
-   */
-  over: boolean;
-  /**
-   * The writes asked for so far, chained onto one another so they reach the
-   * driver in the order the processor made them. Always resolved, never
-   * rejected: a progress write that fails does not fail the job.
-   */
-  writes: Promise<void>;
-}
-
 /** Who is running an isolated attempt, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
@@ -138,13 +114,6 @@ export class IsolatedProcessor {
   #executor: Executor | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
-  /**
-   * The progress writes of the attempts running right now, by job id — one
-   * entry per attempt, since a worker never runs the same job twice at once.
-   * An entry lives from the moment the attempt starts until `run()` has
-   * awaited its writes.
-   */
-  readonly #progress = new Map<string, AttemptProgress>();
 
   constructor(
     /** The processor file: a path, relative to the working directory, or a URL. */
@@ -188,17 +157,6 @@ export class IsolatedProcessor {
     }
 
     const executor = this.#executorFor();
-    /**
-     * This attempt's progress writes: chained so they reach the driver in the
-     * order the processor made them, awaited before `run` returns so the
-     * worker can never record how the job ended before its last progress value
-     * has landed, and registered so a worker that gave up on the run can still
-     * wait for them — see {@link IsolatedProcessor.settleProgress}.
-     */
-    const progress: AttemptProgress = {
-      over: false,
-      writes: Promise.resolve(),
-    };
     const runContext = {
       runId: `${record.id}.${record.attemptsMade}`,
       runnerId: runner.queue,
@@ -238,19 +196,13 @@ export class IsolatedProcessor {
       job: record,
       events: {
         onProgress: (value) => {
-          if (progress.over) {
-            return;
-          }
-          // Chained, not fired: two writes in flight at once could land in
-          // either order, and the last one must be the one the store keeps.
-          // The `catch` is what the fire-and-forget did — a progress write
-          // that fails does not fail the job — and it keeps the chain
-          // resolvable for the write behind it.
-          progress.writes = progress.writes
-            .then(async () => {
-              await job.updateProgress(value);
-            })
-            .catch(() => undefined);
+          // Sent, not asked, so nothing here waits for the store: the
+          // ordering the child's `await` used to buy is the attempt's now —
+          // `updateProgress` joins its lane, which the worker settles before
+          // it records how the job ended, and which drops what arrives after.
+          // The `catch` is what it always was: a progress write that fails
+          // does not fail the job.
+          void job.updateProgress(value).catch(() => undefined);
         },
         onMessage: (data) => {
           void answer(handle, data, job, context, controller);
@@ -266,17 +218,7 @@ export class IsolatedProcessor {
       },
     });
 
-    // Registered once the executor has started, so a `start()` that throws
-    // cannot leave an entry behind: nothing can have reported progress yet,
-    // since a child can only send after it is running.
-    this.#progress.set(record.id, progress);
-
     const stop = () => {
-      // The worker has given up on this attempt — it timed out, lost its lock,
-      // or the worker is closing — so it is over for progress too. What the
-      // child sends while it is being stopped belongs to an attempt whose
-      // ending the worker is already writing, and must not land on top of it.
-      progress.over = true;
       handle.stop(String(controller.signal.reason ?? "stop"));
     };
     controller.signal.addEventListener("abort", stop, { once: true });
@@ -299,46 +241,7 @@ export class IsolatedProcessor {
       );
     } finally {
       controller.signal.removeEventListener("abort", stop);
-      // The processor has settled, so nothing more it asks for counts, and
-      // what it already asked for must be written before the worker records
-      // how the job ended: `#process` starts the completion (or the failure)
-      // as soon as this returns, and a reader that waits for `completed`
-      // would otherwise read the progress the job had before its last update.
-      progress.over = true;
-      this.#progress.delete(record.id);
-      await progress.writes;
     }
-  }
-
-  /**
-   * Ends an attempt's progress writes and waits for the ones already asked
-   * for, without waiting for the attempt itself.
-   *
-   * This is the barrier in `run()`'s `finally`, reachable from outside for the
-   * one case that never reaches it: a job that overran `opts.timeout` has its
-   * run abandoned — the child may be wedged, which is why it is being given up
-   * on — while the progress values it already handed over are the worker's to
-   * write, and must land before the failure record.
-   *
-   * It resolves at once for an attempt that has already finished, for an
-   * `"in-process"` one (whose processor holds the driver itself, so there is
-   * no chain here), and for a job this processor is not running. The caller
-   * bounds the wait: see `PROGRESS_SETTLE_TIMEOUT` in `BunQueueWorker`.
-   */
-  async settleProgress(
-    /** The job whose attempt is being given up on. */
-    jobId: string,
-  ): Promise<void> {
-    const progress = this.#progress.get(jobId);
-
-    if (!progress) {
-      return;
-    }
-
-    // Set before the `await`, so nothing more can join the chain being waited
-    // for and this can never wait on a write it did not already see.
-    progress.over = true;
-    await progress.writes;
   }
 
   /** The executor for this mode, built on first use. */

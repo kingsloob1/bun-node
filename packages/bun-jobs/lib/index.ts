@@ -456,6 +456,7 @@ export {
   assertJobId,
   assertRepeatKey,
   assertWritableStateName,
+  AttemptWrites,
   type BackoffContext,
   BackoffStrategies,
   type BackoffStrategy,

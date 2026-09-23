@@ -1,3 +1,4 @@
+export { AttemptWrites } from "./attemptWrites";
 export {
   type BackoffContext,
   BackoffStrategies,
