@@ -70,6 +70,52 @@ describe("the Overview's Workers section", () => {
     ).toBeNull();
   });
 
+  it("links a row's worker key to its worker page and its queue to the queue", async () => {
+    renderOverview();
+    await overview();
+    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    const [key, queue] = within(row).getAllByRole("link");
+    // The key's page is addressed by queue and key: a key is unique only
+    // within its queue.
+    expect(key!.getAttribute("href")).toContain("/workers/emails/emails-1");
+    expect(key!.textContent).toBe("emails-1");
+    expect(queue!.getAttribute("href")).toContain("/queues/emails");
+    expect(queue!.textContent).toBe("emails");
+  });
+
+  it("leaves the key as text where the worker pages are not routed", async () => {
+    // No `workers.list`: the Workers nav entry is absent, so the app never
+    // registers `/workers/:queue/:key` and a link would lead nowhere.
+    renderOverview({
+      "GET /meta/permissions": {
+        body: permissionsFixture({ "workers.list": false }),
+      },
+    });
+    await overview();
+    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    expect(row.textContent).toContain("emails-1");
+    const links = within(row).getAllByRole("link");
+    // Only the queue is still linked.
+    expect(links).toHaveLength(1);
+    expect(links[0]!.getAttribute("href")).toContain("/queues/emails");
+  });
+
+  it("leaves the queue as text without `queues.list`", async () => {
+    renderOverview({
+      "GET /meta/permissions": {
+        body: permissionsFixture({ "queues.list": false }),
+      },
+    });
+    await overview();
+    const row = await page().findByTestId("worker-analytics-row-emails-1");
+    expect(row.textContent).toContain("emails");
+    expect(
+      within(row)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).not.toContain("/jobs/queues/emails");
+  });
+
   it("names how many rows the range holds when `truncated`", async () => {
     renderOverview({
       "GET /analytics/workers": (call) => ({
@@ -238,6 +284,29 @@ describe("the Overview's Workers section", () => {
 });
 
 describe("the Overview's Runners section", () => {
+  it("links a row's runner to its runner page", async () => {
+    renderOverview();
+    await overview();
+    const row = await page().findByTestId("runner-analytics-row-nightly");
+    const link = within(row).getByRole("link");
+    expect(link.getAttribute("href")).toContain("/runners/nightly");
+    expect(link.textContent).toBe("nightly");
+  });
+
+  it("leaves the runner as text where the runner pages are not routed", async () => {
+    // No `runners.list`: the Runners nav entry is absent, so `/runners/:id`
+    // was never registered and a link would lead nowhere.
+    renderOverview({
+      "GET /meta/permissions": {
+        body: permissionsFixture({ "runners.list": false }),
+      },
+    });
+    await overview();
+    const row = await page().findByTestId("runner-analytics-row-nightly");
+    expect(row.textContent).toContain("nightly");
+    expect(within(row).queryAllByRole("link")).toHaveLength(0);
+  });
+
   it("reads the roll-up and one batch, and labels the derived in-flight line", async () => {
     const { calls } = renderOverview();
     await overview();
