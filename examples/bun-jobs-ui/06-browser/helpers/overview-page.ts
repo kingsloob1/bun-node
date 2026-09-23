@@ -13,6 +13,13 @@ export interface RowView {
   id: string;
   /** Each cell's text, the row header first. */
   cells: string[];
+  /**
+   * Each cell's link target, in the same order as {@link cells}: the `href` of
+   * its first `<a>`, or `null` where the cell is plain text. Cell 0 is the row
+   * header (a Workers row's key, a Runners row's runner id) and cell 1 a
+   * Workers row's queue; every other cell is a number and has none.
+   */
+  cellHrefs: (string | null)[];
 }
 
 /** One card of the Overview (Jobs, Queues, Runners, Workers), as it is now. */
@@ -98,6 +105,10 @@ export const READ_OVERVIEW = `(() => {
       (row) => ({
         id: row.dataset.testid.replace(/^(runner|worker)-analytics-row-/, ""),
         cells: Array.from(row.children, (cell) => cell.textContent.trim()),
+        cellHrefs: Array.from(row.children, (cell) => {
+          const link = cell.querySelector("a");
+          return link ? link.getAttribute("href") : null;
+        }),
       }),
     );
     const figures = {};
