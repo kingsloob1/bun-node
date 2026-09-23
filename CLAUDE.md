@@ -62,6 +62,31 @@ bunx eslint .              # lint — must have 0 errors
 bun test                   # tests — must all pass
 ```
 
+**Running the examples.** Each `examples/*/run-all.ts` runs four examples at a
+time (two in `bun-jobs-ui`, where each drives Chrome). `--jobs N` or
+`EXAMPLE_JOBS=N` changes the width; `--serial` restores one-at-a-time, whose
+output is identical to the old runner's. Measured on `examples/bun-jobs`: 220 s
+serial against 146 s pooled on one backend.
+
+A handful of examples are held back and run alone afterwards, listed in
+`RUN_ALONE` in the runner. The bar for that list is that the example **asserts
+on a duration** — a sweep cadence, a lock expiry, a blocking read's wake budget
+— not merely that it is slow: starved of CPU those read as broken. Being slow
+is what `SLOW_FIRST` is for, which only reorders. Measured the other way too:
+running several **backends** at once, rather than several examples, gave 5
+failures across 8 backends, always in those files. So the backends stay serial.
+
+**How much to run for one change.** The affected examples on memory plus one
+server, which is seconds to a minute, and the full 8-backend sweep once per
+merge window rather than per change — the peers' change reports name the areas
+they touch. Do not try to select the affected examples mechanically: matching a
+diff's identifiers against the examples selects nearly all of them, because
+ordinary names appear everywhere.
+
+`EXAMPLE_DRIVER` chooses the backend and defaults to `memory`. A URL variable
+alone does nothing, so `EXAMPLE_MYSQL_URL=… bun run-all.ts` is a memory run that
+looks like a MySQL one.
+
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
 `setup-databases.ts`, `consumer-check.ts`) belongs to no package, so it has its
 own lint config; after touching one, lint it from there:
