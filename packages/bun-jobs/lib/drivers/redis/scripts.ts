@@ -724,9 +724,10 @@ if redis.call('HGET', META, 'paused') == '1' then
   return {}
 end
 
--- Due delayed and retrying jobs are not promoted here: that is the worker's
--- maintenance (PROMOTE_DELAYED), which \`maintenance: false\` turns off, as on
--- every other driver. ARGV[6] stays in place so the names after it do not move.
+-- Due delayed and retrying jobs are not promoted here: that is the worker's own
+-- promotion (PROMOTE_DELAYED), which every worker runs — nothing turns it off —
+-- as on every other driver. ARGV[6] stays in place so the names after it do not
+-- move.
 
 -- Names to skip arrive after the stamp. Without any, this is the plain head
 -- read it always was: #ARGV is a length check in the VM, not a call to Redis.
@@ -786,9 +787,10 @@ if redis.call('HGET', META, 'paused') == '1' then
   return nil
 end
 
--- Due delayed and retrying jobs are not promoted here: that is the worker's
--- maintenance (PROMOTE_DELAYED), which \`maintenance: false\` turns off, as on
--- every other driver. ARGV[6] stays in place so the names after it do not move.
+-- Due delayed and retrying jobs are not promoted here: that is the worker's own
+-- promotion (PROMOTE_DELAYED), which every worker runs — nothing turns it off —
+-- as on every other driver. ARGV[6] stays in place so the names after it do not
+-- move.
 
 -- Names to skip arrive after the stamp. Without any, this is the plain head
 -- read it always was: #ARGV is a length check in the VM, not a call to Redis.

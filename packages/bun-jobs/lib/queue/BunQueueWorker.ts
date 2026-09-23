@@ -426,10 +426,13 @@ const REPEAT_FLAG_CACHE_MS = 1_000;
  * atomic, not from registration, leases or a coordinator. That is why adding
  * capacity is just starting another process.
  *
- * Each worker also does maintenance by default — promoting delayed jobs,
- * recovering jobs whose worker died, pruning expired results, healing repeat
- * series. Every one of those operations is idempotent, so they need no leader
- * and no single process is load-bearing.
+ * Every worker also keeps the queue live — promoting delayed jobs, recovering
+ * jobs whose worker died, healing flows — and, by default, does the queue's
+ * housekeeping too: pruning expired results, healing repeat series, sweeping
+ * stale queue state. Every one of those operations is idempotent, so they need
+ * no leader and no single process is load-bearing.
+ * {@link BunQueueWorkerOptions.maintenance} turns the housekeeping half off;
+ * nothing turns the liveness half off.
  *
  * ```ts
  * const worker = new BunQueueWorker("mail", async (job) => send(job.data), {
@@ -1441,7 +1444,8 @@ export class BunQueueWorker<
     }
     this.#timers.clear();
     this.#promotionTimer = undefined;
-    this.#maintenanceArmed = false;
+    this.#passesArmed = false;
+    this.#housekeepingArmed = false;
   }
 
   /**
@@ -1726,16 +1730,16 @@ export class BunQueueWorker<
     // time, and that time has not come: then the promotion would find nothing
     // — bar a job another process scheduled earlier since, which the sweep
     // still promotes within a second. See `#nextDue`.
-    let nextDueAt: number | null | undefined;
-    if (this.#options.maintenance) {
-      nextDueAt = this.#knownNextDue(Date.now());
-      if (nextDueAt === undefined) {
-        const pass = await this.#promoteDue();
-        if (pass && pass.promoted > 0) {
-          return;
-        }
-        nextDueAt = pass?.nextDueAt;
+    //
+    // Never conditional on `maintenance`: promotion is liveness, and a queue
+    // whose only worker opted out of it stranded every delayed retry.
+    let nextDueAt: number | null | undefined = this.#knownNextDue(Date.now());
+    if (nextDueAt === undefined) {
+      const pass = await this.#promoteDue();
+      if (pass && pass.promoted > 0) {
+        return;
       }
+      nextDueAt = pass?.nextDueAt;
     }
 
     this.#announceDrained();
@@ -3670,7 +3674,7 @@ export class BunQueueWorker<
     if (next.stalledInterval !== before.stalledInterval) {
       this.#options.stalledInterval = next.stalledInterval;
 
-      if (this.#maintenanceArmed) {
+      if (this.#passesArmed) {
         this.#disarmMaintenance();
         this.#armMaintenance();
       }
@@ -3832,6 +3836,12 @@ export class BunQueueWorker<
           failed: this.#metrics.failed,
           ...(rssBytes === undefined ? {} : { rssBytes }),
           ...(heartbeatRttMs === undefined ? {} : { heartbeatRttMs }),
+          // The very condition `#armMaintenance` branches on, so the record
+          // cannot disagree with what the worker arms. Always written, so
+          // absent means "a worker too old to say" and never "does not
+          // sweep" — and it is the housekeeping half only: this worker keeps
+          // the queue live either way.
+          sweeps: this.#sweeps,
           config: this.config,
           control: this.control,
         });
@@ -3944,13 +3954,38 @@ export class BunQueueWorker<
 
   /* --- maintenance ------------------------------------------------------------ */
 
-  /** Arms the background sweeps this worker contributes to. */
+  /**
+   * Arms the background passes this worker contributes to — the two halves of
+   * what used to be one `maintenance` switch.
+   *
+   * **Liveness is armed unconditionally**: the stalled sweep, the flow heal
+   * that rides it, and the delayed promotion. Each is the only thing that
+   * moves a particular kind of stuck job — a retry out of `delayed`, a job
+   * out of a dead process's hands, a flow parent past a child that already
+   * finished — so a queue whose only worker had them off stranded all three.
+   * There is no configuration under which that is wanted, and
+   * {@link BunQueueWorkerOptions.maintenance} no longer reaches them.
+   *
+   * **Housekeeping is what `maintenance: false` opts out of, and it is
+   * exactly the minute timer**: the expiry prune, the repeat heal and the two
+   * queue-state sweeps. Nothing stalls while they wait — a worker that skips
+   * them costs the queue tidiness, not progress — so a fleet may leave them
+   * to a subset of its workers, and one that opts out arms no timer for them
+   * and makes no call of theirs.
+   *
+   * **One `if`, on one timer, and nothing else.** The liveness passes above
+   * it carry no `maintenance` check at all, deliberately. `#healFlows` takes
+   * {@link FLOW_HEAL_LEASE} so that one worker per queue does the healing,
+   * and *contending for that lease is how a worker takes part* — one
+   * queue-state read per stalled interval, which is the correct price for an
+   * opt-out worker to pay. The same will be true of any lease a later change
+   * puts on the stalled sweep. A worker that skipped either because it had
+   * opted out of housekeeping would recreate exactly the bug this split
+   * fixes, on a queue whose only worker sets `maintenance: false`. Do not
+   * tidy the two paths into one gate.
+   */
   #armMaintenance(): void {
-    if (!this.#options.maintenance) {
-      return;
-    }
-
-    this.#maintenanceArmed = true;
+    this.#passesArmed = true;
 
     this.#every(this.#options.stalledInterval, async () => {
       const { requeued, dead } = await this.driver.recoverStalled(
@@ -3972,12 +4007,33 @@ export class BunQueueWorker<
 
     this.#armPromotion();
 
+    // Liveness is armed. The one line the option decides, and everything past
+    // it is housekeeping.
+    if (!this.#sweeps) {
+      return;
+    }
+
+    this.#housekeepingArmed = true;
+
     this.#every(60_000, async () => {
       await this.#pruneExpired();
       await this.#healRepeats();
       await this.#sweepWindows();
       await this.#sweepWorkerControls();
     });
+  }
+
+  /**
+   * Whether this worker does the queue's **housekeeping** — the minute
+   * timer's passes — which is what {@link BunQueueWorkerOptions.maintenance}
+   * decides and what its heartbeat record reports as `sweeps`.
+   *
+   * Both read it here rather than the option, so the record can never
+   * disagree with what the worker actually arms. It says nothing about
+   * liveness: every worker promotes and recovers whatever this answers.
+   */
+  get #sweeps(): boolean {
+    return this.#options.maintenance;
   }
 
   /**
@@ -4003,7 +4059,7 @@ export class BunQueueWorker<
       const deadline = Date.now() + PRUNE_TIME_BUDGET_MS;
 
       for (let batch = 0; batch < PRUNE_MAX_BATCHES; batch++) {
-        if (this.#closing || !this.#maintenanceArmed) {
+        if (this.#closing || !this.#housekeepingArmed) {
           return;
         }
 
@@ -4029,13 +4085,13 @@ export class BunQueueWorker<
 
   /** Runs {@link #pruneExpired} again after {@link PRUNE_CATCH_UP_MS}. */
   #pruneSoon(): void {
-    if (this.#closing || !this.#maintenanceArmed) {
+    if (this.#closing || !this.#housekeepingArmed) {
       return;
     }
 
     const timer = setTimeout(() => {
       this.#timers.delete(timer);
-      if (this.#closing || !this.#maintenanceArmed) {
+      if (this.#closing || !this.#housekeepingArmed) {
         return;
       }
       void this.#pruneExpired().catch((error: unknown) => {
@@ -4062,7 +4118,7 @@ export class BunQueueWorker<
    * timer `close()` has already cleared.
    */
   #armPromotion(): void {
-    if (!this.#maintenanceArmed || !this.#running || this.#closing) {
+    if (!this.#passesArmed || !this.#running || this.#closing) {
       return;
     }
 
@@ -4089,11 +4145,26 @@ export class BunQueueWorker<
   #promotionTimer: ReturnType<typeof setInterval> | undefined;
 
   /**
-   * Whether `run()` has armed maintenance — set only after it connected — so
-   * a changed poll interval re-arms the promotion sweep only on a worker that
-   * actually got that far.
+   * Whether `run()` has armed the worker's background passes — set only after
+   * it connected — so a changed poll interval re-arms the promotion sweep only
+   * on a worker that actually got that far.
+   *
+   * It says the timers are armed, not which of them: a worker with
+   * {@link BunQueueWorkerOptions.maintenance} off arms liveness and nothing
+   * else, and this is `true` for it too. Parking clears it.
    */
-  #maintenanceArmed = false;
+  #passesArmed = false;
+
+  /**
+   * Whether the minute timer's **housekeeping** passes are armed, which only a
+   * worker with {@link BunQueueWorkerOptions.maintenance} on ever is.
+   *
+   * Separate from {@link #passesArmed} because it guards
+   * something else: the prune's catch-up reads it as its stop flag, and it
+   * must stop for a worker parked or closed *and* say nothing about the
+   * liveness passes, which are armed on every worker.
+   */
+  #housekeepingArmed = false;
 
   /**
    * Removes a page of stale debounce and throttle pointers, resuming where
@@ -4254,8 +4325,8 @@ export class BunQueueWorker<
    * How long to wait for work: never past the next delayed job's due time.
    *
    * `known` is that time when the pass already has it — from the promotion it
-   * just ran, or from `#nextDue` — so only a driver that did not say (or a
-   * worker with maintenance off) pays a `nextDelayedAt` for it.
+   * just ran, or from `#nextDue` — so only a driver that did not say pays a
+   * `nextDelayedAt` for it. Every worker promotes, so every worker has it.
    */
   async #waitBudget(known?: number | null): Promise<number> {
     const base = this.driver.capabilities.blockingWait

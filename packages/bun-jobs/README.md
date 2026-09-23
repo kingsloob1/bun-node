@@ -262,10 +262,18 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
   - from `active`, to `completed`, to `failed` (an attempt failed and a retry
     is scheduled), or to `dead` (attempts exhausted, or unrecoverable);
   - a flow parent sits in `waiting-children` until its children settle.
-- **Maintenance needs no leader.** Every worker promotes delayed jobs,
-  recovers stalled ones, prunes expired results, heals repeat series and flows,
-  and sweeps stale debounce and throttle windows. Each of these is
-  idempotent, so no single process is load-bearing.
+- **Maintenance needs no leader, and comes in two halves.** *Liveness* —
+  promoting delayed jobs, recovering stalled ones and healing flows — runs on
+  **every** worker and cannot be turned off: each is the only thing that moves
+  a particular kind of stuck job, so a queue whose one worker skipped them
+  would strand all three for ever. *Housekeeping* — pruning expired results,
+  healing repeat series, sweeping stale debounce and throttle windows and the
+  leftovers of workers that are gone — also runs on every worker by default,
+  and is what [`maintenance: false`](#worker-options) opts out of; a worker
+  that skips it costs the queue tidiness, not progress. Each operation in both
+  halves is idempotent, so no single process is load-bearing. A worker's
+  heartbeat record says which it does, as
+  [`sweeps`](#reading-a-queue-search-totals-workers-and-throughput).
 - **When a delayed job runs.** A worker promotes due delayed and retrying
   jobs whenever it runs out of work, and ends its idle wait when the next one
   is due; its promotion sweep also runs every `pollInterval`, at least once a
@@ -348,7 +356,9 @@ forms:
   about 1,099 per process). A smaller count is exact;
 - `{ count, ttl }` does both.
 
-A `ttl` is enforced by the workers' maintenance: every minute a worker sweeps
+A `ttl` is enforced by the workers' housekeeping: every minute a sweeping
+worker (one with [`maintenance`](#maintenance-liveness-and-housekeeping) on)
+sweeps
 expired jobs in batches of 100 while batches come back full, up to 5,000 jobs
 or 500 ms per tick, and runs a catch-up pass a second later while a backlog
 remains. On Redis the sweep also reaches expired jobs queued behind
@@ -719,7 +729,7 @@ Examples:
 | `maxStalledCount` | `number` | `1` | How many stalls a job may have before it is buried. |
 | `pollInterval` | `number` | `1000` | Wait between claim attempts on a polling driver. |
 | `maxBlock` | `number` | `5000` | Longest blocking wait on a blocking driver. |
-| `maintenance` | `boolean` | `true` | Run the maintenance sweeps (see [Concepts](#concepts)). |
+| `maintenance` | `boolean` | `true` | Run the queue's **housekeeping** sweeps, once a minute: pruning expired results, healing repeat series, and sweeping stale debounce/throttle windows and dead workers' leftovers. **It does not reach liveness** — promoting delayed jobs, recovering stalled ones and healing flows happen on every worker whatever this says (see [Maintenance: liveness and housekeeping](#maintenance-liveness-and-housekeeping)). Reported on the worker's record as `sweeps`. |
 | `autorun` | `boolean` | `false` | Start consuming on construction. |
 | `drainDelay` | `number` | `0` | Milliseconds of quiet before `drained` is emitted. |
 | `isolation` | `"in-process" \| "worker" \| "spawn"` | `"in-process"` | Where a processor file runs. See [Isolated processors](#isolated-processors). |
@@ -735,6 +745,47 @@ Examples:
 | `stopPersistence` | `"process" \| "key"` | `"process"` | How long a remote `stop` lasts. `"process"` records it against this incarnation, so a restart brings the worker back running; `"key"` also records it against `key`, so every worker with that key applies it at startup until somebody starts it. |
 | `stopPersistenceOverridable` | `boolean` | `false` | Whether one instruction may ask for the other `stopPersistence`. Off, the process rather than the caller decides whether a stop outlives it. On, the worker also obeys a stop recorded against its key at startup (as a `persist: "key"` stop writes), and any start clears that record. |
 | `metrics` | `MetricsOptions` | everything on | What this worker records for [analytics](#analytics): its jobs completed and failed, under its stable key, and a busyness sample on each heartbeat report. `{ workers: false }` stops both, whatever the driver, and is the first lever for a large fleet. `resolution` and `secondRetentionMs` reach only a driver built here from a config. See [The `metrics` option](#the-metrics-option). |
+
+#### Maintenance: liveness and housekeeping
+
+What a worker does for the queue besides running jobs comes in two halves,
+and only one of them is yours to switch off.
+
+| Half | What it does | Cadence | Optional? |
+|---|---|---|---|
+| **Liveness** | Promotes due delayed and retrying jobs; recovers jobs whose worker died (`stalled`); heals flows, so a parent past a child that already finished advances | every `pollInterval` (at least once a second) and on every idle pass; `stalledInterval` for the other two | **No.** Every worker, always. |
+| **Housekeeping** | Prunes expired results; heals repeat series; sweeps stale debounce/throttle windows and the leftovers of workers that are gone | once a minute | Yes — `maintenance: false` |
+
+**Liveness cannot be turned off, because nothing else does it.** A delayed
+retry leaves `delayed` only when some worker promotes it; a job held by a
+process that died returns to the queue only when some worker's stalled sweep
+takes it back; a flow parent whose child finished unrecorded advances only
+when some worker heals it. A queue whose only worker skipped them stranded
+all three for ever: in one observed run, a job sat `active` for forty-five
+minutes and four jobs were frozen at attempt 1 of 2. `maintenance: false`
+used to do exactly that, and no longer does — it now opts out of the
+housekeeping half alone.
+
+Flow healing takes a short lease, so one worker per queue does it rather than
+all of them; **contending for that lease is how a worker takes part**, and a
+worker with `maintenance: false` contends like any other. It costs one
+queue-state read per `stalledInterval`, which is the right price for staying
+part of the queue's liveness.
+
+**Housekeeping is safe to leave to others.** Nothing waits on it: skipping it
+costs the queue tidiness — results kept past their `ttl`, a repeat series
+whose occurrence went missing, stale window pointers — not progress. So a
+large fleet may run most of its workers with `maintenance: false` and leave
+the sweeps to a few. It is exactly one timer, and a worker that opts out never
+arms it: no sweep, and no call of theirs.
+
+`maintenance` stays a boolean on purpose. Under this split a third value for
+"a dedicated sweeper runs elsewhere" would mean exactly what `false` means.
+
+Which half a worker does is on its heartbeat record and in the management
+API as
+[`sweeps`](#reading-a-queue-search-totals-workers-and-throughput) — `true`
+when it sweeps, and never a claim about liveness.
 
 The worker's events are:
 
@@ -868,7 +919,8 @@ Example:
   job being lost. `close()` holds the process open until it finishes, so it is
   safe to await in a `SIGTERM` handler.
 - `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
-  claiming and running maintenance, drains its jobs in flight, and keeps
+  claiming and running its background passes — liveness and housekeeping
+  alike — drains its jobs in flight, and keeps
   heartbeating, so `worker.start()` (or a
   [remote `start`](#controlling-workers-from-another-process)) can bring it
   back. `run()` stays pending while it is parked. `timeout` abandons the jobs
@@ -1015,7 +1067,7 @@ Example:
 ### Stalled jobs
 
 A worker that dies while holding a job stops renewing its lock. Every
-`stalledInterval`, some worker's maintenance returns jobs with expired locks
+`stalledInterval`, every worker's stalled sweep returns jobs with expired locks
 to the queue and emits `stalled` with their ids. A job that has stalled more
 than `maxStalledCount` times is buried in `dead` instead.
 
@@ -1077,7 +1129,8 @@ kept as its `cause`). To have a job retried, throw from the processor instead.
   at the next heartbeat, and whatever the attempt returns or throws is
   discarded: that worker emits `lockLost`, never a second `failed` or `dead`. The
   job gets `failed` and `dead`, and a copy in its own `deadLetter` queue. A
-  flow child's failure reaches its parent on the next maintenance pass.
+  flow child's failure reaches its parent on the next flow-healing pass,
+  which every worker runs.
   `fail()` answers `false` for a job that is finished, gone, or active under
   another lock, and throws `NotSupportedError` on a driver without `buryJob`.
 
@@ -1534,7 +1587,8 @@ Occurrence ids are derived from the series key and the due time
 occurrence only once. A `jobId` on a repeating job is ignored. Use `key`
 instead; `unique()` in the builder maps to it.
 
-Every worker's maintenance heals repeat series.
+Every worker with [`maintenance`](#maintenance-liveness-and-housekeeping) on
+heals repeat series.
 
 ### Disabling a series
 
@@ -1548,7 +1602,7 @@ and answer whether they changed anything.
 
 An occurrence already running when its series is disabled finishes. A worker
 scheduling the next occurrence at that same moment may add one more, which
-maintenance removes. The flag lives in reserved queue state, so both need a
+the repeat heal removes. The flag lives in reserved queue state, so both need a
 driver with queue state (every built-in one), and removing a series clears
 it.
 
@@ -1682,7 +1736,7 @@ parent in `waiting-children` until its children settle.
   [`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
 
   A failed child that has since been removed counts as unsettled, so
-  maintenance fails the parent again (see below).
+  the flow heal fails the parent again (see below).
 - **Retention waits for delivery.** A child's `removeOnComplete` or
   `removeOnFail` never removes it before its parent has recorded its outcome.
   This includes a count or TTL applied by any other job.
@@ -1796,8 +1850,8 @@ listing.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
-paused, started, last heartbeat, `rssBytes` and `heartbeatRttMs` — when it
-starts,
+paused, started, last heartbeat, `sweeps`, `rssBytes` and `heartbeatRttMs` —
+when it starts,
 every `reportInterval` (10 seconds by default; `0` turns it off), and on pause,
 resume or a concurrency change. **Never per job.** A record lapses three
 intervals after its last write, so a worker that dies drops out of the list
@@ -1833,6 +1887,17 @@ first write has not returned yet, simply has no such field — absent, never `0`
   one slow number is as likely to be a single stalled write as a trend. Only a
   write that landed updates it; a failed one leaves the last good sample alone.
 
+**`sweeps` says whether the worker does the queue's housekeeping** — the
+expiry prune, the repeat heal, the queue-state sweeps — which is what its
+[`maintenance`](#maintenance-liveness-and-housekeeping) option decides. It is
+**not** a statement about liveness: every worker promotes delayed jobs,
+recovers stalled ones and heals flows whatever it says, so a queue whose live
+workers all report `false` keeps running — it just accumulates what nobody
+tidies. Like the two samples it is optional, and **absent is not `false`**: a
+record from before the field exists means the worker is too old to say, so a
+reader that warns "no worker is sweeping this queue" must look for a live
+`true` and treat an absent field as unknown.
+
 Examples:
 
 - [`10-options/read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)
@@ -1865,7 +1930,7 @@ a worker or queue writes what is pending when it closes, even on a driver it
 does not own. A write that fails part-way is retried for the counts that did
 not land, never for the ones that did.
 
-Burials by the stalled sweep and by a failed child happen in maintenance rather
+Burials by the stalled sweep and by a failed child happen in a background pass rather
 than per job, so they are counted in the same script on Redis, in place on
 memory, and through that once-a-second write everywhere else, Postgres
 included.
@@ -3697,8 +3762,14 @@ with a fresh read. Its row then refreshes every `reportInterval` (10 s by
 default). A first start is announced as a `state` event with no `previous`.
 
 Each row is the worker's record plus the `stale` flag the server computes, so
-`rssBytes` and `heartbeatRttMs` are on it as well — both optional, and absent
-rather than `0` on a worker that does not report them. **`rssBytes` is the
+`sweeps`, `rssBytes` and `heartbeatRttMs` are on it as well — all three
+optional, and absent rather than `0` (or `false`) on a worker that does not
+report them. **`sweeps` is the housekeeping half of `maintenance` only**:
+pruning, the repeat heal and the queue-state sweeps. Promoting delayed jobs,
+recovering stalled ones and healing flows happen on every worker and cannot be
+turned off, so `sweeps: false` never means a queue is stuck; and an **absent**
+`sweeps` means a worker too old to say, which a "nobody is sweeping this
+queue" warning must not count as a `false`. **`rssBytes` is the
 memory of the *process*, not of the worker**: two workers in one process report
 the same number, so a table must never sum the column — group by `pid` (with
 `host`, which needs `serialize.exposeHosts`) and add one row per process.
@@ -4644,7 +4715,7 @@ The `sql` fields:
   notification is an optimisation, never the only path, and the polling
   underneath it is the correctness floor — the same floor that already covers
   a notification missed while a listener reconnects, or a job promoted by
-  another process's maintenance sweep, which is never announced at all. Only
+  another process's promotion sweep, which is never announced at all. Only
   wakeup latency changes. So leave `notify` on, where it is harmless, or set
   it `false` to skip the listen attempt and the connection it would hold, and
   set `pollInterval` to the latency you want.

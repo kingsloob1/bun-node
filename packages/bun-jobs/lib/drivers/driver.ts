@@ -1466,6 +1466,27 @@ export interface WorkerInfo {
    */
   heartbeatRttMs?: number;
   /**
+   * Whether this worker runs the queue's **housekeeping sweeps** — the
+   * minute pass: the expiry prune, the repeat heal and the queue-state
+   * sweeps — which is what its `maintenance` option decides. `true` by
+   * default.
+   *
+   * **It says nothing about liveness.** Promoting delayed jobs, recovering
+   * stalled ones and healing flows happen on every worker and cannot be
+   * turned off, so a queue whose live workers all report `false` keeps
+   * running; it just accumulates what nobody tidies.
+   *
+   * Absent on a record from before this existed, like
+   * {@link WorkerInfo.rssBytes} — and absent is not `false`: it means the
+   * worker is too old to say. So a reader warning that a queue has no sweeper
+   * wants *both* halves: at least one live worker saying `false`, and none
+   * saying `true`. A queue whose live workers all omit the field has told it
+   * nothing and must not be warned about — otherwise every fleet that has not
+   * upgraded yet reads as broken. Even then the warning is "may be nobody",
+   * since a worker too old to say may well be sweeping unseen.
+   */
+  sweeps?: boolean;
+  /**
    * Its settings: what it runs with, what its own code asked for, and which of
    * them an override replaces. Absent on a worker from before remote
    * configuration existed.

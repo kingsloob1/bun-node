@@ -890,8 +890,9 @@ export class MemoryDriver implements JobsDriver {
       return null;
     }
 
-    // Due delayed jobs are not promoted here: that is the worker's maintenance,
-    // which `maintenance: false` turns off, as on every other driver.
+    // Due delayed jobs are not promoted here: that is the worker's own
+    // promotion, which every worker runs — nothing turns it off — on its idle
+    // passes and on its promotion sweep, as on every other driver.
 
     // The index is already in claim order, so the first due entry is the
     // answer. Walking past a not-yet-due one matters because `runAt` can move

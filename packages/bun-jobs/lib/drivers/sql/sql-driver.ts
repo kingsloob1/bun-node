@@ -2549,10 +2549,10 @@ export class SqlDriver implements JobsDriver {
     // It used to run before every claim, so a queue with nothing delayed still
     // paid for a write — measured, 0.16ms of a 1.16ms claim. Promotion is not
     // what makes a job claimable, it is what keeps the *reported* state
-    // honest, and the worker already runs it on a 1Hz maintenance timer
-    // (`BunQueueWorker.#armMaintenance`). A caller driving the driver directly
-    // with `maintenance: false` promotes explicitly, which is what the
-    // contract suite does.
+    // honest, and every worker already runs it on a 1Hz promotion timer
+    // (`BunQueueWorker.#armMaintenance`) — liveness, which no option turns
+    // off. A caller driving the driver directly, with no worker at all,
+    // promotes explicitly, which is what the contract suite does.
 
     // Before the claim, so a job that lands after it looked is known to the
     // wait that follows an empty one (`Arrivals.mark`).

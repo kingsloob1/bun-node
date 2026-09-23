@@ -841,6 +841,11 @@ export function toWorkerDto(
   if (worker.heartbeatRttMs !== undefined) {
     dto.heartbeatRttMs = worker.heartbeatRttMs;
   }
+  // And for `sweeps`: absent (a worker from before the field) means "too old
+  // to say", which a reader must not read as `false`.
+  if (worker.sweeps !== undefined) {
+    dto.sweeps = worker.sweeps;
+  }
   if (worker.config !== undefined) {
     dto.config = toWorkerConfigDto(worker.config);
   }
