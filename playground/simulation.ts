@@ -1,4 +1,6 @@
 import type { BunJobs, Job } from "@kingsleyweb/bun-jobs";
+import { startIsolated } from "./isolated";
+import { startScheduling } from "./scheduling";
 
 /**
  * A small, always-moving world for the UI to show:
@@ -14,6 +16,16 @@ import type { BunJobs, Job } from "@kingsleyweb/bun-jobs";
  * waiting on two renders in `images`) and a delayed reminder. A producer adds
  * a job every `intervalMs`; the returned `stop` ends the producer and the
  * workers.
+ *
+ * Two more worlds hang off this one, each in its own file because each is
+ * about one thing:
+ *
+ * - `isolated.ts` — `checksums`, `previews` and `imports`, whose workers run
+ *   a processor **file** in a child process or a `Worker`.
+ * - `scheduling.ts` — `notifications` and `dead-letters`, where every way of
+ *   saying *when*, *how often* and *what if it fails* is seeded once.
+ *
+ * They are started here, and their workers close with these.
  */
 
 /** Options for {@link startSimulation}. */
@@ -118,8 +130,19 @@ export async function startSimulation(
     { concurrency: 2, name: "delivery" },
   );
 
-  const workersMap = [emailWorker, reportWorker, webhookWorker];
-  for (const worker of workersMap) {
+  // The two worlds of their own. Each creates its queues, starts its workers
+  // and seeds itself; their workers join the list this module closes.
+  const isolated = await startIsolated(jobs);
+  const scheduled = await startScheduling(jobs);
+
+  const workersMap = [
+    emailWorker,
+    reportWorker,
+    webhookWorker,
+    ...isolated.workers,
+    ...scheduled.workers,
+  ];
+  for (const worker of [emailWorker, reportWorker, webhookWorker]) {
     void worker.run();
   }
 
@@ -182,19 +205,31 @@ export async function startSimulation(
   });
 
   // --- The producer ---
+  //
+  // The isolated and scheduled queues are fed too, but sparingly: a checksum
+  // is a child process and a preview a fresh `Worker`, so a steady 2 s drip of
+  // them would be a benchmark rather than a playground. `imports` is fed by
+  // nobody — each of its jobs has to be killed, and the two seeded ones are
+  // enough to watch that happen; use `Add job` on that queue for more.
   const producer =
     options.intervalMs > 0
       ? setInterval(() => {
           const roll = Math.random();
           const add =
-            roll < 0.6
+            roll < 0.45
               ? addEmail()
-              : roll < 0.9
+              : roll < 0.7
                 ? addWebhook()
-                : images.add("thumbnail", {
-                    image: `upload-${Date.now()}.jpg`,
-                    width: 320,
-                  });
+                : roll < 0.8
+                  ? images.add("thumbnail", {
+                      image: `upload-${Date.now()}.jpg`,
+                      width: 320,
+                    })
+                  : roll < 0.9
+                    ? scheduled.addNotification()
+                    : roll < 0.96
+                      ? isolated.addPreview()
+                      : isolated.addChecksum();
           add.catch((error: unknown) => {
             console.error("playground producer:", error);
           });

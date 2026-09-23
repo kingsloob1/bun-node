@@ -38,11 +38,32 @@ so the Workers page has two services to group (`index.ts`, `mailer.ts`):
 
 | Service | Worker (stable key) | What you see |
 |---|---|---|
-| `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
+| `api` | `api.emails.transactional`, `api.reports.monthly`, `api.webhooks.delivery`, `api.checksums.hasher`, `api.previews`, `api.previews.2`, `api.imports.wedged`, `api.notifications.scheduler`, `api.dead-letters.archive` | the simulation's own workers; the emails one sets `stopPersistenceOverridable`, so its Stop dialog offers "until somebody starts it again" |
 | `mailer` | `mailer.emails.bulk`, `mailer.images.thumbs` | a second deployment on the same queues; `thumbs` slowly eats the `images` backlog, so pausing it is visible |
 
 A worker's **settings** are keyed by that stable key, so a change from the UI
 survives a restart of the playground and reaches every replica carrying it.
+
+**Worker configuration**, spread across the workers it makes sense on rather
+than piled onto one (each is commented where it is set):
+
+| Option | Where, and why |
+|---|---|
+| `concurrency` | 3 on `api.emails.transactional`, 2 on `api.checksums.hasher` (each one is a *process*), 1 on `api.notifications.scheduler` so job order stays legible |
+| `lockDuration`, `heartbeatInterval` | `api.checksums.hasher`: 60 s / 15 s, because a block of hashing holds its thread |
+| `stalledInterval`, `maxStalledCount` | `api.previews`: a terminated `Worker` leaves its lock to expire, so sweep at 15 s and allow two stalls |
+| `pollInterval`, `maxBlock` | `api.previews.2` and `api.imports.wedged`: a child process costs more to start than a `Worker`, so wait longer between empty claims |
+| `drainDelay` | `api.notifications.scheduler`: `drained` after a second of quiet, not in every gap |
+| `reportInterval` | `api.notifications.scheduler`: 5 s, so the Workers page keeps up while you drive its buttons |
+| `maintenance` | off on `api.previews.2` only, because `api.previews` consumes the same queue and sweeps it. The sweep is per queue and idempotent, so any worker covers it — but a queue whose **only** worker skips it has nobody to promote delayed retries or recover a job whose child was killed, and such a job sits `active` for ever |
+| `autorun` | `api.imports.wedged` starts consuming as it is constructed, instead of waiting for `run()` |
+| `metrics` | `{ workers: false }` on `api.dead-letters.archive` |
+| `remoteControl` | the object form on `api.notifications.scheduler`: `{ enabled, subscribe, interval }` |
+| `stopPersistence` / `stopPersistenceOverridable` | `"key"` on `api.notifications.scheduler`, so a Stop from the UI outlives a restart; `api.emails.transactional` keeps the default and only makes it overridable |
+| `service` / `name` / `key` / `keyOrdinal` | `service` and `name` on most; `key` set outright on `api.dead-letters.archive`; `keyOrdinal` pinned on `api.previews.2` |
+| `isolation` / `isolationOptions` | the three isolated queues above |
+| `backoffStrategies` | `"decode-ramp"` on both `previews` workers, `"triage"` on `api.notifications.scheduler` |
+| `deadLetterQueue` | `dead-letters`, on the `previews` workers and on `api.notifications.scheduler` |
 
 **Queues** (`simulation.ts`):
 
@@ -59,6 +80,77 @@ Disable/Enable), a delayed `reminder-tomorrow`, and a flow
 `images` until `mailer.images.thumbs` reaches them behind the thumbnail
 backlog — pause that worker and it waits for good. A new job arrives
 every `PLAYGROUND_INTERVAL_MS` (default 2000).
+
+### Isolated workers (`isolated.ts`, `processors/`)
+
+A worker given a processor **file** instead of a function can run every
+attempt somewhere other than its own thread. Three queues do, and each one
+exists to show a different reason to:
+
+| Queue | Worker | Isolation | What you see |
+|---|---|---|---|
+| `checksums` | `api.checksums.hasher` | `spawn` | a CPU-bound processor (`processors/checksum.ts`) that blocks its thread outright. In-process it would hold the claim loop, the heartbeats and every other job on that worker; in a child process the worker carries on. Its `returnValue` records the **pid**, which is not the playground's. |
+| `previews` | `api.previews` | `worker` | the *same* file (`processors/preview.ts`) in a fresh `Worker` per attempt — a separate JavaScript context, in this process. `returnValue.mainThread` is `false`. |
+| `previews` | `api.previews.2` | `spawn` | and in a child process, side by side on one queue, so the difference is visible rather than described. |
+| `imports` | `api.imports.wedged` | `spawn` | a processor that **ignores its abort signal** (`processors/wedge.ts`). The job's 4 s `timeout` fires, the executor asks the child to close, then `SIGTERM` after a second and `SIGKILL` half a second later. The job fails with a `JobTimeoutError` and is retried in a fresh child; the worker never stops claiming. |
+
+**The child needs no driver of its own.** A log line, a lock renewal, a
+progress update or a flow's children travel the executor's message channel and
+are answered by the worker, which keeps the driver — so these queues behave
+identically on the memory driver and on `PLAYGROUND_DRIVER=sqlite`. Everything
+that would write the stored job directly (`updateData`, `remove`, `promote`, …)
+is unavailable in the child and says so.
+
+Also on `previews`: `preview-broken-header`, which calls `job.fail()` **from
+inside the child**. It dies on its first attempt although it has four, because
+`fail()` is unrecoverable — and a letter about it turns up in `dead-letters`,
+filed by the workers' `deadLetterQueue`.
+
+### Scheduling, every way (`scheduling.ts`)
+
+`notifications` has one worker running one job at a time, so the order the
+queue chose is legible, and one seeded job per scheduling option. Its data's
+`about` field says which option each job is for:
+
+| Option | The seed |
+|---|---|
+| `priority` | three jobs added worst-first (20, 10, 1); the two-factor code runs first |
+| `delay` | a receipt, 45 s out |
+| `runAt` | an absolute instant, given **with** a `delay` to show that `runAt` wins |
+| `jobId` | added twice under `welcome-ada`; one job, and a log line on it saying the second add answered with the same one |
+| `debounce` | three adds under one id, one job, running 20 s after the *last* of them with the newest payload |
+| `throttle` | three adds inside a one-minute window, one job, running now |
+| `attempts` + fixed `backoff` | `backoff: 4000`, three attempts |
+| `attempts` + exponential | `{ type: "exponential", delay: 2000, max: 30000, jitter: 0.2 }` |
+| `attempts` + a **custom strategy** | `{ type: "triage" }`, resolved by name on the worker's `backoffStrategies`: 1 s, 10 s, then `false` — it gives up with an attempt unused |
+| `timeout` | 6 s of work against a 1.5 s limit, so every attempt is a `JobTimeoutError` |
+| `removeOnComplete` (TTL) | three copies kept two minutes, then swept |
+| `removeOnComplete` / `removeOnFail` (`true`) | two jobs that are never in the job list at all — one succeeds, one dies. All the first leaves is a tick on the queue's throughput; the second still files its letter in `dead-letters` before its own copy goes |
+| `keepLogs` | writes 21 lines, keeps the last 5 |
+| `keepStacktraces` | four attempts, two traces on the failure panel |
+| `deadLetter` | the job's own dead-letter queue, which wins over the worker's |
+| flows | `publish-release-2026-09` waits on a child in **another queue** (`previews`, where an isolated worker runs it) and on one that always fails with `ignoreFailure` — the parent completes anyway, with the failure beside the other child's result |
+
+Retention as a **count** is on `imports` instead (`removeOnFail: { count: 4 }`),
+because a count sweeps the whole queue's finished set rather than one job's own
+copies — on a shared queue it would quietly delete the other demonstrations.
+
+**Repeats**, all on `notifications` → Repeatables:
+
+| Series | What it shows |
+|---|---|
+| `cron-five-minutely` | `cron` with `tz`: `*/5 * * * *`, Europe/London — a wall clock that survives a daylight-saving change, which a fixed interval cannot |
+| `every-three-minutes` | `every` as milliseconds |
+| `every-other-minute` | `every` as a **phrase**: `"every other minute"` reads as 120000. A phrase naming *dates* needs the optional `chrono-node`; an interval alone never loads it |
+| `burst-window` | `startAt`, `endAt` and `limit` together: five occurrences inside a ten-minute window, opening 30 s in |
+| `health-check` | `immediately`: runs as the series is created, then every ten minutes |
+| `usage-rollup` | `catchUp`: replays occurrences missed while nothing was consuming, one per completion. Nothing is missed on a fresh start — run with `PLAYGROUND_DRIVER=sqlite`, stop for ten minutes, start again, and watch it work through the gap |
+
+`dead-letters` collects what died: from `notifications` (the worker's
+`deadLetterQueue`, and one job's own `deadLetter`) and from `previews`. Its
+worker is the one with an explicit stable `key` (`api.dead-letters.archive`)
+and `metrics: { workers: false }` — the first lever to reach for on a real
+fleet, where per-worker series are the term that grows.
 
 **Runners** (`runners.ts`, all running `handlers/work.ts`). `backup` and
 `reindex` run in a child process; `sync-crm`, `archive` and `ping` run
@@ -92,6 +184,13 @@ run's because capture attributes each `console` call to the run that made it
 - Open a `sync-crm` or `ping` run, which is in-process: its `console.warn` ("upstream slow on step 2…") is on `stderr` in its own log, and filtering the log to `stderr` shows just that line (and the failure, when it failed).
 - In any run's log, the first `stdout` line prints `apiKey=pk_demo_…`; the stored line has that value redacted.
 - Watch a running run's log on the runner screen: new lines appear as the runner announces them on the live socket, not on a timer.
+- Open a completed `checksums` job and read its `returnValue`: the `pid` is not the playground's, because a child process hashed it.
+- Open two completed `previews` jobs, one from each worker: `api.previews` reports `mainThread: false` (a `Worker`), `api.previews.2` a different `pid` (a child process) — one file, two isolation modes.
+- Add job on `imports`, then watch it: a log line from the child, progress stuck at `blocked`, and four seconds later a `JobTimeoutError` — the child was killed, and the worker never paused.
+- Open `preview-broken-header` on `previews`: dead on attempt 1 of 4, because the processor called `job.fail()` from inside the child.
+- Queues → `notifications` → Delayed: the `delay`, `runAt` and `debounce` seeds all waiting, with the option each one demonstrates in its `about`.
+- Queues → `notifications` → Repeatables: six series, and `burst-window` counting down from five.
+- Queues → `dead-letters`: every job that died, with the queue it died in and why.
 - Try any operation from API docs → HTTP, and watch the screens follow.
 - `PLAYGROUND_DRIVER=sqlite` and restart: everything is still there.
 
