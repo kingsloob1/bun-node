@@ -604,12 +604,30 @@ const worker = jobs.worker<{ hold: boolean }>("logged", async (job) => {
 });
 void worker.run();
 
+/** What `keepLogs: 3` leaves of the five lines the processor writes. */
+const KEPT_LINES = ["step 3", "step 4", "step 5"];
+
 const logged = await queue.add("logged", { hold: true }, { keepLogs: 3 });
+// Wait for the exact three lines, never for a count of three: with five lines
+// written and `keepLogs: 3`, a count of three is reached **twice** — once
+// mid-write, when lines 1 to 3 are in and nothing has been trimmed yet, and
+// again once the cap has trimmed the fifth write back. Waiting on the count
+// therefore proceeds at the first crossing, two lines early, and the reads
+// below then race the rest of the writing.
+//
+// They can also catch a transient fourth row: a driver appends the line and
+// trims the cap in two statements, so between the fifth insert and its trim
+// the log really does hold four lines. That is expected and must not be
+// asserted against — it is what once failed here on MySQL, about one run in
+// eight, with ["step 2", "step 3", "step 4", "step 5"].
 await waitFor(
-  "the job to be active with its log written",
+  "the job to be active with only the lines keepLogs keeps",
   async () => {
     const job = await queue.getJob(logged.id);
-    return job?.state === "active" && (await job.getLogs()).count === 3;
+    if (job?.state !== "active") {
+      return false;
+    }
+    return Bun.deepEquals((await job.getLogs()).logs, KEPT_LINES);
   },
   WAIT,
 );
@@ -633,7 +651,7 @@ checkEqual(
 checkEqual(
   "and nothing was removed",
   (await (await queue.getJob(logged.id))!.getLogs()).logs,
-  ["step 3", "step 4", "step 5"],
+  KEPT_LINES,
 );
 
 release();
