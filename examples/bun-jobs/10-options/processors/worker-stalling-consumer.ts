@@ -21,7 +21,9 @@ const worker = new BunQueueWorker(
     // Short, so the lock lapses soon after the kill.
     lockDuration: 500,
     pollInterval: 20,
-    // The parent's sweeper is the one recovering jobs.
+    // No housekeeping from a process that exists to be killed: the parent's
+    // workers do the queue's tidying. Recovering stalled jobs is not part of
+    // what this turns off — this one just never lives long enough to do it.
     maintenance: false,
   },
 );
