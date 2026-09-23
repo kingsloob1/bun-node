@@ -16,6 +16,21 @@
 }
 
 /*
+ * The housekeeping note on a queue's Workers panel. Deliberately quieter than
+ * an error: a queue nobody sweeps still runs its jobs, so this reads as a
+ * caution, not a failure.
+ */
+.workers-sweep-note {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warning-text);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: var(--text-sm);
+}
+
+/*
  * The filter row: search, then the server-side filters, side by side.
  *
  * It is a ROW on purpose. `.screen` is a column flexbox, and `.search`'s

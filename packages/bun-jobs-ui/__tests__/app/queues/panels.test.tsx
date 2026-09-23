@@ -15,6 +15,7 @@ import {
   openDialog,
   renderQueue,
   repeatablesFixture,
+  workersFixture,
 } from "./fixtures";
 
 setupDom();
@@ -295,6 +296,82 @@ describe("the other panels", () => {
     expect(row.querySelectorAll("time")[1]!.getAttribute("title")).toContain(
       "Last write took 12 ms",
     );
+  });
+
+  it("says nothing about housekeeping when no worker reports it", async () => {
+    // The fixture worker predates `sweeps`. Absent is not `false`: it has
+    // said nothing, and warning here would light up every fleet whose
+    // workers have not been upgraded yet.
+    renderQueue();
+    fireEvent.click(
+      within(await panelTabs()).getByRole("tab", { name: "Workers" }),
+    );
+    await page().findByTestId("worker-row-w-1");
+    expect(page().queryByTestId("sweep-warning")).toBeNull();
+  });
+
+  it("warns when every live worker reports that it does not sweep", async () => {
+    renderQueue({
+      handlers: {
+        "GET /queues/emails/workers": {
+          body: {
+            items: [{ ...workersFixture.items[0]!, sweeps: false }],
+          },
+        },
+      },
+    });
+    fireEvent.click(
+      within(await panelTabs()).getByRole("tab", { name: "Workers" }),
+    );
+    const note = await page().findByTestId("sweep-warning");
+    expect(note.dataset.uncertain).toBe("false");
+    expect(note.textContent).toContain(
+      "No live worker on this queue runs housekeeping",
+    );
+    // Untidy, not stuck: it must not read as "this queue is broken".
+    expect(note.textContent).toContain("Jobs still run");
+    expect(note.textContent).toContain("expired results");
+  });
+
+  it("says it may be nobody when some live workers are too old to say", async () => {
+    renderQueue({
+      handlers: {
+        "GET /queues/emails/workers": {
+          body: {
+            items: [
+              { ...workersFixture.items[0]!, id: "w-1", sweeps: false },
+              { ...workersFixture.items[0]!, id: "w-2" },
+            ],
+          },
+        },
+      },
+    });
+    fireEvent.click(
+      within(await panelTabs()).getByRole("tab", { name: "Workers" }),
+    );
+    const note = await page().findByTestId("sweep-warning");
+    expect(note.dataset.uncertain).toBe("true");
+    expect(note.textContent).toContain("there may be nobody doing it");
+  });
+
+  it("says nothing when one live worker reports that it does sweep", async () => {
+    renderQueue({
+      handlers: {
+        "GET /queues/emails/workers": {
+          body: {
+            items: [
+              { ...workersFixture.items[0]!, id: "w-1", sweeps: false },
+              { ...workersFixture.items[0]!, id: "w-2", sweeps: true },
+            ],
+          },
+        },
+      },
+    });
+    fireEvent.click(
+      within(await panelTabs()).getByRole("tab", { name: "Workers" }),
+    );
+    await page().findByTestId("worker-row-w-2");
+    expect(page().queryByTestId("sweep-warning")).toBeNull();
   });
 
   it("charts throughput with a window select and an accessible table", async () => {
