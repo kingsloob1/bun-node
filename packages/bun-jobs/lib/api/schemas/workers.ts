@@ -203,6 +203,12 @@ export const WorkerSchema = s.named(
           "How long this worker's own heartbeat record write took, in milliseconds: the round trip to the driver, not a network ping. The **last sample**, not an average — a write cannot time itself, so it is the previous report's. Absent on a worker's first report and on an older worker.",
       }),
     ),
+    sweeps: s.optional(
+      s.boolean({
+        description:
+          "Whether this worker runs the queue's **housekeeping sweeps** — the minute pass: pruning expired results, healing repeat series, sweeping stale queue state — which is what its `maintenance` option decides. It says nothing about liveness: promoting delayed jobs, recovering stalled ones and healing flows happen on every worker and cannot be turned off. Absent on an older worker, and absent is **not** `false`: it means too old to say — so a queue counts as having no sweeper only when at least one live worker reports `false` and none reports `true`, never merely because none reports it at all.",
+      }),
+    ),
     config: s.optional(WorkerConfigSchema),
     control: s.optional(WorkerControlSchema),
     host: s.optional(

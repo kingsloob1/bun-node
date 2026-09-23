@@ -1794,6 +1794,24 @@ export interface WorkerDto {
    * on an older worker.
    */
   heartbeatRttMs?: number;
+  /**
+   * Whether this worker runs the queue's **housekeeping sweeps** — the
+   * minute pass: pruning expired results, healing repeat series, sweeping
+   * stale queue state — which is what its `maintenance` option decides.
+   *
+   * **It says nothing about liveness**: promoting delayed jobs, recovering
+   * stalled ones and healing flows happen on every worker and cannot be
+   * turned off, so a queue whose live workers all report `false` still runs —
+   * it just accumulates what nobody tidies.
+   *
+   * Absent on an older worker, and **absent is not `false`**: it means the
+   * worker is too old to say. Warn that a queue has no sweeper only when at
+   * least one live worker reports `false` **and** none reports `true`. A queue
+   * whose live workers all omit the field has said nothing, and warning about
+   * it would make every fleet that has not upgraded yet read as broken. Even
+   * then, "may be nobody": a worker too old to say may be sweeping unseen.
+   */
+  sweeps?: boolean;
   /** Its settings. Absent on an older worker, and when the backend keeps no config. */
   config?: WorkerConfigDto;
   /** Its control state. Absent on a worker that predates remote control — treat that as not controllable. */

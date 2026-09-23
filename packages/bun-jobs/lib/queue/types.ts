@@ -1023,10 +1023,24 @@ export interface BunQueueWorkerOptions {
   /** Longest to block waiting for work on a blocking driver. Defaults to 5000. */
   maxBlock?: number;
   /**
-   * Also promote delayed jobs, recover stalled ones, prune expired results
-   * and heal repeat series. Every worker does this by default: each
-   * operation is idempotent, so no leader election is needed and no single
-   * process is load-bearing.
+   * Also do the queue's **housekeeping**, once a minute: prune expired
+   * results, heal repeat series, and sweep stale debounce/throttle windows
+   * and the lifecycle instructions of workers that are gone. `true` by
+   * default. Each operation is idempotent, so no leader election is needed
+   * and no single process is load-bearing; a large fleet may still leave them
+   * to a subset of its workers. What this worker settled on is reported on
+   * its heartbeat record as `sweeps`.
+   *
+   * **It does not reach the queue's liveness.** Promoting due delayed jobs,
+   * recovering stalled ones and healing flows happen on every worker,
+   * whatever this says: each is the only thing that moves a particular kind
+   * of stuck job — a retry out of `delayed`, a job out of a dead process's
+   * hands, a parent past a child that already finished — so a queue whose
+   * only worker turned them off stranded all three for ever. That is what
+   * this option used to cover, and it is why it no longer does.
+   *
+   * It stays a boolean deliberately: under this split a third value meaning
+   * "somebody else sweeps" would do exactly what `false` does.
    */
   maintenance?: boolean;
   /** Start consuming as soon as it is constructed. Defaults to `false`. */
