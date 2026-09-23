@@ -171,9 +171,10 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
       // repeat series, sweeping stale queue state — which is all
       // `maintenance` decides since bun-jobs #121. It costs this queue
       // nothing, because `previewWorker` above consumes the same queue and
-      // does sweep: housekeeping is idempotent and per queue, so one taker is
-      // enough. The Workers panel says nothing here for that reason; the
-      // queue that shows the UI's note is `dead-letters`.
+      // takes part in housekeeping: the pass is leased (bun-jobs #108), so one
+      // worker holds it per pass while the rest stand down — a queue needs a
+      // taker, not every worker. The Workers panel says nothing here for that
+      // reason; the queue that shows the UI's note is `dead-letters`.
       maintenance: false,
     },
   );
