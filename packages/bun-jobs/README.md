@@ -2248,10 +2248,24 @@ handed has landed, so a reader that waits for `state === "completed"` never
 reads the value the job had before its last update. The price is that a slow
 progress write delays the completion by whatever is left of it, and that a
 value a child sends after its processor has settled is dropped rather than
-written over the finished job's own. Every other job-channel call —
-`job.log`, `job.extendLock`/`touch`, `job.getChildrenValues`,
-`job.getChildrenFailures` and `ctx.heartbeat` — is a real round trip, and
-answers only once the worker's own write has returned.
+written over the finished job's own.
+
+**A job that overruns `opts.timeout` keeps that ordering.** Its *run* is
+abandoned — not waiting for it is what a deadline is for, and the child may be
+wedged — but the progress it already handed over is not: the worker waits for
+those writes, and only those, before it records the failure, and drops
+whatever the child sends while it is being stopped. That wait is capped at
+250ms, so a driver that has stopped answering cannot keep a dead job `active`;
+past the cap the failure is recorded anyway and a write still in flight may
+land after it.
+
+Every other job-channel call — `job.log`, `job.extendLock`/`touch`,
+`job.getChildrenValues`, `job.getChildrenFailures` and `ctx.heartbeat` — is a
+real round trip, and answers only once the worker's own write has returned.
+Ordering the *last* of those against a job's own ending is the attempt's to
+keep: a child that awaited its `job.log` line has it in the store, but a line
+still in flight when the deadline passes can still land after the failure
+record.
 
 A reply on the job channel that is malformed rejects with a `ProtocolError`.
 Errors thrown in a child are rebuilt by name, so `UnrecoverableJobError` still
@@ -5032,7 +5046,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-options.ts) | every `JobOptions`, `RepeatOptions` and `DebounceOptions` field, retention forms, every backoff form |
 | [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
-| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is, and what `opts.timeout` still does not promise |
+| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is |
 | [`job-methods.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-methods.ts) | `job.fail()` inside a processor and from outside (a pending job buried at once, an active one's worker aborting at its next heartbeat); `schedule()`, `update()` and `this \| null`; `disable()` / `enable()` on an occurrence; the queue's `disableRepeatable()` / `enableRepeatable()`; `remove()` / `promote()` / `retry()` emitting and publishing; `progress` as `RunProgress \| null` and `extendLock()` only from the processor's view |
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
