@@ -19,8 +19,12 @@
  *   running worker's stalled sweep does the recovering — here, paused ones —
  *   and which worker's sweep gets there first is not a caller's choice, so
  *   every worker on a queue here takes the same short {@link SWEEP_INTERVAL}.
- * - `maintenance: false` turns promotion and the stalled sweep off on that
- *   worker only; another worker's maintenance still serves the queue.
+ * - `maintenance: false` opts a worker out of the queue's housekeeping — the
+ *   minute pass that prunes expired results, heals repeat series and sweeps
+ *   stale queue state — and out of nothing else. Keeping the queue moving is
+ *   not part of it: such a worker still promotes due delayed jobs and still
+ *   recovers stalled ones, so a queue whose only worker opted out runs
+ *   normally; it just keeps what nobody is tidying away.
  * - Isolation (`isolation`, `isolationOptions`) has its own tour:
  *   `worker-isolation.ts`.
  * - Sections 6 and 14 start child processes, so on the memory default they use
@@ -816,47 +820,159 @@ driver.waitForJob = originalWait;
 await pollQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("8. maintenance: false — no promotion by that worker");
+step("8. maintenance: false — housekeeping off, the queue still live");
 
-const maintQueue = new BunQueue("maintenance", { namespace, driver });
+// The whole step runs with ONE worker on the queue, the one that opted out, so
+// nothing below can be another worker's doing. What that worker still does is
+// keep the queue moving; what it stops doing is tidying up after it.
+const maintQueue = new BunQueue<Record<string, never>, string>("maintenance", {
+  namespace,
+  driver,
+});
 const ranBy: string[] = [];
-const noMaintenance = new BunQueueWorker(
+/** Ids the opt-out worker's own stalled sweep took back. */
+const optOutRecovered: string[] = [];
+
+/**
+ * Waits up to `ms` for `predicate`, answering whether it held rather than
+ * throwing the way {@link waitFor} does.
+ *
+ * This step asserts three things a lone opt-out worker still does and one it
+ * no longer does, so each wait has to be able to come back empty and let the
+ * check print what it saw — a `waitFor` would abort the tour on the first of
+ * them instead.
+ */
+async function waitAtMost(
+  ms: number,
+  predicate: () => boolean | Promise<boolean>,
+): Promise<boolean> {
+  const deadline = Date.now() + ms;
+
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await Bun.sleep(25);
+  }
+
+  return true;
+}
+
+const noMaintenance = new BunQueueWorker<Record<string, never>, string>(
   "maintenance",
-  async (_job, ctx) => {
+  async (job, ctx) => {
     ranBy.push(ctx.workerId);
-    return "ran";
+
+    if (job.name !== "fragile") {
+      return "ran";
+    }
+
+    if (job.stalledCount > 0) {
+      return "the recovered attempt";
+    }
+
+    // First attempt at `fragile`: no heartbeats against a 400ms lock, so this
+    // attempt's lock lapses while it waits here. Nothing else is on the queue,
+    // so if the job comes back at all it is this worker's own stalled sweep
+    // that brought it — and this worker opted out of housekeeping.
+    if (!(await waitAtMost(10_000, () => optOutRecovered.includes(job.id)))) {
+      return "never recovered";
+    }
+    return "the abandoned attempt";
   },
-  { namespace, driver, id: "no-maintenance", maintenance: false, ...fast },
+  {
+    namespace,
+    driver,
+    id: "no-maintenance",
+    maintenance: false,
+    // As in step 5: a short lock and heartbeats a minute apart, so the first
+    // attempt loses its lock, and a sweep cadence a tour can wait for.
+    lockDuration: 400,
+    heartbeatInterval: 60_000,
+    stalledInterval: SWEEP_INTERVAL,
+    maxStalledCount: 5,
+    ...fast,
+  },
 );
 let noMaintenanceReady = false;
 noMaintenance.on("ready", () => {
   noMaintenanceReady = true;
 });
+noMaintenance.on("stalled", (ids) => {
+  optOutRecovered.push(...ids);
+});
 void noMaintenance.run();
 await waitFor("the worker to be ready", () => noMaintenanceReady, LONG);
 
+// Liveness, which the option does not reach. Promoting a due delayed job is
+// still not something a claim does — no backend promotes on the way in — so
+// the promotion below is the worker's own, running whatever `maintenance` says.
 const delayed = await maintQueue.add("later", {}, { delay: 200 });
-await quietWindow(1_500);
-// Promotion is maintenance's job on every backend: a claim never promotes a
-// due job itself, so this worker alone leaves it delayed however long it waits.
+const wasPromoted = await waitAtMost(
+  10_000,
+  async () => (await delayed.refresh())?.state === "completed",
+);
+show("the delayed job ended", (await delayed.refresh())?.state);
 checkEqual(
-  "a due delayed job stays delayed with only that worker",
-  [(await delayed.refresh())?.state, ranBy.length],
-  ["delayed", 0],
+  "a due delayed job is promoted and run with only that worker on the queue",
+  [wasPromoted, (await delayed.refresh())?.state, ranBy],
+  [true, "completed", ["no-maintenance"]],
 );
 
-const promoter = await startSweeper("maintenance");
+const fragile = await maintQueue.add("fragile", {});
+const wasRecovered = await waitAtMost(
+  15_000,
+  async () =>
+    (await fragile.refresh())?.returnValue === "the recovered attempt",
+);
+const fragileDone = await fragile.refresh();
+checkEqual(
+  "…and a job whose lock lapsed under it is recovered by its own sweep",
+  [
+    wasRecovered,
+    optOutRecovered.includes(fragile.id),
+    fragileDone?.state,
+    fragileDone?.stalledCount,
+  ],
+  [true, true, "completed", 1],
+);
+
+// Housekeeping, which is exactly what the option turns off: `removeOnComplete`
+// only stamps when a finished job expires, and removing it then is the minute
+// pass's job. So this result outlives its retention for as long as the only
+// worker on the queue is one that opted out.
+const shortLived = await maintQueue.add(
+  "short-lived",
+  {},
+  { removeOnComplete: { ttl: 250 } },
+);
 await waitFor(
-  "another worker's maintenance to promote it",
-  async () => (await delayed.refresh())?.state === "completed",
+  "the short-lived job to complete",
+  async () => (await shortLived.refresh())?.state === "completed",
   LONG,
 );
-checkEqual("…and the maintenance-free worker still claims it", ranBy, [
-  "no-maintenance",
-]);
+await quietWindow(1_500);
+checkEqual(
+  "a result long past its removeOnComplete ttl is not pruned by that worker",
+  (await shortLived.refresh())?.state,
+  "completed",
+);
+
+// A worker that does housekeeping, paused so it claims nothing: its first
+// minute pass runs as soon as it has connected, not a minute later.
+const housekeeper = await startSweeper("maintenance");
+const wasPruned = await waitAtMost(
+  10_000,
+  async () => (await shortLived.refresh()) === null,
+);
+check(
+  "…until a worker that does housekeeping joins the queue, and prunes it",
+  wasPruned,
+  { stillThere: (await shortLived.refresh())?.toJSON() },
+);
 
 await noMaintenance.close();
-await promoter.worker.close();
+await housekeeper.worker.close();
 await maintQueue.close();
 
 /* ------------------------------------------------------------------ */
