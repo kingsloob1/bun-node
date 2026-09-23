@@ -167,11 +167,13 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
       // a little longer between empty claims rather than spinning on them.
       pollInterval: 2_000,
       maxBlock: 2_000,
-      // The one worker in the playground that skips the sweep, and it can
-      // only do that because `previewWorker` above consumes the same queue
-      // and does it. Maintenance — promoting delayed jobs, recovering stalled
-      // ones, pruning results, healing repeats — is idempotent and per queue,
-      // so any worker on the queue covers it, but *some* worker must.
+      // Skips the **housekeeping** pass — pruning expired results, healing
+      // repeat series, sweeping stale queue state — which is all
+      // `maintenance` decides since bun-jobs #121. It costs this queue
+      // nothing, because `previewWorker` above consumes the same queue and
+      // does sweep: housekeeping is idempotent and per queue, so one taker is
+      // enough. The Workers panel says nothing here for that reason; the
+      // queue that shows the UI's note is `dead-letters`.
       maintenance: false,
     },
   );
@@ -192,12 +194,14 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     // `run()` — which is why it is missing from the loop below.
     autorun: true,
     // Maintenance stays **on**, and the reason is the point of this queue:
-    // isolation means the blocked thread is the child's, not the worker's.
-    // This is also the only worker on `imports`, and a queue whose only
-    // worker skips the sweep has nobody to promote its delayed retries or
-    // recover a job whose child was killed — such a job sits `active` for
-    // ever. Measured on sqlite before this was fixed: a job left `active`
-    // with no logs, and four jobs stuck at attempt 1 of 2.
+    // isolation means the blocked thread is the child's, not the worker's,
+    // so there is nothing to spare it. It is also the only worker on
+    // `imports`, and this queue depends on the two things maintenance used to
+    // gate: promoting a delayed retry, and recovering a job whose child was
+    // killed. Both are unconditional since bun-jobs #121 — `maintenance` now
+    // decides only the housekeeping pass — but measured here before that
+    // landed, with `maintenance: false`: one job left `active` with no logs
+    // for 45 minutes, and four frozen at attempt 1 of 2.
     pollInterval: 2_000,
     maxBlock: 2_000,
     name: "wedged",

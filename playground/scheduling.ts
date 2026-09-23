@@ -175,11 +175,17 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
       // for it is all overhead. `{ workers: false }` is the first lever to
       // reach for on a real fleet, where workers are the term that grows.
       metrics: { workers: false },
-      // Maintenance stays on: this is the only worker on `dead-letters`, and
-      // a queue whose only worker skips the sweep has nobody to recover a job
-      // its worker died holding, or to prune what retention should remove.
-      // `api.previews.2` is where skipping it is shown, because another
-      // worker on that queue does it.
+      // The only worker on `dead-letters`, and it opts out of housekeeping —
+      // so this queue has nobody pruning expired results or healing repeat
+      // series, and its Workers panel says so. That note is what this setting
+      // is here to show.
+      //
+      // Safe to demonstrate since bun-jobs #121: `maintenance` decides the
+      // housekeeping pass alone. Delayed jobs are still promoted and stalled
+      // ones recovered on every worker, whatever it says — which is why a
+      // dead letter added here is still archived. Before #121 this same line
+      // stranded jobs on `imports` (see `isolated.ts`).
+      maintenance: false,
     },
   );
 
