@@ -19,6 +19,13 @@
  *   worker and are answered from there; every other operation that changes the
  *   stored job rejects with "not available in an isolated job" — `schedule`,
  *   `update`, `disable` and `enable` included.
+ * - `job.updateProgress` is the one job-channel call that is *sent* rather than
+ *   asked, so it costs no round trip however often a processor reports. What
+ *   awaiting it buys is ordering: the worker has the value and will write it,
+ *   in the order the processor reported it, before it records how the job ended
+ *   — not that the driver has it at that instant. A job abandoned at its
+ *   `timeout` is the exception: there a progress write can still land after the
+ *   failure record.
  * - `job.fail(reason)` works in every mode: the child keeps the reason and
  *   reports it as the attempt's error when the processor settles, so the job
  *   goes to `dead` exactly as it would in-process.
@@ -184,16 +191,17 @@ for (const { mode, processor, options } of cases) {
     { label: mode },
     { removeOnComplete: false },
   );
-  // The state flip is not the last write. In an isolated mode every
-  // `job.updateProgress` is an RPC to the worker, so the processor's final
-  // `updateProgress` can be written *after* the parent has written the
-  // completion — read the record the instant the state flips and it still
-  // carries the previous progress. So the wait is for the record to have
-  // settled, not for the state alone: both progress checks below then read a
-  // finished job rather than racing that write. The processor sends two
+  // The state flip need not be the last write. In an isolated mode every
+  // `job.updateProgress` is a message to the worker, so the value is written
+  // by the worker rather than by the processor — and a version without the
+  // ordering step 2 asserts could write it *after* the completion, leaving a
+  // reader who looked the instant the state flipped with the previous value.
+  // So the wait is for the record to have settled, not for the state alone:
+  // both progress checks below then read a finished job rather than racing
+  // that write, whatever version they run against. The processor sends two
   // updates, and the stored value must be the later of them; *which* values
   // they are is what the checks assert, so nothing is assumed here. All three
-  // modes share this wait, and so this fix.
+  // modes share this wait.
   await waitFor(
     `the ${mode} report to complete, with its last progress written`,
     async () => {
@@ -294,7 +302,120 @@ for (const { mode, processor, options } of cases) {
 }
 
 /* ------------------------------------------------------------------ */
-step("2. ctx.heartbeat() from a child keeps a long job's lock");
+step("2. An awaited updateProgress is written before the completion is");
+
+// Step 1 waits for the record to settle before reading it, and should: that is
+// what a reader does against any version. This step waits for no write at all.
+// It reads the record the instant the worker announces a job `completed` — the
+// earliest moment a reader could look — and asserts that read already carries
+// the value the processor reported last.
+//
+// That is the ordering an isolated worker guarantees. A child's
+// `job.updateProgress` is *sent*, not asked: awaiting it does not mean the
+// driver has the value, it means the worker has it and will write it — in the
+// order the processor reported it, and before it records how the job ended. So
+// the completion cannot overtake a progress value the processor awaited.
+//
+// The conditions are deliberate, because the ordering is only observable under
+// load: one job reporting twice keeps its order by luck, its progress write
+// going out a tick ahead of the completion and winning. So each processor
+// reports a burst (`progressSteps`) and ten of them run at once, which leaves a
+// dozen writes per job contending for the driver's pool. Measured on MySQL
+// against a version without this guarantee, 8 to 9 of these ten jobs read back
+// an intermediate value at their own completion; with it, none do, on every
+// backend.
+//
+// One known limit, which this step deliberately does not assert either way:
+// `opts.timeout`. A job that hits its deadline has its run abandoned rather
+// than waited for, so a progress value already handed to the worker can still
+// be written after the failure record. The guarantee covers an attempt the
+// worker waited for — one whose processor returned or threw — not one it gave
+// up on. Step 6 is where a job dies at its `timeout`, and it says nothing about
+// that job's progress.
+
+/** How many values each processor reports before its final `100`. */
+const BURST = 10;
+/** How many of those jobs run at once, so their writes contend. */
+const TOGETHER = 10;
+
+for (const mode of ["worker", "spawn"] as const) {
+  const queueName = `ordered-${mode}`;
+  const queue = new BunQueue<ReportData, Report>(queueName, {
+    namespace,
+    driver,
+  });
+  const worker = new BunQueueWorker<ReportData, Report>(queueName, reportFile, {
+    namespace,
+    driver,
+    // Collected rather than printed: ten processors each log a line, and the
+    // step is about the writes, not the logging.
+    logger,
+    isolation: mode,
+    isolationOptions: { closeTimeout: 2_000 },
+    concurrency: TOGETHER,
+    ...fast,
+  });
+  /** What the record carried on the read fired at each job's `completed`. */
+  const atCompletion = new Map<string, { state: string; progress: unknown }>();
+  /** Those reads, so the checks below cannot run before one finishes. */
+  const reads: Promise<void>[] = [];
+  worker.on("completed", (done) => {
+    reads.push(
+      (async () => {
+        const record = await queue.getJob(done.id);
+        // The first read of each job only. A second would be a later look, and
+        // a later look is exactly what this step is not allowed to take.
+        if (!atCompletion.has(done.id)) {
+          atCompletion.set(done.id, {
+            state: record?.state ?? "gone",
+            progress: record?.progress,
+          });
+        }
+      })(),
+    );
+  });
+  void worker.run();
+
+  const ids: string[] = [];
+  for (let n = 0; n < TOGETHER; n++) {
+    const job = await queue.add(
+      "report",
+      { label: `${mode}-ordered-${n}`, progressSteps: BURST },
+      { removeOnComplete: false },
+    );
+    ids.push(job.id);
+  }
+  await waitFor(
+    `all ${TOGETHER} ${mode} jobs to be announced completed`,
+    () => atCompletion.size === TOGETHER,
+    LONG,
+  );
+  await Promise.all(reads);
+
+  const stale = ids.filter((id) => atCompletion.get(id)?.progress !== 100);
+  show(`${mode}: the read taken at each job's completion`, {
+    jobs: TOGETHER,
+    valuesReportedEach: BURST + 2,
+    carriedTheLastValue: TOGETHER - stale.length,
+    carriedAnEarlierOne: stale.length,
+  });
+  checkEqual(
+    `${mode}: every completion read already carries the last progress value`,
+    stale.map((id) => atCompletion.get(id)),
+    [],
+  );
+  checkEqual(
+    `${mode}: …and each of those reads really was of a completed job`,
+    [...new Set(ids.map((id) => atCompletion.get(id)?.state))],
+    ["completed"],
+  );
+
+  await worker.close();
+  await queue.close();
+}
+
+/* ------------------------------------------------------------------ */
+step("3. ctx.heartbeat() from a child keeps a long job's lock");
 
 // The worker's own renewal is effectively off (a minute apart, against a
 // 3-second lock), so only the child's heartbeats can keep the job. A paused
@@ -377,7 +498,7 @@ await sweeper.close();
 await heartbeatQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("3. Operations that change the stored job are unavailable in a child");
+step("4. Operations that change the stored job are unavailable in a child");
 
 const unavailableFile = join(processors, "isolation-unavailable.ts");
 const isolatedOnly = [
@@ -450,7 +571,7 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("4. Errors cross the boundary and still decide retries; so does fail()");
+step("5. Errors cross the boundary and still decide retries; so does fail()");
 
 const failFile = join(processors, "isolation-fail.ts");
 
@@ -586,7 +707,7 @@ for (const mode of ["spawn", "worker"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("5. timeout stops a spawned processor that ignores its signal");
+step("6. timeout stops a spawned processor that ignores its signal");
 
 const hangFile = join(processors, "isolation-hang.ts");
 
@@ -698,7 +819,7 @@ for (const [index, escalation] of escalations.entries()) {
 }
 
 /* ------------------------------------------------------------------ */
-step("6. Configuration errors");
+step("7. Configuration errors");
 
 await checkRejects(
   'a function processor with isolation: "spawn"',
@@ -752,7 +873,7 @@ await checkRejects(
 );
 
 /* ------------------------------------------------------------------ */
-step("7. jobs.worker(name, file, options) through BunJobs");
+step("8. jobs.worker(name, file, options) through BunJobs");
 
 const jobs = new BunJobs({ namespace, driver, logger });
 

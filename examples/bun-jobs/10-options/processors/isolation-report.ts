@@ -17,6 +17,14 @@ export interface ReportData {
   beats?: number;
   /** Milliseconds between heartbeats. Defaults to `0`. */
   beatEvery?: number;
+  /**
+   * How many extra progress values to report, back to back, before the final
+   * `100`. Defaults to `0`: the processor then reports `25` and then `100`, as
+   * every other step expects. A processor that reports per item makes a burst
+   * like this, and it is what makes the *ordering* of an isolated
+   * `updateProgress` observable — see `worker-isolation.ts` step 2.
+   */
+  progressSteps?: number;
 }
 
 /** What a report job returns. */
@@ -73,6 +81,16 @@ export default defineProcessor<ReportData, Report>(async (job, ctx) => {
     await Bun.sleep(job.data.beatEvery ?? 0);
     await ctx.heartbeat();
     heartbeats++;
+  }
+
+  // Back to back, each awaited: every one is a message to the worker, and the
+  // final `100` below must be the value the store keeps.
+  for (
+    let reported = 1;
+    reported <= (job.data.progressSteps ?? 0);
+    reported++
+  ) {
+    await job.updateProgress(reported);
   }
 
   await job.updateProgress(100);
