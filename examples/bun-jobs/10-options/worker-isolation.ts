@@ -84,15 +84,12 @@ const fast = { pollInterval: 25, maxBlock: 50 };
  * `stalledInterval` option, whose default is 30s, far longer than a tour can
  * wait.
  *
- * Every worker on a queue is given it, not only the sweeper that a step is
- * about, and that is the point worth taking away: **a queue's repair cadence
- * is the sweep lease holder's, whoever that turns out to be**, not the cadence
- * of whichever worker you configured for the job. One worker per queue runs
- * the stalled sweep, holding a lease that lasts twice its *own*
- * `stalledInterval`, and it is not chosen — it is whoever asked first. So a
- * single worker left on the 30s default can slow the whole queue's recovery to
- * 30s however fast its siblings are set. A fleet that wants fast repair sets
- * `stalledInterval` on every worker on the queue.
+ * Every worker on a queue is given it, not only the sweeper a step is about.
+ * The queue's repair cadence is the fleet's rather than any one worker's: each
+ * worker sweeps on its own `stalledInterval`, so the shortest on the queue is
+ * what sets the pace, and a fleet that elected one sweeper per queue would
+ * take the elected worker's instead. No step can name the worker whose
+ * interval will count, so this one is set on all of them.
  */
 const SWEEP_INTERVAL = 100;
 /** How long to wait for anything that involves starting a process. */
@@ -420,8 +417,8 @@ step("3. ctx.heartbeat() from a child keeps a long job's lock");
 // The worker's own renewal is effectively off (a minute apart, against a
 // 3-second lock), so only the child's heartbeats can keep the job. A paused
 // worker sweeps for stalled jobs every SWEEP_INTERVAL ms and would take it
-// back — as would `beating` itself, since whichever of the two holds the
-// queue's sweep lease is the one worker sweeping it.
+// back — as would `beating` itself, so both are given that cadence and either
+// one's sweep is quick enough to catch a lock that lapses.
 const heartbeatQueue = new BunQueue<ReportData, Report>("heartbeats", {
   namespace,
   driver,
@@ -450,10 +447,10 @@ const beating = new BunQueueWorker<ReportData, Report>(
     isolationOptions: { closeTimeout: 2_000 },
     lockDuration: 3_000,
     heartbeatInterval: 60_000,
-    // The same cadence as the sweeper beside it: either of them may be the one
-    // worker sweeping this queue, so the sweep has to be quick whichever it is
-    // — otherwise nothing sweeps within the ~6s the job runs and the two
-    // checks below would pass for the wrong reason.
+    // The same cadence as the sweeper beside it: the checks below need a sweep
+    // inside the ~6s the job runs, whichever worker's sweep that turns out to
+    // be — otherwise nothing sweeps in time and the two would pass for the
+    // wrong reason.
     stalledInterval: SWEEP_INTERVAL,
     ...fast,
   },
