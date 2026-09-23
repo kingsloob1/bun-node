@@ -110,12 +110,16 @@ const shared = new BunQueue<Export, number>("exports", {
 const orphan = await shared.add("export", { rows: 5 });
 
 // Both processes take the same short `stalledInterval`, and the child's matters
-// as much as the rescuer's. One worker per queue runs the repair sweeps, under
-// a lease it renews on its own sweep cadence, and the lease lasts twice that
-// cadence. So a holder that is killed hands the sweeps over on *its* cadence —
-// a fast survivor cannot shorten someone else's lease. At the defaults that is
-// 90 seconds, far longer than this example waits, which is why the cadence is
-// set small on both sides rather than only on the rescuer.
+// as much as the rescuer's: a queue's repair cadence is the sweep lease
+// holder's, whoever that turns out to be, not the cadence of whichever worker
+// you configured for the job. One worker per queue runs the stalled sweep,
+// holding a lease that lasts twice its *own* `stalledInterval`, and it is not
+// chosen — it is whoever asked first. So a holder that is killed hands the
+// sweeps over on *its* cadence, and a fast survivor cannot shorten someone
+// else's lease: at the defaults that is 90 seconds, far longer than this
+// example waits. A fleet that wants fast repair sets `stalledInterval` on
+// every worker on the queue — which is why the cadence below is set on both
+// sides rather than only on the rescuer.
 const child = Bun.spawn(
   [
     process.execPath,

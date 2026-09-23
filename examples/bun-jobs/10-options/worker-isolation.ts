@@ -72,6 +72,22 @@ const processors = join(import.meta.dir, "processors");
 const reportFile = join(processors, "isolation-report.ts");
 /** Short waits, so the tour spends its time on the work. */
 const fast = { pollInterval: 25, maxBlock: 50 };
+/**
+ * How often the tour's workers sweep for stalled jobs, in milliseconds — the
+ * `stalledInterval` option, whose default is 30s, far longer than a tour can
+ * wait.
+ *
+ * Every worker on a queue is given it, not only the sweeper that a step is
+ * about, and that is the point worth taking away: **a queue's repair cadence
+ * is the sweep lease holder's, whoever that turns out to be**, not the cadence
+ * of whichever worker you configured for the job. One worker per queue runs
+ * the stalled sweep, holding a lease that lasts twice its *own*
+ * `stalledInterval`, and it is not chosen — it is whoever asked first. So a
+ * single worker left on the 30s default can slow the whole queue's recovery to
+ * 30s however fast its siblings are set. A fleet that wants fast repair sets
+ * `stalledInterval` on every worker on the queue.
+ */
+const SWEEP_INTERVAL = 100;
 /** How long to wait for anything that involves starting a process. */
 const LONG = { timeout: 30_000 };
 
@@ -168,9 +184,26 @@ for (const { mode, processor, options } of cases) {
     { label: mode },
     { removeOnComplete: false },
   );
+  // The state flip is not the last write. In an isolated mode every
+  // `job.updateProgress` is an RPC to the worker, so the processor's final
+  // `updateProgress` can be written *after* the parent has written the
+  // completion — read the record the instant the state flips and it still
+  // carries the previous progress. So the wait is for the record to have
+  // settled, not for the state alone: both progress checks below then read a
+  // finished job rather than racing that write. The processor sends two
+  // updates, and the stored value must be the later of them; *which* values
+  // they are is what the checks assert, so nothing is assumed here. All three
+  // modes share this wait, and so this fix.
   await waitFor(
-    `the ${mode} report to complete`,
-    async () => (await queue.getJob(job.id))?.state === "completed",
+    `the ${mode} report to complete, with its last progress written`,
+    async () => {
+      const settling = await queue.getJob(job.id);
+      return (
+        settling?.state === "completed" &&
+        progress.length === 2 &&
+        settling.progress === progress.at(-1)
+      );
+    },
     LONG,
   );
 
@@ -265,7 +298,9 @@ step("2. ctx.heartbeat() from a child keeps a long job's lock");
 
 // The worker's own renewal is effectively off (a minute apart, against a
 // 3-second lock), so only the child's heartbeats can keep the job. A paused
-// worker sweeps for stalled jobs every 100ms, and would take it back.
+// worker sweeps for stalled jobs every SWEEP_INTERVAL ms and would take it
+// back — as would `beating` itself, since whichever of the two holds the
+// queue's sweep lease is the one worker sweeping it.
 const heartbeatQueue = new BunQueue<ReportData, Report>("heartbeats", {
   namespace,
   driver,
@@ -273,9 +308,10 @@ const heartbeatQueue = new BunQueue<ReportData, Report>("heartbeats", {
 const sweeper = new BunQueueWorker("heartbeats", async () => null, {
   namespace,
   driver,
-  stalledInterval: 100,
+  stalledInterval: SWEEP_INTERVAL,
   ...fast,
 });
+/** Ids the queue's stalled sweep recovered, from whichever worker ran it. */
 const swept: string[] = [];
 sweeper.on("stalled", (ids) => {
   swept.push(...ids);
@@ -293,9 +329,17 @@ const beating = new BunQueueWorker<ReportData, Report>(
     isolationOptions: { closeTimeout: 2_000 },
     lockDuration: 3_000,
     heartbeatInterval: 60_000,
+    // The same cadence as the sweeper beside it: either of them may be the one
+    // worker sweeping this queue, so the sweep has to be quick whichever it is
+    // — otherwise nothing sweeps within the ~6s the job runs and the two
+    // checks below would pass for the wrong reason.
+    stalledInterval: SWEEP_INTERVAL,
     ...fast,
   },
 );
+beating.on("stalled", (ids) => {
+  swept.push(...ids);
+});
 void beating.run();
 
 const longJob = await heartbeatQueue.add(
@@ -320,7 +364,13 @@ check(
   { processedOn: beaten?.processedOn, finishedOn: beaten?.finishedOn },
 );
 checkEqual("never stalled", beaten?.stalledCount, 0);
-check("the sweeper recovered nothing", !swept.includes(longJob.id), swept);
+// `swept` collects both workers' `stalled` events, so this holds whichever of
+// them ran the sweep — and is not satisfied by no sweep having run at all.
+check(
+  "neither worker's sweep recovered it",
+  !swept.includes(longJob.id),
+  swept,
+);
 
 await beating.close();
 await sweeper.close();
@@ -470,6 +520,22 @@ for (const mode of ["spawn", "worker"] as const) {
   const byString = await queue.add("fail", { how: "string" }, options);
   const byError = await queue.add("fail", { how: "error" }, options);
   await waitFor(`both ${mode} fail() jobs to die`, () => dead.size === 2, LONG);
+  // The same race as step 1: what `fail()` answered travels as progress, and
+  // an isolated progress write is an RPC that can land after the job has
+  // already died. So wait for it to be there at all — `progress` starts as
+  // `null` — and let the check below say what it had to be.
+  await waitFor(
+    `both ${mode} fail() answers to reach the store`,
+    async () => {
+      const settling = await Promise.all([
+        queue.getJob(byString.id),
+        queue.getJob(byError.id),
+      ]);
+      // A record not there yet counts as not written, not as written.
+      return settling.every((record) => (record?.progress ?? null) !== null);
+    },
+    LONG,
+  );
 
   const stringNow = await queue.getJob(byString.id);
   const errorNow = await queue.getJob(byError.id);

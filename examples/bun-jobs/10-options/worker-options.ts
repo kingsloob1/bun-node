@@ -15,8 +15,10 @@
  *   aborts `ctx.signal` and emits `lockLost`; `job.touch()` then answers
  *   `false`, and the late completion is refused.
  * - `maxStalledCount` counts recoveries: a job whose worker died goes back to
- *   the queue that many times, and is buried as `dead` the time after. Any
- *   running worker's stalled sweep does the recovering — here, paused ones.
+ *   the queue that many times, and is buried as `dead` the time after. A
+ *   running worker's stalled sweep does the recovering — here, paused ones —
+ *   and which worker runs it is not a caller's choice, so every worker on a
+ *   queue here takes the same short {@link SWEEP_INTERVAL}.
  * - `maintenance: false` turns promotion and the stalled sweep off on that
  *   worker only; another worker's maintenance still serves the queue.
  * - Isolation (`isolation`, `isolationOptions`) has its own tour:
@@ -65,6 +67,22 @@ const namespace = exampleNamespace("worker-options");
 
 /** Short waits, so the tour spends its time on the work. */
 const fast = { pollInterval: 25, maxBlock: 50 };
+/**
+ * How often the tour's workers sweep for stalled jobs, in milliseconds — the
+ * `stalledInterval` option, whose default is 30s, far longer than a tour can
+ * wait.
+ *
+ * Every worker on a queue is given it, not only the sweeper that a step is
+ * about, and that is the point worth taking away: **a queue's repair cadence
+ * is the sweep lease holder's, whoever that turns out to be**, not the cadence
+ * of whichever worker you configured for the job. One worker per queue runs
+ * the stalled sweep, holding a lease that lasts twice its *own*
+ * `stalledInterval`, and it is not chosen — it is whoever asked first. So a
+ * single worker left on the 30s default can slow the whole queue's recovery to
+ * 30s however fast its siblings are set. A fleet that wants fast repair sets
+ * `stalledInterval` on every worker on the queue.
+ */
+const SWEEP_INTERVAL = 100;
 /** How long to wait for anything a busy machine might slow down. */
 const LONG = { timeout: 30_000 };
 
@@ -109,7 +127,12 @@ interface SweeperOptions {
   maxStalledCount?: number;
 }
 
-/** Starts a paused worker that sweeps `queueName` every 100ms. */
+/**
+ * Starts a paused worker that sweeps `queueName` every
+ * {@link SWEEP_INTERVAL}ms — which only sets the *queue's* cadence if this
+ * worker is the one holding the sweep lease, so every other worker the step
+ * starts on the same queue takes the same interval.
+ */
 async function startSweeper(
   queueName: string,
   options: SweeperOptions = {},
@@ -120,7 +143,7 @@ async function startSweeper(
     {
       namespace,
       driver: options.driver ?? driver,
-      stalledInterval: 100,
+      stalledInterval: SWEEP_INTERVAL,
       ...(options.maxStalledCount === undefined
         ? {}
         : { maxStalledCount: options.maxStalledCount }),
@@ -477,6 +500,8 @@ step("4. lockDuration + heartbeatInterval: heartbeats keep a long job's lock");
 const hbQueue = new BunQueue("heartbeat", { namespace, driver });
 const hbSweeper = await startSweeper("heartbeat");
 const hbLockLost: string[] = [];
+/** Ids `hbWorker`'s own stalled sweep recovered — none, if heartbeats work. */
+const hbStalled: string[] = [];
 const hbWorker = new BunQueueWorker(
   "heartbeat",
   async () => {
@@ -484,10 +509,24 @@ const hbWorker = new BunQueueWorker(
     await Bun.sleep(4_000);
     return "outlived its lock";
   },
-  { namespace, driver, lockDuration: 1_500, heartbeatInterval: 250, ...fast },
+  {
+    namespace,
+    driver,
+    lockDuration: 1_500,
+    heartbeatInterval: 250,
+    // The same cadence as the sweeper: either of them may be the one worker
+    // sweeping this queue, so the sweep has to be quick whichever it is —
+    // otherwise nothing sweeps within the 4s the job runs and the check below
+    // would pass for the wrong reason.
+    stalledInterval: SWEEP_INTERVAL,
+    ...fast,
+  },
 );
 hbWorker.on("lockLost", (job) => {
   hbLockLost.push(job.id);
+});
+hbWorker.on("stalled", (ids) => {
+  hbStalled.push(...ids);
 });
 void hbWorker.run();
 
@@ -503,9 +542,15 @@ check(
   (hbDone?.finishedOn ?? 0) - (hbDone?.processedOn ?? 0) >= 3_000,
   hbDone?.toJSON(),
 );
+// Neither worker's sweep saw it stalled — whichever of the two ran the sweep.
 checkEqual(
-  "not stalled, not lost, one attempt",
-  [hbDone?.stalledCount, hbSweeper.stalled, hbLockLost, hbDone?.attemptsMade],
+  "not stalled by either worker's sweep, not lost, one attempt",
+  [
+    hbDone?.stalledCount,
+    [...hbSweeper.stalled, ...hbStalled],
+    hbLockLost,
+    hbDone?.attemptsMade,
+  ],
   [0, [], [], 1],
 );
 
@@ -536,6 +581,17 @@ const lostQueue = new BunQueue<Record<string, never>, string>("lock-lost", {
 const lostSweeper = await startSweeper("lock-lost", { maxStalledCount: 5 });
 let afterLoss: AfterLoss | undefined;
 const lockLost: string[] = [];
+/** Ids `loser`'s own stalled sweep recovered, if it is the one sweeping. */
+const loserStalled: string[] = [];
+/**
+ * Whether the queue's stalled sweep has taken `id` back — from *whichever* of
+ * the two workers ran it. Only one worker per queue sweeps, and which one is
+ * not a caller's choice, so waiting on one named worker's `stalled` events
+ * would be a coin flip. What the step is about is that the job was recovered,
+ * not who recovered it.
+ */
+const recovered = (id: string): boolean =>
+  lostSweeper.stalled.includes(id) || loserStalled.includes(id);
 const loser = new BunQueueWorker<Record<string, never>, string>(
   "lock-lost",
   async (job, ctx) => {
@@ -544,10 +600,10 @@ const loser = new BunQueueWorker<Record<string, never>, string>(
     }
 
     // No heartbeats (a minute apart against a 400ms lock): wait for the
-    // sweeper to take the job back.
+    // stalled sweep to take the job back.
     await waitFor(
-      "the sweeper to recover the job",
-      () => lostSweeper.stalled.includes(job.id),
+      "the stalled sweep to recover the job",
+      () => recovered(job.id),
       LONG,
     );
     const touched = await job.touch();
@@ -561,11 +617,19 @@ const loser = new BunQueueWorker<Record<string, never>, string>(
     driver,
     lockDuration: 400,
     heartbeatInterval: 60_000,
+    // The same cadence as the sweeper beside it: whichever of the two ends up
+    // holding the queue's sweep lease, the recovery below happens in
+    // milliseconds rather than in the 30s default this worker would otherwise
+    // impose on the queue.
+    stalledInterval: SWEEP_INTERVAL,
     ...fast,
   },
 );
 loser.on("lockLost", (job) => {
   lockLost.push(job.id);
+});
+loser.on("stalled", (ids) => {
+  loserStalled.push(...ids);
 });
 void loser.run();
 
@@ -577,6 +641,15 @@ await waitFor(
   LONG,
 );
 const lostDone = await lostJob.refresh();
+// Which worker swept is not something the step controls — one worker per
+// queue runs the stalled sweep, and it is whichever asked for the lease
+// first — so it is printed rather than asserted.
+show("recovered by the stalled sweep on", [
+  ...(loserStalled.includes(lostJob.id) ? ["loser"] : []),
+  ...(lostSweeper.stalled.includes(lostJob.id)
+    ? ["the dedicated sweeper"]
+    : []),
+]);
 checkEqual(
   "job.touch() and job.extendLock() answer false once the lock is not ours",
   [afterLoss?.touched, afterLoss?.extended],
