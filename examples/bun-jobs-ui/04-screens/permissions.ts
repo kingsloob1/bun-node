@@ -2156,6 +2156,19 @@ checkEqual(
   readme.map((row) => row.element),
   gateRows,
 );
+// And this example's own row in the examples README says how many it checks.
+// That sentence is the one thing here nothing derived: it read "all 93 rows"
+// while this check derived 94, because a row landed and only the code was
+// looked at. So the number is asserted rather than described — a figure in
+// prose that nothing compares to its source is a figure that will drift.
+const examplesReadme = await Bun.file(
+  join(import.meta.dir, "../README.md"),
+).text();
+checkEqual(
+  "the examples README says how many rows this file checks, and means it",
+  Number(/all (\d+) rows/.exec(examplesReadme)?.[1]),
+  gateRows.length,
+);
 /** The row just before's parsed needs, for "under the same conditions". */
 let previousNeeds: ReturnType<typeof needsOfCell> | undefined;
 for (const row of readme) {
