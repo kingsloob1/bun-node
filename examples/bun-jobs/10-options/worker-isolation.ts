@@ -23,9 +23,11 @@
  *   asked, so it costs no round trip however often a processor reports. What
  *   awaiting it buys is ordering: the worker has the value and will write it,
  *   in the order the processor reported it, before it records how the job ended
- *   — not that the driver has it at that instant. A job abandoned at its
- *   `timeout` is the exception: there a progress write can still land after the
- *   failure record.
+ *   — not that the driver has it at that instant. That holds however the
+ *   attempt ended and wherever it ran, and it holds for `job.log` too, awaited
+ *   or not: the worker waits for whatever the attempt still has in flight
+ *   before it writes the completion or the failure. The wait is bounded, and
+ *   step 3 demonstrates both halves of that.
  * - `job.fail(reason)` works in every mode: the child keeps the reason and
  *   reports it as the attempt's error when the processor settles, so the job
  *   goes to `dead` exactly as it would in-process.
@@ -37,12 +39,14 @@
 import type {
   IsolationMode,
   IsolationOptions,
+  JobsDriver,
   LoggerLike,
 } from "@kingsleyweb/bun-jobs";
 import type { FailData } from "./processors/isolation-fail";
 import type { HangData } from "./processors/isolation-hang";
 import type { JobFailData } from "./processors/isolation-job-fail";
 import type { Report, ReportData } from "./processors/isolation-report";
+import type { SlowWriteData } from "./processors/isolation-slow-write";
 import type {
   Unavailable,
   UnavailableData,
@@ -77,6 +81,8 @@ const driver = createDriver(exampleDriver());
 const namespace = exampleNamespace("worker-isolation");
 const processors = join(import.meta.dir, "processors");
 const reportFile = join(processors, "isolation-report.ts");
+/** The processor whose one write is still in flight when its attempt ends. */
+const slowWriteFile = join(processors, "isolation-slow-write.ts");
 /** Short waits, so the tour spends its time on the work. */
 const fast = { pollInterval: 25, maxBlock: 50 };
 /**
@@ -322,13 +328,10 @@ step("2. An awaited updateProgress is written before the completion is");
 // an intermediate value at their own completion; with it, none do, on every
 // backend.
 //
-// One known limit, which this step deliberately does not assert either way:
-// `opts.timeout`. A job that hits its deadline has its run abandoned rather
-// than waited for, so a progress value already handed to the worker can still
-// be written after the failure record. The guarantee covers an attempt the
-// worker waited for — one whose processor returned or threw — not one it gave
-// up on. Step 6 is where a job dies at its `timeout`, and it says nothing about
-// that job's progress.
+// The conditions are also this step's limits: ten jobs contending, every value
+// awaited, every processor returning normally. Step 3 takes the two cases they
+// leave out — a deadline that abandons the run, and a write nobody awaited at
+// all — and asserts the same ordering there.
 
 /** How many values each processor reports before its final `100`. */
 const BURST = 10;
@@ -412,7 +415,237 @@ for (const mode of ["worker", "spawn"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("3. ctx.heartbeat() from a child keeps a long job's lock");
+step("3. A deadline keeps that ordering, and so does a write nobody awaited");
+
+// Step 2 makes its writes contend and reads what comes of it. These two
+// demonstrations remove the race instead: the tour's driver holds the one write
+// each is about, so that write is *certainly* unfinished at the moment the
+// record of the ending is made. Nothing else about them is unusual — one job
+// each, one worker each, the ordinary options.
+//
+// They are the two cases step 2 cannot reach:
+//
+// - A job that hits its `opts.timeout` has its run abandoned rather than waited
+//   for — the whole point of a deadline is not to wait — and here it is
+//   abandoned *inside* a progress write, in `"in-process"` mode, where there is
+//   no job channel to blame: the processor is calling the driver itself. The
+//   value still lands before the failure record.
+// - A child that calls `job.log()` and never awaits it has returned while the
+//   line is still on its way. The completion write is the one the worker
+//   deliberately does not wait for either, so this is the ordinary happy path's
+//   half of the same question, with no timeout involved at all.
+//
+// What is *not* promised is an unbounded wait, and the bound is a rule rather
+// than a figure. An attempt that reached its own end — returned, threw, called
+// `job.fail()` — is given a quarter of its worker's `lockDuration`, which the
+// `show` below derives from the lock this step sets. One the worker gave up on
+// is given a short flat floor instead, which is also the least the first can
+// ever be, so a `lockDuration` of zero still means some budget rather than
+// none. The reason is the part worth keeping: past the lock the job belongs to
+// the stalled sweep, so waiting longer than a fraction of the lock buys nothing
+// and costs a worker a concurrency slot. Reach the cap — a write still in
+// flight when the budget runs out — and the ending is recorded anyway, and that
+// write may land after it, exactly as every write could before this ordering
+// existed. A store that has stopped answering cannot pin a worker to a job that
+// is already over. Both holds below are deliberately well inside their budget;
+// a store slower than its worker's budget is one whose last write can still
+// lose the race.
+
+/** The deadline the timed-out job below is given, in milliseconds. */
+const WRITE_DEADLINE = 600;
+/**
+ * How long after that deadline the held progress write lands, in milliseconds.
+ *
+ * Far enough past it that a worker recording the failure and moving on would be
+ * caught doing so — the read below happens within a poll of the job reading
+ * `dead` — and well inside the flat floor an abandoned attempt's writes are
+ * given.
+ */
+const WRITE_OVERRUN = 150;
+/** How long the un-awaited log write below is held, in milliseconds. */
+const LOG_HOLD = 300;
+/** The lock the completing worker below holds, so the budget shown is its own. */
+const WRITE_LOCK = 8_000;
+
+/** How long {@link held} holds a progress write, in milliseconds. */
+let holdProgress = 0;
+/** How long {@link held} holds a log write, in milliseconds. */
+let holdLog = 0;
+
+/**
+ * The tour's driver with the two writes an attempt keeps in flight —
+ * `updateProgress` and `addJobLog` — held back by {@link holdProgress} and
+ * {@link holdLog} milliseconds. Every other call goes straight through, and the
+ * steps above and below use the driver itself.
+ *
+ * A slowed wrapper rather than a slow backend, because what this step asserts
+ * is an *order*: it is only worth asserting when the write it is about is
+ * certainly unfinished at the moment the ending is recorded, and on a quick
+ * store a single job's writes finish so fast that both orders look alike. The
+ * library's own tests do the same thing for the same reason.
+ */
+const held: JobsDriver = new Proxy(driver, {
+  get(target, property) {
+    // Read from, and called on, the real driver: a driver holds private fields,
+    // and a method whose `this` is the proxy cannot see them.
+    const value = Reflect.get(target, property, target) as unknown;
+
+    if (typeof value !== "function") {
+      return value;
+    }
+
+    const method = value as (...args: unknown[]) => unknown;
+    const holding =
+      property === "updateProgress"
+        ? (): number => holdProgress
+        : property === "addJobLog"
+          ? (): number => holdLog
+          : undefined;
+
+    if (!holding) {
+      return method.bind(target);
+    }
+
+    return async (...args: unknown[]): Promise<unknown> => {
+      const hold = holding();
+
+      if (hold > 0) {
+        await Bun.sleep(hold);
+      }
+
+      return await method.apply(target, args);
+    };
+  },
+});
+
+{
+  // Held until the deadline has passed: the processor is inside
+  // `job.updateProgress` when the worker gives up on its attempt.
+  holdProgress = WRITE_DEADLINE + WRITE_OVERRUN;
+  holdLog = 0;
+
+  const queue = new BunQueue<SlowWriteData, string>("timed-write", {
+    namespace,
+    driver: held,
+  });
+  const worker = new BunQueueWorker<SlowWriteData, string>(
+    "timed-write",
+    slowWriteFile,
+    {
+      namespace,
+      driver: held,
+      logger,
+      isolation: "in-process",
+      ...fast,
+    },
+  );
+  void worker.run();
+
+  const job = await queue.add(
+    "slow",
+    { progress: 42 },
+    { attempts: 1, timeout: WRITE_DEADLINE, removeOnFail: false },
+  );
+  /** What the record carried on the read that first found the job dead. */
+  let atDeath: { progress: unknown; failedWith?: string } | undefined;
+  await waitFor(
+    "the in-process job to be read dead",
+    async () => {
+      const record = await queue.getJob(job.id);
+
+      if (record?.state !== "dead") {
+        return false;
+      }
+
+      // The first read only, and the one that found it: a second look would be
+      // a later look, which is what this must not take.
+      atDeath = {
+        progress: record.progress,
+        failedWith: record.failedReason?.name,
+      };
+      return true;
+    },
+    { ...LONG, interval: 5 },
+  );
+  show("the read that first found the in-process job dead", {
+    ...atDeath,
+    deadline: WRITE_DEADLINE,
+    theWriteLandedAfterTheDeadlineBy: WRITE_OVERRUN,
+  });
+  checkEqual(
+    "in-process: a progress write still in flight at the deadline lands before the failure record",
+    [atDeath?.progress, atDeath?.failedWith],
+    [42, "JobTimeoutError"],
+  );
+
+  await worker.close();
+  await queue.close();
+}
+
+{
+  // Held past the moment the processor returns: the line is on its way while
+  // the worker has the result in hand.
+  holdProgress = 0;
+  holdLog = LOG_HOLD;
+
+  const queue = new BunQueue<SlowWriteData, string>("unawaited-log", {
+    namespace,
+    driver: held,
+  });
+  const worker = new BunQueueWorker<SlowWriteData, string>(
+    "unawaited-log",
+    slowWriteFile,
+    {
+      namespace,
+      driver: held,
+      logger,
+      isolation: "spawn",
+      isolationOptions: { closeTimeout: 2_000 },
+      lockDuration: WRITE_LOCK,
+      ...fast,
+    },
+  );
+  void worker.run();
+
+  const job = await queue.add(
+    "slow",
+    { line: "sent, never waited for" },
+    { attempts: 1, removeOnComplete: false },
+  );
+  /** The log as it read the moment the job first read `completed`. */
+  let atCompletion: { logs: string[]; count: number } | undefined;
+  await waitFor(
+    "the spawned job to be read completed",
+    async () => {
+      if ((await queue.getJob(job.id))?.state !== "completed") {
+        return false;
+      }
+
+      atCompletion = await queue.getJobLogs(job.id);
+      return true;
+    },
+    { ...LONG, interval: 5 },
+  );
+  show("what this worker's lock gives the wait for its writes", {
+    lockDuration: WRITE_LOCK,
+    aQuarterOfIt: WRITE_LOCK / 4,
+    theWriteWasHeldFor: LOG_HOLD,
+  });
+  show("the log as it read the moment the spawned job read completed", {
+    ...atCompletion,
+  });
+  checkEqual(
+    "spawn: a log line the child never waited for is stored before the completion record",
+    atCompletion,
+    { logs: ["sent, never waited for"], count: 1 },
+  );
+
+  await worker.close();
+  await queue.close();
+}
+
+/* ------------------------------------------------------------------ */
+step("4. ctx.heartbeat() from a child keeps a long job's lock");
 
 // The worker's own renewal is effectively off (a minute apart, against a
 // 3-second lock), so only the child's heartbeats can keep the job. A paused
@@ -495,7 +728,7 @@ await sweeper.close();
 await heartbeatQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("4. Operations that change the stored job are unavailable in a child");
+step("5. Operations that change the stored job are unavailable in a child");
 
 const unavailableFile = join(processors, "isolation-unavailable.ts");
 const isolatedOnly = [
@@ -568,7 +801,7 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("5. Errors cross the boundary and still decide retries; so does fail()");
+step("6. Errors cross the boundary and still decide retries; so does fail()");
 
 const failFile = join(processors, "isolation-fail.ts");
 
@@ -638,10 +871,13 @@ for (const mode of ["spawn", "worker"] as const) {
   const byString = await queue.add("fail", { how: "string" }, options);
   const byError = await queue.add("fail", { how: "error" }, options);
   await waitFor(`both ${mode} fail() jobs to die`, () => dead.size === 2, LONG);
-  // The same race as step 1: what `fail()` answered travels as progress, and
-  // an isolated progress write is an RPC that can land after the job has
-  // already died. So wait for it to be there at all — `progress` starts as
-  // `null` — and let the check below say what it had to be.
+  // What `fail()` answered travels as progress. That write is ordered ahead of
+  // the failure record — the worker settles an attempt's writes before it
+  // records how the job ended, and it ends both ways here, one processor
+  // returning and one throwing — so this is no longer waiting on a race; step 3
+  // is where that ordering is asserted. It is kept as the read's own guard:
+  // `progress` starts as `null`, so waiting for it to be anything at all says
+  // plainly that the store is caught up before the checks below look.
   await waitFor(
     `both ${mode} fail() answers to reach the store`,
     async () => {
@@ -704,7 +940,7 @@ for (const mode of ["spawn", "worker"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("6. timeout stops a spawned processor that ignores its signal");
+step("7. timeout stops a spawned processor that ignores its signal");
 
 const hangFile = join(processors, "isolation-hang.ts");
 
@@ -759,7 +995,14 @@ for (const [index, escalation] of escalations.entries()) {
   void worker.run();
 
   const job = await queue.add("hang", escalation.data, {
-    timeout: 300,
+    // Long enough to cover starting a process, because the deadline is measured
+    // from the attempt, spawn included. The child reports its pid first thing
+    // and the step needs that value: a value reported once the attempt is over
+    // is dropped rather than merely late — an abort ends the attempt for its
+    // writes too — so a deadline a loaded machine could beat to it would leave
+    // this waiting for a progress event that is never coming. The job still
+    // overruns whatever this is; the fixture blocks its thread for good.
+    timeout: 2_000,
     attempts: 1,
   });
   await waitFor(
@@ -816,7 +1059,7 @@ for (const [index, escalation] of escalations.entries()) {
 }
 
 /* ------------------------------------------------------------------ */
-step("7. Configuration errors");
+step("8. Configuration errors");
 
 await checkRejects(
   'a function processor with isolation: "spawn"',
@@ -870,7 +1113,7 @@ await checkRejects(
 );
 
 /* ------------------------------------------------------------------ */
-step("8. jobs.worker(name, file, options) through BunJobs");
+step("9. jobs.worker(name, file, options) through BunJobs");
 
 const jobs = new BunJobs({ namespace, driver, logger });
 
