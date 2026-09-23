@@ -81,6 +81,12 @@
  *   own answer. A lifecycle action also needs the worker live (it reports
  *   `control.enabled`, is not stale and not mid-transition) in a state that
  *   takes it, and the backend's `features.workerControl`.
+ * - **The housekeeping note needs a worker that said no, not a worker that
+ *   said nothing.** A queue's Workers panel warns that nobody runs its
+ *   housekeeping sweeps only when a live worker reports `sweeps: false` and
+ *   none reports `true`; a worker too old to report the field has said
+ *   nothing, so a panel whose live workers all omit it shows no note at all.
+ *   It needs no permission of its own beyond the panel's.
  * - **Six actions are opt-in** (`JOBS_API_OPT_IN_ACTIONS`): `jobs.add`,
  *   `jobs.update`, `queues.defaults`, `queues.applyDefaults`,
  *   `workers.configure` and `runners.configure` are not routed, and so absent
@@ -467,6 +473,14 @@ interface ScreenInputs {
    * `rssBytes`. Defaults to `false`, as the prop does.
    */
   workerTableMemory?: boolean;
+  /**
+   * Whether the worker table on screen is a **queue's** Workers panel: the one
+   * table whose workers are all of one queue, and so the only one that can say
+   * anything about that queue's housekeeping. The Workers page spans queues
+   * and a worker page's Instances table is one key's, so neither carries the
+   * note. Defaults to `false`.
+   */
+  workerTableQueuePanel?: boolean;
   /** The unfiltered `GET /workers`, which the Workers page's filters offer from. */
   workerList?: readonly WorkerDto[];
   /** The answer to the last worker instruction sent (`?wait=2000`). */
@@ -1445,6 +1459,31 @@ const GATES = [
     when: ({ workerTableMemory, workerTable }) =>
       workerTableMemory === true &&
       workerTable?.some((worker) => worker.rssBytes !== undefined) === true,
+  },
+  {
+    // The housekeeping note, and the trap in it: **`sweeps` absent is not
+    // `false`**. A worker too old to report the field has said nothing, so a
+    // panel whose live workers all omit it is a fleet mid-upgrade, not a queue
+    // nobody tidies — it shows no note at all. `sweeps: true` means the worker
+    // *takes part* in housekeeping (it arms the timer and contends for the
+    // lease; under the lease one holder does the pass and the others stand
+    // down), so one such worker is enough for the note to go. Where some omit
+    // the field and none reports `true`, the note is shown but hedged
+    // (`data-uncertain="true"`), which `06-browser/workers.ts` asserts on the
+    // real wording.
+    name: "worker table: housekeeping note",
+    row: "Queue Workers panel housekeeping note",
+    map: "worker",
+    when: ({ workerTableQueuePanel, workerTable }) => {
+      const reported = (workerTable ?? []).filter(
+        (worker) => worker.sweeps !== undefined,
+      );
+      return (
+        workerTableQueuePanel === true &&
+        reported.length > 0 &&
+        !reported.some((worker) => worker.sweeps === true)
+      );
+    },
   },
   {
     name: "worker: instruction says done (applied)",
@@ -4427,6 +4466,39 @@ checkEqual(
     )["worker table: Memory column"],
   ],
   [true, false, false],
+);
+// The housekeeping note, on a queue's Workers panel. Both workers here take
+// part in housekeeping (`maintenance` defaults to on), so the panel is quiet;
+// the cases that matter are derived from their real DTOs, the way the Memory
+// column's are.
+checkEqual(
+  "both report that they take part in the queue's housekeeping (maintenance is on by default)",
+  [mailer, auditor].map((worker) => worker.sweeps),
+  [true, true],
+);
+/** The note's gate for a queue's Workers panel listing `table`. */
+function sweepNote(table: readonly WorkerDto[]): boolean {
+  return workerRow(table[0]!, maps.mail!, table, {
+    workerTableQueuePanel: true,
+  })["worker table: housekeeping note"];
+}
+/** The mailer having opted out of housekeeping (`maintenance: false`). */
+const optedOut: WorkerDto = { ...mailer, sweeps: false };
+/** The mailer as a worker too old to report the field wrote it: no `sweeps` at all. */
+const tooOldToSay: WorkerDto = (({ sweeps: _sweeps, ...rest }) => rest)(mailer);
+checkEqual(
+  "the note: shown where a live worker reports sweeps:false and none reports true; gone as soon as one takes part; nothing at all where every live worker is too old to say (absent is not false); shown, hedged, where some omit it; and never outside a queue's panel",
+  [
+    sweepNote([optedOut]),
+    sweepNote([optedOut, mailer]),
+    sweepNote([mailer]),
+    sweepNote([tooOldToSay]),
+    sweepNote([tooOldToSay, optedOut]),
+    workerRow(optedOut, boot, [optedOut], { workerTableMemory: true })[
+      "worker table: housekeeping note"
+    ],
+  ],
+  [true, false, false, false, true, false],
 );
 checkEqual(
   "a worker list whose workers carry no host (serialize.exposeHosts off): no Host filter",
