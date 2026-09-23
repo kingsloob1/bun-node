@@ -7,6 +7,7 @@ import { useApiClient } from "../../../context";
 import { useCan } from "../../../meta/hooks";
 import { useQueueWorkersLive } from "../../workers/live";
 import { useWorkerPagesRouted } from "../../workers/routed";
+import { sweepWarning } from "../../workers/sweeps";
 import { WorkerTable } from "../../workers/WorkerTable";
 import { useRefreshInterval } from "../live";
 
@@ -59,13 +60,26 @@ export function WorkersPanel({ queue }: WorkersPanelProps) {
   const showHost = items.some(
     (worker) => worker.host !== undefined || worker.pid !== undefined,
   );
+  const untidy = sweepWarning(items);
   return (
-    <WorkerTable
-      workers={items}
-      label={`Workers of ${queue}`}
-      showQueue={false}
-      showHost={showHost}
-      linkKeys={linkKeys}
-    />
+    <>
+      {untidy && (
+        <p
+          className="workers-sweep-note"
+          role="note"
+          data-testid="sweep-warning"
+          data-uncertain={untidy.uncertain ? "true" : "false"}
+        >
+          {untidy.message}
+        </p>
+      )}
+      <WorkerTable
+        workers={items}
+        label={`Workers of ${queue}`}
+        showQueue={false}
+        showHost={showHost}
+        linkKeys={linkKeys}
+      />
+    </>
   );
 }
