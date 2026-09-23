@@ -25,6 +25,7 @@ import type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
@@ -3235,9 +3236,19 @@ export class FileDriver implements JobsDriver {
     q: QueueRef,
     now: number,
     limit: number,
-  ): Promise<number> {
+  ): Promise<PromoteDelayedResult> {
     const dir = this.#queueDir(q);
     let promoted = 0;
+    /**
+     * The earliest due time still scheduled, read off the same listings the
+     * promotion walks, so answering it costs no directory read of its own.
+     */
+    let nextDueAt: number | null = null;
+    const consider = (due: number): void => {
+      if (Number.isFinite(due) && (nextDueAt === null || due < nextDueAt)) {
+        nextDueAt = due;
+      }
+    };
 
     // Only the due names are sorted. Every marker's prefix is its due time,
     // padded to one width, so comparing it with `pad(now)` as a string is the
@@ -3246,9 +3257,12 @@ export class FileDriver implements JobsDriver {
     const cutoff = `${pad(now, 13)}-`;
 
     for (const state of SCHEDULED_STATES) {
-      const markers = (await this.#list(join(dir, "index", state)))
+      const listed = await this.#list(join(dir, "index", state));
+      const markers = listed
         .filter((marker) => marker < cutoff || marker.startsWith(cutoff))
         .sort();
+      /** Markers this pass moved out of the index, so none of them is next. */
+      const settled = new Set<string>();
 
       for (const marker of markers) {
         if (promoted >= limit) {
@@ -3274,6 +3288,7 @@ export class FileDriver implements JobsDriver {
 
         if (!record) {
           await rm(hold, { force: true });
+          settled.add(marker);
           continue;
         }
 
@@ -3285,6 +3300,12 @@ export class FileDriver implements JobsDriver {
           record.runAt > now
         ) {
           await this.#place(q, hold, record);
+          // Filed again by the record: under its real due time if it is
+          // still scheduled, out of the scheduled indexes if it is not.
+          settled.add(marker);
+          if (SCHEDULED_STATES.includes(record.state)) {
+            consider(record.runAt);
+          }
           continue;
         }
 
@@ -3305,7 +3326,16 @@ export class FileDriver implements JobsDriver {
         }
 
         await this.#release(q, hold, record, updated);
+        settled.add(marker);
         promoted++;
+      }
+
+      // Everything listed and not moved is still scheduled — past the limit,
+      // not yet due, or held by another process that may put it back.
+      for (const marker of listed) {
+        if (!settled.has(marker)) {
+          consider(Number(marker.split("-")[0]));
+        }
       }
     }
 
@@ -3313,7 +3343,7 @@ export class FileDriver implements JobsDriver {
       await this.#touchWake(q);
     }
 
-    return promoted;
+    return { promoted, nextDueAt };
   }
 
   async recoverStalled(

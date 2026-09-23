@@ -4,6 +4,7 @@ import type {
   NamespaceMetricsQuery,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   RunnerMetricsQuery,
   StoredJobOptions,
 } from "../../lib/drivers/driver";
@@ -90,6 +91,23 @@ import { JOB_OPTION_BITS } from "../../lib/queue/jobDefaults";
 import { queueEvent, workerEvent } from "../../lib/shared/events";
 import { compareCodePoints } from "../../lib/shared/strings";
 import { jobOptions, makeJob, testNamespace, waitFor } from "../helpers";
+
+/**
+ * A `promoteDelayed` answer as the pair: every driver in this package reports
+ * `nextDueAt`, and a bare count (the older contract, still accepted from
+ * third-party drivers) would fail the case that asked.
+ */
+async function promotion(
+  pending: Promise<number | PromoteDelayedResult>,
+): Promise<PromoteDelayedResult> {
+  const result = await pending;
+  if (typeof result === "number") {
+    throw new TypeError(
+      "promoteDelayed answered a bare count; this package's drivers report { promoted, nextDueAt }",
+    );
+  }
+  return result;
+}
 
 /**
  * The contract every driver must satisfy, as an executable specification.
@@ -2735,7 +2753,10 @@ export function driverContract(
         ).toBeNull();
 
         // Once due, promotion makes it claimable.
-        expect(await driver.promoteDelayed(q, now + 60_001, 10)).toBe(1);
+        expect(
+          (await promotion(driver.promoteDelayed(q, now + 60_001, 10)))
+            .promoted,
+        ).toBe(1);
         const claimed = await driver.claimJob(q, {
           workerId: "w1",
           token: newToken(),
@@ -2796,6 +2817,150 @@ export function driverContract(
         });
 
         await driver.removeJob(q, "complete-me");
+      });
+
+      describe("promoteDelayed reports the next due time", () => {
+        /**
+         * Promotes, and checks the answer's `nextDueAt` against what
+         * `nextDelayedAt` says straight afterwards: the two must agree, since
+         * the worker uses the first in place of the second.
+         */
+        async function promoteAt(
+          q: QueueRef,
+          now: number,
+          limit = 100,
+        ): Promise<PromoteDelayedResult> {
+          const result = await promotion(driver.promoteDelayed(q, now, limit));
+          expect(result.nextDueAt).toBe(await driver.nextDelayedAt(q));
+          return result;
+        }
+
+        it("is null when nothing is scheduled", async () => {
+          const q = scope("next-due-none");
+          const now = Date.now();
+          await driver.ensureQueue(q);
+          expect(await promoteAt(q, now)).toEqual({
+            promoted: 0,
+            nextDueAt: null,
+          });
+
+          // A waiting job is not scheduled either.
+          await driver.addJob(q, makeJob({ id: "ready", runAt: now }));
+          expect(await promoteAt(q, now)).toEqual({
+            promoted: 0,
+            nextDueAt: null,
+          });
+          await driver.drainQueue(q, true);
+        });
+
+        it("is the earliest runAt left, delayed or retrying, and null once all are promoted", async () => {
+          const q = scope("next-due-left");
+          const now = Date.now();
+          await driver.addJob(
+            q,
+            makeJob({ id: "due", state: "delayed", runAt: now - 10 }),
+          );
+          await driver.addJob(
+            q,
+            makeJob({ id: "late", state: "delayed", runAt: now + 60_000 }),
+          );
+          await driver.addJob(
+            q,
+            makeJob({ id: "mid", state: "delayed", runAt: now + 30_000 }),
+          );
+
+          // A retry is scheduled too, in the `failed` state: it counts.
+          const token = newToken();
+          await driver.addJob(q, makeJob({ id: "retry", runAt: now }));
+          expect(
+            (
+              await driver.claimJob(q, {
+                workerId: "w1",
+                token,
+                lockMs: 30_000,
+                now,
+              })
+            )?.id,
+          ).toBe("retry");
+          await driver.failJob(
+            q,
+            "retry",
+            token,
+            serializeError(new Error("again")),
+            { retry: true, runAt: now + 20_000 },
+            now,
+            3,
+          );
+
+          // Nothing due yet but the one: the retry is next.
+          expect(await promoteAt(q, now)).toEqual({
+            promoted: 1,
+            nextDueAt: now + 20_000,
+          });
+          // Nothing more due: the same answer, and nothing moved.
+          expect(await promoteAt(q, now + 1)).toEqual({
+            promoted: 0,
+            nextDueAt: now + 20_000,
+          });
+          expect(await promoteAt(q, now + 20_000)).toEqual({
+            promoted: 1,
+            nextDueAt: now + 30_000,
+          });
+          expect(await promoteAt(q, now + 60_000)).toEqual({
+            promoted: 2,
+            nextDueAt: null,
+          });
+          await driver.drainQueue(q, true);
+        });
+
+        it("is at or before now when the limit left due jobs behind", async () => {
+          const q = scope("next-due-limit");
+          const now = Date.now();
+          for (const [id, at] of [
+            ["first", now - 30],
+            ["second", now - 20],
+            ["third", now - 10],
+          ] as const) {
+            await driver.addJob(
+              q,
+              makeJob({ id, state: "delayed", runAt: at }),
+            );
+          }
+
+          const first = await promoteAt(q, now, 2);
+          expect(first.promoted).toBe(2);
+          expect(first.nextDueAt).toBe(now - 10);
+
+          expect(await promoteAt(q, now, 2)).toEqual({
+            promoted: 1,
+            nextDueAt: null,
+          });
+          await driver.drainQueue(q, true);
+        });
+
+        it("answers the same on a paused queue", async () => {
+          const q = scope("next-due-paused");
+          const now = Date.now();
+          await driver.addJob(
+            q,
+            makeJob({ id: "due", state: "delayed", runAt: now - 10 }),
+          );
+          await driver.addJob(
+            q,
+            makeJob({ id: "later", state: "delayed", runAt: now + 60_000 }),
+          );
+          await driver.pauseQueue(q);
+
+          // Pausing stops claims, not promotion: the due job moves to
+          // `waiting`, where it stays until the queue resumes.
+          expect(await promoteAt(q, now)).toEqual({
+            promoted: 1,
+            nextDueAt: now + 60_000,
+          });
+
+          await driver.resumeQueue(q);
+          await driver.drainQueue(q, true);
+        });
       });
 
       it("keeps a retrying job separate from a dead one", async () => {
@@ -3305,7 +3470,9 @@ export function driverContract(
         expect(later?.state).toBe("delayed");
         expect(later?.runAt).toBe(now + 60_000);
         expect((await claimFrom(uq, now)).job).toBeNull();
-        expect(await driver.promoteDelayed(uq, now, 10)).toBe(0);
+        expect(
+          (await promotion(driver.promoteDelayed(uq, now, 10))).promoted,
+        ).toBe(0);
         expect(await driver.nextDelayedAt(uq)).toBe(now + 60_000);
 
         // Back to now: waiting, claimable without a promotion pass.
@@ -3435,7 +3602,10 @@ export function driverContract(
         expect(counts["waiting-children"]).toBe(0);
 
         // Out of every index a claim or a promotion reads.
-        expect(await driver.promoteDelayed(bq, now + 120_000, 100)).toBe(0);
+        expect(
+          (await promotion(driver.promoteDelayed(bq, now + 120_000, 100)))
+            .promoted,
+        ).toBe(0);
         expect((await claimFrom(bq, now + 120_000)).job).toBeNull();
         expect(
           (

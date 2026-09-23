@@ -24,6 +24,7 @@ import type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
@@ -2260,7 +2261,7 @@ export class MemoryDriver implements JobsDriver {
     q: QueueRef,
     now: number,
     limit: number,
-  ): Promise<number> {
+  ): Promise<PromoteDelayedResult> {
     return this.#promoteDue(this.#queue(q), now, limit);
   }
 
@@ -2943,34 +2944,38 @@ export class MemoryDriver implements JobsDriver {
     }
   }
 
-  /** Moves due `delayed`/`failed` jobs to `waiting`; returns how many moved. */
-  #promoteDue(queue: QueueState, now: number, limit: number): number {
+  /**
+   * Moves due `delayed`/`failed` jobs to `waiting`, and reports how many
+   * moved and the `runAt` of the earliest one left — the heap's top, which
+   * the loop has already brought to the surface.
+   */
+  #promoteDue(
+    queue: QueueState,
+    now: number,
+    limit: number,
+  ): PromoteDelayedResult {
     // Nothing is delayed or failed, so there is nothing to promote and no
     // reason to look at every job in the queue to find that out.
     if (queue.scheduled.size === 0) {
       queue.due.length = 0;
-      return 0;
+      return { promoted: 0, nextDueAt: null };
     }
 
     let promoted = 0;
+    let next = this.#earliestDue(queue);
 
-    while (promoted < limit) {
-      const job = this.#earliestDue(queue);
-
-      if (!job || job.runAt > now) {
-        break;
-      }
-
+    while (next && next.runAt <= now && promoted < limit) {
       duePop(queue.due);
-      this.#setState(queue, job, "waiting");
+      this.#setState(queue, next, "waiting");
       promoted++;
+      next = this.#earliestDue(queue);
     }
 
     if (promoted > 0) {
       this.#wake(queue);
     }
 
-    return promoted;
+    return { promoted, nextDueAt: next?.runAt ?? null };
   }
 
   /**

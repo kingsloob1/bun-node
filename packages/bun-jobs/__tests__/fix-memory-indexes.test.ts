@@ -155,12 +155,12 @@ describe("memory promotion heap (C10) and idle reads (C11)", () => {
     }
 
     expect(await driver.nextDelayedAt(q)).toBe(100);
-    expect(await driver.promoteDelayed(q, 1_000, 2)).toBe(2);
+    expect((await driver.promoteDelayed(q, 1_000, 2)).promoted).toBe(2);
     expect(await idsIn(driver, q, "waiting")).toEqual(["due1", "due2"]);
     expect(await driver.nextDelayedAt(q)).toBe(300);
-    expect(await driver.promoteDelayed(q, 1_000, 10)).toBe(1);
+    expect((await driver.promoteDelayed(q, 1_000, 10)).promoted).toBe(1);
     expect(await driver.nextDelayedAt(q)).toBe(5_000);
-    expect(await driver.promoteDelayed(q, 1_000, 10)).toBe(0);
+    expect((await driver.promoteDelayed(q, 1_000, 10)).promoted).toBe(0);
   });
 
   it("follows runAt changes, removals and retries", async () => {
@@ -174,7 +174,7 @@ describe("memory promotion heap (C10) and idle reads (C11)", () => {
     expect(await driver.nextDelayedAt(q)).toBe(400);
     // Later while staying delayed: not promoted at the old time.
     await driver.updateJob(q, "a", { runAt: 2_000 }, 0);
-    expect(await driver.promoteDelayed(q, 600, 10)).toBe(1);
+    expect((await driver.promoteDelayed(q, 600, 10)).promoted).toBe(1);
     expect(await idsIn(driver, q, "waiting")).toEqual(["b"]);
     expect(await driver.nextDelayedAt(q)).toBe(2_000);
 
@@ -198,8 +198,8 @@ describe("memory promotion heap (C10) and idle reads (C11)", () => {
       0,
     );
     expect(await driver.nextDelayedAt(q)).toBe(1_500);
-    expect(await driver.promoteDelayed(q, 1_499, 10)).toBe(0);
-    expect(await driver.promoteDelayed(q, 1_500, 10)).toBe(1);
+    expect((await driver.promoteDelayed(q, 1_499, 10)).promoted).toBe(0);
+    expect((await driver.promoteDelayed(q, 1_500, 10)).promoted).toBe(1);
   });
 
   it("stays right after many scheduled jobs come and go", async () => {
@@ -220,7 +220,7 @@ describe("memory promotion heap (C10) and idle reads (C11)", () => {
     }
 
     expect(await driver.nextDelayedAt(q)).toBe(99_999);
-    expect(await driver.promoteDelayed(q, 100_000, 10)).toBe(1);
+    expect((await driver.promoteDelayed(q, 100_000, 10)).promoted).toBe(1);
     expect(await driver.nextDelayedAt(q)).toBeNull();
   });
 

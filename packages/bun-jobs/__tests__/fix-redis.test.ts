@@ -248,7 +248,7 @@ describe.skipIf(!URL)("redis fix round: wake tokens (B5)", () => {
     ]);
 
     const { settled } = await twoIdleConsumers(ns, "promote");
-    expect(await producer.promoteDelayed(q, now + 100, 100)).toBe(2);
+    expect((await producer.promoteDelayed(q, now + 100, 100)).promoted).toBe(2);
 
     for (const took of await Promise.all(settled)) {
       expect(took).toBeLessThan(1_000);

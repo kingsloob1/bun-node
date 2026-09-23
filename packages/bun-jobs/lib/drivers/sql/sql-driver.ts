@@ -33,6 +33,7 @@ import type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
@@ -5970,16 +5971,76 @@ export class SqlDriver implements JobsDriver {
     return promoted > 0;
   }
 
+  /**
+   * Promotes what has come due and reports the next due time, in as few
+   * statements as the engine allows.
+   *
+   * - **Postgres**: one statement. A data-modifying CTE does the promotion,
+   *   and the outer `SELECT` reads the count and the earliest `run_at` left.
+   *   The outer query sees the table as it was *before* the CTE's update, so
+   *   the rows just moved are excluded by id; each side is an ordered probe
+   *   of `ix_…_due` that skips at most `limit` entries.
+   * - **SQLite, MySQL, MariaDB**: the earliest due time first — the read
+   *   `nextDelayedAt` makes, one index probe — and the promotion only when
+   *   that says something is due. An idle pass is then one read-only
+   *   statement: no write lock on SQLite, and on MySQL/MariaDB none of the
+   *   transaction a ranged write is wrapped in (reserve, isolation, begin,
+   *   write, count, commit). SQLite cannot put an `UPDATE` in a CTE, so this
+   *   is its shortest form too. A pass that does promote reads the next due
+   *   time again afterwards.
+   */
   async promoteDelayed(
     q: QueueRef,
     now: number,
     limit: number,
-  ): Promise<number> {
+  ): Promise<PromoteDelayedResult> {
     await this.connect();
 
-    const { bind, values } = this.#binder();
+    const batch = Math.max(1, Math.floor(limit));
 
-    return await this.#run(
+    if (this.adapter === "postgres") {
+      const { bind, values } = this.#binder();
+      const earliest = (state: string) =>
+        `(SELECT run_at FROM ${this.#tables.jobs}
+           WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+             AND state = '${state}' AND id NOT IN (SELECT id FROM moved)
+           ORDER BY run_at ASC LIMIT 1)`;
+      const row = await this.#one<{
+        promoted: number | string;
+        next: number | string | null;
+      }>(
+        `WITH moved AS (
+           UPDATE ${this.#tables.jobs} SET state = 'waiting'
+            WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+              AND state IN ('delayed', 'failed')
+              AND id IN (
+                SELECT id FROM ${this.#tables.jobs}
+                 WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+                   AND state IN ('delayed', 'failed') AND run_at <= ${bind(now)}
+                 ORDER BY run_at ASC
+                 LIMIT ${batch})
+           RETURNING id)
+         SELECT (SELECT COUNT(*) FROM moved) AS promoted,
+                LEAST(${earliest("delayed")}, ${earliest("failed")}) AS next`,
+        values,
+      );
+
+      return {
+        promoted: Number(row?.promoted ?? 0),
+        nextDueAt:
+          row?.next === null || row?.next === undefined
+            ? null
+            : Number(row.next),
+      };
+    }
+
+    const due = await this.nextDelayedAt(q);
+    if (due === null || due > now) {
+      return { promoted: 0, nextDueAt: due };
+    }
+
+    const { bind, values } = this.#binder();
+    const promoted = await this.#run(
       `UPDATE ${this.#tables.jobs} SET state = 'waiting'
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
           AND state IN ('delayed', 'failed')
@@ -5988,10 +6049,12 @@ export class SqlDriver implements JobsDriver {
               WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
                 AND state IN ('delayed', 'failed') AND run_at <= ${bind(now)}
               ORDER BY run_at ASC
-              LIMIT ${Math.max(1, Math.floor(limit))}`,
+              LIMIT ${batch}`,
           )})`,
       values,
     );
+
+    return { promoted, nextDueAt: await this.nextDelayedAt(q) };
   }
 
   async recoverStalled(

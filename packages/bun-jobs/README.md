@@ -266,6 +266,17 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
   recovers stalled ones, prunes expired results, heals repeat series and flows,
   and sweeps stale debounce and throttle windows. Each of these is
   idempotent, so no single process is load-bearing.
+- **When a delayed job runs.** A worker promotes due delayed and retrying
+  jobs whenever it runs out of work, and ends its idle wait when the next one
+  is due; its promotion sweep also runs every `pollInterval`, at least once a
+  second. Between promotions a worker remembers when the next scheduled job
+  is due, and does not ask again before then. A job this process schedules —
+  added with a delay, rescheduled, or failed into a retry, through any queue,
+  job or worker sharing the driver instance — clears that at once. A job
+  another process (or another driver instance) schedules *earlier* than the
+  remembered time is promoted by the sweep instead: at most one sweep interval
+  (a second by default) after it comes due. The same bound already applied to
+  a delayed job added while a worker was waiting.
 
 ## Queues and adding jobs
 

@@ -32,6 +32,7 @@ import type {
   NamespaceMetricsRead,
   PendingOptionsRewrite,
   PendingOptionsRewriteResult,
+  PromoteDelayedResult,
   QueuedTrigger,
   QueueRef,
   QueueStateEntry,
@@ -4800,37 +4801,47 @@ export class MongoDriver implements JobsDriver {
     q: QueueRef,
     now: number,
     limit: number,
-  ): Promise<number> {
+  ): Promise<PromoteDelayedResult> {
     const jobs = await this.#jobs();
+    const batch = Math.max(1, Math.floor(limit));
 
     // `updateMany` takes no limit, so the batch is chosen first and then
     // updated by id — still conditional on the state, so a concurrent claim
     // is not undone.
-    const due = await jobs
-      .find({
-        ns: q.ns,
-        queue: q.queue,
-        state: { $in: SCHEDULED },
-        runAt: { $lte: now },
-      })
+    //
+    // The read asks for the scheduled jobs in due order, one past the batch
+    // and without a `runAt` bound: whatever it returns after the due ones is
+    // the next due time. So an idle pass is this one query — at most one
+    // document back, the job due next — and the answer `nextDelayedAt` would
+    // give costs nothing extra; a pass that promotes adds the `updateMany`.
+    const head = await jobs
+      .find({ ns: q.ns, queue: q.queue, state: { $in: SCHEDULED } })
       .sort({ runAt: 1 })
-      .limit(Math.max(1, Math.floor(limit)))
-      .project<{ _id: string }>({ _id: 1 })
+      .limit(batch + 1)
+      .project<{ _id: string; runAt: number }>({ _id: 1, runAt: 1 })
       .toArray();
 
+    const due: string[] = [];
+    let nextDueAt: number | null = null;
+    for (const document of head) {
+      if (document.runAt <= now && due.length < batch) {
+        due.push(document._id);
+      } else {
+        nextDueAt = document.runAt;
+        break;
+      }
+    }
+
     if (due.length === 0) {
-      return 0;
+      return { promoted: 0, nextDueAt };
     }
 
     const result = await jobs.updateMany(
-      {
-        _id: { $in: due.map((document) => document._id) },
-        state: { $in: SCHEDULED },
-      },
+      { _id: { $in: due }, state: { $in: SCHEDULED } },
       { $set: { state: "waiting" } },
     );
 
-    return result.modifiedCount;
+    return { promoted: result.modifiedCount, nextDueAt };
   }
 
   async recoverStalled(

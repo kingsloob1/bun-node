@@ -97,6 +97,7 @@ import { newId, newToken } from "../shared/ids";
 import { assertJsonSafe } from "../shared/json";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
+import { noteScheduled } from "./delayedHints";
 import { Job } from "./Job";
 import {
   describeJobDefaults,
@@ -628,6 +629,7 @@ export class BunQueue<
       override,
     });
     const { job, added } = await this.driver.addJob(this.ref, record);
+    this.#noteIfScheduled(this.ref, job);
     const view = this.#view(job, added);
 
     if (!added) {
@@ -706,6 +708,11 @@ export class BunQueue<
       }),
     );
     const results = await this.driver.addJobs(this.ref, records);
+    for (const { job } of results) {
+      if (this.#noteIfScheduled(this.ref, job)) {
+        break;
+      }
+    }
 
     return results.map(({ job, added }) => {
       const view = this.#view(job, added);
@@ -1284,6 +1291,7 @@ export class BunQueue<
     };
 
     const { job, added } = await this.driver.addJob(ref, record);
+    this.#noteIfScheduled(ref, job);
     const view = new Job(
       this.driver,
       ref,
@@ -1475,6 +1483,9 @@ export class BunQueue<
       },
       Date.now(),
     );
+    if (record) {
+      this.#noteIfScheduled(this.ref, record);
+    }
 
     return record ? this.#typed(this.#view(record, false)) : null;
   }
@@ -2299,6 +2310,7 @@ export class BunQueue<
         );
 
         if (updated) {
+          this.#noteIfScheduled(this.ref, updated);
           const view = this.#view(updated, false);
           this.safeEmitScoped("debounced", name, view);
           await this.#publish("debounced", { id: updated.id });
@@ -2474,6 +2486,21 @@ export class BunQueue<
     }
 
     return options.filter ? options.filter(this.#view(record)) : true;
+  }
+
+  /**
+   * Tells this process's workers on `ref` that a job there is now scheduled
+   * (`delayed` or `failed`), when it is, so one that remembered a later due
+   * time promotes again rather than waiting for its sweep. Answers whether it
+   * noted anything.
+   */
+  #noteIfScheduled(ref: QueueRef, job: JobRecord): boolean {
+    if (job.state !== "delayed" && job.state !== "failed") {
+      return false;
+    }
+
+    noteScheduled(this.driver, ref);
+    return true;
   }
 
   /**
@@ -2733,6 +2760,7 @@ export class BunQueue<
     });
 
     const { job, added } = await this.driver.addJob(this.ref, record);
+    this.#noteIfScheduled(this.ref, job);
 
     // The key as the caller named it, here and on the wire: the prefix is
     // storage, not contract.
