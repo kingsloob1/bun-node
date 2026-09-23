@@ -127,6 +127,34 @@ describe("listing and reading", () => {
     ).toMatchObject({ local: false, isPaused: true, isRunning: false });
   });
 
+  it("still reads a runner removed from its manager: the record outlives the registration", async () => {
+    // `runners.remove()` drops a runner from its own process's manager alone.
+    // The backend's registration is permanent — it carries what the cluster
+    // decided about the runner, here a pause — so the API keeps answering for
+    // it, now as a runner no process owns. The core of this, including the
+    // intent surviving into a fresh registration, is pinned in
+    // `__tests__/runner.test.ts`.
+    const h = await withRunners();
+    await h.nightly.start();
+    await h.nightly.pause();
+
+    expect(await h.jobs.runners.remove("nightly")).toBe(true);
+    expect(h.jobs.runners.get("nightly")).toBeUndefined();
+
+    const read = await h.call("GET", "/runners/nightly");
+    expect(read.status).toBe(200);
+    expect(read.body).toMatchObject({
+      id: "nightly",
+      isLocal: false,
+      isPaused: true,
+    });
+
+    const listed = await h.call("GET", "/runners");
+    expect(
+      listed.body.items.find((item: { id: string }) => item.id === "nightly"),
+    ).toMatchObject({ id: "nightly", isLocal: false, isPaused: true });
+  });
+
   it("reads a local runner and a remote one, never its file unless exposed", async () => {
     const h = await withRunners();
 

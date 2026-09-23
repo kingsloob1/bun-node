@@ -565,6 +565,61 @@ describe("BunRunnerManager", () => {
     expect(manager.size).toBe(1);
   });
 
+  it("removes a runner from this manager alone, keeping the record and the intent it carries", async () => {
+    // `remove()` is local to the manager: the backend's registration is
+    // permanent, because it carries what the cluster decided about the runner
+    // — here, a pause — and that has to outlive the process that decided it.
+    // A runner's liveness is its lock, not its record, so nothing but
+    // `driver.purge()` erases one. The management API's half of this (a
+    // removed runner still answering `GET /runners/<id>`) is pinned in
+    // `__tests__/api/api-runners.test.ts`.
+    const namespace = testNamespace();
+    const driver = new MemoryDriver();
+    const manager = new BunRunnerManager({ namespace, driver });
+
+    const nightly = manager.add({
+      id: "nightly",
+      file: fixture("echo"),
+      executionMode: "in-process",
+      waitToExit: false,
+    });
+    started.push(nightly);
+    await nightly.start();
+    await nightly.pause();
+
+    expect(await manager.remove("nightly")).toBe(true);
+
+    // Gone from this manager...
+    expect(manager.size).toBe(0);
+    expect(manager.get("nightly")).toBeUndefined();
+    expect(manager.list()).toEqual([]);
+
+    // ...and still registered with the backend, so every cross-process view
+    // still finds it and it stays controllable.
+    expect(await driver.listRunners(namespace)).toContain("nightly");
+    expect(await manager.discover()).toContain("nightly");
+    const controller = await manager.remote("nightly");
+    expect(controller.isLocal).toBe(false);
+    expect((await controller.info()).isPaused).toBe(true);
+
+    // The intent survives the process: a fresh registration of the same id on
+    // the same driver adopts the pause rather than starting from its options.
+    // This is the assertion that says why permanence is right — without the
+    // record, the pause would be silently lost on the next deployment.
+    const elsewhere = new BunRunnerManager({ namespace, driver });
+    const readopted = elsewhere.add({
+      id: "nightly",
+      file: fixture("echo"),
+      executionMode: "in-process",
+      waitToExit: false,
+    });
+    started.push(readopted);
+    await readopted.start();
+
+    expect(readopted.status).toBe("paused");
+    expect((await readopted.info()).isPaused).toBe(true);
+  });
+
   it("refuses a duplicate id instead of overwriting", () => {
     const manager = new BunRunnerManager({ namespace: testNamespace() });
     const options = {

@@ -27,6 +27,18 @@ export interface BunRunnerManagerOptions {
  *
  * Everything here is namespace-scoped, so a service's admin surface can only
  * reach its own runners.
+ *
+ * **Registration here is process-local; the backend's is permanent.** A
+ * runner also has a record in the driver, written by every `start()` and read
+ * by {@link discover}, {@link remote} and the management API. Nothing ever
+ * removes that record — not {@link remove}, not stopping the runner, not the
+ * process exiting — because it carries what the cluster has decided about the
+ * runner (paused, schedule, configuration overrides), which has to outlive
+ * every process that holds it. A runner's *liveness* is its run lock, not its
+ * record. Workers are deliberately the opposite: a `WorkerInfo` is a
+ * heartbeat, so it expires and a worker leaves `listWorkers()` when it closes.
+ * The only thing that erases a runner record is `driver.purge(namespace)`,
+ * which erases the whole namespace, jobs and all.
  */
 export class BunRunnerManager {
   /** The namespace every runner here belongs to. */
@@ -121,7 +133,20 @@ export class BunRunnerManager {
     return [...this.#runners.values()];
   }
 
-  /** Unregisters a runner, stopping it first unless told not to. */
+  /**
+   * Drops a runner from **this manager**, stopping it first unless told not
+   * to. Returns `false` when the id is not registered here.
+   *
+   * It does not unregister the runner from the backend. Its record stays, so
+   * `driver.listRunners()` — and with it {@link discover}, {@link remote},
+   * the management API's `GET /runners/<id>` and every runner mutation —
+   * still answers for the id, and the runner stays remotely controllable: a
+   * pause or a rescheduled cron set on it is still stored, and is still
+   * adopted by whichever process registers that id next. That is deliberate:
+   * the record carries intent that has to outlive the processes holding the
+   * runner, not liveness — liveness is the run lock. `driver.purge()`, which
+   * erases the whole namespace, is the only thing that erases it.
+   */
   async remove(id: string, options?: { stop?: boolean }): Promise<boolean> {
     const runner = this.#runners.get(id);
     if (!runner) {
