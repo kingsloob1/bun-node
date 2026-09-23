@@ -19,9 +19,9 @@ const jobs = new BunJobs({
 });
 
 /**
- * The sweep cadence the parent runs its rescuer at. It has to reach this
- * process too: a worker holds the queue's stalled-sweep lease for twice its
- * own cadence, so a killed holder hands over on *this* number. See the parent.
+ * The sweep cadence the parent runs its rescuer at. It reaches this process
+ * too, so that every worker on the queue sweeps at the same short interval and
+ * the recovery cannot hinge on which of them does it. See the parent.
  */
 const stalledInterval = Number(process.env.STALLED_INTERVAL ?? 200);
 

@@ -1219,12 +1219,13 @@ await remote.start();
  * Starts `helpers/notifier-remote.ts` in a role, on the same short sweep
  * cadence the rescuer below uses.
  *
- * The child's cadence matters as much as the rescuer's. One worker per queue
- * runs the repair sweeps, under a lease it renews on its own sweep cadence,
- * and the lease lasts twice that cadence — so a holder that is killed hands
- * the sweeps over on *its* cadence, and a fast survivor cannot shorten
- * someone else's lease. At the defaults that is 90 seconds, far longer than
- * this step waits, which is why the cadence is set small on both sides.
+ * Both sides get it so the step's timing does not rest on which worker
+ * sweeps. Every worker sweeps for stalled jobs on its own cadence, so the
+ * shortest on the queue is what finds a job whose process died; were a single
+ * sweeper elected per queue instead, it could as easily be the child that was
+ * holding the job. The 30s default is far longer than this step waits either
+ * way, which is why the cadence is set small on both sides rather than on the
+ * survivor alone.
  */
 function spawnRemote(role: "produce-and-consume" | "hang"): Subprocess {
   const child = Bun.spawn(
