@@ -23,6 +23,9 @@ import {
   isRangeNotRetained,
 } from "../../api/analytics";
 import { MAX_ANALYTICS_SERIES } from "../../api/contract";
+import { queuePath } from "../../api/queues";
+import { runnerPath } from "../../api/runners";
+import { workerPath } from "../../api/workers";
 import { Card } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { Pager } from "../../components/Pager";
@@ -32,7 +35,10 @@ import { Table } from "../../components/Table";
 import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { usePollInterval } from "../../live";
+import { useCan } from "../../meta/hooks";
 import { POLL_INTERVAL_MS } from "../../queryClient";
+import { Link } from "../../router";
+import { useRunnerPagesRouted, useWorkerPagesRouted } from "../workers/routed";
 import { useAnalyticsGate } from "./gate";
 import "./sections.css";
 
@@ -123,6 +129,11 @@ function usePage(rowCount: number, maxSeries: number): PageState {
 export function RunnersSection({ range, picker }: SectionProps) {
   const api = useApiClient();
   const enabled = useAnalyticsGate("runners");
+  // A runner links to its page only where those pages are routed for this
+  // caller; otherwise the name is plain text. A row may also name a runner
+  // that has since been unregistered — the link then lands on the runner
+  // screen's own "no longer exists" state, which is the honest answer.
+  const linkRunners = useRunnerPagesRouted();
   const { analytics, key, request } = useAnalyticsRange(range);
   const maxSeries = analytics?.maxSeries ?? MAX_ANALYTICS_SERIES;
   const refetchInterval = usePollInterval(POLL_INTERVAL_MS);
@@ -233,7 +244,16 @@ export function RunnersSection({ range, picker }: SectionProps) {
                       scope="row"
                       className="queue-name"
                     >
-                      {row.runner}
+                      {linkRunners ? (
+                        <Link
+                          to={runnerPath(row.runner)}
+                          title={`${row.runner}: its runs, history and settings`}
+                        >
+                          {row.runner}
+                        </Link>
+                      ) : (
+                        row.runner
+                      )}
                     </th>
                     <td className="num">{formatNumber(row.totals.started)}</td>
                     <td className="num">
@@ -360,6 +380,11 @@ function RunnersHeadline({
 export function WorkersSection({ range, picker }: SectionProps) {
   const api = useApiClient();
   const enabled = useAnalyticsGate("workers");
+  // The same gates the Workers page uses: a key links only where the worker
+  // pages are routed for this caller, and a queue only with `queues.list`.
+  // A row whose key is not linkable still reads as plain text.
+  const linkKeys = useWorkerPagesRouted();
+  const canQueues = useCan("queues.list");
   const { analytics, key, request } = useAnalyticsRange(range);
   const maxSeries = analytics?.maxSeries ?? MAX_ANALYTICS_SERIES;
   const refetchInterval = usePollInterval(POLL_INTERVAL_MS);
@@ -460,9 +485,24 @@ export function WorkersSection({ range, picker }: SectionProps) {
                       scope="row"
                       className="queue-name"
                     >
-                      {row.key}
+                      {linkKeys ? (
+                        <Link
+                          to={workerPath(row.queue, row.key)}
+                          title={`Every instance of ${row.key}, its settings and its numbers`}
+                        >
+                          {row.key}
+                        </Link>
+                      ) : (
+                        row.key
+                      )}
                     </th>
-                    <td>{row.queue}</td>
+                    <td>
+                      {canQueues ? (
+                        <Link to={queuePath(row.queue)}>{row.queue}</Link>
+                      ) : (
+                        row.queue
+                      )}
+                    </td>
                     <td className="num">
                       {formatNumber(row.totals.completed)}
                     </td>

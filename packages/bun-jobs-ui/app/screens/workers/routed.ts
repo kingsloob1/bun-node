@@ -20,3 +20,21 @@ export function useWorkerPagesRouted(): boolean {
     [meta, sections, can],
   );
 }
+
+/**
+ * Whether the runner pages (`/runners/:runner`) are routed for this caller:
+ * exactly when the Runners nav entry exists, since the routes are built from
+ * the nav. Read the same way, and for the same reason, as
+ * {@link useWorkerPagesRouted} — a section inside a queue's scope must not
+ * offer a link to a route the app never registered.
+ */
+export function useRunnerPagesRouted(): boolean {
+  const meta = useMeta();
+  const { sections } = useUiConfig();
+  const can = useUntargetedCanFn();
+  return useMemo(
+    () =>
+      buildNav({ meta, sections, can }).some((item) => item.id === "runners"),
+    [meta, sections, can],
+  );
+}
