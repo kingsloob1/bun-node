@@ -727,7 +727,7 @@ OSS uses `BRPOP` rather than `BRPOPLPUSH`, and Quirrel's signature is
 | **Trigger.dev** (verified) | v4.6.4. Two nested contracts. **Outer** (supervisor ↔ platform, and it *is* in the open-source repo): `POST /engine/v1/worker-actions/{connect,dequeue,heartbeat}` and `runs/:runId/snapshots/:snapshotId/{attempts/start,attempts/complete,suspend,continue}`. **Inner** (runner ↔ supervisor): a local Workload API on :8020. The *code* contract is "an OCI image our CLI built from your TypeScript" | **Pull** for work — a **short-poll** at 250 ms busy / 1,000 ms idle, ≤10 runs per dequeue, with a `preDequeue` hook that reports free CPU/memory and **can skip the poll entirely when full**. Push only for `run:notify` over socket.io, about runs it already holds | **There is no lock token — the lease is the execution snapshot.** Every action is addressed `(runId, snapshotId)`, so a stale worker acting on an old snapshot is rejected: optimistic concurrency instead of a lock. Plus per-status heartbeat timeouts — 60 s for `EXECUTING`, 600 s for `SUSPENDED` | `Bearer tr_wgt_…` (admin-minted worker-group token) + `x-trigger-worker-managed-secret` + instance name; per-run calls add a runner id and a deployment-derived environment id. **Runners get a separate workload token and never hold the group token** | **Address every worker action as `(runId, snapshotId)` so a stale or duplicated worker is rejected by construction**, and make the dequeue carry the worker's free resources so the *server* right-sizes the batch | **Binding the work unit to a container image built by your own CLI.** It is what makes their worker un-implementable by anyone else — and why their own self-hosted tier loses checkpoints, warm starts and auto-scaling, which remain cloud-only |
 | **Hatchet** (verified) | gRPC `Dispatcher`: `Register` declaring `actions`, **`slots`** (capacity) and per-action `slot_config`, then `ListenV2` — a server stream of `AssignedAction` on which **cancellation is a pushed message**, not a poll result — then unary `SendStepActionEvent`. `PutLog` and `PutStreamEvent` are first-class RPCs on the same channel | Worker dials out; server pushes | Heartbeat every ~4 s, **liveness keyed by session id rather than a timestamp**. **`RefreshTimeout(taskId, increment_timeout_by)` is an explicit extend-lease RPC** — exactly what Temporal deliberately does not have — plus `ReleaseSlot` and `RestoreEvictedTask`, so a durable task waiting seven days is *evicted* rather than holding a slot | Tenant-scoped `HATCHET_CLIENT_TOKEN` in gRPC metadata | Declaring capacity at registration (which is what makes push safe), `should_not_retry` as a field rather than a header, and logs and streamed output as protocol rather than a side channel | **Shipping a serverless transport (2024), leaving it undocumented across a major version, and reusing its name for an unrelated feature.** Hatchet is now rebuilding from scratch what it had in 2024 — see §3.8.1 |
 | **Quirrel** (verified) | A queue bound to one of your own API routes. `POST` is hard-coded, as is `Content-Type: text/plain`; the body *is* the payload string; an **`x-quirrel-meta` header carries `{id, count, exclusive, retry, nextRepetition}` as a JSON string**. 2xx acks, non-2xx retries — and **HTTP 404 means `dontReschedule: true`** | Push. The worker holds no connection and no queue state | **None — no lease, no heartbeat, no visibility timeout.** The HTTP request's lifetime *is* the lease, which is exactly why it fits serverless and why long jobs do not fit at all | `x-quirrel-signature`, via the `secure-webhooks` package written for it. Format `v=<ms>,d=<digest>`; the signed input is **`body + timestamp` concatenated with no separator**; symmetric is HMAC-SHA256 hex, **and there is an asymmetric mode** (`createSign('sha256')`, base64) where the receiver holds only a *public key*. Window `FIVE_MINUTES`, compared with **`Math.abs`** — two-sided, arrived at independently of Inngest. Rotation tries `token` then `quirrelOldToken` | **`404` ⇒ never retry** — it distinguishes *"your handler failed"* from *"your handler isn't there"*, which a pure 2xx/non-2xx contract cannot (§5.5). **The asymmetric mode**: a remote holding only a public key cannot forge a request (§5.6). And end-to-end payload encryption with a 4-char key descriptor so the secret can be rotated | **Signature verification is skipped entirely unless `NODE_ENV === "production"`.** Digest comparison is `===` on hex, not constant-time. The no-separator concatenation is ambiguous — `body="a"`+`ts=11` and `body="a1"`+`ts=1` sign identical bytes. And the auth token doubles as the HMAC key, entangling rotation with blast radius. **Status: not archived, but the last release and the last `main` commits are all 2023-06-26, and the hosted service shut down in 2022** — unmaintained, not dead-lettered |
-| **Graphile Worker** (verified — v0.18.0, 2026-09-08) | **No remote contract; the contract is the SQL schema.** A batched `UPDATE … FROM (… FOR UPDATE SKIP LOCKED)` CTE against `_private_jobs`; the stable public interface is the `graphile_worker.jobs` **view**, which deliberately omits `payload`. **An exhaustive grep of the v0.18.0 tree for a non-Node worker story returns exactly one hit** — *"Executes tasks written in Node.js (these can call out to any other language or networked service)"*. The **producer** side is language-agnostic: anything that can `select graphile_worker.add_job(...)`, including a trigger | Pull, woken by `NOTIFY`, with a 2,000 ms poll as the safety net | `locked_at`/`locked_by` — and `locked_by` is the **pool** id, not the worker's. **No heartbeat at all**; the only recovery is `locked_at < now() - interval '4 hours'` | Postgres credentials | **`LISTEN`/`NOTIFY` for latency plus a short poll for safety — and a random `r` field in the NOTIFY payload to defeat Postgres' in-transaction NOTIFY coalescing** (§3.8.3). Also the `job_key` + `job_key_mode` triad — `replace` = debounce, `preserve_run_at` = throttle — the clearest idempotency vocabulary here. And it publishes *measured* throughput for four locking strategies, which is unusual and worth reading before writing any SQL driver | A **4-hour** fixed stale-lock window with no heartbeat: a crashed pool strands its jobs for hours |
+| **Graphile Worker** (verified — v0.18.0, 2026-09-08) | **No remote contract; the contract is the SQL schema.** A batched `UPDATE … FROM (… FOR UPDATE SKIP LOCKED)` CTE against `_private_jobs`; the stable public interface is the `graphile_worker.jobs` **view**, which deliberately omits `payload`. **An exhaustive grep of the v0.18.0 tree for a non-Node worker story returns exactly one hit** — *"Executes tasks written in Node.js (these can call out to any other language or networked service)"*. The **producer** side is language-agnostic: anything that can `select graphile_worker.add_job(...)`, including a trigger | Pull, woken by `NOTIFY`, with a 2,000 ms poll as the safety net | `locked_at`/`locked_by` — and `locked_by` is the **pool** id, not the worker's. **No heartbeat at all**; the only recovery is `locked_at < now() - interval '4 hours'` | Postgres credentials | **`LISTEN`/`NOTIFY` for latency plus a short poll for safety.** It also puts a random `r` field in the NOTIFY payload to defeat Postgres' in-transaction coalescing — **do not copy that one**: bun-jobs measured it and the coalescing costs nothing here, because its claim loop re-claims after a success rather than waiting (§3.8.3(a)). Also the `job_key` + `job_key_mode` triad — `replace` = debounce, `preserve_run_at` = throttle — the clearest idempotency vocabulary here. And it publishes *measured* throughput for four locking strategies, which is unusual and worth reading before writing any SQL driver | A **4-hour** fixed stale-lock window with no heartbeat: a crashed pool strands its jobs for hours |
 | **River** (verified — v0.47.0, 2026-08-31) | Go over a `river_job` table; `JobGetAvailable` is a `FOR UPDATE SKIP LOCKED` CTE. Non-Go languages get a documented, deliberately **insert-only** client tier — `riverqueue-python` is literally described as *"Python insert-only client for River"*, and both it and the Ruby client state they *"don't support working jobs"* | Pull, woken by `pg_notify('river_insert', …)`, with a Scheduler tick every 5 s | **No lease column and no heartbeat: `state='running'` *is* the lease and it never expires.** Recovery is an out-of-process **Rescuer** at `RescueStuckJobsAfter`, **default 1 hour**, on top of an in-process `JobTimeout` (1 min) and `JobStuckThreshold` (10 s). Worst-case recovery ≈ 1 h 1 min — and River Pro sells *"active job rescue"* to shorten it | Postgres credentials | **The explicit insert-only tier**: a sanctioned producer contract for other languages that does not pretend to be a worker contract — much cheaper than a full protocol and still valuable. Plus `attempted_by` as a **bounded ring** of client ids, so *who touched this job* stays debuggable without unbounded growth | Letting `state='running'` be the lease with an hour-scale rescuer as the only backstop — River's own acknowledged weak spot, which it sells the fix for. *(Only the pgx driver's SQL was read; the sqlite and database/sql drivers may differ.)* |
 | **Oban** (verified — v2.24.0, 2026-08-25) | Elixir; the row names a **worker module**. **Correction to the common belief: Oban Pro for Python (v0.6.4, 2026-09-03) both enqueues *and* executes**, so the runtime welding is no longer absolute — though it is commercial, and whether Elixir and Python workers interoperate on one database is unverified. There is still no HTTP or remote worker protocol in OSS | Pull, `FOR UPDATE SKIP LOCKED`, with `pg_notify` wakeups and a leader-only Stager | `:executing` + **`attempted_by`, which records node + queue + producer nonce**. Liveness comes from the Lifeline plugin's heartbeats and a rescue sweep (`rescue_after`, **60 min** per the 2.23 docs — the 2.24 page is a deprecation stub, so treat the current default as unconfirmed). Leadership itself re-elects every 30 s | Database credentials (plus a shared cookie for `Oban.Peers.Global`) | **`attempted_by` binding a job to node + queue + producer nonce**, which makes orphan rescue *provably* safe — *"guaranteed to only rescue jobs that belong to dead queue processes or nodes"* — rather than time-based guessing. And `Oban.Peer` leader election so sweeping and scheduling run exactly once with no separate coordinator | Naming the job by a language-native module path; and putting orphan rescue behind a leader-elected plugin with an hour-scale default |
 | **Sidekiq** (verified — v8.1.7 on `main`, 2026-09-22) | The *accidental* language-agnostic protocol: JSON on a Redis LIST, format published on a wiki so non-Ruby clients exist — but `class` is a Ruby class name, and **the official wiki lists only *client* (enqueue-side) libraries**. A cross-language *worker* exists (`jrallison/go-workers`) but is unofficial and apparently unmaintained. **Note for any pre-8.0 client: `created_at`/`enqueued_at` became epoch *milliseconds as integers* in Sidekiq 8.0**, having been float seconds | Pull — `BRPOP` with a 2 s timeout so shutdown stays responsive, and `@queues.shuffle` on *every* call for weighting | **OSS has no lease at all: the correction is that it uses `BRPOP`, not `BRPOPLPUSH`, and `UnitOfWork#acknowledge` is literally a no-op** — the job is already gone from Redis, so a `kill -9` loses it. The `LMOVE`-into-a-private-queue reliable fetch is Pro's `super_fetch` only, whose own wiki says *"super_fetch might recover jobs in 5 minutes or 3 hours, there's no guarantee"* | Redis credentials only. Anything that can reach Redis can push a `class` name your workers will instantiate | **The process registry**: `SADD processes <host:pid:nonce>` plus a self-expiring `<identity>` hash rewritten every 10 s with a **60 s TTL**, carrying `busy`, `concurrency`, `rss` and `rtt_us` — and a `<identity>-signals` LIST the process `RPOP`s each beat for remote quiet/stop. Liveness, a live dashboard and remote control in about thirty lines (§3.8.3) | A no-op acknowledge (at-most-once on crash); selling reliable fetch as the paid tier rather than making the durable path the default; and orphan recovery that leans on an hourly full `SCAN`. *(super_fetch's private-queue key format is closed-source and unconfirmed.)* |
@@ -921,10 +921,11 @@ Neither belongs in this plan's phases. The guard key belongs in an issue; the
 
 ### 3.8.3 Four things the survey turned up that have nothing to do with this plan
 
-Each is independent of every decision above, and each is cheaper than
-anything in §11. They belong in issues, not in this plan's phases.
+Each is independent of every decision above. None belongs in this plan's
+phases. **(a) closed as a null result** and needs nothing; the rest are
+issue-sized and cheaper than anything in §11.
 
-#### (a) A latency bug in the shipped SQL driver, found via Graphile Worker
+#### (a) The `pg_notify` collapse in the SQL driver — measured, and it costs nothing
 
 Graphile emits `pg_notify('jobs:insert', '{"r":<random>,"count":<n>}')`. The
 random `r` exists for one reason: **Postgres de-duplicates identical
@@ -948,28 +949,68 @@ of N jobs calls `pg_notify` N times with an identical payload inside one
 implicit transaction. **A bulk enqueue therefore delivers one notification, not
 N.**
 
-**The de-duplication is confirmed in the code; the latency consequence is
-not, and may not follow.** Challenged 2026-09-22 by the bun-jobs session, whose
-objection is a good one: a worker re-claims immediately after a *successful*
-claim and only waits on `pollInterval` when a claim comes back **empty**, and
-`LISTEN` reaches every listening session — so a single wake can drain an
-entire backlog without a second notification. Whether the collapse costs
-anything therefore depends on the claim-batch size against the enqueued chunk
-size, and on how many workers are listening. It is being measured now; **do
-not act on this item until those numbers land.** The paragraph below states the
-original reasoning, which stands only if the measurement supports it.
+**That much is true. The latency consequence this section originally drew from
+it is not — measured 2026-09-22, and the answer is a clean null.** The
+conclusion below replaces it; the numbers now live beside the code, in the
+comment above `notifyingInsert` in `lib/drivers/sql/dialect.ts`.
 
-Were it to hold: workers wake once, claim a batch, and the remainder of the
-backlog waits for `pollInterval` (1,000 ms by default) instead of being
-announced.
+The objection came from the bun-jobs session and it holds in the code:
+`LISTEN` delivers to **every** listening session and `Arrivals.#listen` fires
+*every* waiter on the channel, so one notification wakes every idle worker
+everywhere. Each then claims, and `BunQueueWorker.#iterate` returns as soon as
+`claimed > 0` and claims again at once — **only an empty claim reaches
+`#idle`**. One wake therefore drains a whole backlog, and `mark`/`take` covers
+the race where a notification lands between an empty claim and the wait
+registration.
 
-Scope, stated honestly: **read from the source, not measured.** It would be a
-latency bug, not a correctness one — polling finds the jobs regardless, and the driver
-already documents notifications as best-effort. `addJob` (singular) is
-unaffected. The fix is Graphile's: put something varying in the payload, which
-costs nothing and is already the pattern the driver's own arrivals channel
-could carry a count on. **Worth a benchmark against `enqueue-bulk` before and
-after**, since that scenario is exactly where it would show.
+Measured on PostgreSQL 16.15, four rounds interleaved against a unique-payload
+variant (`pg_notify(channel, id::text)`), W idle workers × concurrency C, one
+`addBulk` of N, medians in ms of add → first claim and add → last completion:
+
+| | constant payload | unique payload |
+|---|---|---|
+| W1 C1 N50 *(1 vs 50 notifies)* | 12.2 / 59.4 | 12.6 / 62.1 |
+| W1 C1 N500 | 23.5 / 547.6 | 23.7 / 564.0 |
+| W4 C8 N500 | 23.8 / 73.6 | 23.5 / 74.0 |
+| W16 C1 N500 | 23.4 / 129.6 | 28.3 / 119.2 |
+| W16 C8 N500 | 24.0 / 61.1 | 28.8 / 62.6 |
+
+**All 12 pairs tied inside the noise, in both directions**, across exactly the
+two axes the objection said would decide it — claim batch against chunk size,
+and how many workers listen. The `W1 C1 N500` row is the most informative:
+547 ms to drain 500 jobs one at a time is the re-claim-after-success path
+working. A `pollInterval` dependency would put a floor under that row, and
+there is none.
+
+A tie can hide a rare miss, so a second test was built to expose a lost wake —
+four workers about to wait, three overlapping `addBulk`s per round with jitter,
+and `pollInterval`/`maxBlock` at **10 s** so any missed wake would show as a
+ten-second tail. 1,200 jobs over 240 adds: p50 4.7 ms, p99 14.7 ms, max
+23.9 ms, nothing over a second, unique variant matching. **Caveat worth
+keeping:** the collapse is *per transaction*, so those 240 adds were 240
+notifications either way — that test stresses the wake path, not the collapse.
+The collapse itself is exercised by the N50/N500 rows.
+
+Two facts that finish it off: **nothing reads the payload** — `Arrivals.#listen`
+registers a zero-argument callback that only counts — and MySQL, MariaDB and
+SQLite have no `NOTIFY` at all, their `notifyingInsert` being the identity, so
+none of this ever reached them.
+
+**Verdict: no action. Leave the payload constant**, and do not "fix" it later
+without re-reading this. The unique variant was, if anything, slightly *worse*
+at W16 first-claim (28.3/28.8 against 23.4/24.0) — not real either, but it is
+not a free change made for tidiness.
+
+**Why this item is kept rather than deleted.** It is the third claim from this
+survey to fall to someone reading the code instead of the summary, after
+§3.8.2's stalled-grace premise and the advisory-lock lead that did not exist
+anywhere in the codebase. The pattern across all three is worth more than any
+one of them: **the survey's *observations* held up and its *consequences* did
+not.** Graphile really does randomise its payload, Postgres really does
+coalesce, and `SqlDriver` really does send a constant — every observable fact
+was right. What was wrong every time was the inference about what those facts
+cost in a system whose claim loop nobody had read. Treat a cross-project
+comparison as a source of questions, not of conclusions.
 
 #### (b) bun-jobs already dodged a Bun `worker_threads` trap — keep it that way
 
@@ -2863,9 +2904,9 @@ describes and should be read in full before phase 2.
 **Read the provenance markers.** Every row is tagged as read-by-me, read by a
 delegated agent at a pinned version, or unverified, and the distinction is
 load-bearing rather than decorative. Three claims that reached an earlier draft
-of this plan were later withdrawn or re-attributed — the stalled-grace
-recommendation in §3.8.2, the `pg_notify` latency consequence in §3.8.3(a), and
-the `worker_threads` stdio trap — and every one failed the same way: a
+of this plan were later withdrawn, disproved or re-attributed — the
+stalled-grace recommendation in §3.8.2, the `pg_notify` latency consequence in
+§3.8.3(a) (measured, null), and the `worker_threads` stdio trap — and every one failed the same way: a
 plausible inference from a secondary source that nobody had checked against the
 code it described.
 
