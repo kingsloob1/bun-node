@@ -206,7 +206,7 @@ export const WorkerSchema = s.named(
     sweeps: s.optional(
       s.boolean({
         description:
-          "Whether this worker runs the queue's **housekeeping sweeps** — the minute pass: pruning expired results, healing repeat series, sweeping stale queue state — which is what its `maintenance` option decides. It says nothing about liveness: promoting delayed jobs, recovering stalled ones and healing flows happen on every worker and cannot be turned off. Absent on an older worker, and absent is **not** `false`: it means too old to say — so a queue counts as having no sweeper only when at least one live worker reports `false` and none reports `true`, never merely because none reports it at all.",
+          'Whether this worker **takes part in** the queue\'s housekeeping sweeps — the minute pass: pruning expired results, healing repeat series, sweeping stale queue state — which is what its `maintenance` option decides. Taking part, not performing: the minute pass is leased, so on a queue of five `true` workers exactly one holds the lease on any given pass and the rest stand down — do not show it as "sweeping now". It says nothing about liveness: promoting delayed jobs, recovering stalled ones and healing flows happen on every worker and cannot be turned off. Absent on an older worker, and absent is **not** `false`: it means too old to say — so a queue counts as having no sweeper only when at least one live worker reports `false` and none reports `true`, never merely because none reports it at all.',
       }),
     ),
     config: s.optional(WorkerConfigSchema),

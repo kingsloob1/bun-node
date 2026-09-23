@@ -1795,9 +1795,14 @@ export interface WorkerDto {
    */
   heartbeatRttMs?: number;
   /**
-   * Whether this worker runs the queue's **housekeeping sweeps** — the
-   * minute pass: pruning expired results, healing repeat series, sweeping
+   * Whether this worker **takes part in** the queue's housekeeping sweeps —
+   * the minute pass: pruning expired results, healing repeat series, sweeping
    * stale queue state — which is what its `maintenance` option decides.
+   *
+   * Taking part, not performing: the minute pass is leased, so on a queue of
+   * five `true` workers exactly one holds the lease on any given pass and the
+   * rest stand down. Do not show it as "sweeping now" — a worker that stood
+   * down this minute is not a queue without a sweeper.
    *
    * **It says nothing about liveness**: promoting delayed jobs, recovering
    * stalled ones and healing flows happen on every worker and cannot be

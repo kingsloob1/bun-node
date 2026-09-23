@@ -1466,10 +1466,17 @@ export interface WorkerInfo {
    */
   heartbeatRttMs?: number;
   /**
-   * Whether this worker runs the queue's **housekeeping sweeps** — the
-   * minute pass: the expiry prune, the repeat heal and the queue-state
+   * Whether this worker **takes part in** the queue's housekeeping sweeps —
+   * the minute pass: the expiry prune, the repeat heal and the queue-state
    * sweeps — which is what its `maintenance` option decides. `true` by
    * default.
+   *
+   * Taking part, not performing: the minute pass is leased, so on a queue of
+   * five `true` workers exactly one holds the lease on any given pass and the
+   * other four stand down. `true` therefore means "arms the housekeeping
+   * timer and contends for its lease", which is the question a reader
+   * actually wants answered — a worker that stood down this minute is not a
+   * queue without a sweeper.
    *
    * **It says nothing about liveness.** Promoting delayed jobs, recovering
    * stalled ones and healing flows happen on every worker and cannot be

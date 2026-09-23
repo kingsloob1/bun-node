@@ -122,10 +122,90 @@ import {
 import { WorkerMetricsRecorder } from "./workerMetrics";
 
 /**
- * The queue-state entry naming the one worker that heals the queue's flows:
- * `{ holder, until }`, taken by compare-and-set (C12).
+ * The queue-state entry naming the one worker that runs the queue's
+ * stalled-interval sweeps — stalled recovery and flow healing:
+ * a {@link SweepLease}, taken by compare-and-set (C12).
+ *
+ * The name is the one the flow-heal lease carried when flow healing was the
+ * only leased sweep. It is kept so that a fleet part-way through an upgrade
+ * shares a single lease rather than electing one leader per version.
  */
-const FLOW_HEAL_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
+const STALLED_SWEEP_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
+
+/**
+ * The queue-state entry naming the one worker that runs the queue's minute
+ * sweeps — pruning, repeat healing, the window sweep and the worker-control
+ * sweep. The same {@link SweepLease} shape as {@link STALLED_SWEEP_LEASE}.
+ */
+const MINUTE_SWEEP_LEASE = `${RESERVED_STATE_PREFIX}msweep`;
+
+/**
+ * What one of the queue's sweep leases records: who is sweeping, until when,
+ * and how often they sweep.
+ */
+interface SweepLease {
+  /** The id of the worker that holds the lease. */
+  holder?: unknown;
+  /** The epoch millisecond the lease lapses at, if nobody renews it. */
+  until?: unknown;
+  /**
+   * The holder's cadence for this sweep, in milliseconds — what the queue is
+   * actually swept at while this worker holds the lease, and what a faster
+   * worker measures itself against before taking over. Absent on a lease
+   * written before this was recorded; see
+   * {@link SWEEP_LEASE_TAKEOVER_FACTOR}.
+   */
+  cadence?: unknown;
+}
+
+/**
+ * How many of its own cadences a sweep lease lasts. The holder renews it on
+ * every pass, so it survives one missed pass and lapses after two; another
+ * worker's next pass then falls within one more cadence, which is what bounds
+ * the hand-over at three.
+ */
+const SWEEP_LEASE_LIFETIMES = 2;
+
+/**
+ * How much longer than its own a holder's cadence must be before a worker
+ * takes a live lease from it: the lease settles on the fastest sweeper rather
+ * than on whoever won the first race, so a worker deliberately given a short
+ * `stalledInterval` governs the queue whether or not it started first.
+ *
+ * It is {@link SWEEP_LEASE_LIFETIMES} deliberately, not an arbitrary number: a
+ * worker takes over only when the whole lease it would take — two of its own
+ * cadences — still fits inside a single one of the holder's. A hand-over
+ * therefore always at least halves how often the queue is swept, never trades
+ * one cadence for a barely different one.
+ *
+ * **Why it cannot thrash.** Worker B takes from holder A only when
+ * `cA > 2·cB`.
+ *
+ * - *Equal or near-equal cadences never move it.* `cA > 2·cA` is false, and
+ *   so is anything within a factor of two, so two workers configured alike —
+ *   the overwhelmingly common fleet — never take the lease from each other:
+ *   whoever wins the first race keeps it exactly as in #108.
+ * - *The slow holder cannot take it back.* After B takes over, the lease
+ *   records `cB`, and A would need `cB > 2·cA`; but `cA > 2·cB` gives
+ *   `2·cA > 4·cB > cB`. False for every positive pair.
+ * - *And no longer cycle exists either.* Each takeover at least halves the
+ *   recorded cadence, so the recorded value is strictly decreasing: a fleet
+ *   spanning a factor of `k` hands over at most `log2(k)` times, ever, and
+ *   then never again.
+ *
+ * A lease that records no cadence at all — one written by a worker from before
+ * this, which shares the `fheal` name — is waited out rather than taken early.
+ * An unknown cadence is not a known-slower one, and treating it as slower
+ * would have a new worker and an old one take the lease from each other on
+ * alternate passes, which is the one thing this must not do.
+ */
+const SWEEP_LEASE_TAKEOVER_FACTOR = SWEEP_LEASE_LIFETIMES;
+
+/**
+ * How often, in milliseconds, the sweeps that are not tied to the stalled
+ * interval run: pruning, repeat healing, windows and worker controls.
+ */
+const MINUTE_SWEEP_INTERVAL = 60_000;
 
 /** How many jobs one maintenance sweep touches. */
 const MAINTENANCE_BATCH = 100;
@@ -1323,6 +1403,9 @@ export class BunQueueWorker<
     this.#setPhase("stopping", options?.reason);
     this.#wake.abort();
     this.#disarmMaintenance();
+    // A parked worker runs no sweeps, so it must not go on holding the leases
+    // for them; the expiry would cover it, three cadences later.
+    void this.#releaseSweepLeases();
     void this.#report();
 
     const cancel = createDeferred<void>();
@@ -1505,6 +1588,11 @@ export class BunQueueWorker<
       clearInterval(timer);
     }
     this.#timers.clear();
+
+    // Before either path below closes the driver: a worker leaving hands the
+    // queue's sweeps to another straight away, rather than leaving them to
+    // wait out the lease it will never renew again.
+    await this.#releaseSweepLeases();
 
     if (this.#reportTimer) {
       clearInterval(this.#reportTimer);
@@ -2750,31 +2838,61 @@ export class BunQueueWorker<
       return;
     }
 
+    await this.#healParents();
+    await this.#healChildren();
+  }
+
+  /**
+   * Delivers again anything this worker recorded as undelivered. Its own work,
+   * not the queue's: no other worker has these keys, so it runs on every
+   * worker rather than under the sweep lease.
+   */
+  async #redeliverPending(): Promise<void> {
+    if (!this.driver.recordChild || !this.driver.markChildRecorded) {
+      return;
+    }
+
     for (const key of [...this.#redeliveries.keys()]) {
       if (this.#closing) {
         return;
       }
       await this.#redeliver(key);
     }
-
-    // The walks below read the queue's shared state, so one worker per queue
-    // does them rather than every worker on it (C12). A redelivery above is
-    // this worker's own and always runs.
-    if (!(await this.#holdsFlowHealLease())) {
-      return;
-    }
-
-    await this.#healParents();
-    await this.#healChildren();
   }
 
   /**
-   * Takes or renews the queue's flow-heal lease, answering whether this
-   * worker holds it. The lease lasts two stalled intervals, so a holder that
-   * dies hands over within about a minute at the defaults; a driver without
-   * queue state has no lease and every worker heals, as before.
+   * Takes or renews one of the queue's sweep leases, answering whether this
+   * worker holds it — so that one worker per queue runs the sweeps that read
+   * and repair the queue's shared state, rather than every worker on it
+   * running the same pass (C12, item 7).
+   *
+   * The lease is taken for {@link SWEEP_LEASE_LIFETIMES} times `cadence` —
+   * the *taker's* cadence, always, so the bound follows whoever holds it now
+   * and tightens as they sweep more often. A holder whose process dies leaves
+   * two of its own cadences of lease behind, and the next worker's pass takes
+   * it over within one more of that worker's: three cadences in a fleet
+   * configured alike (90 seconds for the stalled sweeps at the defaults, three
+   * minutes for the minute sweeps). A graceful park or close hands over at
+   * once by releasing what it holds. A driver without queue state has no lease
+   * and every worker sweeps, exactly as before.
+   *
+   * A live lease is not the end of it: a worker whose own cadence is
+   * materially shorter than the holder's takes it over there and then, so the
+   * queue is swept at the shortest `stalledInterval` among its workers rather
+   * than at whichever worker won the first race. See
+   * {@link SWEEP_LEASE_TAKEOVER_FACTOR} for the threshold and why it settles.
+   * It costs no extra driver call: the entry this already reads to find out
+   * whether it holds the lease is the one that says whose cadence is on it.
+   *
+   * The lease is an optimisation, never a correctness mechanism: every sweep
+   * under it is idempotent and atomic at the driver, so two holders during a
+   * hand-over duplicate work and never corrupt it — which is also why a
+   * takeover needs no coordination beyond the compare-and-set below.
+   *
+   * @param name The reserved queue-state entry holding the lease.
+   * @param cadence How often, in milliseconds, this worker runs this sweep.
    */
-  async #holdsFlowHealLease(): Promise<boolean> {
+  async #holdsSweepLease(name: string, cadence: number): Promise<boolean> {
     if (
       typeof this.driver.getQueueState !== "function" ||
       typeof this.driver.setQueueState !== "function"
@@ -2783,28 +2901,111 @@ export class BunQueueWorker<
     }
 
     const now = Date.now();
-    const entry = await this.driver.getQueueState(this.ref, FLOW_HEAL_LEASE);
-    const lease = entry?.value as { holder?: unknown; until?: unknown } | null;
+    const entry = await this.driver.getQueueState(this.ref, name);
+    const lease = entry?.value as SweepLease | null;
 
+    // Held by someone else and still live. Take it anyway if this worker
+    // sweeps materially more often than the holder does; otherwise stand down.
     if (
       lease &&
       lease.holder !== this.id &&
       typeof lease.until === "number" &&
-      lease.until > now
+      lease.until > now &&
+      !(
+        typeof lease.cadence === "number" &&
+        lease.cadence > SWEEP_LEASE_TAKEOVER_FACTOR * cadence
+      )
     ) {
+      this.#sweepLeases.delete(name);
       return false;
     }
 
     const version = await setReservedState(
       this.driver,
       this.ref,
-      FLOW_HEAL_LEASE,
-      { holder: this.id, until: now + 2 * this.#options.stalledInterval },
+      name,
+      {
+        holder: this.id,
+        until: now + SWEEP_LEASE_LIFETIMES * cadence,
+        cadence,
+      },
       entry?.version ?? null,
     );
 
     // Lost the race to another worker taking it at the same moment.
-    return version !== null;
+    if (version === null) {
+      this.#sweepLeases.delete(name);
+      return false;
+    }
+
+    this.#sweepLeases.add(name);
+    return true;
+  }
+
+  /**
+   * Gives up every sweep lease this worker holds, so that a worker being
+   * parked or closed hands the queue's sweeps to another straight away rather
+   * than leaving them to wait out an expiry.
+   *
+   * Best effort, and deliberately so: the expiry is what guarantees the
+   * hand-over, and a worker that is killed, or whose driver has already gone,
+   * simply lets its lease lapse. It only ever clears a lease still recorded
+   * against itself, never one another worker has since taken over.
+   */
+  async #releaseSweepLeases(): Promise<void> {
+    const held = [...this.#sweepLeases];
+    this.#sweepLeases.clear();
+
+    if (
+      held.length === 0 ||
+      typeof this.driver.getQueueState !== "function" ||
+      typeof this.driver.setQueueState !== "function"
+    ) {
+      return;
+    }
+
+    for (const name of held) {
+      try {
+        const entry = await this.driver.getQueueState(this.ref, name);
+        const lease = entry?.value as SweepLease | null;
+
+        if (!entry || lease?.holder !== this.id) {
+          continue;
+        }
+
+        await setReservedState(
+          this.driver,
+          this.ref,
+          name,
+          null,
+          entry.version,
+        );
+      } catch {
+        // Left to lapse: a lease nobody can clear still expires.
+      }
+    }
+  }
+
+  /**
+   * The sweep leases this worker currently holds, so parking or closing it can
+   * hand them over rather than leaving the queue's sweeps to wait out an
+   * expiry. Empty on a driver without queue state, which has no leases.
+   */
+  readonly #sweepLeases = new Set<string>();
+
+  /**
+   * Whether this worker holds `name` according to what its last pass recorded
+   * — no driver read, so it is free to ask. True on a driver without queue
+   * state, where there is no lease and every worker sweeps.
+   *
+   * @param name The reserved queue-state entry holding the lease.
+   */
+  #holdsRecordedSweepLease(name: string): boolean {
+    return (
+      this.#sweepLeases.has(name) ||
+      typeof this.driver.getQueueState !== "function" ||
+      typeof this.driver.setQueueState !== "function"
+    );
   }
 
   /** Step 2 of {@link #healFlows}: parents waiting on children. */
@@ -3528,6 +3729,7 @@ export class BunQueueWorker<
       if (stopped) {
         this.#setPhase("stopped", "stopped persistently");
         this.#disarmMaintenance();
+        void this.#releaseSweepLeases();
         changed = true;
       }
     }
@@ -4074,7 +4276,15 @@ export class BunQueueWorker<
 
   /**
    * Arms the background passes this worker contributes to — the two halves of
-   * what used to be one `maintenance` switch.
+   * what used to be one `maintenance` switch, each under its own lease.
+   *
+   * Every pass on either timer reads and repairs state belonging to the
+   * **queue** rather than to this worker, so each timer runs under a sweep
+   * lease: one worker per queue does the pass and the rest spend a single
+   * queue-state read finding that out (C12, item 7). What is genuinely this
+   * worker's own — redelivering its undelivered flow events, and promoting
+   * delayed jobs, which is what bounds its own next wake-up — stays on every
+   * worker and takes no lease at all.
    *
    * **Liveness is armed unconditionally**: the stalled sweep, the flow heal
    * that rides it, and the delayed promotion. Each is the only thing that
@@ -4089,23 +4299,45 @@ export class BunQueueWorker<
    * queue-state sweeps. Nothing stalls while they wait — a worker that skips
    * them costs the queue tidiness, not progress — so a fleet may leave them
    * to a subset of its workers, and one that opts out arms no timer for them
-   * and makes no call of theirs.
+   * and makes no call of theirs. It never reads or takes
+   * {@link MINUTE_SWEEP_LEASE} either: a lease for a timer it does not arm
+   * would be a lease it could win and then never sweep under, which is
+   * strictly worse than not contending.
    *
    * **One `if`, on one timer, and nothing else.** The liveness passes above
-   * it carry no `maintenance` check at all, deliberately. `#healFlows` takes
-   * {@link FLOW_HEAL_LEASE} so that one worker per queue does the healing,
-   * and *contending for that lease is how a worker takes part* — one
+   * it carry no `maintenance` check at all, deliberately — and that includes
+   * their lease. The stalled timer takes {@link STALLED_SWEEP_LEASE} so that
+   * one worker per queue recovers stalled jobs and heals flows, and
+   * **contending for that lease is how a worker takes part** — one
    * queue-state read per stalled interval, which is the correct price for an
-   * opt-out worker to pay. The same will be true of any lease a later change
-   * puts on the stalled sweep. A worker that skipped either because it had
-   * opted out of housekeeping would recreate exactly the bug this split
-   * fixes, on a queue whose only worker sets `maintenance: false`. Do not
-   * tidy the two paths into one gate.
+   * opt-out worker to pay. An opt-out worker that skipped the stalled lease would
+   * never be the one holding it, so on a queue whose only worker sets
+   * `maintenance: false` nothing would ever recover a stalled job: exactly
+   * the bug this split fixes, reached through the lease instead of the timer.
+   * That the two leases differ here is the whole point. Do not tidy them into
+   * one gate.
+   *
+   * **Cadence.** The stalled sweeps run at this worker's `stalledInterval`,
+   * which workers on a queue may set differently, so their lease settles on
+   * the shortest of them; the minute sweeps run at
+   * {@link MINUTE_SWEEP_INTERVAL} on every worker, so theirs is never
+   * contested for cadence and stays with whoever took it.
    */
   #armMaintenance(): void {
     this.#passesArmed = true;
 
     this.#every(this.#options.stalledInterval, async () => {
+      await this.#redeliverPending();
+
+      if (
+        !(await this.#holdsSweepLease(
+          STALLED_SWEEP_LEASE,
+          this.#options.stalledInterval,
+        ))
+      ) {
+        return;
+      }
+
       const { requeued, dead } = await this.driver.recoverStalled(
         this.ref,
         Date.now(),
@@ -4125,15 +4357,25 @@ export class BunQueueWorker<
 
     this.#armPromotion();
 
-    // Liveness is armed. The one line the option decides, and everything past
-    // it is housekeeping.
+    // Liveness is armed, lease and all. The one line the option decides, and
+    // everything past it is housekeeping — including its lease, which an
+    // opt-out worker never reads.
     if (!this.#sweeps) {
       return;
     }
 
     this.#housekeepingArmed = true;
 
-    this.#every(60_000, async () => {
+    this.#every(MINUTE_SWEEP_INTERVAL, async () => {
+      if (
+        !(await this.#holdsSweepLease(
+          MINUTE_SWEEP_LEASE,
+          MINUTE_SWEEP_INTERVAL,
+        ))
+      ) {
+        return;
+      }
+
       await this.#pruneExpired();
       await this.#healRepeats();
       await this.#sweepWindows();
@@ -4148,7 +4390,13 @@ export class BunQueueWorker<
    *
    * Both read it here rather than the option, so the record can never
    * disagree with what the worker actually arms. It says nothing about
-   * liveness: every worker promotes and recovers whatever this answers.
+   * liveness: every worker promotes, and every worker contends for
+   * {@link STALLED_SWEEP_LEASE} and recovers while it holds it, whatever this
+   * answers.
+   *
+   * It reports what the worker arms and contends for, not what it did this
+   * minute: on a queue of `true` workers, one holds
+   * {@link MINUTE_SWEEP_LEASE} on any given pass and the rest stand down.
    */
   get #sweeps(): boolean {
     return this.#options.maintenance;
@@ -4201,15 +4449,29 @@ export class BunQueueWorker<
     }
   }
 
-  /** Runs {@link #pruneExpired} again after {@link PRUNE_CATCH_UP_MS}. */
+  /**
+   * Runs {@link #pruneExpired} again after {@link PRUNE_CATCH_UP_MS}.
+   *
+   * Only while this worker still holds the minute sweep's lease — checked
+   * against what it recorded, not with another queue-state read, since the
+   * lease it took a moment ago outlasts this pause many times over.
+   */
   #pruneSoon(): void {
-    if (this.#closing || !this.#housekeepingArmed) {
+    if (
+      this.#closing ||
+      !this.#housekeepingArmed ||
+      !this.#holdsRecordedSweepLease(MINUTE_SWEEP_LEASE)
+    ) {
       return;
     }
 
     const timer = setTimeout(() => {
       this.#timers.delete(timer);
-      if (this.#closing || !this.#housekeepingArmed) {
+      if (
+        this.#closing ||
+        !this.#housekeepingArmed ||
+        !this.#holdsRecordedSweepLease(MINUTE_SWEEP_LEASE)
+      ) {
         return;
       }
       void this.#pruneExpired().catch((error: unknown) => {
