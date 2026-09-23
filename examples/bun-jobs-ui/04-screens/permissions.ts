@@ -459,6 +459,14 @@ interface ScreenInputs {
   worker?: WorkerDto;
   /** Every worker in the table on screen: the columns depend on them all. */
   workerTable?: readonly WorkerDto[];
+  /**
+   * Whether the worker table on screen **asks** for the Memory column
+   * (`WorkerTable`'s `showMemory`): the Workers page and a worker page's
+   * Instances table do, a queue's Workers panel — a narrow control surface —
+   * does not. Asking is not enough: the column still needs a worker reporting
+   * `rssBytes`. Defaults to `false`, as the prop does.
+   */
+  workerTableMemory?: boolean;
   /** The unfiltered `GET /workers`, which the Workers page's filters offer from. */
   workerList?: readonly WorkerDto[];
   /** The answer to the last worker instruction sent (`?wait=2000`). */
@@ -1424,6 +1432,19 @@ const GATES = [
         (worker) =>
           worker.completed !== undefined || worker.failed !== undefined,
       ) === true,
+  },
+  {
+    // Two conditions, and the first is the table's own: the Workers page and a
+    // worker page's Instances table pass `showMemory`, a queue's Workers panel
+    // does not. The figure is the *process's* resident memory at that report,
+    // so two workers sharing a pid repeat one number and the column is never
+    // summed; a worker reporting none shows "—", because absent is not zero.
+    name: "worker table: Memory column",
+    row: "Workers table Memory column (the Workers page and a worker page's Instances table, not a queue's Workers panel)",
+    map: "worker",
+    when: ({ workerTableMemory, workerTable }) =>
+      workerTableMemory === true &&
+      workerTable?.some((worker) => worker.rssBytes !== undefined) === true,
   },
   {
     name: "worker: instruction says done (applied)",
@@ -4382,6 +4403,30 @@ checkEqual(
     workersPage["worker table: Completed / Failed columns"],
   ],
   [true, true, true, true, true, true],
+);
+// The Memory column: two conditions, one of them the table's own. Both real
+// workers here report `rssBytes` (it rides the heartbeat), so the only thing
+// left to decide is whether the table asked.
+checkEqual(
+  "both report their process's resident memory",
+  [mailer, auditor].map((worker) => typeof worker.rssBytes),
+  ["number", "number"],
+);
+checkEqual(
+  "the Memory column: the Workers page asks and somebody reports; a queue's Workers panel never asks; a table of workers reporting none has no column even where it is asked for",
+  [
+    workerRow(mailer, boot, workerList, { workerTableMemory: true })[
+      "worker table: Memory column"
+    ],
+    workerRow(mailer, maps.mail!)["worker table: Memory column"],
+    workerRow(
+      mailer,
+      boot,
+      workerList.map(({ rssBytes: _rssBytes, ...rest }) => rest),
+      { workerTableMemory: true },
+    )["worker table: Memory column"],
+  ],
+  [true, false, false],
 );
 checkEqual(
   "a worker list whose workers carry no host (serialize.exposeHosts off): no Host filter",

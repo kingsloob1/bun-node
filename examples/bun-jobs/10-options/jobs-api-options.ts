@@ -44,6 +44,11 @@
  * - **A runner's `status` is its lifecycle**, not a run in flight: `idle`
  *   is not started, `running` is started with its schedule armed. Whether a
  *   run is in flight is `isRunning`, on every list item, remote ones too.
+ * - **A worker record's `rssBytes` and `heartbeatRttMs` are optional
+ *   everywhere**, including on the contract: absent, never `0`, on a record
+ *   that lacks them. `rssBytes` is the *process's* memory, so a column of it
+ *   must never be summed — [`read-apis.ts`](./read-apis.ts) covers the record
+ *   itself and how to total a fleet.
  */
 import type {
   DriverEvent,
@@ -60,6 +65,7 @@ import type {
   RepeatableDto,
   RunnerInfoDto,
   RunnerListItemDto,
+  WorkerDto,
 } from "@kingsleyweb/bun-jobs/api/contract";
 import { BunRouter, createTestLogger } from "@kingsleyweb/bun-common";
 import {
@@ -72,6 +78,7 @@ import {
   JOBS_API_MUTATIONS,
   JOBS_API_OPT_IN_ACTIONS,
   JobsNotifier,
+  registerWorkerRecord,
   runnerKey,
 } from "@kingsleyweb/bun-jobs";
 import {
@@ -1444,6 +1451,127 @@ check(
 
 await worker.close();
 await running;
+
+/* ------------------------------------------------------------------ */
+step("The worker reads carry rssBytes and heartbeatRttMs, or leave them out");
+
+// Two optional samples that ride the heartbeat write: `rssBytes`, the
+// **process's** resident memory (`process.memoryUsage.rss()` — two workers in
+// one process report the same number, so a table must never sum the column;
+// `read-apis.ts` shows how to total a fleet instead), and `heartbeatRttMs`,
+// how long the worker's own heartbeat *write* took at the driver — a round
+// trip, not a network ping, and the previous write's, since a write cannot
+// time itself. All three read routes carry them, and every one leaves them out
+// of a record that has neither: absent, never `0`.
+const samplesContext = context("worker-samples");
+const sampling = mount({ actions: [...JOBS_API_ACTIONS] }, samplesContext);
+const sampleQueue = samplesContext.queue("mail");
+const sampleWorker = samplesContext.worker("mail", async () => "ok", {
+  id: "mail.sampled",
+  reportInterval: 150,
+  pollInterval: 25,
+});
+const samplingRun = sampleWorker.run();
+
+// Beside it, a record from a worker that reports neither field — what an older
+// worker in the same fleet writes — put straight into the registry.
+const olderAt = Date.now();
+await registerWorkerRecord(sampleQueue.driver, sampleQueue.ref, {
+  id: "mail.older",
+  queue: "mail",
+  host: "another-host",
+  pid: 4242,
+  concurrency: 1,
+  active: 0,
+  paused: false,
+  startedAt: olderAt - 5_000,
+  heartbeatAt: olderAt,
+  expiresAt: olderAt + 60_000,
+});
+
+// The round trip appears on the *second* report, so wait for it rather than for
+// the record: the first one has nothing to report yet.
+await waitFor("the live worker's record to carry a round trip", async () => {
+  const live = await sampleQueue.listWorkers();
+  return live.some(
+    (info) => info.id === "mail.sampled" && info.heartbeatRttMs !== undefined,
+  );
+});
+
+/**
+ * The three routes that answer a worker record. A path ending in `/` is the
+ * single read, which takes the worker's id; the other two are listings.
+ */
+const WORKER_READS = [
+  ["GET /workers", "/workers"],
+  ["GET /queues/mail/workers", "/queues/mail/workers"],
+  ["GET /queues/mail/workers/:worker", "/queues/mail/workers/"],
+] as const;
+
+/** The named worker as one of {@link WORKER_READS} answered it. */
+async function workerFrom(
+  path: string,
+  id: string,
+): Promise<Record<string, unknown> | undefined> {
+  const answer = await sampling.call(
+    "GET",
+    path.endsWith("/") ? `${path}${id}` : path,
+  );
+  const items = answer.body?.items as Record<string, unknown>[] | undefined;
+  return items
+    ? items.find((item) => item.id === id)
+    : (answer.body as Record<string, unknown>);
+}
+
+for (const [route, path] of WORKER_READS) {
+  const live = await workerFrom(path, "mail.sampled");
+  check(
+    `${route} carries both samples on a worker that reports them`,
+    Number.isInteger(live?.rssBytes) &&
+      (live!.rssBytes as number) > 1_000_000 &&
+      Number.isFinite(live?.heartbeatRttMs) &&
+      (live!.heartbeatRttMs as number) >= 0,
+    { rssBytes: live?.rssBytes, heartbeatRttMs: live?.heartbeatRttMs },
+  );
+
+  const older = await workerFrom(path, "mail.older");
+  checkEqual(
+    `${route} omits them on a record that has neither`,
+    [
+      Object.hasOwn(older ?? {}, "rssBytes"),
+      Object.hasOwn(older ?? {}, "heartbeatRttMs"),
+    ],
+    [false, false],
+  );
+}
+
+// Both are optional on the browser-safe contract as well, so a client cannot
+// read either as a plain `number` — which is exactly what would let a `0` stand
+// in for a worker that never reported one.
+type _RssOptional = Expect<Equal<WorkerDto["rssBytes"], number | undefined>>;
+type _RttOptional = Expect<
+  Equal<WorkerDto["heartbeatRttMs"], number | undefined>
+>;
+compileOnly(() => {
+  const dto: WorkerDto = {
+    id: "mail.older",
+    queue: "mail",
+    concurrency: 1,
+    active: 0,
+    paused: false,
+    startedAt: olderAt,
+    heartbeatAt: olderAt,
+    expiresAt: olderAt + 60_000,
+  };
+  // @ts-expect-error absent is part of the type: a reader must handle it
+  const bytes: number = dto.rssBytes;
+  // @ts-expect-error the same for the round trip
+  const rtt: number = dto.heartbeatRttMs;
+  return [bytes, rtt];
+});
+
+await sampleWorker.close();
+await samplingRun;
 
 /* ------------------------------------------------------------------ */
 step("addableNames, runnerTriggerArgs and validateResponses");
@@ -3303,6 +3431,7 @@ await Promise.all(
     throwingPerQueue,
     listing,
     timed,
+    sampling,
     ...matrixHosts,
   ].map((mounted) => mounted.api.close()),
 );
