@@ -42,6 +42,14 @@ import { ConfigError } from "../shared/errors";
  * answered from here, and its progress is written here too. Everything else
  * that would change the stored job directly is unavailable in the child, and
  * says so.
+ *
+ * Progress is the one of those that is *sent* rather than asked: a child's
+ * `job.updateProgress()` does not wait for a reply, so an update costs no
+ * round trip however often a processor reports one. What the child's `await`
+ * buys instead is ordering — the writes are chained here and awaited before
+ * the attempt returns, so every value a processor reported is in the store
+ * before the worker records how the job ended, and a reader that waits for
+ * `completed` never reads the value before the last one.
  */
 
 /** How a job's processor is run. */
@@ -144,6 +152,19 @@ export class IsolatedProcessor {
     }
 
     const executor = this.#executorFor();
+    /**
+     * The progress writes this attempt has asked for, chained onto one another
+     * so they reach the driver in the order the processor made them, and
+     * awaited before `run` returns so the worker can never record how the job
+     * ended before its last progress value has landed.
+     */
+    let progressWrites: Promise<void> = Promise.resolve();
+    /**
+     * Whether the processor has settled. A progress value arriving after that
+     * belongs to a job the worker is already finishing, so it is dropped
+     * rather than written over the finished job's own.
+     */
+    let attemptOver = false;
     const runContext = {
       runId: `${record.id}.${record.attemptsMade}`,
       runnerId: runner.queue,
@@ -183,7 +204,19 @@ export class IsolatedProcessor {
       job: record,
       events: {
         onProgress: (value) => {
-          void job.updateProgress(value).catch(() => undefined);
+          if (attemptOver) {
+            return;
+          }
+          // Chained, not fired: two writes in flight at once could land in
+          // either order, and the last one must be the one the store keeps.
+          // The `catch` is what the fire-and-forget did — a progress write
+          // that fails does not fail the job — and it keeps the chain
+          // resolvable for the write behind it.
+          progressWrites = progressWrites
+            .then(async () => {
+              await job.updateProgress(value);
+            })
+            .catch(() => undefined);
         },
         onMessage: (data) => {
           void answer(handle, data, job, context, controller);
@@ -222,6 +255,13 @@ export class IsolatedProcessor {
       );
     } finally {
       controller.signal.removeEventListener("abort", stop);
+      // The processor has settled, so nothing more it asks for counts, and
+      // what it already asked for must be written before the worker records
+      // how the job ended: `#process` starts the completion (or the failure)
+      // as soon as this returns, and a reader that waits for `completed`
+      // would otherwise read the progress the job had before its last update.
+      attemptOver = true;
+      await progressWrites;
     }
   }
 

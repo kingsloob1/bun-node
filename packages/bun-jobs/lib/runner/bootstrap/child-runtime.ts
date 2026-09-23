@@ -499,6 +499,12 @@ function isolatedJob(
     queue: { ns: ctx.namespace, queue: ctx.runnerId },
     isRepeat: record.repeatKey !== null,
     lockToken: record.lockToken,
+    // Sent, not asked. Awaiting this means the worker has the value and will
+    // write it — in the order the processor reported it, and before it records
+    // how the job ended — not that the driver has it already. Acknowledging
+    // each one would cost a round trip per update, and a processor that
+    // reports per item makes thousands; the worker's barrier
+    // (`IsolatedProcessor.run`) buys the ordering that matters without one.
     updateProgress: async (value: RunProgress) => {
       transport.send({ t: "progress", runId: ctx.runId, value });
     },

@@ -1037,7 +1037,7 @@ with a job answer `this` type, or `null`: a job narrowed by a
 | `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. `progress` is a `RunProgress` (a number or a record), or `null`. Errors are rehydrated as `Error`s. |
 | `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. `workerId` is the worker holding the job right now: set while `active`, `null` once the attempt settles. |
 | `processedBy` | The worker that claimed the current or last attempt, as `{ id, key?, host?, pid? }`. It is kept after the job settles, and it is `null` for a job never claimed. See [Who ran a job](#who-ran-a-job-worker-attribution). |
-| `updateProgress(value)` | Records a number or an object, and emits `progress`. |
+| `updateProgress(value)` | Records a number or an object, and emits `progress`. In an isolated processor the value is sent to the worker, which writes it before it records how the job ended — see [Isolated processors](#isolated-processors). |
 | `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. |
 | `clearLogs()` | Empties the log, as `queue.clearJobLogs(id)` does. Refused while the job is active. See [Clearing a job's log](#clearing-a-jobs-log). |
 | `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
@@ -2237,6 +2237,21 @@ object with every public member of `Job`.
   `disable`, `enable` and `refresh`.
 - `job.fail(reason)` is kept by the child and sent as the attempt's error when
   it settles, so the job goes to `dead` as it would in-process.
+
+**Progress is sent, not asked for.** `job.updateProgress()` in a child does
+not wait for a reply, so reporting progress costs no round trip however often
+a processor does it. Awaiting it means the worker has the value and will write
+it — in the order the processor reported it, and before it records how the job
+ended — not that the driver has it already. That ordering is what the `await`
+buys: the worker holds the attempt open until every progress write it was
+handed has landed, so a reader that waits for `state === "completed"` never
+reads the value the job had before its last update. The price is that a slow
+progress write delays the completion by whatever is left of it, and that a
+value a child sends after its processor has settled is dropped rather than
+written over the finished job's own. Every other job-channel call —
+`job.log`, `job.extendLock`/`touch`, `job.getChildrenValues`,
+`job.getChildrenFailures` and `ctx.heartbeat` — is a real round trip, and
+answers only once the worker's own write has returned.
 
 A reply on the job channel that is malformed rejects with a `ProtocolError`.
 Errors thrown in a child are rebuilt by name, so `UnrecoverableJobError` still
@@ -5017,7 +5032,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-options.ts) | every `JobOptions`, `RepeatOptions` and `DebounceOptions` field, retention forms, every backoff form |
 | [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
-| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job |
+| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is, and what `opts.timeout` still does not promise |
 | [`job-methods.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-methods.ts) | `job.fail()` inside a processor and from outside (a pending job buried at once, an active one's worker aborting at its next heartbeat); `schedule()`, `update()` and `this \| null`; `disable()` / `enable()` on an occurrence; the queue's `disableRepeatable()` / `enableRepeatable()`; `remove()` / `promote()` / `retry()` emitting and publishing; `progress` as `RunProgress \| null` and `extendLock()` only from the processor's view |
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
