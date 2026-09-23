@@ -298,29 +298,21 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
   won would be one it never swept under — strictly worse than standing aside.
   So `maintenance: false` costs one queue-state read per stalled interval and
   none per minute.
-- **The holder's settings govern the sweeps.** `stalledInterval`,
-  `maxStalledCount` and `reportInterval` are read from the worker holding the
-  lease, so a fleet whose workers are configured differently is swept on that
-  worker's terms. Before the sweeps were leased every worker ran them, and the
-  shortest interval and the lowest threshold in the fleet effectively won.
-  A lease is written for two of the **holder's** cadences, so that is also
-  what a hand-over waits for: a worker sweeping every 30 s that dies holds
-  its lease for a minute, and a survivor sweeping every 100 ms cannot take it
-  over any sooner. Give the workers on a queue the same `stalledInterval` if
-  that matters to you.
-- **The lease settles on the fastest sweeper.** A worker takes the lease from
-  a holder whose `stalledInterval` is more than twice its own, so a queue is
-  swept at the shortest `stalledInterval` among its workers whoever won the
-  startup race: one deliberately set to 100 ms governs the queue even when a
-  default 30 s one started first. Equal and near-equal cadences never take it
-  from each other, and a slower worker can never take it back, so it settles
-  once and stays. `maxStalledCount` is read from the holder, so it is the
-  fastest sweeper's threshold that applies. A lease is written for two of the
-  **holder's** cadences, so that is also what a hand-over waits for — and it
-  tightens with the fastest sweeper's interval, not the slowest. Only the
-  stalled lease is ever taken this way: every worker runs the minute sweeps at
-  the same cadence, so that lease has nothing to compare and stays with
-  whoever took it.
+- **The holder's settings govern the sweeps, and the lease settles on the
+  fastest sweeper.** `stalledInterval` and `maxStalledCount` are read from the
+  worker holding the lease, so a fleet whose workers are configured differently
+  is swept on that worker's terms — and that worker is the one sweeping most
+  often, not whoever won the startup race. A worker takes the lease from a
+  holder whose `stalledInterval` is more than twice its own, so the queue is
+  swept at the shortest `stalledInterval` among its workers: one deliberately
+  set to 100 ms governs the queue even when a default 30 s one started first.
+  Equal and near-equal cadences never take it from each other, and a slower
+  worker can never take it back, so it settles once and stays. A lease is
+  written for two of the **holder's** cadences, so that is also what a
+  hand-over waits for — and it tightens with the fastest sweeper's interval,
+  not the slowest. Only the stalled lease is ever taken this way: every worker
+  runs the minute sweeps at the same cadence, so that lease has nothing to
+  compare and stays with whoever took it.
 - **When a delayed job runs.** A worker promotes due delayed and retrying
   jobs whenever it runs out of work, and ends its idle wait when the next one
   is due; its promotion sweep also runs every `pollInterval`, at least once a
@@ -776,7 +768,7 @@ Examples:
 | `maxStalledCount` | `number` | `1` | How many stalls a job may have before it is buried. |
 | `pollInterval` | `number` | `1000` | Wait between claim attempts on a polling driver. |
 | `maxBlock` | `number` | `5000` | Longest blocking wait on a blocking driver. |
-| `maintenance` | `boolean` | `true` | Run the queue's **housekeeping** sweeps, once a minute: pruning expired results, healing repeat series, and sweeping stale debounce/throttle windows and dead workers' leftovers. **It does not reach liveness** — promoting delayed jobs, recovering stalled ones and healing flows happen on every worker whatever this says (see [Maintenance: liveness and housekeeping](#maintenance-liveness-and-housekeeping)). Reported on the worker's record as `sweeps`. |
+| `maintenance` | `boolean` | `true` | Contend for the queue's **housekeeping** lease and, while holding it, run those sweeps once a minute: pruning expired results, healing repeat series, and sweeping stale debounce/throttle windows and dead workers' leftovers. `false` arms no minute timer and never reads that lease. **It does not reach liveness** — promoting delayed jobs is every worker's own, and every worker contends for the stalled lease that recovers stalled jobs and heals flows, whatever this says (see [Maintenance: liveness and housekeeping](#maintenance-liveness-and-housekeeping)). Reported on the worker's record as `sweeps`. |
 | `autorun` | `boolean` | `false` | Start consuming on construction. |
 | `drainDelay` | `number` | `0` | Milliseconds of quiet before `drained` is emitted. |
 | `isolation` | `"in-process" \| "worker" \| "spawn"` | `"in-process"` | Where a processor file runs. See [Isolated processors](#isolated-processors). |
@@ -800,8 +792,8 @@ and only one of them is yours to switch off.
 
 | Half | What it does | Cadence | Optional? |
 |---|---|---|---|
-| **Liveness** | Promotes due delayed and retrying jobs; recovers jobs whose worker died (`stalled`); heals flows, so a parent past a child that already finished advances | every `pollInterval` (at least once a second) and on every idle pass; `stalledInterval` for the other two | **No.** Every worker, always. |
-| **Housekeeping** | Prunes expired results; heals repeat series; sweeps stale debounce/throttle windows and the leftovers of workers that are gone | once a minute | Yes — `maintenance: false` |
+| **Liveness** | Promotes due delayed and retrying jobs; recovers jobs whose worker died (`stalled`); heals flows, so a parent past a child that already finished advances | every `pollInterval` (at least once a second) and on every idle pass; `stalledInterval` for the other two | **No.** Promotion on every worker, always; recovery and flow healing on the holder of the stalled lease, which **every** worker contends for. |
+| **Housekeeping** | Prunes expired results; heals repeat series; sweeps stale debounce/throttle windows and the leftovers of workers that are gone | once a minute | Yes — `maintenance: false`. Runs on the holder of the minute lease, which only workers that did **not** opt out contend for. |
 
 **Liveness cannot be turned off, because nothing else does it.** A delayed
 retry leaves `delayed` only when some worker promotes it; a job held by a
@@ -813,11 +805,31 @@ minutes and four jobs were frozen at attempt 1 of 2. `maintenance: false`
 used to do exactly that, and no longer does — it now opts out of the
 housekeeping half alone.
 
-Flow healing takes a short lease, so one worker per queue does it rather than
-all of them; **contending for that lease is how a worker takes part**, and a
-worker with `maintenance: false` contends like any other. It costs one
-queue-state read per `stalledInterval`, which is the right price for staying
-part of the queue's liveness.
+Both halves are **leased**, so one worker per queue makes each pass rather than
+all of them making the same one — but the two leases are contended for by
+different sets of workers, and that is the whole of how the split survives
+leasing.
+
+The **stalled lease** covers stalled recovery and the flow heal that rides it.
+**Contending for it is how a worker takes part**, so a worker with
+`maintenance: false` contends like any other. It costs one queue-state read per
+`stalledInterval`, which is the right price for staying part of the queue's
+liveness. An opt-out worker that stood down from it could never be the holder,
+so a queue whose only worker sets `maintenance: false` would never recover a
+stalled job — the exact failure this split exists to prevent, reached through
+the lease instead of the timer.
+
+The **minute lease** covers the housekeeping, and an opt-out worker never reads
+it. It arms no minute timer, so a minute lease it won would be one it never
+swept under: strictly worse than standing aside. `maintenance: false` therefore
+costs one queue-state read per `stalledInterval`, and nothing per minute.
+
+That read is not a new cost. Flow healing has been leased under this same entry
+all along, and every worker already paid one read of it per `stalledInterval`;
+the lease now covers stalled recovery as well, so the read buys more. Measured
+over one second, three opt-out workers at a 100 ms `stalledInterval`: 33 lease
+reads and 33 `recoverStalled` calls before, 34 lease reads and 11
+`recoverStalled` calls after — the same reads, a third of the sweeps.
 
 **Housekeeping is safe to leave to others.** Nothing waits on it: skipping it
 costs the queue tidiness — results kept past their `ttl`, a repeat series
@@ -831,8 +843,13 @@ arms it: no sweep, and no call of theirs.
 
 Which half a worker does is on its heartbeat record and in the management
 API as
-[`sweeps`](#reading-a-queue-search-totals-workers-and-throughput) — `true`
-when it sweeps, and never a claim about liveness.
+[`sweeps`](#reading-a-queue-search-totals-workers-and-throughput) — `true` when
+it arms the housekeeping and contends for its lease, and never a claim about
+liveness. It reports what the worker is *willing* to do, not what it did this
+minute: on a queue with five `sweeps: true` workers, one of them holds the
+minute lease and the other four stood down on that pass. That is what a
+"nobody is sweeping this queue" check wants — a queue with no live `true` has
+nobody eligible, which is the condition worth warning about.
 
 The worker's events are:
 
@@ -1965,7 +1982,10 @@ first write has not returned yet, simply has no such field — absent, never `0`
 
 **`sweeps` says whether the worker does the queue's housekeeping** — the
 expiry prune, the repeat heal, the queue-state sweeps — which is what its
-[`maintenance`](#maintenance-liveness-and-housekeeping) option decides. It is
+[`maintenance`](#maintenance-liveness-and-housekeeping) option decides. It says
+the worker arms those passes and contends for their lease, not that it made
+them this minute: one `true` worker per queue holds the minute lease and the
+rest stand down on that pass. It is
 **not** a statement about liveness: every worker promotes delayed jobs,
 recovers stalled ones and heals flows whatever it says, so a queue whose live
 workers all report `false` keeps running — it just accumulates what nobody
@@ -3885,9 +3905,12 @@ Each row is the worker's record plus the `stale` flag the server computes, so
 `sweeps`, `rssBytes` and `heartbeatRttMs` are on it as well — all three
 optional, and absent rather than `0` (or `false`) on a worker that does not
 report them. **`sweeps` is the housekeeping half of `maintenance` only**:
-pruning, the repeat heal and the queue-state sweeps. Promoting delayed jobs,
-recovering stalled ones and healing flows happen on every worker and cannot be
-turned off, so `sweeps: false` never means a queue is stuck; and an **absent**
+pruning, the repeat heal and the queue-state sweeps, and it means the worker
+contends for their lease rather than that it held it this minute. Promoting
+delayed jobs is every worker's own, and recovering stalled ones and healing
+flows run on the holder of a lease **every** worker contends for whatever
+`sweeps` says — none of it can be turned off, so `sweeps: false` never means a
+queue is stuck; and an **absent**
 `sweeps` means a worker too old to say, which a "nobody is sweeping this
 queue" warning must not count as a `false`. **`rssBytes` is the
 memory of the *process*, not of the worker**: two workers in one process report

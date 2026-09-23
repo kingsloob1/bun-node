@@ -1,7 +1,7 @@
 import type { JobsDriver, JobState } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
-import { BunQueueWorker, MemoryDriver } from "../lib/index";
+import { BunQueue, BunQueueWorker, MemoryDriver } from "../lib/index";
 // Reserved queue-state entries are refused without this package's own token,
 // so a test that has to plant one writes it the way the worker does.
 import { setReservedState } from "../lib/queue/windows";
@@ -14,8 +14,17 @@ import { testNamespace, waitFor } from "./helpers";
  * parked.
  *
  * The sweeps that are this worker's own (flow redelivery, delayed-job
- * promotion) stay on every worker, and `maintenance: false` still arms
- * nothing.
+ * promotion) stay on every worker.
+ *
+ * `maintenance: false` meets the lease here, and the two leases part company
+ * over it. Housekeeping is what the option turns off, so an opt-out worker
+ * arms no minute timer and never reads {@link MINUTE_SWEEP_LEASE}. Recovery is
+ * liveness, which the option no longer reaches, so an opt-out worker contends
+ * for {@link STALLED_SWEEP_LEASE} exactly like any other, because contending
+ * for it is how a worker takes part in recovery now. One that skipped it could
+ * never hold it, and a queue whose only worker sets `maintenance: false` would
+ * never recover a stalled job: the bug the liveness/housekeeping split fixed,
+ * reached through the lease instead of the timer.
  */
 
 /** The queue-state entry holding the stalled-interval sweeps' lease. */
@@ -26,11 +35,19 @@ const MINUTE_SWEEP_LEASE = "__win:msweep";
 
 const open: BunQueueWorker<unknown, unknown>[] = [];
 
+/**
+ * Anything else a test must shut down — a queue, or a worker whose data and
+ * result types are its own, which `open` cannot hold.
+ */
+const closers: (() => Promise<unknown>)[] = [];
+
 afterEach(async () => {
-  await Promise.allSettled(
-    open.map(async (worker) => worker.close({ force: true })),
-  );
+  await Promise.allSettled([
+    ...open.map(async (worker) => worker.close({ force: true })),
+    ...closers.map(async (close) => close()),
+  ]);
   open.length = 0;
+  closers.length = 0;
 });
 
 /** What one worker's view of the driver saw, per sweep. */
@@ -47,6 +64,29 @@ interface SweepCounts {
   windows: number;
   /** Worker-control sweep pages. */
   controls: number;
+  /**
+   * Reads of {@link STALLED_SWEEP_LEASE}. Not a sweep but the price of
+   * contending for one, and the thing that says whether a worker takes part in
+   * recovery at all — which is why an opt-out worker's must not be zero.
+   */
+  stalledLeaseReads: number;
+  /**
+   * Reads of {@link MINUTE_SWEEP_LEASE}. An opt-out worker arms no minute
+   * timer, so its must be zero: a lease it could win and never sweep under is
+   * strictly worse than not contending.
+   */
+  minuteLeaseReads: number;
+}
+
+/** The counts that are housekeeping — what `maintenance: false` turns off. */
+function housekeeping(counts: SweepCounts): number {
+  return (
+    counts.prune +
+    counts.repeats +
+    counts.windows +
+    counts.controls +
+    counts.minuteLeaseReads
+  );
 }
 
 /** A view of `inner` counting the sweeps one worker makes through it. */
@@ -74,6 +114,8 @@ function countingView(
     repeats: 0,
     windows: 0,
     controls: 0,
+    stalledLeaseReads: 0,
+    minuteLeaseReads: 0,
   };
   let dead = false;
 
@@ -111,6 +153,12 @@ function countingView(
             counts.windows++;
           } else if (prefix.startsWith("__win:wctl:")) {
             counts.controls++;
+          }
+        } else if (prop === "getQueueState") {
+          if (args[1] === STALLED_SWEEP_LEASE) {
+            counts.stalledLeaseReads++;
+          } else if (args[1] === MINUTE_SWEEP_LEASE) {
+            counts.minuteLeaseReads++;
           }
         }
 
@@ -174,11 +222,6 @@ function fleet(
     made.push(worker(inner, ns, options));
   }
   return made;
-}
-
-/** Every sweep a worker's view counted, summed. */
-function total(counts: SweepCounts): number {
-  return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
 describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
@@ -385,7 +428,7 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     );
   });
 
-  it("arms nothing, and takes no lease, with maintenance off", async () => {
+  it("arms no housekeeping, and takes no minute lease, with maintenance off", async () => {
     const inner = new MemoryDriver();
     const ns = testNamespace("sweep-off");
     const workers = fleet(inner, ns, 3, { maintenance: false });
@@ -396,13 +439,205 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     await Bun.sleep(400);
 
     for (const { counts } of workers) {
-      expect(total(counts)).toBe(0);
+      // Not one housekeeping call, and not one read of its lease: the minute
+      // timer is what the option turns off, lease and all.
+      expect(housekeeping(counts)).toBe(0);
+      // But every one of them contended for the stalled lease. This is the
+      // line that separates opting out of tidying from opting out of
+      // liveness, and zero here would mean the latter.
+      expect(counts.stalledLeaseReads).toBeGreaterThan(0);
     }
 
+    // One of them is sweeping — the lease holder — and the others are not.
+    expect(workers.filter(({ counts }) => counts.stalled > 0)).toHaveLength(1);
+
     const ref = { ns, queue: "q" };
-    expect(await inner.getQueueState!(ref, STALLED_SWEEP_LEASE)).toBeNull();
+    const held = await inner.getQueueState!(ref, STALLED_SWEEP_LEASE);
+    expect(held).not.toBeNull();
+    expect(workers.map(({ instance }) => instance.id)).toContain(
+      (held!.value as { holder: string }).holder,
+    );
     expect(await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)).toBeNull();
   });
+
+  it("takes the stalled lease, and never the minute one, as the only worker", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-off-solo");
+    const only = worker(inner, ns, { maintenance: false });
+    void only.instance.run();
+
+    await waitFor(() => only.counts.stalled > 0, {
+      timeout: 3_000,
+      message: () =>
+        `the queue's only worker never swept: ${JSON.stringify(only.counts)}`,
+    });
+
+    const ref = { ns, queue: "q" };
+    const held = await inner.getQueueState!(ref, STALLED_SWEEP_LEASE);
+    expect((held?.value as { holder?: string } | undefined)?.holder).toBe(
+      only.instance.id,
+    );
+    // It holds the lease it sweeps under, and nothing at all for the timer it
+    // never armed.
+    expect(await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)).toBeNull();
+    expect(housekeeping(only.counts)).toBe(0);
+  });
+
+  it("keeps the housekeeping on the sweeper and the recovery on both, with one worker opted out", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-mixed");
+    const sweeper = worker(inner, ns, { stalledInterval: 60 });
+    const idler = worker(inner, ns, {
+      maintenance: false,
+      stalledInterval: 60,
+    });
+
+    void sweeper.instance.run();
+    void idler.instance.run();
+
+    // Housekeeping still happens on this queue: the one worker that arms it
+    // holds its lease, uncontested, because the other never asks for it.
+    await waitFor(
+      () =>
+        sweeper.counts.prune > 0 &&
+        sweeper.counts.repeats > 0 &&
+        sweeper.counts.windows > 0 &&
+        sweeper.counts.controls > 0,
+      {
+        timeout: 3_000,
+        message: () =>
+          `the sweeper skipped housekeeping: ${JSON.stringify(sweeper.counts)}`,
+      },
+    );
+    expect(housekeeping(idler.counts)).toBe(0);
+
+    const ref = { ns, queue: "q" };
+    expect(
+      (
+        (await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE))?.value as {
+          holder?: string;
+        }
+      )?.holder,
+    ).toBe(sweeper.instance.id);
+
+    // Both take part in recovery: both contend for the stalled lease...
+    await waitFor(
+      () =>
+        sweeper.counts.stalledLeaseReads > 0 &&
+        idler.counts.stalledLeaseReads > 0,
+      {
+        timeout: 3_000,
+        message: () =>
+          `only one worker contended: ${sweeper.counts.stalledLeaseReads} vs ${idler.counts.stalledLeaseReads}`,
+      },
+    );
+
+    // ...and the opt-out worker is a real candidate, not a bystander: close
+    // the sweeper and the queue keeps being swept, by the worker that opted
+    // out of housekeeping.
+    const before = idler.counts.stalled;
+    await sweeper.instance.close({ force: true });
+    await waitFor(
+      async () =>
+        idler.counts.stalled > before &&
+        (
+          (await inner.getQueueState!(ref, STALLED_SWEEP_LEASE))?.value as {
+            holder?: string;
+          }
+        )?.holder === idler.instance.id,
+      {
+        timeout: 3_000,
+        message: () =>
+          `the opt-out worker never took over: ${JSON.stringify(idler.counts)}`,
+      },
+    );
+    // Taking the stalled lease over did not give it the housekeeping it
+    // opted out of.
+    expect(housekeeping(idler.counts)).toBe(0);
+  }, 15_000);
+});
+
+/**
+ * The combination nothing had tested before the lease and the
+ * liveness/housekeeping split met: a queue whose **only** worker opts out of
+ * housekeeping, with a real job stuck in `active` under a dead process's lock.
+ *
+ * It is the one case where the two changes could cancel out. The split made
+ * recovery unconditional so that this queue recovers; the lease then made
+ * recovery something a worker must *win* before it does it. Skip the lease on
+ * an opt-out worker — a one-line "tidy-up" that reads perfectly sensibly, and
+ * which #108 shipped, since it predated the split — and this queue has nobody
+ * who can ever hold the lease, so the job sits `active` for ever. The bug the
+ * split fixed, restored through a different door, with every other test in
+ * both files still green.
+ *
+ * So this asserts both halves at once: the job is recovered, *and* the lease
+ * that recovery ran under is recorded against this very worker. Without the
+ * second assertion the test would still pass if the lease were bypassed
+ * entirely.
+ */
+describe("a lone maintenance: false worker recovers a stalled job", () => {
+  it("recovers it, and holds the stalled sweep's lease while doing so", async () => {
+    const driver = new MemoryDriver();
+    const ns = testNamespace("solo-optout-stalled");
+    const queue = new BunQueue<{ n: number }, string, string>("work", {
+      namespace: ns,
+      driver,
+      logger: noopLogger,
+    });
+
+    const added = await queue.add("stall", { n: 1 });
+
+    // Claimed by a process that then vanished, as `kill -9` leaves it: an
+    // `active` job under a lock nobody will ever renew.
+    await driver.claimJob(queue.ref, {
+      workerId: "ghost",
+      token: "ghost-token",
+      lockMs: 20,
+      now: Date.now(),
+    });
+    expect(await queue.count("active")).toBe(1);
+
+    const only = new BunQueueWorker<{ n: number }, string>(
+      "work",
+      async () => "recovered",
+      {
+        namespace: ns,
+        driver,
+        logger: noopLogger,
+        pollInterval: 10,
+        stalledInterval: 30,
+        lockDuration: 500,
+        // The whole point: the queue's only worker opts out of housekeeping.
+        maintenance: false,
+      },
+    );
+    closers.push(async () => only.close({ force: true }));
+    closers.push(async () => queue.close());
+
+    const stalled = new Promise<string[]>((resolve) => {
+      only.once("stalled", resolve);
+    });
+
+    void only.run();
+
+    // Nothing else exists to recover it. If an opt-out worker stood down from
+    // the stalled lease, this never resolves.
+    expect(await stalled).toEqual([added.id]);
+
+    // And it ran under the lease, held by this worker — not around it.
+    const held = await driver.getQueueState!(queue.ref, STALLED_SWEEP_LEASE);
+    expect((held?.value as { holder?: string } | undefined)?.holder).toBe(
+      only.id,
+    );
+
+    await waitFor(async () => (await queue.count("completed")) === 1, {
+      timeout: 5_000,
+      message: async () =>
+        `still ${await queue.count("active")} active after recovery`,
+    });
+    expect((await queue.getJob(added.id))?.stalledCount).toBe(1);
+  }, 15_000);
 });
 
 /**

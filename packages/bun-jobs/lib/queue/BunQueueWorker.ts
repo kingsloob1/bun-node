@@ -4278,8 +4278,8 @@ export class BunQueueWorker<
    * Arms the background passes this worker contributes to — the two halves of
    * what used to be one `maintenance` switch, each under its own lease.
    *
-   * Every pass on either timer reads and repairs state that belongs to the
-   * *queue* rather than to this worker, so each timer runs under a sweep
+   * Every pass on either timer reads and repairs state belonging to the
+   * **queue** rather than to this worker, so each timer runs under a sweep
    * lease: one worker per queue does the pass and the rest spend a single
    * queue-state read finding that out (C12, item 7). What is genuinely this
    * worker's own — redelivering its undelivered flow events, and promoting
@@ -4308,9 +4308,9 @@ export class BunQueueWorker<
    * it carry no `maintenance` check at all, deliberately — and that includes
    * their lease. The stalled timer takes {@link STALLED_SWEEP_LEASE} so that
    * one worker per queue recovers stalled jobs and heals flows, and
-   * *contending for that lease is how a worker takes part* — one queue-state
-   * read per stalled interval, which is the correct price for an opt-out
-   * worker to pay. An opt-out worker that skipped the stalled lease would
+   * **contending for that lease is how a worker takes part** — one
+   * queue-state read per stalled interval, which is the correct price for an
+   * opt-out worker to pay. An opt-out worker that skipped the stalled lease would
    * never be the one holding it, so on a queue whose only worker sets
    * `maintenance: false` nothing would ever recover a stalled job: exactly
    * the bug this split fixes, reached through the lease instead of the timer.
@@ -4390,7 +4390,13 @@ export class BunQueueWorker<
    *
    * Both read it here rather than the option, so the record can never
    * disagree with what the worker actually arms. It says nothing about
-   * liveness: every worker promotes and recovers whatever this answers.
+   * liveness: every worker promotes, and every worker contends for
+   * {@link STALLED_SWEEP_LEASE} and recovers while it holds it, whatever this
+   * answers.
+   *
+   * It reports what the worker arms and contends for, not what it did this
+   * minute: on a queue of `true` workers, one holds
+   * {@link MINUTE_SWEEP_LEASE} on any given pass and the rest stand down.
    */
   get #sweeps(): boolean {
     return this.#options.maintenance;
