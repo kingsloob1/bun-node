@@ -1733,3 +1733,23 @@ add a public option and therefore each owe one. A worked example under
 `examples/` — an HTTP request that enqueues a job, processed by a worker in a
 second process, with the resulting two-trace-plus-link shape shown — is the
 thing that will make the link-not-parent decision stick.
+
+---
+
+## Appendix: evidence
+
+The cost figures and the `AsyncLocalStorage` boundaries in this document were
+measured, not looked up. The probes are in
+[`evidence/opentelemetry/`](evidence/opentelemetry/) as a standalone Bun
+project — `bun install`, then `bun probe.ts`, `bun probe2.ts`,
+`bun serve-als.ts`, `bun worker-als.ts`.
+
+Two numbers carry most of the design: a no-op `startActiveSpan` costs ~184 ns,
+which is why telemetry-off is an `undefined` check with the traced body in a
+separate method rather than a null-object tracer; and sampling out is **not**
+free (527 ns under `AlwaysOff`), which is why an always-on hook point cannot be
+justified by "it samples away".
+
+All of it was measured on **Bun 1.4.3-canary.1**. A Bun release can move any of
+it, and `Bun.otel` landing would change the picture entirely — re-run before
+relying on a figure here.

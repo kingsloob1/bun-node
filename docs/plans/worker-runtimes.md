@@ -2848,3 +2848,26 @@ second justifies a wire protocol. ~4.5 days against ~15.5, plus a protocol to
 version and defend for as long as anyone implements it. Hatchet shipped a
 serverless transport in 2024, let it go undocumented, and is rebuilding it
 this month; that is the cost of getting this decision wrong.
+
+---
+
+## Appendix: evidence
+
+The fourteen-system comparison in §3.8 is a summary. The full survey it was
+drawn from — transports, lease mechanics, auth, what to steal and what to
+avoid, each at a pinned version with file paths — is in
+[`evidence/worker-runtimes/prior-art-survey.md`](evidence/worker-runtimes/prior-art-survey.md),
+about 1,080 lines. Inngest's `SDK_SPEC.md` is normative for the artifact §5
+describes and should be read in full before phase 2.
+
+**Read the provenance markers.** Every row is tagged as read-by-me, read by a
+delegated agent at a pinned version, or unverified, and the distinction is
+load-bearing rather than decorative. Three claims that reached an earlier draft
+of this plan were later withdrawn or re-attributed — the stalled-grace
+recommendation in §3.8.2, the `pg_notify` latency consequence in §3.8.3(a), and
+the `worker_threads` stdio trap — and every one failed the same way: a
+plausible inference from a secondary source that nobody had checked against the
+code it described.
+
+That is the argument for keeping the workings rather than the conclusions. The
+survey is what made those reversals possible to find.

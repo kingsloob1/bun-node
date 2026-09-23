@@ -2187,3 +2187,24 @@ fully spiked and independently valuable without any of the others.
 on `BunValidate`'s middleware. Three lines, no API surface, no behaviour change,
 and it is the prerequisite for the only part of this plan that is genuinely
 automatic.
+
+---
+
+## Appendix: evidence
+
+The feasibility claims in §3.6–§3.8 were spiked, not reasoned about. The spikes
+are in [`evidence/api-docs/`](evidence/api-docs/), with a README explaining
+which run standalone and which need a copy of `bun-common` carrying the §3.7
+changes.
+
+They settle four things that could not be settled by reading: a chained
+`.describe()` **cannot** constrain a handler already passed to `.get()`; Bun
+**does** honour `emitDecoratorMetadata`; the full class-validator plus
+class-transformer stack works under Bun; and a Nest method decorator can
+constrain a return type but **cannot** retype a parameter.
+
+The pass condition for the patched-library set is `tsc -p` exiting **0**, which
+proves both halves at once — an unsatisfied `@ts-expect-error` is itself an
+error, so a clean run means the library compiles *and* every negative control
+fires. If you edit these, keep the controls; a green run without them proves
+nothing.
