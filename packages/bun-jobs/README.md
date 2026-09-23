@@ -263,17 +263,51 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
     is scheduled), or to `dead` (attempts exhausted, or unrecoverable);
   - a flow parent sits in `waiting-children` until its children settle.
 - **Maintenance needs no leader, and comes in two halves.** *Liveness* —
-  promoting delayed jobs, recovering stalled ones and healing flows — runs on
-  **every** worker and cannot be turned off: each is the only thing that moves
-  a particular kind of stuck job, so a queue whose one worker skipped them
-  would strand all three for ever. *Housekeeping* — pruning expired results,
-  healing repeat series, sweeping stale debounce and throttle windows and the
-  leftovers of workers that are gone — also runs on every worker by default,
-  and is what [`maintenance: false`](#worker-options) opts out of; a worker
-  that skips it costs the queue tidiness, not progress. Each operation in both
-  halves is idempotent, so no single process is load-bearing. A worker's
-  heartbeat record says which it does, as
+  promoting delayed jobs, recovering stalled ones and healing flows — is
+  **every** worker's concern and cannot be turned off: each is the only thing
+  that moves a particular kind of stuck job, so a queue whose one worker
+  skipped them would strand all three for ever. *Housekeeping* — pruning
+  expired results, healing repeat series, sweeping stale debounce and throttle
+  windows and the leftovers of workers that are gone — is on by default and is
+  what [`maintenance: false`](#worker-options) opts out of; a worker that skips
+  it costs the queue tidiness, not progress. Each operation in both halves is
+  idempotent, so no single process is load-bearing. A worker's heartbeat record
+  says whether it does the housekeeping half, as
   [`sweeps`](#reading-a-queue-search-totals-workers-and-throughput).
+- **Maintenance is leased, not shared.** Promoting delayed jobs is every
+  worker's own business — it is what bounds its next wake-up — and so is
+  redelivering a flow event it recorded. Everything else repairs the *queue*:
+  recovering stalled jobs, pruning expired results, healing repeat series and
+  flows, and sweeping stale debounce, throttle and worker-control entries. One
+  worker per queue does those — whichever holds that cadence's sweep lease — so
+  twenty workers make one pass rather than twenty. Every pass is idempotent and
+  atomic at the driver, so the lease only stops duplicate work, never loss: a
+  holder that is parked or closed hands over at once, one whose process dies is
+  replaced within three cadences (90 s for the stalled sweeps at the defaults,
+  three minutes for the minute ones), and no pass is ever skipped. A driver
+  without queue state has no lease and every worker sweeps.
+- **The two leases are contended for by different sets of workers, and that is
+  deliberate.** The *stalled* lease is contended for by **every** worker,
+  including one with `maintenance: false` — contending for it is how a worker
+  takes part in recovery, and it costs one queue-state read per
+  `stalledInterval`. If an opt-out worker skipped it, a queue whose only worker
+  sets `maintenance: false` would never recover a stalled job: the liveness bug
+  the two halves exist to prevent, reached through the lease instead of the
+  timer. The *minute* lease is contended for only by workers that do the
+  housekeeping. An opt-out worker arms no minute timer, so a minute lease it
+  won would be one it never swept under — strictly worse than standing aside.
+  So `maintenance: false` costs one queue-state read per stalled interval and
+  none per minute.
+- **The holder's settings govern the sweeps.** `stalledInterval`,
+  `maxStalledCount` and `reportInterval` are read from the worker holding the
+  lease, so a fleet whose workers are configured differently is swept on that
+  worker's terms. Before the sweeps were leased every worker ran them, and the
+  shortest interval and the lowest threshold in the fleet effectively won.
+  A lease is written for two of the **holder's** cadences, so that is also
+  what a hand-over waits for: a worker sweeping every 30 s that dies holds
+  its lease for a minute, and a survivor sweeping every 100 ms cannot take it
+  over any sooner. Give the workers on a queue the same `stalledInterval` if
+  that matters to you.
 - **When a delayed job runs.** A worker promotes due delayed and retrying
   jobs whenever it runs out of work, and ends its idle wait when the next one
   is due; its promotion sweep also runs every `pollInterval`, at least once a
@@ -356,12 +390,12 @@ forms:
   about 1,099 per process). A smaller count is exact;
 - `{ count, ttl }` does both.
 
-A `ttl` is enforced by the workers' housekeeping: every minute a sweeping
-worker (one with [`maintenance`](#maintenance-liveness-and-housekeeping) on)
-sweeps
-expired jobs in batches of 100 while batches come back full, up to 5,000 jobs
-or 500 ms per tick, and runs a catch-up pass a second later while a backlog
-remains. On Redis the sweep also reaches expired jobs queued behind
+A `ttl` is enforced by the workers' housekeeping: every minute the worker
+holding the queue's minute-sweep lease — which only a worker with
+[`maintenance`](#maintenance-liveness-and-housekeeping) on ever contends for —
+sweeps expired jobs in batches of 100 while batches come back full, up to
+5,000 jobs or 500 ms per tick, and runs a catch-up pass a second later while a
+backlog remains. On Redis the sweep also reaches expired jobs queued behind
 long-lived ones, resuming from a saved cursor.
 
 A flow child is never removed before its parent has recorded its outcome.
@@ -1067,9 +1101,30 @@ Example:
 ### Stalled jobs
 
 A worker that dies while holding a job stops renewing its lock. Every
-`stalledInterval`, every worker's stalled sweep returns jobs with expired locks
-to the queue and emits `stalled` with their ids. A job that has stalled more
-than `maxStalledCount` times is buried in `dead` instead.
+`stalledInterval`, the worker holding the queue's stalled-sweep lease — one per
+queue, not all of them — returns jobs with expired locks to the queue and emits
+`stalled` with their ids. A job that has stalled more than `maxStalledCount`
+times is buried in `dead` instead.
+
+The holder renews the lease on every pass. Parked or closed, it gives the lease
+up there and then; if its process dies, the lease lapses after two
+`stalledInterval`s and the next worker's pass takes it over, so sweeping
+resumes within three (90 s at the defaults).
+
+**Every worker contends for this lease**, including one with
+[`maintenance: false`](#maintenance-liveness-and-housekeeping). Recovery is
+liveness, not housekeeping, and contending for the lease is how a worker takes
+part in it: an opt-out worker spends one queue-state read per `stalledInterval`
+and sweeps whenever it wins. That is what keeps a queue whose only worker opts
+out recovering its stalled jobs.
+
+**What that costs.** A worker dying with jobs in flight has them recovered
+within one `stalledInterval`, as before, because the holder is still sweeping.
+The exception is the holder's own death: nobody is sweeping until another
+worker takes the lease, so its jobs — and any others that stall meanwhile —
+wait up to three `stalledInterval`s instead of one. Every worker used to sweep,
+so that case cost one interval too. If that delay matters more to you than the
+duplicated work, a shorter `stalledInterval` shortens all three.
 
 A recovered job keeps the dead worker's [`processedBy`](#who-ran-a-job-worker-attribution)
 until another worker claims it, so you can still see which worker died holding it.
@@ -1587,8 +1642,9 @@ Occurrence ids are derived from the series key and the due time
 occurrence only once. A `jobId` on a repeating job is ignored. Use `key`
 instead; `unique()` in the builder maps to it.
 
-Every worker with [`maintenance`](#maintenance-liveness-and-housekeeping) on
-heals repeat series.
+The minute housekeeping heals repeat series, on one worker per queue: whichever
+worker with [`maintenance`](#maintenance-liveness-and-housekeeping) on holds
+the minute sweeps' lease.
 
 ### Disabling a series
 
@@ -1744,9 +1800,10 @@ parent in `waiting-children` until its children settle.
 **Healing.** Recording a child on its parent and applying the child's
 retention are two separate steps, and both are safe to repeat. A delivery that
 fails is retried within a few seconds by the worker that started it. One
-worker per queue (whichever holds the queue's heal lease, handed over within
-two `stalledInterval`s when it stops or dies) finishes, every
-`stalledInterval`, whatever a crash left half done:
+worker per queue (whichever holds the queue's stalled-sweep lease — the same
+one that recovers stalled jobs — given up at once when it is parked or closed,
+and lapsing within two `stalledInterval`s when its process dies) finishes,
+every `stalledInterval`, whatever a crash left half done:
 
 - a parent waiting on a child that settled without the parent knowing is told
   again;
