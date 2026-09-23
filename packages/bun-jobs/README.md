@@ -805,6 +805,15 @@ Enforcement is approximate by design. Concurrency is held as leases that
 expire `lockDuration` after a worker stops renewing them. In exchange, no claim
 waits on a global lock.
 
+The lease is short and kept alive by a heartbeat, not by a long timeout: a
+claim's lock lives `lockDuration` (30 s by default) and the worker renews it
+every `lockDuration / 3` (10 s, floored at 250 ms). So a worker that dies —
+crash, `SIGKILL`, a machine that disappears — stops renewing at once, its
+locks lapse 30 s later, and the next [stalled sweep](#stalled-jobs), which
+runs every `stalledInterval` (30 s), hands its jobs back to the queue. With
+the defaults that is under a minute from death to retry, and both numbers are
+yours to shorten.
+
 `define(name, handler, { concurrency })` in the registry stores a per-name
 concurrency the same way. Every built-in driver can store limits.
 
@@ -4560,6 +4569,26 @@ The `sql` fields:
   three after it hold the [analytics](#analytics-per-driver) series.
 - `notify` (Postgres `LISTEN`/`NOTIFY`) is on by default, with polling
   underneath.
+- **A transaction-pooling connection pooler cannot carry those
+  notifications.** `LISTEN` belongs to a session, and a pooler that hands each
+  transaction whichever backend connection is free has no session to keep it
+  on — so behind PgBouncer in transaction mode, AWS RDS Proxy or Cloudflare
+  Hyperdrive, notifications do not arrive. Hyperdrive does not support
+  `LISTEN`/`NOTIFY` at all; RDS Proxy answers a `LISTEN` by pinning the
+  session for the connection's life, with no opt-out on Postgres, which costs
+  the pooling you went there for. **The driver stays correct either way**: a
+  notification is an optimisation, never the only path, and the polling
+  underneath it is the correctness floor — the same floor that already covers
+  a notification missed while a listener reconnects, or a job promoted by
+  another process's maintenance sweep, which is never announced at all. Only
+  wakeup latency changes. So leave `notify` on, where it is harmless, or set
+  it `false` to skip the listen attempt and the connection it would hold, and
+  set `pollInterval` to the latency you want.
+- Hyperdrive's 60-second query cap does not bind a wait. A wait here is polled
+  rather than held open, so `maxBlock` is spent over many short statements
+  instead of one long one. What the cap can bind is a bulk statement on a
+  large table: a [schema sync](#schema-sync)'s index build, or a `drain()` of
+  a very large queue.
 - Events (the API socket, `BunQueue` subscriptions, worker control) are read
   from the `events` table by one poll per namespace per driver, every
   `pollInterval`, however many channels it follows — not one query per
