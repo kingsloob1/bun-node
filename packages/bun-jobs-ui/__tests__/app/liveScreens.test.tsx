@@ -404,9 +404,16 @@ describe("live Job screen", () => {
   });
 
   it("does not subscribe without jobs.read", async () => {
+    // The screen this render settles on is `job-hidden`, so it waits for that
+    // one itself: the default wait (`job-screen`/`job-not-found`) only ever
+    // catches `job-screen` as a transient, in the microtasks between the lazy
+    // chunk mounting and the permissions landing — and only once an earlier
+    // render has resolved `React.lazy`'s payload for this screen.
     await renderJobScreen(fullJobFixture(), {
       permissions: permissionsFixture({ "jobs.read": false }),
+      wait: false,
     });
+    await page().findByTestId("job-hidden");
     await settle(50);
     expect(live.channels()).toEqual([]);
   });
