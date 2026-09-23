@@ -63,8 +63,24 @@
  *   moment ago without waiting out its 2 s queue cache.
  * - **Wait on conditions, never on time.** Every page-side helper polls the
  *   DOM with a deadline, and every API check polls the API.
+ * - **The Memory column is the process's, so it is never summed.** It is
+ *   opt-in per table — the Workers page and a worker page's Instances table ask
+ *   for it, a queue's Workers panel does not — and it exists only when some
+ *   worker in that table reports `rssBytes`; one that reports none shows "—",
+ *   never `0 B`. Two workers in one process repeat one figure, which is why
+ *   nothing adds the column up. A live reading moves between two reports, so
+ *   the step that checks all this pins `process.memoryUsage.rss()` while it
+ *   looks, and asserts every figure against what the API reported for that
+ *   row rather than against a number typed into this file.
+ * - **The heartbeat's round trip is a tooltip, never a column**, in every
+ *   worker table including the queue's panel: appended under the Heartbeat
+ *   cell's ISO instant, and absent altogether on a worker reporting none.
  */
-import type { JobsApiAuthorize, WorkerDto } from "@kingsleyweb/bun-jobs";
+import type {
+  JobsApiAuthorize,
+  WorkerDto,
+  WorkerInfo,
+} from "@kingsleyweb/bun-jobs";
 import type { Subprocess } from "bun";
 import type { RemoteProcess } from "./helpers/remote-process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -76,6 +92,8 @@ import {
   BunJobs,
   createJobsApi,
   JOBS_API_ACTIONS,
+  registerWorkerRecord,
+  removeWorkerRecord,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
 import {
@@ -612,6 +630,67 @@ function groupingOf(workers: WorkerDto[]): [string, [string, string[]][]][] {
         .sort(),
     ])
     .sort();
+}
+
+/** Page-side: the column headers of the table holding worker `id`, once its row shows. */
+function headersOf(id: string): string {
+  return poll(`(() => {
+    const row = document.querySelector(${JSON.stringify(`tr[data-testid="worker-row-${id}"]`)});
+    return row ? [...row.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim()) : null;
+  })()`);
+}
+
+/**
+ * Page-side: the `title` of the titled element in worker `id`'s cell under
+ * column `header` — a Heartbeat cell's `<time>`, a Memory cell's muted dash —
+ * wrapped so a cell with no title answers at once instead of polling out:
+ * `{ title: null }` means the cell is there and carries none.
+ */
+function cellTitle(id: string, header: string): string {
+  return poll(`(() => {
+    const row = document.querySelector(${JSON.stringify(`tr[data-testid="worker-row-${id}"]`)});
+    if (!row) return null;
+    const headers = [...row.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim());
+    const index = headers.indexOf(${JSON.stringify(header)});
+    const cell = index === -1 ? null : row.children[index];
+    if (!cell) return null;
+    const titled = cell.querySelector("[title]");
+    return { title: titled ? titled.getAttribute("title") : null };
+  })()`);
+}
+
+/** The units the UI steps a size through, each 1024× the one before (`app/format.ts`). */
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const;
+
+/**
+ * A size in bytes as the UI renders it (`formatBytes` in `app/format.ts`):
+ * whole bytes below a kilobyte, then one decimal in the largest **binary**
+ * unit that fits — `393.8 MiB`. Mirrored here so a rendered cell can be
+ * compared with the number the API reported for that row, rather than with a
+ * figure typed into this file.
+ */
+function formatBytes(value: number): string {
+  let size = value;
+  let index = 0;
+  while (size >= 1024 && index < BYTE_UNITS.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return index === 0
+    ? `${size} ${BYTE_UNITS[index]}`
+    : `${size.toFixed(1)} ${BYTE_UNITS[index]}`;
+}
+
+/** What a size looks like once the UI has formatted it, whichever unit it landed in. */
+const BYTE_FIGURE = /^(?:\d+ B|\d+[.,]\d (?:KiB|MiB|GiB|TiB|PiB))$/;
+
+/**
+ * A figure with a locale's decimal comma read as a point: the browser and this
+ * process need not agree on a locale, and a memory figure's mantissa is always
+ * under 1024, so no digit grouping can be confused with it.
+ */
+function plainFigure(text: string): string {
+  return text.replace(/(\d),(\d)/g, "$1.$2");
 }
 
 /** Page-side: the job row ids in `scope`, in order, once `ready(ids)` holds. */
@@ -1288,6 +1367,437 @@ try {
       (await view.evaluate<string | null>(
         at(`${main.ui}/workers/emails/${KEY.apiEmails}`),
       )) !== null,
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("Memory: one figure per process, shown per row and never summed");
+
+  // A live process's resident memory moves between one report and the next, so
+  // a figure read from the page and a figure read from the API a moment later
+  // could never be compared, and "two workers in one process report one
+  // figure" could not be shown at all. So this step pins the *source* —
+  // `process.memoryUsage.rss()`, which each worker reads once per report — for
+  // as long as it looks, and puts it back afterwards. Nothing below is
+  // asserted from that constant: every expectation is built from what the API
+  // reports for the row in question.
+  const realRss = process.memoryUsage.rss;
+  /** A resident size that lands mid-unit, so the formatter's one decimal shows: 393.75 MiB. */
+  const PINNED_RSS = 412_876_800;
+  process.memoryUsage.rss = () => PINNED_RSS;
+
+  // A second instance of the mailer's key in *this* process, so one table
+  // holds two workers that share a host and a pid. (The replica's instance is
+  // another process, and reports its own figure.)
+  const twin = mailerJobs.worker<JobData, string>("emails", handle, {
+    ...WORKER_OPTIONS,
+    name: "send",
+    concurrency: 1,
+  });
+  void twin.run();
+  /** Every row on screen while the twin runs. */
+  const withTwin = [...Object.values(ids), twin.id];
+  await waitFor(
+    "the twin to register and every worker of this process to report the pinned figure",
+    async () => {
+      const all = await listed();
+      const mine = all.filter(
+        (worker) => worker.host === hostname() && worker.pid === process.pid,
+      );
+      return (
+        all.some((worker) => worker.id === twin.id) &&
+        mine.length > 1 &&
+        mine.every((worker) => worker.rssBytes === PINNED_RSS)
+      );
+    },
+  );
+
+  await open("/workers");
+  await view.evaluate(rowsAre(withTwin));
+  const memoryList = await listed();
+  /** The rows of this process: five workers, three services, one figure. */
+  const hereWorkers = memoryList.filter(
+    (worker) => worker.host === hostname() && worker.pid === process.pid,
+  );
+  /** The replica's row: another process, its own live figure. */
+  const otherWorkers = memoryList.filter(
+    (worker) => worker.pid !== process.pid,
+  );
+  show(
+    "GET /workers: rssBytes by host and pid",
+    memoryList.map((worker) => [
+      worker.id,
+      `${worker.host} · pid ${worker.pid}`,
+      worker.rssBytes,
+    ]),
+  );
+  checkEqual(
+    "every live worker reports its process's resident memory: it rides the heartbeat, so the column costs no read",
+    memoryList
+      .filter((worker) => typeof worker.rssBytes !== "number")
+      .map((worker) => worker.id),
+    [],
+  );
+  check(
+    "the workers of this process report one figure between them: it is the process's, not each worker's",
+    hereWorkers.length > 1 &&
+      new Set(hereWorkers.map((worker) => worker.rssBytes)).size === 1,
+    hereWorkers.map((worker) => [worker.id, worker.rssBytes]),
+  );
+  check(
+    "and the replica, another process, reports its own",
+    otherWorkers.length === 1 &&
+      otherWorkers[0]!.rssBytes !== hereWorkers[0]!.rssBytes,
+    otherWorkers.map((worker) => [worker.id, worker.pid, worker.rssBytes]),
+  );
+  const memoryTables = await view.evaluate<[number, number]>(
+    `[document.querySelectorAll('[data-testid="workers-list"] table').length,
+      [...document.querySelectorAll('[data-testid="workers-list"] thead th')].filter((th) => th.textContent.trim() === "Memory").length]`,
+  );
+  checkEqual(
+    "the Workers page asks for the Memory column and somebody reports, so each of its tables has exactly one",
+    memoryTables,
+    [3, 3],
+  );
+  const memoryRows = Object.fromEntries(
+    await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
+  );
+  show(
+    "the Memory column, row by row",
+    Object.fromEntries(
+      memoryList.map((worker) => [worker.id, memoryRows[worker.id]?.Memory]),
+    ),
+  );
+  checkEqual(
+    "every row of this process shows that process's figure, in binary units, as the UI's own formatter writes it",
+    hereWorkers
+      .filter(
+        (worker) =>
+          plainFigure(memoryRows[worker.id]?.Memory ?? "") !==
+          plainFigure(formatBytes(worker.rssBytes!)),
+      )
+      .map((worker) => [
+        worker.id,
+        memoryRows[worker.id]?.Memory,
+        formatBytes(worker.rssBytes!),
+      ]),
+    [],
+  );
+  check(
+    "the replica's row shows a figure of its own, in the same units (live, so only its shape can be pinned down)",
+    BYTE_FIGURE.test(memoryRows[otherWorkers[0]!.id]?.Memory ?? "") &&
+      memoryRows[otherWorkers[0]!.id]?.Memory !==
+        memoryRows[hereWorkers[0]!.id]?.Memory,
+    [
+      memoryRows[otherWorkers[0]!.id]?.Memory,
+      memoryRows[hereWorkers[0]!.id]?.Memory,
+    ],
+  );
+  check(
+    "so the two instances in one process repeat one figure, side by side in one table",
+    memoryRows[ids.mailer]?.Memory === memoryRows[twin.id]?.Memory &&
+      BYTE_FIGURE.test(memoryRows[twin.id]?.Memory ?? ""),
+    [memoryRows[ids.mailer]?.Memory, memoryRows[twin.id]?.Memory],
+  );
+
+  /** The sums a reader might look for, and must not find. */
+  const sums = [
+    formatBytes(
+      hereWorkers.reduce((total, worker) => total + worker.rssBytes!, 0),
+    ),
+    formatBytes(
+      memoryList.reduce((total, worker) => total + worker.rssBytes!, 0),
+    ),
+    formatBytes(hereWorkers[0]!.rssBytes! * 2),
+  ];
+  const tableText = plainFigure(
+    await view.evaluate<string>(
+      `[...document.querySelectorAll('[data-testid="workers-list"] table')].map((table) => table.textContent).join(" ")`,
+    ),
+  );
+  show("no total is offered, so none of these may appear", sums);
+  checkEqual(
+    "nothing adds the column up: no tfoot, no row calling itself a total, and no sum of the figures anywhere in the tables",
+    [
+      await view.evaluate<number>(
+        `document.querySelectorAll('[data-testid="workers-list"] tfoot').length`,
+      ),
+      /\btotals?\b/i.test(tableText),
+      sums.filter((sum) => tableText.includes(plainFigure(sum))),
+    ],
+    [0, false, []],
+  );
+  const memoryHint = await view.evaluate<string | null>(
+    `[...document.querySelectorAll('[data-testid="workers-list"] thead th')].find((th) => th.textContent.trim() === "Memory")?.getAttribute("title") ?? null`,
+  );
+  show("the Memory header's tooltip", memoryHint);
+  check(
+    "the column header says whose memory it is, and that the rows must not be added up",
+    memoryHint?.includes("not the worker's own") === true &&
+      memoryHint.includes("one row per pid"),
+    memoryHint,
+  );
+
+  // The heartbeat's round trip: a tooltip on the Heartbeat cell, never a
+  // column. It is the *previous* report's sample, so the figure on screen need
+  // not be the one the API answers with now — only the wording and its shape
+  // can be held to.
+  const beating = memoryList.find(
+    (worker) => worker.heartbeatRttMs !== undefined,
+  );
+  check(
+    "some worker reports how long its last heartbeat write took",
+    beating !== undefined,
+    memoryList.map((worker) => [worker.id, worker.heartbeatRttMs]),
+  );
+  /** The wording bun-jobs-ui puts under the instant, verbatim. */
+  const RTT_HINT =
+    /^Last write took [\d.,]+ ms \(the previous report's round trip to the driver, not a network ping\)\.$/;
+  const beatLines = (
+    (
+      await view.evaluate<{ title: string | null } | null>(
+        cellTitle(beating!.id, "Heartbeat"),
+      )
+    )?.title ?? ""
+  ).split("\n");
+  show("the Heartbeat cell's tooltip", beatLines);
+  check(
+    "it keeps the ISO instant and adds the round trip on a line of its own, worded as a driver round trip rather than a ping or an average",
+    beatLines.length === 2 &&
+      !Number.isNaN(Date.parse(beatLines[0]!)) &&
+      RTT_HINT.test(beatLines[1]!),
+    beatLines,
+  );
+
+  await open(`/workers/emails/${KEY.mailer}`);
+  await view.evaluate(rowsAre([ids.mailer, twin.id, ids.replica]));
+  const instanceRows = Object.fromEntries(
+    await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
+  );
+  const instanceList = await listed(`?queue=emails&key=${KEY.mailer}`);
+  checkEqual(
+    "a worker page's Instances table asks for the column too: each instance of this process shows that process's figure",
+    instanceList
+      .filter((worker) => worker.pid === process.pid)
+      .filter(
+        (worker) =>
+          plainFigure(instanceRows[worker.id]?.Memory ?? "") !==
+          plainFigure(formatBytes(worker.rssBytes!)),
+      )
+      .map((worker) => [worker.id, instanceRows[worker.id]?.Memory]),
+    [],
+  );
+  check(
+    "the two sharing a pid repeat one figure; the replica's differs, and nothing on the page sums them",
+    instanceRows[ids.mailer]?.Memory === instanceRows[twin.id]?.Memory &&
+      instanceRows[ids.replica]?.Memory !== instanceRows[twin.id]?.Memory &&
+      !plainFigure(
+        await view.evaluate<string>(
+          `document.querySelector('[data-testid="worker-instances"]').textContent`,
+        ),
+      ).includes(plainFigure(formatBytes(hereWorkers[0]!.rssBytes! * 2))),
+    [
+      instanceRows[ids.mailer]?.Memory,
+      instanceRows[twin.id]?.Memory,
+      instanceRows[ids.replica]?.Memory,
+    ],
+  );
+  const instanceBeat = (
+    (
+      await view.evaluate<{ title: string | null } | null>(
+        cellTitle(ids.mailer, "Heartbeat"),
+      )
+    )?.title ?? ""
+  ).split("\n");
+  check(
+    "and the same round-trip tooltip on the instances' Heartbeat cells",
+    instanceBeat.length === 2 && RTT_HINT.test(instanceBeat[1]!),
+    instanceBeat,
+  );
+
+  // A queue's Workers panel is a narrow control surface: it does not ask for
+  // the column, whatever its workers report. The tooltip is not a column, so
+  // it is there.
+  await open("/queues/emails?panel=workers");
+  await view.evaluate(
+    rowsAre([ids.apiEmails, ids.mailer, twin.id, ids.replica]),
+  );
+  const panelHeaders = await view.evaluate<string[] | null>(
+    headersOf(ids.mailer),
+  );
+  show("the queue's Workers panel, its columns", panelHeaders);
+  check(
+    "no Memory column in the panel, though its workers report one",
+    panelHeaders !== null &&
+      !panelHeaders.includes("Memory") &&
+      panelHeaders.includes("Heartbeat"),
+    panelHeaders,
+  );
+  const panelBeat = (
+    (
+      await view.evaluate<{ title: string | null } | null>(
+        cellTitle(ids.mailer, "Heartbeat"),
+      )
+    )?.title ?? ""
+  ).split("\n");
+  check(
+    "but the heartbeat's round trip is still there, in the tooltip",
+    panelBeat.length === 2 && RTT_HINT.test(panelBeat[1]!),
+    panelBeat,
+  );
+
+  await twin.close({ timeout: 2_000 });
+  process.memoryUsage.rss = realRss;
+  await waitFor(
+    "the twin's record to go",
+    async () => (await record(twin.id)) === undefined,
+  );
+
+  /* ---------------------------------------------------------------- */
+  step('A worker from before the fields: "—" rather than 0 B, and no column');
+
+  /**
+   * A heartbeat record as a worker older than these two fields wrote it: every
+   * field such a worker reported, and neither `rssBytes` nor `heartbeatRttMs`.
+   * Written straight to the driver, because no current worker can write one.
+   */
+  function olderRecord(options: {
+    /** Its per-incarnation id. */
+    id: string;
+    /** The stable key it reports. */
+    key: string;
+    /** The queue it consumes. */
+    queue: string;
+  }): WorkerInfo {
+    const now = Date.now();
+    return {
+      id: options.id,
+      key: options.key,
+      service: "legacy",
+      queue: options.queue,
+      host: "older-host",
+      pid: 4_242,
+      concurrency: 1,
+      active: 0,
+      paused: false,
+      startedAt: now - 60_000,
+      heartbeatAt: now,
+      expiresAt: now + 120_000,
+    };
+  }
+
+  /** An older instance of the mailer's key: a table that has the column, and a row with nothing to put in it. */
+  const olderInstance = olderRecord({
+    id: "older-mailer",
+    key: KEY.mailer,
+    queue: "emails",
+  });
+  /** An older worker alone on its key: a table where the column has nothing to show at all. */
+  const olderAlone = olderRecord({
+    id: "older-reports",
+    key: "legacy.reports",
+    queue: "reports",
+  });
+  await registerWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("emails").ref,
+    olderInstance,
+  );
+  await registerWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("reports").ref,
+    olderAlone,
+  );
+  const olderDto = (await listed(`?queue=emails&key=${KEY.mailer}`)).find(
+    (worker) => worker.id === olderInstance.id,
+  );
+  show("GET /workers: the older record as the API serialises it", olderDto);
+  checkEqual(
+    "the API leaves both fields out of such a record rather than defaulting them to 0",
+    [
+      olderDto !== undefined,
+      olderDto !== undefined && "rssBytes" in olderDto,
+      olderDto !== undefined && "heartbeatRttMs" in olderDto,
+    ],
+    [true, false, false],
+  );
+
+  await open(`/workers/emails/${KEY.mailer}`);
+  await view.evaluate(rowsAre([ids.mailer, ids.replica, olderInstance.id]));
+  const olderRows = Object.fromEntries(
+    await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
+  );
+  checkEqual(
+    "in a table that has the column, it shows a dash and never 0 B: absent is not zero",
+    [olderRows[olderInstance.id]?.Memory, olderRows[ids.mailer]?.Memory].map(
+      (cell) => (cell === "—" ? "—" : BYTE_FIGURE.test(cell ?? "")),
+    ),
+    ["—", true],
+  );
+  const dashTitle =
+    (
+      await view.evaluate<{ title: string | null } | null>(
+        cellTitle(olderInstance.id, "Memory"),
+      )
+    )?.title ?? null;
+  check(
+    "with a tooltip saying it reports none, in place of a figure nobody measured",
+    dashTitle?.includes("does not report its process memory") === true,
+    dashTitle,
+  );
+  const olderBeat =
+    (
+      await view.evaluate<{ title: string | null } | null>(
+        cellTitle(olderInstance.id, "Heartbeat"),
+      )
+    )?.title ?? null;
+  check(
+    "and its Heartbeat tooltip is the instant alone: no round trip reported, none invented",
+    olderBeat !== null &&
+      !olderBeat.includes("\n") &&
+      !Number.isNaN(Date.parse(olderBeat)),
+    olderBeat,
+  );
+
+  await open(`/workers/reports/${olderAlone.key}`);
+  await view.evaluate(rowsAre([olderAlone.id]));
+  const aloneHeaders = await view.evaluate<string[] | null>(
+    headersOf(olderAlone.id),
+  );
+  show("a table of older workers only, its columns", aloneHeaders);
+  check(
+    "a table whose every worker reports none has no Memory column at all, though the page asks for one",
+    aloneHeaders !== null &&
+      !aloneHeaders.includes("Memory") &&
+      aloneHeaders.includes("Heartbeat"),
+    aloneHeaders,
+  );
+  checkEqual(
+    "which the API agrees with: its one instance reports no rssBytes",
+    (await listed(`?queue=reports&key=${olderAlone.key}`)).map((worker) => [
+      worker.id,
+      "rssBytes" in worker,
+    ]),
+    [[olderAlone.id, false]],
+  );
+
+  await removeWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("emails").ref,
+    olderInstance.id,
+  );
+  await removeWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue("reports").ref,
+    olderAlone.id,
+  );
+  await waitFor("the older records to go", async () => {
+    const live = (await listed()).map((worker) => worker.id);
+    return !live.includes(olderInstance.id) && !live.includes(olderAlone.id);
+  });
+  checkEqual(
+    "both records removed: /workers is back to the five live workers",
+    (await listed()).map((worker) => worker.id).sort(),
+    Object.values(ids).sort(),
   );
 
   /* ---------------------------------------------------------------- */

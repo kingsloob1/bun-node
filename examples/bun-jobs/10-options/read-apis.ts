@@ -23,6 +23,16 @@
  * - A worker writes one heartbeat per `reportInterval`, never per job, and its
  *   record lapses three intervals after the last write. The tour waits for
  *   records rather than sleeping, except where it has to prove a negative.
+ * - **`rssBytes` on a worker's record is the *process's* resident memory, not
+ *   the worker's.** Two workers in one process report the same number, so a
+ *   column of it must never be summed — `fleetRss` below is the right total,
+ *   one row per `host`+`pid`.
+ * - **`heartbeatRttMs` is how long the heartbeat *write* took at the driver**,
+ *   not a network ping, and it is the last sample — in fact the previous
+ *   write's, since a write cannot time itself — so it is absent on a worker's
+ *   first record.
+ * - Both are optional, and a record that lacks them (an older worker's) leaves
+ *   them **out**: absent, never `0`.
  */
 import type {
   JobsDriver,
@@ -470,6 +480,358 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
+step("listWorkers: rssBytes and heartbeatRttMs, the samples the write carries");
+
+// Both ride the heartbeat write the worker makes anyway — no timer of their
+// own, no driver call of their own — and both are optional, so what matters is
+// where each number comes from rather than that a number arrived.
+
+/**
+ * One worker's record, waited for until `ready` holds.
+ *
+ * Prints every record it saw before giving up, so a timeout names what was
+ * actually there rather than only what was wanted.
+ */
+async function recordWhen(
+  queue: BunQueue,
+  id: string,
+  what: string,
+  ready: (info: WorkerInfo) => boolean,
+): Promise<WorkerInfo> {
+  let seen: WorkerInfo[] = [];
+  let found: WorkerInfo | undefined;
+
+  try {
+    await waitFor(
+      what,
+      async () => {
+        seen = await queue.listWorkers();
+        found = seen.find((info) => info.id === id && ready(info));
+        return found !== undefined;
+      },
+      LONG,
+    );
+  } catch (error) {
+    show(`records seen while waiting for ${what}`, seen);
+    throw error;
+  }
+
+  return found!;
+}
+
+// A long report interval, so exactly one write has happened when the record
+// first appears — which is the case where there is no round trip to report yet.
+const samplesQueue = new BunQueue("samples", { namespace, driver });
+const sampled = new BunQueueWorker("samples", async () => undefined, {
+  namespace,
+  driver,
+  id: "sampled-1",
+  reportInterval: 30_000,
+  pollInterval: 25,
+});
+void sampled.run();
+
+const firstReport = await recordWhen(
+  samplesQueue,
+  "sampled-1",
+  "the worker's first heartbeat record",
+  () => true,
+);
+
+check(
+  "rssBytes is on the very first record: whole bytes, and a real process's",
+  Number.isInteger(firstReport.rssBytes) && firstReport.rssBytes! > 1_000_000,
+  { rssBytes: firstReport.rssBytes },
+);
+// A write cannot time itself, so the first record has no round trip to carry —
+// and it says so by leaving the field out, not by reporting `0`.
+check(
+  "heartbeatRttMs is absent on the first record, not 0",
+  !Object.hasOwn(firstReport, "heartbeatRttMs") &&
+    firstReport.heartbeatRttMs === undefined,
+  {
+    heartbeatRttMs: firstReport.heartbeatRttMs,
+    keys: Object.keys(firstReport).sort(),
+  },
+);
+
+// A pause reports at once, whatever the interval, so the second write happens
+// now rather than in thirty seconds — and it carries the *first* write's time.
+await sampled.pause();
+const secondReport = await recordWhen(
+  samplesQueue,
+  "sampled-1",
+  "a record carrying a round trip",
+  (info) => info.heartbeatRttMs !== undefined,
+);
+check(
+  "the next record carries the previous write's round trip",
+  Number.isFinite(secondReport.heartbeatRttMs) &&
+    secondReport.heartbeatRttMs! >= 0,
+  { heartbeatRttMs: secondReport.heartbeatRttMs },
+);
+// It measures the driver's work — a Redis script, a SQL upsert, a MongoDB
+// replace, a file rename — plus whatever was queued in front of it, not a
+// network ping. Under a millisecond in memory and a few milliseconds against a
+// local server; a figure near a whole report interval is the one worth an
+// alert, so that is the bound asserted rather than a fixed number.
+check(
+  "…and it is a driver round trip, not a report interval",
+  secondReport.heartbeatRttMs! < 10_000,
+  { heartbeatRttMs: secondReport.heartbeatRttMs },
+);
+show(`heartbeatRttMs on ${backend} (ms)`, secondReport.heartbeatRttMs);
+
+await sampled.close();
+
+/* ------------------------------------------------------------------ */
+step(
+  "rssBytes is the process's memory, so a column of it must never be summed",
+);
+
+/**
+ * The resident memory of a fleet of workers, in bytes.
+ *
+ * `rssBytes` is whatever `process.memoryUsage.rss()` answered, so **every
+ * worker in one process reports the same number** and nothing apportions it
+ * between them. Summing the column counts a process once per worker it runs.
+ * The right total takes one row per process — `host` and `pid` together name
+ * one — and adds those. A row without the field is skipped rather than read as
+ * zero.
+ */
+function fleetRss(workers: WorkerInfo[]): number {
+  const perProcess = new Map<string, number>();
+
+  for (const info of workers) {
+    if (info.rssBytes === undefined) {
+      continue;
+    }
+    perProcess.set(`${info.host ?? "?"}:${info.pid ?? "?"}`, info.rssBytes);
+  }
+
+  return [...perProcess.values()].reduce((total, bytes) => total + bytes, 0);
+}
+
+/**
+ * What this process reports while the section runs.
+ *
+ * Pinned only so the claim can be exact: the two records must carry *the same*
+ * number, and a live reading drifts between two reports, which would prove
+ * nothing either way. Restored below, and nothing else in the tour reads it.
+ */
+const PINNED_RSS = 512 * 1024 * 1024;
+const realRss = process.memoryUsage.rss;
+process.memoryUsage.rss = () => PINNED_RSS;
+
+const pairQueue = new BunQueue("pair", { namespace, driver });
+const pair = ["pair-a", "pair-b"].map((id) => {
+  const instance = new BunQueueWorker("pair", async () => undefined, {
+    namespace,
+    driver,
+    id,
+    reportInterval: 150,
+    pollInterval: 25,
+  });
+  void instance.run();
+  return instance;
+});
+
+const pairRecords = await Promise.all(
+  pair.map(
+    async (instance) =>
+      await recordWhen(
+        pairQueue,
+        instance.id,
+        `${instance.id}'s record`,
+        (info) => info.rssBytes !== undefined,
+      ),
+  ),
+);
+
+checkEqual(
+  "two workers in one process report the same rssBytes — the process's",
+  pairRecords.map((info) => info.rssBytes),
+  [PINNED_RSS, PINNED_RSS],
+);
+checkEqual(
+  "…which is the same process: one host, one pid",
+  pairRecords.map((info) => `${info.host}:${info.pid}`),
+  [`${HOST}:${process.pid}`, `${HOST}:${process.pid}`],
+);
+
+// A second process, on another host, running two workers of its own: what a
+// fleet actually looks like to a reader of the list.
+const OTHER_RSS = 300 * 1024 * 1024;
+const remoteAt = Date.now();
+for (const id of ["remote-a", "remote-b"]) {
+  await registerWorkerRecord(driver, pairQueue.ref, {
+    id,
+    queue: "pair",
+    host: "another-host",
+    pid: 9999,
+    concurrency: 1,
+    active: 0,
+    paused: false,
+    startedAt: remoteAt - 1_000,
+    heartbeatAt: remoteAt,
+    expiresAt: remoteAt + 60_000,
+    rssBytes: OTHER_RSS,
+  });
+}
+
+// Waited for rather than read straight away: the two live workers report every
+// 150ms, so a record could be mid-write, and this section is about the
+// arithmetic rather than about timing.
+let fleet: WorkerInfo[] = [];
+try {
+  await waitFor(
+    "all four records to be listed",
+    async () => {
+      fleet = await pairQueue.listWorkers();
+      return fleet.length === 4;
+    },
+    LONG,
+  );
+} catch (error) {
+  show("records listed while waiting for four", fleet);
+  throw error;
+}
+
+checkEqual("four workers, on two processes", fleet.length, 4);
+checkEqual(
+  "summing the column counts each process once per worker it runs",
+  fleet.reduce((total, info) => total + (info.rssBytes ?? 0), 0),
+  2 * PINNED_RSS + 2 * OTHER_RSS,
+);
+checkEqual(
+  "…while one row per host+pid is the fleet's real resident memory",
+  fleetRss(fleet),
+  PINNED_RSS + OTHER_RSS,
+);
+
+await Promise.all(pair.map(async (instance) => await instance.close()));
+process.memoryUsage.rss = realRss;
+
+/* ------------------------------------------------------------------ */
+step("Both samples are absent, never 0, on a record that lacks them");
+
+// What a worker from before these fields wrote — and what every backend here
+// gives back: the field is not present at all. A reader's `?? 0` would turn
+// "did not report" into "reported nothing", which reads as a healthy process
+// using no memory and a write that took no time.
+const olderQueue = new BunQueue("older-record", { namespace, driver });
+await olderQueue.connect();
+
+const olderAt = Date.now();
+await registerWorkerRecord(driver, olderQueue.ref, {
+  id: "older-1",
+  queue: "older-record",
+  host: "another-host",
+  pid: 4242,
+  concurrency: 1,
+  active: 0,
+  paused: false,
+  startedAt: olderAt - 5_000,
+  heartbeatAt: olderAt,
+  expiresAt: olderAt + 60_000,
+});
+
+const [olderRecord] = await olderQueue.listWorkers();
+checkEqual(
+  "read back with neither field present — not present, not zero",
+  [
+    Object.hasOwn(olderRecord!, "rssBytes"),
+    Object.hasOwn(olderRecord!, "heartbeatRttMs"),
+  ],
+  [false, false],
+);
+checkEqual(
+  "…so a reader sees undefined, which is a different answer from 0",
+  [olderRecord!.rssBytes, olderRecord!.heartbeatRttMs],
+  [undefined, undefined],
+);
+checkEqual(
+  "and fleetRss skips it rather than adding a zero",
+  fleetRss(await olderQueue.listWorkers()),
+  0,
+);
+
+/* ------------------------------------------------------------------ */
+step("completed and failed on the record are per incarnation");
+
+// The counts ride the same write, so a workers table has throughput per
+// instance with no analytics read at all. They are the *incarnation's*: a
+// restart starts them again, while the queue's own counters keep going.
+const restartsQueue = new BunQueue("restarts", { namespace, driver });
+
+/**
+ * Runs one incarnation of the same worker — two completions and one failed
+ * attempt — and answers the record it left, once its counts have been
+ * reported.
+ */
+async function incarnation(): Promise<WorkerInfo> {
+  const instance = new BunQueueWorker(
+    "restarts",
+    async (job) => {
+      if (job.name === "bad") {
+        throw new Error("no");
+      }
+      return "ok";
+    },
+    {
+      namespace,
+      driver,
+      // The stable identity, shared by every incarnation; the per-incarnation
+      // id is assigned for each one.
+      key: "restarts.sender",
+      reportInterval: 150,
+      pollInterval: 25,
+    },
+  );
+  void instance.run();
+
+  await restartsQueue.addBulk([
+    { name: "ok", data: {} },
+    { name: "ok", data: {} },
+    { name: "bad", data: {}, opts: { attempts: 1 } },
+  ]);
+
+  const record = await recordWhen(
+    restartsQueue,
+    instance.id,
+    `${instance.id}'s counts`,
+    (info) => info.completed === 2 && info.failed === 1,
+  );
+  await instance.close();
+  return record;
+}
+
+const firstLife = await incarnation();
+const secondLife = await incarnation();
+
+check(
+  "each incarnation has its own id, under one stable key",
+  firstLife.id !== secondLife.id && firstLife.key === secondLife.key,
+  {
+    first: { id: firstLife.id, key: firstLife.key },
+    second: { id: secondLife.id, key: secondLife.key },
+  },
+);
+checkEqual(
+  "the counts start again on the restart: per incarnation, not per key",
+  [secondLife.completed, secondLife.failed],
+  [2, 1],
+);
+// The queue's running totals are a different question, and the throughput
+// counters answer it: they carry both incarnations' work.
+const acrossRestarts = await restartsQueue.getThroughput({ minutes: 5 });
+checkEqual(
+  "…while the queue's totals keep counting across the restart",
+  [acrossRestarts.completed, acrossRestarts.failed],
+  [4, 2],
+);
+
+/* ------------------------------------------------------------------ */
 step("reportInterval: the default, and 0");
 
 const defaultsQueue = new BunQueue("defaults", { namespace, driver });
@@ -909,6 +1271,10 @@ await jobs.close();
 await Promise.all([
   reads.close(),
   workersQueue.close(),
+  samplesQueue.close(),
+  pairQueue.close(),
+  olderQueue.close(),
+  restartsQueue.close(),
   defaultsQueue.close(),
   silentQueue.close(),
   lapsedQueue.close(),

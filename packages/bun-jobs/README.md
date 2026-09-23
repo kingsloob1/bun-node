@@ -1833,6 +1833,11 @@ first write has not returned yet, simply has no such field — absent, never `0`
   one slow number is as likely to be a single stalled write as a trend. Only a
   write that landed updates it; a failed one leaves the last good sample alone.
 
+Examples:
+
+- [`10-options/read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)
+- [`10-options/jobs-api-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/jobs-api-options.ts)
+
 **Aggregates.** `jobs.getQueueSummaries()` lives on `BunJobs` because it is a
 question about the namespace, which the context owns; a `BunQueue` knows only
 itself. Counting is one grouped query on SQL and MongoDB and one count per queue
