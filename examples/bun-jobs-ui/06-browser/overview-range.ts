@@ -52,6 +52,21 @@
  *   that feature off too, the band is gone.
  * - **No fixed "last 60 minutes" figure** anywhere: throughput belongs to the
  *   range on screen.
+ * - **A row opens what it names.** A Workers row's key links to that worker's
+ *   page and its queue to the queue screen; a Runners row's runner links to
+ *   its page. Each link is clicked here, not only read. Each is gated as the
+ *   equivalent link elsewhere is, **on the untargeted map**: the key needs
+ *   what the Workers nav entry needs, the runner what the Runners nav entry
+ *   needs, the queue `queues.list`. So a host granting `workers.list` per
+ *   queue leaves every row's key plain text — the section spans queues, and
+ *   the app registers `/workers/:queue/:key` from the nav, which is built from
+ *   the untargeted map, so a link there would open a route that does not exist
+ *   for that caller. Anything not linkable is plain text, never a dead link.
+ * - **A row may name something the API no longer reaches.** The rows answer
+ *   "who did the work in this window", so a runner that is no longer
+ *   registered and a worker key that is no longer live keep theirs. The link
+ *   stays, and lands on that screen's own answer: "Runner not found", and a
+ *   worker page with "No live instance".
  *
  * Why `maxBuckets` and `resolution` are not shown: the Overview asks for
  * one-second buckets only up to 15 minutes (at most 901 buckets) and minute
@@ -63,8 +78,12 @@
  * Wait on conditions, never on time: every page read polls the DOM until
  * what it wants is there, and every seed step polls the API.
  */
-import type { JobsDriver } from "@kingsleyweb/bun-jobs";
-import type { OverviewView } from "./helpers/overview-page";
+import type {
+  JobsApiAction,
+  JobsApiAuthorize,
+  JobsDriver,
+} from "@kingsleyweb/bun-jobs";
+import type { OverviewView, RowView } from "./helpers/overview-page";
 import {
   BunHttpAdapter,
   createDeferred,
@@ -77,7 +96,7 @@ import {
   runnerKey,
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
-import { chromeOrSkip, openView } from "../shared/browser";
+import { chromeOrSkip, openView, textOf } from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import {
@@ -85,6 +104,7 @@ import {
   READ_OVERVIEW,
   TOGGLE_SCOPE,
 } from "./helpers/overview-page";
+import { at, clickOn } from "./helpers/page";
 
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
@@ -155,6 +175,8 @@ interface Host {
   overview: string;
   /** The API's base path. */
   apiBase: string;
+  /** The UI's base path, which every app link is written under. */
+  uiBase: string;
   /** Every API request it received, oldest first. */
   seen: Seen[];
   /** Stops it. */
@@ -182,8 +204,15 @@ function without(real: JobsDriver, methods: (keyof JobsDriver)[]): JobsDriver {
  * Serves an API (mode `both`, with its socket, so the page goes live and
  * polls once a minute rather than every 5 s: a request count is then the
  * page's reads, not its polls) and the UI, recording every API request.
+ *
+ * `authorize` defaults to allowing everything; a host passing one of its own
+ * decides per action, and per queue or runner, as a real host would.
  */
-async function serveHost(name: string, driver: JobsDriver): Promise<Host> {
+async function serveHost(
+  name: string,
+  driver: JobsDriver,
+  authorize: JobsApiAuthorize = () => true,
+): Promise<Host> {
   const jobs = new BunJobs({
     namespace: `examples-ui-overview-${name}`,
     service: SERVICE,
@@ -194,7 +223,7 @@ async function serveHost(name: string, driver: JobsDriver): Promise<Host> {
     jobs,
     mode: "both",
     basePath: "/jobs-api",
-    authorize: () => true,
+    authorize,
     logger: noopLogger,
   });
   const ui = jobsUi({ api, logger: noopLogger });
@@ -225,6 +254,7 @@ async function serveHost(name: string, driver: JobsDriver): Promise<Host> {
     origin,
     overview: `${origin}${ui.basePath}`,
     apiBase: api.basePath,
+    uiBase: ui.basePath,
     seen,
     close: async () => {
       await app.close();
@@ -474,7 +504,44 @@ for (const host of [bare, bareNoAdded]) {
   await host.jobs.queue(BACKLOG).add("task", {});
 }
 
-const hosts = [main, minute, fleet, bare, bareNoAdded];
+/**
+ * What the gated host refuses, untargeted. Its `authorize` reads it on every
+ * request, so a reload of the page asks `/meta/permissions` afresh and the
+ * links change with it — one host, one seed, every fallback.
+ */
+const refusedUntargeted = new Set<JobsApiAction>();
+/**
+ * A host that answers per queue and per runner, the way a real one with
+ * per-queue grants does: an action in {@link refusedUntargeted} is refused
+ * when no queue or runner is named, and allowed when one is. The Overview's
+ * analytics sections span queues, so they see only the untargeted answer.
+ */
+const gatedDriver = new MemoryDriver();
+const gatedAuthorize: JobsApiAuthorize = (_req, context) =>
+  refusedUntargeted.has(context.action)
+    ? context.queue !== undefined || context.runner !== undefined
+    : true;
+const gated = await serveHost("gated", gatedDriver, gatedAuthorize);
+// Its rows the way the fleet's are made: the counts a worker's and a runner's
+// recorders write, through the real driver methods, read back through the real
+// routes. A key's row is read over the queues the API lists, and a queue is
+// listed once it has held a job.
+await gated.jobs.queue(ORDERS).add("order", {});
+const gatedNow = Date.now();
+await gatedDriver.countWorkerJobs(
+  { ns: gated.jobs.namespace, queue: ORDERS },
+  ORDERS_KEY,
+  gatedNow,
+  { completed: 3 },
+);
+await gatedDriver.countRunnerRun(
+  gated.jobs.namespace,
+  runnerKey(RUNNER),
+  gatedNow,
+  { started: 2, succeeded: 2 },
+);
+
+const hosts = [main, minute, fleet, bare, bareNoAdded, gated];
 
 /** The fleet's `index`th worker key, zero-padded so it sorts as it counts. */
 function fleetKey(index: number): string {
@@ -556,6 +623,16 @@ function settled(
     section.rows.length > 0 &&
     section.sparklines.length >= headline + section.rows.length
   );
+}
+
+/** Whether the Workers section has drawn its rows and every sparkline. */
+function workersDrawn(screen: OverviewView): boolean {
+  return settled(screen, "Workers", 1);
+}
+
+/** The same for the Runners section, whose headline carries two sparklines. */
+function runnersDrawn(screen: OverviewView): boolean {
+  return settled(screen, "Runners", 2);
 }
 
 /** Whether every card of the main host has drawn its data. */
@@ -1271,6 +1348,326 @@ try {
       1,
       [screen.cards.Runners!.rows.map((row) => row.id)],
     ],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A row opens what it names: the worker, its queue, the runner");
+
+  /** The row of `card` naming `id`, or a failure naming the rows there were. */
+  function rowOf(
+    one: OverviewView,
+    card: "Runners" | "Workers",
+    id: string,
+  ): RowView {
+    const found = one.cards[card]?.rows.find((row) => row.id === id);
+    if (found === undefined) {
+      throw new Error(
+        `no ${card} row for ${id}; rows: ${JSON.stringify(one.cards[card]?.rows.map((row) => row.id) ?? null)}`,
+      );
+    }
+    return found;
+  }
+
+  await open(main);
+  screen = await overviewUntil("every section to draw", mainSettled);
+  // Read back what the links point at, through the routes the screens they
+  // open use: the key is live on its queue, the queue is listed, the runner is
+  // registered. A link is only worth offering where the thing is there.
+  const liveWorkers = await read<{ items: { queue: string; key: string }[] }>(
+    main,
+    `/workers?queue=${ORDERS}`,
+  );
+  const listedQueues = await read<{ items: { name: string }[] }>(
+    main,
+    "/queues",
+  );
+  const liveRunner = await read<{ id: string }>(main, `/runners/${RUNNER}`);
+  checkEqual(
+    "the API has the worker key on its queue, the queue in its list and the runner registered",
+    [
+      liveWorkers.body.items.map((one) => [one.queue, one.key]),
+      listedQueues.body.items.some((one) => one.name === ORDERS),
+      [liveRunner.status, liveRunner.body.id],
+    ],
+    [[[ORDERS, ORDERS_KEY]], true, [200, RUNNER]],
+  );
+  checkEqual(
+    "the Workers row links its key to the worker page and its queue to the queue screen; the Runners row links its runner",
+    [
+      rowOf(screen, "Workers", ORDERS_KEY).cellHrefs.slice(0, 2),
+      rowOf(screen, "Runners", RUNNER).cellHrefs.slice(0, 2),
+    ],
+    [
+      [
+        `${main.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+        `${main.uiBase}/queues/${ORDERS}`,
+      ],
+      // Only the runner id links; the figures beside it are numbers.
+      [`${main.uiBase}/runners/${RUNNER}`, null],
+    ],
+  );
+
+  /**
+   * Clicks `selector` on the Overview, waits for the app to land on `path`
+   * and for `marker` to be on screen, and answers with `[href, landedAt,
+   * heading]` — so a failure says which of the three did not happen.
+   */
+  async function follow(
+    host: Host,
+    selector: string,
+    path: string,
+    marker: string,
+  ): Promise<[string | true | null, string | null, string | null]> {
+    const href = await view.evaluate<string | true | null>(clickOn(selector));
+    const landed = await view.evaluate<string | null>(
+      at(`${host.uiBase}${path}`),
+    );
+    const heading = await view.evaluate<string | null>(
+      textOf(`${marker} h1`, 10_000),
+    );
+    return [href, landed, heading];
+  }
+
+  checkEqual(
+    "clicking the key lands on that worker's page",
+    await follow(
+      main,
+      `[data-testid="worker-analytics-row-${ORDERS_KEY}"] th a`,
+      `/workers/${ORDERS}/${ORDERS_KEY}`,
+      '[data-testid="worker-screen"]',
+    ),
+    [
+      `${main.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+      `${main.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+      `Worker ${ORDERS_KEY}`,
+    ],
+  );
+  await open(main);
+  await overviewUntil("the Workers section again", workersDrawn);
+  checkEqual(
+    "clicking the queue lands on the queue screen",
+    await follow(
+      main,
+      `[data-testid="worker-analytics-row-${ORDERS_KEY}"] td a`,
+      `/queues/${ORDERS}`,
+      '[data-testid="queue-screen"]',
+    ),
+    [
+      `${main.uiBase}/queues/${ORDERS}`,
+      `${main.uiBase}/queues/${ORDERS}`,
+      ORDERS,
+    ],
+  );
+  await open(main);
+  await overviewUntil("the Runners section again", runnersDrawn);
+  checkEqual(
+    "clicking the runner lands on its page",
+    await follow(
+      main,
+      `[data-testid="runner-analytics-row-${RUNNER}"] th a`,
+      `/runners/${RUNNER}`,
+      '[data-testid="runner-screen"]',
+    ),
+    [
+      `${main.uiBase}/runners/${RUNNER}`,
+      `${main.uiBase}/runners/${RUNNER}`,
+      RUNNER,
+    ],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("A name the app cannot route to stays plain text");
+
+  /** The gated host's three links now: the key, its queue, the runner. */
+  async function gatedLinks(): Promise<(string | null)[]> {
+    await open(gated);
+    const one = await overviewUntil(
+      "the gated host's sections",
+      (drawn) =>
+        (drawn.cards.Workers?.rows.length ?? 0) > 0 &&
+        (drawn.cards.Runners?.rows.length ?? 0) > 0,
+    );
+    return [
+      rowOf(one, "Workers", ORDERS_KEY).cellHrefs[0] ?? null,
+      rowOf(one, "Workers", ORDERS_KEY).cellHrefs[1] ?? null,
+      rowOf(one, "Runners", RUNNER).cellHrefs[0] ?? null,
+    ];
+  }
+
+  refusedUntargeted.clear();
+  checkEqual(
+    "granted everything, the gated host links all three",
+    await gatedLinks(),
+    [
+      `${gated.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+      `${gated.uiBase}/queues/${ORDERS}`,
+      `${gated.uiBase}/runners/${RUNNER}`,
+    ],
+  );
+
+  /**
+   * Whether `action` is allowed on the gated host untargeted, and when the
+   * map is asked about one target (`target` is the query `/meta/permissions`
+   * takes: `queue=orders` or `runner=nightly`). Read from the API, not
+   * inferred from `refusedUntargeted`, so the host's own answer is the
+   * witness for what the page then draws.
+   */
+  async function grants(
+    action: string,
+    target: string,
+  ): Promise<[untargeted: unknown, onTarget: unknown]> {
+    /** What `GET /meta/permissions` answers: the actions, each true or false. */
+    interface PermissionsBody {
+      /** Every routed action, by name. */
+      actions: Record<string, boolean>;
+    }
+    const untargeted = await read<PermissionsBody>(gated, "/meta/permissions");
+    const onTarget = await read<PermissionsBody>(
+      gated,
+      `/meta/permissions?${target}`,
+    );
+    return [untargeted.body.actions[action], onTarget.body.actions[action]];
+  }
+
+  // The section spans queues, so it reads the untargeted map — the one the nav
+  // is built from, and the nav is what registers `/workers/:queue/:key`. A
+  // per-queue grant would make the link point at a route this caller has not
+  // got, so every row's key is plain text, this one included.
+  refusedUntargeted.clear();
+  refusedUntargeted.add("workers.list");
+  checkEqual(
+    "`workers.list` per queue only: the key is plain text on every row, and the queue link survives",
+    [await grants("workers.list", `queue=${ORDERS}`), await gatedLinks()],
+    [
+      [false, true],
+      [
+        null,
+        `${gated.uiBase}/queues/${ORDERS}`,
+        `${gated.uiBase}/runners/${RUNNER}`,
+      ],
+    ],
+  );
+
+  refusedUntargeted.clear();
+  refusedUntargeted.add("queues.list");
+  checkEqual(
+    "`queues.list` per queue only: the queue is plain text, and the key still links",
+    [await grants("queues.list", `queue=${ORDERS}`), await gatedLinks()],
+    [
+      [false, true],
+      [
+        `${gated.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+        null,
+        `${gated.uiBase}/runners/${RUNNER}`,
+      ],
+    ],
+  );
+
+  refusedUntargeted.clear();
+  refusedUntargeted.add("runners.list");
+  checkEqual(
+    "`runners.list` per runner only: the runner is plain text, and the Workers row keeps both links",
+    [await grants("runners.list", `runner=${RUNNER}`), await gatedLinks()],
+    [
+      [false, true],
+      [
+        `${gated.uiBase}/workers/${ORDERS}/${ORDERS_KEY}`,
+        `${gated.uiBase}/queues/${ORDERS}`,
+        null,
+      ],
+    ],
+  );
+  refusedUntargeted.clear();
+
+  /* ---------------------------------------------------------------- */
+  step("A row may name what the API no longer reaches");
+
+  // The rows answer "who did the work in this window", so a runner that is no
+  // longer registered and a key that is no longer live keep theirs — which is
+  // exactly the fleet host's shape: counts in range, and nothing registered or
+  // live behind them. The link is still offered, and lands on that screen's
+  // own answer rather than a dead end.
+  const goneRunner = fleetRunner(FLEET_RUNNERS - 1);
+  const goneKey = fleetKey(FLEET_KEYS - 1);
+  const missingRunner = await read<{ code?: string }>(
+    fleet,
+    `/runners/${goneRunner}`,
+  );
+  const noInstance = await read<{ items: unknown[] }>(
+    fleet,
+    `/workers?queue=bulk&key=${goneKey}`,
+  );
+  checkEqual(
+    "the API does not reach the row's runner (404) and lists no worker for its key",
+    [
+      missingRunner.status,
+      missingRunner.body.code,
+      noInstance.body.items.length,
+    ],
+    [404, "RUNNER_NOT_FOUND", 0],
+  );
+  await open(fleet);
+  screen = await overviewUntil(
+    "the fleet's busiest rows",
+    (one) => settled(one, "Runners", 2) && settled(one, "Workers", 1),
+  );
+  checkEqual(
+    "both rows link all the same",
+    [
+      rowOf(screen, "Runners", goneRunner).cellHrefs[0],
+      rowOf(screen, "Workers", goneKey).cellHrefs[0],
+    ],
+    [
+      `${fleet.uiBase}/runners/${goneRunner}`,
+      `${fleet.uiBase}/workers/bulk/${goneKey}`,
+    ],
+  );
+  checkEqual(
+    'clicking the runner lands on the runner screen\'s own "Runner not found"',
+    await follow(
+      fleet,
+      `[data-testid="runner-analytics-row-${goneRunner}"] th a`,
+      `/runners/${goneRunner}`,
+      '[data-testid="runner-not-found"]',
+    ),
+    [
+      `${fleet.uiBase}/runners/${goneRunner}`,
+      `${fleet.uiBase}/runners/${goneRunner}`,
+      "Runner not found",
+    ],
+  );
+  checkEqual(
+    "and the explanation names the runner, offering the list rather than nothing",
+    await view.evaluate<string | null>(
+      textOf(
+        '[data-testid="runner-not-found"] .empty-state-description',
+        10_000,
+      ),
+    ),
+    `There is no runner ${goneRunner} in this namespace. It may have been unregistered, or its process has not started yet.`,
+  );
+  await open(fleet);
+  await overviewUntil("the fleet's Workers rows again", workersDrawn);
+  checkEqual(
+    'clicking the key lands on its worker page, which says "No live instance"',
+    await follow(
+      fleet,
+      `[data-testid="worker-analytics-row-${goneKey}"] th a`,
+      `/workers/bulk/${goneKey}`,
+      '[data-testid="worker-screen"]',
+    ),
+    [
+      `${fleet.uiBase}/workers/bulk/${goneKey}`,
+      `${fleet.uiBase}/workers/bulk/${goneKey}`,
+      `Worker ${goneKey}`,
+    ],
+  );
+  checkEqual(
+    "its Instances card says so, and the numbers the row came from are still there",
+    await view.evaluate<string | null>(
+      textOf('[data-testid="worker-instances"] .empty-state-title', 10_000),
+    ),
+    "No live instance",
   );
 
   /* ---------------------------------------------------------------- */

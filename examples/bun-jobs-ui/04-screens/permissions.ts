@@ -852,6 +852,37 @@ const GATES = [
     when: ({ meta }) => meta.analytics?.recording.workers === true,
   },
   {
+    // useRunnerPagesRouted(): the Runners nav entry, on the untargeted map,
+    // because the app registers `/runners/:runner` from the nav. A row whose
+    // runner has since been unregistered still links: the runner screen's
+    // own "no longer exists" state is the honest landing.
+    name: "overview: Runners row runner link",
+    row: "Overview Runners section row links",
+    map: "boot",
+    on: "overview: Runners section",
+    needsOf: ["Runners: nav and /runners*"],
+  },
+  {
+    // useWorkerPagesRouted(): the Workers nav entry, on the untargeted map,
+    // for the same reason. The section spans queues, so a host granting
+    // `workers.list` per queue leaves every row's key plain text — a link
+    // there would point at a route the app never registered.
+    name: "overview: Workers row key link",
+    row: "Overview Workers section row links",
+    map: "boot",
+    on: "overview: Workers section",
+    needsOf: ["Workers: nav and /workers"],
+  },
+  {
+    // The queue column, gated like every other queue link: untargeted
+    // `queues.list`, the action the queue screen's route is registered with.
+    name: "overview: Workers row queue link",
+    row: "Overview Workers section row links",
+    map: "boot",
+    on: "overview: Workers section",
+    reads: ["queues.list"],
+  },
+  {
     name: "overview: Runners busiest note",
     row: 'Overview Runners / Workers note "Showing the N busiest … of M"',
     map: "boot",
@@ -5385,6 +5416,84 @@ checkEqual(
   })(),
   // The added-by-state group reads its own route, not the series.
   [false, false, true, false, false],
+);
+
+/* ------------------------------------------------------------------ */
+step("the analytics rows' links: the worker, the queue and the runner");
+
+/**
+ * The three row links of the Overview's analytics tables, for a caller whose
+ * untargeted map is `bootMap`: a Workers row's key, that row's queue, and a
+ * Runners row's runner. The queue passed alongside is `mail`'s own answer,
+ * which none of the three may consult.
+ */
+function rowLinks(bootMap: PermissionsBody): boolean[] {
+  const set = screenGates({
+    meta,
+    sections,
+    boot: bootMap,
+    queue: maps.mail,
+    runnerMap: maps.nightly,
+  });
+  return [
+    set["overview: Workers row key link"],
+    set["overview: Workers row queue link"],
+    set["overview: Runners row runner link"],
+  ];
+}
+/** `bootMap` with each of `actions` refused untargeted. */
+function refusedUntargeted(...actions: JobsApiAction[]): PermissionsBody {
+  return {
+    ...boot,
+    actions: {
+      ...boot.actions,
+      ...Object.fromEntries(actions.map((action) => [action, false])),
+    },
+  };
+}
+checkEqual(
+  "this caller: the key links to its worker page, the queue to the queue screen, the runner to its page",
+  rowLinks(boot),
+  [true, true, true],
+);
+// The section spans queues, and the app registers `/workers/:queue/:key` from
+// the nav, which is built from the untargeted map. So a host granting
+// `workers.list` only per queue offers no key link on any row — including a
+// row whose own queue would have allowed it — because the route it would open
+// was never registered for this caller. A plain name beats a dead link.
+checkEqual(
+  "`workers.list` granted per queue but not untargeted: every key is plain text, and the queue link survives",
+  [
+    can(refusedUntargeted("workers.list"), "workers.list"),
+    can(maps.mail!, "workers.list"),
+    rowLinks(refusedUntargeted("workers.list")),
+  ],
+  [false, true, [false, true, true]],
+);
+checkEqual(
+  "the same for the queue column: `queues.list` per queue only leaves every row's queue plain text, and the key still links",
+  [
+    can(refusedUntargeted("queues.list"), "queues.list"),
+    can(maps.mail!, "queues.list"),
+    // `queues.list` is the Overview's own alternative to `metrics.read`, and
+    // the Workers nav entry never asks for it, so the section and the key stay.
+    rowLinks(refusedUntargeted("queues.list")),
+  ],
+  [false, true, [true, false, true]],
+);
+checkEqual(
+  "and without untargeted `runners.list` the runner is plain text, while the Workers row keeps both links",
+  rowLinks(refusedUntargeted("runners.list")),
+  [true, true, false],
+);
+checkEqual(
+  "a backend keeping no worker registry (meta.features.workers false): no key link, since /workers is not routed",
+  screenGates({
+    meta: { ...meta, features: { ...meta.features, workers: false } },
+    sections,
+    boot,
+  })["overview: Workers row key link"],
+  false,
 );
 
 await mailWorker.close({ timeout: 1_000 });

@@ -1,8 +1,9 @@
 /**
- * Page-side helpers for `06-browser/workers.ts`, beside the shared ones in
- * `../../shared/browser.ts`. Each returns the source of a promise for
- * `view.evaluate`, and every one waits on a condition with a deadline —
- * never on time — so a step fails naming what never appeared.
+ * Page-side helpers for `06-browser/workers.ts` and `overview-range.ts`,
+ * beside the shared ones in `../../shared/browser.ts`. Each returns the
+ * source of a promise for `view.evaluate`, and every one waits on a condition
+ * with a deadline — never on time — so a step fails naming what never
+ * appeared.
  */
 
 /**
