@@ -1215,7 +1215,17 @@ remote.on("event", (event) => {
 });
 await remote.start();
 
-/** Starts `helpers/notifier-remote.ts` in a role. */
+/**
+ * Starts `helpers/notifier-remote.ts` in a role, on the same short sweep
+ * cadence the rescuer below uses.
+ *
+ * The child's cadence matters as much as the rescuer's. One worker per queue
+ * runs the repair sweeps, under a lease it renews on its own sweep cadence,
+ * and the lease lasts twice that cadence — so a holder that is killed hands
+ * the sweeps over on *its* cadence, and a fast survivor cannot shorten
+ * someone else's lease. At the defaults that is 90 seconds, far longer than
+ * this step waits, which is why the cadence is set small on both sides.
+ */
 function spawnRemote(role: "produce-and-consume" | "hang"): Subprocess {
   const child = Bun.spawn(
     [
@@ -1228,6 +1238,7 @@ function spawnRemote(role: "produce-and-consume" | "hang"): Subprocess {
         ROLE: role,
         NAMESPACE: sharedNamespace,
         DRIVER_CONFIG: JSON.stringify(sharedConfig),
+        STALLED_INTERVAL: "200",
       },
       stdout: "inherit",
       stderr: "inherit",

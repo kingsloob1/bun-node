@@ -19,6 +19,10 @@ const worker = new BunQueueWorker(
     id: "doomed-worker",
     // Short, so the lock lapses soon after the kill.
     lockDuration: Number(process.env.LOCK_DURATION ?? 500),
+    // Short for the same reason, and it has to come from the parent: as the
+    // queue's only worker this process holds the stalled-sweep lease, and the
+    // lease lasts twice *this* cadence. See the parent for why that matters.
+    stalledInterval: Number(process.env.STALLED_INTERVAL ?? 100),
     pollInterval: 20,
   },
 );
