@@ -75,6 +75,15 @@
  * - **The heartbeat's round trip is a tooltip, never a column**, in every
  *   worker table including the queue's panel: appended under the Heartbeat
  *   cell's ISO instant, and absent altogether on a worker reporting none.
+ * - **The housekeeping note needs a worker that said no, not one that said
+ *   nothing.** A queue's Workers panel says nobody runs the queue's
+ *   housekeeping sweeps only where a live worker reports `sweeps: false` and
+ *   none reports `true`; where some live worker is too old to report the field
+ *   the note hedges (`data-uncertain="true"`), and where they **all** omit it
+ *   there is no note at all, because absent is not `false`. It is about
+ *   tidiness, never liveness: both forms say jobs still run. Its own queue,
+ *   `newsletters`, is started and torn down in that step so the five workers
+ *   above keep theirs.
  */
 import type {
   JobsApiAuthorize,
@@ -146,6 +155,12 @@ const KEY = {
 const FIRST_START_QUEUE = "first-start";
 /** A queue another process (`helpers/remote-worker.ts`) creates in the last step. */
 const DISCOVERED_QUEUE = "discovered";
+/**
+ * A queue of its own for the housekeeping note, so the five workers above keep
+ * their queues and the note's five cases can each be the whole of one queue's
+ * fleet. Its workers are started and closed inside that step.
+ */
+const HOUSEKEEPING_QUEUE = "newsletters";
 /**
  * How soon the Workers page must show a worker after its first start: it
  * re-reads on the `state` event (about 0.3 s measured), and while live its
@@ -1796,6 +1811,231 @@ try {
   });
   checkEqual(
     "both records removed: /workers is back to the five live workers",
+    (await listed()).map((worker) => worker.id).sort(),
+    Object.values(ids).sort(),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(
+    "The housekeeping note: said when nobody sweeps, never when nobody said",
+  );
+
+  // `WorkerDto.sweeps` is what a worker's `maintenance` option decides: whether
+  // it takes part in the queue's minute pass — arming the timer and contending
+  // for the lease that lets one holder do the pass while the others stand down
+  // — which prunes expired results, heals repeat series and sweeps stale queue
+  // state. It says nothing about liveness: delayed jobs are promoted and
+  // stalled ones recovered on every worker, and cannot be turned off. So the
+  // note is about tidiness, and must never read as "this queue is stuck".
+  //
+  // The trap is the absent field: a worker too old to report it has said
+  // nothing, and **absent is not `false`**. Every case below is a real queue
+  // read back from the API as well as from the page; the one worker that cannot
+  // exist any more — a pre-field one — is written straight to the driver, as
+  // the step above does.
+
+  /** The wording every form of the note ends with: untidy, not stuck. */
+  const CONSEQUENCE =
+    "Jobs still run — delayed jobs are promoted and stalled ones recovered — but expired results, repeat series and stale queue state are not swept.";
+  /** What the note says when every live worker has reported, and all said no. */
+  const CERTAIN_NOTE = `No live worker on this queue runs housekeeping. ${CONSEQUENCE}`;
+  /** What it says when some live worker is too old to say, so nobody can be sure. */
+  const HEDGED_NOTE = `No live worker on this queue reports that it runs housekeeping, and some are too old to say — so there may be nobody doing it. ${CONSEQUENCE}`;
+  /** The note itself. */
+  const NOTE = '[data-testid="sweep-warning"]';
+
+  /**
+   * The note as the panel renders it, once worker rows `expected` are on
+   * screen: `[text, data-uncertain]`, or `null` when the rows showed and no
+   * note came with them (the panel renders both in one pass, so a table
+   * without a note means the note is not shown).
+   */
+  async function noteFor(
+    expected: string[],
+  ): Promise<[string, string | null] | null> {
+    await open(`/queues/${HOUSEKEEPING_QUEUE}?panel=workers`);
+    const rows = await view.evaluate<string[] | null>(rowsAre(expected));
+    check(
+      `the ${HOUSEKEEPING_QUEUE} panel lists ${expected.length} worker(s)`,
+      rows !== null,
+      { expected, shown: await view.evaluate(ROW_IDS).catch(() => null) },
+    );
+    return view.evaluate<[string, string | null] | null>(
+      `(() => {
+        const note = document.querySelector(${JSON.stringify(NOTE)});
+        return note ? [note.textContent.trim(), note.getAttribute("data-uncertain")] : null;
+      })()`,
+    );
+  }
+
+  /** What `GET /queues/<queue>/workers` — the panel's own read — reports as `sweeps`. */
+  async function panelSweeps(): Promise<(boolean | "absent")[]> {
+    const items = (
+      await read<{ items: WorkerDto[] }>(
+        `/queues/${HOUSEKEEPING_QUEUE}/workers`,
+      )
+    ).items;
+    return items
+      .map((worker) => ("sweeps" in worker ? worker.sweeps! : "absent"))
+      .sort((left, right) => String(left).localeCompare(String(right)));
+  }
+
+  // 1. One worker, opted out of housekeeping: the note, stated as a fact.
+  const optedOut = apiJobs.worker<JobData, string>(HOUSEKEEPING_QUEUE, handle, {
+    ...WORKER_OPTIONS,
+    maintenance: false,
+  });
+  void optedOut.run();
+  await waitFor(
+    `${HOUSEKEEPING_QUEUE}'s opted-out worker to register and the queue to be discovered`,
+    async () => {
+      if ((await record(optedOut.id)) === undefined) {
+        return false;
+      }
+      const queues = (await read<{ items: { name: string }[] }>("/queues"))
+        .items;
+      return queues.some((queue) => queue.name === HOUSEKEEPING_QUEUE);
+    },
+  );
+  checkEqual(
+    "the API reports it as taking no part in housekeeping (maintenance: false → sweeps: false)",
+    await panelSweeps(),
+    [false],
+  );
+  const loneNote = await noteFor([optedOut.id]);
+  show("the note on a queue whose one worker opted out", loneNote);
+  checkEqual(
+    "a lone opted-out worker: the note, as a fact, with data-uncertain false",
+    loneNote,
+    [CERTAIN_NOTE, "false"],
+  );
+  check(
+    "and it says jobs still run — nothing about the queue being stuck, stalled or broken",
+    loneNote !== null &&
+      loneNote[0].includes(CONSEQUENCE) &&
+      !/\bstuck\b|\bstalling\b|\bnot running\b|\bbroken\b/i.test(loneNote[0]),
+    loneNote,
+  );
+
+  // 2. A second worker that does take part: one is enough, so the note goes.
+  const sweeper = mailerJobs.worker<JobData, string>(
+    HOUSEKEEPING_QUEUE,
+    handle,
+    {
+      ...WORKER_OPTIONS,
+    },
+  );
+  void sweeper.run();
+  await waitFor(
+    `${HOUSEKEEPING_QUEUE}'s sweeping worker to register`,
+    async () => (await record(sweeper.id)) !== undefined,
+  );
+  checkEqual(
+    "the API now reports one worker taking part and one not",
+    await panelSweeps(),
+    [false, true],
+  );
+  checkEqual(
+    "one worker taking part is enough: no note, though the other still opts out",
+    await noteFor([optedOut.id, sweeper.id]),
+    null,
+  );
+
+  // 3. The sweeper alone: nothing to say, and nothing said.
+  await optedOut.close();
+  await waitFor(
+    "the opted-out worker's record to go",
+    async () => (await record(optedOut.id)) === undefined,
+  );
+  checkEqual(
+    "a queue whose only worker takes part: the API reports sweeps true",
+    await panelSweeps(),
+    [true],
+  );
+  checkEqual(
+    "and the panel never shows the note",
+    await noteFor([sweeper.id]),
+    null,
+  );
+
+  // 4. Every live worker too old to report the field: **nothing at all**. This
+  // is the case a naive `!sweeps` gets wrong, and the one that would make every
+  // fleet mid-upgrade read as broken the day this UI is deployed. No current
+  // worker can write such a record, so it goes straight to the driver.
+  await sweeper.close();
+  await waitFor(
+    "the sweeping worker's record to go",
+    async () => (await record(sweeper.id)) === undefined,
+  );
+  const preField = olderRecord({
+    id: "older-newsletters",
+    key: `legacy.${HOUSEKEEPING_QUEUE}`,
+    queue: HOUSEKEEPING_QUEUE,
+  });
+  await registerWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue(HOUSEKEEPING_QUEUE).ref,
+    preField,
+  );
+  await waitFor(
+    "the pre-field record to be listed",
+    async () => (await record(preField.id)) !== undefined,
+  );
+  checkEqual(
+    "the API leaves sweeps out of such a record rather than defaulting it to false",
+    await panelSweeps(),
+    ["absent"],
+  );
+  checkEqual(
+    "every live worker too old to say: no note at all, because absent is not false",
+    await noteFor([preField.id]),
+    null,
+  );
+
+  // 5. Mixed: one worker that said no, one that said nothing. Nobody can be
+  // sure, so the note is shown and hedged.
+  const optedOutAgain = apiJobs.worker<JobData, string>(
+    HOUSEKEEPING_QUEUE,
+    handle,
+    { ...WORKER_OPTIONS, maintenance: false },
+  );
+  void optedOutAgain.run();
+  await waitFor(
+    "the second opted-out worker to register beside the pre-field record",
+    async () => (await record(optedOutAgain.id)) !== undefined,
+  );
+  checkEqual(
+    "the API reports one false and one absent: some said no, some said nothing",
+    await panelSweeps(),
+    ["absent", false],
+  );
+  const mixedNote = await noteFor([preField.id, optedOutAgain.id]);
+  show("the note where some workers are too old to say", mixedNote);
+  checkEqual(
+    "the note hedges, with data-uncertain true: there may be nobody doing it",
+    mixedNote,
+    [HEDGED_NOTE, "true"],
+  );
+  check(
+    "and the hedged form says jobs still run too, not that the queue is stuck",
+    mixedNote !== null &&
+      mixedNote[0].includes(CONSEQUENCE) &&
+      !/\bstuck\b|\bstalling\b|\bnot running\b|\bbroken\b/i.test(mixedNote[0]),
+    mixedNote,
+  );
+
+  await optedOutAgain.close();
+  await removeWorkerRecord(
+    apiJobs.driver,
+    apiJobs.queue(HOUSEKEEPING_QUEUE).ref,
+    preField.id,
+  );
+  await waitFor(`${HOUSEKEEPING_QUEUE}'s workers to go`, async () => {
+    const live = (await listed()).map((worker) => worker.id);
+    return !live.includes(optedOutAgain.id) && !live.includes(preField.id);
+  });
+  checkEqual(
+    "cleaned up: /workers is back to the five live workers",
     (await listed()).map((worker) => worker.id).sort(),
     Object.values(ids).sort(),
   );
