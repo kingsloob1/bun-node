@@ -89,8 +89,9 @@ that rotates the lease id).
 **bun-jobs is already in the second group** — 30 s `lockDuration`, renewed at
 `lockDuration / 3`, every settle conditional on the lock token so a stale
 worker's `completeJob` returns `false`. That is a genuine differentiator and
-it is currently undersold. Two adjacent improvements are in §3.8.2 (BullMQ's
-two-pass stalled check) and §5.8 (Trigger.dev's snapshot-id fencing).
+it is currently undersold. One adjacent improvement is in §5.8
+(Trigger.dev's snapshot-id fencing); §3.8.2 records a second that was
+**investigated and rejected**, with the measurements that killed it.
 
 ### The two things to be honest about up front
 
@@ -512,9 +513,13 @@ protocol:**
    the invocation), but it *is* a place a bun-jobs **remote executor** can run
    with no transpilation. That makes Vercel the cheapest adapter to validate.
 3. **`sql.listen` is unusable behind AWS RDS Proxy and behind Cloudflare
-   Hyperdrive**, and session advisory locks are unusable behind RDS Proxy.
-   Both are present-day limitations of the existing `SqlDriver`, independent of
-   this plan, and belong in the driver documentation now.
+   Hyperdrive.** This is a present-day limitation of the existing `SqlDriver`,
+   independent of this plan, and belongs in the driver documentation now.
+   (An earlier draft added "and session advisory locks". **Corrected
+   2026-09-22:** bun-jobs uses no Postgres advisory locks — verified, the only
+   "advisory" in the package is unrelated prose in the file driver — so that
+   half of the RDS Proxy restriction, though true of the proxy, does not touch
+   this driver.)
 4. **Cloud Run kills idle connections on a clock nobody expects**: *"there is a
    timeout after 10 minutes of idle time for requests from your container to
    VPC"*, and 20 minutes to the internet. A pooled Postgres or Redis
@@ -615,7 +620,7 @@ ago**, and one of them changes the analysis: **Lambda Managed Instances
 | SQS event source mapping | batch ≤10,000 (FIFO 10); batching window 0–300 s but *"Lambda might wait for up to 20 seconds"* on a quiet queue; `MaximumConcurrency` 2–1,000; `ReportBatchItemFailures` for partial acks |
 | SQS partial-failure trap | a malformed `batchItemFailures` response — bad JSON, wrong key, empty or unknown `itemIdentifier` — **silently retries the whole batch** |
 | EventBridge Scheduler | 1-minute floor, and *"All schedule types… invoke their targets with 60 second precision"* |
-| RDS Proxy pinning | PostgreSQL pins the session on `SET`, `PREPARE`/`EXECUTE`, temp objects, **declaring cursors**, **`LISTEN`**, and **`pg_advisory_lock`** — but *not* `pg_advisory_xact_lock`. *"RDS Proxy doesn't support session pinning filters for PostgreSQL"* — no opt-out. Also: no `CancelRequest` for PostgreSQL |
+| RDS Proxy pinning | PostgreSQL pins the session on `SET`, `PREPARE`/`EXECUTE`, temp objects, **declaring cursors**, **`LISTEN`**, and **`pg_advisory_lock`** — but *not* `pg_advisory_xact_lock`. *"RDS Proxy doesn't support session pinning filters for PostgreSQL"* — no opt-out. Also: no `CancelRequest` for PostgreSQL. **Only the `LISTEN` row binds bun-jobs** — it uses no advisory locks, cursors or `PREPARE` (verified 2026-09-22) |
 
 **What this forces:**
 
@@ -642,11 +647,13 @@ ago**, and one of them changes the analysis: **Lambda Managed Instances
    which corrupts the heartbeat record, the lock token and the concurrency
    lease simultaneously. `BunQueueWorkerOptions.id` already warns that two
    workers sharing an id corrupt all three; this is that hazard, industrialised.
-5. **`sql.listen` cannot be used behind RDS Proxy**, and neither can session
-   advisory locks. bun-jobs' `SqlDriver` uses `sql.listen` for push events on
-   Postgres. A worker behind RDS Proxy must fall back to polling. **This is a
-   real, present-day limitation of the existing SQL driver, independent of
-   this plan**, and belongs in the driver documentation regardless.
+5. **`sql.listen` cannot be used behind RDS Proxy.** bun-jobs' `SqlDriver`
+   uses `sql.listen` for push events on Postgres, so a worker behind RDS Proxy
+   must fall back to polling. **This is a real, present-day limitation of the
+   existing SQL driver, independent of this plan**, and belongs in the driver
+   documentation regardless. RDS Proxy also pins the session on
+   `pg_advisory_lock`, but **bun-jobs uses no advisory locks** (verified
+   2026-09-22), so only the `LISTEN` half binds here.
 6. **The 6 MB synchronous payload limit** is the binding value for
    `maxBodyBytes` on a Lambda adapter behind a function URL — not 1 MiB, and
    not 200 MB.
@@ -836,7 +843,7 @@ header, no signing code and no webhook POST exist in the v0 dispatcher source.
 If bun-jobs ships a remote contract, it ships with `PROTOCOL.md`, the
 conformance kit (§7) and a version, or it should not ship.
 
-### 3.8.2 BullMQ's stalled check, which is better than ours
+### 3.8.2 BullMQ's stalled check — the sweep guard is worth taking, the grace is not
 
 Verified from `src/commands/moveStalledJobsToWait-9.lua` on 2026-09-22, and
 called out separately because **bun-jobs should probably adopt it**.
@@ -854,27 +861,63 @@ It is a **two-pass mark-and-sweep**, not an expiry check:
 3. **Mark.** `LRANGE active 0 -1` and `SADD stalled <every active id>`, in
    batches of 7,000.
 
-**The property that makes it better than what bun-jobs does today:** a job is
-declared stalled only if it was in `active` **at the previous sweep** *and* its
-lock is gone **now**. That is one full interval of grace *plus* the lock TTL,
-and it requires two independent observations. A plain "lock expired ⇒ stalled"
-check — which is what `#armMaintenance()` and the drivers' stall recovery
-implement — can kill a job on a single slow tick.
+**An earlier draft of this section claimed bun-jobs "inherits the same sharp
+edge with none of the grace", and that a CPU-bound processor "loses its job on
+one slow tick". Both claims were wrong. Corrected 2026-09-22** after the
+bun-jobs session challenged the premise; the code was then re-read
+independently, and its objection holds on every point:
 
-bun-jobs' `maxStalledCount` defaults to 1, exactly as BullMQ's does, so it
-inherits the same sharp edge with none of the grace. Two things follow, and
-both are **independent of everything else in this plan**:
+- **A stall requires the lock to have *already* expired.** `recoverStalled`
+  (`lib/drivers/sql/sql-driver.ts:6009`) selects on
+  `state = 'active' AND lock_expires_at <= now`. With
+  `DEFAULT_LOCK_DURATION = 30_000` renewed at `lockDuration / 3`, a processor
+  must starve its heartbeat for a **full 30 s** before the job is eligible at
+  all. That is a grace period; it is simply expressed as a lock TTL rather
+  than as a second sweep.
+- **A first stall requeues; it does not bury.** Same function:
+  `count = stalled_count + 1; buried = count > maxStalledCount`, and the row is
+  written `state = buried ? "dead" : "waiting"`. With
+  `DEFAULT_MAX_STALLED = 1`, the first stall sets `waiting` — the job runs
+  again. Only a second stall buries it. "Loses its job" was wrong twice over:
+  not on one tick, and not lost.
+- **The real difference is one `stalledInterval`.** BullMQ's second pass adds
+  roughly one sweep interval on top of the same lock lifetime.
+  `DEFAULT_STALLED_INTERVAL` is also `30_000`, so the gap is ~30 s of
+  additional tolerance before a *first* requeue — not grace versus no grace.
 
-- The single-sweeper guard key is nearly free and would replace "every worker
-  does maintenance, each operation is idempotent" with "one worker does it per
-  interval" — the same correctness, a fraction of the load. Note the existing
-  `FLOW_HEAL_LEASE` in `BunQueueWorker.ts` is already this idea, applied to
-  flow healing only.
-- The mark-then-sweep grace is a behaviour change and needs its own decision,
-  but it is the cheapest available fix for the "a CPU-bound processor starves
-  its own heartbeat and loses its job" failure.
+Where the survey went wrong is instructive: it compared the `maxStalledCount`
+**default** (1 in both systems) and inferred equivalent exposure, without
+reading how each system reaches the point of counting a stall. Matching
+defaults over different mechanisms is not a finding.
 
-Neither belongs in this plan's phases. Both belong in an issue.
+**The honest conclusion: bun-jobs chose a different point on the same axis.**
+Practical exposure before work is actually lost is ~2 stall cycles — on the
+order of a minute of heartbeat starvation — not one tick. So what remains:
+
+- **Worth taking: the single-sweeper guard key.** This stands on its own and
+  is unaffected by the correction above. Confirmed against
+  `BunQueueWorker.ts` on 2026-09-22: **every** worker runs `recoverStalled`
+  (`:3844`) and flow healing each `stalledInterval`, and `#pruneExpired`,
+  `#healRepeats`, `#sweepWindows` and `#sweepWorkerControls` (`:3864-3867`)
+  every 60 s — all unconditionally. Only flow healing takes a lease
+  (`FLOW_HEAL_LEASE`, `:2571`/`:2586`). So with N workers on a queue those
+  sweeps are duplicated N times, and the lease mechanism to fix it already
+  exists in the file. Same correctness, a fraction of the driver load.
+
+  **Two conditions on it.** It is evidence-gated like everything else here —
+  measure driver calls per second at 1, 5 and 20 workers, before and after.
+  And **a lease must never delay recovery when its holder dies**: the
+  hand-over has to be bounded the way the flow-heal one is, or this trades
+  duplicated work for stalled jobs nobody sweeps, which is a far worse
+  failure than the one it fixes.
+- **Not worth taking: the mark-then-sweep grace.** A behaviour change across
+  five drivers to buy one `stalledInterval` of tolerance on a failure that
+  already requeues rather than buries. The cheap improvement is documentation
+  instead — a long synchronous handler should call `job.touch()` — which costs
+  nothing and addresses the actual failure mode.
+
+Neither belongs in this plan's phases. The guard key belongs in an issue; the
+`job.touch()` guidance belongs in the queue documentation.
 
 ### 3.8.3 Four things the survey turned up that have nothing to do with this plan
 
@@ -903,11 +946,25 @@ and `#announce()` in `lib/drivers/sql/sql-driver.ts`, which sends
 `#insertRows` applies `notifyingInsert` to a **multi-row** insert, so a chunk
 of N jobs calls `pg_notify` N times with an identical payload inside one
 implicit transaction. **A bulk enqueue therefore delivers one notification, not
-N.** Workers wake once, claim a batch, and the remainder of the backlog waits
-for `pollInterval` (1,000 ms by default) instead of being announced.
+N.**
 
-Scope, stated honestly: **read from the source, not measured.** It is a latency
-bug, not a correctness one — polling finds the jobs regardless, and the driver
+**The de-duplication is confirmed in the code; the latency consequence is
+not, and may not follow.** Challenged 2026-09-22 by the bun-jobs session, whose
+objection is a good one: a worker re-claims immediately after a *successful*
+claim and only waits on `pollInterval` when a claim comes back **empty**, and
+`LISTEN` reaches every listening session — so a single wake can drain an
+entire backlog without a second notification. Whether the collapse costs
+anything therefore depends on the claim-batch size against the enqueued chunk
+size, and on how many workers are listening. It is being measured now; **do
+not act on this item until those numbers land.** The paragraph below states the
+original reasoning, which stands only if the measurement supports it.
+
+Were it to hold: workers wake once, claim a batch, and the remainder of the
+backlog waits for `pollInterval` (1,000 ms by default) instead of being
+announced.
+
+Scope, stated honestly: **read from the source, not measured.** It would be a
+latency bug, not a correctness one — polling finds the jobs regardless, and the driver
 already documents notifications as best-effort. `addJob` (singular) is
 unaffected. The fix is Graphile's: put something varying in the payload, which
 costs nothing and is already the pattern the driver's own arrivals channel
@@ -917,8 +974,18 @@ after**, since that scenario is exactly where it would show.
 #### (b) bun-jobs already dodged a Bun `worker_threads` trap — keep it that way
 
 BullMQ carries a source comment citing `bullmq#2232`: **Bun ignores
-`worker_threads` `stdin`/`stdout`/`stderr` options.** Anything that plans to
-pipe a thread's stdio on Bun is building on sand.
+`worker_threads` `stdin`/`stdout`/`stderr` options.**
+
+**Corrected 2026-09-22, and the correction matters.** That is no longer true of
+`node:worker_threads`: measured on Bun 1.4.3 by the bun-jobs session, a `Worker`
+created there with `{ stdout: true }` yields a real stream carrying the child's
+output, 3/3 runs, so `bullmq#2232` appears fixed for that API. **The trap is
+still real for bun-jobs, for a different reason** — `runner/executors/worker.ts:56`
+constructs the **global** `Worker`, whose `Bun.WorkerOptions` declares no
+`stdin`/`stdout`/`stderr` at all (verified against bun-types 1.4.2: zero stdio
+fields on the interface), so passing them leaves the streams `undefined`.
+Anything that plans to pipe a *global* `Worker`'s stdio on Bun is building on
+sand; `node:worker_threads` is no longer the cited hazard.
 
 bun-jobs is already correct here, and for the stated reason —
 `runner/protocol.ts` documents `captureConsole` as *"Set only for a `worker`

@@ -108,12 +108,59 @@ So the design is two layers, and the first one is vendor-agnostic:
 Either way bun-common gains **no dependency, no optional peer, and no
 declaration that imports an undeclared package**.
 
+### Decision 4 — responses ride on the **validator**, not on `.describe()`
+
+This was forced by a spike, and it resolves what would otherwise be two
+competing places to declare a response.
+
+`.describe()` is chained *after* the verb call, so the handler has already been
+checked by the time it runs. **Spiked** (`spike/chained.ts`): even given the
+most generous possible builder — `get()` returning a `Builder<H>` that carries
+the handler's type — a subsequent `.describe({ responses })` produces **no
+error** for a handler that returns the wrong shape. Enforcement is impossible
+by construction. The same spike shows the converse: once responses are
+declared **before** the handler, a wrong body is caught.
+
+So the two mechanisms divide cleanly, and the split is a rule, not a
+preference:
+
+| Mechanism | Owns | Reaches the type system? |
+|---|---|---|
+| `.describe({ … })` | prose: `summary`, `description`, `tags`, `operationId`, `deprecated`, `hidden`, `security`, `extensions` | no — and never needs to |
+| `validate(schemas, { responses })` | anything that must be **enforced**: request schemas (already) and now response status + shape | **yes** — it is the one shape-carrying position |
+
+A route that wants *documented* responses with no runtime or compile-time
+checking uses `.describe({ responses })`, which stays in the API for exactly
+that case (a route with no validator, a legacy handler, a hand-written
+fragment). When both are present the validator wins and `.describe()`'s
+`responses` is merged in for documentation only, with a warning if they
+disagree. §3.4 states the rule.
+
+Three results, all **spiked against the real `BunRouter`** (a full copy of
+`packages/bun-common` with the changes applied — CLAUDE.md records that the
+per-position-shape idea worked in isolation and collapsed in the real class,
+so isolation was not an option):
+
+- Narrowing `res` through the validator **works**, including for mounted
+  sub-routers, and the error messages are clean (§3.7).
+- The patched library typechecks with **zero** changes outside four files —
+  the whole cost is one `protected setStatusRaw` and one cast (§3.7).
+- It does **not** disturb the generated verb overloads: no argument position
+  changes, and `MountedHandler` reads the responses out of the `TShape` it
+  already receives, so `generate-verb-overloads.ts` emits identical text.
+
 ### What this does *not* solve
 
-Response bodies are invisible at runtime — `res.json(x)` carries no schema and
-never will. Responses must be declared by hand in `.describe()`. That is the
-plan's principal limitation and the reason phase (a) is manual annotation
-first, auto-derivation second.
+Response bodies are still invisible to *inference* — nothing derives a schema
+from `res.json(x)`. Responses are declared, by hand, once. What changed is
+that the declaration is now enforced at compile time and optionally at
+runtime, instead of being documentation that silently rots.
+
+Enforcement is **partial, with a known boundary**: `res.status(c).json(b)` is
+caught, `res.send()` and `res.jsonp()` are not, and passing `res` to a helper
+typed as a plain `BunResponse` escapes it entirely. §3.7 has the measured
+table. Partial with stated limits is the claim; parity with a framework that
+owns its response type is not.
 
 ---
 
@@ -195,8 +242,11 @@ a regex-constrained param:
 | Package | Biggest gap | Cost to close |
 |---|---|---|
 | bun-common HTTP | no per-route doc slot; validator schemas invisible at runtime | small: a `WeakMap` + `.describe()` + a non-enumerable property (~250 lines) |
+| bun-common **responses** | nothing declares a status or a body shape, anywhere | medium, and **spiked**: `responses` on the validator, `TResponses` on `BunResponse`, `TRes` threaded through `TypedRouteHandler`. Four files, one `protected setStatusRaw`, one cast — §3.7 |
+| bun-common **class DTOs** | `toStandardSchema` exists but nothing accepts a class | small: one wrapper plus an injected adapter — §3.6. Blocked for consumers on stage-3 decorators (risk 1e) |
 | bun-common WS | no public route list; no message concept at all | small for channels (one accessor), **large** for messages — needs a new declaration API |
-| bun-nest HTTP | nothing; `@nestjs/swagger` already covers it | see §7 — verify + document + example |
+| bun-nest HTTP | nothing; `@nestjs/swagger` already covers it | see §8.6 — verify + document + example |
+| bun-nest **validation** | `lib/decorators.ts` is one re-export line; no decorator infrastructure at all | medium: an interceptor on `interceptors.ts`'s pattern, plus the swagger bridge — §3.8. Gated on (d) |
 | bun-nest WS | metadata exists but nothing reads it | medium: a metadata explorer + an AsyncAPI mapper |
 
 ---
@@ -284,8 +334,17 @@ export interface RouteDoc {
    */
   requestRequired?: boolean;
   /**
-   * Declared responses by status. `null` means "no body" (204). A bare
-   * schema is shorthand for `{ schema, description: <reason phrase> }`.
+   * Declared responses by status, **for documentation only**. `null` means
+   * "no body" (204). A bare schema is shorthand for
+   * `{ schema, description: <reason phrase> }`.
+   *
+   * This never reaches the type system and is never checked at runtime — it
+   * cannot be, because `.describe()` runs after the handler was already
+   * type-checked (§3.4, spiked). To *enforce* responses, declare them on the
+   * validator instead: `validate(schemas, { responses })` (§3.5). Use this
+   * form for a route with no validator, or for a status the handler never
+   * produces itself (a 401 added by middleware).
+   *
    * Default: `{}` — the generator then emits a single
    * `default: { description: "Unspecified" }`, which is valid but useless,
    * and `strict` mode (see {@link OpenApiOptions.strict}) rejects it.
@@ -518,7 +577,565 @@ The alternative designs all *do* violate them, and are rejected:
 `.describe()` returns `this`, so it chains, and it throws for middleware for
 the same reason `setName` does.
 
+**One rule about `responses`, since it can now be declared in two places.**
+`RouteDoc.responses` (§3.2) is *documentation only* — it never reaches the
+type system, for the reason Decision 4 spiked. `validate(schemas, { responses })`
+(§3.5) is the *enforced* declaration. When a route has both, the generator
+takes the validator's as the source of truth, merges `.describe()`'s
+`description`/`headers`/`examples` onto it, and emits a warning if the two
+declare different statuses. A route should normally use one or the other:
+
+| Situation | Use |
+|---|---|
+| Route has a validator, or you want any checking at all | `validate(..., { responses })` |
+| Route has no validator and you only want the document right | `.describe({ responses })` |
+| Documented status the handler never produces (e.g. a 401 added by middleware) | `.describe({ responses })` — the validator's map types `res`, so putting an unreachable status there would let a handler send it |
+
+That last row is the reason `.describe({ responses })` is not deleted.
+
+### 3.5 Runtime response validation
+
+Prior art, reused rather than reinvented: bun-jobs' `responseMismatch`
+(`packages/bun-jobs/lib/api/routes/define.ts`) validates a handler's result
+against the declared schema for its status, and on a mismatch **logs** —
+`logger.error("jobs api response did not match its schema", { operationId,
+status, mismatch })` — rather than failing the request. That is the right
+default and the right semantics, and the message shape should match.
+
+```ts
+/** Options for {@link BunValidateOptions.responses} checking. */
+export type ResponseValidationMode =
+  /** Never check. The default. */
+  | "off"
+  /** Check and log at `error` level; the response is sent unchanged. */
+  | "log"
+  /** Check and throw, entering the error pipeline. For tests and CI. */
+  | "throw";
+
+/** Response schemas by status. `null` declares a status that carries no body. */
+export type ResponseSchemas = Readonly<Record<number, StandardSchemaV1 | null>>;
+
+interface BunValidateOptions</* … existing params … */> {
+  /**
+   * Response schemas by status — what the route is allowed to answer with.
+   *
+   * They type the following handler's `res` (see §3.7) and, when
+   * {@link validateResponses} is on, are checked at runtime. A status of
+   * `null` declares a body-less response (204, 304).
+   *
+   * Declaring these does not make the route send them; it constrains what it
+   * *may* send. A declared status the handler never produces is not an error
+   * — exhaustiveness is not checkable (measured).
+   */
+  responses?: ResponseSchemas;
+  /**
+   * Whether to check a response against {@link responses} at runtime.
+   * Defaults to `"off"`. A sensible production setting is
+   * `process.env.NODE_ENV === "production" ? "off" : "log"`.
+   */
+  validateResponses?: ResponseValidationMode;
+  /**
+   * What to do when the status sent is not among {@link responses} at all.
+   * Defaults to `"report"`, which treats it as a mismatch (`status <n> is not
+   * declared`, bun-jobs' wording). `"allow"` passes it through unchecked —
+   * for a route whose error statuses come from middleware it does not own.
+   */
+  undeclaredStatus?: "report" | "allow";
+}
+```
+
+**Where it hooks.** Not in `json()` — that would miss `send()` and fire before
+the status is final. The check belongs at **response finalisation**, the one
+place every path converges, and it reads `BunResponse`'s existing
+`#sentBody`/`getSentBody` rather than intercepting a setter. Coverage by path:
+
+| Path | Checked? | Why |
+|---|---|---|
+| `json()` / `jsonp()` | **yes** | `#sentBody` holds the pre-serialisation value — the object, not the string |
+| `send(object)` | **yes** | same slot |
+| `send(string)` where the schema is a string schema | **yes** | the schema is run against the string |
+| `send(string)` where the schema is an object schema | **reported as a mismatch** | correct: the route declared JSON and sent text |
+| `end()` with no body | checked against `null`/absent | a body-less status declared `null` passes; one declaring a schema mismatches |
+| 204 / 304 | **yes**, expects no body | falls out of the above |
+| `redirect()` | **skipped** | the status is a redirect and the body is generated; never a declared response |
+| `sendFile()` / a stream / `StreamableFile` | **skipped**, with one warning per route on the first occurrence | the body is never materialised; validating it would mean buffering it, which is the one thing a stream exists to avoid |
+| `res.headersSent` already true | skipped | nothing to check |
+
+**Cost.** Zero when `"off"` — one property read on a branch that is already
+taken at finalisation. When on, it is one Standard Schema `validate()` per
+response, i.e. the same order as validating a request body, plus a `WeakMap`
+lookup for the route's map. That is why the default is off and the
+recommendation is dev-only; it is not free and the plan should not pretend it
+is.
+
+**On a mismatch**, `"log"` emits through the router's resolved `Logger` at
+`error` with `{ path, method, status, mismatch }`, where `mismatch` is
+bun-jobs' flattened `"<path>: <message>; …"` string. It never alters the
+response — a response already being written cannot be retracted, and turning a
+working 200 into a 500 because a schema is stale is a worse failure than the
+drift it is reporting.
+
 ---
+
+### 3.6 Class DTOs (class-validator / class-transformer)
+
+`toStandardSchema` (`BunValidate.ts:345`) already exists for exactly this. A
+DTO class becomes a Standard Schema in one wrapper, so **every target that
+accepts a schema accepts a class constructor**, with no change to
+`ValidationSchemas`' four keys beyond widening their type.
+
+```ts
+/** A DTO class: a constructor `plainToInstance` can build. */
+export type DtoClass<T = object> = new (...args: never[]) => T;
+
+/**
+ * The class-validator / class-transformer surface, injected rather than
+ * imported — the structural rule the logging adapters and the §4 converters
+ * follow. Neither library, nor `reflect-metadata`, becomes a bun-common
+ * dependency or appears in a shipped declaration.
+ */
+export interface ClassValidatorAdapter {
+  /** `class-transformer`'s `plainToInstance`. */
+  plainToInstance: (cls: DtoClass, plain: unknown, options?: object) => object;
+  /** `class-validator`'s `validate`. Async; issues are mapped to Standard Schema issues. */
+  validate: (instance: object, options?: object) => Promise<readonly ClassValidationError[]>;
+  /**
+   * `class-validator`'s `getMetadataStorage`, when the OpenAPI bridge is
+   * wanted. Optional: without it a DTO validates but documents as `{}`.
+   */
+  getMetadataStorage?: () => unknown;
+}
+
+/** Options for {@link useClassDtos}. */
+export interface ClassDtoOptions {
+  /**
+   * Passed to `plainToInstance`. Defaults to
+   * `{ enableImplicitConversion: true }`, which is what makes a DTO usable on
+   * `query` and `params`, where every value arrives as a string
+   * (**measured**: `"42"` → `42` for an `@IsInt()` property).
+   */
+  transform?: Record<string, unknown>;
+  /**
+   * Passed to class-validator's `validate`. Defaults to
+   * `{ whitelist: true, forbidNonWhitelisted: false }`.
+   *
+   * Note `whitelist` governs *errors*, not the instance:
+   * `plainToInstance` keeps undeclared properties regardless (**measured** —
+   * an `extra` key survived `whitelist: true`). To strip them, use
+   * `transform: { excludeExtraneousValues: true }` with `@Expose()`.
+   */
+  validate?: Record<string, unknown>;
+  /**
+   * Converts a DTO class to JSON Schema for the generated document — e.g.
+   * `class-validator-jsonschema`'s `targetConstructorToSchema`. Without it a
+   * DTO validates correctly and documents as `{}` plus a warning.
+   */
+  toJsonSchema?: (cls: DtoClass) => JsonSchemaLike;
+}
+
+/**
+ * Teaches bun-common to accept DTO classes wherever a schema is accepted.
+ * Call once at startup.
+ *
+ * @example
+ * ```ts
+ * import { plainToInstance } from "class-transformer";
+ * import { getMetadataStorage, validate } from "class-validator";
+ * import { targetConstructorToSchema } from "class-validator-jsonschema";
+ *
+ * useClassDtos(
+ *   { plainToInstance, validate, getMetadataStorage },
+ *   { toJsonSchema: (cls) => targetConstructorToSchema(cls) },
+ * );
+ * ```
+ */
+export function useClassDtos(
+  adapter: ClassValidatorAdapter,
+  options?: ClassDtoOptions,
+): void;
+
+/**
+ * Wraps one DTO class as a Standard Schema, for a caller who wants it
+ * explicitly rather than through the global registration. The result's
+ * `~standard.vendor` is `"class-validator"`.
+ */
+export function fromDto<T>(cls: DtoClass<T>, options?: ClassDtoOptions): StandardSchemaV1<unknown, T>;
+```
+
+`ValidationSchemas`' four keys widen from `StandardSchemaV1` to
+`StandardSchemaV1 | DtoClass`, and so do `RouteDoc.request.*` and
+`RouteResponseDoc.schema`. Discrimination is trivial and unambiguous: a
+Standard Schema has `~standard`, a DTO is a function.
+
+**Feasibility — two risks, both spiked, and the answers are not the ones
+feared.**
+
+**Bun *does* honour `emitDecoratorMetadata`.** This was the risk flagged as
+potentially fatal. It is not. **Measured** under Bun 1.4.3-canary with
+`experimentalDecorators` + `emitDecoratorMetadata`:
+
+```
+name  -> String    age    -> Number   flag   -> Boolean
+when  -> Date      nested -> Inner     list  -> Array     maybe -> String
+metadata keys on prototype.name: ["design:type"]
+```
+
+and the full stack works end to end — `class-validator@0.15.1` +
+`class-transformer@0.5.1`, `plainToInstance` coercing `"42"` → `42`,
+instantiating a nested `@Type(() => Address)` as a real `Address`, and
+`validate()` returning per-property constraints (`name:isString`, `age:min`,
+`tags:isString`). `getMetadataStorage().getTargetValidationMetadatas(...)`
+returned 6 readable entries — the JSON Schema source.
+
+The two standing `design:type` limits are class-validator's own, not Bun's:
+`string[]` erases to `Array` (hence `@IsString({ each: true })`) and `maybe?:
+string` erases to `String` (hence `@IsOptional()`). Neither is new.
+
+**Stage-3 decorators are a hard break, not a degradation.** **Measured**: with
+`experimentalDecorators` *off* (TypeScript 5+ standard decorators), importing
+the same DTO throws at class-definition time —
+
+```
+TypeError: undefined is not an object (evaluating 'object.constructor')
+  at class-validator/cjs/decorator/common/ValidateBy.js:16
+```
+
+because a stage-3 field decorator is called `(value, context)`, so
+class-validator's `object` is `undefined`. The repo sets
+`experimentalDecorators: true` globally (`tsconfig.base.json:24-26`) so
+bun-common and bun-nest are fine; a **consumer** on standard decorators cannot
+use class DTOs at all and must set `experimentalDecorators: true` (and keep
+`reflect-metadata` imported first). This must be stated in the README as a
+requirement of the DTO path, not a footnote — and it is an argument for
+keeping the Standard Schema path primary.
+
+### 3.7 Compile-time enforcement — spiked, and partial
+
+**Mechanism chosen: thread a narrowed `res` into the handler**, not type the
+handler's return. The return route was spiked and fails for the documented
+reason: `TypedRouteHandler`'s `R = unknown` carries an explicit comment in
+`types/general.ts` (*"a handler may return `res.send(...)`, a promise, or
+nothing"*), and **measured**, a handler written `(req, res) => res.json(x)`
+returns `BunResponse`, which is not the body type — so return-typing rejects
+the repo's own dominant style.
+
+**What it takes.** Four files, spiked as a full copy of `packages/bun-common`:
+
+| File | Change |
+|---|---|
+| `lib/types/general.ts` | `TypedRouteHandler` gains `TRes = BunResponse` **as its last parameter**, so existing `TypedRouteHandler<P, Q, B, R>` uses keep compiling |
+| `lib/types/routeTyping.ts` | `ValidationShape` gains `responses?: Record<number, unknown>`; new `ResolveResponses<S>`; `MountedHandler` passes `BunResponse<unknown, ResolveResponses<MergeShape<TMountShape, TShape>>>` |
+| `lib/BunResponse.ts` | a second defaulted parameter `TResponses = undefined`; `status()` narrows; `json()` constrains; **one `protected setStatusRaw(code: number)`** for the class's own ~8 internal `this.status(n)` calls, which cannot satisfy `AllowedStatus<TResponses>` while `TResponses` is unresolved; one `as BunResponseSentBody` cast |
+| `lib/BunValidate.ts` | `responses` option; `ValidatedShapeFor` gains a `TRes` parameter; `validate()` infers it with `const` |
+
+```ts
+/** A declared response map: status code to that status's body type. */
+export type ResponseMap = Record<number, unknown>;
+/** Statuses `status()` accepts: any number until responses are declared. */
+export type AllowedStatus<M> = M extends ResponseMap ? keyof M & number : number;
+/** The map left after `status(C)` narrowed it. */
+export type NarrowResponses<M, C extends number> = M extends ResponseMap ? Pick<M, C & keyof M> : undefined;
+/** What `json()` accepts: the declared bodies, or anything JSON until declared. */
+export type JsonBodyFor<M> = M extends ResponseMap ? M[keyof M] : BunResponseBody;
+
+public status<const C extends AllowedStatus<TResponses>>(
+  code: C,
+): BunResponse<customWebsocketDataType, NarrowResponses<TResponses, C>>;
+public json<T extends JsonBodyFor<TResponses>>(body: T): BunResponse;
+```
+
+**Result: the patched library typechecks clean** (`tsc -p` exit 0) with no
+other change anywhere in bun-common. The ~18 files naming `BunResponse` are
+unaffected because both new parameters default.
+
+**Verb overloads are untouched.** `MountedHandler` derives the response map
+from the `TShape` it is already handed, so `generate-verb-overloads.ts` emits
+byte-identical text and `--check` stays green. No argument position changes,
+so all three CLAUDE.md constraints hold — verified by the spike compiling
+against the real class, including inline arrow handlers.
+
+**What is caught** (every case below compiled or failed as stated):
+
+```ts
+const v = validate({ params: IdParams }, { responses: { 200: UserS, 404: ProblemS } });
+
+r.get("/u/:id",   v, (req, res) => res.status(200).json({ id: req.params.id, name: "a" })); // OK
+r.get("/bad1/:id", v, (req, res) => res.status(200).json({ code: "NOPE" }));
+//   TS2353: Object literal may only specify known properties, and 'code' does not exist in type 'User'.
+r.get("/bad2/:id", v, (req, res) => res.status(418).json({ id: "x", name: "y" }));
+//   TS2345: Argument of type '418' is not assignable to parameter of type '404 | 200'.
+r.get("/bad3/:id", v, (req, res) => res.json({ nope: true }));
+//   TS2353: ... 'nope' does not exist in type 'User | Problem'.
+```
+
+Those are the **actual** messages, and they are the reason this is worth
+shipping: a plain `TS2353`/`TS2345` naming the offending property, not a wall
+of overload-resolution noise. A mounted sub-router declaring
+`BunRouter<"/users/:uid", { responses: { 200: User } }>` produces the same
+clean message, and `async` handlers behave identically. Request narrowing is
+unaffected — `req.params.id` stays `string`.
+
+**What is not caught — the boundary, measured:**
+
+| Case | Caught? | Note |
+|---|---|---|
+| `res.status(c).json(b)`, wrong body | **yes** | |
+| Undeclared status | **yes** | |
+| `res.status(200); res.json(b)` as separate statements | **yes**, but only against the *union* of all declared bodies | the narrowing returned by `status()` is discarded; `res` still carries the full map |
+| `async` handler, awaited | **yes** | |
+| `res.send(anything)` | **no** | `send` takes the wide body union; constraining it would reject every legitimate string/Buffer/stream response |
+| `res.jsonp(anything)` | **no** | same; could be fixed with `json`'s treatment if wanted |
+| `helper(res)` where `helper(res: BunResponse)` | **no** | `TResponses` appears only in method parameter positions, so a narrowed `res` is assignable to a bare one. **The escape hatch**, and structural — not closable without variance annotations that would break far more |
+| Returning a bare object, Nest-style | **no** | the router ignores handler return values by design |
+| A declared status never sent | **no** | exhaustiveness is not checkable |
+
+Nothing here is a surprise in retrospect, but all of it is measured rather
+than reasoned, and the README must state the `send()` and helper-function
+limits plainly.
+
+**Negative controls** (the repo convention) are in the spike and must ship
+with the feature: a validator with no `responses` leaves `res` completely
+unconstrained (`res.status(599).json({ anything: 1 })` compiles), as does a
+route with no validator — so the feature is opt-in and the "zero cost when
+unused" claim of §3.1 survives at the type level too.
+
+### 3.8 `@Validate` — BunValidate as a NestJS route decorator
+
+Nest registers routes through its own explorer, so there is no
+`router.get(path, validate(...), handler)` chain for a validator to sit in.
+The equivalent must be a Nest construct.
+
+**Where it runs: an interceptor, following `interceptors.ts`.**
+`packages/bun-nest/lib/decorators.ts` is one line
+(`export { UploadedFile, UploadedFiles } from "@nestjs/common"`), so there is
+no decorator infrastructure to extend; `packages/bun-nest/lib/interceptors.ts`
+(351 lines) is the precedent — mixin classes from a factory, with
+`getMultipartRequest(ctx)` reaching the underlying bun-common request and
+`transformUploadException` mapping failures to Nest exceptions. Reuse both.
+
+Why an interceptor rather than a pipe or a guard:
+
+| Candidate | Verdict |
+|---|---|
+| **Interceptor** | **Chosen.** Runs before the handler *and* wraps its result, so one construct does request validation **and** response validation (§3.5). It can reach the real `BunRequest` via the same `ctx.switchToHttp().getRequest()` route `getMultipartRequest` already uses, and mutate `req.query`/`req.body` in place — which is the whole point of `BunValidate`, and what makes `@Query()`/`@Body()` see the **parsed output**. Chaining semantics are preserved for free: each validator replaces the target wholesale, exactly as in the router |
+| Pipe | Per-parameter and cannot see the response. A pipe also cannot replace `req.query` in place — it transforms the value Nest hands the parameter, so a second reader of `req.query` still sees the raw one. Wrong semantics |
+| Guard | Runs too early (before pipes) and may only return a boolean; a validation failure would surface as 403 |
+| bun-common middleware via `adapter.use()` | Runs **below** Nest's pipeline — `BunHttpAdapter.use`'s own JSDoc says so: *"guards, interceptors and `setGlobalPrefix` do not apply"*. Usable, but invisible to Nest's exception filters and to `@nestjs/swagger` |
+
+With a Nest `ValidationPipe` also present: the interceptor runs **first**
+(interceptors precede pipes on the request path), so the pipe receives the
+already-parsed value. For a class DTO that is harmless and idempotent; for a
+zod-parsed `query` whose output is no longer a string map, a `ValidationPipe`
+with `transform: true` may re-coerce. Recommendation: document that the two
+should not both own a target, and have `@Validate` set
+`req[BUN_VALIDATED]` so a future `BunValidationPipe` could no-op. Not worth
+building the pipe now.
+
+```ts
+/** What `@Validate` accepts — `validate()`'s surface, in decorator form. */
+export interface ValidateOptions<
+  S extends ValidationSchemas = ValidationSchemas,
+  TRes extends ResponseSchemas | undefined = undefined,
+> {
+  /** Validates path parameters. A Standard Schema or a DTO class. */
+  params?: S["params"];
+  /** Validates the query string. */
+  query?: S["query"];
+  /** Validates the request body. */
+  body?: S["body"];
+  /** Validates the request headers. */
+  headers?: S["headers"];
+  /** Response schemas by status; see §3.5. Also constrains the method's return type. */
+  responses?: TRes;
+  /** Runtime response checking. Defaults to `"off"`. */
+  validateResponses?: ResponseValidationMode;
+  /** Per-target `normalize`/`transform` hooks, as `BunValidateOptions.hooks`. */
+  hooks?: ValidationHooks<S>;
+  /**
+   * What to do on failure. Defaults to `"throw"` here rather than `"next"`:
+   * in Nest a thrown `BadRequestException` is what exception filters expect.
+   */
+  onFailure?: "throw" | "respond";
+  /** Status for a failure. Defaults to 400. */
+  status?: number;
+  /**
+   * Also emit `@nestjs/swagger` metadata derived from these schemas, so one
+   * declaration feeds validation and the OpenAPI document. Defaults to `true`
+   * when `@nestjs/swagger` is present and `useSwaggerBridge()` was called,
+   * `false` otherwise. See §3.8.2.
+   */
+  document?: boolean;
+}
+
+/**
+ * Validates a controller route's request, and optionally its response.
+ *
+ * On a **method**, it applies to that route. On a **class**, it applies to
+ * every route in the controller; a method-level `@Validate` then **merges**
+ * over it per target — a target the method declares replaces the class's, a
+ * target only the class declares still applies. (Merge, not replace, so a
+ * controller-wide `headers` schema is not silently lost by a method that
+ * declares only `body`.) `responses` merge by status, method winning.
+ *
+ * When `responses` is given, the decorator additionally **constrains the
+ * method's return type** to the union of the declared bodies — see §3.8.3.
+ */
+export function Validate<
+  S extends ValidationSchemas,
+  const TRes extends ResponseSchemas | undefined = undefined,
+>(options: ValidateOptions<S, TRes>): ValidateDecorator<TRes>;
+```
+
+#### 3.8.1 Before / after
+
+```ts
+// before — class-validator DTO, no response contract, swagger restated
+@Controller("users")
+export class UsersController {
+  @Post()
+  @ApiBody({ type: CreateUserDto })
+  @ApiResponse({ status: 201, type: UserDto })
+  @UsePipes(new ValidationPipe({ transform: true }))
+  create(@Body() body: CreateUserDto): Promise<UserDto> { … }
+}
+
+// after — one declaration; works with a DTO class or any Standard Schema
+@Controller("users")
+export class UsersController {
+  @Post()
+  @Validate({ body: CreateUserDto, responses: { 201: UserDto, 409: ProblemDto } })
+  create(@Body() body: CreateUserDto): Promise<UserDto> { … }
+  //                                   ^ return type is checked against 201|409
+
+  @Get()
+  @Validate({ query: PageQuery, responses: { 200: UserListSchema } })  // zod, no DTO
+  list(@Query() query: InferQuery<typeof PageQuery>): Promise<UserList> { … }
+}
+```
+
+#### 3.8.2 The OpenAPI bridge — why this belongs in *this* plan
+
+§8.5 recommends `@nestjs/swagger` rather than duplicating it. But
+`@nestjs/swagger` discovers DTO **classes**; it knows nothing about a Standard
+Schema. So `@Validate({ body: zodSchema })` would validate correctly and
+document as nothing. That is the gap this closes:
+
+```ts
+/**
+ * Lets `@Validate` emit `@nestjs/swagger` metadata from its schemas, so one
+ * declaration produces both the validation and the document.
+ *
+ * The decorators are injected, not imported — `@nestjs/swagger` must not
+ * become a bun-nest dependency or appear in a shipped declaration (§8.5).
+ */
+export function useSwaggerBridge(api: {
+  /** `@nestjs/swagger`'s `ApiBody`. */
+  ApiBody: (options: object) => MethodDecorator;
+  /** `ApiQuery`. */
+  ApiQuery: (options: object) => MethodDecorator;
+  /** `ApiParam`. */
+  ApiParam: (options: object) => MethodDecorator;
+  /** `ApiHeader`. */
+  ApiHeader: (options: object) => MethodDecorator;
+  /** `ApiResponse`. */
+  ApiResponse: (options: object) => MethodDecorator;
+  /** `@nestjs/swagger`'s `SwaggerModule` document, for registering named components. */
+  registerComponent?: (name: string, schema: JsonSchemaLike) => void;
+}): void;
+```
+
+With it, `@Validate` applies the corresponding `Api*` decorator for every
+target it was given, with `schema:` produced by **the §4 converter registry** —
+`~standard.jsonSchema` first, then the vendor registry, then `class-validator`
+metadata for a DTO. One declaration, two outputs.
+
+Where it cannot reach, stated plainly:
+
+- **A DTO keeps its native path.** When a target is a DTO class, the bridge
+  emits `{ type: TheClass }`, not a converted schema — that is strictly better,
+  because swagger's own `@ApiProperty` reflection produces a named component
+  and a `$ref`, and it already works.
+- **An anonymous Standard Schema has no component name.** It is emitted inline
+  as `schema: { … }`. Inline schemas are legal and render, but they are
+  repeated per operation and produce no `$ref`. Mitigation: `.meta({ id })` on
+  a zod schema, or `OpenApiOptions.componentName`, supplies a name that
+  `registerComponent` can hoist — **unverified**, since it depends on
+  `SwaggerModule`'s component registration API, which I did not execute.
+- **Swagger's schema model is OpenAPI 3.0-shaped.** `@nestjs/swagger` emits
+  3.0 documents, so a converted schema should be requested at
+  `target: "openapi-3.0"`, not `draft-2020-12`: `nullable: true` instead of
+  `type: ["x","null"]`, no `prefixItems`, boolean `exclusiveMinimum`. This is
+  the one place in the plan where 3.0 is the right target, and it is why §4's
+  `ConvertContext.dialect` must not be hard-coded to 2020-12 after all — widen
+  it to `"draft-2020-12" | "openapi-3.0"`.
+- **`SwaggerModule` was not executed against this.** Everything above is
+  design against a read of `@nestjs/swagger@11.4.6`'s `dist/`. Phase (d) must
+  prove it.
+
+#### 3.8.3 What the decorator can and cannot type — spiked
+
+**A method decorator *can* constrain the method's return type.** **Measured**
+(legacy decorators, the repo's setting): typing `@Validate`'s returned
+decorator as
+
+```ts
+<T extends (...args: never[]) => ReturnUnion<R> | Promise<ReturnUnion<R>>>(
+  target: object, key: string | symbol, descriptor: TypedPropertyDescriptor<T>,
+) => void
+```
+
+rejects a method whose return type matches no declared response, and accepts
+`async` methods. With no `responses` declared it imposes nothing (control
+compiled). **This is the inversion worth calling out**: in the router,
+return-typing is the *weak* option and narrowed-`res` is the strong one; in
+Nest, a handler returns a value and never touches `res`, so return-typing is
+the *only* option — and it happens to be the natural one.
+
+The error is correct but noisier than the router's:
+
+```
+TS1241: Unable to resolve signature of method decorator when called as an expression.
+  Argument of type 'TypedPropertyDescriptor<() => { totally: "wrong"; }>' is not
+  assignable to parameter of type 'TypedPropertyDescriptor<(...args: any[]) =>
+  UserDto | Problem | Promise<UserDto | Problem>>'.
+    … 4 more levels …
+          Type '{ totally: "wrong"; }' is not assignable to type 'UserDto | Problem | …'.
+```
+
+Six lines where the router gives one, with the useful line last. Usable, but
+the README should show it so nobody files it as a bug.
+
+**A decorator *cannot* retype a parameter. Confirmed, no workaround found.**
+A method decorator's signature is `(target, key, descriptor)` and a parameter
+decorator's is `(target, key, index)` — neither has a type link to a
+parameter. **Measured**: with `@ValidatedBody(CreateUserSchema) body: string`,
+`body` stays `string` and compiles. I tried the param-decorator route
+specifically and it does not recover inference.
+
+What works instead is an exported helper type the developer writes once:
+
+```ts
+/** The output type a schema or DTO produces — for annotating a `@Body()` parameter. */
+export type Infer<S> = S extends StandardSchemaV1
+  ? StandardSchemaV1.InferOutput<S>
+  : S extends DtoClass<infer T> ? T : never;
+
+@Validate({ body: CreateUserSchema })
+create(@Body() body: Infer<typeof CreateUserSchema>) { … }   // inferred, not restated
+```
+
+**Verified** to infer correctly. One `typeof` per parameter is the honest cost.
+
+**So what the decorator buys, stated without overselling:** runtime request
+validation with `BunValidate`'s exact semantics including in-place
+replacement; runtime **response** validation, which Nest has no equivalent of;
+compile-time **return-type** checking against declared responses; one
+declaration site instead of DTO + `@ApiBody` + `@ApiResponse` + `@UsePipes`;
+and OpenAPI metadata for schemas swagger cannot otherwise see. It does **not**
+give parameter-type inference — the developer still annotates, with `Infer<>`
+making that a mechanical one-liner. For a user already happy with DTO classes
+and `ValidationPipe`, the honest pitch is the response half, not the request
+half.
 
 ## 4. Standard Schema → JSON Schema
 
@@ -566,6 +1183,7 @@ All five libraries are already devDependencies of `bun-common`
 | `"yup"` | 1.7.1 | **none** (measured: `~standard` present since yup 1.7.0, `vendor: "yup"`, no `jsonSchema`) | instance `.describe()` → **we write the mapper** | **no** | No official export (`yup.toJSONSchema` is `undefined`; a grep of the published `index.js` for `jsonSchema` finds nothing). `describe()` returns `{type, optional, nullable, oneOf, tests:[{name, params}], fields}` — enough for `min`/`max`/`integer`/`matches`/`length`/`email`/`url`, and `oneOf` → `enum`. **Gotcha, measured**: `matches`'s `params.regex` is a `RegExp`, which `JSON.stringify`s to `{}` — read `.source`. The only third-party option, `@sodaru/yup-to-json-schema`, was last published 2023-04-25 and is unmaintained |
 | `"custom"` (superstruct via `toStandardSchema`) | superstruct 2.0.2 | none | none | — | No `~standard` at all (measured: `"NONE"`); last published 2024-07-06. `toStandardSchema`'s `validate` is an opaque closure, so nothing can be introspected — a wrapper can supply `validate`, never `jsonSchema`. **Falls back to `{}` plus a warning**; the user attaches JSON Schema explicitly |
 | `"bun-jobs"` | — | none | `schema.json` (its own field) | no | bun-jobs' `s.*` builder already *is* JSON Schema (`schema/builder.ts`). A ~15-line built-in reading `.json` makes every bun-jobs schema usable from bun-common's generator for free |
+| `"class-validator"` (§3.6) | class-validator 0.15.1 | none | `ClassDtoOptions.toJsonSchema` — e.g. `class-validator-jsonschema`'s `targetConstructorToSchema` | **yes**, injected | A DTO class **has no `~standard` at all**, so it never reaches vendor dispatch by itself. `fromDto()` wraps it in a Standard Schema stamped `vendor: "class-validator"`, and keeps a `WeakMap<StandardSchemaV1, DtoClass>` back to the original constructor so the converter can reach the class the JSON-Schema producer needs. **Measured**: `getMetadataStorage().getTargetValidationMetadatas(cls, "", false, false)` returns readable per-property entries, so the conversion is real rather than hypothetical. Without `toJsonSchema` a DTO validates and documents as `{}` plus a warning. In **bun-nest**, a DTO keeps its native `@nestjs/swagger` path instead (§3.8.2) — strictly better, since that produces a named component |
 
 Deliberately **not** depended on, but worth knowing: `@standard-community/standard-json`
 (0.3.6) is a maintained generic converter doing exactly this vendor dispatch,
@@ -611,8 +1229,15 @@ export type SchemaDirection = "input" | "output";
 export interface ConvertContext {
   /** `"input"` for requests, `"output"` for responses. */
   direction: SchemaDirection;
-  /** The dialect the caller wants. Always `"draft-2020-12"` for OpenAPI 3.1. */
-  dialect: "draft-2020-12";
+  /**
+   * The dialect the caller wants: `"draft-2020-12"` for an OpenAPI 3.1
+   * document (the default and the common case), `"openapi-3.0"` when the
+   * output feeds `@nestjs/swagger`, which emits 3.0 (§3.8.2) — `nullable:
+   * true` instead of `type: ["x","null"]`, no `prefixItems`, boolean
+   * `exclusiveMinimum`. Passed straight through to
+   * `~standard.jsonSchema`'s `target`.
+   */
+  dialect: "draft-2020-12" | "openapi-3.0";
   /** Converts a nested schema, for a converter that recurses. */
   convert: (schema: StandardSchemaV1, direction?: SchemaDirection) => JsonSchemaLike | undefined;
 }
@@ -1190,6 +1815,33 @@ dependency bump for no signal.
   guard for "did adding `.describe()` disturb the overloads", alongside
   `bun scripts/generate-verb-overloads.ts --check`.
 
+`__tests__/responses.type-test.ts` (phase b1) carries the spike verbatim —
+it already exists as working code:
+
+- positive: `res.status(200).json(declared)` compiles; request narrowing
+  survives; `async` handlers work; a mounted sub-router declaring
+  `BunRouter<"/users/:uid", { responses: … }>` is constrained;
+- four `@ts-expect-error` negative controls: wrong body for a status,
+  undeclared status, bare `json()` outside the union, and the sub-router case;
+- **boundary assertions that must *compile*** — `res.send(anything)`,
+  `helper(res)` with `helper(res: BunResponse)`, a bare returned object, and a
+  validator with no `responses` leaving `res` fully unconstrained. These are
+  not aspirational: they pin §3.7's documented limits so a later "improvement"
+  that closes one is a deliberate decision, not a silent behaviour change.
+
+`packages/bun-nest/__tests__/validate.type-test.ts` (phase g) carries spike D:
+a method whose return type matches no declared response is
+`@ts-expect-error`'d; one that matches compiles; `@Validate` with no
+`responses` imposes nothing (control); and `@ValidatedBody(S) body: string`
+compiles, pinning the "a decorator cannot retype a parameter" limit.
+
+Runtime tests for (b1)/(b2): a response that violates its schema logs exactly
+once under `"log"` and throws under `"throw"`; a stream response is skipped
+with one warning; an undeclared status is reported under `"report"` and passed
+under `"allow"`; `redirect()` and 204 behave as §3.5's table says; and a DTO
+target validates, coerces (`"42"` → `42`) and **replaces `req.query` in
+place** so a later reader sees the parsed value.
+
 ### 9.6 The `examples/` obligation
 
 CLAUDE.md's examples protocol applies: a user-facing change means a CHANGE
@@ -1200,6 +1852,14 @@ before merge. New folders:
   `from-validators.ts`, `serving-and-viewing.ts`, and `10-options/`'s
   `openapi-options.ts` (the repo's convention is one `10-options/` file per
   options interface).
+- `examples/bun-common/13-api-docs/response-contracts.ts` (phase b1) and
+  `class-dtos.ts` (b2). The DTO example must skip visibly
+  (`skipped: class-validator is not installed`) rather than fail, since
+  neither library is a dependency — and its own `tsconfig` must set
+  `experimentalDecorators`, which is a useful demonstration in itself.
+- `examples/bun-nest/08-validate/` (phase g) — `route-decorator.ts`,
+  `controller-scope.ts`, `swagger-bridge.ts`, plus `10-options/validate-options.ts`
+  per the repo's one-file-per-options-interface convention.
 - `examples/bun-nest/07-openapi/swagger-module.ts` — the end-to-end
   `SwaggerModule.setup()` proof from §8.6, skipping visibly
   (`skipped: …`) when `@nestjs/swagger` or `swagger-ui-dist` is absent.
@@ -1221,16 +1881,93 @@ and its spec tests are the extraction's regression net;
 
 Ordered by how much they can hurt.
 
-1. **Response types are invisible, and always will be.** `res.json(x)` carries
-   no schema. Everything in `responses` is hand-written, so it drifts. Three
-   partial mitigations, none complete: the route/document parity test (§9.2);
-   a `validateResponses` dev-mode flag that runs the declared schema against
-   what a handler actually sent and logs a mismatch — bun-jobs has exactly this
-   (`routes/define.ts`'s `responseMismatch`) and it is the single best idea in
-   that file to copy; and `strict` mode refusing a route with no declared
-   responses. **Open question:** is a *typed* response helper
-   (`res.jsonAs(Schema, value)`) worth it? It would make responses derivable,
-   but only for routes that opt in, and it is a second way to write a response.
+1. **Response types are not inferable — they are declared, and now enforced.**
+   Nothing derives a schema from `res.json(x)`. §3.5 and §3.7 close the *drift*
+   half of this (runtime checking, compile-time checking, the route/document
+   parity test of §9.2), but the declaration itself is hand-written and
+   always will be. The earlier open question about a `res.jsonAs(Schema, value)`
+   helper is now **closed as unnecessary**: `validate(..., { responses })`
+   gives the same guarantee without a second way to write a response.
+
+1b. **Compile-time enforcement is partial, and two of its holes are
+   structural.** §3.7's table is the boundary. The two that cannot be closed
+   without disproportionate cost: `res.send()` (constraining it would reject
+   every legitimate string/Buffer/stream response) and a helper function taking
+   a plain `BunResponse` (`TResponses` appears only in method parameter
+   positions, so a narrowed `res` is assignable to a bare one — closing it
+   needs variance annotations that would break far more than they fix). The
+   README must state both. **Open question:** should `jsonp()` be constrained
+   like `json()`? It is trivially possible and nobody uses `jsonp`.
+
+1c. **`BunResponse` gains a second type parameter, and that is a public type
+   change.** Both parameters default, and **measured**, the patched library
+   plus its ~18 `BunResponse`-naming files typecheck clean — but `dts/`
+   changes, so it is a minor-version surface change and
+   `consumer-check.json`'s `BunResponse` spellings must be re-run. The one
+   ergonomic cost inside the class is real: `TResponses` is unresolved there,
+   so all ~8 internal `this.status(n)` calls must go through a
+   `protected setStatusRaw`. A future contributor writing `this.status(500)`
+   in `BunResponse.ts` will get a confusing error; the method needs a comment
+   saying why, and the spike's wording is a good start.
+
+1d. **Runtime response validation is not free, and streams are exempt.**
+   One Standard Schema `validate()` per response when enabled — the same order
+   as validating a request body. Default `"off"`, recommended dev-only, and
+   `sendFile`/stream/`StreamableFile` responses are skipped outright because
+   checking them would mean buffering the thing that exists not to be
+   buffered. A route whose success path is a stream therefore gets **no**
+   response checking, silently, apart from one warning per route.
+
+1e. **Class DTOs require `experimentalDecorators`, and stage-3 is a hard
+   break.** **Measured**: with standard decorators, importing a class-validator
+   DTO throws `TypeError: undefined is not an object (evaluating
+   'object.constructor')` at class-definition time — not a degradation, a
+   crash. The repo is fine (`tsconfig.base.json:24-26`), but a consumer on
+   TS 5+ standard decorators cannot use the DTO path at all. It must be a
+   stated requirement, and it is the strongest argument for keeping Standard
+   Schema the primary path. Secondary, smaller: `design:type` erases
+   `string[]` to `Array` and optionality entirely (both **measured**), so
+   `@IsString({ each: true })` and `@IsOptional()` remain mandatory; and
+   `whitelist: true` does not strip undeclared properties from the instance
+   (**measured**) — that needs `excludeExtraneousValues` + `@Expose()`.
+
+1f. **Neither class-validator, class-transformer, `reflect-metadata` nor
+   `@nestjs/swagger` may become a dependency or a declaration import.** All
+   four are injected structurally (`useClassDtos`, `useSwaggerBridge`), which
+   is what keeps `checkPeerScopes` (`scripts/build-declarations.ts:273`)
+   quiet — the shipped `dts/` names only structural interfaces. The risk is
+   drift: somebody later "simplifies" one into a real import and the
+   declaration starts importing an undeclared package. The packaging test
+   should assert the import graph of `lib/docs/**` and
+   `bun-nest/lib/decorators.ts` directly, not rely on review.
+
+1g. **`@Validate`'s error message is six lines where the router's is one.**
+   **Measured**: a method whose return type matches no declared response fails
+   with `TS1241: Unable to resolve signature of method decorator when called as
+   an expression`, then four levels of `TypedPropertyDescriptor` nesting, with
+   the useful line last. Correct, usable, ugly. Show it in the README.
+
+1h. **A decorator cannot type a parameter, and no workaround exists.**
+   **Measured**: `@ValidatedBody(CreateUserSchema) body: string` compiles with
+   `body` still `string`. A parameter decorator's signature
+   (`target, key, index`) has no type link to the parameter. The `Infer<typeof
+   Schema>` helper is the answer and it is a genuine ergonomic cost — one
+   `typeof` per parameter — that the README must show rather than gloss.
+   **Open question:** is the decorator worth building for a team already happy
+   with DTO classes and `ValidationPipe`? The honest pitch is the *response*
+   half and the swagger bridge, not the request half. If phase (d) finds
+   `@nestjs/swagger` + `ValidationPipe` already satisfying, phase (g) should be
+   dropped rather than shipped for symmetry.
+
+1i. **`@Validate` and a Nest `ValidationPipe` can both own a target.** The
+   interceptor runs first, so the pipe sees the parsed value; for a DTO that
+   is idempotent, but a `ValidationPipe({ transform: true })` over a
+   zod-parsed `query` may re-coerce what is no longer a string map. The plan
+   sets a `BUN_VALIDATED` marker so a future `BunValidationPipe` can no-op,
+   but **does not build that pipe** — the documented rule is that the two
+   should not both own a target. **Unverified**: the precise interceptor/pipe
+   ordering claim comes from Nest's documented request lifecycle, not from a
+   run.
 
 2. **`@routejs/router` paths with no OpenAPI equivalent.** `toOpenApiPath`
    (`bun-jobs/lib/api/spec/openapi.ts`) already throws for `*`, `(` and `)` and
@@ -1403,8 +2140,11 @@ engineer-days for someone who wrote this code.
 | **(a2) `defineRoute`-style registrar** *(optional, same phase)* | A `routes([...])` helper over `.describe()` for people who prefer bun-jobs' shape | Ergonomics, no new capability | 1–2 |
 | **(b0) Update the vendored spec types** | `lib/types/standardSchema.ts` → `@standard-schema/spec` 1.1.0: `StandardTypedV1`, `StandardJSONSchemaV1`, `StandardSchemaV1.Options`. Its own commit, before (b) | The type surface every validator is checked against, current | **0.5–1** |
 | **(b) Standard Schema auto-derivation** | `__schemas` on the validator middleware; the `~standard.jsonSchema` primary path; the vendor registry; zod/arktype/yup/bun-jobs fallbacks; `valibotConverter(toJsonSchema)`; `withJsonSchema`; the `$defs`→`components` lift with recursion rewriting; the agreement tests of §9.3; `from-validators.ts` example | **The headline feature.** Existing validated routes document themselves | **4–6** |
+| **(b1) Response contracts** | `responses` on `BunValidateOptions`; `BunResponse` gains `TResponses`, `status()` narrows, `json()` constrains, `protected setStatusRaw` (§3.7); `TypedRouteHandler`/`MountedHandler` thread `TRes`; runtime checking at response finalisation with bun-jobs' `responseMismatch` semantics (§3.5); `responses.type-test.ts` carrying the spike's four negative controls plus the `send()`/helper-escape boundary cases; `generate-verb-overloads.ts --check` must stay green; `consumer-check` re-run for the `BunResponse` surface change | Declared responses **enforced** at compile time and optionally at runtime. Feeds (a)'s document for free | **4–5** |
+| **(b2) Class DTOs** | `useClassDtos` / `fromDto` (§3.6); widen the four `ValidationSchemas` keys and `RouteDoc.request.*` to `StandardSchemaV1 \| DtoClass`; a `"class-validator"` converter reading the injected `toJsonSchema`; class-validator + class-transformer as **devDependencies** of bun-common for the tests; an `experimentalDecorators`-off negative test proving the documented failure | DTO users reach both validation and the document | **2–3** |
 | **(c) Serving and viewing** | `docsRouter()`; move `docs/html.ts` + `docs/cdn.ts` into `lib/docs/viewer.ts` parameterised; CSP/nonce/SRI tests copied from `api-docs.test.ts`; `serving-and-viewing.ts` example. bun-jobs keeps its own pins and routes | Documents served and browsable, off by default | **3–4** |
-| **(d) bun-nest** | Execute `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end; close the §8.6 gaps; `examples/bun-nest/07-openapi/swagger-module.ts`; README section covering the mixed-app caveat and the `@Render` note. Only if execution finds a hole: a `./lib/swagger` helper with `"peers"` | A documented, proven path. **Cheapest phase per unit of value** | **2–3** |
+| **(d) bun-nest — verify `@nestjs/swagger`** | Execute `SwaggerModule.setup()` against `BunHttpAdapter` end-to-end; close the §8.6 gaps; `examples/bun-nest/07-openapi/swagger-module.ts`; README section covering the mixed-app caveat and the `@Render` note. Only if execution finds a hole: a `./lib/swagger` helper with `"peers"` | A documented, proven path. **Cheapest phase per unit of value** — and the phase that decides whether (g) is worth building | **2–3** |
+| **(g) bun-nest `@Validate` decorator** | The interceptor (§3.8), following `interceptors.ts`'s mixin shape and reusing `transformUploadException`'s error mapping; method **and** class forms with per-target merge; return-type constraint via `TypedPropertyDescriptor`; `useSwaggerBridge` emitting `ApiBody`/`ApiQuery`/`ApiParam`/`ApiHeader`/`ApiResponse` from the §4 registry at `target: "openapi-3.0"`; the `Infer<>` helper; `decorators.ts` grows from one line to a real module; `consumer-check.json` entry; `examples/bun-nest/08-validate/` | One declaration for validation + response contract + document. **Gate on (d)** — see risk 1h | **5–7** |
 | **(e) AsyncAPI 3.0** | Public WS route accessor on `BunWebSocket`; `WsChannelDoc` + `describeChannel()`; the bun-common generator (servers/channels/parameters/messages/operations); bun-nest's metadata explorer reading `MESSAGE_METADATA`/`GATEWAY_OPTIONS`/`PORT_METADATA` and the `MessageEventTypes` envelope; AsyncAPI 3.0 meta-schema test via `@asyncapi/specs`; examples | AsyncAPI for both adapters | **7–9** |
 | **(f) Generic self-hosted viewer** *(deferred, separate decision)* | Extract `bun-jobs-ui/app/screens/docs/{schema,http}` into `@kingsleyweb/bun-api-docs-ui`; migrate bun-jobs-ui onto it; keep its golden WS fixtures as the net | An offline, CSP-strict viewer and one fewer fork | **10–14** |
 
@@ -1424,6 +2164,24 @@ engineer-days for someone who wrote this code.
   genuinely undecided.
 - (f) is deliberately outside the sequence. It is a UI project with a package
   boundary and a bun-jobs-ui migration, and none of (a)–(e) needs it.
+- **(b1) sits where it does because it is the enforcement half of (a)'s
+  declaration half**, and because it is the one change touching a public type
+  (`BunResponse`). Doing it immediately after (b), while the response design is
+  fresh and before anything is built on the current `dts/`, is much cheaper
+  than retrofitting it after (c)–(e) ship.
+- **(b2) after (b1), not before**, because `responses` must accept a DTO on the
+  day DTOs land, and widening `ValidationSchemas` once is cheaper than twice.
+- **(g) is gated on (d)**, deliberately. (d) will show whether `@nestjs/swagger`
+  plus a `ValidationPipe` already covers what a bun-nest user wants. If it
+  does, (g) should be dropped, not shipped for symmetry — risk 1h. If (g) is
+  built, it must come after (b1)/(b2)/(d) because it is a thin shell over all
+  three: the interceptor is `BunValidate` plus Nest wiring, and the swagger
+  bridge is §4's registry plus a dialect argument.
+
+**Revised total** for the enforcement work the maintainer asked for — (b1) +
+(b2) + (g) — is **11–15 days**, of which (g) is the half most likely to be cut.
+(b1) is the one I would ship regardless: it is the only item here that is both
+fully spiked and independently valuable without any of the others.
 
 **Suggested first commit**, if only one thing is done: the `__schemas` property
 on `BunValidate`'s middleware. Three lines, no API surface, no behaviour change,
