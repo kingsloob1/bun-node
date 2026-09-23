@@ -130,9 +130,14 @@ export function RunnersSection({ range, picker }: SectionProps) {
   const api = useApiClient();
   const enabled = useAnalyticsGate("runners");
   // A runner links to its page only where those pages are routed for this
-  // caller; otherwise the name is plain text. A row may also name a runner
-  // that has since been unregistered — the link then lands on the runner
-  // screen's own "no longer exists" state, which is the honest answer.
+  // caller; otherwise the name is plain text. A row is built from what was
+  // recorded in the range, so it can name a runner the API no longer knows —
+  // a fleet host reporting counts for ids it holds no record of. The link
+  // then lands on the runner screen's own "no longer exists" state, which is
+  // the honest answer. (Measured by the examples session: `runners.remove()`
+  // is *not* a route to that — a removed runner stays in the registry and
+  // still answers `GET /runners/:id`. Workers are the opposite: close one and
+  // it leaves `GET /workers` while its analytics row remains.)
   const linkRunners = useRunnerPagesRouted();
   const { analytics, key, request } = useAnalyticsRange(range);
   const maxSeries = analytics?.maxSeries ?? MAX_ANALYTICS_SERIES;
