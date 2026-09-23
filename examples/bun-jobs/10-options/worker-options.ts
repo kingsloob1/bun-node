@@ -19,6 +19,11 @@
  *   running worker's stalled sweep does the recovering — here, paused ones —
  *   and which worker's sweep gets there first is not a caller's choice, so
  *   every worker on a queue here takes the same short {@link SWEEP_INTERVAL}.
+ * - What *is* a caller's to rely on is the cadence: a queue is swept at the
+ *   shortest `stalledInterval` among its workers, whichever worker that is.
+ *   Section 6 counts the sweeps of a queue whose two workers are on the 30s
+ *   default as a third joins on {@link SWEEP_INTERVAL}, without ever asking
+ *   which of the three did them.
  * - `maintenance: false` opts a worker out of the queue's housekeeping — the
  *   minute pass that prunes expired results, heals repeat series and sweeps
  *   stale queue state — and out of nothing else. Keeping the queue moving is
@@ -27,7 +32,7 @@
  *   normally; it just keeps what nobody is tidying away.
  * - Isolation (`isolation`, `isolationOptions`) has its own tour:
  *   `worker-isolation.ts`.
- * - Sections 6 and 14 start child processes, so on the memory default they use
+ * - Sections 7 and 15 start child processes, so on the memory default they use
  *   a temporary SQLite file (`crossProcessDriver()`).
  */
 import type {
@@ -79,12 +84,11 @@ const fast = { pollInterval: 25, maxBlock: 50 };
  * Every worker on a queue is given it, not only the sweeper that a step is
  * about, and that is the point worth taking away: **a queue's repair cadence
  * belongs to the fleet, not to the one worker you configured for the job**.
- * Each worker sweeps on its own `stalledInterval`, so the shortest one on the
- * queue is what sets the pace; a fleet that elected a single sweeper per queue
- * instead would take the elected worker's. Neither arrangement lets a step
- * name the worker whose interval counts, so a fleet that wants fast repair
- * sets `stalledInterval` on every worker on the queue rather than on one of
- * them.
+ * The shortest `stalledInterval` on the queue is what sets the pace, and
+ * section 6 measures that rather than asserting it. What no arrangement lets a
+ * step do is *name* the worker whose interval counts, so a fleet that wants
+ * fast repair sets `stalledInterval` on every worker on the queue rather than
+ * on one of them.
  */
 const SWEEP_INTERVAL = 100;
 /** How long to wait for anything a busy machine might slow down. */
@@ -108,8 +112,9 @@ function gate(): Gate {
 }
 
 /**
- * Waits out a window in which something must *not* happen. The only sleeps
- * in the tour: a negative cannot be waited for.
+ * Waits out a window: one in which something must *not* happen, or one a rate
+ * is measured over. The only sleeps in the tour — neither a negative nor a
+ * cadence can be waited for.
  */
 async function quietWindow(ms: number): Promise<void> {
   await Bun.sleep(ms);
@@ -133,9 +138,9 @@ interface SweeperOptions {
 
 /**
  * Starts a paused worker that sweeps `queueName` every
- * {@link SWEEP_INTERVAL}ms — which is not on its own the *queue's* cadence,
- * so every other worker the step starts on the same queue takes the same
- * interval.
+ * {@link SWEEP_INTERVAL}ms — which does not make this the worker whose sweep
+ * gets to a stalled job first, so every other worker the step starts on the
+ * same queue takes the same interval.
  */
 async function startSweeper(
   queueName: string,
@@ -675,8 +680,119 @@ await lostSweeper.worker.close();
 await lostQueue.close();
 
 /* ------------------------------------------------------------------ */
+step("6. Mixed stalledIntervals: the queue is swept at the shortest of them");
+
+/**
+ * The queue this step measures the sweep cadence of. Nothing is ever added to
+ * it: the stalled sweep runs on its interval whether or not there is anything
+ * to recover, which is exactly what makes the cadence measurable.
+ */
+const cadenceQueueName = "sweep-cadence";
+/** The `stalledInterval` default, and the cadence the first workers sweep at. */
+const SLOW_SWEEP = 30_000;
+/** How long the cadence is measured over once the fast worker joins, in ms. */
+const CADENCE_WINDOW = 2_500;
+/**
+ * How many sweeps in that window mean the short interval is the one in force.
+ *
+ * A *ratio*, not a measured figure: {@link SWEEP_INTERVAL} gives about
+ * `CADENCE_WINDOW / SWEEP_INTERVAL` sweeps and {@link SLOW_SWEEP} at most one,
+ * so a fifth of the short interval's own rate still stands an order of
+ * magnitude clear of the slow one and leaves a loaded machine plenty of room.
+ */
+const FAST_SWEEPS_AT_LEAST = Math.floor(CADENCE_WINDOW / SWEEP_INTERVAL / 5);
+/** The most sweeps the 30s cadence alone could account for in that window. */
+const SLOW_SWEEPS_AT_MOST = Math.ceil(CADENCE_WINDOW / SLOW_SWEEP);
+
+/**
+ * When each stalled sweep of {@link cadenceQueueName} ran, counted at the
+ * driver — the same trick `draft-and-process-every.ts` uses on
+ * `promoteDelayed`.
+ *
+ * Counting *sweeps* is the whole point of the step. Which worker sweeps is an
+ * implementation detail and not a caller's choice, so the guarantee is about
+ * the cadence and nothing else: **a queue is swept at the shortest
+ * `stalledInterval` among its workers, whoever ends up doing it.** Reading a
+ * lease entry, or naming the worker expected to hold one, would assert the
+ * implementation instead.
+ */
+const sweptAt: number[] = [];
+const recoverStalled = driver.recoverStalled.bind(driver);
+driver.recoverStalled = async (q, now, maxStalledCount, limit) => {
+  if (q.queue === cadenceQueueName) {
+    sweptAt.push(Date.now());
+  }
+  return await recoverStalled(q, now, maxStalledCount, limit);
+};
+
+const cadenceQueue = new BunQueue(cadenceQueueName, { namespace, driver });
+
+/**
+ * Starts a paused worker on {@link cadenceQueueName} — it never claims, so
+ * the only thing it contributes to the queue is its maintenance.
+ *
+ * @param stalledInterval How often it would sweep, in milliseconds.
+ */
+async function startCadenceWorker(
+  stalledInterval: number,
+): Promise<BunQueueWorker> {
+  const worker = new BunQueueWorker<unknown, unknown>(
+    cadenceQueueName,
+    async () => null,
+    { namespace, driver, stalledInterval, ...fast },
+  );
+  await worker.pause();
+  void worker.run();
+  return worker;
+}
+
+// Two workers on the 30s default. Both sweep as they start; after that the
+// queue would be swept every 30s — which over the window below means once at
+// most, if these two were all the cadence there is.
+const slowWorkers = await Promise.all([
+  startCadenceWorker(SLOW_SWEEP),
+  startCadenceWorker(SLOW_SWEEP),
+]);
+await waitFor(
+  "one of the 30s workers to have swept the queue",
+  () => sweptAt.length > 0,
+  LONG,
+);
+
+const fastStartedAt = Date.now();
+const fastWorker = await startCadenceWorker(SWEEP_INTERVAL);
+await quietWindow(CADENCE_WINDOW);
+
+/** Every sweep of the queue since the fast worker joined it. */
+const afterFast = sweptAt.filter((at) => at >= fastStartedAt);
+show(
+  `sweeps in ${CADENCE_WINDOW}ms, once a ${SWEEP_INTERVAL}ms worker joined two on ${SLOW_SWEEP}ms`,
+  afterFast.length,
+);
+show(
+  "the first of them, after the fast worker started (ms)",
+  afterFast[0] === undefined ? "there was none" : afterFast[0] - fastStartedAt,
+);
+check(
+  "a queue is swept at the shortest stalledInterval among its workers, whichever worker has it",
+  afterFast.length >= FAST_SWEEPS_AT_LEAST &&
+    afterFast.length > SLOW_SWEEPS_AT_MOST,
+  {
+    sweeps: afterFast.length,
+    atLeast: FAST_SWEEPS_AT_LEAST,
+    theSlowCadenceAloneCouldManage: SLOW_SWEEPS_AT_MOST,
+  },
+);
+
+await Promise.all(
+  [...slowWorkers, fastWorker].map(async (worker) => worker.close()),
+);
+await cadenceQueue.close();
+driver.recoverStalled = recoverStalled;
+
+/* ------------------------------------------------------------------ */
 step(
-  "6. stalledInterval + maxStalledCount: a worker killed twice buries the job",
+  "7. stalledInterval + maxStalledCount: a worker killed twice buries the job",
 );
 
 const stallQueue = new BunQueue("stalls", {
@@ -774,7 +890,7 @@ await stallSweeper.worker.close();
 await stallQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("7. pollInterval and maxBlock: how long an idle worker waits");
+step("8. pollInterval and maxBlock: how long an idle worker waits");
 
 // The wait is the driver's `waitForJob(ref, ms)`: `maxBlock` on a driver that
 // can block, `pollInterval` on one that polls. Recorded by wrapping it.
@@ -820,7 +936,7 @@ driver.waitForJob = originalWait;
 await pollQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("8. maintenance: false — housekeeping off, the queue still live");
+step("9. maintenance: false — housekeeping off, the queue still live");
 
 // The whole step runs with ONE worker on the queue, the one that opted out, so
 // nothing below can be another worker's doing. What that worker still does is
@@ -976,7 +1092,7 @@ await housekeeper.worker.close();
 await maintQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("9. drainDelay: drained only after quiet");
+step("10. drainDelay: drained only after quiet");
 
 const drainQueue = new BunQueue("drain", { namespace, driver });
 const drainedAt: number[] = [];
@@ -1037,7 +1153,7 @@ await eager.close();
 await drainQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("10. backoffStrategies — an instance, a record, and a name nobody gave");
+step("11. backoffStrategies — an instance, a record, and a name nobody gave");
 
 await checkRejects(
   "BackoffStrategies refuses a built-in name",
@@ -1174,7 +1290,7 @@ await instanceQueue.close();
 await recordQueue.close();
 
 /* ------------------------------------------------------------------ */
-step("11. deadLetterQueue, the deadLettered and error events");
+step("12. deadLetterQueue, the deadLettered and error events");
 
 const dlqSource = new BunQueue<{ n: number }>("dlq-source", {
   namespace,
@@ -1258,7 +1374,7 @@ await dlqWorker.close();
 await Promise.all([dlqSource.close(), dlq.close(), dlqOwn.close()]);
 
 /* ------------------------------------------------------------------ */
-step("12. limitsRefreshInterval: how soon a worker sees queue.setLimits()");
+step("13. limitsRefreshInterval: how soon a worker sees queue.setLimits()");
 
 /** The most jobs a limits scenario ran at once, before and after the limit was lifted. */
 interface LimitPeaks {
@@ -1342,7 +1458,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("13. publish: job events for other processes");
+step("14. publish: job events for other processes");
 
 const loudObserver = new BunQueue("published", {
   namespace,
@@ -1424,7 +1540,7 @@ await Promise.all(
 );
 
 /* ------------------------------------------------------------------ */
-step("14. waitToExit: whether an idle worker keeps its process alive");
+step("15. waitToExit: whether an idle worker keeps its process alive");
 
 /** A running idle-worker process and what it has printed so far. */
 interface IdleChild {
@@ -1561,7 +1677,7 @@ if (!holdsProcess) {
 }
 
 /* ------------------------------------------------------------------ */
-step("15. close(): graceful, { timeout }, { force }");
+step("16. close(): graceful, { timeout }, { force }");
 
 /** Jobs that ignore their signal hold this gate, which is never opened. */
 const never = gate();

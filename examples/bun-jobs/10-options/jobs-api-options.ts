@@ -50,9 +50,11 @@
  *   must never be summed — [`read-apis.ts`](./read-apis.ts) covers the record
  *   itself and how to total a fleet.
  * - **`sweeps` is optional in the same way, and absent is not `false`**: it
- *   says whether a worker does the queue's housekeeping, and a worker too old
- *   to have the field has said nothing. It says nothing about liveness either
- *   way. [`read-apis.ts`](./read-apis.ts) has the rule a reader applies to it.
+ *   says whether a worker *takes part in* the queue's housekeeping — never
+ *   which worker swept on a given pass — and a worker too
+ *   old to have the field has said nothing. It says nothing about liveness
+ *   either way. [`read-apis.ts`](./read-apis.ts) has the rule a reader applies
+ *   to it.
  */
 import type {
   DriverEvent,
@@ -1561,7 +1563,7 @@ for (const [route, path] of WORKER_READS) {
   );
 
   checkEqual(
-    `${route} carries sweeps: true on a worker that does the housekeeping`,
+    `${route} carries sweeps: true on a worker that takes part in housekeeping`,
     [Object.hasOwn(live ?? {}, "sweeps"), live?.sweeps],
     [true, true],
   );
