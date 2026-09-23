@@ -129,6 +129,8 @@ export const workersFixture: WorkerListDto = {
       expiresAt: NOW + 25_000,
       host: "box-1",
       pid: 4242,
+      rssBytes: 268_435_456,
+      heartbeatRttMs: 12,
     },
   ],
 };

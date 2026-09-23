@@ -89,6 +89,21 @@ describe("RelativeTime", () => {
     expect(time.textContent).toBe(formatRelativeTime(at, Date.now()));
   });
 
+  it("puts a hint under the instant in the tooltip, keeping the instant", () => {
+    const at = Date.now() - 3 * MIN;
+    render(
+      <RelativeTime
+        value={at}
+        hint="Last write took 12 ms."
+      />,
+    );
+    const time = document.querySelector("time")!;
+    const iso = new Date(at).toISOString();
+    // The instant the tooltip already carried is still first.
+    expect(time.getAttribute("title")).toBe(`${iso}\nLast write took 12 ms.`);
+    expect(time.getAttribute("dateTime")).toBe(iso);
+  });
+
   it("renders a dash for null and undefined, without joining the clock", () => {
     render(
       <>

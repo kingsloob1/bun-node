@@ -51,6 +51,7 @@ interface ActionsModule {
     state: () => string;
     awaitState: (label: string) => Promise<void>;
     offers: (name: string) => boolean;
+    memory: () => string;
     awaitButton: (name: string) => Promise<void>;
     lifecycle: (name: LifecycleButton) => Promise<string>;
     refuse: (name: LifecycleButton) => Promise<string>;
@@ -101,6 +102,8 @@ const QUEUES = {
   config: "digests",
   /** The refusal after the worker moved on. */
   refusal: "invoices",
+  /** The Memory column, read from what a live worker really reports. */
+  memory: "memos",
 } as const;
 
 /** What the workers' own code asks for, so an override is recognisable as one. */
@@ -434,5 +437,27 @@ describe("a worker's row against a real API", () => {
     expect(refused).toContain(`Could not resume ${worker.id}`);
     expect(refused).toContain("no longer in the state that action needs");
     expect(refused).toContain("a stopped worker is started, not resumed");
+  }, 30_000);
+
+  it("shows the process memory a live worker really reports", async () => {
+    const queue = QUEUES.memory;
+    // What the worker wrote with its heartbeat, straight off the API.
+    const rssBytes = (await reported(queue)).rssBytes;
+    expect(typeof rssBytes).toBe("number");
+    // A Bun process: more than a megabyte, less than a terabyte.
+    expect(rssBytes as number).toBeGreaterThan(1024 * 1024);
+    expect(rssBytes as number).toBeLessThan(1024 ** 4);
+
+    const ui = await mount(queue);
+    await ui.awaitState("Running");
+    // The column is there, and carries a size — never the dash, and never 0 B.
+    await until(
+      () => /^[\d,.]+ (?:B|KiB|MiB|GiB)$/.test(ui.memory()),
+      () => `the Memory cell reads "${ui.memory()}"`,
+    );
+    const shown = ui.memory();
+    expect(shown).not.toBe("—");
+    expect(shown).not.toBe("0 B");
+    expect(Number.parseFloat(shown.replace(/,/g, ""))).toBeGreaterThan(0);
   }, 30_000);
 });

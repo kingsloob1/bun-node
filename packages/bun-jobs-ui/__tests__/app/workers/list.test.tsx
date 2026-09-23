@@ -130,6 +130,87 @@ describe("the workers screen", () => {
     expect(cells("w-old")[failed]).toBe("—");
   });
 
+  it("has no Memory column when no worker reports its process memory", async () => {
+    const screen = await open();
+    const table = (await within(screen).findAllByRole("table"))[0]!;
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((cell) => cell.textContent);
+    expect(headers).not.toContain("Memory");
+  });
+
+  it("shows the process's memory, and a dash — not a zero — where a worker reports none", async () => {
+    const screen = await open([
+      worker({ id: "w-new", rssBytes: 1_610_612_736 }),
+      // Predates the field: absent is not zero.
+      worker({ id: "w-old" }),
+    ]);
+    const row = await within(screen).findByTestId("worker-row-w-new");
+    const table = row.closest("table")!;
+    const headers = within(table).getAllByRole("columnheader");
+    const memory = headers.findIndex((cell) => cell.textContent === "Memory");
+    expect(memory).toBeGreaterThan(-1);
+    // The header says whose memory it is and that the rows do not add up.
+    const hint = headers[memory]!.getAttribute("title") ?? "";
+    expect(hint).toContain("process this worker runs in");
+    expect(hint).toContain("do not add these up");
+    const cells = (id: string) =>
+      Array.from(
+        within(screen).getByTestId(`worker-row-${id}`).children,
+        (cell) => cell.textContent,
+      );
+    expect(cells("w-new")[memory]).toBe("1.5 GiB");
+    expect(cells("w-old")[memory]).toBe("—");
+  });
+
+  it("repeats one figure for two workers of a pid, and totals nothing", async () => {
+    const rssBytes = 268_435_456;
+    const screen = await open([
+      worker({ id: "w-a", host: "api-1", pid: 100, rssBytes }),
+      worker({ id: "w-b", host: "api-1", pid: 100, rssBytes }),
+    ]);
+    const row = await within(screen).findByTestId("worker-row-w-a");
+    const table = row.closest("table")!;
+    const memory = within(table)
+      .getAllByRole("columnheader")
+      .findIndex((cell) => cell.textContent === "Memory");
+    const cellAt = (id: string) => {
+      const cells = within(screen).getByTestId(`worker-row-${id}`).children;
+      return cells[memory]?.textContent;
+    };
+    // The same process, so the same figure on both rows — not half each.
+    expect(cellAt("w-a")).toBe("256.0 MiB");
+    expect(cellAt("w-b")).toBe("256.0 MiB");
+    // And nowhere a sum of them: no footer, and no 512 MiB anywhere.
+    expect(table.querySelector("tfoot")).toBeNull();
+    expect(screen.textContent).not.toContain("512.0 MiB");
+  });
+
+  it("explains the heartbeat's round trip in the cell's tooltip, and only when reported", async () => {
+    const screen = await open([
+      worker({ id: "w-rtt", heartbeatRttMs: 12 }),
+      worker({ id: "w-sub", heartbeatRttMs: 0.42 }),
+      // A first report, or an older worker: no sample to show.
+      worker({ id: "w-none" }),
+    ]);
+    await within(screen).findByTestId("worker-row-w-rtt");
+    const heartbeatTitle = (id: string) => {
+      const times = within(screen)
+        .getByTestId(`worker-row-${id}`)
+        .querySelectorAll("time");
+      // Started, then Heartbeat.
+      expect(times).toHaveLength(2);
+      return times[1]!.getAttribute("title") ?? "";
+    };
+    expect(heartbeatTitle("w-rtt")).toContain(
+      "Last write took 12 ms (the previous report's round trip to the driver, not a network ping).",
+    );
+    expect(heartbeatTitle("w-sub")).toContain("Last write took 0.4 ms (");
+    // The instant the tooltip already carried is still there.
+    expect(heartbeatTitle("w-rtt")).toContain("T");
+    expect(heartbeatTitle("w-none")).not.toContain("Last write took");
+  });
+
   it("filters by id, queue or host through ?search", async () => {
     const screen = await open();
     await within(screen).findByTestId("workers-count");

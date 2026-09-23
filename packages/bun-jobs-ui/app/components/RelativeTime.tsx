@@ -10,6 +10,13 @@ export interface RelativeTimeProps {
   fallback?: string;
   /** Extra class names. */
   className?: string;
+  /**
+   * A note appended to the `<time>`'s tooltip, on its own line under the
+   * absolute instant — so a caller can explain the instant without taking
+   * the tooltip away from it. Absent leaves the tooltip the instant alone,
+   * and it is ignored for a missing value (there is no `<time>` then).
+   */
+  hint?: string;
 }
 
 /**
@@ -21,6 +28,7 @@ export function RelativeTime({
   value,
   fallback = "—",
   className,
+  hint,
 }: RelativeTimeProps) {
   const ms = toEpochMs(value);
   if (ms === null) {
@@ -30,6 +38,7 @@ export function RelativeTime({
     <TickingTime
       ms={ms}
       className={className}
+      hint={hint}
     />
   );
 }
@@ -40,17 +49,19 @@ interface TickingTimeProps {
   ms: number;
   /** Extra class names. */
   className?: string;
+  /** A note under the instant in the tooltip. See {@link RelativeTimeProps.hint}. */
+  hint?: string;
 }
 
 /** The subscribed part, so a missing value never joins the clock. */
-function TickingTime({ ms, className }: TickingTimeProps) {
+function TickingTime({ ms, className, hint }: TickingTimeProps) {
   const now = useNow();
   const iso = new Date(ms).toISOString();
   return (
     <time
       className={cx("relative-time", className)}
       dateTime={iso}
-      title={iso}
+      title={hint === undefined ? iso : `${iso}\n${hint}`}
     >
       {formatRelativeTime(ms, now)}
     </time>
