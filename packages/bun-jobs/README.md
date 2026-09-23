@@ -2255,8 +2255,23 @@ is finished. Progress writes are ordered against one another, because a job has
 one progress value; log lines are not, because each is appended with its own
 sequence and chaining them would cost a chatty processor a round trip a line.
 The price is that a slow write delays the ending by whatever is left of it, and
-that what a child sends once its attempt is over is dropped rather than written
-over the finished job's own.
+that what a processor sends once its attempt is over is dropped rather than
+written over the finished job's own.
+
+**A progress value reported after the worker gave up on the attempt is dropped
+— in every mode, and silently.** An overrun `opts.timeout` aborts the attempt,
+and a value reported after that is not merely written late: it is not written
+at all, and no `progress` event fires for it, because the event is emitted by
+the write. Before this ordering existed such a value could still surface, on
+top of a job that had already failed.
+
+That matters for one combination in particular: **a tight deadline and a wait
+for a progress event** — a caller or a test waiting for the pid an isolated
+child reports, say. If the spawn is slower than the deadline, the value is
+dropped and the wait never ends. Give such a job a deadline it can comfortably
+beat; a processor that hangs still overruns it. Log lines are not dropped this
+way — each is appended with its own sequence, so one written late is still the
+line.
 
 **The wait is always capped**, because a driver that hangs rather than
 rejects would otherwise hold a worker's concurrency slot for good — the ending
