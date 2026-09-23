@@ -33,6 +33,12 @@
  *   first record.
  * - Both are optional, and a record that lacks them (an older worker's) leaves
  *   them **out**: absent, never `0`.
+ * - **`sweeps` is the housekeeping half of a worker's `maintenance` option and
+ *   only that half** — whether it runs the minute pass that prunes expired
+ *   results, heals repeat series and sweeps stale queue state. It says nothing
+ *   about liveness. It has three states, not two: `true`, `false`, and absent
+ *   on a worker too old to say — so it takes the same `Object.hasOwn` care as
+ *   the two samples, and absent is never `false`.
  */
 import type {
   JobsDriver,
@@ -434,6 +440,16 @@ check(
     listed.heartbeatAt <= Date.now(),
   listed,
 );
+// `sweeps` is what the worker's `maintenance` option settled on, read off the
+// worker rather than off the option, so a record cannot claim what the worker
+// does not do. This one took the default, so it does the queue's housekeeping —
+// and says so with the field *present*, which is the half of the answer a
+// reader must not get from falsiness.
+check(
+  "sweeps: a default worker reports it present and true",
+  !!listed && Object.hasOwn(listed, "sweeps") && listed.sweeps === true,
+  { sweeps: listed?.sweeps, keys: Object.keys(listed ?? {}).sort() },
+);
 checkEqual(
   "expiresAt is three report intervals past the heartbeat",
   listed!.expiresAt - listed!.heartbeatAt,
@@ -755,6 +771,110 @@ checkEqual(
   fleetRss(await olderQueue.listWorkers()),
   0,
 );
+
+/* ------------------------------------------------------------------ */
+step("sweeps: false is an answer, absent is not");
+
+// The same care as the two samples above, for a different reason: `sweeps` has
+// three states and a reader that treats it as two gets the wrong one. `false`
+// is a worker saying it deliberately does not do the queue's housekeeping;
+// absent is a worker too old to have the field, which has said nothing at all.
+//
+// A queue counts as having no sweeper only when at least one live worker
+// reports `false` and none reports `true`. A queue whose live workers all omit
+// the field has said nothing — warning about it would make every fleet that has
+// not upgraded read as broken. Even then it is "may be nobody": a worker too
+// old to say may be sweeping unseen.
+
+/**
+ * What a reader may honestly say about a queue's housekeeping, from its live
+ * workers' records — the rule above, as code.
+ *
+ * `"unknown"` is the case worth the care: it is what a fleet of older workers
+ * looks like, and `!info.sweeps` would report it as `"may-be-nobody"`.
+ */
+function sweeperVerdict(
+  workers: WorkerInfo[],
+): "swept" | "may-be-nobody" | "unknown" {
+  if (workers.some((info) => info.sweeps === true)) {
+    return "swept";
+  }
+
+  return workers.some((info) => info.sweeps === false)
+    ? "may-be-nobody"
+    : "unknown";
+}
+
+const sweepsQueue = new BunQueue("sweeps", { namespace, driver });
+const optedOut = new BunQueueWorker("sweeps", async () => undefined, {
+  namespace,
+  driver,
+  id: "opted-out",
+  // The one thing this turns off is the housekeeping the record reports.
+  maintenance: false,
+  reportInterval: 150,
+  pollInterval: 25,
+});
+void optedOut.run();
+
+const optedOutRecord = await recordWhen(
+  sweepsQueue,
+  "opted-out",
+  "the opted-out worker's record",
+  () => true,
+);
+checkEqual(
+  "a worker that opted out of housekeeping reports sweeps present and false",
+  [Object.hasOwn(optedOutRecord, "sweeps"), optedOutRecord.sweeps],
+  [true, false],
+);
+
+// Beside it, what a worker from before the field wrote: nothing in that slot.
+const unknownAt = Date.now();
+await registerWorkerRecord(driver, sweepsQueue.ref, {
+  id: "too-old-to-say",
+  queue: "sweeps",
+  host: "another-host",
+  pid: 4343,
+  concurrency: 1,
+  active: 0,
+  paused: false,
+  startedAt: unknownAt - 5_000,
+  heartbeatAt: unknownAt,
+  expiresAt: unknownAt + 60_000,
+});
+const olderSweeps = (await sweepsQueue.listWorkers()).find(
+  (info) => info.id === "too-old-to-say",
+);
+checkEqual(
+  "…while an older worker's record reads back absent, not false",
+  [Object.hasOwn(olderSweeps ?? {}, "sweeps"), olderSweeps?.sweeps],
+  [false, undefined],
+);
+
+// The two records together, and the older one on its own: absence alone is
+// never the warning, and one `false` beside it is only ever "may be".
+checkEqual(
+  "the rule: a fleet that has said nothing is 'unknown', not 'no sweeper'",
+  [
+    sweeperVerdict([olderSweeps!]),
+    sweeperVerdict([optedOutRecord]),
+    sweeperVerdict(await sweepsQueue.listWorkers()),
+  ],
+  ["unknown", "may-be-nobody", "may-be-nobody"],
+);
+// And one worker reporting `true` settles it for the whole queue, however many
+// of its siblings opted out or are too old to say.
+checkEqual(
+  "…and one worker reporting true answers for the queue",
+  sweeperVerdict([
+    ...(await sweepsQueue.listWorkers()),
+    { ...optedOutRecord, id: "sweeper", sweeps: true },
+  ]),
+  "swept",
+);
+
+await optedOut.close();
 
 /* ------------------------------------------------------------------ */
 step("completed and failed on the record are per incarnation");
