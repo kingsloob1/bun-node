@@ -179,6 +179,7 @@ export function WorkerScreen() {
                   label={`Instances of ${key}`}
                   showQueue={false}
                   showHost={showHost}
+                  showMemory
                 />
               )}
             </div>

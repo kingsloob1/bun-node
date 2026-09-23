@@ -26,6 +26,8 @@ export function workerFixture(overrides: Partial<WorkerDto> = {}): WorkerDto {
     version: "2.13.0",
     host: "api-1",
     pid: 100,
+    rssBytes: 268_435_456,
+    heartbeatRttMs: 12,
     config: {
       effective: {
         concurrency: 3,

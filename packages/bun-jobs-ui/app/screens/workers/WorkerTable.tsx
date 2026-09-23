@@ -6,7 +6,7 @@ import { isStale, workerPath, workerState } from "../../api/workers";
 import { Badge } from "../../components/Badge";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Table } from "../../components/Table";
-import { formatNumber } from "../../format";
+import { formatBytes, formatNumber } from "../../format";
 import { Link } from "../../router";
 import { WorkerActions } from "./actions";
 import {
@@ -71,6 +71,43 @@ export interface WorkerTableProps {
    * link. Defaults to `false` (the worker page itself lists one key).
    */
   linkKeys?: boolean;
+  /**
+   * Whether to offer the Memory column (the Workers page and a worker page's
+   * Instances table ask for it; a queue's Workers panel is a narrow control
+   * surface and does not). Asking for it is not enough: like the counters, the
+   * column exists only when some worker here reports `rssBytes`. Defaults to
+   * `false`.
+   */
+  showMemory?: boolean;
+}
+
+/**
+ * The Memory column's header tooltip. It says the two things a reader can
+ * only get wrong once: whose memory it is, and that the figures do not add up
+ * to a host's.
+ */
+const MEMORY_HINT =
+  "Resident memory of the process this worker runs in, at its last report — not the worker's own. Workers sharing a pid repeat the same figure, so do not add these up; to size a host, take one row per pid.";
+
+/** One shared formatter for a heartbeat round trip: a sub-millisecond sample keeps its decimal. */
+const rttFormat = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 1,
+});
+
+/**
+ * The tooltip for a worker's Heartbeat cell, or `undefined` when it reports
+ * no round trip (an older worker, and every worker's first report).
+ *
+ * It is the *previous* write's sample — a write cannot time itself — and it
+ * measures the driver round trip, so it is worded to be mistaken for neither
+ * an average nor a network ping.
+ */
+function heartbeatHint(worker: WorkerDto): string | undefined {
+  const rtt = worker.heartbeatRttMs;
+  if (rtt === undefined) {
+    return undefined;
+  }
+  return `Last write took ${rttFormat.format(rtt)} ms (the previous report's round trip to the driver, not a network ping).`;
 }
 
 /** A worker's state, plus a note when its record has lapsed. */
@@ -134,8 +171,39 @@ function CounterCell({
 }
 
 /**
+ * The memory of the process a worker runs in, or a muted dash when it reports
+ * none.
+ *
+ * **Absent is not zero**, as in {@link CounterCell}: a worker older than the
+ * field reports nothing, and `0 B` would claim an empty process. The figure is
+ * the *process's* — every worker in one process repeats it — which the column
+ * header says.
+ */
+function MemoryCell({
+  value,
+}: {
+  /** `WorkerDto.rssBytes`: absent on a worker that does not report it. */
+  value: number | undefined;
+}) {
+  return (
+    <td className="num">
+      {value === undefined ? (
+        <span
+          className="muted"
+          title="This worker does not report its process memory (it predates it)."
+        >
+          —
+        </span>
+      ) : (
+        formatBytes(value)
+      )}
+    </td>
+  );
+}
+
+/**
  * Live workers: id, queue, state, load, what this incarnation completed and
- * failed, the times it reported, and its actions.
+ * failed, its process's memory, the times it reported, and its actions.
  */
 export function WorkerTable({
   workers,
@@ -144,8 +212,14 @@ export function WorkerTable({
   linkQueues = false,
   showHost = false,
   linkKeys = false,
+  showMemory: offerMemory = false,
 }: WorkerTableProps) {
   const canMutate = useCanControlWorkers();
+  // Asked for, and reported by somebody: the figure rides the heartbeat, so it
+  // costs no read, but a table of workers that predate it would be a column of
+  // dashes.
+  const showMemory =
+    offerMemory && workers.some((worker) => worker.rssBytes !== undefined);
   // The counters ride the heartbeat, so they cost no read; the columns exist
   // only when some worker here reports them, and an older worker that does
   // not shows a dash rather than a zero it never claimed.
@@ -206,6 +280,15 @@ export function WorkerTable({
               Failed
             </th>
           )}
+          {showMemory && (
+            <th
+              scope="col"
+              className="num"
+              title={MEMORY_HINT}
+            >
+              Memory
+            </th>
+          )}
           <th scope="col">Started</th>
           <th scope="col">Heartbeat</th>
           {showActions && <th scope="col">Actions</th>}
@@ -250,11 +333,15 @@ export function WorkerTable({
             </td>
             {showCounts && <CounterCell value={worker.completed} />}
             {showCounts && <CounterCell value={worker.failed} />}
+            {showMemory && <MemoryCell value={worker.rssBytes} />}
             <td>
               <RelativeTime value={worker.startedAt} />
             </td>
             <td>
-              <RelativeTime value={worker.heartbeatAt} />
+              <RelativeTime
+                value={worker.heartbeatAt}
+                hint={heartbeatHint(worker)}
+              />
             </td>
             {showActions && (
               <td>

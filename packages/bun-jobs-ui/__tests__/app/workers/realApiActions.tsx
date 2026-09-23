@@ -30,6 +30,8 @@ export interface WorkerRowDriver {
   awaitState: (label: string) => Promise<void>;
   /** Whether the row offers a button with this accessible name right now. */
   offers: (name: string) => boolean;
+  /** The Memory cell's text (`"256.0 MiB"`, or `"—"` when the worker reports none), or `""` while the row or the column is absent. */
+  memory: () => string;
   /** Resolves once the row offers a button with this name. */
   awaitButton: (name: string) => Promise<void>;
   /** The hint saying why no lifecycle action is offered (`worker-blocked-<id>`), or `null` when the row shows none. */
@@ -125,6 +127,22 @@ export async function mountWorkerRow(
   const state = (): string =>
     rowNow()?.querySelectorAll("td")[0]?.textContent?.trim() ?? "";
 
+  /** The Memory cell of the row, found by its column header rather than a fixed index. */
+  const memory = (): string => {
+    const here = rowNow();
+    const table = here?.closest("table");
+    if (!here || !table) {
+      return "";
+    }
+    const headers = [...table.querySelectorAll("thead th")];
+    const column = headers.findIndex(
+      (cell) => cell.textContent?.trim() === "Memory",
+    );
+    return column === -1
+      ? ""
+      : (here.children[column]?.textContent?.trim() ?? "");
+  };
+
   const offers = (name: string): boolean => {
     const here = rowNow();
     return here === null
@@ -205,6 +223,7 @@ export async function mountWorkerRow(
       );
     },
     offers,
+    memory,
     awaitButton,
     blockedHint: () => {
       const hint = rowNow()?.querySelector(

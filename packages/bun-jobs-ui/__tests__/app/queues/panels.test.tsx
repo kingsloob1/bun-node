@@ -276,6 +276,27 @@ describe("the other panels", () => {
     );
   });
 
+  it("keeps the Memory column out of the panel, though the worker reports it", async () => {
+    renderQueue();
+    fireEvent.click(
+      within(await panelTabs()).getByRole("tab", { name: "Workers" }),
+    );
+    const row = await page().findByTestId("worker-row-w-1");
+    const table = row.closest("table")!;
+    // The panel is a narrow control surface: it does not ask for the column,
+    // so the reported `rssBytes` is simply not shown here.
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).not.toContain("Memory");
+    expect(table.textContent).not.toContain("MiB");
+    // The heartbeat's round trip is a tooltip, not a column, so it is here.
+    expect(row.querySelectorAll("time")[1]!.getAttribute("title")).toContain(
+      "Last write took 12 ms",
+    );
+  });
+
   it("charts throughput with a window select and an accessible table", async () => {
     const { calls } = renderQueue({
       path: "/queues/emails?panel=throughput",

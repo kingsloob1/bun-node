@@ -158,6 +158,69 @@ describe("the worker page", () => {
     ).toBeNull();
   });
 
+  it("gives the Instances table a Memory column, one figure per process, and a dash where none is reported", async () => {
+    open({
+      items: [
+        workerFixture({ id: "api.emails.a1", host: "api-1", pid: 100 }),
+        // A second worker in the SAME process: the same figure, never doubled.
+        workerFixture({ id: "api.emails.a2", host: "api-1", pid: 100 }),
+        // Predates the field.
+        workerFixture({
+          id: "api.emails.b2",
+          host: "api-2",
+          pid: 200,
+          rssBytes: undefined,
+        }),
+      ],
+    });
+    const instances = await page().findByTestId("worker-instances");
+    const row = await within(instances).findByTestId(
+      "worker-row-api.emails.a1",
+    );
+    const table = row.closest("table")!;
+    const headers = within(table).getAllByRole("columnheader");
+    const memory = headers.findIndex((cell) => cell.textContent === "Memory");
+    expect(memory).toBeGreaterThan(-1);
+    expect(headers[memory]!.getAttribute("title")).toContain(
+      "do not add these up",
+    );
+    const cellAt = (id: string) => {
+      const cells = within(instances).getByTestId(`worker-row-${id}`).children;
+      return cells[memory]?.textContent;
+    };
+    expect(cellAt("api.emails.a1")).toBe("256.0 MiB");
+    expect(cellAt("api.emails.a2")).toBe("256.0 MiB");
+    expect(cellAt("api.emails.b2")).toBe("—");
+    expect(table.querySelector("tfoot")).toBeNull();
+    expect(instances.textContent).not.toContain("512.0 MiB");
+  });
+
+  it("explains the heartbeat's round trip in its tooltip, and only where one is reported", async () => {
+    open({
+      items: [
+        workerFixture({ id: "api.emails.a1" }),
+        workerFixture({ id: "api.emails.b2", heartbeatRttMs: undefined }),
+      ],
+    });
+    const instances = await page().findByTestId("worker-instances");
+    await within(instances).findByTestId("worker-row-api.emails.a1");
+    const heartbeatTitle = (id: string) =>
+      within(instances)
+        .getByTestId(`worker-row-${id}`)
+        .querySelectorAll("time")[1]!
+        .getAttribute("title") ?? "";
+    expect(heartbeatTitle("api.emails.a1")).toContain(
+      "Last write took 12 ms (the previous report's round trip to the driver, not a network ping).",
+    );
+    expect(heartbeatTitle("api.emails.b2")).not.toContain("Last write took");
+    // The Memory column is a column; the round trip is not.
+    expect(
+      within(instances)
+        .getAllByRole("columnheader")
+        .map((cell) => cell.textContent),
+    ).not.toContain("Heartbeat round trip");
+  });
+
   it("shows every setting: what it runs with, what the code asks for, and which are overridden", async () => {
     open();
     const config = await page().findByTestId("worker-config");

@@ -16,6 +16,9 @@ export interface WorkersHarnessProps {
  * {@link WorkerTable}, which mounts a row's `WorkerActions`. The read sits
  * under `workerKeys.all`, so every worker write's invalidation refreshes it,
  * exactly as it does on the Workers screen.
+ *
+ * It asks for the Memory column, as the Workers screen does, so the real-API
+ * test can read what a live worker reports for it.
  */
 export function WorkersHarness({ queue, pollMs }: WorkersHarnessProps) {
   const api = useApiClient();
@@ -33,6 +36,7 @@ export function WorkersHarness({ queue, pollMs }: WorkersHarnessProps) {
         workers={query.data.items.filter((worker) => worker.queue === queue)}
         label={`Workers of ${queue}`}
         showQueue={false}
+        showMemory
       />
     </div>
   );

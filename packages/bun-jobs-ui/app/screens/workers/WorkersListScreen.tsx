@@ -71,6 +71,7 @@ function ServerSection({
         label={`Workers on ${title}`}
         linkQueues={linkQueues}
         linkKeys={linkKeys}
+        showMemory
       />
     </section>
   );
