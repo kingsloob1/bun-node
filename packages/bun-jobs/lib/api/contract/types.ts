@@ -1773,6 +1773,27 @@ export interface WorkerDto {
   completed?: number;
   /** Attempts this incarnation has failed since it started, as of its last report. Absent on an older worker. */
   failed?: number;
+  /**
+   * Resident set size in bytes at its last report
+   * (`process.memoryUsage.rss()`).
+   *
+   * **The memory of the process, not of the worker.** Two workers in one
+   * process report the same number, so **never sum it across rows** — to size
+   * a host, take one row per `pid` (with `host`) and add those. Absent on an
+   * older worker.
+   */
+  rssBytes?: number;
+  /**
+   * How long this worker's own heartbeat record write took, in milliseconds:
+   * the round trip to the driver, **not** a network ping — the driver's work
+   * and whatever was queued in front of it.
+   *
+   * **The last sample, not an average**: a write cannot time itself, so this
+   * is the previous report's round trip, and one slow figure may be a single
+   * stalled write rather than a trend. Absent on a worker's first report and
+   * on an older worker.
+   */
+  heartbeatRttMs?: number;
   /** Its settings. Absent on an older worker, and when the backend keeps no config. */
   config?: WorkerConfigDto;
   /** Its control state. Absent on a worker that predates remote control — treat that as not controllable. */
