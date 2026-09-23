@@ -130,6 +130,21 @@ const FLOW_HEAL_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
 const MAINTENANCE_BATCH = 100;
 
 /**
+ * How long a timed-out job's failure record waits for the progress writes its
+ * isolated processor already asked for.
+ *
+ * Enough for a driver write that is merely slow — a progress write is one
+ * statement or one command, single-digit milliseconds even on a loaded
+ * database, so this is two orders of magnitude of headroom — and small next to
+ * everything it could delay: a hundredth of the default `lockDuration`, and a
+ * thirtieth of the budget `#persist` gives the failure write itself, so the
+ * failure still lands far inside the lock it is written under. Past it the
+ * failure is recorded regardless: a driver that is not answering must not keep
+ * a dead job `active` until the stalled sweep takes it.
+ */
+const PROGRESS_SETTLE_TIMEOUT = 250;
+
+/**
  * The most batches of expired jobs one prune pass removes, back to back, while
  * each comes back full. With {@link MAINTENANCE_BATCH} that is 5,000 jobs: one
  * batch a minute capped the whole sweep at 100 jobs a minute, so a queue
@@ -2094,6 +2109,9 @@ export class BunQueueWorker<
     this.safeEmitScoped("active", record.name, job);
     void this.#publish("active", { id: record.id });
 
+    /** Whether the attempt ended because it outlived `opts.timeout`. */
+    let timedOut = false;
+
     try {
       const running = this.#isolated
         ? this.#isolated.run(
@@ -2113,7 +2131,10 @@ export class BunQueueWorker<
         record.opts.timeout > 0
           ? await withTimeout(running, record.opts.timeout, {
               message: `Job ${record.id} exceeded its ${record.opts.timeout}ms timeout`,
-              onTimeout: () => controller.abort(),
+              onTimeout: () => {
+                timedOut = true;
+                controller.abort();
+              },
             })
           : await running;
       attemptOver = true;
@@ -2138,6 +2159,15 @@ export class BunQueueWorker<
       this.#settle(job, record, result as TResult);
     } catch (error) {
       attemptOver = true;
+      // A timeout rejects without waiting for the run — the point of a
+      // deadline is not to wait — so the barrier an isolated attempt keeps in
+      // its own `finally`, where the progress it was handed is written, never
+      // runs. Wait for those writes alone here, and briefly, before recording
+      // the failure: the run stays abandoned, and the values the processor
+      // reported still land before the record that says how the job ended.
+      if (timedOut) {
+        await this.#settleIsolatedProgress(record);
+      }
       // A reason given to `job.fail()` wins over whatever was thrown after it
       // — very often the processor's own way of stopping once it had failed.
       await this.#recordFailure(job, record, failedWith ?? error);
@@ -2150,6 +2180,41 @@ export class BunQueueWorker<
       if (this.#reservedIds.delete(record.id)) {
         this.#limiter?.release(record.name);
       }
+    }
+  }
+
+  /**
+   * Waits for the progress an isolated processor asked for before its job's
+   * deadline passed, so those writes land before the failure record.
+   *
+   * Only the writes — never the run, which is abandoned precisely because it
+   * overran, and whose child may be wedged. The wait is bounded so a driver
+   * that is not answering cannot hold a failure record hostage: when
+   * `PROGRESS_SETTLE_TIMEOUT` elapses the failure is recorded anyway, and a
+   * write still in flight may land after it, exactly as it did before. The
+   * attempt is marked over either way, so nothing further joins the chain.
+   */
+  async #settleIsolatedProgress(
+    /** The job whose attempt overran its deadline. */
+    record: JobRecord,
+  ): Promise<void> {
+    if (!this.#isolated) {
+      return;
+    }
+
+    try {
+      await withTimeout(
+        this.#isolated.settleProgress(record.id),
+        PROGRESS_SETTLE_TIMEOUT,
+        {
+          message: `Job ${record.id}'s progress writes did not land within ${PROGRESS_SETTLE_TIMEOUT}ms of its timeout`,
+        },
+      );
+    } catch (error) {
+      this.#logger.debug(
+        "Recording a timed-out job's failure without waiting for its last progress write",
+        { jobId: record.id, error },
+      );
     }
   }
 
