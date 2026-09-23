@@ -34,11 +34,15 @@
  * - Both are optional, and a record that lacks them (an older worker's) leaves
  *   them **out**: absent, never `0`.
  * - **`sweeps` is the housekeeping half of a worker's `maintenance` option and
- *   only that half** — whether it runs the minute pass that prunes expired
- *   results, heals repeat series and sweeps stale queue state. It says nothing
- *   about liveness. It has three states, not two: `true`, `false`, and absent
- *   on a worker too old to say — so it takes the same `Object.hasOwn` care as
- *   the two samples, and absent is never `false`.
+ *   only that half** — whether it *takes part in* the minute pass that prunes
+ *   expired results, heals repeat series and sweeps stale queue state. Taking
+ *   part is not performing it: the field says nothing about *which* worker
+ *   swept on a given pass, so `true` never means this one did the work. A
+ *   reader who needs to know who swept cannot learn it here, whatever the
+ *   fleet does. It says nothing about liveness. It has three states, not
+ *   two: `true`, `false`, and absent on a worker too old to say — so it takes
+ *   the same `Object.hasOwn` care as the two samples, and absent is never
+ *   `false`.
  */
 import type {
   JobsDriver,
@@ -442,9 +446,10 @@ check(
 );
 // `sweeps` is what the worker's `maintenance` option settled on, read off the
 // worker rather than off the option, so a record cannot claim what the worker
-// does not do. This one took the default, so it does the queue's housekeeping —
-// and says so with the field *present*, which is the half of the answer a
-// reader must not get from falsiness.
+// does not do. This one took the default, so it takes part in the queue's
+// housekeeping — which is not the same as having done a pass: the field says
+// who is willing, never who swept. It says so with the field *present*, which
+// is the half of the answer a reader must not get from falsiness.
 check(
   "sweeps: a default worker reports it present and true",
   !!listed && Object.hasOwn(listed, "sweeps") && listed.sweeps === true,
@@ -777,8 +782,9 @@ step("sweeps: false is an answer, absent is not");
 
 // The same care as the two samples above, for a different reason: `sweeps` has
 // three states and a reader that treats it as two gets the wrong one. `false`
-// is a worker saying it deliberately does not do the queue's housekeeping;
-// absent is a worker too old to have the field, which has said nothing at all.
+// is a worker saying it deliberately takes no part in the queue's
+// housekeeping; absent is a worker too old to have the field, which has said
+// nothing at all.
 //
 // A queue counts as having no sweeper only when at least one live worker
 // reports `false` and none reports `true`. A queue whose live workers all omit
