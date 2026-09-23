@@ -1089,8 +1089,8 @@ with a job answer `this` type, or `null`: a job narrowed by a
 | `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. `progress` is a `RunProgress` (a number or a record), or `null`. Errors are rehydrated as `Error`s. |
 | `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. `workerId` is the worker holding the job right now: set while `active`, `null` once the attempt settles. |
 | `processedBy` | The worker that claimed the current or last attempt, as `{ id, key?, host?, pid? }`. It is kept after the job settles, and it is `null` for a job never claimed. See [Who ran a job](#who-ran-a-job-worker-attribution). |
-| `updateProgress(value)` | Records a number or an object, and emits `progress`. In an isolated processor the value is sent to the worker, which writes it before it records how the job ended — see [Isolated processors](#isolated-processors). |
-| `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. |
+| `updateProgress(value)` | Records a number or an object, and emits `progress`. Inside a processor the value is written before the worker records how the job ended, whichever way it ended — see [Isolated processors](#isolated-processors). |
+| `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. A line a processor logged is stored before the worker records how the job ended, as its progress is. |
 | `clearLogs()` | Empties the log, as `queue.clearJobLogs(id)` does. Refused while the job is active. See [Clearing a job's log](#clearing-a-jobs-log). |
 | `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
 | `setPriority(n)` | Changes the priority. A waiting job moves in claim order. |
@@ -2306,31 +2306,61 @@ object with every public member of `Job`.
 **Progress is sent, not asked for.** `job.updateProgress()` in a child does
 not wait for a reply, so reporting progress costs no round trip however often
 a processor does it. Awaiting it means the worker has the value and will write
-it — in the order the processor reported it, and before it records how the job
-ended — not that the driver has it already. That ordering is what the `await`
-buys: the worker holds the attempt open until every progress write it was
-handed has landed, so a reader that waits for `state === "completed"` never
-reads the value the job had before its last update. The price is that a slow
-progress write delays the completion by whatever is left of it, and that a
-value a child sends after its processor has settled is dropped rather than
+it — in the order the processor reported it — not that the driver has it
+already.
+
+**What a job wrote lands before the record of how it ended.** Its progress and
+its log lines, in every isolation mode and on every ending: a completion, a
+`job.fail()`, a thrown error, an overrun `opts.timeout`. An attempt keeps a
+record of the writes it has asked for, and the worker settles that record
+before it writes the job's ending — so a reader that waits for
+`state === "completed"` never reads the value the job had before its last
+update, and a line a processor logged is in the log by the time the job says it
+is finished. Progress writes are ordered against one another, because a job has
+one progress value; log lines are not, because each is appended with its own
+sequence and chaining them would cost a chatty processor a round trip a line.
+The price is that a slow write delays the ending by whatever is left of it, and
+that what a processor sends once its attempt is over is dropped rather than
 written over the finished job's own.
 
-**A job that overruns `opts.timeout` keeps that ordering.** Its *run* is
-abandoned — not waiting for it is what a deadline is for, and the child may be
-wedged — but the progress it already handed over is not: the worker waits for
-those writes, and only those, before it records the failure, and drops
-whatever the child sends while it is being stopped. That wait is capped at
-250ms, so a driver that has stopped answering cannot keep a dead job `active`;
-past the cap the failure is recorded anyway and a write still in flight may
-land after it.
+**A progress value reported after the worker gave up on the attempt is dropped
+— in every mode, and silently.** An overrun `opts.timeout` aborts the attempt,
+and a value reported after that is not merely written late: it is not written
+at all, and no `progress` event fires for it, because the event is emitted by
+the write. Before this ordering existed such a value could still surface, on
+top of a job that had already failed.
+
+That matters for one combination in particular: **a tight deadline and a wait
+for a progress event** — a caller or a test waiting for the pid an isolated
+child reports, say. If the spawn is slower than the deadline, the value is
+dropped and the wait never ends. Give such a job a deadline it can comfortably
+beat; a processor that hangs still overruns it. Log lines are not dropped this
+way — each is appended with its own sequence, so one written late is still the
+line.
+
+**The wait is always capped**, because a driver that hangs rather than
+rejects would otherwise hold a worker's concurrency slot for good — the ending
+write is not awaited, so before this ordering existed a write that never
+answered cost the job nothing, and it must not start costing a slot now. Past
+the cap the ending is recorded anyway and a write still in flight may land
+after it. There are two caps, because the two endings are not in the same
+situation:
+
+- An attempt that **reached its own end** gets a quarter of `lockDuration` —
+  7.5 seconds at the default, and the same budget the ending write itself is
+  given. Past the lock the job is the stalled sweep's to recover, so waiting
+  longer buys nothing.
+- An attempt the worker **gave up on** — a deadline, a lost lock, a closing
+  worker — gets a flat 250ms. Its *run* is abandoned: not waiting for it is
+  what a deadline is for, and the child may be wedged. The writes it already
+  handed over are still written, but a job that is already dying must not sit
+  `active` for seconds waiting on writes nothing will read.
 
 Every other job-channel call — `job.log`, `job.extendLock`/`touch`,
 `job.getChildrenValues`, `job.getChildrenFailures` and `ctx.heartbeat` — is a
-real round trip, and answers only once the worker's own write has returned.
-Ordering the *last* of those against a job's own ending is the attempt's to
-keep: a child that awaited its `job.log` line has it in the store, but a line
-still in flight when the deadline passes can still land after the failure
-record.
+real round trip, and answers only once the worker's own write has returned;
+`job.log` answers with the line count. A child that does not wait for its line
+is covered by the ordering above rather than by its own reply.
 
 A reply on the job channel that is malformed rejects with a `ProtocolError`.
 Errors thrown in a child are rebuilt by name, so `UnrecoverableJobError` still

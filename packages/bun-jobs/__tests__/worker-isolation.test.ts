@@ -505,7 +505,13 @@ describe("isolation: what only isolation can do", () => {
       pid = (value as { pid?: number }).pid ?? pid;
     });
 
-    const job = await queue.add("hang", {}, { timeout: 300, attempts: 1 });
+    // Long enough that the child certainly reports its pid before the deadline
+    // passes, and no less a timeout for it: the fixture hangs for ever, so the
+    // job still overruns and the child is still killed. At 300ms a loaded
+    // machine could spawn slower than that, and a progress update arriving
+    // after the abort is dropped by design — leaving this test waiting 20s for
+    // an event that was never going to come.
+    const job = await queue.add("hang", {}, { timeout: 2_000, attempts: 1 });
 
     await waitFor(() => pid !== undefined, { timeout: 20_000 });
     await waitFor(async () => (await queue.getJob(job.id))?.state === "dead", {

@@ -11,6 +11,7 @@ import type {
   ResolvedJobOptions,
 } from "../drivers/index";
 import type { RunProgress } from "../shared/progress";
+import type { AttemptWrites } from "./attemptWrites";
 import { deserializeError, serializeError } from "@kingsleyweb/bun-common";
 import { DEFAULT_KEEP_LOGS, DEFAULT_LOCK_DURATION } from "../shared/constants";
 import {
@@ -89,6 +90,16 @@ export interface JobHooks {
    * what its own method of the same name would.
    */
   onEvent?: (event: JobEvent) => Promise<void>;
+  /**
+   * The writes this job's attempt has in flight, which the worker settles
+   * before it records how the job ended. Present only on the view a worker
+   * hands its processor: `updateProgress` and `log` join it there, so what a
+   * processor reported is in the store before the completion or failure
+   * record, whether it ran in the worker's own thread, in a `Worker` or in a
+   * child process. Every other view writes straight through — there is no
+   * attempt to order those against.
+   */
+  writes?: AttemptWrites;
 }
 
 /** What {@link Job.update} changes. Anything left out stays as it is. */
@@ -252,12 +263,28 @@ export class Job<TData = unknown, TResult = unknown> {
     return this.#hooks.onFail !== undefined;
   }
 
-  /** Records a progress value for observers to read. */
+  /**
+   * Records a progress value for observers to read.
+   *
+   * On a processor's own view of its job the write is ordered against the
+   * others that attempt made and against the record of how the job ended, and
+   * a value reported once the attempt is over does nothing — see
+   * {@link AttemptWrites}.
+   */
   async updateProgress(value: RunProgress): Promise<void> {
-    await this.#driver.updateProgress(this.#ref, this.id, value);
-    // Told after the write, not before: an observer should not be shown
-    // progress that failed to persist.
-    this.#hooks.onProgress?.(value);
+    const write = async (): Promise<void> => {
+      await this.#driver.updateProgress(this.#ref, this.id, value);
+      // Told after the write, not before: an observer should not be shown
+      // progress that failed to persist.
+      this.#hooks.onProgress?.(value);
+    };
+
+    // Inside a processor's attempt this joins the attempt's ordered lane: a
+    // job has one progress value, so the last one reported must be the one
+    // that lands, and the worker waits for the lane before it records how the
+    // job ended. A value reported after the attempt is over is dropped — the
+    // job's ending is already being written, and this would land on top of it.
+    await (this.#hooks.writes?.chain(write) ?? write());
   }
 
   /**
@@ -533,13 +560,19 @@ export class Job<TData = unknown, TResult = unknown> {
    */
   async log(line: string): Promise<number> {
     const driver = this.#require("addJobLog", "log()");
+    const write = async (): Promise<number> =>
+      await driver.addJobLog!(
+        this.#ref,
+        this.id,
+        String(line),
+        this.opts.keepLogs ?? DEFAULT_KEEP_LOGS,
+      );
 
-    return await driver.addJobLog!(
-      this.#ref,
-      this.id,
-      String(line),
-      this.opts.keepLogs ?? DEFAULT_KEEP_LOGS,
-    );
+    // Counted by the attempt, not chained behind its other writes: a line is
+    // appended with its own sequence, so nothing is lost by writing several at
+    // once, and chaining would cost a chatty processor one driver round trip
+    // per line. The worker still waits for all of them before the job's ending.
+    return await (this.#hooks.writes?.track(write) ?? write());
   }
 
   /** A page of the job's log, oldest first unless asked otherwise. */
