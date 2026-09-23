@@ -214,6 +214,50 @@ describe("reading one worker", () => {
     expect(res.body.control).toEqual(worker.control);
   });
 
+  it("surfaces rssBytes and heartbeatRttMs, and omits them on a record without them", async () => {
+    const jobs = jobsContext("api-workers-samples");
+    const h = harness({ jobs });
+    await putWorker(jobs, {
+      id: "mail.sampled",
+      rssBytes: 123_456_789,
+      heartbeatRttMs: 2.5,
+    });
+    // `workerRecord` drops a field given as `undefined`, so this is a record
+    // from a worker that reports neither.
+    await putWorker(jobs, {
+      id: "mail.older",
+      rssBytes: undefined,
+      heartbeatRttMs: undefined,
+    });
+
+    const sampled = await h.call("GET", "/queues/mail/workers/mail.sampled");
+    expect(sampled.status).toBe(200);
+    // Whole bytes and fractional milliseconds both survive the round trip,
+    // and `validateResponses` checks them against `WorkerSchema` on the way.
+    expect({
+      rssBytes: sampled.body.rssBytes,
+      heartbeatRttMs: sampled.body.heartbeatRttMs,
+    }).toEqual({ rssBytes: 123_456_789, heartbeatRttMs: 2.5 });
+
+    // Absent, never `0`: an older worker reports nothing, which is a different
+    // answer from a process using no memory or a write that took no time.
+    const older = await h.call("GET", "/queues/mail/workers/mail.older");
+    expect(older.status).toBe(200);
+    expect("rssBytes" in older.body).toBe(false);
+    expect("heartbeatRttMs" in older.body).toBe(false);
+
+    // And the list says what the reads say.
+    const list = await h.call("GET", "/workers");
+    const byId = new Map(
+      (list.body.items as { id: string }[]).map((item) => [item.id, item]),
+    );
+    expect(byId.get("mail.sampled")).toMatchObject({
+      rssBytes: 123_456_789,
+      heartbeatRttMs: 2.5,
+    });
+    expect("rssBytes" in byId.get("mail.older")!).toBe(false);
+  });
+
   it("is 404 for a worker nothing names, and 410 when an instruction is still stored for it", async () => {
     const jobs = jobsContext("api-workers-gone");
     const h = harness({ jobs });

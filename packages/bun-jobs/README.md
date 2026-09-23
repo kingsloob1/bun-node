@@ -1796,7 +1796,8 @@ listing.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
-paused, started, last heartbeat — when it starts,
+paused, started, last heartbeat, `rssBytes` and `heartbeatRttMs` — when it
+starts,
 every `reportInterval` (10 seconds by default; `0` turns it off), and on pause,
 resume or a concurrency change. **Never per job.** A record lapses three
 intervals after its last write, so a worker that dies drops out of the list
@@ -1811,6 +1812,26 @@ behind the server cannot expire it.
 `queue.listWorkers()` and `jobs.listWorkers()` behave alike: on a driver with no
 worker registry both keep records in queue state, and on one with neither both
 throw `NotSupportedError`.
+
+**Two samples ride that write**, so neither costs a timer or a driver call of
+its own, and both are **optional**: a record from an older worker, or one whose
+first write has not returned yet, simply has no such field — absent, never `0`.
+
+| Field | What it is |
+|---|---|
+| `rssBytes` | Resident set size in bytes at the last report, from `process.memoryUsage.rss()`. |
+| `heartbeatRttMs` | How long the heartbeat write took, in milliseconds. |
+
+- **`rssBytes` is the *process's* memory, not the worker's.** Two workers
+  running in one process report the same number, and nothing apportions it
+  between them, so **never sum the column**. To size a host, take one row per
+  `pid` (with `host`) and add those.
+- **`heartbeatRttMs` is a driver round trip, not a network ping** — the Redis
+  script, the SQL upsert, the MongoDB replace or the file rename, plus whatever
+  was queued in front of it. It is the **last sample, not an average**: a write
+  cannot time itself, so the record carries the *previous* report's figure, and
+  one slow number is as likely to be a single stalled write as a trend. Only a
+  write that landed updates it; a failed one leaves the last good sample alone.
 
 **Aggregates.** `jobs.getQueueSummaries()` lives on `BunJobs` because it is a
 question about the namespace, which the context owns; a `BunQueue` knows only
@@ -3137,6 +3158,12 @@ a write that happens anyway, so they cost nothing and are written whatever
 record written by an older version; the series that survives restarts is the
 one keyed by `key`.
 
+The record's `rssBytes` and `heartbeatRttMs` ride the same write, but they are
+**not** recorded as analytics: a gauge is a different shape from these
+counters, so there is no memory or round-trip series to read back — only the
+last value each live record carries. See
+[Workers](#reading-a-queue-search-totals-workers-and-throughput).
+
 **Recording never changes a job or a run.** A driver without the analytics
 methods records nothing, and one whose write throws is logged once and
 ignored. A runner, worker or queue that closes writes what it had gathered —
@@ -3648,6 +3675,17 @@ starts, even on a queue created a moment ago: a queue a live worker consumes
 but the cached queue list (`limits.queueCacheMs`) does not have yet is checked
 with a fresh read. Its row then refreshes every `reportInterval` (10 s by
 default). A first start is announced as a `state` event with no `previous`.
+
+Each row is the worker's record plus the `stale` flag the server computes, so
+`rssBytes` and `heartbeatRttMs` are on it as well — both optional, and absent
+rather than `0` on a worker that does not report them. **`rssBytes` is the
+memory of the *process*, not of the worker**: two workers in one process report
+the same number, so a table must never sum the column — group by `pid` (with
+`host`, which needs `serialize.exposeHosts`) and add one row per process.
+`heartbeatRttMs` is the worker's own last write to the driver, a round trip and
+not a network ping, so it reads the path the worker depends on; it is the last
+sample, not an average. See
+[Workers](#reading-a-queue-search-totals-workers-and-throughput).
 
 The socket's broad `workers` channel follows queues that appear after it was
 subscribed. A queue this API's own `BunJobs` creates, for instance through a

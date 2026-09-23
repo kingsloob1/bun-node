@@ -344,6 +344,31 @@ export function incarnationTag(
 /** How many report intervals a heartbeat record outlives its last write by. */
 const REPORT_LIFETIMES = 3;
 
+/**
+ * This *process's* resident memory in bytes, for the heartbeat record's
+ * `rssBytes`; `undefined` where the runtime does not report it.
+ *
+ * `process.memoryUsage.rss()` rather than `process.memoryUsage()`: it reads
+ * the one figure instead of gathering the whole heap breakdown. Called once
+ * per report, never per job. It is the process's number, not the worker's, so
+ * two workers sharing a process report the same one.
+ */
+function processRss(): number | undefined {
+  const rss = process.memoryUsage?.rss;
+  if (typeof rss !== "function") {
+    return undefined;
+  }
+
+  try {
+    const bytes = rss();
+    return Number.isFinite(bytes) ? bytes : undefined;
+  } catch {
+    // A runtime that has the function but cannot answer: the record simply
+    // carries no `rssBytes`, which readers already handle.
+    return undefined;
+  }
+}
+
 /** A publish that does nothing: already settled, and shared, so it costs nothing. */
 const SETTLED: Promise<void> = Promise.resolve();
 
@@ -741,6 +766,14 @@ export class BunQueueWorker<
    * and on an unreachable backend, wait — for nothing.
    */
   #reported = false;
+  /**
+   * How long the last heartbeat write took, in milliseconds, for the next
+   * record's `heartbeatRttMs`. `undefined` until one has completed — a write
+   * cannot time itself, so the figure a record carries is the previous
+   * write's. Only a write that landed is kept; a failed one leaves the last
+   * good sample alone rather than reporting the time spent failing.
+   */
+  #reportRttMs: number | undefined;
   /**
    * This worker's analytics: the outcomes it counts under its stable key, the
    * busyness each report samples, and the cumulative counts the heartbeat
@@ -3770,6 +3803,13 @@ export class BunQueueWorker<
 
       const active = this.#active.size;
       const concurrency = this.#concurrency;
+      // Two samples that cost the report no driver call of its own: the
+      // process's resident memory (one reading, once per interval — never per
+      // job), and how long the *previous* write took. A write cannot time
+      // itself, so the record carries the last sample rather than this one.
+      const rssBytes = processRss();
+      const heartbeatRttMs = this.#reportRttMs;
+      const startedWrite = performance.now();
 
       try {
         await registerWorkerRecord(this.driver, this.ref, {
@@ -3790,9 +3830,14 @@ export class BunQueueWorker<
           version: JOBS_VERSION,
           completed: this.#metrics.completed,
           failed: this.#metrics.failed,
+          ...(rssBytes === undefined ? {} : { rssBytes }),
+          ...(heartbeatRttMs === undefined ? {} : { heartbeatRttMs }),
           config: this.config,
           control: this.control,
         });
+        // Only a write that landed: a failure leaves the last good round trip
+        // in place rather than reporting how long the failure took.
+        this.#reportRttMs = performance.now() - startedWrite;
         // The busyness sample rides the heartbeat — this tick, the values the
         // record just carried — so it costs no timer of its own: a second
         // timer would have an idle worker writing forever. Only after a

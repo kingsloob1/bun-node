@@ -1437,6 +1437,35 @@ export interface WorkerInfo {
    */
   failed?: number;
   /**
+   * Resident set size in bytes at its last report, from
+   * `process.memoryUsage.rss()`.
+   *
+   * **The memory of the process, not of the worker.** Two workers running in
+   * one process report the same number, and nothing apportions it between
+   * them — so **never sum it across rows**. To size a host, take one row per
+   * `pid` (with {@link WorkerInfo.host}) and add those.
+   *
+   * Absent on a record from before this existed, and wherever the runtime does
+   * not report it.
+   */
+  rssBytes?: number;
+  /**
+   * How long this worker's own heartbeat record write took, in milliseconds:
+   * the round trip to the driver — a Redis script, a SQL upsert, a MongoDB
+   * replace, a file rename — measured around the write itself.
+   *
+   * **Not a network ping.** It is the driver's work and whatever is queued in
+   * front of it, so it reads the path the worker actually depends on rather
+   * than the link to the backend.
+   *
+   * **The last sample, not an average.** A write cannot time itself, so the
+   * record carries the *previous* report's round trip, and one slow figure is
+   * as likely to be a single stalled write as a trend. Absent on a worker's
+   * first report, on a record from before this existed, and wherever no write
+   * has yet completed.
+   */
+  heartbeatRttMs?: number;
+  /**
    * Its settings: what it runs with, what its own code asked for, and which of
    * them an override replaces. Absent on a worker from before remote
    * configuration existed.

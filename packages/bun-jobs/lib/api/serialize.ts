@@ -832,6 +832,15 @@ export function toWorkerDto(
   if (worker.failed !== undefined) {
     dto.failed = worker.failed;
   }
+  // The same rule for the two heartbeat samples: absent (a worker that does
+  // not report them, or one whose first write has not returned yet) is a
+  // different answer from `0`.
+  if (worker.rssBytes !== undefined) {
+    dto.rssBytes = worker.rssBytes;
+  }
+  if (worker.heartbeatRttMs !== undefined) {
+    dto.heartbeatRttMs = worker.heartbeatRttMs;
+  }
   if (worker.config !== undefined) {
     dto.config = toWorkerConfigDto(worker.config);
   }

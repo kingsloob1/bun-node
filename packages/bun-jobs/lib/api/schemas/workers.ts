@@ -189,6 +189,20 @@ export const WorkerSchema = s.named(
           "Attempts this incarnation has failed since it started, as of its last report. Absent on an older worker.",
       }),
     ),
+    rssBytes: s.optional(
+      s.integer({
+        minimum: 0,
+        description:
+          "Resident set size in bytes at its last report (`process.memoryUsage.rss()`). The memory of the **process**, not of the worker: two workers in one process report the same number, so never sum it across rows — take one row per `pid` (with `host`). Absent on an older worker.",
+      }),
+    ),
+    heartbeatRttMs: s.optional(
+      s.number({
+        minimum: 0,
+        description:
+          "How long this worker's own heartbeat record write took, in milliseconds: the round trip to the driver, not a network ping. The **last sample**, not an average — a write cannot time itself, so it is the previous report's. Absent on a worker's first report and on an older worker.",
+      }),
+    ),
     config: s.optional(WorkerConfigSchema),
     control: s.optional(WorkerControlSchema),
     host: s.optional(
