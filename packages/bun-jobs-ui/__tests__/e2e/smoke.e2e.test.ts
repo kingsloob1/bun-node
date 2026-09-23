@@ -23,6 +23,7 @@ import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { buildAssets, DEFAULT_ENTRY } from "../../lib/assets";
 import { createJobsUi } from "../../lib/jobsUi";
+import { chromeProfile } from "./profile";
 
 /** Where Chrome may be, in search order. */
 const CHROME_CANDIDATES = [
@@ -100,6 +101,8 @@ describe.skipIf(skipReason !== undefined)(
     let app: BunHttpAdapter;
     let origin: string;
     let view: Bun.WebView | undefined;
+    /** The Chrome profile this suite owns, deleted with the view. */
+    let profile: ReturnType<typeof chromeProfile> | undefined;
     const pageConsole: string[] = [];
 
     beforeAll(async () => {
@@ -136,8 +139,12 @@ describe.skipIf(skipReason !== undefined)(
         throw new Error(`the shell answered ${warm.status}`);
       }
 
+      profile = chromeProfile("smoke");
       view = new Bun.WebView({
         backend: { type: "chrome", url: false, path: chromePath },
+        // Chrome always writes a profile; owning the directory is what lets
+        // this suite delete it (see `chromeProfile`).
+        dataStore: profile.dataStore,
         width: 1280,
         height: 800,
         console: (type, ...args) => {
@@ -148,6 +155,7 @@ describe.skipIf(skipReason !== undefined)(
 
     afterAll(async () => {
       view?.close();
+      await profile?.remove();
       await app?.close();
       await api?.close();
       await jobs?.close();
