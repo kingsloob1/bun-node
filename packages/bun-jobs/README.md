@@ -269,14 +269,20 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
 - **When a delayed job runs.** A worker promotes due delayed and retrying
   jobs whenever it runs out of work, and ends its idle wait when the next one
   is due; its promotion sweep also runs every `pollInterval`, at least once a
-  second. Between promotions a worker remembers when the next scheduled job
-  is due, and does not ask again before then. A job this process schedules —
-  added with a delay, rescheduled, or failed into a retry, through any queue,
-  job or worker sharing the driver instance — clears that at once. A job
-  another process (or another driver instance) schedules *earlier* than the
-  remembered time is promoted by the sweep instead: at most one sweep interval
-  (a second by default) after it comes due. The same bound already applied to
-  a delayed job added while a worker was waiting.
+  second, whatever else the worker is doing. Between promotions a worker
+  remembers when the next scheduled job is due, and does not ask the backend
+  again before then. Anything this process schedules — added with a delay,
+  rescheduled, or failed into a retry, through any queue, job or worker
+  sharing the driver instance — clears that memory at once; a job another
+  process (or another driver instance) schedules does not.
+
+  That memory saves reads, not time. Every case is bounded by the same sweep:
+  a job that comes due earlier than the remembered time runs at most one
+  sweep interval (a second by default) late, whoever scheduled it, and the
+  same bound already applied to a delayed job added while a worker was
+  waiting. Measured across the backends, a job scheduled by another instance
+  and due immediately ran 472–512 ms late, and one scheduled through the
+  worker's own instance 7–698 ms late: the same bound either way.
 
 ## Queues and adding jobs
 
