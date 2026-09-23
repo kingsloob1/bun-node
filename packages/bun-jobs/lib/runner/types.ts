@@ -699,7 +699,11 @@ export interface BunRunnerOptions<TArgs = unknown> {
   heartbeatInterval?: number;
   /** What to do when the lock is lost mid-run. Defaults to `"abort"`. */
   onLockLost?: "abort" | "continue";
-  /** How many run records to keep. Defaults to 50. */
+  /**
+   * How many run records to keep. Defaults to 50. Above the management API's
+   * `limits.maxHistory` (200 by default) the extra records are stored but
+   * never served: `GET /runners/:runner/history` caps its `limit` there.
+   */
   keepHistory?: number;
   /** Cap on a stored run result, in bytes. Defaults to 16384. */
   maxResultBytes?: number;

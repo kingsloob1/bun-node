@@ -3092,7 +3092,7 @@ A registry of the runners in one namespace. `jobs.runners` is one.
 | `get(id)` | Returns one registered runner. |
 | `list()` | Returns every registered runner. |
 | `size` | How many runners are registered. |
-| `remove(id, { stop = true })` | Unregisters a runner, stopping it first unless told not to. |
+| `remove(id, { stop = true })` | Drops a runner from this manager, stopping it first unless told not to. The backend keeps its record — see below. |
 | `startAll()` | Starts every registered runner. |
 | `stopAll({ timeout?, force? })` | Stops every runner. Failures are collected into one `AggregateError`. |
 | `info()` | Returns a snapshot of every registered runner. |
@@ -3102,6 +3102,24 @@ A registry of the runners in one namespace. `jobs.runners` is one.
 `get()`, `list()` and `info()` only see this process's runners. `remote(id)`
 reaches the others, through what every runner already keeps in the driver:
 its state, its lock, its history and its trigger queue.
+
+**Registering here is process-local; the backend's registration is permanent.**
+A runner also has a record in the driver, written by every `start()`, and
+nothing removes it — not `remove()`, not stopping the runner, not the process
+exiting. So after `remove(id)` the runner is gone from `get()`, `list()`,
+`info()` and `size`, and still there in `discover()`, `remote(id)` and the
+management API: `GET /runners/<id>` answers 200 and every runner mutation still
+applies. A pause or a rescheduled cron set on it stays stored, and the next
+process to register that id adopts it.
+
+That is deliberate. The record carries what the cluster has decided about the
+runner — paused, schedule, configuration overrides — and that intent has to
+outlive the processes holding it; a runner's *liveness* is its run lock, not
+its record. [Workers](#controlling-workers-from-another-process) are the
+opposite on purpose: a `WorkerInfo` **is** a heartbeat, so it expires and a
+worker leaves `listWorkers()` when it closes. The only thing that erases a
+runner record is [`jobs.purge()`](#the-bunjobs-registry-and-builder), which
+erases the whole namespace, jobs and all.
 
 ```ts
 const cleanup = await jobs.runners.remote<CleanupArgs, CleanupResult>(
