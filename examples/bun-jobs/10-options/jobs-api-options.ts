@@ -49,6 +49,10 @@
  *   that lacks them. `rssBytes` is the *process's* memory, so a column of it
  *   must never be summed — [`read-apis.ts`](./read-apis.ts) covers the record
  *   itself and how to total a fleet.
+ * - **`sweeps` is optional in the same way, and absent is not `false`**: it
+ *   says whether a worker does the queue's housekeeping, and a worker too old
+ *   to have the field has said nothing. It says nothing about liveness either
+ *   way. [`read-apis.ts`](./read-apis.ts) has the rule a reader applies to it.
  */
 import type {
   DriverEvent,
@@ -1453,7 +1457,9 @@ await worker.close();
 await running;
 
 /* ------------------------------------------------------------------ */
-step("The worker reads carry rssBytes and heartbeatRttMs, or leave them out");
+step(
+  "The worker reads carry rssBytes, heartbeatRttMs and sweeps, or leave them out",
+);
 
 // Two optional samples that ride the heartbeat write: `rssBytes`, the
 // **process's** resident memory (`process.memoryUsage.rss()` — two workers in
@@ -1463,6 +1469,12 @@ step("The worker reads carry rssBytes and heartbeatRttMs, or leave them out");
 // trip, not a network ping, and the previous write's, since a write cannot
 // time itself. All three read routes carry them, and every one leaves them out
 // of a record that has neither: absent, never `0`.
+//
+// `sweeps` rides the same write and is optional in the same way, but its
+// absence means something else again: not "nothing to report yet" but "a worker
+// too old to say". So the routes are checked for all three of its states —
+// `true` from a default worker, `false` from one that opted out of the queue's
+// housekeeping, and nothing at all from an older record.
 const samplesContext = context("worker-samples");
 const sampling = mount({ actions: [...JOBS_API_ACTIONS] }, samplesContext);
 const sampleQueue = samplesContext.queue("mail");
@@ -1472,6 +1484,16 @@ const sampleWorker = samplesContext.worker("mail", async () => "ok", {
   pollInterval: 25,
 });
 const samplingRun = sampleWorker.run();
+
+// A second live worker on the same queue, opted out of housekeeping: the one
+// that reports `sweeps: false` rather than leaving it out.
+const optedOutWorker = samplesContext.worker("mail", async () => "ok", {
+  id: "mail.no-sweeps",
+  maintenance: false,
+  reportInterval: 150,
+  pollInterval: 25,
+});
+const optedOutRun = optedOutWorker.run();
 
 // Beside it, a record from a worker that reports neither field — what an older
 // worker in the same fleet writes — put straight into the registry.
@@ -1496,6 +1518,10 @@ await waitFor("the live worker's record to carry a round trip", async () => {
   return live.some(
     (info) => info.id === "mail.sampled" && info.heartbeatRttMs !== undefined,
   );
+});
+await waitFor("the opted-out worker to report", async () => {
+  const live = await sampleQueue.listWorkers();
+  return live.some((info) => info.id === "mail.no-sweeps");
 });
 
 /**
@@ -1534,6 +1560,19 @@ for (const [route, path] of WORKER_READS) {
     { rssBytes: live?.rssBytes, heartbeatRttMs: live?.heartbeatRttMs },
   );
 
+  checkEqual(
+    `${route} carries sweeps: true on a worker that does the housekeeping`,
+    [Object.hasOwn(live ?? {}, "sweeps"), live?.sweeps],
+    [true, true],
+  );
+
+  const optedOut = await workerFrom(path, "mail.no-sweeps");
+  checkEqual(
+    `${route} carries sweeps: false — present, on a worker that opted out`,
+    [Object.hasOwn(optedOut ?? {}, "sweeps"), optedOut?.sweeps],
+    [true, false],
+  );
+
   const older = await workerFrom(path, "mail.older");
   checkEqual(
     `${route} omits them on a record that has neither`,
@@ -1542,6 +1581,13 @@ for (const [route, path] of WORKER_READS) {
       Object.hasOwn(older ?? {}, "heartbeatRttMs"),
     ],
     [false, false],
+  );
+  // The state a reader must not read as `false`: the route leaves the key out
+  // rather than serialising a default, so "too old to say" survives the wire.
+  checkEqual(
+    `${route} omits sweeps on an older record, rather than sending false`,
+    [Object.hasOwn(older ?? {}, "sweeps"), older?.sweeps],
+    [false, undefined],
   );
 }
 
@@ -1552,6 +1598,9 @@ type _RssOptional = Expect<Equal<WorkerDto["rssBytes"], number | undefined>>;
 type _RttOptional = Expect<
   Equal<WorkerDto["heartbeatRttMs"], number | undefined>
 >;
+// `sweeps` the same, and for it the `undefined` is load-bearing: a client typed
+// `boolean` would have no way to say "too old to say" other than `false`.
+type _SweepsOptional = Expect<Equal<WorkerDto["sweeps"], boolean | undefined>>;
 compileOnly(() => {
   const dto: WorkerDto = {
     id: "mail.older",
@@ -1567,11 +1616,15 @@ compileOnly(() => {
   const bytes: number = dto.rssBytes;
   // @ts-expect-error the same for the round trip
   const rtt: number = dto.heartbeatRttMs;
-  return [bytes, rtt];
+  // @ts-expect-error and for sweeps, where absent is a third answer
+  const sweeps: boolean = dto.sweeps;
+  return [bytes, rtt, sweeps];
 });
 
 await sampleWorker.close();
 await samplingRun;
+await optedOutWorker.close();
+await optedOutRun;
 
 /* ------------------------------------------------------------------ */
 step("addableNames, runnerTriggerArgs and validateResponses");
