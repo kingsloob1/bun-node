@@ -308,6 +308,19 @@ await runner.trigger({ args: { days: 7 } }); // { outcome: "started", runId }
   its lease for a minute, and a survivor sweeping every 100 ms cannot take it
   over any sooner. Give the workers on a queue the same `stalledInterval` if
   that matters to you.
+- **The lease settles on the fastest sweeper.** A worker takes the lease from
+  a holder whose `stalledInterval` is more than twice its own, so a queue is
+  swept at the shortest `stalledInterval` among its workers whoever won the
+  startup race: one deliberately set to 100 ms governs the queue even when a
+  default 30 s one started first. Equal and near-equal cadences never take it
+  from each other, and a slower worker can never take it back, so it settles
+  once and stays. `maxStalledCount` is read from the holder, so it is the
+  fastest sweeper's threshold that applies. A lease is written for two of the
+  **holder's** cadences, so that is also what a hand-over waits for — and it
+  tightens with the fastest sweeper's interval, not the slowest. Only the
+  stalled lease is ever taken this way: every worker runs the minute sweeps at
+  the same cadence, so that lease has nothing to compare and stays with
+  whoever took it.
 - **When a delayed job runs.** A worker promotes due delayed and retrying
   jobs whenever it runs out of work, and ends its idle wait when the next one
   is due; its promotion sweep also runs every `pollInterval`, at least once a
@@ -1106,10 +1119,16 @@ queue, not all of them — returns jobs with expired locks to the queue and emit
 `stalled` with their ids. A job that has stalled more than `maxStalledCount`
 times is buried in `dead` instead.
 
+The holder is the worker with the shortest `stalledInterval` on the queue: a
+worker sweeping more than twice as often as the holder takes the lease over on
+its first pass, so the cadence an operator asked for is the cadence the queue
+gets, whichever worker started first.
+
 The holder renews the lease on every pass. Parked or closed, it gives the lease
-up there and then; if its process dies, the lease lapses after two
+up there and then; if its process dies, the lease lapses after two of **its**
 `stalledInterval`s and the next worker's pass takes it over, so sweeping
-resumes within three (90 s at the defaults).
+resumes within three of them (90 s at the defaults, 300 ms behind a worker set
+to 100 ms).
 
 **Every worker contends for this lease**, including one with
 [`maintenance: false`](#maintenance-liveness-and-housekeeping). Recovery is

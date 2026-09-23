@@ -124,7 +124,7 @@ import { WorkerMetricsRecorder } from "./workerMetrics";
 /**
  * The queue-state entry naming the one worker that runs the queue's
  * stalled-interval sweeps — stalled recovery and flow healing:
- * `{ holder, until }`, taken by compare-and-set (C12).
+ * a {@link SweepLease}, taken by compare-and-set (C12).
  *
  * The name is the one the flow-heal lease carried when flow healing was the
  * only leased sweep. It is kept so that a fleet part-way through an upgrade
@@ -135,9 +135,28 @@ const STALLED_SWEEP_LEASE = `${RESERVED_STATE_PREFIX}fheal`;
 /**
  * The queue-state entry naming the one worker that runs the queue's minute
  * sweeps — pruning, repeat healing, the window sweep and the worker-control
- * sweep. The same `{ holder, until }` shape as {@link STALLED_SWEEP_LEASE}.
+ * sweep. The same {@link SweepLease} shape as {@link STALLED_SWEEP_LEASE}.
  */
 const MINUTE_SWEEP_LEASE = `${RESERVED_STATE_PREFIX}msweep`;
+
+/**
+ * What one of the queue's sweep leases records: who is sweeping, until when,
+ * and how often they sweep.
+ */
+interface SweepLease {
+  /** The id of the worker that holds the lease. */
+  holder?: unknown;
+  /** The epoch millisecond the lease lapses at, if nobody renews it. */
+  until?: unknown;
+  /**
+   * The holder's cadence for this sweep, in milliseconds — what the queue is
+   * actually swept at while this worker holds the lease, and what a faster
+   * worker measures itself against before taking over. Absent on a lease
+   * written before this was recorded; see
+   * {@link SWEEP_LEASE_TAKEOVER_FACTOR}.
+   */
+  cadence?: unknown;
+}
 
 /**
  * How many of its own cadences a sweep lease lasts. The holder renews it on
@@ -146,6 +165,41 @@ const MINUTE_SWEEP_LEASE = `${RESERVED_STATE_PREFIX}msweep`;
  * the hand-over at three.
  */
 const SWEEP_LEASE_LIFETIMES = 2;
+
+/**
+ * How much longer than its own a holder's cadence must be before a worker
+ * takes a live lease from it: the lease settles on the fastest sweeper rather
+ * than on whoever won the first race, so a worker deliberately given a short
+ * `stalledInterval` governs the queue whether or not it started first.
+ *
+ * It is {@link SWEEP_LEASE_LIFETIMES} deliberately, not an arbitrary number: a
+ * worker takes over only when the whole lease it would take — two of its own
+ * cadences — still fits inside a single one of the holder's. A hand-over
+ * therefore always at least halves how often the queue is swept, never trades
+ * one cadence for a barely different one.
+ *
+ * **Why it cannot thrash.** Worker B takes from holder A only when
+ * `cA > 2·cB`.
+ *
+ * - *Equal or near-equal cadences never move it.* `cA > 2·cA` is false, and
+ *   so is anything within a factor of two, so two workers configured alike —
+ *   the overwhelmingly common fleet — never take the lease from each other:
+ *   whoever wins the first race keeps it exactly as in #108.
+ * - *The slow holder cannot take it back.* After B takes over, the lease
+ *   records `cB`, and A would need `cB > 2·cA`; but `cA > 2·cB` gives
+ *   `2·cA > 4·cB > cB`. False for every positive pair.
+ * - *And no longer cycle exists either.* Each takeover at least halves the
+ *   recorded cadence, so the recorded value is strictly decreasing: a fleet
+ *   spanning a factor of `k` hands over at most `log2(k)` times, ever, and
+ *   then never again.
+ *
+ * A lease that records no cadence at all — one written by a worker from before
+ * this, which shares the `fheal` name — is waited out rather than taken early.
+ * An unknown cadence is not a known-slower one, and treating it as slower
+ * would have a new worker and an old one take the lease from each other on
+ * alternate passes, which is the one thing this must not do.
+ */
+const SWEEP_LEASE_TAKEOVER_FACTOR = SWEEP_LEASE_LIFETIMES;
 
 /**
  * How often, in milliseconds, the sweeps that are not tied to the stalled
@@ -2812,21 +2866,33 @@ export class BunQueueWorker<
    * and repair the queue's shared state, rather than every worker on it
    * running the same pass (C12, item 7).
    *
-   * `lifetime` is {@link SWEEP_LEASE_LIFETIMES} times the sweep's own cadence,
-   * so a holder that dies or is parked hands over within three cadences — 90
-   * seconds for the stalled sweeps at the defaults, three minutes for the
-   * minute sweeps — and a graceful park or close hands over at once by
-   * releasing what it holds. A driver without queue state has no lease and
-   * every worker sweeps, exactly as before.
+   * The lease is taken for {@link SWEEP_LEASE_LIFETIMES} times `cadence` —
+   * the *taker's* cadence, always, so the bound follows whoever holds it now
+   * and tightens as they sweep more often. A holder whose process dies leaves
+   * two of its own cadences of lease behind, and the next worker's pass takes
+   * it over within one more of that worker's: three cadences in a fleet
+   * configured alike (90 seconds for the stalled sweeps at the defaults, three
+   * minutes for the minute sweeps). A graceful park or close hands over at
+   * once by releasing what it holds. A driver without queue state has no lease
+   * and every worker sweeps, exactly as before.
+   *
+   * A live lease is not the end of it: a worker whose own cadence is
+   * materially shorter than the holder's takes it over there and then, so the
+   * queue is swept at the shortest `stalledInterval` among its workers rather
+   * than at whichever worker won the first race. See
+   * {@link SWEEP_LEASE_TAKEOVER_FACTOR} for the threshold and why it settles.
+   * It costs no extra driver call: the entry this already reads to find out
+   * whether it holds the lease is the one that says whose cadence is on it.
    *
    * The lease is an optimisation, never a correctness mechanism: every sweep
    * under it is idempotent and atomic at the driver, so two holders during a
-   * hand-over duplicate work and never corrupt it.
+   * hand-over duplicate work and never corrupt it — which is also why a
+   * takeover needs no coordination beyond the compare-and-set below.
    *
    * @param name The reserved queue-state entry holding the lease.
-   * @param lifetime How long, in milliseconds, the lease is taken for.
+   * @param cadence How often, in milliseconds, this worker runs this sweep.
    */
-  async #holdsSweepLease(name: string, lifetime: number): Promise<boolean> {
+  async #holdsSweepLease(name: string, cadence: number): Promise<boolean> {
     if (
       typeof this.driver.getQueueState !== "function" ||
       typeof this.driver.setQueueState !== "function"
@@ -2836,13 +2902,19 @@ export class BunQueueWorker<
 
     const now = Date.now();
     const entry = await this.driver.getQueueState(this.ref, name);
-    const lease = entry?.value as { holder?: unknown; until?: unknown } | null;
+    const lease = entry?.value as SweepLease | null;
 
+    // Held by someone else and still live. Take it anyway if this worker
+    // sweeps materially more often than the holder does; otherwise stand down.
     if (
       lease &&
       lease.holder !== this.id &&
       typeof lease.until === "number" &&
-      lease.until > now
+      lease.until > now &&
+      !(
+        typeof lease.cadence === "number" &&
+        lease.cadence > SWEEP_LEASE_TAKEOVER_FACTOR * cadence
+      )
     ) {
       this.#sweepLeases.delete(name);
       return false;
@@ -2852,7 +2924,11 @@ export class BunQueueWorker<
       this.driver,
       this.ref,
       name,
-      { holder: this.id, until: now + lifetime },
+      {
+        holder: this.id,
+        until: now + SWEEP_LEASE_LIFETIMES * cadence,
+        cadence,
+      },
       entry?.version ?? null,
     );
 
@@ -2891,7 +2967,7 @@ export class BunQueueWorker<
     for (const name of held) {
       try {
         const entry = await this.driver.getQueueState(this.ref, name);
-        const lease = entry?.value as { holder?: unknown } | null;
+        const lease = entry?.value as SweepLease | null;
 
         if (!entry || lease?.holder !== this.id) {
           continue;
@@ -4240,6 +4316,12 @@ export class BunQueueWorker<
    * the bug this split fixes, reached through the lease instead of the timer.
    * That the two leases differ here is the whole point. Do not tidy them into
    * one gate.
+   *
+   * **Cadence.** The stalled sweeps run at this worker's `stalledInterval`,
+   * which workers on a queue may set differently, so their lease settles on
+   * the shortest of them; the minute sweeps run at
+   * {@link MINUTE_SWEEP_INTERVAL} on every worker, so theirs is never
+   * contested for cadence and stays with whoever took it.
    */
   #armMaintenance(): void {
     this.#passesArmed = true;
@@ -4250,7 +4332,7 @@ export class BunQueueWorker<
       if (
         !(await this.#holdsSweepLease(
           STALLED_SWEEP_LEASE,
-          SWEEP_LEASE_LIFETIMES * this.#options.stalledInterval,
+          this.#options.stalledInterval,
         ))
       ) {
         return;
@@ -4288,7 +4370,7 @@ export class BunQueueWorker<
       if (
         !(await this.#holdsSweepLease(
           MINUTE_SWEEP_LEASE,
-          SWEEP_LEASE_LIFETIMES * MINUTE_SWEEP_INTERVAL,
+          MINUTE_SWEEP_INTERVAL,
         ))
       ) {
         return;

@@ -2,6 +2,9 @@ import type { JobsDriver, JobState } from "../lib/index";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunQueueWorker, MemoryDriver } from "../lib/index";
+// Reserved queue-state entries are refused without this package's own token,
+// so a test that has to plant one writes it the way the worker does.
+import { setReservedState } from "../lib/queue/windows";
 import { testNamespace, waitFor } from "./helpers";
 
 /**
@@ -47,7 +50,16 @@ interface SweepCounts {
 }
 
 /** A view of `inner` counting the sweeps one worker makes through it. */
-function countingView(inner: MemoryDriver): {
+function countingView(
+  inner: MemoryDriver,
+  /**
+   * Where to append the epoch millisecond of every stalled sweep this view
+   * sees. Shared across a fleet's views on purpose: the queue has one sweep
+   * history whoever made it, and its gaps are what an operator's
+   * `stalledInterval` is a promise about. Defaults to a private array.
+   */
+  stalledAt: number[] = [],
+): {
   /** The view to hand the worker. */
   driver: JobsDriver;
   /** What it has counted so far. */
@@ -79,6 +91,7 @@ function countingView(inner: MemoryDriver): {
 
         if (prop === "recoverStalled") {
           counts.stalled++;
+          stalledAt.push(Date.now());
         } else if (prop === "pruneExpired") {
           counts.prune++;
         } else if (prop === "listRepeats") {
@@ -118,6 +131,12 @@ function worker(
     maintenance?: boolean;
     /** The stalled sweeps' cadence, which is also their lease's unit. */
     stalledInterval?: number;
+    /**
+     * Where to append the epoch millisecond of every stalled sweep this
+     * worker makes. Pass one array to a whole fleet to get the queue's sweep
+     * history. Defaults to a private array.
+     */
+    stalledAt?: number[];
   },
 ): {
   /** The worker itself. */
@@ -127,7 +146,7 @@ function worker(
   /** Makes its driver view throw, as a dead process would. */
   kill: () => void;
 } {
-  const view = countingView(inner);
+  const view = countingView(inner, options?.stalledAt);
   const instance = new BunQueueWorker<unknown, unknown>("q", async () => null, {
     namespace: ns,
     driver: view.driver,
@@ -384,4 +403,245 @@ describe("maintenance sweeps: one worker per queue (C12 item 7)", () => {
     expect(await inner.getQueueState!(ref, STALLED_SWEEP_LEASE)).toBeNull();
     expect(await inner.getQueueState!(ref, MINUTE_SWEEP_LEASE)).toBeNull();
   });
+});
+
+/**
+ * The lease settles on the **fastest** sweeper, not on whoever grabbed it
+ * first. Without this, a worker deliberately given a short `stalledInterval`
+ * beside default-cadence workers governs the queue only when it happens to win
+ * the startup race — and when it loses, nothing sweeps for a default interval
+ * and its cadence means nothing, silently.
+ *
+ * A worker takes a live lease when the holder's recorded cadence is more than
+ * twice its own. That factor is what keeps it from thrashing: equal and
+ * near-equal cadences never take it from each other, and the slow holder can
+ * never take it back (it would need `cB > 2*cA` when `cA > 2*cB`).
+ */
+describe("the maintenance lease settles on the fastest sweeper", () => {
+  /** The lease as it is written: holder, expiry and the holder's cadence. */
+  interface LeaseValue {
+    /** The worker id holding it. */
+    holder: string;
+    /** The epoch millisecond it lapses at. */
+    until: number;
+    /** How often that worker sweeps, in milliseconds. */
+    cadence?: number;
+  }
+
+  /** The stalled-sweep lease as it stands, or `null` if nobody holds one. */
+  async function lease(
+    inner: MemoryDriver,
+    ns: string,
+  ): Promise<LeaseValue | null> {
+    const entry = await inner.getQueueState!(
+      { ns, queue: "q" },
+      STALLED_SWEEP_LEASE,
+    );
+    return (entry?.value as LeaseValue | undefined) ?? null;
+  }
+
+  /**
+   * Every holder the lease has had between now and `ms` from now, in order and
+   * without repeats — the thing a thrash would show up in.
+   */
+  async function holdersOver(
+    inner: MemoryDriver,
+    ns: string,
+    ms: number,
+    step = 50,
+  ): Promise<string[]> {
+    const seen: string[] = [];
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      const held = await lease(inner, ns);
+      if (held && seen.at(-1) !== held.holder) {
+        seen.push(held.holder);
+      }
+      await Bun.sleep(step);
+    }
+    return seen;
+  }
+
+  /** The longest gap between consecutive sweeps recorded in `at`. */
+  function widestGap(at: number[]): number {
+    let widest = 0;
+    for (let i = 1; i < at.length; i++) {
+      widest = Math.max(widest, at[i]! - at[i - 1]!);
+    }
+    return widest;
+  }
+
+  const FAST = 100;
+  const SLOW = 1_500;
+
+  it("takes the lease from a slower holder, whichever started first", async () => {
+    for (const slowFirst of [true, false]) {
+      const inner = new MemoryDriver();
+      const ns = testNamespace(`sweep-fastest-${slowFirst ? "slow" : "fast"}`);
+      const sweeps: number[] = [];
+      const slow = worker(inner, ns, {
+        stalledInterval: SLOW,
+        stalledAt: sweeps,
+      });
+      const fast = worker(inner, ns, {
+        stalledInterval: FAST,
+        stalledAt: sweeps,
+      });
+
+      const [first, second] = slowFirst ? [slow, fast] : [fast, slow];
+      void first.instance.run();
+      await waitFor(async () => (await lease(inner, ns)) !== null, {
+        timeout: 2_000,
+        message: "the first worker never took the lease",
+      });
+      expect((await lease(inner, ns))!.holder).toBe(first.instance.id);
+      void second.instance.run();
+
+      // Whoever started, the fast worker ends up holding it.
+      await waitFor(
+        async () => (await lease(inner, ns))?.holder === fast.instance.id,
+        {
+          timeout: 2_000,
+          message: async () =>
+            `the fast worker never took the lease: ${JSON.stringify(await lease(inner, ns))}`,
+        },
+      );
+
+      // And the queue is then swept at the fast worker's cadence, not the
+      // slow one's: measured over more than a whole slow cadence, so a slow
+      // sweeper governing the queue could not possibly pass this.
+      sweeps.length = 0;
+      await Bun.sleep(SLOW + 300);
+      expect(sweeps.length).toBeGreaterThanOrEqual(8);
+      expect(widestGap(sweeps)).toBeLessThan(FAST * 5);
+
+      await Promise.allSettled(
+        [slow, fast].map(async (one) => one.instance.close({ force: true })),
+      );
+    }
+  }, 20_000);
+
+  it("keeps a uniform fleet's lease with one holder over many passes", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-uniform");
+    const cadence = 200;
+    const sweeps: number[] = [];
+    const workers = fleet(inner, ns, 4, {
+      stalledInterval: cadence,
+      stalledAt: sweeps,
+    });
+    for (const { instance } of workers) {
+      void instance.run();
+    }
+
+    // Twenty passes' worth. Equal cadences are never "materially longer", so
+    // nothing may take the lease from anybody: this is #108's behaviour,
+    // unchanged.
+    const holders = await holdersOver(inner, ns, cadence * 20);
+    expect(holders).toHaveLength(1);
+
+    const sweeping = workers.filter(({ counts }) => counts.stalled > 0);
+    expect(sweeping).toHaveLength(1);
+    expect(sweeping[0]!.instance.id).toBe(holders[0]!);
+    expect((await lease(inner, ns))!.cadence).toBe(cadence);
+  }, 20_000);
+
+  it("leaves near-equal cadences alone — under the factor, nobody moves", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-near-equal");
+    // 180 is shorter than 200 but not *materially*: 200 is not more than
+    // twice 180, nor 180 more than twice 200, so neither may take the other's.
+    const quick = worker(inner, ns, { stalledInterval: 180 });
+    const plain = worker(inner, ns, { stalledInterval: 200 });
+
+    void plain.instance.run();
+    await waitFor(
+      async () => (await lease(inner, ns))?.holder === plain.instance.id,
+      { timeout: 2_000, message: "the first worker never took the lease" },
+    );
+    void quick.instance.run();
+
+    const holders = await holdersOver(inner, ns, 3_000);
+    expect(holders).toEqual([plain.instance.id]);
+    expect(quick.counts.stalled).toBe(0);
+  }, 20_000);
+
+  it("never lets the slow worker take it back", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-no-takeback");
+    const slowCadence = 400;
+    const slow = worker(inner, ns, { stalledInterval: slowCadence });
+    const fast = worker(inner, ns, { stalledInterval: FAST });
+
+    void slow.instance.run();
+    await waitFor(
+      async () => (await lease(inner, ns))?.holder === slow.instance.id,
+      { timeout: 2_000, message: "the slow worker never took the lease" },
+    );
+    void fast.instance.run();
+    await waitFor(
+      async () => (await lease(inner, ns))?.holder === fast.instance.id,
+      { timeout: 2_000, message: "the fast worker never took the lease" },
+    );
+
+    // Ten of the slow worker's own passes. Every one of them reads a live
+    // lease whose cadence is a quarter of its own, and stands down.
+    const swept = slow.counts.stalled;
+    const holders = await holdersOver(inner, ns, slowCadence * 10);
+    expect(holders).toEqual([fast.instance.id]);
+    expect(slow.counts.stalled).toBe(swept);
+  }, 20_000);
+
+  it("gives the lease the new holder's lifetime after a takeover", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-lifetime");
+    const slow = worker(inner, ns, { stalledInterval: SLOW });
+    const fast = worker(inner, ns, { stalledInterval: FAST });
+
+    void slow.instance.run();
+    await waitFor(
+      async () => (await lease(inner, ns))?.holder === slow.instance.id,
+      { timeout: 2_000, message: "the slow worker never took the lease" },
+    );
+    const bySlow = (await lease(inner, ns))!;
+    expect(bySlow.cadence).toBe(SLOW);
+    expect(bySlow.until - Date.now()).toBeGreaterThan(SLOW);
+
+    void fast.instance.run();
+    await waitFor(
+      async () => (await lease(inner, ns))?.holder === fast.instance.id,
+      { timeout: 2_000, message: "the fast worker never took the lease" },
+    );
+
+    // The hand-over bound follows whoever holds it now: two of the *fast*
+    // worker's cadences, not two of the slow one's.
+    const byFast = (await lease(inner, ns))!;
+    expect(byFast.cadence).toBe(FAST);
+    expect(byFast.until - Date.now()).toBeLessThanOrEqual(FAST * 2);
+  }, 20_000);
+
+  it("waits out a lease that records no cadence at all", async () => {
+    const inner = new MemoryDriver();
+    const ns = testNamespace("sweep-legacy-lease");
+    const ref = { ns, queue: "q" };
+
+    // What a worker from before the cadence was recorded leaves behind. An
+    // unknown cadence is not a known-slower one, so even the fastest worker
+    // waits for it rather than taking it — otherwise an old worker and a new
+    // one would take it from each other on alternate passes.
+    await setReservedState(
+      inner,
+      ref,
+      STALLED_SWEEP_LEASE,
+      { holder: "someone-else", until: Date.now() + 5_000 },
+      null,
+    );
+
+    const fast = worker(inner, ns, { stalledInterval: FAST });
+    void fast.instance.run();
+    await Bun.sleep(FAST * 8);
+
+    expect((await lease(inner, ns))!.holder).toBe("someone-else");
+    expect(fast.counts.stalled).toBe(0);
+  }, 20_000);
 });
