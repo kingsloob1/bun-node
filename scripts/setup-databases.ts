@@ -615,15 +615,67 @@ interface ServicePlan {
   readyTimeout?: number;
 }
 
-/** Whether a SQL URL can be connected to and queried. */
+/**
+ * Why the last `sqlReachable` call failed, so a server that never becomes
+ * ready can say what was actually wrong instead of "it did not become ready".
+ */
+let lastSqlError = "";
+
+/**
+ * Whether a SQL URL can be connected to and queried — the same way the suites
+ * connect, which is the only check worth making.
+ *
+ * `allowPublicKeyRetrieval` is taken out of the query and passed as an option,
+ * because **Bun's client honours it as an option and ignores it in a URL.** It
+ * is a JDBC-style parameter, so a URL carrying it connects exactly as though it
+ * were absent, and against MySQL 8.4's `caching_sha2_password` that means it
+ * does not connect at all. The driver already does this (`takeBooleanParam` in
+ * `packages/bun-jobs/lib/shared/connection.ts`); this check did not, so it
+ * called a perfectly good MySQL server unreachable and then waited four minutes
+ * to say so. Duplicated rather than imported: nothing else in `scripts/` loads
+ * a workspace package, and the root declares no dependency on one.
+ */
 async function sqlReachable(url: string): Promise<boolean> {
   try {
     const { SQL } = await import("bun");
-    const sql = new SQL({ url });
+
+    // Edited as text, so the rest of the URL — an escaped password, a host
+    // list — is never reparsed or re-encoded.
+    const at = url.indexOf("?");
+    let bare = url;
+    let allow: boolean | undefined;
+
+    if (at >= 0) {
+      const kept: string[] = [];
+      for (const pair of url.slice(at + 1).split("&")) {
+        const eq = pair.indexOf("=");
+        const key = decodeURIComponent(eq < 0 ? pair : pair.slice(0, eq));
+        if (key.toLowerCase() !== "allowpublickeyretrieval") {
+          if (pair !== "") {
+            kept.push(pair);
+          }
+          continue;
+        }
+
+        const raw = decodeURIComponent(eq < 0 ? "" : pair.slice(eq + 1))
+          .trim()
+          .toLowerCase();
+        allow = ["true", "1", "yes"].includes(raw);
+      }
+
+      bare = url.slice(0, at) + (kept.length > 0 ? `?${kept.join("&")}` : "");
+    }
+
+    const sql = new SQL({
+      url: bare,
+      ...(allow === undefined ? {} : { allowPublicKeyRetrieval: allow }),
+    });
     await sql.unsafe("SELECT 1");
     await sql.close();
+    lastSqlError = "";
     return true;
-  } catch {
+  } catch (error) {
+    lastSqlError = error instanceof Error ? error.message : String(error);
     return false;
   }
 }
@@ -846,6 +898,13 @@ const PLANS: Record<Service, ServicePlan> = {
       // MySQL 8.4 authenticates with caching_sha2_password, which only sends a
       // password over plain TCP when the client may fetch the server's key.
       // Fine for a loopback test server; use TLS anywhere that matters.
+      //
+      // Bun ignores this parameter in a URL and honours it only as a `SQL`
+      // option, so a URL is usable here only by something that takes it back
+      // out first. The driver does (`takeBooleanParam`), and so does
+      // `sqlReachable` above; a bare `new SQL(url)` does not, and fails with
+      // ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED. That asymmetry is why this
+      // URL looks broken when probed by hand and works in the suites.
       `mysql://${options.user}:${options.password}@127.0.0.1:3307/${options.database}?allowPublicKeyRetrieval=true`,
     // A container, so there are no binaries on the host to look for.
     installed: () => false,
@@ -1048,10 +1107,16 @@ async function setupService(
       ? true
       : started && (await waitForConfigured(plan, options, plan.readyTimeout));
 
+    // "container running" is not evidence: the port opens well before the
+    // credentials work, and a check that reports the container rather than the
+    // connection is exactly the hole this run is meant to catch. `ready` here
+    // means a real query succeeded over the URL the suites will use.
     return {
       service: plan.service,
       ready,
-      note: ready ? "container running" : "the container did not become ready",
+      note: ready
+        ? "connected with the expected credentials"
+        : `the container did not become usable${lastSqlError ? `: ${lastSqlError}` : ""}`,
     };
   }
 
@@ -1156,7 +1221,7 @@ function printEnv(options: Options): void {
   console.log(
     colour.dim(
       "\n  Then: cd packages/bun-jobs && bun test" +
-        "\n  A suite whose variable is unset skips, visibly.",
+        "\n  A suite whose variable is unset skips, visibly. One whose variable is set\n  but whose server cannot be reached fails, so missing coverage cannot pass.",
     ),
   );
 }

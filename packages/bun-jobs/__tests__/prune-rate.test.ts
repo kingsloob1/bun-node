@@ -5,6 +5,7 @@ import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, describe, expect, it } from "bun:test";
 import { BunQueueWorker, createDriver, MemoryDriver } from "../lib/index";
 import { makeJob, makeTmpDir, testNamespace, waitFor } from "./helpers";
+import { reachError, reportUnreachable } from "./helpers/backends";
 
 /**
  * How fast expired jobs leave: the worker's prune sweep, and the drivers'
@@ -20,7 +21,8 @@ import { makeJob, makeTmpDir, testNamespace, waitFor } from "./helpers";
  *   `limit` such jobs at the head hid every expired job behind them for good.
  *
  * Memory, file and SQLite always run; each server backend runs when its
- * `BUN_JOBS_TEST_*_URL` is set, and skips visibly otherwise.
+ * `BUN_JOBS_TEST_*_URL` is set, and skips visibly otherwise. A variable that is
+ * set but names a server nobody can reach *fails* — see `reportUnreachable`.
  */
 
 /** Work to undo when the file ends: namespaces, drivers, temp directories. */
@@ -85,16 +87,34 @@ const BACKENDS: Backend[] = [
     name: "sqlite",
     config: { type: "sql", url: `sqlite://${join(tmp.path, "jobs.db")}` },
   },
-  ...SERVERS.map((server) => {
-    const url = process.env[server.variable];
-    return url
-      ? { name: server.name, config: server.toConfig(url) }
-      : {
+  ...(await Promise.all(
+    SERVERS.map(async (server): Promise<Backend> => {
+      const url = process.env[server.variable];
+      if (!url) {
+        return {
           name: server.name,
           config: undefined,
           skip: `${server.variable} is not set`,
         };
-  }),
+      }
+
+      // Probed once here rather than discovered inside each test: a server that
+      // is named but absent is a missing-coverage failure, not a skip, and one
+      // named failure reads better than every test timing out on its own.
+      const config = server.toConfig(url);
+      const error = await reachError(config);
+      if (error) {
+        reportUnreachable(server.name, server.variable, error);
+        return {
+          name: server.name,
+          config: undefined,
+          skip: `${server.variable} is set but unreachable`,
+        };
+      }
+
+      return { name: server.name, config };
+    }),
+  )),
 ];
 
 /** A connected driver for `backend`, closed when the file ends. */
