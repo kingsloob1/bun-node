@@ -286,6 +286,25 @@ export interface SqlDialect {
     cursor: ClaimCursor,
   ) => string;
   /**
+   * "After `cursor` in a listing's order" — the same predicate for **any**
+   * `ORDER BY` of some columns and the id that breaks their ties, in either
+   * direction: what a jobs-list cursor page seeks with.
+   *
+   * The two shapes are {@link SqlDialect.claimOrderAfter}'s, for the reasons
+   * measured there — a row-value `>=` bound plus a tie-stripping disjunction
+   * on Postgres and SQLite, the nested expansion on MySQL and MariaDB — with
+   * every comparison mirrored for `desc`.
+   *
+   * `claimOrderAfter` stays a member of its own rather than calling this one:
+   * the claim is the hottest statement in the library and its text is a
+   * prepared-statement identity, so it is not worth risking a byte of it for
+   * the sharing.
+   */
+  keysetAfter: (
+    bind: (value: unknown) => string,
+    cursor: KeysetCursor,
+  ) => string;
+  /**
    * Text placed after a table name in `FROM` to pin a read to `index`, or
    * `""` where the engine needs no hint.
    *
@@ -641,6 +660,40 @@ export interface ClaimCursor {
 }
 
 /**
+ * Where a listing's page stopped, in the form {@link SqlDialect.keysetAfter}
+ * needs it: the order's own columns and the cursor's value for each, then the
+ * id that breaks their ties.
+ *
+ * A **value, not a position**, like {@link ClaimCursor}: the predicate
+ * compares it, so the job it names need not still be there — the ordinary case
+ * on a queue that drains, and the whole point of paging by cursor.
+ */
+export interface KeysetCursor {
+  /**
+   * The columns the order rests on, in `ORDER BY` order, ahead of the id.
+   * At least one, and they must be exactly the `ORDER BY`'s leading terms —
+   * a seek derived from anywhere else can drift from the sort it pages.
+   */
+  columns: readonly string[];
+  /** The cursor's value for each of {@link KeysetCursor.columns}, in that order. */
+  values: readonly number[];
+  /**
+   * The expression the order breaks its ties on. Bare `id` for a listing whose
+   * `ORDER BY` names it bare, and the collated or cast form (`id COLLATE "C"`,
+   * `CAST(id AS BINARY)`) for one that does not: the seek has to compare
+   * whatever the sort compares, or the two disagree on a tie.
+   */
+  idColumn: string;
+  /** The id the cursor names, compared against {@link KeysetCursor.idColumn}. */
+  id: string;
+  /**
+   * The direction being walked. `desc` mirrors every comparison, tie-break
+   * included, so the seek is the exact reverse of the ascending one.
+   */
+  direction: "asc" | "desc";
+}
+
+/**
  * How many waiting rows one pass of a claim that skips names looks at.
  *
  * `name NOT IN (…)` is a filter on the claim index, not a key of it, so on its
@@ -738,6 +791,76 @@ function expandedAfter(
 ): string {
   return `(priority > ${bind(cursor.priority)} OR (priority = ${bind(cursor.priority)}
            AND (created_at > ${bind(cursor.createdAt)} OR (created_at = ${bind(cursor.createdAt)} AND id > ${bind(cursor.id)}))))`;
+}
+
+/**
+ * {@link rowValueAfter} generalised to any listing order, for Postgres and
+ * SQLite: a row-value bound on the order's own columns, then a disjunction
+ * that removes only the rows tied with the cursor on every one of them.
+ *
+ * The bound is `>=`, never `>`, and that is the measured part rather than a
+ * detail. Postgres estimates a row comparison from its first column alone, so
+ * `(priority, created_at) > (…)` on a queue whose rows share one priority
+ * looks like no rows at all and it picks a sequential scan; `>=` includes
+ * every row of that priority, which is a selectivity it plans as an index
+ * range. The disjunction is then a filter that strips the cursor's own ties,
+ * and the id — which is not a key of any of these indexes — only ever appears
+ * inside it.
+ *
+ * Correct for any number of columns: the bound already implies that a row
+ * failing every strict term is equal on all of them, so the last disjunct
+ * decides it on the id.
+ */
+function rowValueKeysetAfter(
+  bind: (value: unknown) => string,
+  cursor: KeysetCursor,
+): string {
+  const strict = cursor.direction === "desc" ? "<" : ">";
+  const orEqual = `${strict}=`;
+  const { columns, values } = cursor;
+
+  // A one-column order needs no row constructor: Postgres reads `(x)` as the
+  // scalar anyway, and the plain form is what a reader expects to see.
+  const bound =
+    columns.length === 1
+      ? `${columns[0]} ${orEqual} ${bind(values[0])}`
+      : `(${columns.join(", ")}) ${orEqual} (${values.map((value) => bind(value)).join(", ")})`;
+
+  const ties = [
+    ...columns.map((column, at) => `${column} ${strict} ${bind(values[at])}`),
+    `${cursor.idColumn} ${strict} ${bind(cursor.id)}`,
+  ];
+
+  return `${bound}
+           AND (${ties.join(" OR ")})`;
+}
+
+/**
+ * {@link expandedAfter} generalised the same way, for MySQL and MariaDB, which
+ * do not bound a range scan with a row comparison — measured on the claim's
+ * own key, 11,001 index rows read against 1,000 for the same window.
+ */
+function expandedKeysetAfter(
+  bind: (value: unknown) => string,
+  cursor: KeysetCursor,
+): string {
+  const strict = cursor.direction === "desc" ? "<" : ">";
+
+  // Nested from the left, so each column is compared only where every column
+  // ahead of it tied. Built recursively because the depth is the order's, and
+  // left to right because `bind` numbers placeholders in call order.
+  const nest = (at: number): string => {
+    const column = cursor.columns[at];
+
+    if (column === undefined) {
+      return `${cursor.idColumn} ${strict} ${bind(cursor.id)}`;
+    }
+
+    return `${column} ${strict} ${bind(cursor.values[at])} OR (${column} = ${bind(cursor.values[at])}
+           AND (${nest(at + 1)}))`;
+  };
+
+  return `(${nest(0)})`;
 }
 
 /** The queue's waiting, due rows, from `options.after` when there is one. */
@@ -1270,6 +1393,7 @@ const postgres: SqlDialect = {
                   ELSE o.v END
         FROM (SELECT ${postgresObject(column)} AS v) AS o)`,
   claimOrderAfter: rowValueAfter,
+  keysetAfter: rowValueKeysetAfter,
   indexHint: () => "",
   isMissingHintedIndex: () => false,
   // `->>` works on `json` and on a `jsonb` column left by an older version.
@@ -1486,6 +1610,7 @@ const mysql: SqlDialect = {
            THEN JSON_SET(${column}, '$.${key}', CAST(CAST(JSON_EXTRACT(${column}, '$.${key}') AS SIGNED) | ${bitLiteral(bit)} AS SIGNED))
            ELSE ${column} END)`,
   claimOrderAfter: expandedAfter,
+  keysetAfter: expandedKeysetAfter,
   indexHint: (index) => ` FORCE INDEX (${index})`,
   isMissingHintedIndex: (error) =>
     hasErrorCode(error, [1176, "1176", "ER_KEY_DOES_NOT_EXITS"]),
@@ -1697,6 +1822,7 @@ const sqlite: SqlDialect = {
            THEN json_set(${column}, '$.${key}', CAST(json_extract(${column}, '$.${key}') AS INTEGER) | ${bitLiteral(bit)})
            ELSE ${column} END)`,
   claimOrderAfter: rowValueAfter,
+  keysetAfter: rowValueKeysetAfter,
   indexHint: () => "",
   isMissingHintedIndex: () => false,
   jsonInteger: (column, key) =>

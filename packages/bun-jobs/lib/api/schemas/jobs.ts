@@ -241,6 +241,14 @@ function finishedAt(description: string): Schema<number | string> {
   );
 }
 
+/**
+ * The longest jobs-list cursor this route accepts. The ones it mints hold a
+ * namespace, a queue, the states, a sort, an order, one or two numbers, a job
+ * id and a state, so they are far shorter. The same cap the runner history and
+ * the apply-defaults walk put on theirs.
+ */
+const MAX_JOB_LIST_CURSOR_LENGTH = 2048;
+
 /** `GET /queues/:queue/jobs` query. */
 export function jobListQuerySchema(
   defaultPageSize: number,
@@ -253,7 +261,22 @@ export function jobListQuerySchema(
           description: "States to list; every state when absent.",
         }),
       ),
-      offset: s.optional(s.integer({ minimum: 0, default: 0 })),
+      cursor: s.optional(
+        s.string({
+          minLength: 1,
+          maxLength: MAX_JOB_LIST_CURSOR_LENGTH,
+          description:
+            "The previous page's `page.next`, to continue the walk at the job after the last one you were shown. **Opaque — never build or parse one**: it holds the backend's ordering key, and the backends do not agree on it. One this route did not issue, or one belonging to another queue, other states, the other sort or the other order, is 400 `INVALID_ARGUMENT`, never a silent restart at page one. Takes precedence over `offset`. Unlike an offset it cannot jump to page N — it walks — and unlike an offset nothing shifts under it when a job leaves the list ahead of it. Refused for `state=active` on its own in the natural order; see the route description.",
+        }),
+      ),
+      offset: s.optional(
+        s.integer({
+          minimum: 0,
+          default: 0,
+          description:
+            "Matching jobs to skip. This is how a client jumps to page N and *samples* a list; `cursor` is how it *walks* one without losing a job to another leaving the list meanwhile. Ignored when `cursor` is sent.",
+        }),
+      ),
       limit: s.optional(
         s.integer({
           minimum: 1,

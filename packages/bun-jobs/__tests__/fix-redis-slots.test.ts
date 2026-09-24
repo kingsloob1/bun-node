@@ -303,6 +303,19 @@ describe.skipIf(!URL)(
         order: "asc",
         names: ["test"],
       });
+      // A keyset cursor page, which resolves its seek in a script of its own.
+      await driver.findJobs(q, {
+        states: ["waiting", "completed"],
+        offset: 0,
+        limit: 10,
+        order: "asc",
+        after: {
+          values: [now],
+          id: "later",
+          state: "waiting",
+          stateValues: [0, now],
+        },
+      });
       await driver.getThroughput(q, { from: now - 60_000, to: now });
 
       // Flows.

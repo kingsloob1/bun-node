@@ -551,6 +551,7 @@ Every method connects the driver on first use. After `close()`, calls throw
 | `addFlow(node)` | Adds a job together with the jobs it waits on. See [Flows](#flows). |
 | `getJob(id)` | Returns one job, or `null`. |
 | `list(state \| states, { offset, limit = 100, order = "asc", sort = "natural" })` | Returns jobs in the given state or states. Also takes `name`, `search`, and the worker and finish-time filters `workerKey`, `workerId`, `finishedFrom` and `finishedTo`. See [Who ran a job](#who-ran-a-job-worker-attribution). `sort: "createdAt"` orders by creation time on memory, SQL and MongoDB; see [sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time). |
+| `walk(state \| states, { limit, order, after? })` | A page read with a **keyset cursor** — the same filters as `list()`, plus `after`, and answering `{ jobs, offset, next }`. This is how a list is *walked*; `list()` and `page()` are how it is *sampled*. `next` is `null` exactly when the walk is complete. Measured on a draining queue, an `asc` offset walk lost 20 of the 59 jobs that never left the list and the cursor walk lost none; see [Pagination](#pagination-filtering-and-include). Refused for `active` alone, whose key every lock renewal rewrites. |
 | `count()` / `count(state)` | Returns counts for every state, or for one. |
 | `countAdded({ from, to })` | Of the jobs added in `[from, to)`, how many are in each state now. Memory, SQL and MongoDB only; see [Jobs added in a range](#jobs-added-in-a-range-and-sorting-by-creation-time). |
 | `update(id, { data?, priority?, runAt?, onlyIn? })` | Patches a stored job. `runAt` moves only a waiting or delayed job. `onlyIn` makes the change conditional on the job's state. |
@@ -4169,18 +4170,20 @@ and `DURATION_HISTOGRAM_BOUNDS`.
 
 ### Pagination, filtering and `include`
 
-Lists are offset-based: `?offset=0&limit=20`, answering
-`{ items, page: { offset, limit, total?, hasMore } }`. Ask for `total=true`
-only when you need a count — it costs a second query. Jobs can be filtered by
-`state` (repeated or comma-separated), by `name`, and by `search` (a substring
-of id or name, never the payload).
+Every list takes `?offset=0&limit=20` and answers
+`{ items, page: { offset?, limit, total?, hasMore, next? } }`. Ask for
+`total=true` only when you need a count — it costs a second query. Jobs can be
+filtered by `state` (repeated or comma-separated), by `name`, and by `search`
+(a substring of id or name, never the payload).
 
-**`GET /runners/{runner}/history` also pages by keyset cursor**, and the two
-answer different questions. `offset` *samples* a list — it counts records from
-one end, which is how a client jumps to page N. `cursor` *walks* one: send back
-the previous page's `page.next` and this page starts at the record after the
-last one you were shown, so nothing shifts under you when a run starts
-meanwhile. Both are supported; a request naming both uses the cursor.
+**`GET /queues/{queue}/jobs` and `GET /runners/{runner}/history` also page by
+keyset cursor**, and the two ways answer different questions. `offset`
+*samples* a list — it counts items from one end, which is how a client jumps to
+page N. `cursor` *walks* one: send back the previous page's `page.next` and
+this page starts at the item after the last one you were shown, so nothing
+shifts under you when an item leaves the list meanwhile. Both are supported for
+good; a request naming both uses the cursor. A cursor is minted on an offset
+page too, so a client can jump to page N and then walk on from it.
 
 ```ts
 let cursor: string | null = null;
@@ -4197,11 +4200,16 @@ do {
 
 A cursor is **opaque and bound to its walk**: never build or parse one — it
 holds the backend's ordering key, and the backends do not agree on it — and one
-this route did not issue, or one belonging to another runner or the other
-`order`, is 400 `INVALID_ARGUMENT` rather than a silent restart at page one.
-`page.next` is `null` exactly when the walk is complete, and `page.offset` on a
-cursor page says where the seek landed, so a pager can still show "41–60 of
-250".
+this route did not issue, or one belonging to another runner, another queue,
+other states, the other sort or the other `order`, is 400 `INVALID_ARGUMENT`
+rather than a silent restart at page one, which a walking client cannot tell
+from the end of the list. `page.next` is `null` exactly when the walk is
+complete, and that is the **only** end signal: a short page is not one, since a
+filter can shorten a page anywhere in a list. `page.offset` says where the seek
+landed, so a pager can still show "41–60 of 250" — except on a jobs-list cursor
+page on SQL or MongoDB, where it is **absent**, because counting the jobs
+before the key is an index range scan of exactly the size the `OFFSET` would
+have walked and paying it would make the cursor cost what the offset cost.
 
 Measured on a **full** history (`total === keepHistory`, the steady state for
 any runner that has run more than `keepHistory` times) with runs starting
@@ -4212,6 +4220,38 @@ irreducible limit — the walk moves toward the old end while `keepHistory` trim
 that same end, so a record can be gone before the walk reaches it, and no
 paging scheme can show a record that no longer exists. `asc` has no such case:
 the trim drops the oldest, which in `asc` is behind the cursor.
+
+**On the jobs list the same measurement is larger, and it is why the cursor
+exists.** An offset probe of 868 trials found **1,259 unreachable jobs, every
+one of them on `order=asc`**, and 94 of those 217 trials lost jobs without a
+single repeat to announce it: jobs are claimed off the head of a queue, so the
+window slides backwards under a fixed offset and the next page steps over jobs
+in the middle that nobody touched. `order=desc` lost nothing in 434 trials —
+its failure is a repeat, which any client that remembers what it showed can
+see. Paging `waiting` in `asc` on a queue draining as fast as it fills, of the
+59 jobs in the operator's first hundred that were **still waiting when the walk
+ended**, the offset walk showed 39 and the cursor walk showed all 59, on
+memory, PostgreSQL and Redis alike.
+
+**What the cursor does not fix, because it has to be said.** A job whose
+**priority is lowered while you are paging** jumps *behind* the cursor and is
+never shown — the walk has already passed that point in the order. An offset
+walk misses it too, but the shift makes it repeat a row, so the cursor trades a
+*detectable* miss for a *silent* one. Measured: one job missed per
+re-prioritisation under both, with four repeats under offset and none under the
+cursor. Raising a priority is symmetric — the job sorts past the end and
+neither scheme shows it. `delayed` and `failed` have the same shape, since a
+retry re-schedules a job in the `runAt` order. Set against the twenty jobs per
+hundred that ordinary draining costs an offset, it is a small price; it is not
+nothing, and a client that must not miss a promoted job should re-read rather
+than walk.
+
+**`state=active` on its own cannot be walked**, and a `cursor` with it is 400
+`INVALID_ARGUMENT`. Its natural order is `lockExpiresAt`, which every worker
+rewrites each time it renews a lock — several times a minute, per job, with no
+operator involved — so a cursor there would be anchored to a key that has
+already moved and would be no more stable than the offset it replaced. Page
+`active` with `offset`, or walk it with `sort=createdAt`, which is immutable.
 
 Jobs can also be filtered by
 [who ran them and when they finished](#who-ran-a-job-worker-attribution):

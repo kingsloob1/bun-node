@@ -209,8 +209,16 @@ export interface PageInfoDto {
   /**
    * Items skipped before this page — and, on a page reached with a `cursor`,
    * where the seek landed, so a walked page can still say where it sits.
+   *
+   * **Absent only on a cursor page whose backend did not count what precedes
+   * it.** `GET /queues/{queue}/jobs` on SQL or MongoDB is that case, and it is
+   * deliberate: counting the jobs before the key is an index range scan of
+   * exactly the size the `offset` would have walked, so answering it would
+   * make a cursor page cost what the offset page cost. Every offset page has
+   * it, and so does every page of the runner history, whose whole list the
+   * backend holds anyway.
    */
-  offset: number;
+  offset?: number;
   /** Most items the page could hold. */
   limit: number;
   /** Items in the whole list, when it was counted. */

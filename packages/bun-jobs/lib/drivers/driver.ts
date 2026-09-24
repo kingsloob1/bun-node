@@ -12,6 +12,7 @@ import type {
   WorkerState,
   WorkerStopPersistence,
 } from "../shared/workers";
+import type { JobCursorKey } from "./jobCursor";
 import type {
   BucketRange,
   BusynessSample,
@@ -1354,6 +1355,22 @@ export interface JobQuery {
   finishedTo?: number;
   /** Also count every match, ignoring `offset` and `limit`. Defaults to `false`. */
   total?: boolean;
+  /**
+   * Seek position: start the page at the job **after** this one, in the order
+   * asked for, instead of counting {@link JobQuery.offset} matches in.
+   *
+   * The ordering key of the last job the previous page returned — a driver
+   * mints it and a client only ever echoes it back, encoded, as
+   * `encodeJobCursor` in `jobCursor.ts` makes it. When set, `offset` is
+   * ignored.
+   *
+   * Honoured by declaration rather than by capability: a driver that honours it
+   * says so by answering {@link JobPage.offset}, and one that does not — a
+   * driver written before this existed ignores the field and hands back page
+   * one, which reads exactly like the end of a list — has its page discarded
+   * by `findJobPage` and the query re-read by scan.
+   */
+  after?: JobCursorKey;
 }
 
 /**
@@ -1373,6 +1390,30 @@ export interface JobPage {
   jobs: JobRecord[];
   /** Every match, ignoring `offset` and `limit`; present only when asked for. */
   total?: number;
+  /**
+   * **How a driver declares it honoured {@link JobQuery.after}**, and where
+   * the seek landed. Three answers, and they are three different statements:
+   *
+   * - **`undefined`** — "I did not seek." Either no cursor was asked for, or
+   *   this driver does not know the field. On a cursor request `findJobPage`
+   *   discards the page and re-reads the query by scan, because a page that
+   *   ignored the cursor is page one, and a client walking a list cannot tell
+   *   page one from the end of it.
+   * - **`null`** — "I sought past the cursor, and I did not count how many
+   *   jobs precede the page." This is the normal answer on SQL and MongoDB.
+   *   Counting them is an index range scan of exactly the size the `OFFSET`
+   *   would have walked, so answering it would make a cursor page cost what
+   *   the offset page cost — which is most of the reason to have a cursor on
+   *   the deep lists at all.
+   * - **a number** — "I sought, and the page starts here." Free on the
+   *   backends that already know: the memory and file drivers put the listing
+   *   in order to read it, Redis resolves the seek to a `ZRANK`, and the
+   *   shared scan counts as it goes.
+   *
+   * On an **offset** request a driver leaves this out; `findJobPage` fills in
+   * `query.offset`.
+   */
+  offset?: number | null;
 }
 
 /**

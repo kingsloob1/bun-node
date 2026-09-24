@@ -52,6 +52,7 @@ import type {
   WorkerMetricsTotals,
   WorkerMetricsTotalsQuery,
 } from "./driver";
+import type { JobCursorKey } from "./jobCursor";
 import type {
   BufferWriteResult,
   BusynessSample,
@@ -105,6 +106,7 @@ import { newId } from "../shared/ids";
 import { safeJsonParse } from "../shared/json";
 import { PauseCache } from "../shared/pauseCache";
 import { compareCodePoints } from "../shared/strings";
+import { sortsByCreated } from "./added";
 import {
   attributionFilter,
   attributionOf,
@@ -125,6 +127,7 @@ import {
   NAME_OVERHEAD,
 } from "./file-names";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
+import { jobOrderFields, seekJobIndex } from "./jobCursor";
 import {
   addBusynessSample,
   addDuration,
@@ -2486,9 +2489,17 @@ export class FileDriver implements JobsDriver {
       }
     }
 
-    // Several states at once have no shared order but creation time.
+    // Several states at once have no shared order but creation time, and the
+    // id breaks its ties — which is what SQL and MongoDB already do here, and
+    // what makes the order **total**. Without it a listing of jobs added in
+    // one bulk kept the order the states were concatenated in, so it was
+    // ordered by something creation time cannot see; a keyset cursor whose
+    // anchor had been removed then seeked against an order it could not
+    // describe and lost rows silently.
     if (states.length > 1) {
-      found.sort((a, b) => a.createdAt - b.createdAt);
+      found.sort(
+        (a, b) => a.createdAt - b.createdAt || compareCodePoints(a.id, b.id),
+      );
     }
 
     if (opts.order === "desc") {
@@ -2532,6 +2543,28 @@ export class FileDriver implements JobsDriver {
    * theirs are named by the padded `finishedOn`, so the markers outside the
    * range are dropped by name and only the jobs inside it are opened — to
    * check the worker filters, and that the marker still speaks for its record.
+   *
+   * **The keyset cursor is honoured natively**, and how depends on the shape
+   * of the read:
+   *
+   * - **One state** is already in its own order by its markers' names, and a
+   *   marker name embeds exactly the fields the cursor key holds, padded the
+   *   same way — so the seek is {@link seekMarkerIndex}, a comparison of
+   *   names, and the records before the page are never opened. Unfiltered,
+   *   the seek's index *is* the page's `offset`, since a marker is a match
+   *   unless its record has moved on. Filtered, it is not: deciding a match
+   *   means reading the record, so counting the ones the seek skipped would
+   *   cost exactly the offset walk the cursor exists to avoid, and the page
+   *   answers `null` — "sought, did not count" — unless a total was asked
+   *   for, which reads them anyway and so knows the number for free.
+   * - **Several states** share no marker order, so the listing is built to be
+   *   answered at all and the seek is {@link seekJobIndex} over that very
+   *   array, with the resolved index as `offset`.
+   *
+   * `sort: "createdAt"` is the one walk left to the shared scan: this driver
+   * does not produce that order — it implements no `countAddedJobs`, so
+   * `findJobPage` never routes one here — and a seek claimed in an order the
+   * page is not cut in would answer with the wrong rows.
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     const filter = jobFilter(query);
@@ -2541,30 +2574,85 @@ export class FileDriver implements JobsDriver {
     // Each state once: a job is in one state, so it is one match.
     const states = [...new Set(query.states)];
     const index = join(this.#queueDir(q), "index");
+    // The cursor, but only on a walk this driver orders itself.
+    const after = sortsByCreated(query) ? undefined : query.after;
 
     if (attribution && matchesNothing(attribution, states)) {
-      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+      return {
+        jobs: [],
+        ...(query.total ? { total: 0 } : {}),
+        // The seek landed at the end of an empty listing — still a seek, and
+        // saying so keeps `findJobPage` from re-reading the same nothing.
+        ...(after === undefined ? {} : { offset: 0 }),
+      };
     }
 
     if (!filter && !attribution) {
-      const jobs =
-        limit === 0
-          ? []
-          : await this.listJobs(q, states, {
-              offset,
-              limit,
-              order: query.order,
-            });
+      if (after === undefined) {
+        const jobs =
+          limit === 0
+            ? []
+            : await this.listJobs(q, states, {
+                offset,
+                limit,
+                order: query.order,
+              });
 
-      if (!query.total) {
-        return { jobs };
+        if (!query.total) {
+          return { jobs };
+        }
+
+        let total = 0;
+        for (const state of states) {
+          total += (await this.#list(join(index, state))).length;
+        }
+        return { jobs, total };
       }
 
-      let total = 0;
-      for (const state of states) {
-        total += (await this.#list(join(index, state))).length;
+      // A cursor with nothing to filter by, on one state: the markers answer
+      // it alone. No record before the page is opened, the total is the
+      // markers counted, and the page starts at the seek's own index.
+      if (states.length === 1) {
+        const state = states[0]!;
+        const markers = (await this.#list(join(index, state))).sort();
+        if (query.order === "desc") {
+          markers.reverse();
+        }
+
+        const from = seekMarkerIndex(
+          markers,
+          markerForKey(state, after),
+          query.order,
+        );
+        const page: JobRecord[] = [];
+
+        for (
+          let at = from;
+          at < markers.length && page.length < limit;
+          at += READ_CONCURRENCY
+        ) {
+          for (const record of await this.#readMarked(
+            q,
+            markers.slice(at, at + READ_CONCURRENCY),
+          )) {
+            // A marker whose record has moved on is skipped without counting,
+            // as in `listJobs`.
+            if (record && record.state === state && page.length < limit) {
+              page.push(record);
+            }
+          }
+        }
+
+        return {
+          jobs: page,
+          ...(query.total ? { total: markers.length } : {}),
+          offset: from,
+        };
       }
-      return { jobs, total };
+
+      // Several unfiltered states fall through to the read below: they have no
+      // shared marker order, so the listing has to be built before it can be
+      // seeked, and there `matches` is only the marker-still-speaks check.
     }
 
     /** Whether a record read through a `state` marker is a match. */
@@ -2597,23 +2685,44 @@ export class FileDriver implements JobsDriver {
         markers.reverse();
       }
 
-      let skip = offset;
+      // The same name comparison the unfiltered seek makes, and the markers
+      // before it are read only when a total was asked for — which needs them
+      // read anyway, and pays for knowing where the page starts.
+      const from =
+        after === undefined
+          ? 0
+          : seekMarkerIndex(markers, markerForKey(state, after), query.order);
+
+      let skip = after === undefined ? offset : 0;
+      let before = 0;
       let total = 0;
 
-      for (let at = 0; at < markers.length; at += READ_CONCURRENCY) {
+      for (
+        let at = after === undefined || query.total ? 0 : from;
+        at < markers.length;
+        at += READ_CONCURRENCY
+      ) {
         if (!query.total && jobs.length >= limit) {
           break;
         }
 
-        for (const record of await this.#readMarked(
-          q,
-          markers.slice(at, at + READ_CONCURRENCY),
-        )) {
+        const slice = markers.slice(at, at + READ_CONCURRENCY);
+
+        for (const [step, record] of (
+          await this.#readMarked(q, slice)
+        ).entries()) {
           if (!matches(record, state)) {
             continue;
           }
 
           total++;
+
+          // Behind the seek: counted for the total, never part of the page.
+          if (at + step < from) {
+            before++;
+            continue;
+          }
+
           if (skip > 0) {
             skip--;
           } else if (jobs.length < limit) {
@@ -2622,7 +2731,11 @@ export class FileDriver implements JobsDriver {
         }
       }
 
-      return query.total ? { jobs, total } : { jobs };
+      return {
+        jobs,
+        ...(query.total ? { total } : {}),
+        ...(after === undefined ? {} : { offset: query.total ? before : null }),
+      };
     }
 
     // Several states share no order but creation time, which needs them all —
@@ -2647,14 +2760,33 @@ export class FileDriver implements JobsDriver {
       }
     }
 
-    // Filtering before a stable sort leaves the order `listJobs` would give.
-    matching.sort((a, b) => a.createdAt - b.createdAt);
+    // The same total order `listJobs` gives: creation time, ties by id.
+    matching.sort(
+      (a, b) => a.createdAt - b.createdAt || compareCodePoints(a.id, b.id),
+    );
     if (query.order === "desc") {
       matching.reverse();
     }
 
-    jobs.push(...matching.slice(offset, offset + limit));
-    return query.total ? { jobs, total: matching.length } : { jobs };
+    // The seek runs on the array the page is cut from, so the two cannot read
+    // the order differently. `seekJobIndex` anchors by identity first, which
+    // is what makes it exact although this listing breaks no tie on the id.
+    const from =
+      after === undefined
+        ? offset
+        : seekJobIndex(
+            matching,
+            after,
+            jobOrderFields(states, query.sort),
+            query.order,
+          );
+
+    jobs.push(...matching.slice(from, from + limit));
+    return {
+      jobs,
+      ...(query.total ? { total: matching.length } : {}),
+      ...(after === undefined ? {} : { offset: from }),
+    };
   }
 
   /** Several jobs by id: each distinct id read once, a bounded batch at a time. */
@@ -5527,6 +5659,74 @@ function mayFinishIn(filter: AttributionFilter, marker: string): boolean {
 /** The marker name of an active job, which is ordered by its lock expiry. */
 function activeMarker(lockExpiresAt: number, id: string): string {
   return `${pad(lockExpiresAt, 13)}-${encodeName(id)}`;
+}
+
+/**
+ * The marker name a jobs-list cursor key names, in the state's own marker
+ * order — what lets a page resume by comparing names instead of opening every
+ * record before it.
+ *
+ * It mirrors `#markerFor` field for field, because `jobOrderFields` names for
+ * each state exactly the fields that state's marker is built from, in the same
+ * order: `waiting` its priority then its creation, and every other state one
+ * 13-digit stamp. The padding is the same call, so the comparison is the same
+ * comparison.
+ *
+ * One seam, and it is unreachable through the API: `active` markers pad
+ * `lockExpiresAt ?? 0` where the cursor key reads `lockExpiresAt ??
+ * processedOn ?? createdAt`, so an `active` record carrying no lock expiry
+ * would be sought against a key its marker does not hold. A cursor on a single
+ * `active` state in its natural order is refused before it reaches a driver
+ * (`jobWalkIsSeekable`), precisely because that order is rewritten under the
+ * walk.
+ */
+function markerForKey(
+  /** The state whose markers are being walked. */
+  state: JobState,
+  /** Where the previous page stopped. */
+  key: JobCursorKey,
+): string {
+  const id = encodeName(key.id);
+
+  return state === "waiting"
+    ? `${pad((key.values[0] ?? 0) + PRIORITY_OFFSET, 8)}-${pad(key.values[1] ?? 0, 13)}-${id}`
+    : `${pad(key.values[0] ?? 0, 13)}-${id}`;
+}
+
+/**
+ * Where a page resuming after `seek` starts in `markers`, already put in the
+ * order being walked: the index of the first marker sorting strictly after it,
+ * or the end when none does.
+ *
+ * A marker *equal* to `seek` is the anchor job itself, and skipping it is the
+ * anchor step — the same resume `seekJobIndex` makes by identity, except that
+ * here the name carries both the key and the id, so no record has to be read
+ * to find it. A binary search, because the deep page is the one the cursor
+ * exists for.
+ */
+function seekMarkerIndex(
+  /** The state's markers, sorted and already reversed for `desc`. */
+  markers: readonly string[],
+  /** The marker name the cursor key resolves to, from {@link markerForKey}. */
+  seek: string,
+  /** The direction being walked; `desc` is the exact reverse. */
+  order: "asc" | "desc",
+): number {
+  const sign = order === "asc" ? 1 : -1;
+  let low = 0;
+  let high = markers.length;
+
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+
+    if (compareCodePoints(markers[mid]!, seek) * sign > 0) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+
+  return low;
 }
 
 /** Splits a hold's name into when it was taken, the state it was taken from and the marker it holds. */

@@ -62,6 +62,7 @@ import type {
   WorkerMetricsTotals,
   WorkerMetricsTotalsQuery,
 } from "../driver";
+import type { JobCursorKey, JobOrderField } from "../jobCursor";
 import type {
   BufferWriteResult,
   BusynessSample,
@@ -84,6 +85,7 @@ import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type {
   ClaimCursor,
   ClaimStatementOptions,
+  KeysetCursor,
   SqlAdapter,
   SqlDialect,
 } from "./dialect";
@@ -130,6 +132,7 @@ import {
   listsChild,
   unsettledChildren,
 } from "../flow";
+import { jobOrderFields } from "../jobCursor";
 import {
   addBusynessSample,
   addDuration,
@@ -469,14 +472,42 @@ export function createdAtOrder(
   order: "asc" | "desc",
 ): string {
   const direction = order === "desc" ? "DESC" : "ASC";
-  const id = dialect.codePointCollation
+
+  return `created_at ${direction}, ${codePointId(dialect)} ${direction}`;
+}
+
+/**
+ * The tie-break term of {@link createdAtOrder}: the id compared in code-point
+ * order, as a collation, as a cast, or bare where the column already is.
+ *
+ * Named on its own because a cursor page has to **seek on the term the sort
+ * orders by** — a keyset predicate over bare `id` under an `ORDER BY … id
+ * COLLATE "C"` would disagree with the sort on exactly the ties the tie-break
+ * is there to decide.
+ */
+function codePointId(dialect: SqlDialect): string {
+  return dialect.codePointCollation
     ? `id COLLATE ${dialect.codePointCollation}`
     : dialect.name === "mysql" || dialect.name === "mariadb"
       ? "CAST(id AS BINARY)"
       : "id";
-
-  return `created_at ${direction}, ${id} ${direction}`;
 }
+
+/**
+ * The column each of a listing's ordering fields is stored in.
+ *
+ * The one crossing between `jobCursor.ts`'s {@link jobOrderFields} — which
+ * says what a cursor's key holds — and this driver's `ORDER BY`. Both read the
+ * field list from that same function, so the sort and the seek cannot come to
+ * hold different opinions about what the order is.
+ */
+const JOB_ORDER_COLUMNS: Record<JobOrderField, string> = {
+  createdAt: "created_at",
+  finishedOn: "finished_on",
+  lockExpiresAt: "lock_expires_at",
+  priority: "priority",
+  runAt: "run_at",
+};
 
 /**
  * The statement counting a namespace's jobs added in `[from, to)` by queue and
@@ -1297,10 +1328,13 @@ export class SqlDriver implements JobsDriver {
    */
   readonly #retentionSettles = new Map<string, number>();
   /**
-   * Whether the pending-options rewrite found the claim index missing when it
-   * named it in an index hint (MySQL and MariaDB's `FORCE INDEX`), and so
-   * walks unhinted from then on. `false` until that happens; never set on an
-   * engine without hints.
+   * Whether a read found the claim index missing when it named it in an index
+   * hint (MySQL and MariaDB's `FORCE INDEX`), and so runs unhinted from then
+   * on. `false` until that happens; never set on an engine without hints.
+   *
+   * Shared by the two reads that pin themselves to that index: the
+   * pending-options rewrite's keyset walk and a `waiting` cursor page
+   * (`#listHint`). One table, one index, so one answer.
    */
   #claimIndexMissing = false;
 
@@ -4299,24 +4333,100 @@ export class SqlDriver implements JobsDriver {
    * The `ORDER BY` a listing uses: a single state in its own natural order,
    * several by creation, the id breaking ties so a page boundary is stable.
    * Shared by `listJobs` and `findJobs`, which must agree.
+   *
+   * Which columns that is comes from {@link jobOrderFields}, the same function
+   * a cursor's key is built and decoded from, so the `ORDER BY` and the seek
+   * that pages it are one definition. `id` is appended in every case and in
+   * the same direction, which is what makes every order here total — and a
+   * value seek on it exact.
    */
   #listOrder(states: JobState[], order: "asc" | "desc"): string {
     const direction = order === "desc" ? "DESC" : "ASC";
-    const single = states.length === 1 ? states[0] : undefined;
-    const columns =
-      single === "waiting"
-        ? ["priority", "created_at"]
-        : single === "delayed" || single === "failed"
-          ? ["run_at"]
-          : single === "active"
-            ? ["lock_expires_at"]
-            : single === "completed" || single === "dead"
-              ? ["finished_on"]
-              : ["created_at"];
+    const columns = jobOrderFields(states, undefined).map(
+      (field) => JOB_ORDER_COLUMNS[field],
+    );
 
     return [...columns, "id"]
       .map((column) => `${column} ${direction}`)
       .join(", ");
+  }
+
+  /**
+   * The keyset predicate a cursor page adds to its `WHERE`: only rows strictly
+   * after the one the cursor names, in this listing's own order.
+   *
+   * Built from {@link jobOrderFields} and {@link JOB_ORDER_COLUMNS}, the same
+   * pair `#listOrder` is built from, and against {@link codePointId} where the
+   * sort is `createdAt` and orders the id by code point rather than bare. The
+   * dialect decides the shape — see {@link SqlDialect.keysetAfter}.
+   *
+   * **It replaces the `OFFSET`, never the `#listNotNull` beside it.** That
+   * predicate is what lets Postgres and SQLite use their partial indexes at
+   * all, and a seek that dropped it would bound a range in an index the
+   * planner had already refused to read.
+   *
+   * One residue, shared with the `ORDER BY` it mirrors: a `completed` or
+   * `dead` row with a NULL `finished_on` would sort somewhere the seek cannot
+   * reach, since a comparison with NULL is never true. The driver holds that
+   * such a row does not exist — every path that writes those states writes
+   * `finished_on` in the same statement, which is the same invariant
+   * `#listNotNull` already relies on — so this is a note, not a case.
+   */
+  #listKeyset(
+    query: JobQuery,
+    after: JobCursorKey,
+    bind: (value: unknown) => string,
+  ): string {
+    const fields = jobOrderFields(query.states, query.sort);
+    const cursor: KeysetCursor = {
+      columns: fields.map((field) => JOB_ORDER_COLUMNS[field]),
+      // A cursor whose key is short for its walk cannot be minted — the codec
+      // types every part — but reading a missing one as 0 keeps the predicate
+      // well formed rather than binding `undefined`.
+      values: fields.map((_field, at) => after.values[at] ?? 0),
+      idColumn: sortsByCreated(query) ? codePointId(this.dialect) : "id",
+      id: after.id,
+      direction: query.order,
+    };
+
+    return this.dialect.keysetAfter(bind, cursor);
+  }
+
+  /**
+   * The index a cursor page pins itself to, as text for the `FROM`, or `""`.
+   *
+   * MySQL and MariaDB only ({@link SqlDialect.indexHint}); everywhere else it
+   * is empty. It is the same hazard the claim's walk is pinned against, and
+   * measured here on 40,000 waiting jobs with a page three quarters in:
+   * **MySQL planned the seek as a `ref` over the whole state — 13.4ms,
+   * 39,835 rows estimated — and `FORCE INDEX` made it a `range`, 0.34ms.**
+   * MariaDB picked the `range` unaided and lost nothing for being told
+   * (0.47ms to 0.28ms), which is the claim's experience too: the choice swings
+   * with the statistics, so the hint is insurance there rather than a rescue.
+   *
+   * **Only the claim order, and only a single state**, because that is the
+   * only listing whose order is a bounded range of an index this driver has
+   * named to us. `(run_at)` would want `ix_…_due` and measured the same way
+   * (8.4ms as a `ref`, 0.32ms forced), but its name is not exported from
+   * `schema.ts` — a follow-up, not a duplicate of the naming convention here.
+   * Several states make the index's `state` key a list rather than a
+   * constant, and no hint applies.
+   *
+   * Never on an offset page: that plan is unchanged, and this is the one read
+   * whose whole point is that it does not walk what precedes it.
+   */
+  #listHint(query: JobQuery, states: JobState[]): string {
+    if (states.length !== 1 || this.#claimIndexMissing) {
+      return "";
+    }
+
+    const fields = jobOrderFields(query.states, query.sort);
+
+    if (fields.join(",") !== "priority,createdAt") {
+      return "";
+    }
+
+    return this.dialect.indexHint(claimIndexName(this.#tables.jobs));
   }
 
   /**
@@ -4378,12 +4488,23 @@ export class SqlDriver implements JobsDriver {
    * of those states in that queue are looked at, and nothing else. A search is
    * `LOWER(id) LIKE … OR LOWER(name) LIKE …` with `%`, `_` and the escape
    * character escaped, and never touches `data`.
+   *
+   * **{@link JobQuery.after} is honoured natively**, and the page then carries
+   * no `OFFSET` at all: the seek is a bound on the same index the `ORDER BY`
+   * reads (`#listKeyset`), so a page deep in a list costs what the first page
+   * costs instead of walking everything before it. The honour is declared by
+   * answering {@link JobPage.offset}, and the answer is **`null`** rather than
+   * a number — counting the rows before the key is an index range scan of
+   * exactly the size the `OFFSET` walks, which is the cost the cursor exists
+   * to avoid. `total`, when it is asked for, still counts every match: a
+   * cursor pages a list, it does not narrow it.
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     await this.connect();
 
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
+    const after = query.after;
 
     const attribution = attributionFilter(query);
 
@@ -4392,7 +4513,15 @@ export class SqlDriver implements JobsDriver {
       query.names?.length === 0 ||
       (attribution !== null && matchesNothing(attribution, query.states))
     ) {
-      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+      // Nothing matches, so the seek is answered by declaring it honoured:
+      // sending this page back undeclared would have `findJobPage` re-read a
+      // query that matches nothing by scan — which, with no states at all,
+      // would ask `listJobs` for `state IN ()`.
+      return {
+        jobs: [],
+        ...(query.total ? { total: 0 } : {}),
+        ...(after === undefined ? {} : { offset: null }),
+      };
     }
 
     // A range matches only finished jobs, so the other states are not even
@@ -4465,25 +4594,59 @@ export class SqlDriver implements JobsDriver {
           : [`finished_on < ${bind(attribution.finishedTo)}`]),
       ].join(" AND ");
 
-    const page = async (): Promise<JobRecord[]> => {
-      if (limit === 0) {
-        return [];
-      }
-
+    const read = async (hint: string): Promise<JobRecord[]> => {
       const { bind, values } = this.#binder();
+      // Bound in text order — `?` engines number positionally — so the seek is
+      // rendered where it stands in the `WHERE`, after everything `where`
+      // binds and before the `LIMIT`.
+      const conditions = where(bind);
+      const seek =
+        after === undefined
+          ? ""
+          : `
+            AND ${this.#listKeyset(query, after, bind)}`;
       const rows = await this.#all<Record<string, unknown>>(
-        `SELECT * FROM ${this.#tables.jobs}
-          WHERE ${where(bind)}
+        `SELECT * FROM ${this.#tables.jobs}${hint}
+          WHERE ${conditions}${seek}
           ORDER BY ${
             sortsByCreated(query)
               ? createdAtOrder(this.dialect, query.order)
               : this.#listOrder(query.states, query.order)
           }
-          LIMIT ${bind(limit)} OFFSET ${bind(offset)}`,
+          LIMIT ${bind(limit)}${
+            // A seek replaces the offset rather than joining it: `JobQuery`
+            // says `offset` is ignored when `after` is set.
+            after === undefined ? ` OFFSET ${bind(offset)}` : ""
+          }`,
         values,
       );
 
       return rows.map((row) => this.#toRecord(row));
+    };
+
+    const page = async (): Promise<JobRecord[]> => {
+      if (limit === 0) {
+        return [];
+      }
+
+      const hint = after === undefined ? "" : this.#listHint(query, states);
+
+      if (hint === "") {
+        return await read("");
+      }
+
+      try {
+        return await read(hint);
+      } catch (error) {
+        // A table whose claim index was dropped by hand still pages, unhinted:
+        // `FORCE INDEX` fails the statement rather than being ignored, and a
+        // missing index is no reason to fail an operator's read.
+        if (!this.dialect.isMissingHintedIndex(error)) {
+          throw error;
+        }
+        this.#claimIndexMissing = true;
+        return await read("");
+      }
     };
 
     const count = async (): Promise<number> => {
@@ -4504,7 +4667,13 @@ export class SqlDriver implements JobsDriver {
         ]),
     );
 
-    return total === undefined ? { jobs } : { jobs, total };
+    return {
+      jobs,
+      ...(total === undefined ? {} : { total }),
+      // See the method's doc: `null` is "I sought, and I did not count what
+      // precedes the page".
+      ...(after === undefined ? {} : { offset: null }),
+    };
   }
 
   /** Several jobs by id: one `IN (…)` per 500 distinct ids. */

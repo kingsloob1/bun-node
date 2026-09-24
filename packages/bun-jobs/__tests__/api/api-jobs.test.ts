@@ -289,7 +289,14 @@ describe("jobs", () => {
       "a",
       "b",
     ]);
-    expect(first.body.page).toEqual({ offset: 0, limit: 2, hasMore: true });
+    // An offset page mints a cursor too: jump to page N, then walk.
+    expect(first.body.page.next).toStartWith("jl1.");
+    expect({ ...first.body.page, next: undefined }).toEqual({
+      offset: 0,
+      limit: 2,
+      hasMore: true,
+      next: undefined,
+    });
     expect(first.body.items[0]).not.toHaveProperty("data");
     expect(first.body.items[0]).not.toHaveProperty("opts");
 

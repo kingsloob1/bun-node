@@ -96,6 +96,22 @@ export type {
   WorkerMetricsTotalsQuery,
 } from "./driver";
 export { FileDriver, type FileDriverOptions } from "./file-driver";
+export {
+  compareJobKey,
+  decodeJobCursor,
+  encodeJobCursor,
+  isAfterJob,
+  JOB_LIST_CURSOR_PREFIX,
+  type JobCursorKey,
+  jobCursorKey,
+  jobFieldValue,
+  type JobListWalk,
+  type JobOrderField,
+  jobOrderFields,
+  jobWalkIsSeekable,
+  refuseUnseekableWalk,
+  seekJobIndex,
+} from "./jobCursor";
 export { MemoryDriver } from "./memory-driver";
 export {
   addBusynessSample,

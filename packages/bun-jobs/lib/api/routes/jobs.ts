@@ -1,10 +1,17 @@
-import type { JobState } from "../../drivers/index";
+import type { JobCursorKey, JobListWalk, JobState } from "../../drivers/index";
 import type { BunQueue } from "../../queue/BunQueue";
 import type { Job } from "../../queue/Job";
 import type { ResolvedJobsApiConfig } from "../config";
 import type { JobInclude } from "../serialize";
 import type { AnyRouteDef, RouteContext, RouteServices } from "./define";
-import { supportsCreatedSort } from "../../drivers/index";
+import {
+  decodeJobCursor,
+  encodeJobCursor,
+  jobCursorKey,
+  jobOrderFields,
+  jobWalkIsSeekable,
+  supportsCreatedSort,
+} from "../../drivers/index";
 import { ConfigError } from "../../shared/errors";
 import { isAddableName } from "../config";
 import { ApiError, mapCallSiteError } from "../errors";
@@ -164,8 +171,19 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "jobs.list",
       mode: "jobs",
       summary: "A page of the queue's jobs",
-      description:
-        "Offset pagination over the states asked for, in their natural order by default; `sort=createdAt` orders by creation time instead where `features.addedByState` is true (400 `INVALID_ARGUMENT` elsewhere). Jobs move between states while you page, so a page can repeat or skip a job: treat it as live data. Lists omit `data`, `returnValue`, `stacktrace` and `opts` unless `include` asks for them. `stacktrace` entries (and `failedReason`) carry `stack` only with `serialize.exposeStacks`; otherwise each is the error's `name` and `message`, plus `code`, `data` and `cause` when it had them.",
+      description: `Two ways to page the states asked for, and they answer different questions. **\`cursor\` walks the list**: send back the \`page.next\` of the page before, and this one starts at the job after the last one you were shown. **\`offset\` samples it**: it counts matching jobs, which is how you jump straight to page N. Both are supported for good, neither is deprecated, and a request naming both uses the cursor. Jobs come back in their states' natural order by default; \`sort=createdAt\` orders by creation time instead, where \`features.addedByState\` is true (400 \`INVALID_ARGUMENT\` elsewhere). Lists omit \`data\`, \`returnValue\`, \`stacktrace\` and \`opts\` unless \`include\` asks for them. \`stacktrace\` entries (and \`failedReason\`) carry \`stack\` only with \`serialize.exposeStacks\`; otherwise each is the error's \`name\` and \`message\`, plus \`code\`, \`data\` and \`cause\` when it had them.
+
+**An \`offset\` page of this list is live data, and \`order=asc\` is the direction where that goes wrong silently.** Jobs are claimed off the head of a queue, so the window slides backwards under a fixed offset and the next page steps over jobs in the middle that nobody touched — no repeat, no broken order, and \`total\` (opt-in here, so most clients do not even have it) moves for a reason indistinguishable from an arrival. Measured over 868 trials against a draining queue: **1,259 unreachable jobs, every one of them on \`order=asc\`, and 94 of those 217 trials lost jobs without a single repeat to announce it.** \`order=desc\` lost nothing in 434 trials; its failure is a repeat, which any client that remembers what it showed can see.
+
+**The cursor is what fixes it.** It names the job you stopped at rather than a count, so a job leaving the list shifts nothing under it. Measured on a queue draining as fast as it fills, paging \`waiting\` in \`asc\`: of the jobs that were **still waiting when the walk ended** — the ones nobody claimed and every one of which the operator meant to read — \`offset\` lost about a third and \`cursor\` lost none, on memory, PostgreSQL and Redis alike.
+
+**What the cursor does not fix, said plainly.** A job whose **priority is lowered while you are paging** jumps *behind* the cursor and is never shown: the walk has already passed that point in the order. An \`offset\` page misses it too, but announces itself by repeating a row — so here the cursor trades a *detectable* miss for a *silent* one. It costs one job per operator re-prioritisation, against the twenty per hundred that ordinary draining costs an offset, but it is a real residue and not a rounding error. \`delayed\` and \`failed\` carry the same shape: a job that retries is re-scheduled, and so moves in the \`runAt\` order. A job that simply leaves the states you asked for, or is removed, is missed by both schemes and by every other: nothing can show a row that is no longer there.
+
+**What it costs, which is not uniform.** Where an index carries the order, a cursor page is a bounded range and its cost stops growing with depth: measured at a 50-row page 20,000 jobs deep, MongoDB's \`waiting\` went from 20,050 index keys and 352 ms to 51 keys and under a millisecond, and a 40,000-job \`waiting\` page at 75% went from 11.6 ms to 0.52 ms on PostgreSQL, 62.8 ms to 0.35 ms on MariaDB and 98.5 ms to 0.48 ms on MySQL. The file driver, whose sort key is its file name, went from 79.7 ms to 2.2 ms on a 4,000-job list. **Where no index carries the order it is a filter rather than a range**, and the gain is smaller: \`completed\`/\`dead\` on PostgreSQL, MySQL and MariaDB (which deliberately keep no \`finished_on\` index — it costs 25-35% on every completion), and every \`createdAt\`-ordered listing on every backend (several states, \`waiting-children\`, \`sort=createdAt\`), still sort the whole matching set. Measured there: 32.7 ms by offset against 8.5 ms by cursor, because the seek drops three quarters of the rows before the sort rather than after. Correctness is the same everywhere; only the speed-up varies.
+
+**\`state=active\` on its own cannot be walked** — a \`cursor\` with it is 400 \`INVALID_ARGUMENT\`. Its natural order is \`lockExpiresAt\`, which every worker rewrites each time it renews a lock: several times a minute, per job, with no operator involved. A cursor there would be anchored to a key that has already moved, so it would be no more stable than the offset it replaced, and implying otherwise is worse than the offset. Page \`active\` with \`offset\`, or walk it with \`sort=createdAt\`, which is immutable.
+
+**Cursors are opaque and bound to their walk.** Do not build or parse one: it holds the backend's ordering key, and the backends do not agree on it — the memory and Redis drivers break ties on an insertion counter where SQL, MongoDB and the file driver break them on the id. One this route did not issue, or one belonging to another queue, other states, the other sort or the other order, is 400 \`INVALID_ARGUMENT\`, never a silent restart at page one, which a walking client cannot tell from the end of the list. **\`page.next\` is \`null\` exactly when the walk is complete, and that is the only end signal** — a short page is not one, since a filter can shorten a page anywhere in a list. \`page.offset\` reports where the seek landed **when the backend knows it for free** — the memory driver, Redis, the shared scan, and the file driver except on a filtered page that asked for no \`total\`. On SQL and MongoDB it is *absent* on a cursor page, because counting the jobs before the key is an index range scan of exactly the size the \`OFFSET\` would have walked, and paying it would make the cursor cost what the offset cost.`,
       tags: ["Jobs"],
       params: QueueParams,
       query: jobListQuerySchema(limits.defaultPageSize, limits.maxPageSize),
@@ -180,6 +198,36 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             ? [...new Set(query.state)]
             : [...JOB_STATES];
         const include = includeOf(query.include, JOB_LIST_INCLUDE);
+        // Which walk a cursor has to belong to, and the one `page.next` is
+        // minted for: the queue in the path, the states, the sort and the
+        // order — every parameter that decides what the walk visits and in
+        // what sequence. Filters are not part of it: narrowing a list does not
+        // move the jobs in it, so a cursor stays valid across one.
+        const walk: JobListWalk = {
+          ns: services.config.namespace,
+          queue: params.queue,
+          states,
+          sort: query.sort,
+          order: query.order,
+        };
+        const seekable = jobWalkIsSeekable(states, query.sort);
+        /**
+         * The cursor continuing this page, or `null` when the walk ends here.
+         *
+         * Minted on an **offset** page too, so a client can jump to page N
+         * with an offset and then walk on from it — which is the only way to
+         * have both a page number and a walk that loses nothing.
+         */
+        const nextCursor = (
+          last: Job<unknown, unknown> | undefined,
+          hasMore: boolean,
+        ): string | null =>
+          hasMore && last !== undefined && seekable
+            ? encodeJobCursor(
+                walk,
+                jobCursorKey(last.toJSON(), jobOrderFields(states, query.sort)),
+              )
+            : null;
         const finishedFrom =
           query.finishedFrom === undefined
             ? undefined
@@ -258,6 +306,63 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
           ...(finishedTo === undefined ? {} : { finishedTo }),
         };
 
+        // A cursor read is a different call: it seeks rather than counts, and
+        // it hands back the key of the job the page ended on. Decoded here
+        // rather than in the queue, because only the route knows the walk the
+        // cursor has to belong to, and a bad cursor must be a 400 rather than
+        // a page one that reads like the end of the list.
+        if (query.cursor !== undefined) {
+          if (!seekable) {
+            throw new ApiError(
+              "INVALID_ARGUMENT",
+              400,
+              "`active` cannot be walked with a `cursor`: its order is `lockExpiresAt`, which every worker rewrites each time it renews a lock, so a cursor there would be no more stable than an `offset`. Page `active` with `offset`, or walk it with `sort=createdAt`.",
+              { context: { state: states } },
+            );
+          }
+
+          let after: JobCursorKey;
+          try {
+            after = decodeJobCursor(query.cursor, walk);
+          } catch (error) {
+            throw new ApiError(
+              "INVALID_ARGUMENT",
+              400,
+              error instanceof ConfigError
+                ? error.message
+                : "cursor is not one this walk issued",
+              { cause: error, context: { cursor: query.cursor } },
+            );
+          }
+
+          const page = await listing(() =>
+            queue.walk(states, {
+              limit: query.limit,
+              order: query.order,
+              after,
+              ...(query.total ? { total: true } : {}),
+              ...filters,
+            }),
+          );
+
+          return {
+            body: {
+              items: page.jobs.map((job) => dto(ctx, queue, job, include)),
+              page: {
+                // Only where the backend knew it for free; see `JobPage.offset`.
+                ...(page.offset === null ? {} : { offset: page.offset }),
+                limit: query.limit,
+                ...(page.total === undefined ? {} : { total: page.total }),
+                hasMore: page.next !== null,
+                // Null is the end of the walk, and it is the *only* end signal
+                // a cursor client needs. A page that ends the list mints none.
+                next:
+                  page.next === null ? null : encodeJobCursor(walk, page.next),
+              },
+            },
+          };
+        }
+
         // A total has to see every match, so it is asked for only when the
         // caller wants it; `hasMore` then follows from the total rather than
         // from reading one extra job.
@@ -270,6 +375,7 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
               ...filters,
             }),
           );
+          const hasMore = query.offset + page.jobs.length < page.total;
           return {
             body: {
               items: page.jobs.map((job) => dto(ctx, queue, job, include)),
@@ -277,7 +383,8 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
                 offset: query.offset,
                 limit: query.limit,
                 total: page.total,
-                hasMore: query.offset + page.jobs.length < page.total,
+                hasMore,
+                next: nextCursor(page.jobs.at(-1), hasMore),
               },
             },
           };
@@ -292,15 +399,16 @@ export function jobRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             ...filters,
           }),
         );
+        const hasMore = jobs.length > query.limit;
+        const items = jobs.slice(0, query.limit);
         return {
           body: {
-            items: jobs
-              .slice(0, query.limit)
-              .map((job) => dto(ctx, queue, job, include)),
+            items: items.map((job) => dto(ctx, queue, job, include)),
             page: {
               offset: query.offset,
               limit: query.limit,
-              hasMore: jobs.length > query.limit,
+              hasMore,
+              next: nextCursor(items.at(-1), hasMore),
             },
           },
         };
