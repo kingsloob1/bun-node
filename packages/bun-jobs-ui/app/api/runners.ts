@@ -27,11 +27,19 @@ export const runnerKeys = {
   runner: (id: string) => ["runner", id] as const,
   /** `GET /runners/:runner`. */
   detail: (id: string) => ["runner", id, "detail"] as const,
-  /** Every `GET /runners/:runner/history`, whatever its limit. */
+  /** Every `GET /runners/:runner/history`, whatever window it asked for. */
   historyAll: (id: string) => ["runner", id, "history"] as const,
-  /** One `GET /runners/:runner/history?limit=`. */
-  history: (id: string, limit: number) =>
-    ["runner", id, "history", { limit }] as const,
+  /**
+   * One `GET /runners/:runner/history` window.
+   *
+   * The **offset is part of the key**: the route pages on the server, so two
+   * windows of one runner are two different answers, and a key holding only
+   * the limit would serve page 2 the cached page 1. Every invalidation goes
+   * through {@link runnerKeys.historyAll} (or {@link runnerKeys.runner}
+   * above it), which is the prefix of all of them, so no window is missed.
+   */
+  history: (id: string, window: HistoryWindow) =>
+    ["runner", id, "history", { ...window }] as const,
   /** `GET /runners/:runner/stats`. */
   stats: (id: string) => ["runner", id, "stats"] as const,
 };
@@ -79,15 +87,31 @@ export async function getRunner(
   );
 }
 
-/** `GET /runners/:runner/history?limit=`, newest first. */
+/**
+ * One window of `GET /runners/:runner/history`.
+ *
+ * `limit` bounds a **page**, not how far back `offset` may read: the route
+ * caps `limit` at `limits.maxHistory` (more is 400 `VALIDATION`) and leaves
+ * `offset` uncapped, so every stored run is reachable.
+ */
+export interface HistoryWindow {
+  /** Runs skipped before the page. `0` is the first page. */
+  offset: number;
+  /** Runs on the page, `1` to `limits.maxHistory`. */
+  limit: number;
+  /** Which end to read from, by start time. `"desc"` is newest first. */
+  order: "asc" | "desc";
+}
+
+/** `GET /runners/:runner/history`: one window of the runner's stored runs. */
 export function getRunnerHistory(
   api: ApiClient,
   id: string,
-  limit: number,
+  window: HistoryWindow,
   signal?: AbortSignal,
 ): Promise<RunnerHistoryDto> {
   return api.request<RunnerHistoryDto>("GET", base(id, "/history"), {
-    query: { limit },
+    query: { offset: window.offset, limit: window.limit, order: window.order },
     signal,
   });
 }

@@ -1,8 +1,6 @@
 import type { RunnerInfoDto, RunRecordDto } from "../../api/types";
-import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useState } from "react";
 import { hasRunLogs } from "../../api/runnerLogs";
-import { getRunnerHistory, runnerKeys } from "../../api/runners";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
@@ -13,25 +11,17 @@ import { ProblemBanner } from "../../components/ProblemBanner";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
-import { useApiClient } from "../../context";
 import { formatNumber, plural } from "../../format";
 import { useMeta } from "../../meta/hooks";
 import { useCanMutate } from "../queues/gating";
-import { clampLimit, intParam, useUrlParams } from "../queues/urlState";
+import { useUrlParams } from "../queues/urlState";
 import { runnerActionGates } from "./actions/gating";
 import { ClearHistoryDialog } from "./actions/RunnerDialogs";
-import { useHistoryPage } from "./historyPage";
-import { useHistoryRefetchInterval } from "./live";
+import { useRunnerHistory } from "./historyPage";
 import { LOGS_PARAM } from "./runLogFormat";
 import { useCanReadRunLogs } from "./runLogGates";
 import { RunLogsSection } from "./RunLogsSection";
-import {
-  defaultHistoryLimit,
-  historyLimitOptions,
-  newestFirst,
-  RUN_SOURCE,
-  runDuration,
-} from "./runnerFormat";
+import { historyLimitOptions, RUN_SOURCE, runDuration } from "./runnerFormat";
 import { RunRecordDetails, RunStatusBadge } from "./RunRecord";
 
 /** Props of {@link RunnerHistory}. */
@@ -148,15 +138,17 @@ function HistoryRow({ run, showLogs }: HistoryRowProps) {
 }
 
 /**
- * `GET /runners/:runner/history`: the recent runs, newest first, with a size
- * select capped at `limits.maxHistory` (kept in the URL as `history`).
+ * `GET /runners/:runner/history`: the runner's whole stored history, newest
+ * first, one server page at a time. The "Runs shown" select is the page size,
+ * capped at `limits.maxHistory` (kept in the URL as `history`), and the pager
+ * moves the window (`offset`). Where a page comes from is
+ * {@link useRunnerHistory}'s business, not this component's.
  */
 export function RunnerHistory({
   runner,
   enabled = true,
   info,
 }: RunnerHistoryProps) {
-  const api = useApiClient();
   const canMutate = useCanMutate();
   // Clear history… lives here, above the runs it clears, rather than with the
   // runner's other actions in the page header.
@@ -169,25 +161,21 @@ export function RunnerHistory({
   // Like the workers table's actions column: a caller who cannot read run
   // logs sees the table without the column, not a column of blanks.
   const showLogs = useCanReadRunLogs();
-  const fallback = defaultHistoryLimit(limits.maxHistory);
-  const limit = clampLimit(
-    intParam(params, "history", fallback),
-    limits.maxHistory,
-  );
   const options = historyLimitOptions(limits.maxHistory);
+  const openRunId = showLogs ? params.get(LOGS_PARAM) : null;
 
-  const refetchInterval = useHistoryRefetchInterval();
-  const history = useQuery({
-    queryKey: runnerKeys.history(runner, limit),
-    queryFn: ({ signal }) => getRunnerHistory(api, runner, limit, signal),
-    refetchInterval,
+  // The page on screen, read from the server: `historyPage.ts` is the only
+  // place that knows where a page comes from.
+  const page = useRunnerHistory({
+    runner,
+    maxHistory: limits.maxHistory,
     enabled,
+    openRunId,
   });
-  // The rows in the order the table lists them, then the page of them: the
-  // fetch above is unchanged, and `historyPage.ts` is the only place that
-  // knows where a page comes from.
-  const runs = history.data ? newestFirst(history.data.items) : [];
-  const page = useHistoryPage(runs, showLogs ? params.get(LOGS_PARAM) : null);
+  const history = page.query;
+  // The whole history, not this page: an empty page past the end is not an
+  // empty history, and Clear history… clears every run there is.
+  const noRuns = history.data !== undefined && page.total === 0;
 
   return (
     <Card
@@ -199,12 +187,8 @@ export function RunnerHistory({
               size="sm"
               variant="danger"
               // Nothing to clear yet: say so rather than open an empty dialog.
-              disabled={history.data?.items.length === 0}
-              title={
-                history.data?.items.length === 0
-                  ? "No runs to clear."
-                  : undefined
-              }
+              disabled={noRuns}
+              title={noRuns ? "No runs to clear." : undefined}
               onClick={() => setClearing(true)}
             >
               Clear history…
@@ -215,11 +199,9 @@ export function RunnerHistory({
             <Select
               id={selectId}
               options={options.map((value) => ({ value: String(value) }))}
-              value={String(limit)}
+              value={String(page.limit)}
               onChange={(value) =>
-                update({
-                  history: Number(value) === fallback ? null : value,
-                })
+                page.onChange({ offset: page.offset, limit: Number(value) })
               }
             />
           </div>
@@ -243,10 +225,17 @@ export function RunnerHistory({
           title="Could not load the history"
           onRetry={() => void history.refetch()}
         />
-      ) : history.data.items.length === 0 ? (
+      ) : noRuns ? (
         <EmptyState
           title="No runs yet"
           description="Runs show here, newest first, once this runner has run."
+        />
+      ) : page.rows.length === 0 ? (
+        // A window past the end of the history — a stale link, or runs that
+        // went while it was open. Not "no runs yet": there are runs, behind us.
+        <EmptyState
+          title="No runs on this page"
+          description="This page starts past the end of the history. Go back for the runs it holds."
         />
       ) : (
         <Table
@@ -288,24 +277,36 @@ export function RunnerHistory({
           </tbody>
         </Table>
       )}
-      {page.paged && (
-        <>
-          <Pager
-            label="History pages"
-            offset={page.offset}
-            limit={page.limit}
-            total={page.total}
-            itemCount={page.rows.length}
-            onChange={page.onChange}
-          />
-          <p
-            className="muted history-paging-note"
-            data-testid="history-paging-note"
+      {page.openRunOffPage && (
+        // The URL opens a run's log, and that run is not among these rows.
+        // Its page cannot be worked out — no route reports where a run sits,
+        // and these rows do not hold it — so say so rather than open nothing.
+        <p
+          className="muted history-open-log-note"
+          data-testid="history-open-log-note"
+        >
+          {`The log this link opens belongs to run ${openRunId}, which is not on this page — it is further back in the history, or gone. `}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => update({ [LOGS_PARAM]: null })}
           >
-            These pages divide the runs fetched — the “Runs shown” number above
-            — not the runner’s whole history. To reach older runs, fetch more.
-          </p>
-        </>
+            Close log
+          </Button>
+        </p>
+      )}
+      {page.paged && (
+        <Pager
+          label="History pages"
+          offset={page.offset}
+          limit={page.limit}
+          total={page.total}
+          itemCount={page.rows.length}
+          pageSizes={options}
+          maxPageSize={limits.maxHistory}
+          disabled={page.turning}
+          onChange={page.onChange}
+        />
       )}
     </Card>
   );

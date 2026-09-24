@@ -152,11 +152,15 @@
 }
 
 /*
- * Under the history's pager: what the pages divide. It is the last thing in
- * the card, so it is aligned with the pager's range text on the left.
+ * Above the history's pager: the `?logs=` link names a run this page does not
+ * hold, so nothing on screen is expanded and the note says why.
  */
-.history-paging-note {
-  margin: 0;
+.history-open-log-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
   font-size: var(--text-xs);
 }
 

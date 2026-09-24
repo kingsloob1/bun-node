@@ -4,6 +4,7 @@ import type {
   RunRecordDto,
   WorkerDto,
 } from "../../app/api/types";
+import type { RecordedCall } from "./mockFetch";
 import { describe, expect, it } from "bun:test";
 import { fireEvent, page, setupDom, visit, waitFor, within } from "./dom";
 import { permissionsFixture } from "./fixtures";
@@ -14,7 +15,7 @@ import {
 } from "./queues/fixtures";
 import { renderApp } from "./renderApp";
 import {
-  historyFixture,
+  historyPager,
   renderRunner,
   runFixture,
   runnerListFixture,
@@ -26,10 +27,11 @@ import { workerFixture } from "./workers/fixtures";
  * queue's workers and repeat series, a worker key's instances, the runners
  * and a runner's history.
  *
- * Every one of them is cut in the browser from rows already fetched, so each
+ * Most of them are cut in the browser from rows already fetched, so each
  * table is checked the same four ways: the pager appears, a page change shows
  * the next rows, the rows-per-page select changes the window, and a table
- * that fits one page grows no pager at all.
+ * that fits one page grows no pager at all. The runner history is the
+ * exception: it pages on the server, so its section checks the requests too.
  */
 
 setupDom();
@@ -430,7 +432,7 @@ describe("the runners list", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * A runner's history: paged within the runs fetched
+ * A runner's history: the server's pages, windowed from the URL
  * ------------------------------------------------------------------ */
 
 /** `count` finished runs, newest first, named `run-00`, `run-01`, …. */
@@ -444,79 +446,133 @@ function runs(count: number): RunRecordDto[] {
   return Array.from({ length: count }, (_unused, index) => at(index));
 }
 
-/** The `nightly` runner screen with `count` runs in its history. */
+/**
+ * The `nightly` runner screen over a history of `count` stored runs, served
+ * by a handler that windows them as the route does — so a page turn here is
+ * the real thing: a new request, and rows only that request returned.
+ */
 async function openHistory(count: number, query = "") {
-  renderRunner({
+  const rendered = renderRunner({
     path: `/runners/nightly${query}`,
     handlers: {
-      "GET /runners/nightly/history": {
-        body: historyFixture({ items: runs(count) }),
-      },
+      "GET /runners/nightly/history": historyPager(runs(count)),
       "GET /runners/nightly/runs/run-27/logs": {
         body: { runId: "run-27", lines: [], nextCursor: null, dropped: 0 },
       },
     },
   });
-  return page().findByRole("table", { name: "Run history" });
+  const table = await page().findByRole("table", { name: "Run history" });
+  return { ...rendered, table };
+}
+
+/** Every `GET /runners/nightly/history` the screen has made, in order. */
+function historyReads(calls: readonly RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => call.path === "/runners/nightly/history");
 }
 
 describe("a runner's history", () => {
-  it("pages the runs fetched at 25, and says that is what it pages", async () => {
-    const table = await openHistory(30);
+  it("pages the whole history on the server, re-reading with a new offset", async () => {
+    const { table, calls } = await openHistory(30, "?history=25");
     expect(rowIds(table)).toHaveLength(25);
     expect(rowIds(table)[0]).toBe("history-row-run-00");
-    expect(page().getByTestId("history-paging-note").textContent).toContain(
-      "Runs shown",
-    );
+    expect(requirePager("History pages").textContent).toContain("1–25 of 30");
+    const before = historyReads(calls).length;
 
     turn("History pages", "Next");
     await waitFor(() => expect(rowIds(table)).toHaveLength(5));
     expect(rowIds(table)[0]).toBe("history-row-run-25");
+    // The rows came from the server, not from a slice of what was already here.
+    expect(historyReads(calls).length).toBeGreaterThan(before);
+    expect(historyReads(calls).at(-1)!.query.get("offset")).toBe("25");
+    expect(historyReads(calls).at(-1)!.query.get("order")).toBe("desc");
+    expect(window.location.search).toContain("offset=25");
   });
 
-  it("changes the window with the rows-per-page select", async () => {
-    const table = await openHistory(30);
+  it("changes the page size with either select, and restarts paging", async () => {
+    const { table, calls } = await openHistory(30, "?history=25");
+    turn("History pages", "Next");
+    await waitFor(() => expect(rowIds(table)[0]).toBe("history-row-run-25"));
+
     setPageSize("History pages", 10);
     await waitFor(() => expect(rowIds(table)).toHaveLength(10));
     expect(rowIds(table).at(-1)).toBe("history-row-run-09");
-  });
-
-  it("opens the page holding the run whose log the URL names", async () => {
-    // `run-27` is on the second page, so a ?logs= link would otherwise open
-    // nothing at all.
-    const table = await openHistory(30, "?logs=run-27");
-    await waitFor(() =>
-      expect(
-        table.querySelector('[data-testid="history-row-run-27"]'),
-      ).toBeTruthy(),
+    expect(historyReads(calls).at(-1)!.query.get("limit")).toBe("10");
+    // A new size starts again at the first page: the old offsets named
+    // different runs.
+    expect(historyReads(calls).at(-1)!.query.get("offset")).toBe("0");
+    expect(new URLSearchParams(window.location.search).has("offset")).toBe(
+      false,
     );
-    expect(requirePager("History pages").textContent).toContain("26–30 of 30");
+
+    // The card's own "Runs shown" select is the same value, and behaves the
+    // same way.
+    fireEvent.change(page().getByLabelText("Runs shown"), {
+      target: { value: "25" },
+    });
+    await waitFor(() => expect(rowIds(table)).toHaveLength(25));
+    expect(new URLSearchParams(window.location.search).get("history")).toBe(
+      "25",
+    );
   });
 
-  it("has no pager when the runs fetched fit one page", async () => {
-    const table = await openHistory(25);
-    expect(rowIds(table)).toHaveLength(25);
-    expect(pagerCount("History pages")).toBe(0);
+  it("lands a ?logs= link on the page its URL carries", async () => {
+    // A Log button writes `logs` into the query string it was pressed on, so
+    // a copied link carries the run's page with it.
+    const { table } = await openHistory(
+      30,
+      "?history=25&offset=25&logs=run-27",
+    );
     expect(
-      document.querySelectorAll('[data-testid="history-paging-note"]').length,
+      table.querySelector('[data-testid="history-row-run-27"]'),
+    ).toBeTruthy();
+    expect(requirePager("History pages").textContent).toContain("26–30 of 30");
+    expect(
+      document.querySelectorAll('[data-testid="history-open-log-note"]').length,
     ).toBe(0);
   });
 
-  it("reads nothing more to turn a page", async () => {
-    const { calls } = renderRunner({
-      path: "/runners/nightly",
+  it("says so when the open log's run is not on the page, and closes it", async () => {
+    // `run-27` is on the last page; this link names it from the first. Its
+    // page cannot be worked out from rows that do not hold it, so the card
+    // says where the reader stands rather than opening nothing.
+    const { table } = await openHistory(30, "?history=25&logs=run-27");
+    const note = await page().findByTestId("history-open-log-note");
+    expect(note.textContent).toContain("run-27");
+    expect(rowIds(table)[0]).toBe("history-row-run-00");
+
+    fireEvent.click(within(note).getByRole("button", { name: "Close log" }));
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll('[data-testid="history-open-log-note"]')
+          .length,
+      ).toBe(0),
+    );
+    expect(new URLSearchParams(window.location.search).has("logs")).toBe(false);
+  });
+
+  it("has no pager when the whole history fits one page", async () => {
+    const { table } = await openHistory(25, "?history=25");
+    expect(rowIds(table)).toHaveLength(25);
+    expect(pagerCount("History pages")).toBe(0);
+  });
+
+  it("reports an offset past the end as an empty page, not an empty history", async () => {
+    renderRunner({
+      path: "/runners/nightly?history=25&offset=500",
       handlers: {
-        "GET /runners/nightly/history": {
-          body: historyFixture({ items: runs(30) }),
-        },
+        "GET /runners/nightly/history": historyPager(runs(30)),
       },
     });
-    const table = await page().findByRole("table", { name: "Run history" });
-    const reads = () =>
-      calls.filter((call) => call.path === "/runners/nightly/history").length;
-    const before = reads();
-    turn("History pages", "Next");
-    await waitFor(() => expect(rowIds(table)[0]).toBe("history-row-run-25"));
-    expect(reads()).toBe(before);
+    expect(await page().findByText("No runs on this page")).toBeTruthy();
+    expect(
+      document.querySelectorAll("[data-testid^=history-row-]"),
+    ).toHaveLength(0);
+    // The history is not empty, so Clear history… stays live and the pager is
+    // there to come back with.
+    const clear = page().getByRole("button", {
+      name: "Clear history…",
+    }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    expect(requirePager("History pages").textContent).toContain("0 of 30");
   });
 });
