@@ -2418,15 +2418,54 @@ checkEqual(
 // that figure is the size the screen really pages at. Same reason as the row
 // count above: a number in prose that nothing compares to its source drifts.
 const pagerGates = GATES.filter((gate: Gate) => gate.pagedTable !== undefined);
+/**
+ * The rows-per-page figure a pager row states: the number inside the
+ * parentheses, however the sentence goes on.
+ *
+ * It used to be `/\((\d+)\)/`, which needs a `)` immediately after the digits
+ * — and that made this check fail on prose that got *better*. PR #141 rewrote
+ * the Runners list row's "(25)" as "(25 by default; `limit` is in the URL, so
+ * the size a reader picks is what a page holds)", correcting a rule to a
+ * default without touching the number, and the check went red on develop and
+ * stayed red. A check that fires on a rewording is a check somebody eventually
+ * deletes, so the pattern reads the figure and lets the prose be prose. That
+ * exact edit is the fixture below.
+ */
+const PAGE_FIGURE = /\((\d+)\b/;
+/** The figure a pager row states, or `undefined` where it states none. */
+function statedPageSize(gate: Gate): string | undefined {
+  const cell = readme.find((row) => row.element === gate.row)?.needs ?? "";
+  return PAGE_FIGURE.exec(cell)?.[1];
+}
+show(
+  "the figure each pager row states, as `PAGE_FIGURE` reads it",
+  pagerGates.map((gate: Gate) => `${gate.row}: ${statedPageSize(gate)}`),
+);
 checkEqual(
   `all ${pagerGates.length} pager rows state the page size their table pages at`,
-  pagerGates.map((gate: Gate) => {
-    const cell = readme.find((row) => row.element === gate.row)?.needs ?? "";
-    return `${gate.row}: ${/\((\d+)\)/.exec(cell)?.[1]}`;
-  }),
+  pagerGates.map((gate: Gate) => `${gate.row}: ${statedPageSize(gate)}`),
   pagerGates.map(
     (gate: Gate) => `${gate.row}: ${PAGE_SIZES[gate.pagedTable!]}`,
   ),
+);
+// The other half of that: the figure must still be compared, so a rewording
+// that changes the number has to fail. The #141 edit is the fixture — both
+// spellings of that row give 25, and the pattern this replaced read only the
+// first, which is how develop came to be red.
+const REWORDED = [
+  "the Runners nav entry's needs, and more runners match the filter than one page holds (25). Its window lives in the URL, as the queue list's does, and changing the filter restarts it",
+  "the Runners nav entry's needs, and more runners match the filter than one page holds (25 by default; `limit` is in the URL, so the size a reader picks is what a page holds). Its window lives in the URL, as the queue list's does, and changing the filter restarts it",
+];
+checkEqual(
+  "rewording a row around an unchanged figure does not move the figure (PR #141's own edit), while the pattern it replaced read only the first spelling",
+  [
+    REWORDED.map((cell) => PAGE_FIGURE.exec(cell)?.[1]),
+    REWORDED.map((cell) => /\((\d+)\)/.exec(cell)?.[1]),
+  ],
+  [
+    ["25", "25"],
+    ["25", undefined],
+  ],
 );
 
 /** The rows gating on an opt-in action, and whether their cell says "opt-in". */
