@@ -211,7 +211,12 @@ describe("clear history: in the History card, not the header", () => {
   });
 
   it("is disabled, saying so, when the history is empty", async () => {
-    const { calls } = await renderActions({ history: { items: [] } });
+    const { calls } = await renderActions({
+      history: {
+        items: [],
+        page: { offset: 0, limit: 50, total: 0, hasMore: false },
+      },
+    });
     expect(within(historyCard()).getByText("No runs yet")).not.toBeNull();
     const button = clearHistoryButton()!;
     expect(button).not.toBeNull();

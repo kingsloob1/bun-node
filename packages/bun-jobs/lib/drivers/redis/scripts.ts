@@ -2879,6 +2879,54 @@ return redis.call('LPOP', KEYS[1])
 `;
 
 /**
+ * Reads a page of the history **and the list's length in one step**.
+ *
+ * A script rather than an `LLEN` beside an `LRANGE`, because the two describe
+ * one list: a run starting between them would answer a page of one list with
+ * the size of another, and the pager's last page would repeat or vanish.
+ *
+ * The list is newest first, so `desc` reads it as stored and `asc` is its
+ * reverse — computed as indices rather than by fetching the list and
+ * reversing it, so a page at the old end costs no more than one at the new.
+ *
+ * KEYS: history list. ARGV: offset, limit, order (`asc` or `desc`).
+ * Returns: the total, then the page's records.
+ */
+export const PAGE_HISTORY = `
+local total = redis.call('LLEN', KEYS[1])
+local offset = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local out = { total }
+
+if limit > 0 and offset < total then
+  local first, last
+  if ARGV[3] == 'asc' then
+    -- Count from the old end: the last element is the oldest record.
+    last = total - 1 - offset
+    first = last - limit + 1
+    if first < 0 then first = 0 end
+  else
+    first = offset
+    last = offset + limit - 1
+  end
+
+  local page = redis.call('LRANGE', KEYS[1], first, last)
+  if ARGV[3] == 'asc' then
+    -- LRANGE answers in list order (newest first); asc wants the reverse.
+    for i = #page, 1, -1 do
+      out[#out + 1] = page[i]
+    end
+  else
+    for i = 1, #page do
+      out[#out + 1] = page[i]
+    end
+  end
+end
+
+return out
+`;
+
+/**
  * Prepends a run record and trims the history in one step.
  *
  * KEYS: history list. ARGV: record, keep.

@@ -335,7 +335,12 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       operationId: "getRunnerHistory",
       action: "runners.read",
       mode: "runner",
-      summary: "The runner's recent runs, newest first, from any process",
+      summary: "A page of the runner's runs, newest first, from any process",
+      description: `Offset pagination over the runner's stored runs. \`page.total\` is the whole history's size, always present and exact — the history is a bounded list (\`keepHistory\` records) that every backend holds whole, so counting it costs nothing the page has not already read. That is why it is unconditional here and opt-in on \`GET /queues/{queue}/jobs\`, where a total means counting a queue.
+
+**\`limits.maxHistory\` bounds a page, not how deep you can read.** It used to be both, and a \`keepHistory\` above it stored runs no client could reach; \`offset\` is uncapped precisely so that it no longer does. A \`limit\` above the cap is 400 \`VALIDATION\`, never a quietly shortened page, and \`GET /meta\` reports the cap.
+
+**The history grows at the head, so treat a page as live data.** A run *starting* between two requests prepends a record and shifts every later one down, so the next offset repeats a row; a run *finishing* does not, because it patches its record in place rather than adding one. \`keepHistory\` trimming the far end can skip a row the same way. \`page.total\` is what detects both: a client whose \`total\` moved between two pages knows the window did too, and can re-read. The same hazard \`GET /queues/{queue}/jobs\` documents, with the same answer.`,
       tags: ["Runners"],
       params: RunnerParams,
       query: historyQuerySchema(limits.maxHistory),
@@ -344,7 +349,13 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       target: ({ params }) => runnerTarget(params.runner),
       handler: async ({ req, params, query, services }) => {
         const { controller } = await services.runners.resolve(params.runner);
-        const records = await controller.history(query.limit);
+        // One read for the records and the count, so the two cannot disagree
+        // about a run that started between them — see `pageHistory`.
+        const { records, total } = await controller.historyPage({
+          offset: query.offset,
+          limit: query.limit,
+          order: query.order,
+        });
         return {
           body: {
             items: records.map((record) =>
@@ -354,6 +365,12 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
                 services.config.serialize,
               ),
             ),
+            page: {
+              offset: query.offset,
+              limit: query.limit,
+              total,
+              hasMore: query.offset + records.length < total,
+            },
           },
         };
       },

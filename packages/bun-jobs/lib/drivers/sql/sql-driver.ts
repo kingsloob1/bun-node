@@ -79,6 +79,7 @@ import type {
   WorkerMetricsRef,
 } from "../metrics";
 import type { PendingThroughput, ThroughputWriteResult } from "../readApis";
+import type { RunHistoryPage, RunHistoryQuery } from "../runHistory";
 import type { SchemaChange, SchemaSyncOptions } from "../schemaSync";
 import type {
   ClaimCursor,
@@ -164,6 +165,7 @@ import {
   throughputBucket,
   ThroughputBuffer,
 } from "../readApis";
+import { pageRunHistory } from "../runHistory";
 import { emptyRunLog, runLogBytes } from "../runLogs";
 import { resolveSyncOptions } from "../schemaSync";
 import { Arrivals } from "./arrivals";
@@ -1832,6 +1834,18 @@ export class SqlDriver implements JobsDriver {
   ): Promise<RunRecord[]> {
     const { history } = await this.#readState(ns, key);
     return limit && limit > 0 ? history.slice(0, limit) : history;
+  }
+
+  async pageHistory(
+    ns: string,
+    key: string,
+    opts: RunHistoryQuery,
+  ): Promise<RunHistoryPage> {
+    // Free on every SQL engine: the history is one JSON column, and
+    // `#readState` already reads and parses the whole row. Slicing it in SQL
+    // would cost an engine-specific JSON path expression to save nothing.
+    const { history } = await this.#readState(ns, key);
+    return pageRunHistory(history, opts);
   }
 
   async clearHistory(ns: string, key: string): Promise<void> {
