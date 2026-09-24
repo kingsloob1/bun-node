@@ -393,6 +393,36 @@ interface SectionRead {
   truncated?: boolean;
 }
 
+/**
+ * The list tables that cut their pages **in the browser**, and the rows one
+ * page of each holds (the size the screen hands `useClientPage`).
+ *
+ * Each of these reads its whole list in one request and pages what came back,
+ * so turning a page fetches nothing and a pager needs no permission of its own
+ * beyond its table's. A pager is on screen only where the rows outnumber one
+ * page (`useClientPage`'s `paged`): a table that fits on one page must not grow
+ * prev/next, a page select and a size select that change nothing.
+ */
+const PAGE_SIZES = {
+  /** The Overview's Queues card (`QUEUE_PAGE_SIZE`). */
+  "overview queues": 20,
+  /** A queue's Repeatables panel (`REPEATABLE_PAGE_SIZE`). */
+  repeatables: 20,
+  /** `/runners`, the one of these whose window is in the URL (`RUNNER_PAGE_SIZE`). */
+  runners: 25,
+  /** A runner's History card, over the runs **fetched** (`HISTORY_PAGE_SIZE`). */
+  "runner history": 25,
+  /** One server's section on the Workers page (`SERVER_PAGE_SIZE`). */
+  "workers page server": 25,
+  /** A queue's Workers panel (`WORKER_PAGE_SIZE`). */
+  "queue workers panel": 25,
+  /** A worker page's Instances card (`INSTANCE_PAGE_SIZE`). */
+  "worker instances": 10,
+} as const satisfies Record<string, number>;
+
+/** One list table that pages in the browser. */
+type PagedTable = keyof typeof PAGE_SIZES;
+
 /** Everything a screen decides from. */
 interface ScreenInputs {
   /** `GET /meta`. */
@@ -499,6 +529,14 @@ interface ScreenInputs {
     /** The stored override, `null` for none, `undefined` when not reported. */
     stored?: WorkerConfigOverrideDto | null;
   };
+  /**
+   * How many rows each browser-paged list table on screen was handed, before
+   * it cut a page from them: what decides whether that table shows a pager at
+   * all. Counted after any browser-side filter, since the filtered rows are
+   * what the table pages. A table named here with no count, or not named at
+   * all, has no rows on screen and so no pager. Defaults to `{}`.
+   */
+  tableRows?: Partial<Record<PagedTable, number>>;
   /**
    * The operation or channel on screen in the API docs, as its document
    * describes it. Absent off a docs item page, which closes every
@@ -641,6 +679,13 @@ interface Gate {
    * table check notice a row that gains or loses one.
    */
   readonly metaFields?: readonly MetaField[];
+  /**
+   * The gate is a list table's pager, over this table of {@link PAGE_SIZES}.
+   * Its `when` is that table outgrowing one page; naming the table here also
+   * lets the check below compare the rows-per-page figure the README row
+   * states with the size the screen really pages at.
+   */
+  readonly pagedTable?: PagedTable;
   /** Whatever else it needs that no permission expresses. */
   readonly when?: (inputs: ScreenInputs) => boolean;
   /**
@@ -689,6 +734,15 @@ interface Gate {
    * marker, "Not an action this UI knows", instead of "You lack".
    */
   readonly unknownAction?: boolean;
+}
+
+/**
+ * Whether `table`'s rows outnumber one page, so its pager is on screen
+ * (`useClientPage`'s `paged`, `rows > the page size`). Exactly one page's
+ * worth is not enough: there would be nothing to turn to.
+ */
+function pagerShown(table: PagedTable, inputs: ScreenInputs): boolean {
+  return (inputs.tableRows?.[table] ?? 0) > PAGE_SIZES[table];
 }
 
 /** Whether the runner on screen has a run in flight in the API's process. */
@@ -803,6 +857,18 @@ const GATES = [
     row: "Overview queue table",
     map: "boot",
     reads: ["queues.list"],
+  },
+  {
+    // The card reads every queue the API summarises in one request and cuts
+    // its pages from that, so turning a page reads nothing: what the pager may
+    // show is exactly what the table may, and a table fitting one page grows
+    // no pager at all.
+    name: "Overview: queue table pager",
+    row: "Overview queue table pager",
+    map: "boot",
+    needsOf: ["Overview: queue table"],
+    pagedTable: "overview queues",
+    when: (inputs) => pagerShown("overview queues", inputs),
   },
   {
     name: "Overview: sparklines",
@@ -1140,6 +1206,17 @@ const GATES = [
     mutations: ["repeatables.remove"],
   },
   {
+    // The panel's own rows, paged where the queue has more repeat series than
+    // one page holds. Remove sits in a row, so it needs its own mutation; a
+    // pager does not — it only rearranges rows the panel may already show.
+    name: "panel=repeatables, pager",
+    row: "Repeatables panel pager",
+    map: "queue",
+    needsOf: ["panel=repeatables"],
+    pagedTable: "repeatables",
+    when: (inputs) => pagerShown("repeatables", inputs),
+  },
+  {
     // Without it: "Job hidden", and the job is not requested. Nor is it
     // while the queue's map loads.
     name: "job: screen",
@@ -1218,6 +1295,19 @@ const GATES = [
     reads: ["runners.list"],
   },
   {
+    // The whole screen is this one list, so its window lives in the URL as
+    // `/queues`' does (`offset`, `limit`) and a link reproduces the page being
+    // read. Browser-side all the same: the list is read whole and filtered
+    // here, so no request carries either, and changing the filter drops the
+    // offset so a narrowed list starts at its first page again.
+    name: "runners: list pager",
+    row: "Runners list pager",
+    map: "boot",
+    needsOf: ["Runners: nav and /runners*"],
+    pagedTable: "runners",
+    when: (inputs) => pagerShown("runners", inputs),
+  },
+  {
     // Without it: "Runner hidden", and the runner is not requested. Nor is
     // it while the runner's map loads.
     name: "runner: screen",
@@ -1234,6 +1324,19 @@ const GATES = [
     reads: ["runners.read"],
     // Read once the runner itself has loaded.
     when: ({ runner }) => runner !== undefined,
+  },
+  {
+    // It divides the runs **fetched** — the "Runs shown" number — not the
+    // runner's history: `GET /runners/:runner/history` takes a limit and no
+    // window, so turning a page reads nothing and older runs need a larger
+    // fetch, which the note under the pager says. A run whose log the URL
+    // opens (`?logs=`) is pinned onto the page shown, however far down it is.
+    name: "runner: history pager",
+    row: "Runner history pager",
+    map: "runner",
+    needsOf: ["runner: stats and history"],
+    pagedTable: "runner history",
+    when: (inputs) => pagerShown("runner history", inputs),
   },
   {
     name: "runner: active runs",
@@ -1490,6 +1593,42 @@ const GATES = [
     when: ({ workerTableMemory, workerTable }) =>
       workerTableMemory === true &&
       workerTable?.some((worker) => worker.rssBytes !== undefined) === true,
+  },
+  // The three worker tables page at their own sizes, and each pager belongs to
+  // the table it pages, not to the screen around it.
+  {
+    // One pager per **server** section: a pager per service card, or one over
+    // the whole page, would have to turn across the host headings that say
+    // where a worker runs. The section's heading keeps counting the server's
+    // workers, not the page's.
+    name: "workers page: server table pager",
+    row: "Workers page server table pager",
+    map: "boot",
+    needsOf: ["Workers: nav and /workers"],
+    pagedTable: "workers page server",
+    when: (inputs) => pagerShown("workers page server", inputs),
+  },
+  {
+    // The same 25 as a server's section: the same kind of list, paged the same
+    // way wherever it is read. One queue rarely has that many live workers.
+    name: "panel=workers, pager",
+    row: "Queue Workers panel pager",
+    map: "queue",
+    needsOf: ["panel=workers"],
+    pagedTable: "queue workers panel",
+    when: (inputs) => pagerShown("queue workers panel", inputs),
+  },
+  {
+    // Ten, not a worker *list's* 25: these are the live instances of one key,
+    // which is one or a few on most deployments, so the card almost never
+    // shows a pager — and a key replicated across a large fleet stays a card
+    // rather than taking over the page above its configuration.
+    name: "worker page: instances pager",
+    row: "Worker page Instances pager",
+    map: "queue",
+    needsOf: ["worker page: instances"],
+    pagedTable: "worker instances",
+    when: (inputs) => pagerShown("worker instances", inputs),
   },
   {
     // The housekeeping note, and the trap in it: **`sweeps` absent is not
@@ -2273,6 +2412,21 @@ checkEqual(
     })
     .map((gate) => gate.name),
   [],
+);
+
+// A pager row states the rows one page holds — "(20)", "(25)", "(10)" — and
+// that figure is the size the screen really pages at. Same reason as the row
+// count above: a number in prose that nothing compares to its source drifts.
+const pagerGates = GATES.filter((gate: Gate) => gate.pagedTable !== undefined);
+checkEqual(
+  `all ${pagerGates.length} pager rows state the page size their table pages at`,
+  pagerGates.map((gate: Gate) => {
+    const cell = readme.find((row) => row.element === gate.row)?.needs ?? "";
+    return `${gate.row}: ${/\((\d+)\)/.exec(cell)?.[1]}`;
+  }),
+  pagerGates.map(
+    (gate: Gate) => `${gate.row}: ${PAGE_SIZES[gate.pagedTable!]}`,
+  ),
 );
 
 /** The rows gating on an opt-in action, and whether their cell says "opt-in". */
@@ -3342,9 +3496,13 @@ printGates(gates, "boot", "queue");
 /**
  * The gates on the untargeted map that need something no queue or runner
  * screen here passes: an analytics read's answer, a job with a worker, a
- * worker row, the unfiltered worker list. Asked with them further down.
+ * worker row, the unfiltered worker list, a list longer than one page. Asked
+ * with them further down.
  */
 const BOOT_NEEDS_INPUT = {
+  "Overview: queue table pager": false,
+  "runners: list pager": false,
+  "workers page: server table pager": false,
   "overview: Runners busiest note": false,
   "overview: Workers busiest note": false,
   "overview: Jobs range caption": false,
@@ -3391,6 +3549,11 @@ checkEqual(
     "worker page: Edit settings…": false,
     "worker page: Reset to code values…": false,
     "worker page: Change pending": false,
+    // The browser-side pagers, which need a list longer than one page: asked
+    // below with row counts either side of each table's size.
+    "panel=repeatables, pager": false,
+    "panel=workers, pager": false,
+    "worker page: instances pager": false,
   },
 );
 
@@ -3944,6 +4107,8 @@ checkEqual(
     "runner: Resume…": false,
     "runner: Kill…": false,
     "runner: remote hint": false,
+    // Its history pager: asked below with a fetch longer than one page.
+    "runner: history pager": false,
   },
 );
 checkEqual(
@@ -3982,6 +4147,7 @@ checkEqual(
     "runner: Resume…": false,
     "runner: Kill…": false,
     "runner: Reset stats…": false,
+    "runner: history pager": false,
   },
 );
 checkEqual(
@@ -5506,6 +5672,88 @@ checkEqual(
     sections,
     boot,
   })["overview: Workers row key link"],
+  false,
+);
+
+/* ------------------------------------------------------------------ */
+step("The pagers: on a list table only where its rows outnumber one page");
+
+/** A row count per paged table, from each table's own page size. */
+function rowsPerTable(
+  of: (size: number) => number,
+): Record<PagedTable, number> {
+  return Object.fromEntries(
+    Object.entries(PAGE_SIZES).map(([table, size]) => [table, of(size)]),
+  ) as Record<PagedTable, number>;
+}
+
+/** One row more than a page, in every paged table. */
+const overOnePage = rowsPerTable((size) => size + 1);
+
+/**
+ * Every pager gate, in the order the README lists them, for a caller holding
+ * everything.
+ *
+ * @param tableRows How many rows each paged table was handed.
+ * @param queueMap The queue's own answer, which the two panels' and a worker
+ * page's pagers are decided on. Defaults to `mail`'s, which allows everything.
+ * @param bootMap The untargeted map. Defaults to this caller's.
+ */
+function pagers(
+  tableRows: Partial<Record<PagedTable, number>>,
+  queueMap: PermissionsBody = maps.mail!,
+  bootMap: PermissionsBody = boot,
+): boolean[] {
+  const set = screenGates({
+    meta,
+    sections,
+    boot: bootMap,
+    queue: queueMap,
+    runnerMap: runnerMaps.nightly,
+    runner: runnerInfos.nightly,
+    tableRows,
+  });
+  return pagerGates.map((gate: Gate) => set[gate.name as GateName]);
+}
+
+show(
+  "the pager gates, in the order the README lists them",
+  pagerGates.map((gate: Gate) => gate.name),
+);
+checkEqual(
+  "no rows on screen: no pager anywhere",
+  pagers({}),
+  pagerGates.map(() => false),
+);
+// The boundary is the one worth asserting: at exactly one page's worth there is
+// nowhere to turn to, so the pager is not on the table at all — not there with
+// every control disabled.
+checkEqual(
+  "exactly one page in every table: still no pager",
+  pagers(rowsPerTable((size) => size)),
+  pagerGates.map(() => false),
+);
+checkEqual(
+  "one row more than a page: every pager, each at its own size",
+  pagers(overOnePage),
+  pagerGates.map(() => true),
+);
+// A pager is its table's, so whatever closes the table closes it however many
+// rows came back. payroll allows nothing queue-scoped — no Repeatables panel,
+// no Workers panel, no instances — so there are no pages of them either.
+checkEqual(
+  "payroll: the three queue-side pagers close with their tables; the rest the untargeted map decides",
+  pagers(overOnePage, maps.payroll!),
+  [true, false, true, true, true, false, false],
+);
+checkEqual(
+  "audit reads all of them, as it reads the tables they page",
+  pagers(overOnePage, maps.audit!),
+  pagerGates.map(() => true),
+);
+checkEqual(
+  "and without untargeted queues.list there is no Overview queue table, so nothing to page",
+  pagers(overOnePage, maps.mail!, refusedUntargeted("queues.list"))[0],
   false,
 );
 
