@@ -92,6 +92,7 @@ import {
 } from "./attribution";
 import { canBury } from "./bury";
 import { awaitsDelivery, flowKey, listsChild, unsettledChildren } from "./flow";
+import { jobOrderFields, seekJobIndex } from "./jobCursor";
 import {
   addBusynessSample,
   addDuration,
@@ -1448,7 +1449,7 @@ export class MemoryDriver implements JobsDriver {
         if (single === "waiting") {
           return this.#compareWaiting(queue, a, b);
         }
-        return this.#sortKey(a, single) - this.#sortKey(b, single);
+        return this.#compareByKey(a, b, single);
       });
 
     if (opts.order === "desc") {
@@ -1478,13 +1479,34 @@ export class MemoryDriver implements JobsDriver {
     return counts;
   }
 
+  /**
+   * A page of jobs, filtered and ordered exactly as {@link listJobs} orders
+   * them.
+   *
+   * **The keyset cursor is honoured natively**, for every states/sort
+   * combination this serves: the listing is materialised in the walk's order
+   * to answer at all, so the seek is `seekJobIndex` over that very array and
+   * the page's `offset` is the index it resolved — a real number, never
+   * `null`. Reusing the array the page is cut from is what keeps the seek and
+   * the order from drifting apart; see the residue `seekJobIndex` documents
+   * for the ties this driver breaks on `queue.order`, its insertion counter,
+   * rather than on the id.
+   */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     const queue = this.#queue(q);
     const filter = jobFilter(query);
     const attribution = attributionFilter(query);
+    const after = query.after;
 
     if (attribution && matchesNothing(attribution, query.states)) {
-      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+      return {
+        jobs: [],
+        ...(query.total ? { total: 0 } : {}),
+        // Nothing matches, so the seek landed at the end of an empty listing —
+        // which is still a seek, and saying so keeps `findJobPage` from
+        // re-reading the same nothing by scan.
+        ...(after === undefined ? {} : { offset: 0 }),
+      };
     }
 
     const wanted = new Set(query.states);
@@ -1503,19 +1525,34 @@ export class MemoryDriver implements JobsDriver {
           ? compareCreated(a, b)
           : single === "waiting"
             ? this.#compareWaiting(queue, a, b)
-            : this.#sortKey(a, single) - this.#sortKey(b, single),
+            : this.#compareByKey(a, b, single),
       );
 
     if (query.order === "desc") {
       matching.reverse();
     }
 
-    const offset = Math.max(0, Math.floor(query.offset));
+    // A cursor seeks on the ordered listing itself, so the resume point is
+    // read off the same sequence the page is cut from; without one the page
+    // is cut where the caller counted to.
+    const offset =
+      after === undefined
+        ? Math.max(0, Math.floor(query.offset))
+        : seekJobIndex(
+            matching,
+            after,
+            jobOrderFields(query.states, query.sort),
+            query.order,
+          );
     const jobs = matching
       .slice(offset, offset + Math.max(0, Math.floor(query.limit)))
       .map((job) => ({ ...job }));
 
-    return query.total ? { jobs, total: matching.length } : { jobs };
+    return {
+      jobs,
+      ...(query.total ? { total: matching.length } : {}),
+      ...(after === undefined ? {} : { offset }),
+    };
   }
 
   async getJobs(q: QueueRef, ids: string[]): Promise<(JobRecord | null)[]> {
@@ -2942,6 +2979,32 @@ export class MemoryDriver implements JobsDriver {
    * The timestamp a state is naturally ordered by. Listing several states at
    * once falls back to creation time, the only key they all share.
    */
+  /**
+   * Orders two jobs by their state's key, ties broken by id.
+   *
+   * The id tie-break is what SQL, MongoDB and the file driver's listings
+   * already do, and what makes the order **total** — without it the order of
+   * jobs sharing a timestamp was whatever `Map` iteration gave, which is an
+   * order nothing outside this process can name. A keyset cursor whose anchor
+   * has been removed can only compare values, so an order it cannot name is an
+   * order it can land wrongly in. `waiting` keeps its own comparator, whose
+   * insertion-counter tie-break is the queue's FIFO claim order and not
+   * cosmetic.
+   */
+  #compareByKey(
+    /** The job on the left. */
+    a: JobRecord,
+    /** The job on the right. */
+    b: JobRecord,
+    /** The single state being listed, or `undefined` for several. */
+    single: JobState | undefined,
+  ): number {
+    return (
+      this.#sortKey(a, single) - this.#sortKey(b, single) ||
+      compareCodePoints(a.id, b.id)
+    );
+  }
+
   #sortKey(job: JobRecord, single: JobState | undefined): number {
     switch (single) {
       case "delayed":

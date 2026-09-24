@@ -7,6 +7,7 @@ import type { JobDefaultsValues } from "../api/contract/types";
 import type {
   DriverConfig,
   EditableJobOptionKey,
+  JobCursorKey,
   JobsDriver,
   JobState,
   MetricsOptions,
@@ -1631,6 +1632,63 @@ export interface ListJobsOptions {
    * needs no attribution stamp and works on every driver.
    */
   finishedTo?: Date | number;
+  /**
+   * Seek position: start at the job **after** this one, in the order asked
+   * for, instead of counting `offset` matches in. When set, `offset` is
+   * ignored.
+   *
+   * The ordering key of the last job the previous page returned — what
+   * `walk()` hands back as {@link JobsWalkPage.next}, and what
+   * `encodeJobCursor` turns into the opaque string the management API's
+   * clients echo back. A cursor is how a caller **walks** a list without
+   * losing a job to one leaving the list ahead of it; an `offset` is how it
+   * **samples** one, and jumps to page N.
+   *
+   * A `ConfigError` on a walk that cannot be seeked: a single `active` state
+   * in its natural order, whose `lockExpiresAt` key every worker rewrites on
+   * every lock renewal.
+   */
+  after?: JobCursorKey;
+  /**
+   * Also count every job that matched. Read by `walk()` only: `page()` always
+   * counts and `list()` never does.
+   */
+  total?: boolean;
+}
+
+/**
+ * A page of jobs read with a cursor: what `walk()` answers.
+ *
+ * @typeParam TData The jobs' payload type.
+ * @typeParam TResult The jobs' result type.
+ * @typeParam TJob The job type the page holds: `Job<TData, TResult>` by default, a `TypedJob` from a registry-bound queue.
+ */
+export interface JobsWalkPage<
+  TData = unknown,
+  TResult = unknown,
+  TJob = Job<TData, TResult>,
+> {
+  /** The page, in the order asked for. */
+  jobs: TJob[];
+  /** Every job that matched, when `total: true` asked for one. */
+  total?: number;
+  /**
+   * Where the page starts in the ordered list, or `null` when the backend
+   * sought past the cursor without counting how many jobs precede it.
+   *
+   * `null` is the normal answer on SQL and MongoDB, and it is not a gap in
+   * them: counting the jobs before the key is an index range scan of exactly
+   * the size the `OFFSET` would have walked, so answering it would cost what
+   * the offset page cost — most of the reason to walk a deep list with a
+   * cursor. The memory and file drivers know it because they put the listing
+   * in order to read it, and Redis because the seek resolves to a `ZRANK`.
+   */
+  offset: number | null;
+  /**
+   * The key of the page's last job, to seek past on the next page — or `null`
+   * when the walk is complete, which is the **only** end-of-walk signal.
+   */
+  next: JobCursorKey | null;
 }
 
 /**

@@ -133,18 +133,17 @@ export function decodePageCursor(
     envelope.v !== 1 ||
     envelope.k !== kind ||
     !Array.isArray(envelope.w) ||
-    !Array.isArray(envelope.p) ||
-    envelope.p.length !== keyTypes.length ||
-    keyTypes.some((type, index) => {
-      const part: unknown = envelope.p?.[index];
-      return type === "number"
-        ? typeof part !== "number" || !Number.isFinite(part)
-        : typeof part !== "string";
-    })
+    !Array.isArray(envelope.p)
   ) {
     throw malformed();
   }
 
+  // The walk is compared **before** the key's shape, because a walk can decide
+  // that shape: the jobs list keys `waiting` on two numbers and `completed` on
+  // one, so a real `waiting` cursor replayed against `completed` fails both
+  // checks, and "this belongs to another walk" is the one that tells the
+  // client what it actually did. Where the shape is fixed — the runner
+  // history — the order cannot matter, since only one of the two can fail.
   if (
     envelope.w.length !== walk.length ||
     envelope.w.some((part, index) => part !== walk[index])
@@ -154,6 +153,18 @@ export function decodePageCursor(
       walk: [...walk],
       cursorWalk: envelope.w,
     });
+  }
+
+  if (
+    envelope.p.length !== keyTypes.length ||
+    keyTypes.some((type, index) => {
+      const part: unknown = envelope.p?.[index];
+      return type === "number"
+        ? typeof part !== "number" || !Number.isFinite(part)
+        : typeof part !== "string";
+    })
+  ) {
+    throw malformed();
   }
 
   return envelope.p;

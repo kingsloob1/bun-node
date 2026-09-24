@@ -101,8 +101,16 @@ export interface PageInfoDto {
   /**
    * Items skipped before this page — and, on a page reached with a `cursor`,
    * where the seek landed, so a walked page can still say where it sits.
+   *
+   * **Absent only on a cursor page whose backend did not count what precedes
+   * it.** `GET /queues/{queue}/jobs` on SQL or MongoDB is that case, and it is
+   * deliberate: counting the jobs before the key is an index range scan of
+   * exactly the size the `offset` would have walked, so answering it would
+   * make a cursor page cost what the offset page cost. Every offset page has
+   * it, and so does every page of the runner history, whose whole list the
+   * backend holds anyway.
    */
-  offset: number;
+  offset?: number;
   /** Most items the page could hold. */
   limit: number;
   /** Items in the whole list, when it was counted. */
@@ -345,7 +353,21 @@ export type JobPageDto = PageDto<JobDto>;
 export interface JobListQuery {
   /** States to list; every state when absent. */
   state?: JobState[];
-  /** Jobs skipped. Defaults to `0`. */
+  /**
+   * The previous page's `page.next`, to continue the walk at the job after the
+   * last one you were shown.
+   *
+   * **Opaque — never build or parse one**: it holds the backend's ordering
+   * key, and the backends do not agree on it. One this route did not issue, or
+   * one belonging to another queue, other states, the other sort or the other
+   * order, is 400 `INVALID_ARGUMENT`, never a silent restart at page one.
+   * Takes precedence over `offset`. Unlike an offset it cannot jump to page N
+   * — it walks — and unlike an offset nothing shifts under it when a job
+   * leaves the list ahead of it. Refused for `state: ["active"]` in the
+   * natural order, whose key every lock renewal rewrites.
+   */
+  cursor?: string;
+  /** Jobs skipped; how a client jumps to page N. Ignored with `cursor`. Defaults to `0`. */
   offset?: number;
   /** Page size. Defaults to `limits.defaultPageSize`; at most `limits.maxPageSize`. */
   limit?: number;

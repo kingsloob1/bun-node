@@ -170,11 +170,15 @@ describe("listing jobs by name, search and a total", () => {
       "/queues/mail/jobs?state=waiting&name=sendEmail&total=true&limit=2",
     );
     expect(counted.body.items).toHaveLength(2);
-    expect(counted.body.page).toEqual({
+    // Minted on an offset page too, so a client can jump to page N and then
+    // walk on from it; see `jobs-list-cursor.test.ts`.
+    expect(counted.body.page.next).toStartWith("jl1.");
+    expect({ ...counted.body.page, next: undefined }).toEqual({
       offset: 0,
       limit: 2,
       total: 3,
       hasMore: true,
+      next: undefined,
     });
 
     // The last page knows it is the last from the total, not from an extra read.
@@ -187,6 +191,8 @@ describe("listing jobs by name, search and a total", () => {
       limit: 2,
       total: 3,
       hasMore: false,
+      // A page that ends the list mints no cursor: `null` is the end signal.
+      next: null,
     });
   });
 

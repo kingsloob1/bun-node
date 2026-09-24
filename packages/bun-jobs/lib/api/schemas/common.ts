@@ -88,11 +88,13 @@ export const ErrorDtoSchema = s.named(
 export const PageInfoSchema = s.named(
   "PageInfo",
   s.object({
-    offset: s.integer({
-      minimum: 0,
-      description:
-        "Items skipped before this page — and, on a page reached with a `cursor`, where the seek landed, so a walked page can still say where it sits.",
-    }),
+    offset: s.optional(
+      s.integer({
+        minimum: 0,
+        description:
+          "Items skipped before this page — and, on a page reached with a `cursor`, where the seek landed, so a walked page can still say where it sits. **Absent only on a cursor page whose backend did not count what precedes it**: `GET /queues/{queue}/jobs` on SQL or MongoDB, where counting the jobs before the key is an index range scan of exactly the size the `offset` would have walked, which would make the cursor page cost what the offset page cost. Every offset page carries it, and so does every page of the runner history.",
+      }),
+    ),
     limit: s.integer({ minimum: 0 }),
     total: s.optional(s.integer({ minimum: 0 })),
     hasMore: s.boolean(),

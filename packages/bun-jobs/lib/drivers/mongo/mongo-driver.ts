@@ -60,6 +60,7 @@ import type {
   WorkerMetricsTotals,
   WorkerMetricsTotalsQuery,
 } from "../driver";
+import type { JobOrderField } from "../jobCursor";
 import type {
   BufferWriteResult,
   BusynessSample,
@@ -118,6 +119,7 @@ import { BURIABLE_STATES, canBury } from "../bury";
 import { claimByLoop } from "../claimBatch";
 import { EventGaps } from "../eventGaps";
 import { flowKey, unsettledChildren } from "../flow";
+import { jobOrderFields } from "../jobCursor";
 import {
   addBusynessSample,
   addDuration,
@@ -1104,6 +1106,117 @@ const FINISHED_INDEX = {
   finishedOn: 1,
   _id: 1,
 } as const satisfies Record<string, 1>;
+
+/**
+ * The claim index's key: a queue's jobs of one state cheapest first, which is
+ * the claim's own order and a listing of `waiting`.
+ *
+ * Named beside {@link FINISHED_INDEX}, and for the same reason: a cursor page
+ * of `waiting` **hints** it, so the definition and the hint cannot drift.
+ */
+const CLAIM_INDEX = {
+  ns: 1,
+  queue: 1,
+  state: 1,
+  priority: 1,
+  createdAt: 1,
+  _id: 1,
+} as const satisfies Record<string, 1>;
+
+/** The promotion index's key, which a listing of `delayed` or `failed` walks. */
+const PROMOTION_INDEX = {
+  ns: 1,
+  queue: 1,
+  state: 1,
+  runAt: 1,
+  _id: 1,
+} as const satisfies Record<string, 1>;
+
+/** The stalled-recovery index's key, which a listing of `active` walks. */
+const LOCK_INDEX = {
+  ns: 1,
+  queue: 1,
+  state: 1,
+  lockExpiresAt: 1,
+  _id: 1,
+} as const satisfies Record<string, 1>;
+
+/**
+ * The index a seek's order walks, to hint it with — or `undefined` when no
+ * index carries the order's fields right after the states, which is every
+ * listing ordered by creation: several states, and `sort: "createdAt"`.
+ *
+ * Hinted rather than left to the planner, because the planner gets this one
+ * wrong. Measured on 30,000 `completed` jobs, a 50-row cursor page 20,000
+ * deep: left alone, MongoDB chose an `OR` of index scans and then a
+ * **blocking sort of the whole remaining tail** — 10,000 keys, 10,000
+ * documents, 460ms, worse than the `skip` it replaced. Hinted, the same query
+ * is a `SORT_MERGE` that stops at the limit: 51 keys, 50 documents, under a
+ * millisecond. Neither the number of seek branches nor the `$and` wrapper
+ * moved it; the index choice was all of it.
+ *
+ * Several states never reach an index here, so the single-state pin
+ * {@link MongoDriver.findJobs} makes is what the hint rests on: with
+ * `jobOrderFields` answering `createdAt` for every multi-state listing, this
+ * answers `undefined` for them anyway.
+ */
+function seekIndex(
+  /** The seek's ordering fields, in order; see {@link jobOrderFields}. */
+  fields: readonly JobOrderField[],
+): Record<string, 1> | undefined {
+  if (fields.length === 2) {
+    return fields[0] === "priority" && fields[1] === "createdAt"
+      ? CLAIM_INDEX
+      : undefined;
+  }
+
+  switch (fields.length === 1 ? fields[0] : undefined) {
+    case "runAt":
+      return PROMOTION_INDEX;
+    case "lockExpiresAt":
+      return LOCK_INDEX;
+    case "finishedOn":
+      return FINISHED_INDEX;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * An ordering field a job document may not carry.
+ *
+ * `priority`, `runAt` and `createdAt` are written on every document this
+ * driver stores, so only these two open the gap between the sort — where an
+ * absent field is a null, below every number — and a `$gt`/`$lt` seek, which
+ * never matches an absent field at all.
+ */
+type NullableOrderField = "lockExpiresAt" | "finishedOn";
+
+/** Whether `field` is one a document may be missing; see {@link NullableOrderField}. */
+function nullableOrderField(
+  /** The ordering field being asked about. */
+  field: JobOrderField,
+): field is NullableOrderField {
+  return field === "lockExpiresAt" || field === "finishedOn";
+}
+
+/**
+ * Where a job listing resumes: the anchor's place in the listing's own order,
+ * read off the `sort()` the page will use.
+ */
+interface JobSeekKey {
+  /** The fields the sort rests on, in order, before the `_id` tie-break. */
+  fields: readonly JobOrderField[];
+  /**
+   * The anchor's value for each of {@link JobSeekKey.fields}, positionally.
+   * `null` is "the anchor has none there", which sorts below every number.
+   */
+  values: readonly (number | null)[];
+  /** The anchor's `_id`, `<ns>:<queue>:<id>` — what the sort breaks ties on. */
+  id: string;
+  /** The direction the listing is walked, as the sort spec writes it. */
+  direction: 1 | -1;
+}
 
 /**
  * A job listing's attribution filters as query conditions on the stamp's
@@ -4008,6 +4121,159 @@ export class MongoDriver implements JobsDriver {
     return { createdAt: direction, _id: direction };
   }
 
+  /**
+   * Where a {@link JobQuery.after} cursor resumes, lined up against the very
+   * `sort()` the page is about to use — or `null` when the two cannot be lined
+   * up, in which case the page is served by `offset` and left unsigned so
+   * `findJobPage` discards it and re-reads the query by scan.
+   *
+   * The fields are taken from the sort spec itself rather than from
+   * {@link jobOrderFields}, so the seek cannot drift from the order it seeks
+   * in; the cursor's values are positional against them, and the two are
+   * checked to agree before anything is sought. A disagreement is a bug in
+   * one of the two, and it is answered with a slow correct page rather than a
+   * fast wrong one.
+   *
+   * **The null block costs one extra point read**, and only on the two orders
+   * that have one. `jobFieldValue` reports a job's `createdAt` when its
+   * `finishedOn` or `lockExpiresAt` is absent, where MongoDB sorts that job
+   * below every number — so the cursor's plain number cannot say which of the
+   * two the anchor was, and a projection of that one field off the anchor's
+   * `_id` is what answers.
+   *
+   * When the anchor is **gone** — claimed, settled, removed — nothing can
+   * answer it, so the listing is asked instead whether it holds any null
+   * there at all. Normally it holds none: every settle writes `finishedOn`
+   * and every claim writes `lockExpiresAt`, so only a restored document or
+   * one from before those fields existed can be in the block, and with the
+   * block empty the cursor's number is unambiguous. When the block is *not*
+   * empty the seek is refused rather than guessed, and `findJobPage` re-reads
+   * the query by scan — a slow correct page instead of a fast wrong one.
+   * Both reads are a single index key.
+   */
+  async #jobSeekKey(
+    jobs: CollectionLike<JobDocument>,
+    q: QueueRef,
+    query: JobQuery,
+    sort: Record<string, 1 | -1>,
+  ): Promise<JobSeekKey | null> {
+    const after = query.after;
+
+    if (!after) {
+      return null;
+    }
+
+    const keys = Object.keys(sort);
+    const sorted = keys.slice(0, -1);
+    const fields = jobOrderFields(query.states, query.sort);
+
+    if (
+      keys.at(-1) !== "_id" ||
+      sorted.length !== fields.length ||
+      after.values.length !== fields.length ||
+      sorted.some((field, index) => field !== fields[index])
+    ) {
+      return null;
+    }
+
+    const id = this.#jobId(q, after.id);
+    const values: (number | null)[] = [...after.values];
+    const nullable = fields.filter(nullableOrderField);
+
+    if (nullable.length > 0) {
+      const anchor = (await jobs.findOne(
+        { _id: id },
+        {
+          projection: Object.fromEntries(
+            nullable.map((field) => [field, 1] as const),
+          ),
+        },
+      )) as Pick<JobDocument, NullableOrderField> | null;
+
+      if (anchor) {
+        for (const field of nullable) {
+          if ((anchor[field] ?? null) === null) {
+            values[fields.indexOf(field)] = null;
+          }
+        }
+      } else {
+        for (const field of nullable) {
+          const inBlock = await jobs.findOne(
+            {
+              ns: q.ns,
+              queue: q.queue,
+              state: { $in: query.states },
+              [field]: null,
+            },
+            { projection: { _id: 1 } },
+          );
+
+          if (inBlock) {
+            return null;
+          }
+        }
+      }
+    }
+
+    return {
+      fields,
+      values,
+      id,
+      direction: sort._id === -1 ? -1 : 1,
+    };
+  }
+
+  /**
+   * A seek as the disjunction the planner can turn into bounded index ranges:
+   * one branch per ordering field, each pinning the fields ahead of it to the
+   * anchor's values and comparing that one, and a last branch that pins them
+   * all and breaks the tie on `_id`.
+   *
+   * It is the generalised form of {@link MongoDriver.rewritePendingOptions}'
+   * claim-order window — any number of key components, and the `$lt` mirror
+   * for a descending walk — with the null block handled, which that one does
+   * not need because `priority` and `createdAt` are on every document.
+   *
+   * `_id` stands in for the job's id for the same reason the sort uses it:
+   * every document one `find` reads shares the `ns:queue:` prefix, so byte
+   * order on `_id` is code point order on the id.
+   */
+  #seekBranches(key: JobSeekKey): FilterLike[] {
+    const comparison = key.direction === 1 ? "$gt" : "$lt";
+    const branches: FilterLike[] = [];
+    /** The fields already equal to the anchor's, which every later branch pins. */
+    const equal: FilterLike = {};
+
+    for (const [index, field] of key.fields.entries()) {
+      const value = key.values[index] ?? null;
+
+      if (value === null) {
+        // The anchor sits in the null block, at the bottom of the order:
+        // ascending, every job that has a value there is after it;
+        // descending, none is, and only the rest of the block remains.
+        if (key.direction === 1) {
+          branches.push({ ...equal, [field]: { $ne: null } });
+        }
+      } else {
+        branches.push({ ...equal, [field]: { [comparison]: value } });
+
+        if (key.direction === -1 && nullableOrderField(field)) {
+          // `$lt: <number>` never matches an absent field, and the null block
+          // is exactly what a descending walk reaches after every number.
+          branches.push({ ...equal, [field]: null });
+        }
+      }
+
+      // `null` matches an explicit null and an absent field alike, which is
+      // how the sort treats the two as well.
+      equal[field] = value;
+    }
+
+    branches.push({ ...equal, _id: { [comparison]: key.id } });
+
+    return branches;
+  }
+
   async countJobs(q: QueueRef): Promise<Record<JobState, number>> {
     const jobs = await this.#jobs();
 
@@ -4063,29 +4329,51 @@ export class MongoDriver implements JobsDriver {
    * which fetches every document. The sort holds offset + limit keys, about
    * 300 bytes each, so a page past roughly 340,000 jobs deep exceeds the
    * 100MB in-memory limit and spills to disk (`allowDiskUseByDefault`).
+   *
+   * **A {@link JobQuery.after} cursor is sought, not skipped.** The seek is
+   * the lexicographic disjunction of the sort's own keys (`#seekBranches`),
+   * hinted onto the index that order walks ({@link seekIndex}), so a cursor
+   * page is a bounded range of that index instead of a `skip` that reads and
+   * throws away everything before it — and `offset` is answered `null`,
+   * because counting what precedes the key would cost exactly what the `skip`
+   * cost. Measured on 30,000 `completed` jobs, a 50-row page 20,000 deep:
+   * 20,050 keys examined by `offset` at ~350ms, 51 by cursor at under a
+   * millisecond.
+   *
+   * It is honoured for every order this serves; the one order with no index
+   * behind it is the one that had none before — several states, and
+   * `sort: "createdAt"` — where the seek removes the `skip` but the top-k
+   * sort stays.
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     const filter = jobFilter(query);
     const attribution = attributionFilter(query);
+    const seeking = query.after !== undefined;
 
     if (attribution && matchesNothing(attribution, query.states)) {
-      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+      return {
+        jobs: [],
+        ...(query.total ? { total: 0 } : {}),
+        // The cursor was honoured — vacuously, on a filter that asks the
+        // server nothing — so the page is a real end of the walk, not a
+        // page one that `findJobPage` would have to re-read.
+        ...(seeking ? { offset: null } : {}),
+      };
     }
 
     const jobs = await this.#jobs();
     const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
     const range = attribution !== null && hasRange(attribution);
+    // A range matches only the finished states, so only theirs are read.
+    const states = range
+      ? query.states.filter((state) => FINISHED_STATES.includes(state))
+      : query.states;
 
     const where: FilterLike = {
       ns: q.ns,
       queue: q.queue,
-      // A range matches only the finished states, so only theirs are read.
-      state: {
-        $in: range
-          ? query.states.filter((state) => FINISHED_STATES.includes(state))
-          : query.states,
-      },
+      state: { $in: states },
     };
 
     if (attribution) {
@@ -4105,18 +4393,41 @@ export class MongoDriver implements JobsDriver {
     // to the planner (see FINISHED_INDEX).
     const options = range ? { hint: FINISHED_INDEX } : undefined;
 
+    const sort = sortsByCreated(query)
+      ? this.#createdSort(query.order)
+      : this.#listSort(query.states, query.order);
+    const seek = seeking ? await this.#jobSeekKey(jobs, q, query, sort) : null;
+
+    // The page's own filter: the listing's, and the seek under an `$and` so it
+    // cannot collide with a search's `$or` or a range's `finishedOn`. A single
+    // state is pinned as a scalar here so each seek branch is one bounded
+    // range of the matching index; `$in` of one matches exactly the same
+    // documents, `state` never being an array. The listing filter itself is
+    // left alone, because it is what the total counts — a total is of the
+    // whole listing, not of the part after the cursor.
+    const pageWhere: FilterLike = seek
+      ? {
+          ...where,
+          ...(states.length === 1 ? { state: states[0] } : {}),
+          $and: [{ $or: this.#seekBranches(seek) }],
+        }
+      : where;
+
+    // A seek is hinted onto the index its order walks, for the reason
+    // `seekIndex` records: unhinted, MongoDB sorted the whole remaining tail.
+    // A range already names the index a finished order would name anyway.
+    const hint = seek && !range ? seekIndex(seek.fields) : undefined;
+    const pageOptions = hint ? { hint } : options;
+
     // `limit(0)` means "no limit" to MongoDB, so an empty page is not asked for.
     const page =
       limit === 0
         ? Promise.resolve([])
         : jobs
-            .find(where, options)
-            .sort(
-              sortsByCreated(query)
-                ? this.#createdSort(query.order)
-                : this.#listSort(query.states, query.order),
-            )
-            .skip(offset)
+            .find(pageWhere, pageOptions)
+            .sort(sort)
+            // A cursor says where the page starts, so nothing is counted in.
+            .skip(seek ? 0 : offset)
             .limit(limit)
             .toArray();
 
@@ -4129,9 +4440,15 @@ export class MongoDriver implements JobsDriver {
     const [documents, counted] = await Promise.all([page, total]);
     const records = documents.map((document) => this.#toRecord(document));
 
-    return counted === undefined
-      ? { jobs: records }
-      : { jobs: records, total: counted };
+    return {
+      jobs: records,
+      ...(counted === undefined ? {} : { total: counted }),
+      // `null`, never a number: counting what precedes the key is a range
+      // scan of exactly the size the `skip` walks, which is the cost the
+      // cursor exists to remove. A seek that could not be lined up answers
+      // nothing at all, and `findJobPage` re-reads the query by scan.
+      ...(seek ? { offset: null } : {}),
+    };
   }
 
   /** Several jobs by id in one `find` on `_id`, answered in the order asked. */
@@ -5663,20 +5980,20 @@ export class MongoDriver implements JobsDriver {
       // per claim that grew with the backlog.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, priority: 1, createdAt: 1, _id: 1 },
+        key: { ...CLAIM_INDEX },
       },
       // Promotion: what is due but not yet claimable. `_id` ends it, as it
       // ends a listing's sort by `runAt`, so a page of `delayed` walks the
       // index instead of sorting the whole state.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, runAt: 1, _id: 1 },
+        key: { ...PROMOTION_INDEX },
       },
       // Stalled recovery: active jobs whose lock has lapsed. `_id` for the
       // same reason, for a listing of `active`.
       {
         collection: this.collections.jobs,
-        key: { ns: 1, queue: 1, state: 1, lockExpiresAt: 1, _id: 1 },
+        key: { ...LOCK_INDEX },
       },
       // Cleaning and retention, and a job listing's `finishedOn` range.
       {

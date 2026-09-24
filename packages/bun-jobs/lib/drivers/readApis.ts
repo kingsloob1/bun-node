@@ -10,6 +10,7 @@ import type {
   ThroughputBucket,
   WorkerInfo,
 } from "./driver";
+import type { JobCursorKey } from "./jobCursor";
 import type { BufferWriteResult } from "./metrics";
 import { NotSupportedError } from "../shared/errors";
 import { compareCodePoints } from "../shared/strings";
@@ -27,6 +28,7 @@ import {
   supportsAttributionQuery,
   usesAttribution,
 } from "./attribution";
+import { jobOrderFields, seekJobIndex } from "./jobCursor";
 import {
   bucketStart,
   JOB_COUNTERS,
@@ -206,6 +208,14 @@ export function escapeRegExp(value: string): string {
  *   would land here for that reason; the scan still serves it for a driver
  *   that promises the sort but routes here for another field (an attribution
  *   filter without the capability, or no `findJobs` at all).
+ *
+ * **A {@link JobQuery.after} cursor is answered by whoever can seek.** A
+ * driver declares it honoured one by answering {@link JobPage.offset} — a
+ * number, or `null` for "sought, did not count". A driver that answers neither
+ * ignored the field, and its page is page one, which a walking client cannot
+ * tell from the end of the list: that page is **discarded** and the query
+ * re-read by the scan, which always seeks. One wasted read on a backend that
+ * cannot seek, and never a silently wrong page.
  */
 export async function findJobPage(
   driver: QueueDriver,
@@ -217,7 +227,16 @@ export async function findJobPage(
     (!usesAttribution(query) || supportsAttributionQuery(driver)) &&
     (!sortsByCreated(query) || supportsCreatedSort(driver))
   ) {
-    return await driver.findJobs(q, query);
+    const page = await driver.findJobs(q, query);
+
+    if (query.after === undefined) {
+      return page;
+    }
+    if (page.offset !== undefined) {
+      return page;
+    }
+    // The driver ignored the seek. Fall through to the scan rather than serve
+    // its page one.
   }
 
   return await findJobsByScan(driver, q, query);
@@ -235,12 +254,21 @@ export async function findJobsByScan(
   const limit = Math.max(0, Math.floor(query.limit));
 
   if (attribution && matchesNothing(attribution, query.states)) {
-    return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+    return {
+      jobs: [],
+      ...(query.total ? { total: 0 } : {}),
+      ...(query.after === undefined ? {} : { offset: 0 }),
+    };
+  }
+
+  const matches = (record: JobRecord): boolean =>
+    matchesScan(filter, attribution, record);
+
+  if (query.after !== undefined) {
+    return await scanAfterCursor(driver, q, query, query.after, matches);
   }
 
   if (sortsByCreated(query)) {
-    const matches = (record: JobRecord): boolean =>
-      matchesScan(filter, attribution, record);
     return await scanByCreated(driver, q, query, matches);
   }
 
@@ -352,6 +380,93 @@ async function scanByCreated(
   );
 
   return query.total ? { jobs, total: matching.length } : { jobs };
+}
+
+/**
+ * The scan behind a {@link JobQuery.after} cursor — what serves the seek for
+ * any driver that cannot seek in its own store, and the re-read for one that
+ * ignored the cursor.
+ *
+ * It reads every job in the states, in pages of {@link SCAN_PAGE}, keeps the
+ * matches in the listing's own order, and hands the whole ordered list to
+ * `seekJobIndex`. Reading it whole is what makes the seek exact on a backend
+ * whose tie-break is not the id — the memory driver's insertion counter, the
+ * file driver's several-state listing, Redis's state-blocked concatenation —
+ * because the anchor is then resolved **by identity**, at whatever index the
+ * driver itself put it, and only a job that has actually left the listing
+ * falls through to comparing keys.
+ *
+ * Linear in the jobs in those states, and it holds every match at once: the
+ * same cost `sort: "createdAt"` already pays here. It is a fallback, not the
+ * path any shipped driver takes.
+ *
+ * It always answers {@link JobPage.offset}, because it has counted the matches
+ * it walked past on the way.
+ *
+ * **Its one precondition, stated because it is not free:** once the anchor job
+ * has left the listing, the seek compares the walk's key against the listing,
+ * so **the listing must be in the order that key describes**. For a single
+ * state that is every backend. For several states it is every backend that
+ * follows the driver contract's "several states are ordered by creation" —
+ * memory, the file driver, SQL and MongoDB. It is **not** Redis, which
+ * concatenates whole sorted sets, state block by state block, each block in
+ * that state's own key order; measured against a listing of that shape, this
+ * seek lost 3 jobs and repeated 3 of 33, silently. The two readings cannot be
+ * told apart from the rows (jobs added in one `addBulk` share a creation
+ * millisecond, so a blocked listing is also non-decreasing by `createdAt`), so
+ * the repair belongs in the driver, not here: **a driver whose several-state
+ * listing is not the contract's must seek for itself**, and Redis does, from
+ * {@link JobCursorKey.stateValues}. If a future driver orders several states
+ * its own way and cannot seek, it must say so — and this is where the cost
+ * lands.
+ */
+async function scanAfterCursor(
+  driver: QueueDriver,
+  q: QueueRef,
+  query: JobQuery,
+  after: JobCursorKey,
+  matches: (record: JobRecord) => boolean,
+): Promise<JobPage> {
+  const limit = Math.max(0, Math.floor(query.limit));
+  const byCreated = sortsByCreated(query);
+  const matching: JobRecord[] = [];
+  let from = 0;
+
+  for (;;) {
+    const page = await driver.listJobs(q, query.states, {
+      offset: from,
+      limit: SCAN_PAGE,
+      // `sort: "createdAt"` is put in order below, from one direction, exactly
+      // as `scanByCreated` reads it.
+      order: byCreated ? "asc" : query.order,
+    });
+
+    for (const record of page) {
+      if (matches(record)) {
+        matching.push(record);
+      }
+    }
+
+    if (page.length < SCAN_PAGE) {
+      break;
+    }
+
+    from += page.length;
+  }
+
+  const ordered = byCreated ? sortByCreated(matching, query.order) : matching;
+  const offset = seekJobIndex(
+    ordered,
+    after,
+    jobOrderFields(query.states, query.sort),
+    query.order,
+  );
+
+  return {
+    jobs: ordered.slice(offset, offset + limit),
+    ...(query.total ? { total: ordered.length } : {}),
+    offset,
+  };
 }
 
 /** The sum of the counts of some states, each counted once. */

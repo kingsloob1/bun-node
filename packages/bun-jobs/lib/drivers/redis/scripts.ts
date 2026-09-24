@@ -1520,6 +1520,216 @@ return page
 `;
 
 /**
+ * Where a keyset cursor lands in the {@link LIST_JOBS} listing: the rank the
+ * next page starts at, resolved on the server.
+ *
+ * A cursor names a job — its ordering key and its id — and a page has to
+ * resume at the job *after* it. This turns that into an **absolute rank** in
+ * the concatenated listing, which the driver then hands straight to
+ * `LIST_JOBS` as its offset, so a cursor page costs one extra O(log n) call
+ * and nothing else. It is also why Redis can answer `JobPage.offset` as a real
+ * number where SQL and MongoDB can only answer `null`: the rank *is* the
+ * offset, and it came for free.
+ *
+ * **The listing order, reproduced exactly.** The states are taken as given and
+ * reversed for `desc`, as `LIST_JOBS` reverses them, so "the sets before the
+ * anchor's" means the same thing in both. Within the anchor's set the seek is:
+ *
+ * - **The anchor is still a member** — `ZRANK` it, and resume at the next
+ *   rank. Exact whatever its score has done since the page was read, which is
+ *   the rule `seekJobIndex` states for every backend: while the job is still
+ *   listed, the seek is by identity, not by key. (This is where it parts from
+ *   `REWRITE_PENDING`'s resume, which re-checks the score first — that walk
+ *   must not re-visit a job whose priority it has just rewritten, while this
+ *   one must land where the listing puts the job *now*.)
+ * - **It has left the set but its hash is still there** — claimed, completed,
+ *   moved on: the ordinary case on a draining queue. The hash still carries
+ *   the member it was listed under and the score that set sorts by, so a
+ *   binary search over the tie group sharing that score finds the place it
+ *   held, byte-exactly, sequence and all — and it needs nothing from the
+ *   cursor, so it is the step that keeps a **several-state** walk exact over a
+ *   draining queue.
+ * - **The hash is gone too** — the job was removed — so fall back to the
+ *   cursor's key: the same binary search, comparing the cursor's **id**
+ *   against the members'. The score the caller passes is the score of the set
+ *   the anchor was listed in, which a several-state cursor carries beside its
+ *   own key (`JobCursorKey.stateValues`) exactly because this listing is
+ *   blocked by state: its own key is a creation time, which cannot place a job
+ *   in a `waiting` set ordered by priority. `fallback` is off only for a
+ *   cursor that carries no such score at all.
+ *
+ * Every comparison is `before()`, byte by byte, never Lua's `<`, which asks
+ * the server's collation.
+ *
+ * The wait set is the one set whose member is not the bare id — it is
+ * `%016d:id`, the sequence that orders jobs of equal priority — so the anchor
+ * is looked up through `member(id)` there and the last step, which has no
+ * member to compare, compares only the member's id part. That is the one
+ * residue, and it is the residue `seekJobIndex` documents for every backend
+ * whose tie-break is not the id: within a tie group the set is ordered by
+ * sequence, and the comparison assumes that agrees with the id, which it does
+ * for the generated UUIDv7 ids and can disagree only for caller-supplied ones
+ * added out of their own order — and only once the job's hash has gone too.
+ *
+ * `desc` is the exact reverse: with `lo` jobs sorting before the cursor in the
+ * set, the reversed listing has all of them *after* it, so the start is
+ * `ZCARD - lo` — the same expression whether the anchor was found or not.
+ *
+ * **`from`/`to` are there for the filtered walk**, which does not range whole
+ * sets: {@link FIND_JOBS} ranks within the score window `[from, to)`, so the
+ * seek reports the anchor's start within that same window — `wholeStart - lo`
+ * ascending, `hi - p` descending, clamped into the window, and identical to
+ * the whole-set start when no window is given. The absolute rank it also
+ * answers is the *unwindowed* one, which is the only one `LIST_JOBS` can use.
+ *
+ * ARGV: prefix, order, the anchor's state, the anchor's id, the anchor's score
+ * in the set it was listed in, fallback ('1' to search by that score when the
+ * anchor is gone, '0' to answer "not found" instead), from ('' for none),
+ * to ('' for none), then one state per remaining argument — the listing, as
+ * `LIST_JOBS` is given it.
+ *
+ * Reply: found (`1` the anchor was a member, `0` it was placed from its hash
+ * or from the cursor's key, `-1` its state is not in this listing at all), the
+ * absolute rank in the listing, the anchor state's index in it, and the rank
+ * within that state's own window. The last three are `-1` when nothing was
+ * resolved — the anchor gone entirely, with no key to fall back on.
+ */
+export const SEEK_JOBS = `${QUEUE_PRELUDE}
+local order, which, id, score = ARGV[2], ARGV[3], ARGV[4], ARGV[5]
+local fallback = ARGV[6] == '1'
+local from, to = ARGV[7], ARGV[8]
+local sets = { waiting = WAIT, delayed = DELAYED, failed = FAILED, active = ACTIVE, completed = COMPLETED, dead = DEAD, ['waiting-children'] = CHILDREN }
+
+local names = {}
+for i = 9, #ARGV do names[#names + 1] = ARGV[i] end
+if order == 'desc' then
+  local reversed = {}
+  for i = #names, 1, -1 do reversed[#reversed + 1] = names[i] end
+  names = reversed
+end
+
+-- Members ordered as the sorted set orders them: byte by byte, never by the
+-- server's collation, which is what Lua's < would use.
+local function before(a, b)
+  for i = 1, math.min(#a, #b) do
+    local x, y = string.byte(a, i), string.byte(b, i)
+    if x ~= y then
+      return x < y
+    end
+  end
+  return #a < #b
+end
+
+-- A member's id: the wait set prefixes its own with a 16-digit sequence and a
+-- colon, every other set holds the id itself.
+local function idOf(entry)
+  if which == 'waiting' then return string.sub(entry, 18) end
+  return entry
+end
+
+-- Where the anchor's set sits in the listing, and how many jobs the sets
+-- before it hold — exactly what LIST_JOBS skips by ZCARD to reach it.
+local index, preceding = -1, 0
+for i, name in ipairs(names) do
+  local set = sets[name]
+  if set then
+    if name == which then
+      index = i - 1
+      break
+    end
+    preceding = preceding + redis.call('ZCARD', set)
+  end
+end
+
+local set = sets[which]
+if index == -1 or not set then
+  return { -1, -1, -1, -1 }
+end
+
+-- The hash field a set is scored by, and what an absent one falls back to —
+-- the same reading the add scripts' stamp() gives, so a job restored without
+-- a finishedOn is placed here where it is placed there.
+local function scoreField(name)
+  if name == 'waiting' then return 'priority' end
+  if name == 'delayed' or name == 'failed' then return 'runAt' end
+  if name == 'active' then return 'lockExpiresAt' end
+  if name == 'completed' or name == 'dead' then return 'finishedOn' end
+  return 'createdAt'
+end
+
+local card = redis.call('ZCARD', set)
+local anchor = (which == 'waiting') and member(id) or id
+local rank = redis.call('ZRANK', set, anchor)
+local found = rank and 1 or 0
+local p
+
+if rank then
+  p = rank
+else
+  -- The anchor has left the set. Its own hash still places it exactly if it
+  -- is there — the job was claimed, completed, moved on, and the member and
+  -- the score it was listed under are still written on it — so that is tried
+  -- before the cursor's key, and it is what keeps a several-state walk exact
+  -- over a draining queue.
+  local stored = redis.call('HMGET', job(id), scoreField(which), 'createdAt', 'member')
+  local key, byMember
+  if stored[2] then
+    local own = stored[1]
+    key = (own and own ~= '' and tonumber(own)) or tonumber(stored[2]) or 0
+    anchor = (which == 'waiting') and (stored[3] or id) or id
+    byMember = true
+  elseif fallback then
+    key = tonumber(score) or 0
+    byMember = false
+  else
+    return { 0, -1, -1, -1 }
+  end
+
+  -- The tie group [p, top): every member sharing that score. The search leaves
+  -- p on the first of them that does not sort before the anchor, so p counts
+  -- every member strictly before it — which is what ZRANK counts above.
+  local text = string.format('%.17g', key)
+  p = redis.call('ZCOUNT', set, '-inf', '(' .. text)
+  local top = p + redis.call('ZCOUNT', set, text, text)
+  while p < top do
+    local mid = math.floor((p + top) / 2)
+    local entry = redis.call('ZRANGE', set, mid, mid)[1]
+    local sorts
+    if byMember then
+      sorts = before(entry, anchor)
+    else
+      sorts = before(idOf(entry), id)
+    end
+    if sorts then
+      p = mid + 1
+    else
+      top = mid
+    end
+  end
+end
+
+-- The window FIND_JOBS ranks within, as ranks: [lo, hi).
+local lo, hi = 0, card
+if from ~= '' then lo = redis.call('ZCOUNT', set, '-inf', '(' .. from) end
+if to ~= '' then hi = redis.call('ZCOUNT', set, '-inf', '(' .. to) end
+
+local whole, window
+if order == 'desc' then
+  whole = card - p
+  window = hi - p
+else
+  whole = (found == 1) and p + 1 or p
+  window = whole - lo
+end
+
+-- An anchor outside the window: before it, the whole window follows; after it,
+-- nothing does.
+window = math.max(0, math.min(window, hi - lo))
+
+return { found, preceding + whole, index, window }
+`;
+
+/**
  * How many jobs are in each state. ARGV: prefix. Returns waiting, delayed,
  * active, completed, failed, dead and waiting-children, in that order.
  */

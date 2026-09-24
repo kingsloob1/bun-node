@@ -57,6 +57,7 @@ import type {
   WorkerMetricsTotals,
   WorkerMetricsTotalsQuery,
 } from "../driver";
+import type { JobCursorKey } from "../jobCursor";
 import type {
   BufferWriteResult,
   BusynessSample,
@@ -360,6 +361,99 @@ const ADD_CHUNK = 500;
  * why a walk over *n* members is `ceil(n / FIND_CHUNK)` calls, never *n*.
  */
 const FIND_CHUNK = 500;
+
+/**
+ * Where a {@link JobQuery.after} cursor resumes, as the `SEEK_JOBS` script
+ * resolves it: ranks in this driver's own listing, never keys.
+ */
+interface JobSeek {
+  /**
+   * Whether the cursor's job is still a member of its state's set. When it is,
+   * the seek was by identity — exact whatever its score has done since — and
+   * when it is not, the place it held was recovered from its hash, or from the
+   * cursor's key once the hash had gone too.
+   */
+  found: boolean;
+  /**
+   * Where the page starts in the whole concatenated listing: the rank within
+   * the anchor's set plus the sizes of the sets before it. This is what
+   * `LIST_JOBS` takes as its offset, and what an unfiltered cursor page
+   * answers as {@link JobPage.offset}.
+   */
+  rank: number;
+  /**
+   * Which state of the listing the page starts in, as an index into the
+   * states in the order they are walked — `desc` reversed, and, for a filtered
+   * walk, the unmatchable ones already dropped.
+   */
+  stateIndex: number;
+  /**
+   * Where the page starts inside that state alone, as `FIND_JOBS` counts
+   * ranks: within the `finishedOn` window when the query has one, and within
+   * the whole set when it does not.
+   */
+  start: number;
+}
+
+/**
+ * One stretch of a filtered walk: a state, a range of ranks inside it, and
+ * whether what matches there belongs to the page.
+ *
+ * A plain query is one stretch per state, all of them collecting. A cursor
+ * query starts collecting at the seek — and, *only when a total was asked
+ * for*, walks what precedes the seek first in stretches that collect nothing,
+ * because a total has to see every match whether the page begins before it or
+ * not. Those same stretches are how a filtered cursor page can answer
+ * {@link JobPage.offset} as a number rather than `null`: they have counted
+ * exactly the matches it starts after.
+ */
+interface JobWalkSegment {
+  /** The state whose set this stretch reads. */
+  state: JobState;
+  /** The first rank of that state's window to read. */
+  start: number;
+  /** The rank to stop before; `Infinity` is "to the end of the window". */
+  stop: number;
+  /** Whether matches here go into the page, or are only counted for a total. */
+  collect: boolean;
+}
+
+/**
+ * The stretches a filtered `findJobs` walks, in order — see
+ * {@link JobWalkSegment}.
+ */
+function walkSegments(
+  /** The states, in the order the walk visits them. */
+  states: readonly JobState[],
+  /** The resolved cursor, or `null` for an offset query. */
+  seek: JobSeek | null,
+  /** Whether every match has to be counted. */
+  total: boolean | undefined,
+): JobWalkSegment[] {
+  const segments: JobWalkSegment[] = [];
+
+  for (const [index, state] of states.entries()) {
+    if (!seek || index > seek.stateIndex) {
+      segments.push({ state, start: 0, stop: Infinity, collect: true });
+      continue;
+    }
+
+    if (index < seek.stateIndex) {
+      if (total) {
+        segments.push({ state, start: 0, stop: Infinity, collect: false });
+      }
+      continue;
+    }
+
+    if (total && seek.start > 0) {
+      segments.push({ state, start: 0, stop: seek.start, collect: false });
+    }
+
+    segments.push({ state, start: seek.start, stop: Infinity, collect: true });
+  }
+
+  return segments;
+}
 
 /**
  * Job fields stored as JSON rather than as scalars.
@@ -1962,6 +2056,16 @@ export class RedisDriver implements JobsDriver {
    * a page that fills from its first chunk is **one** call — then one
    * pipelined batch of `HGETALL`s for the page. Nothing here uses `KEYS` or
    * `SCAN`.
+   *
+   * **A {@link JobQuery.after} cursor is resolved to a rank**, by one
+   * `SEEK_JOBS` call, and the walk then starts there — unfiltered, the rank is
+   * itself `LIST_JOBS`' offset and the page's own {@link JobPage.offset}, so a
+   * cursor page costs one extra O(log n) call over an offset page and answers
+   * a number where SQL and MongoDB can only answer `null`. Where the seek
+   * cannot be exact — {@link RedisDriver.#seekJobs} says when — this answers an
+   * empty page **with no `offset`**, which is the contract's "I did not seek":
+   * `findJobPage` discards it and re-reads the query by scan, which seeks by
+   * identity over this driver's own listing.
    */
   async findJobs(q: QueueRef, query: JobQuery): Promise<JobPage> {
     const attribution = attributionFilter(query);
@@ -1974,16 +2078,35 @@ export class RedisDriver implements JobsDriver {
       query.states.length === 0 ||
       (attribution && matchesNothing(attribution, query.states))
     ) {
-      return query.total ? { jobs: [], total: 0 } : { jobs: [] };
+      return {
+        jobs: [],
+        ...(query.total ? { total: 0 } : {}),
+        // A query nothing can match is sought as exactly as any other: the
+        // page begins at nothing, whatever the cursor said, so there is no
+        // reason to hand it to the scan to find that out.
+        ...(query.after === undefined ? {} : { offset: 0 }),
+      };
     }
 
     await this.connect();
 
     const filter = jobFilter(query);
-    const offset = Math.max(0, Math.floor(query.offset));
     const limit = Math.max(0, Math.floor(query.limit));
+    const after = query.after;
 
     if (!filter && !attribution) {
+      // A cursor replaces the offset with the rank the seek resolved, which
+      // `LIST_JOBS` skips to by ZCARD exactly as it skips an offset.
+      const seek =
+        after === undefined
+          ? null
+          : await this.#seekJobs(q, query.states, query, after, {});
+
+      if (after !== undefined && !seek) {
+        return { jobs: [] };
+      }
+
+      const offset = seek ? seek.rank : Math.max(0, Math.floor(query.offset));
       const [jobs, counts] = await Promise.all([
         limit === 0
           ? Promise.resolve([])
@@ -1995,16 +2118,43 @@ export class RedisDriver implements JobsDriver {
         query.total ? this.countJobs(q) : Promise.resolve(null),
       ]);
 
-      return counts
-        ? { jobs, total: sumStates(counts, query.states) }
-        : { jobs };
+      return {
+        jobs,
+        ...(counts ? { total: sumStates(counts, query.states) } : {}),
+        ...(seek ? { offset } : {}),
+      };
     }
 
-    // The order LIST_JOBS concatenates sets in: as given, reversed for desc.
-    // A range skips every state it cannot match without asking Redis.
-    const states = (
-      query.order === "desc" ? [...query.states].reverse() : query.states
-    ).filter((state) => !attribution || canMatchState(attribution, state));
+    const offset = Math.max(0, Math.floor(query.offset));
+
+    // The states a filtered walk visits, in the order it visits them: a range
+    // skips every state it cannot match without asking Redis, and `desc`
+    // reverses them as LIST_JOBS does. Filtering before reversing is the same
+    // list either way, and it is the order `SEEK_JOBS` has to be given.
+    const matchable = query.states.filter(
+      (state) => !attribution || canMatchState(attribution, state),
+    );
+    const states =
+      query.order === "desc" ? [...matchable].reverse() : matchable;
+
+    // A cursor here names a rank inside one state's window, not a position in
+    // the whole listing: the walk starts at that state and that rank, and
+    // counts matches from zero rather than skipping `offset` of them.
+    const seek =
+      after === undefined
+        ? null
+        : await this.#seekJobs(q, matchable, query, after, {
+            ...(attribution?.finishedFrom === undefined
+              ? {}
+              : { from: attribution.finishedFrom }),
+            ...(attribution?.finishedTo === undefined
+              ? {}
+              : { to: attribution.finishedTo }),
+          });
+
+    if (after !== undefined && !seek) {
+      return { jobs: [] };
+    }
 
     const keys = attribution?.workerKeys ? [...attribution.workerKeys] : [];
     const workerIds = attribution?.workerIds ? [...attribution.workerIds] : [];
@@ -2014,19 +2164,34 @@ export class RedisDriver implements JobsDriver {
     const stride = withNames ? 2 : 1;
 
     const ids: string[] = [];
-    let skip = offset;
+    let skip = seek ? 0 : offset;
     let total = 0;
+    // The matches the page starts after, known only when a total was asked
+    // for — those are the calls that count them. Without one the walk begins
+    // at the seek and has counted nothing, so the page answers `null`.
+    let before: number | null = null;
 
-    walk: for (const state of states) {
-      for (let start = 0; ; start += FIND_CHUNK) {
+    walk: for (const segment of walkSegments(states, seek, query.total)) {
+      if (segment.collect && before === null) {
+        before = total;
+      }
+
+      for (
+        let start = segment.start;
+        start < segment.stop;
+        start += FIND_CHUNK
+      ) {
         if (!query.total && ids.length >= limit) {
           break walk;
         }
 
+        // Never past the segment's end: a counting segment stops where the
+        // page begins, so the matches before it are counted exactly once.
+        const count = Math.min(FIND_CHUNK, segment.stop - start);
         const reply = await this.#runQueue(q, scripts.FIND_JOBS, [
-          state,
+          segment.state,
           String(start),
-          String(FIND_CHUNK),
+          String(count),
           query.order,
           bound(attribution?.finishedFrom),
           bound(attribution?.finishedTo),
@@ -2051,6 +2216,10 @@ export class RedisDriver implements JobsDriver {
 
           total++;
 
+          if (!segment.collect) {
+            continue;
+          }
+
           if (skip > 0) {
             skip--;
           } else if (ids.length < limit) {
@@ -2058,7 +2227,7 @@ export class RedisDriver implements JobsDriver {
           }
         }
 
-        if (examined < FIND_CHUNK) {
+        if (examined < count) {
           break;
         }
       }
@@ -2069,7 +2238,107 @@ export class RedisDriver implements JobsDriver {
       (job): job is JobRecord => job !== null,
     );
 
-    return query.total ? { jobs, total } : { jobs };
+    return {
+      jobs,
+      ...(query.total ? { total } : {}),
+      // Where the page starts among the *matches*, which only a counting walk
+      // knows: the seek's rank counts set members, not matches.
+      ...(seek ? { offset: query.total ? (before ?? total) : null } : {}),
+    };
+  }
+
+  /**
+   * Where a {@link JobQuery.after} cursor resumes in this driver's own
+   * listing, or `null` when the seek cannot be exact and the page must be left
+   * to the shared scan.
+   *
+   * One `SEEK_JOBS` call, which is where the seek is actually defined. Three
+   * steps, each a fallback for the one before, and **none of them hands a
+   * several-state page to the shared scan**:
+   *
+   * - **The cursor's job is still in its set** — by identity, whatever the
+   *   states asked for. The listing concatenates whole sets, so its rank in
+   *   its own set plus the sizes of the sets before it is where the page
+   *   resumes.
+   * - **It has left the set but its hash is still there** — claimed,
+   *   completed, moved on, the ordinary case on a draining queue — and the
+   *   hash still carries the member and the score it was listed under, which
+   *   place it exactly, sequence and all.
+   * - **The job is gone entirely**, so the cursor's own key places it: the
+   *   score of the set it was listed in, then its id. That score is the
+   *   walk's leading value on a single-state walk, and
+   *   {@link JobCursorKey.stateValues} on a several-state one — where the
+   *   walk's own value is a creation time, which cannot place a job in a
+   *   `waiting` set ordered by priority. Without those the seek declined here
+   *   and the scan took over, and the scan seeks by the *walk's* key against
+   *   this state-blocked listing: measured, that lost 3 jobs and repeated 3 of
+   *   33, silently.
+   *
+   * `null` — "leave it to the scan" — is therefore reached only by a cursor
+   * that carries no usable score at all: a `sort: "createdAt"` query, which
+   * `findJobPage` never sends here, or a several-state cursor minted before
+   * `stateValues` existed.
+   *
+   * One residue survives all three, and it is the one `seekJobIndex` documents
+   * for every backend whose tie-break is not the id: in the last step the wait
+   * set's tie group is ordered by its sequence and compared by id, so
+   * caller-supplied ids added out of their own order can skip or repeat among
+   * jobs tied on priority — and only once the job's hash has gone too.
+   */
+  async #seekJobs(
+    q: QueueRef,
+    /**
+     * The states, in the order the listing is asked for — before `desc`
+     * reverses them, which the script does itself, exactly as `LIST_JOBS`
+     * does.
+     */
+    states: JobState[],
+    /** The query being paged, for its order and its states. */
+    query: JobQuery,
+    /** Where the previous page stopped. */
+    after: JobCursorKey,
+    /** The `finishedOn` window a filtered walk ranks within, when it has one. */
+    window: { from?: number; to?: number },
+  ): Promise<JobSeek | null> {
+    // The score of the set the anchor was listed in, which is what the script
+    // falls back on once the job itself has gone. On a single-state walk the
+    // walk's own leading value *is* that score; on a several-state walk it is
+    // the creation time, and the anchor's own state key — carried for this —
+    // supplies it. `sort: "createdAt"` is neither, and never reaches this
+    // driver: `findJobPage` keeps it away, since nothing here implements
+    // `countAddedJobs`.
+    const score =
+      query.sort === "createdAt"
+        ? undefined
+        : query.states.length === 1
+          ? after.values[0]
+          : after.stateValues[0];
+
+    const reply = (await this.#runQueue(q, scripts.SEEK_JOBS, [
+      query.order,
+      after.state,
+      after.id,
+      String(score ?? 0),
+      score === undefined ? "0" : "1",
+      window.from === undefined ? "" : String(window.from),
+      window.to === undefined ? "" : String(window.to),
+      ...states,
+    ])) as unknown[] | null;
+
+    const [found, rank, stateIndex, start] = (reply ?? []).map(Number);
+
+    if (
+      found === undefined ||
+      rank === undefined ||
+      stateIndex === undefined ||
+      start === undefined ||
+      found < 0 ||
+      rank < 0
+    ) {
+      return null;
+    }
+
+    return { found: found === 1, rank, stateIndex, start };
   }
 
   /**

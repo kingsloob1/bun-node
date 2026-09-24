@@ -143,6 +143,7 @@ export type {
   JobProcessor,
   JobResultOf,
   JobsPage,
+  JobsWalkPage,
   JobTypeEntry,
   ListJobsOptions,
   ProcessorContext,

@@ -48,6 +48,7 @@ import type {
   JobName,
   JobOptions,
   JobsPage,
+  JobsWalkPage,
   ListJobsOptions,
   QueueEventsOf,
   QueueJobOf,
@@ -73,8 +74,12 @@ import {
   findJobPage,
   findJobsByScan,
   getJobsByIds,
+  jobCursorKey,
   jobFilter,
+  jobOrderFields,
+  jobWalkIsSeekable,
   listWorkerRecords,
+  refuseUnseekableWalk,
   resolveDriver,
   sortsByCreated,
   supportsCreatedSort,
@@ -780,6 +785,9 @@ export class BunQueue<
     const states = Array.isArray(state) ? state : [state];
     const query = this.#query(states, options);
     const records =
+      // A cursor is a seek, never a count, so it can never take the plain
+      // `listJobs` path.
+      query.after === undefined &&
       jobFilter(query) === null &&
       attributionFilter(query) === null &&
       !sortsByCreated(query)
@@ -791,6 +799,89 @@ export class BunQueue<
         : (await findJobPage(this.driver, this.ref, query)).jobs;
 
     return records.map((record) => this.#typed(this.#view(record)));
+  }
+
+  /**
+   * A page of jobs read with a **keyset cursor**: the jobs after
+   * {@link ListJobsOptions.after}, and the key to seek past on the next page.
+   *
+   * ```ts
+   * let after: JobCursorKey | undefined;
+   * do {
+   *   const page = await queue.walk("waiting", { limit: 50, after });
+   *   for (const job of page.jobs) render(job);
+   *   after = page.next ?? undefined;
+   * } while (after);
+   * ```
+   *
+   * **This is how a list is walked; `list()` and `page()` are how it is
+   * sampled.** An `offset` counts jobs, so a job leaving the list ahead of the
+   * window slides every later job *under* the count and the next page steps
+   * over the ones that moved — measured at 20 of every 100 jobs an operator
+   * meant to read, silently, on a queue that drains as fast as it fills. A
+   * cursor names the last job a page showed, so nothing shifts under it. What
+   * it cannot do is jump to page N, which is the one thing an offset is still
+   * for.
+   *
+   * Without `after` this is simply the first page of the walk. `next` is
+   * `null` exactly when the walk is complete, and that is the **only** end
+   * signal: a page shorter than `limit` is not one, since a filter can shorten
+   * a page in the middle of a list.
+   *
+   * Refuses what {@link list} refuses, plus a walk that cannot be seeked — a
+   * single `active` state in its natural order, whose `lockExpiresAt` key
+   * every worker rewrites on every lock renewal.
+   */
+  async walk(
+    state: JobState | JobState[],
+    options?: ListJobsOptions,
+  ): Promise<JobsWalkPage<TData, TResult, QueueJobOf<TData, TResult, TJobs>>> {
+    await this.connect();
+
+    const states = Array.isArray(state) ? state : [state];
+    const query = this.#query(states, options);
+
+    if (!jobWalkIsSeekable(states, query.sort)) {
+      refuseUnseekableWalk(states);
+    }
+
+    // One more than the page, so whether the walk continues is known without a
+    // count — the same read the API's non-total listing makes.
+    const page = await findJobPage(this.driver, this.ref, {
+      ...query,
+      limit: query.limit + 1,
+    });
+    const records = page.jobs.slice(0, query.limit);
+    const last = records.at(-1);
+    // A driver's own `findJobs` may answer without the total it was asked for.
+    // The page's length is not the total — reporting it as one would be a
+    // number that looks right and is wrong — so the scan counts it instead,
+    // exactly as `page()` does.
+    const total =
+      options?.total !== true
+        ? undefined
+        : (page.total ??
+          (
+            await findJobsByScan(this.driver, this.ref, {
+              ...query,
+              after: undefined,
+              offset: 0,
+              limit: 0,
+              total: true,
+            })
+          ).total ??
+          0);
+
+    return {
+      jobs: records.map((record) => this.#typed(this.#view(record))),
+      ...(total === undefined ? {} : { total }),
+      offset: page.offset ?? (query.after === undefined ? query.offset : null),
+      // A page that ends the walk mints nothing: `null` is the end.
+      next:
+        page.jobs.length > query.limit && last !== undefined
+          ? jobCursorKey(last, jobOrderFields(states, query.sort))
+          : null,
+    };
   }
 
   /**
@@ -917,6 +1008,8 @@ export class BunQueue<
         : { workerIds: Array.isArray(workerId) ? workerId : [workerId] }),
       ...(finishedFrom === undefined ? {} : { finishedFrom }),
       ...(finishedTo === undefined ? {} : { finishedTo }),
+      ...(options?.total ? { total: true } : {}),
+      ...(options?.after === undefined ? {} : { after: options.after }),
     };
   }
 
