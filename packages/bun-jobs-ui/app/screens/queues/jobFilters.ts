@@ -32,13 +32,19 @@ export function readJobFilters(
     // Newest first by default: the most recent job is what a person looks
     // for. Only the exception, `order=asc`, is written into the URL.
     //
-    // **Do not drop this override for the API's own default (`asc`).** Paging
-    // a list that changes under you loses rows either way, but measured over
-    // 822 trials the two directions differ in whether anyone can tell: in
-    // `desc` every miss leaves a repeated id, while in `asc` against a
-    // draining queue every miss was silent — 100% of the trials that missed,
-    // on every backend. So this line keeps a reader on the direction whose
-    // losses are at least visible, until the jobs list pages by cursor.
+    // **Do not drop this override for the API's own default (`asc`).**
+    // Paging a list that changes under you can lose rows, and the two
+    // directions differ in whether anyone can tell. Measured by the offset
+    // probe: `desc` lost no rows at all, and a moved window showed up as a
+    // repeated row rather than a missing one; `asc` against a draining queue
+    // lost rows in more than half its trials, and most of those losses were
+    // invisible to the client — all of them where no total was asked for.
+    // So this line keeps a reader on the direction whose losses leave a
+    // trace, until the jobs list pages by cursor.
+    //
+    // Deliberately no figures: a count in a comment is a count nothing
+    // compares against its source, and the first version of this one carried
+    // a trial total that was already wrong when it was written.
     order: params.get("order") === "asc" ? "asc" : "desc",
     names: splitList(params.get("name") ?? ""),
     search: params.get("search") ?? "",
