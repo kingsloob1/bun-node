@@ -394,24 +394,36 @@ interface SectionRead {
 }
 
 /**
- * The list tables that cut their pages **in the browser**, and the rows one
- * page of each holds (the size the screen hands `useClientPage`).
+ * Every paged list table, and the rows one page of it holds — the figure its
+ * README row states, which the check below compares with this.
  *
- * Each of these reads its whole list in one request and pages what came back,
- * so turning a page fetches nothing and a pager needs no permission of its own
- * beyond its table's. A pager is on screen only where the rows outnumber one
- * page (`useClientPage`'s `paged`): a table that fits on one page must not grow
- * prev/next, a page select and a size select that change nothing.
+ * Six of them cut their pages **in the browser**, at a constant of the app's
+ * (the size the screen hands `useClientPage`). Each reads its whole list in one
+ * request and pages what came back, so turning a page fetches nothing and a
+ * pager needs no permission of its own beyond its table's. A pager is on screen
+ * only where the rows outnumber one page (`useClientPage`'s `paged`): a table
+ * that fits on one page must not grow prev/next, a page select and a size
+ * select that change nothing.
+ *
+ * Two of the figures are **defaults** rather than rules, because those two
+ * tables take their size from the URL — `/runners`' `limit`, and the runner
+ * history's `history`. {@link pageSizeOf} is the size in force;
+ * {@link historyPageSize} is how the history works its out.
  */
 const PAGE_SIZES = {
   /** The Overview's Queues card (`QUEUE_PAGE_SIZE`). */
   "overview queues": 20,
   /** A queue's Repeatables panel (`REPEATABLE_PAGE_SIZE`). */
   repeatables: 20,
-  /** `/runners`, the one of these whose window is in the URL (`RUNNER_PAGE_SIZE`). */
+  /** `/runners`, whose window is in the URL: `RUNNER_PAGE_SIZE`, the default. */
   runners: 25,
-  /** A runner's History card, over the runs **fetched** (`HISTORY_PAGE_SIZE`). */
-  "runner history": 25,
+  /**
+   * A runner's History card — the **default** page size, not a constant it
+   * pages at: `defaultHistoryLimit(limits.maxHistory)`, `min(50, maxHistory)`,
+   * which is 50 on any API whose cap is 50 or more (this one's is 200, checked
+   * below). The size in force is the `history` URL parameter.
+   */
+  "runner history": 50,
   /** One server's section on the Workers page (`SERVER_PAGE_SIZE`). */
   "workers page server": 25,
   /** A queue's Workers panel (`WORKER_PAGE_SIZE`). */
@@ -420,7 +432,16 @@ const PAGE_SIZES = {
   "worker instances": 10,
 } as const satisfies Record<string, number>;
 
-/** One list table that pages in the browser. */
+/**
+ * The one paged table that pages **on the server**: a runner's History card.
+ * `GET /runners/:runner/history` takes the window (`offset`, `limit`) and
+ * reports `page.total`, so the table pages the runner's **whole** stored history
+ * one server read at a time, and the "Runs shown" select is that `limit` — the
+ * `history` URL parameter, defaulting to `min(50, limits.maxHistory)`.
+ */
+const HISTORY_TABLE = "runner history";
+
+/** One list table with a pager. */
 type PagedTable = keyof typeof PAGE_SIZES;
 
 /** Everything a screen decides from. */
@@ -530,13 +551,44 @@ interface ScreenInputs {
     stored?: WorkerConfigOverrideDto | null;
   };
   /**
-   * How many rows each browser-paged list table on screen was handed, before
-   * it cut a page from them: what decides whether that table shows a pager at
-   * all. Counted after any browser-side filter, since the filtered rows are
-   * what the table pages. A table named here with no count, or not named at
-   * all, has no rows on screen and so no pager. Defaults to `{}`.
+   * How many rows each paged list table has to page: what decides whether it
+   * shows a pager at all. A table named here with no count, or not named at
+   * all, has nothing to page and so no pager. Defaults to `{}`.
+   *
+   * For the six of {@link PAGE_SIZES} that is the rows the table was handed
+   * before it cut a page from them, counted after any browser-side filter,
+   * since the filtered rows are what it pages. For {@link HISTORY_TABLE} it is
+   * the runner's **whole stored history** (`page.total`), not the rows on
+   * screen: that table re-reads the server for each page, so what is on screen
+   * is one page of this count and can even be none of it, past the end.
    */
   tableRows?: Partial<Record<PagedTable, number>>;
+  /**
+   * The runner history's window, as the URL asks for it. Absent off a runner
+   * screen, and `{}` for a screen opened without any of these.
+   */
+  historyPage?: {
+    /**
+     * The `history` parameter verbatim, which is the page size. Absent, or not
+     * a run of digits, means `min(50, limits.maxHistory)`; a number outside
+     * `1…limits.maxHistory` is clamped to it.
+     */
+    param?: string;
+    /**
+     * The `offset` parameter: runs skipped before the page. Defaults to `0`,
+     * and is deliberately uncapped — `keepHistory` may hold far more runs than
+     * `limits.maxHistory`, and this is what reaches them.
+     */
+    offset?: number;
+    /** The `logs` parameter: the run whose log the URL opens. Absent for none. */
+    openRun?: string;
+    /**
+     * Where that run sits in the stored history, counting from the newest at
+     * `0`; `-1` for one the history no longer holds. What decides whether it
+     * is among the rows the window reads.
+     */
+    openRunAt?: number;
+  };
   /**
    * The operation or channel on screen in the API docs, as its document
    * describes it. Absent off a docs item page, which closes every
@@ -737,12 +789,106 @@ interface Gate {
 }
 
 /**
- * Whether `table`'s rows outnumber one page, so its pager is on screen
- * (`useClientPage`'s `paged`, `rows > the page size`). Exactly one page's
- * worth is not enough: there would be nothing to turn to.
+ * The runner history's page size: the `history` parameter, clamped to
+ * `1…limits.maxHistory`, and `defaultHistoryLimit(maxHistory)` —
+ * `max(1, min(50, maxHistory))` — when the URL names none. `intParam` takes a
+ * run of digits and nothing else, so anything else is the default too.
+ *
+ * This is the one paged table with no constant to compare against: the size is
+ * the reader's, and `limits.maxHistory` is the only figure the app fixes.
+ */
+function historyPageSize({ meta, historyPage }: ScreenInputs): number {
+  const max = Math.max(1, meta.limits.maxHistory);
+  const raw = historyPage?.param;
+  const asked =
+    raw !== undefined && /^\d+$/.test(raw)
+      ? Number(raw)
+      : Math.max(1, Math.min(50, max));
+  return Math.min(Math.max(1, asked), max);
+}
+
+/**
+ * The size `table` pages at under `inputs` — which for six of them is the
+ * constant in {@link PAGE_SIZES}, and for the runner history the size the URL
+ * asks for. With no `history` parameter the two agree, which the step below
+ * asserts: that is what makes the README's figure for that row a true default
+ * rather than a number nobody compared to anything.
+ */
+function pageSizeOf(table: PagedTable, inputs: ScreenInputs): number {
+  return table === HISTORY_TABLE ? historyPageSize(inputs) : PAGE_SIZES[table];
+}
+
+/**
+ * Whether `table` has more rows to page than one page holds, so its pager is
+ * on screen. Exactly one page's worth is not enough: there would be nothing to
+ * turn to.
+ *
+ * For the six browser-paged tables that is `useClientPage`'s `paged` — the rows
+ * it was handed against its constant. For the runner history it is
+ * `historyPage.ts`'s `paged`, `page.total > limit`: the runner's whole stored
+ * history against the page size, not the rows on screen. The difference shows
+ * past the end of the history, where the page is empty and the pager is still
+ * there to go back with.
  */
 function pagerShown(table: PagedTable, inputs: ScreenInputs): boolean {
-  return (inputs.tableRows?.[table] ?? 0) > PAGE_SIZES[table];
+  return (inputs.tableRows?.[table] ?? 0) > pageSizeOf(table, inputs);
+}
+
+/** The runner history's window, as the screen reads it from the URL. */
+function historyWindow(inputs: ScreenInputs): {
+  /** Runs skipped before the page. */
+  offset: number;
+  /** Runs per page. */
+  limit: number;
+  /** Every run the runner has stored, the route's `page.total`. */
+  total: number;
+  /** How many rows this window actually reads. */
+  rows: number;
+} {
+  const limit = historyPageSize(inputs);
+  const offset = inputs.historyPage?.offset ?? 0;
+  const total = inputs.tableRows?.[HISTORY_TABLE] ?? 0;
+  return {
+    offset,
+    limit,
+    total,
+    rows: Math.max(0, Math.min(total - offset, limit)),
+  };
+}
+
+/**
+ * Whether the History card shows `history-open-log-note`: the URL opens a run's
+ * log (`logs=`) and that run is not among the rows this window read, so its
+ * page cannot be worked out and the card says so instead of opening nothing.
+ *
+ * Silent while the page is empty or the caller cannot read run logs at all —
+ * then nothing is open to be missing.
+ */
+function historyOpenLogNote(inputs: ScreenInputs): boolean {
+  const { openRun, openRunAt } = inputs.historyPage ?? {};
+  if (openRun === undefined) {
+    return false;
+  }
+  // `openRunId` is `null` for a caller without the Log column, so no note.
+  if (!screenGates(inputs)["runner: run log and Log column"]) {
+    return false;
+  }
+  const { offset, limit, rows } = historyWindow(inputs);
+  if (rows === 0) {
+    return false;
+  }
+  const at = openRunAt ?? -1;
+  return !(at >= offset && at < offset + limit);
+}
+
+/**
+ * Whether Clear history… is disabled ("No runs to clear."), once the history
+ * has been read — which is what a count in {@link ScreenInputs.tableRows}
+ * stands for. It reads the **total**, not the rows on screen, so a window past
+ * the end of the history leaves it live: there are runs to clear, behind us.
+ */
+function historyClearDisabled(inputs: ScreenInputs): boolean {
+  return historyWindow(inputs).total === 0;
 }
 
 /** Whether the runner on screen has a run in flight in the API's process. */
@@ -1326,16 +1472,24 @@ const GATES = [
     when: ({ runner }) => runner !== undefined,
   },
   {
-    // It divides the runs **fetched** — the "Runs shown" number — not the
-    // runner's history: `GET /runners/:runner/history` takes a limit and no
-    // window, so turning a page reads nothing and older runs need a larger
-    // fetch, which the note under the pager says. A run whose log the URL
-    // opens (`?logs=`) is pinned onto the page shown, however far down it is.
+    // The one pager here that reads the server for each page, and so the one
+    // whose table is not in `PAGE_SIZES`: `GET /runners/:runner/history` takes
+    // the window (`offset`, `limit`) and reports `page.total`, so the "Runs
+    // shown" number is the page size and turning a page re-reads with a new
+    // offset. It is therefore on screen when the runner's **stored total**
+    // outgrows that size — the six others compare the rows they were handed —
+    // and `limits.maxHistory` caps the size, never how deep the offset reads,
+    // so every run `keepHistory` holds is reachable.
+    //
+    // The window lives in the URL, which is what lets a Log button's link
+    // carry the page its run is on; a `?logs=` naming a run this page does not
+    // hold cannot be placed at all (no route says where a run sits), so the
+    // card says so with a Close log rather than opening nothing.
     name: "runner: history pager",
     row: "Runner history pager",
     map: "runner",
     needsOf: ["runner: stats and history"],
-    pagedTable: "runner history",
+    pagedTable: HISTORY_TABLE,
     when: (inputs) => pagerShown("runner history", inputs),
   },
   {
@@ -2108,29 +2262,68 @@ interface ReadmeRow {
   needs: string;
 }
 
+/** The package README, whose tables are the contract checked here. */
+const PACKAGE_README = join(
+  import.meta.dir,
+  "../../../packages/bun-jobs-ui/README.md",
+);
+
 /**
- * The table under `### What each element needs` in the package README,
- * read as a file: the docs are the contract here, not the package's code.
+ * The rows of the pipe table under `heading` in the package README, each cell
+ * trimmed. The docs are the contract here, not the package's code.
  */
-async function readmeGatingTable(): Promise<ReadmeRow[]> {
-  const path = join(import.meta.dir, "../../../packages/bun-jobs-ui/README.md");
-  const lines = (await Bun.file(path).text()).split("\n");
-  const heading = lines.findIndex(
-    (line) => line.trim() === "### What each element needs",
-  );
-  if (heading === -1) {
-    throw new Error(`${path} has no "### What each element needs" section`);
+async function readmeTable(heading: string): Promise<string[][]> {
+  const lines = (await Bun.file(PACKAGE_README).text()).split("\n");
+  const index = lines.findIndex((line) => line.trim() === heading);
+  if (index === -1) {
+    throw new Error(`${PACKAGE_README} has no "${heading}" section`);
   }
   const start = lines.findIndex(
-    (line, index) => index > heading && line.startsWith("|"),
+    (line, at) => at > index && line.startsWith("|"),
   );
-  const rows: ReadmeRow[] = [];
+  const rows: string[][] = [];
   // Skip the header and the |---| separator; stop at the first non-row.
-  for (let index = start + 2; lines[index]?.startsWith("|"); index++) {
-    const cells = lines[index]!.split("|").map((cell) => cell.trim());
-    rows.push({ element: cells[1]!, needs: cells.slice(2, -1).join("|") });
+  for (let at = start + 2; lines[at]?.startsWith("|"); at++) {
+    rows.push(lines[at]!.split("|").map((cell) => cell.trim()));
   }
   return rows;
+}
+
+/** The table under `### What each element needs`. */
+async function readmeGatingTable(): Promise<ReadmeRow[]> {
+  return (await readmeTable("### What each element needs")).map((cells) => ({
+    element: cells[1]!,
+    // A cell holding a `|` of its own is rejoined, as the split broke it.
+    needs: cells.slice(2, -1).join("|"),
+  }));
+}
+
+/** One row of the README's `### URL parameters` table. */
+interface UrlParamRow {
+  /** The screen it belongs to, as the table spells it (`/runners/:runner`). */
+  screen: string;
+  /** The parameter's name, unquoted. */
+  parameter: string;
+  /** What the row says it means, verbatim. */
+  meaning: string;
+}
+
+/**
+ * The table under `### URL parameters`. `permissions.ts` reads it for the
+ * runner history alone — the size and depth of that table's pages are URL
+ * parameters rather than constants, so the claims its pager row makes are
+ * spelled out there. Every screen's parameters are checked against the links
+ * that carry them in `deep-links.ts`.
+ */
+async function readmeUrlParams(): Promise<UrlParamRow[]> {
+  return (await readmeTable("### URL parameters")).flatMap((cells) =>
+    // A row may name several parameters ("`jobsRange`, `queuesRange`, …").
+    [...cells[2]!.matchAll(/`([^`]+)`/g)].map((match) => ({
+      screen: cells[1]!.replace(/`/g, ""),
+      parameter: match[1]!,
+      meaning: cells.slice(3, -1).join("|"),
+    })),
+  );
 }
 
 /** The values `meta.mode` takes. */
@@ -2415,18 +2608,60 @@ checkEqual(
 );
 
 // A pager row states the rows one page holds — "(20)", "(25)", "(10)" — and
-// that figure is the size the screen really pages at. Same reason as the row
-// count above: a number in prose that nothing compares to its source drifts.
+// that figure is the size the screen pages at. Same reason as the row count
+// above: a number in prose that nothing compares to its source drifts.
 const pagerGates = GATES.filter((gate: Gate) => gate.pagedTable !== undefined);
+/**
+ * The rows-per-page figure a pager row states: the number inside the
+ * parentheses, however the sentence goes on.
+ *
+ * It used to be `/\((\d+)\)/`, which needs a `)` immediately after the digits
+ * — and that made the check fail on prose that got *better*. PR #141 rewrote
+ * the Runners list row's "(25)" as "(25 by default; `limit` is in the URL, so
+ * the size a reader picks is what a page holds)", correcting a rule to a
+ * default without touching the number, and this check went red on develop and
+ * stayed red. A check that fires on a rewording is a check someone eventually
+ * deletes, so the pattern reads the figure and lets the prose be prose. That
+ * exact edit is the fixture below.
+ */
+const PAGE_FIGURE = /\((\d+)\b/;
+/** A pager row's "needs" cell, as the README writes it. */
+function pagerCell(gate: Gate): string {
+  return readme.find((row) => row.element === gate.row)?.needs ?? "";
+}
+/** The figure a pager row states, or `undefined` where it states none. */
+function statedPageSize(gate: Gate): string | undefined {
+  return PAGE_FIGURE.exec(pagerCell(gate))?.[1];
+}
+show(
+  "the figure each pager row states, as `PAGE_FIGURE` reads it",
+  pagerGates.map((gate: Gate) => `${gate.row}: ${statedPageSize(gate)}`),
+);
 checkEqual(
   `all ${pagerGates.length} pager rows state the page size their table pages at`,
-  pagerGates.map((gate: Gate) => {
-    const cell = readme.find((row) => row.element === gate.row)?.needs ?? "";
-    return `${gate.row}: ${/\((\d+)\)/.exec(cell)?.[1]}`;
-  }),
+  pagerGates.map((gate: Gate) => `${gate.row}: ${statedPageSize(gate)}`),
   pagerGates.map(
     (gate: Gate) => `${gate.row}: ${PAGE_SIZES[gate.pagedTable!]}`,
   ),
+);
+// The other half of that: the figure must still be compared, so a rewording
+// that changes the number has to fail. The #141 edit is the fixture — both
+// spellings of that row give 25, and the old pattern gave nothing for the
+// second, which is how develop came to be red.
+const REWORDED = [
+  "the Runners nav entry's needs, and more runners match the filter than one page holds (25). Its window lives in the URL, as the queue list's does, and changing the filter restarts it",
+  "the Runners nav entry's needs, and more runners match the filter than one page holds (25 by default; `limit` is in the URL, so the size a reader picks is what a page holds). Its window lives in the URL, as the queue list's does, and changing the filter restarts it",
+];
+checkEqual(
+  "rewording a row around an unchanged figure does not move the figure (PR #141's own edit), while the pattern it replaced read only the first spelling",
+  [
+    REWORDED.map((cell) => PAGE_FIGURE.exec(cell)?.[1]),
+    REWORDED.map((cell) => /\((\d+)\)/.exec(cell)?.[1]),
+  ],
+  [
+    ["25", "25"],
+    ["25", undefined],
+  ],
 );
 
 /** The rows gating on an opt-in action, and whether their cell says "opt-in". */
@@ -5678,12 +5913,19 @@ checkEqual(
 /* ------------------------------------------------------------------ */
 step("The pagers: on a list table only where its rows outnumber one page");
 
-/** A row count per paged table, from each table's own page size. */
+/**
+ * A row count per paged table, from the size each one pages at — the constant
+ * for six of them, and for the runner's history the size a reader who has
+ * picked none gets (`min(50, limits.maxHistory)`).
+ */
 function rowsPerTable(
   of: (size: number) => number,
 ): Record<PagedTable, number> {
   return Object.fromEntries(
-    Object.entries(PAGE_SIZES).map(([table, size]) => [table, of(size)]),
+    pagerGates.map((gate: Gate) => [
+      gate.pagedTable!,
+      of(pageSizeOf(gate.pagedTable!, { meta, sections, boot })),
+    ]),
   ) as Record<PagedTable, number>;
 }
 
@@ -5755,6 +5997,250 @@ checkEqual(
   "and without untargeted queues.list there is no Overview queue table, so nothing to page",
   pagers(overOnePage, maps.mail!, refusedUntargeted("queues.list"))[0],
   false,
+);
+
+/* ------------------------------------------------------------------ */
+step("A runner's history: paged on the server, over the whole stored history");
+
+// The seventh pager is the odd one out, so what its README row claims is
+// checked against the model rather than against a constant. Its size and its
+// depth are URL parameters, so the README's `### URL parameters` table is read
+// here too: `history` and `offset` are where those claims are spelled out.
+const urlParams = await readmeUrlParams();
+/** What the README says a `/runners/:runner` parameter means, `""` for one it does not document. */
+function runnerParam(name: string): string {
+  return (
+    urlParams.find(
+      (row) => row.screen === "/runners/:runner" && row.parameter === name,
+    )?.meaning ?? ""
+  );
+}
+const historyPagerCell = pagerCell(
+  GATES.find((gate: Gate) => gate.pagedTable === HISTORY_TABLE)!,
+);
+const historyParamCell = runnerParam("history");
+const offsetParamCell = runnerParam("offset");
+
+/**
+ * A runner screen with every permission, a stored history of `total` runs and
+ * the window the URL asks for.
+ *
+ * @param total The runner's whole stored history (`page.total`).
+ * @param page The `history`, `offset` and `logs` parameters.
+ * @param runnerMap The runner's own permissions. Defaults to `nightly`'s, which
+ * allows everything.
+ */
+function historyScreen(
+  total: number,
+  page: NonNullable<ScreenInputs["historyPage"]> = {},
+  runnerMap: PermissionsBody = runnerMaps.nightly!,
+): ScreenInputs {
+  return {
+    meta,
+    sections,
+    boot,
+    runnerMap,
+    runner: runnerInfos.nightly,
+    tableRows: { [HISTORY_TABLE]: total },
+    historyPage: page,
+  };
+}
+
+/** Whether the history pager is on screen for a stored total and a window. */
+function historyPager(
+  total: number,
+  page: NonNullable<ScreenInputs["historyPage"]> = {},
+): boolean {
+  return screenGates(historyScreen(total, page))["runner: history pager"];
+}
+
+/** `nightly`'s own map with `actions` refused, the rest of it untouched. */
+function refusedOnRunner(...actions: JobsApiAction[]): PermissionsBody {
+  const map = runnerMaps.nightly!;
+  return {
+    ...map,
+    actions: {
+      ...map.actions,
+      ...Object.fromEntries(actions.map((action) => [action, false])),
+    },
+  };
+}
+
+show("limits.maxHistory, as this API reports it", meta.limits.maxHistory);
+show("the README's row for the history pager", historyPagerCell);
+checkEqual(
+  "its row states that figure as a default: the size is the “Runs shown” number, capped by `limits.maxHistory`, and the paging is on the server with the window in the URL",
+  [
+    // The figure the check above compares is a default here, as `/runners`' is,
+    // so the row has to say so — a bare "(50)" would be a rule the app does not
+    // have.
+    /by default/.test(historyPagerCell),
+    /limits\.maxHistory/.test(historyPagerCell),
+    /Runs shown/.test(historyPagerCell),
+    /page size/.test(historyPagerCell),
+    /on the server/.test(historyPagerCell),
+    /window in the URL/.test(historyPagerCell),
+    // What the row used to say, and the drift this check exists to catch: it
+    // paged "within what was fetched", "never reading again".
+    /within what was fetched|never reading again/.test(historyPagerCell),
+  ],
+  [true, true, true, true, true, true, false],
+);
+
+// The page size is `history`, and the README's row for it is where the rule
+// lives. The `50` in the expectation is the README's own figure, read out of
+// the row rather than written here twice.
+show("the README's row for `history`", historyParamCell);
+const documentedDefault = Number(
+  /the smaller of `(\d+)` and `limits\.maxHistory`/.exec(historyParamCell)?.[1],
+);
+checkEqual(
+  "`history` is the page size: the README calls it runs per page, says a change resets `offset`, and the size follows it",
+  [
+    /Runs \*\*per page\*\*/.test(historyParamCell),
+    /resets `offset`/.test(historyParamCell),
+    historyPageSize(historyScreen(0)),
+    historyPageSize(historyScreen(0, { param: "10" })),
+    historyPageSize(historyScreen(0, { param: "0" })),
+    historyPageSize(historyScreen(0, { param: "nonsense" })),
+  ],
+  [
+    true,
+    true,
+    Math.min(documentedDefault, meta.limits.maxHistory),
+    10,
+    // `clampLimit` holds it to 1 at the bottom, and `intParam` takes digits
+    // only, so anything else is the default.
+    1,
+    Math.min(documentedDefault, meta.limits.maxHistory),
+  ],
+);
+// And the figure the pager row states is that same default: what makes it a
+// figure this file has compared to something, rather than a number in prose.
+checkEqual(
+  "the figure its pager row states is that default, and the size in force with no `history` in the URL",
+  [PAGE_SIZES[HISTORY_TABLE], historyPageSize(historyScreen(0))],
+  [
+    Math.min(documentedDefault, meta.limits.maxHistory),
+    Math.min(documentedDefault, meta.limits.maxHistory),
+  ],
+);
+// The asymmetry is the whole point of the change: a page is capped, the window
+// is not, so a `keepHistory` far above `limits.maxHistory` is still reachable.
+show("the README's row for `offset`", offsetParamCell);
+checkEqual(
+  "`limits.maxHistory` caps a page and not the window: the README says `offset` is uncapped, and only the size clamps",
+  [
+    /clamped to that range/.test(historyParamCell),
+    /uncapped/.test(offsetParamCell),
+    historyPageSize(historyScreen(0, { param: "1000000" })),
+    historyWindow(historyScreen(0, { offset: 1_000_000 })).offset,
+  ],
+  [true, true, meta.limits.maxHistory, 1_000_000],
+);
+
+// What decides the pager moved with the change: the runner's stored total, not
+// the rows the table holds. The six others are the other way round, which is
+// why this one's `PAGE_SIZES` figure is a default and not a rule.
+checkEqual(
+  "the pager follows the stored total against the page size, whatever is on screen",
+  [
+    // What the row claims, and what the six others cannot: it pages the
+    // runner's whole history rather than the rows its table was handed.
+    /whole history/.test(historyPagerCell),
+    pagerGates.filter(
+      (gate: Gate) =>
+        gate.pagedTable !== HISTORY_TABLE &&
+        /whole history/.test(pagerCell(gate)),
+    ).length,
+    historyPager(30),
+    historyPager(30, { param: "10" }),
+    historyPager(10, { param: "10" }),
+    historyPager(30, { param: "10", offset: 100 }),
+    historyPager(0, { param: "10" }),
+  ],
+  [
+    true,
+    0,
+    // 30 runs under a 50-run default page: one page, so nothing to turn to.
+    false,
+    true,
+    // Exactly one page's worth, as for every other table.
+    false,
+    // Past the end: the page is empty and the pager is how you get back.
+    true,
+    false,
+  ],
+);
+
+// A window past the end is a state the old table could not reach, since it
+// only ever cut pages from rows it held.
+const pastTheEnd = historyScreen(30, { param: "10", offset: 100 });
+checkEqual(
+  '`offset` past the end reads no rows, and the README\'s row says what that page shows: "No runs on this page", the pager and Clear history… still live',
+  [
+    /No runs on this page/.test(offsetParamCell),
+    /Clear history/.test(offsetParamCell) && /still live/.test(offsetParamCell),
+    historyWindow(pastTheEnd).rows,
+    historyWindow(pastTheEnd).total,
+    historyClearDisabled(pastTheEnd),
+    // An empty history is the other thing entirely: "No runs yet", and nothing
+    // to clear.
+    historyClearDisabled(historyScreen(0)),
+  ],
+  [true, true, 0, 30, false, true],
+);
+
+// `?logs=` no longer bends the page to the run; the link carries the window
+// the Log button was pressed on, and a run this page does not hold is named in
+// a note (`history-open-log-note`) instead of opening nothing.
+const OPEN_RUN = "run-off-page";
+checkEqual(
+  "a `logs=` run off the page is called out rather than silently opened, and a link carrying its own `offset` lands on it",
+  [
+    /not on the page shown/.test(historyPagerCell),
+    /the card says the open log is elsewhere/.test(runnerParam("logs")),
+    // The run is the fourth-newest, and the page holds the newest ten.
+    historyOpenLogNote(
+      historyScreen(30, { param: "10", openRun: OPEN_RUN, openRunAt: 3 }),
+    ),
+    // The twenty-first newest: two pages on, so this page cannot place it.
+    historyOpenLogNote(
+      historyScreen(30, { param: "10", openRun: OPEN_RUN, openRunAt: 20 }),
+    ),
+    // The same link as the Log button wrote it, `offset` included.
+    historyOpenLogNote(
+      historyScreen(30, {
+        param: "10",
+        offset: 20,
+        openRun: OPEN_RUN,
+        openRunAt: 20,
+      }),
+    ),
+    // A run the history no longer holds at all.
+    historyOpenLogNote(
+      historyScreen(30, { param: "10", openRun: OPEN_RUN, openRunAt: -1 }),
+    ),
+    // Nothing is open without the Log column, so there is nothing to note:
+    // `openRunId` is `null` for a caller who may not read run logs.
+    historyOpenLogNote(
+      historyScreen(
+        30,
+        { param: "10", openRun: OPEN_RUN, openRunAt: 20 },
+        refusedOnRunner("runners.logs"),
+      ),
+    ),
+    // Nor on a page with no rows: there is nothing yet to be missing from.
+    historyOpenLogNote(
+      historyScreen(30, {
+        param: "10",
+        offset: 100,
+        openRun: OPEN_RUN,
+        openRunAt: 0,
+      }),
+    ),
+  ],
+  [true, true, false, true, false, true, false, false],
 );
 
 await mailWorker.close({ timeout: 1_000 });

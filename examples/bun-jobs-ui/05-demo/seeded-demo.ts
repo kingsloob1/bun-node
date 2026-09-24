@@ -773,7 +773,7 @@ const screens: [string, string][] = [
   ["runner: paused (Resume…)", `/runners/${DEMO_RUNNERS.paused}`],
   ["runner: a run in flight (Kill…)", `/runners/${DEMO_RUNNERS.busy}`],
   [
-    "runner: a failed run, 10 in the history",
+    "runner: a failed run, its history 10 runs to a page",
     `/runners/${DEMO_RUNNERS.failing}?history=10`,
   ],
   [
