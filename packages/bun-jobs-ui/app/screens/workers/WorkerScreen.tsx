@@ -20,6 +20,16 @@ import { WorkerTable } from "./WorkerTable";
 import "./workers.css";
 
 /**
+ * Instances per page in the Instances card.
+ *
+ * Ten, not the 25 a worker *list* pages at: these are the live instances of
+ * **one** key, which is one or a few on most deployments, so the card almost
+ * never shows a pager — and a key replicated across a large fleet stays a card
+ * rather than taking over the page above its configuration.
+ */
+const INSTANCE_PAGE_SIZE = 10;
+
+/**
  * The override a listing's `offline` entry stores, or `null` when it stores
  * nothing. Resetting a key no instance of which is live **empties** its entry
  * rather than deleting it — the entry keeps its `seq`, so a later write still
@@ -180,6 +190,7 @@ export function WorkerScreen() {
                   showQueue={false}
                   showHost={showHost}
                   showMemory
+                  pageSize={INSTANCE_PAGE_SIZE}
                 />
               )}
             </div>

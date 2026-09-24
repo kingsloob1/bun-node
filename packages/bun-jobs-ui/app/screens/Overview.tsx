@@ -31,10 +31,12 @@ import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorView } from "../components/ErrorView";
 import { Checkbox } from "../components/inputs";
+import { Pager } from "../components/Pager";
 import { Sparkline } from "../components/Sparkline";
 import { Spinner } from "../components/Spinner";
 import { StateBadge } from "../components/StateBadge";
 import { Table } from "../components/Table";
+import { useClientPage } from "../components/useClientPage";
 import { useApiClient } from "../context";
 import { formatNumber, plural } from "../format";
 import { useInView } from "../hooks/useInView";
@@ -58,6 +60,16 @@ const SPARKLINE_REFETCH_MS = 30_000;
 
 /** Shared across rows so the cap is global. */
 const throughputLimiter = createLimiter(SPARKLINE_CONCURRENCY);
+
+/**
+ * Queues per page on the Overview.
+ *
+ * Twenty, like `/queues`: the card is a glance at the namespace, and a row
+ * carries eight counts and a sparkline, so more than a screenful defeats it.
+ * A sparkline is fetched per visible row, so a page is also what the card
+ * costs in analytics reads.
+ */
+const QUEUE_PAGE_SIZE = 20;
 
 /** One stat tile. */
 function Stat({
@@ -420,6 +432,10 @@ function QueuesCard({ range, picker }: SectionProps) {
     refetchInterval,
     placeholderData: keepPreviousData,
   });
+  // The read brings back every queue the API summarises (and says so when it
+  // truncated), so the page is cut here rather than asked for: the filter, the
+  // poll and the permissions are untouched.
+  const page = useClientPage(queues.data?.items ?? [], QUEUE_PAGE_SIZE);
 
   return (
     <Card
@@ -472,10 +488,20 @@ function QueuesCard({ range, picker }: SectionProps) {
       ) : (
         <>
           <QueueTable
-            items={queues.data.items}
+            items={page.rows}
             sparklines={throughput && canMetrics && analytics !== null}
             range={range}
           />
+          {page.paged && (
+            <Pager
+              label="Queue pages"
+              offset={page.offset}
+              limit={page.limit}
+              total={page.total}
+              itemCount={page.rows.length}
+              onChange={page.onChange}
+            />
+          )}
           {queues.data.truncated && (
             <p
               className="notice"

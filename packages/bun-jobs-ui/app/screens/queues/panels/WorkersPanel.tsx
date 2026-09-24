@@ -11,6 +11,16 @@ import { sweepWarning } from "../../workers/sweeps";
 import { WorkerTable } from "../../workers/WorkerTable";
 import { useRefreshInterval } from "../live";
 
+/**
+ * Workers per page in a queue's panel.
+ *
+ * The same 25 as a server's section on the Workers page: it is the same kind
+ * of list — live workers, one row each — so it pages the same way wherever it
+ * is read. One queue rarely has that many workers, so the panel usually shows
+ * no pager.
+ */
+const WORKER_PAGE_SIZE = 25;
+
 /** Props of {@link WorkersPanel}. */
 export interface WorkersPanelProps {
   /** The queue whose live workers are listed. */
@@ -79,6 +89,7 @@ export function WorkersPanel({ queue }: WorkersPanelProps) {
         showQueue={false}
         showHost={showHost}
         linkKeys={linkKeys}
+        pageSize={WORKER_PAGE_SIZE}
       />
     </>
   );

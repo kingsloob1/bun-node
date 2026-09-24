@@ -6,17 +6,29 @@ import { Badge } from "../../components/Badge";
 import { Card } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorView } from "../../components/ErrorView";
+import { Pager } from "../../components/Pager";
 import { Spinner } from "../../components/Spinner";
 import { Table } from "../../components/Table";
+import { clientWindow } from "../../components/useClientPage";
 import { useApiClient } from "../../context";
 import { plural } from "../../format";
 import { SEARCH_SHORTCUT } from "../../layout/shortcuts";
 import { useCan } from "../../meta/hooks";
 import { Link } from "../../router";
-import { useUrlParams } from "../queues/urlState";
+import { intParam, useUrlParams } from "../queues/urlState";
 import { useListRefetchInterval, useRunnerListLive } from "./live";
 import { filterRunners, orderRunners, RUNNER_STATUS } from "./runnerFormat";
 import "./runners.css";
+
+/**
+ * Runners per page.
+ *
+ * Twenty-five: a runner row is three short cells, so a page holds more than a
+ * queue's, and a namespace registering one runner per report or sweep reaches
+ * a few dozen. The window lives in the URL, like `/queues`, since the whole
+ * screen is this one list and a link should reproduce the page being read.
+ */
+const RUNNER_PAGE_SIZE = 25;
 
 /**
  * One row: a local runner with its name and lifecycle status, or a remote id
@@ -120,6 +132,13 @@ export function RunnersListScreen() {
   const all = runners.data ? orderRunners(runners.data.items) : [];
   const shown = filterRunners(all, deferredFilter);
   const localCount = all.filter((item) => item.isLocal).length;
+  // The list is read whole and filtered in the browser, so the page is cut
+  // here too; the window is in the URL, as on `/queues`.
+  const page = clientWindow(shown.length, {
+    offset: intParam(params, "offset", 0),
+    limit: intParam(params, "limit", RUNNER_PAGE_SIZE),
+  });
+  const rows = shown.slice(page.offset, page.offset + page.limit);
 
   return (
     <div
@@ -145,7 +164,9 @@ export function RunnersListScreen() {
               {...SEARCH_SHORTCUT}
               value={filter}
               maxLength={200}
-              onChange={(event) => update({ search: event.target.value })}
+              onChange={(event) =>
+                update({ search: event.target.value, offset: null })
+              }
             />
           </div>
         }
@@ -192,7 +213,7 @@ export function RunnersListScreen() {
                 </tr>
               </thead>
               <tbody>
-                {shown.map((item) => (
+                {rows.map((item) => (
                   <RunnerRow
                     key={item.id}
                     item={item}
@@ -200,6 +221,24 @@ export function RunnersListScreen() {
                 ))}
               </tbody>
             </Table>
+            {page.paged && (
+              <Pager
+                label="Runner pages"
+                offset={page.offset}
+                limit={page.limit}
+                total={shown.length}
+                itemCount={rows.length}
+                onChange={(next) =>
+                  update({
+                    offset: next.offset > 0 ? String(next.offset) : null,
+                    limit:
+                      next.limit === RUNNER_PAGE_SIZE
+                        ? null
+                        : String(next.limit),
+                  })
+                }
+              />
+            )}
             <p
               className="muted runners-count"
               data-testid="runners-count"

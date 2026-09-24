@@ -116,6 +116,21 @@ describe("the Overview's Workers section", () => {
     ).not.toContain("/jobs/queues/emails");
   });
 
+  it("shows no pager when every row fits one page", async () => {
+    // The default fixture holds two worker keys against a page of
+    // MAX_ANALYTICS_SERIES, so there is nothing to page. Every other table in
+    // the app hides its pager there; these two used to show one.
+    renderOverview();
+    await overview();
+    await page().findByTestId("worker-analytics-row-emails-1");
+    expect(
+      page().queryByRole("navigation", { name: "Worker pages" }),
+    ).toBeNull();
+    expect(
+      page().queryByRole("navigation", { name: "Runner pages" }),
+    ).toBeNull();
+  });
+
   it("names how many rows the range holds when `truncated`", async () => {
     renderOverview({
       "GET /analytics/workers": (call) => ({

@@ -8,6 +8,7 @@ import { Button } from "../../components/Button";
 import { Card } from "../../components/Card";
 import { EmptyState } from "../../components/EmptyState";
 import { Select } from "../../components/inputs";
+import { Pager } from "../../components/Pager";
 import { ProblemBanner } from "../../components/ProblemBanner";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Spinner } from "../../components/Spinner";
@@ -19,6 +20,7 @@ import { useCanMutate } from "../queues/gating";
 import { clampLimit, intParam, useUrlParams } from "../queues/urlState";
 import { runnerActionGates } from "./actions/gating";
 import { ClearHistoryDialog } from "./actions/RunnerDialogs";
+import { useHistoryPage } from "./historyPage";
 import { useHistoryRefetchInterval } from "./live";
 import { LOGS_PARAM } from "./runLogFormat";
 import { useCanReadRunLogs } from "./runLogGates";
@@ -181,6 +183,11 @@ export function RunnerHistory({
     refetchInterval,
     enabled,
   });
+  // The rows in the order the table lists them, then the page of them: the
+  // fetch above is unchanged, and `historyPage.ts` is the only place that
+  // knows where a page comes from.
+  const runs = history.data ? newestFirst(history.data.items) : [];
+  const page = useHistoryPage(runs, showLogs ? params.get(LOGS_PARAM) : null);
 
   return (
     <Card
@@ -271,7 +278,7 @@ export function RunnerHistory({
             </tr>
           </thead>
           <tbody>
-            {newestFirst(history.data.items).map((run) => (
+            {page.rows.map((run) => (
               <HistoryRow
                 key={run.runId}
                 run={run}
@@ -280,6 +287,25 @@ export function RunnerHistory({
             ))}
           </tbody>
         </Table>
+      )}
+      {page.paged && (
+        <>
+          <Pager
+            label="History pages"
+            offset={page.offset}
+            limit={page.limit}
+            total={page.total}
+            itemCount={page.rows.length}
+            onChange={page.onChange}
+          />
+          <p
+            className="muted history-paging-note"
+            data-testid="history-paging-note"
+          >
+            These pages divide the runs fetched — the “Runs shown” number above
+            — not the runner’s whole history. To reach older runs, fetch more.
+          </p>
+        </>
       )}
     </Card>
   );
