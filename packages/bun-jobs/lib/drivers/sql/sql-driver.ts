@@ -176,10 +176,14 @@ import {
   createSchema,
   DURATION_BIN_COLUMNS,
   DURATION_STAT_COLUMNS,
+  FINISHED_NOT_NULL,
   FRESH_JOB_COLUMNS,
+  hasFinishedIndex,
+  hasPartialIndexes,
   insertColumns,
   JOB_COLUMNS,
   jobColumnTypes,
+  LOCK_NOT_NULL,
   METRIC_KEY_COLUMNS,
   schemaDefinition,
   STAMP_COLUMNS,
@@ -4243,11 +4247,16 @@ export class SqlDriver implements JobsDriver {
     // shares, see `JobsDriver.listJobs` — and several states share only
     // creation time. The id breaks ties, so a page boundary is stable.
     const order = this.#listOrder(states, opts.order);
+    // And what that order implies about its own sort column, so the index
+    // over it can serve the order. See `#listNotNull`.
+    const notNull = this.#listNotNull(states)
+      .map((condition) => `\n          AND ${condition}`)
+      .join("");
 
     const rows = await this.#all<Record<string, unknown>>(
       `SELECT * FROM ${this.#tables.jobs}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-          AND state IN (${states.map((state) => bind(state)).join(", ")})
+          AND state IN (${states.map((state) => bind(state)).join(", ")})${notNull}
         ORDER BY ${order}
         LIMIT ${bind(opts.limit)} OFFSET ${bind(opts.offset)}`,
       values,
@@ -4311,6 +4320,56 @@ export class SqlDriver implements JobsDriver {
   }
 
   /**
+   * The `IS NOT NULL` a listing's own sort column implies, so the partial
+   * index over that column can serve the order instead of the whole state
+   * being read and sorted.
+   *
+   * Emitted only where there is a **partial** index over that column to
+   * unlock, and only for a state all of whose rows have the column set, so it
+   * can never change which rows come back:
+   *
+   * - `active` is reached only through a claim, and the statement that writes
+   *   `state = 'active'` writes `lock_expires_at` in the same `SET` list
+   *   (`claimAssignments`); every settle clears the two together. Its index,
+   *   `ix_…_lock`, is partial on Postgres and SQLite — see
+   *   {@link hasPartialIndexes}.
+   * - `completed` and `dead` are written with `finished_on` by every path
+   *   that sets them. Their index exists on SQLite alone, so the predicate is
+   *   emitted there alone — see {@link hasFinishedIndex}.
+   *
+   * Nothing is emitted on MySQL or MariaDB, and nothing for `completed`/`dead`
+   * on Postgres, because neither has an index the predicate would unlock: it
+   * would only be a filter over every row of the state, which both were
+   * measured to pay for (Postgres `completed` 16.2ms against 20.5ms).
+   *
+   * Measured, 200,000 rows evenly across the states, a page of 20 through
+   * `listJobs`, both orders at offsets 0 and 1000: Postgres `active` 4.9x to
+   * 22x faster — a bitmap scan of the whole state and a top-N sort becomes an
+   * index scan and an incremental sort; SQLite, on a warm cache, `active` 13x
+   * to 70x and `completed`/`dead` 13x to 173x.
+   *
+   * @param states The states the listing is restricted to.
+   * @returns The conditions to `AND` into the `WHERE`; empty for every other
+   *   state, for several states at once, and for a listing sorted by creation.
+   */
+  #listNotNull(states: JobState[]): string[] {
+    const single = states.length === 1 ? states[0] : undefined;
+
+    if (single === "active" && hasPartialIndexes(this.dialect)) {
+      return [LOCK_NOT_NULL];
+    }
+
+    if (
+      (single === "completed" || single === "dead") &&
+      hasFinishedIndex(this.dialect)
+    ) {
+      return [FINISHED_NOT_NULL];
+    }
+
+    return [];
+  }
+
+  /**
    * A filtered page and its total, as two statements at most: the page, and
    * a `COUNT(*)` with the same conditions when a total is asked for.
    *
@@ -4353,10 +4412,20 @@ export class SqlDriver implements JobsDriver {
     const names =
       query.names === undefined ? undefined : [...new Set(query.names)];
 
+    // What the listing's own order implies about its sort column — nothing at
+    // all when the query sorts by creation instead, because then no index over
+    // that column is serving anything. See `#listNotNull`. Applied to the page
+    // and the count alike, so the two can never disagree; it selects the same
+    // rows either way.
+    const notNull = sortsByCreated(query)
+      ? []
+      : this.#listNotNull(query.states);
+
     const where = (bind: (value: unknown) => string): string =>
       [
         `ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}`,
         `state IN (${states.map((state) => bind(state)).join(", ")})`,
+        ...notNull,
         ...(names
           ? [`name IN (${names.map((name) => bind(name)).join(", ")})`]
           : []),
@@ -4383,7 +4452,11 @@ export class SqlDriver implements JobsDriver {
         // partial index on finished jobs serve the range; that index exists
         // on SQLite only, and Postgres, MySQL and MariaDB serve the range
         // without it, from the (ns, queue, state) prefix of their indexes.
-        ...(range ? ["finished_on IS NOT NULL"] : []),
+        // Not when the order already asked for it: a repeat would be harmless
+        // but is noise in a plan.
+        ...(range && !notNull.includes(FINISHED_NOT_NULL)
+          ? [FINISHED_NOT_NULL]
+          : []),
         ...(attribution?.finishedFrom === undefined
           ? []
           : [`finished_on >= ${bind(attribution.finishedFrom)}`]),
