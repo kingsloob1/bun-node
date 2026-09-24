@@ -106,10 +106,22 @@ thirteen, in READMEs, benchmark code and `package.json`. The editor lints
 everything, so the errors were visible there and nowhere else.
 
 bun-jobs' integration suites need database servers, and skip (visibly) when
-their URL is unset. `bun scripts/setup-databases.ts` provides them — system
-packages by default, `--docker` for containers, `--dry-run` to see the plan
-first. It never reinstalls an existing server and configures one only when a
-connection with the expected credentials fails.
+their URL is **unset**. A URL that is **set but unreachable fails** the suite,
+naming the backend and the connection error (`reportUnreachable` in
+`__tests__/helpers/backends.ts`) — a set variable is a claim of coverage, and
+the two used to be the same bit, so a broken URL reported a clean pass for an
+engine nothing had touched. `examples/**` already behaved this way; the test
+suites now match it.
+
+`bun scripts/setup-databases.ts` provides the servers — system packages by
+default, `--docker` for containers, `--dry-run` to see the plan first. It never
+reinstalls an existing server and configures one only when a connection with
+the expected credentials fails. That check connects **the way the suites do**,
+which for MySQL means taking `allowPublicKeyRetrieval` out of the URL and
+passing it as a `SQL` option: **Bun honours it as an option and ignores it in a
+URL**, so `new SQL(url)` on the configured MySQL URL fails with
+`ERR_MYSQL_PUBLIC_KEY_RETRIEVAL_NOT_ALLOWED` while the driver connects fine.
+Probing that URL by hand is therefore misleading — it looks broken and is not.
 
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
 depend on bun-common). The `eslint.config.mjs` `TS2742`/`TS2883` portability

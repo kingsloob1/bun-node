@@ -1,6 +1,7 @@
 import type { DriverConfig } from "../../lib/index";
 import { join } from "node:path";
 import process from "node:process";
+import { describe, it } from "bun:test";
 import { createDriver } from "../../lib/index";
 import { makeTmpDir } from "../helpers";
 
@@ -13,7 +14,8 @@ import { makeTmpDir } from "../helpers";
  * A backend added here is picked up by every suite that matters.
  *
  * A backend with no server configured is *skipped*, visibly, rather than
- * quietly passing tests that did nothing.
+ * quietly passing tests that did nothing. A backend whose variable is set but
+ * whose server cannot be reached is a *failure* — see `reportUnreachable`.
  */
 
 /** A backend a spawned process can build for itself. */
@@ -62,16 +64,60 @@ const SERVERS: {
   },
 ];
 
-/** Whether a driver of this shape can be built and reached. */
-async function isAvailable(config: DriverConfig): Promise<boolean> {
+/**
+ * Connects once to see whether a server of this shape is really there.
+ *
+ * Returns the failure rather than a boolean, because the two callers want
+ * different things from it and a boolean throws the interesting half away:
+ * "unreachable" and "not configured" are the same bit, and that is exactly the
+ * confusion this module exists to prevent.
+ */
+export async function reachError(
+  config: DriverConfig,
+): Promise<Error | undefined> {
   try {
     const driver = createDriver(config);
     await driver.connect();
     await driver.close();
-    return true;
-  } catch {
-    return false;
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
   }
+}
+
+/**
+ * Registers a failing test for a backend whose URL is set but whose server
+ * cannot be reached.
+ *
+ * **A set variable is a claim of coverage, so a broken one fails rather than
+ * skips.** Setting `BUN_JOBS_TEST_MYSQL_URL` says "I have a MySQL server, test
+ * against it"; leaving it unset says "I do not". Treating an unreachable server
+ * as unconfigured collapses those two into one, and the suite then reports a
+ * clean pass for an engine it never touched — measured at 272 pass / 0 fail
+ * before this, against 238 pass / 36 silent skips with the port changed by one
+ * digit. A skip, however loud, is still a green run; only a failure reliably
+ * tells you your coverage is missing.
+ *
+ * The backend is still marked unavailable, so the rest of the file skips
+ * instead of producing a storm of connection timeouts on top of this one
+ * named, explained failure.
+ */
+export function reportUnreachable(
+  /** Backend name, as it appears in the test titles. */
+  name: string,
+  /** The variable that pointed at it, so the reader knows what to fix. */
+  variable: string,
+  /** Why the connection failed. */
+  error: Error,
+): void {
+  describe(`backend ${name}: unreachable`, () => {
+    it(`connects to the server ${variable} points at`, () => {
+      throw new Error(
+        `${variable} is set, but the ${name} server it names could not be reached, so every ${name} test would have been skipped and the run would still have been green. Start the server (bun scripts/setup-databases.ts), fix the URL, or unset the variable to skip ${name} deliberately.\n  ${error.message}`,
+        { cause: error },
+      );
+    });
+  });
 }
 
 /**
@@ -107,14 +153,26 @@ export async function crossProcessBackends(options?: {
   for (const server of SERVERS) {
     const url = process.env[server.variable];
     if (!url) {
+      // Registered rather than merely skipped over: dropping the backend from
+      // the list silently is how a suite reports "56 pass, 0 skip" on seven
+      // backends and "56 pass, 0 skip" on eight. The unset case is meant to be
+      // a *visible* skip, so it needs something in the output to be visible in.
+      describe.skip(`backend ${server.name}: not configured`, () => {
+        it(`runs when ${server.variable} is set`, () => {});
+      });
       continue;
     }
 
     const config = server.toConfig(url);
+    const error = await reachError(config);
+    if (error) {
+      reportUnreachable(server.name, server.variable, error);
+    }
+
     backends.push({
       name: server.name,
       config,
-      available: await isAvailable(config),
+      available: error === undefined,
     });
   }
 

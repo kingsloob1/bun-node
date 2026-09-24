@@ -18,6 +18,7 @@ import {
 import { takeBooleanParam } from "../lib/shared/connection";
 import { queueEvent } from "../lib/shared/events";
 import { makeJob, makeTmpDir, testNamespace, waitFor } from "./helpers";
+import { reachError, reportUnreachable } from "./helpers/backends";
 import { driverContract } from "./helpers/driverContract";
 
 /**
@@ -35,6 +36,11 @@ import { driverContract } from "./helpers/driverContract";
  * They run the same contract as every other driver, so "supported" means the
  * same thing for all of them. Each uses a unique namespace and purges it, so
  * a shared server can host several runs at once.
+ *
+ * A URL that is set but names a server nobody can reach *fails* the suite
+ * rather than skipping it — see `reportUnreachable`. Only an unset variable is
+ * a skip, because only an unset variable says the engine was left out on
+ * purpose.
  */
 
 /** The servers this suite can reach, if any. */
@@ -55,6 +61,27 @@ const SERVERS: { adapter: SqlAdapter; variable: string; url?: string }[] = [
     url: process.env.BUN_JOBS_TEST_MARIADB_URL,
   },
 ];
+
+// Probed once, before anything below gates on a URL. Every gate here reads
+// `server.url`, so an unreachable server is reported loudly and then forgotten,
+// which leaves one named failure explaining the missing coverage instead of a
+// hundred connection errors from tests that were never going to run.
+for (const server of SERVERS) {
+  if (!server.url) {
+    continue;
+  }
+
+  const error = await reachError({
+    type: "sql",
+    url: server.url,
+    adapter: server.adapter,
+  });
+
+  if (error) {
+    reportUnreachable(server.adapter, server.variable, error);
+    server.url = undefined;
+  }
+}
 
 /** Clients opened for the servers, closed when the suite ends. */
 const clients: SQL[] = [];
@@ -768,8 +795,14 @@ for (const engine of ENGINES) {
   });
 }
 
-/** The MySQL server's URL, when one is configured. */
-const MYSQL = process.env.BUN_JOBS_TEST_MYSQL_URL;
+/**
+ * The MySQL server's URL, when one is configured *and reachable*.
+ *
+ * Taken from the probed `SERVERS` entry rather than from the environment, so
+ * an unreachable server is reported once by `reportUnreachable` instead of
+ * again by every test below it.
+ */
+const MYSQL = SERVERS.find((server) => server.adapter === "mysql")?.url;
 
 describe("SQL driver: allowPublicKeyRetrieval in a connection URL", () => {
   it("is taken out of the URL, with every other parameter left as written", () => {
