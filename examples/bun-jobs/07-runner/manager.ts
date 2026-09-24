@@ -98,8 +98,21 @@ show(
   await jobs.runners.remove("compact-audit-log"),
 );
 show(
-  "still registered",
+  "still registered in this process",
   jobs.runners.list().map((runner) => runner.id),
+);
+// `remove()` unregisters the runner *here*. It does not delete the record on
+// the backend, and nothing does: the record carries what the cluster decided
+// about this runner — paused, its schedule, its config overrides — and that
+// intent is meant to outlive a process. So the backend still lists it, another
+// instance still discovers it, and `GET /runners/<id>` still answers 200.
+// Register the same id again on this driver and it comes back as it was, pause
+// included. Liveness is the run lock, not the record — which is the opposite of
+// a worker, whose record really is a heartbeat and does expire.
+show("but the backend still lists it", await jobs.listRunners());
+show(
+  "and the other instance still discovers it",
+  await secondInstance.runners.discover(),
 );
 
 await secondInstance.close();
