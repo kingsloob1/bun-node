@@ -241,9 +241,25 @@ describe("the query keys the actions invalidate", () => {
       runnerKeys.detail("a"),
       runnerKeys.stats("a"),
       runnerKeys.historyAll("a"),
-      runnerKeys.history("a", 50),
+      runnerKeys.history("a", { offset: 0, limit: 50, order: "desc" }),
     ]) {
       expect(key.slice(0, 2)).toEqual(["runner", "a"]);
+    }
+    // The offset is part of the key, or page 2 is served the cached page 1 —
+    // the route pages on the server. `historyAll` still covers every window.
+    const first = runnerKeys.history("a", {
+      offset: 0,
+      limit: 50,
+      order: "desc",
+    });
+    const second = runnerKeys.history("a", {
+      offset: 50,
+      limit: 50,
+      order: "desc",
+    });
+    expect(first).not.toEqual(second);
+    for (const key of [first, second]) {
+      expect(key.slice(0, 3)).toEqual([...runnerKeys.historyAll("a")]);
     }
     expect(runnerKeys.list().slice(0, 1)).toEqual([...runnerKeys.all]);
     expect(runnerInvalidations("a")).toEqual([["runner", "a"], ["runners"]]);

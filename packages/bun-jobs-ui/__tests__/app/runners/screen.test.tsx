@@ -274,7 +274,9 @@ describe("the runner history", () => {
       handlers: {
         // Oldest first on the wire: the table still reads newest first.
         [`GET ${runnerApiPath("nightly", "/history")}`]: {
-          body: { items: [...historyFixture().items].reverse() },
+          body: historyFixture({
+            items: [...historyFixture().items].reverse(),
+          }),
         },
       },
     });
@@ -358,7 +360,7 @@ describe("the runner history", () => {
     const empty = await renderLoaded(runnerFixture(), {
       handlers: {
         [`GET ${runnerApiPath("nightly", "/history")}`]: {
-          body: { items: [] },
+          body: historyFixture({ items: [] }),
         },
       },
     });

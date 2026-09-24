@@ -189,44 +189,80 @@ export function runnerListFixture(
   };
 }
 
-/** `GET /runners/nightly/history`: three runs, newest first. */
+/**
+ * `GET /runners/nightly/history`: three runs, newest first, as one whole page.
+ *
+ * `page` is derived from the items, so a caller overriding them gets a
+ * coherent page without restating it — the route's `total` is always present
+ * and exact, and the card reads the whole history's size from it. Pass `page`
+ * for a window of a longer history; {@link historyPager} is the handler that
+ * pages one for real.
+ */
 export function historyFixture(
   overrides: Partial<RunnerHistoryDto> = {},
 ): RunnerHistoryDto {
+  const items = overrides.items ?? [
+    runFixture(),
+    runFixture({
+      runId: "run-2",
+      startedAt: NOW - 86_400_000,
+      finishedAt: NOW - 86_390_000,
+      durationMs: 10_000,
+      status: "failed",
+      exitCode: 1,
+      signal: null,
+      result: undefined,
+      error: {
+        name: "Error",
+        message: "Report query failed",
+        cause: { name: "SqlError", message: "connection reset" },
+      },
+    }),
+    runFixture({
+      runId: "run-1",
+      attempt: 2,
+      source: "manual",
+      startedAt: NOW - 172_800_000,
+      finishedAt: NOW - 172_799_000,
+      durationMs: 1_000,
+      status: "killed",
+      signal: "SIGTERM",
+      detached: true,
+      result: undefined,
+    }),
+  ];
   return {
-    items: [
-      runFixture(),
-      runFixture({
-        runId: "run-2",
-        startedAt: NOW - 86_400_000,
-        finishedAt: NOW - 86_390_000,
-        durationMs: 10_000,
-        status: "failed",
-        exitCode: 1,
-        signal: null,
-        result: undefined,
-        error: {
-          name: "Error",
-          message: "Report query failed",
-          cause: { name: "SqlError", message: "connection reset" },
-        },
-      }),
-      runFixture({
-        runId: "run-1",
-        attempt: 2,
-        source: "manual",
-        startedAt: NOW - 172_800_000,
-        finishedAt: NOW - 172_799_000,
-        durationMs: 1_000,
-        status: "killed",
-        signal: "SIGTERM",
-        detached: true,
-        result: undefined,
-      }),
-    ],
-    // The route always answers a page; these three runs are the whole history.
-    page: { offset: 0, limit: 50, total: 3, hasMore: false },
+    items,
+    page: { offset: 0, limit: 50, total: items.length, hasMore: false },
     ...overrides,
+  };
+}
+
+/**
+ * A `GET /runners/:runner/history` handler that pages `runs` the way the
+ * route does: `offset`, `limit` and `order` off the query, and a `page` whose
+ * `total` is the whole list, not the window.
+ *
+ * @param runs Every stored run, newest first.
+ */
+export function historyPager(runs: readonly RunRecordDto[]): MockHandler {
+  return (call) => {
+    const offset = Math.max(0, Number(call.query.get("offset") ?? 0));
+    const limit = Math.max(1, Number(call.query.get("limit") ?? 50));
+    const ordered =
+      call.query.get("order") === "asc" ? [...runs].reverse() : [...runs];
+    const items = ordered.slice(offset, offset + limit);
+    return {
+      body: {
+        items,
+        page: {
+          offset,
+          limit,
+          total: runs.length,
+          hasMore: offset + items.length < runs.length,
+        },
+      } satisfies RunnerHistoryDto,
+    };
   };
 }
 
