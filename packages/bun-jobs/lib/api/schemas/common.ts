@@ -88,10 +88,22 @@ export const ErrorDtoSchema = s.named(
 export const PageInfoSchema = s.named(
   "PageInfo",
   s.object({
-    offset: s.integer({ minimum: 0 }),
+    offset: s.integer({
+      minimum: 0,
+      description:
+        "Items skipped before this page — and, on a page reached with a `cursor`, where the seek landed, so a walked page can still say where it sits.",
+    }),
     limit: s.integer({ minimum: 0 }),
     total: s.optional(s.integer({ minimum: 0 })),
     hasMore: s.boolean(),
+    next: s.optional(
+      s.nullable(
+        s.string({
+          description:
+            "Opaque cursor continuing the walk after this page's last item — send it back as `cursor` — or `null` when the walk is complete. Present only where the route pages by cursor, and `next === null` is that route's end-of-list signal.",
+        }),
+      ),
+    ),
   }),
 );
 

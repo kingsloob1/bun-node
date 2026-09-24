@@ -206,7 +206,10 @@ export interface JobWorkerDto {
 
 /** Where a page sits in its list. */
 export interface PageInfoDto {
-  /** Items skipped before this page. */
+  /**
+   * Items skipped before this page — and, on a page reached with a `cursor`,
+   * where the seek landed, so a walked page can still say where it sits.
+   */
   offset: number;
   /** Most items the page could hold. */
   limit: number;
@@ -214,6 +217,13 @@ export interface PageInfoDto {
   total?: number;
   /** Whether items follow this page. */
   hasMore: boolean;
+  /**
+   * Opaque cursor continuing the walk after this page's last item — send it
+   * back as `cursor` — or `null` when the walk is complete. Present only where
+   * the route pages by cursor, and `next === null` is that route's
+   * end-of-list signal.
+   */
+  next?: string | null;
 }
 
 /** One page of a list. */

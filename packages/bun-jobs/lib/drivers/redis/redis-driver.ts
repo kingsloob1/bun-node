@@ -917,24 +917,29 @@ export class RedisDriver implements JobsDriver {
   ): Promise<RunHistoryPage> {
     await this.connect();
 
-    // One script: the slice and the `LLEN` have to see the same list — see
-    // `PAGE_HISTORY`. Never a whole-list read, so `keepHistory` may be large
-    // without every page paying for it.
-    const [total, ...entries] = (await this.#run(
+    // One script: the slice, the `LLEN` and — for a cursor — the seek all have
+    // to see the same list, see `PAGE_HISTORY`. Never a whole-list read *to
+    // the client*, so `keepHistory` may be large without every page paying for
+    // it; a cursor's seek does scan the list, but inside Redis, and only the
+    // page itself crosses the wire.
+    const [total, offset, ...entries] = (await this.#run(
       scripts.PAGE_HISTORY,
       [this.keys.runner(ns, this.#runnerId(key)).history],
       [
         String(Math.max(0, Math.floor(opts.offset))),
         String(Math.max(0, Math.floor(opts.limit))),
         opts.order,
+        opts.after?.runId ?? "",
+        String(opts.after?.startedAt ?? 0),
       ],
-    )) as [number, ...string[]];
+    )) as [number, number, ...string[]];
 
     return {
       records: entries
         .map((entry) => safeJsonParse<RunRecord | null>(entry, null))
         .filter((record): record is RunRecord => record !== null),
       total: Number(total),
+      offset: Number(offset),
     };
   }
 

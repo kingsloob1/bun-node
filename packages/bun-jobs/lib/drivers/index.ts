@@ -187,6 +187,12 @@ export {
   type UpdateFilterLike,
   type UpdateResultLike,
 } from "./mongo/mongo-driver";
+export {
+  type CursorPart,
+  type CursorPartType,
+  decodePageCursor,
+  encodePageCursor,
+} from "./pageCursor";
 export { type PromotionRead, readPromotion } from "./promotion";
 export {
   countAdded,
@@ -222,10 +228,15 @@ export {
 export { RedisKeys } from "./redis/keys";
 export { RedisDriver, type RedisDriverOptions } from "./redis/redis-driver";
 export {
+  decodeHistoryCursor,
+  encodeHistoryCursor,
+  HISTORY_CURSOR_PREFIX,
   pageRunHistory,
   readHistoryPage,
+  type RunHistoryCursorKey,
   type RunHistoryPage,
   type RunHistoryQuery,
+  type RunHistoryWalk,
 } from "./runHistory";
 export type {
   ColumnRow,

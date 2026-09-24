@@ -435,6 +435,14 @@ export interface RunnerDriver {
    * The `total` is exact and must come from the **same read** as the records,
    * or a page and its count can disagree about a run that started between two
    * queries.
+   *
+   * **Honouring {@link RunHistoryQuery.after} — the keyset cursor — is opt-in,
+   * and is declared by answering with {@link RunHistoryPage.offset}.** An
+   * implementation that seeks resolves the cursor to a position and returns
+   * it; one that cannot must leave `offset` out, and `readHistoryPage` then
+   * reads the history whole and seeks with `pageRunHistory` rather than let a
+   * cursor request be answered with page one — which a client cannot tell
+   * apart from the end of the list.
    */
   pageHistory?: (
     ns: string,

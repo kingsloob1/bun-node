@@ -1,4 +1,5 @@
 import type { BunJobs } from "../../lib/index";
+import { Buffer } from "node:buffer";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { MAX_DATE_MS } from "../../lib/api/contract/constants";
 import { scheduleIssuePath } from "../../lib/api/routes/runners";
@@ -226,8 +227,9 @@ describe("listing and reading", () => {
     expect((await h.call("GET", "/runners/remote/history")).body).toEqual({
       items: [],
       // An empty history still carries its page: `total: 0` is what tells a
-      // pager the list is empty rather than merely this window of it.
-      page: { offset: 0, limit: 5, total: 0, hasMore: false },
+      // pager the list is empty rather than merely this window of it, and
+      // `next: null` tells a walking client the same thing.
+      page: { offset: 0, limit: 5, total: 0, hasMore: false, next: null },
     });
     expect(
       (await h.call("GET", "/runners/nightly/history?limit=6")).status,
@@ -321,13 +323,17 @@ describe("listing and reading", () => {
       ).toEqual([]);
 
       // The envelope the UI's pager reads: "21–25 of 25" on the last page.
-      expect(first.body.page).toEqual({
+      // `next` rides along on every page: an offset client may ignore it, and
+      // a client that wants to stop losing rows to a starting run can switch
+      // to walking without re-deriving anything.
+      expect(first.body.page).toMatchObject({
         offset: 0,
         limit: 10,
         total: 25,
         hasMore: true,
       });
-      expect(second.body.page).toEqual({
+      expect(first.body.page.next).toBeTypeOf("string");
+      expect(second.body.page).toMatchObject({
         offset: 10,
         limit: 10,
         total: 25,
@@ -338,6 +344,8 @@ describe("listing and reading", () => {
         limit: 10,
         total: 25,
         hasMore: false,
+        // The last page ends the walk, so there is nothing to continue with.
+        next: null,
       });
     });
 
@@ -382,7 +390,7 @@ describe("listing and reading", () => {
         "r03",
         "r04",
       ]);
-      expect(asc.body.page).toEqual({
+      expect(asc.body.page).toMatchObject({
         offset: 0,
         limit: 4,
         total: 12,
@@ -420,6 +428,7 @@ describe("listing and reading", () => {
         limit: 10,
         total: 7,
         hasMore: false,
+        next: null,
       });
     });
 
@@ -446,6 +455,200 @@ describe("listing and reading", () => {
       );
       expect(deep.status).toBe(200);
       expect(deep.body.page.total).toBe(12);
+    });
+  });
+
+  /**
+   * Walking the history with `cursor`, over the route.
+   *
+   * `runner-history-cursor.test.ts` runs the seek itself against all eight
+   * backends, including the interleaving that offset loses records to. What is
+   * left for here is the HTTP surface: `page.next` round-tripping as `cursor`,
+   * the end-of-walk signal, and the refusals — a cursor that answers 200 with
+   * page one where it should answer 400 is the failure mode a client cannot
+   * see.
+   */
+  describe("history cursor", () => {
+    /** Writes `count` records for a runner only another process registered. */
+    async function seedHistory(
+      h: Awaited<ReturnType<typeof withRunners>>,
+      runner: string,
+      count: number,
+    ) {
+      const key = runnerKey(runner);
+      for (let n = 1; n <= count; n++) {
+        await h.jobs.driver.appendHistory(
+          h.jobs.namespace,
+          key,
+          {
+            runId: `${runner}-r${String(n).padStart(2, "0")}`,
+            runnerId: runner,
+            attempt: 1,
+            source: "manual",
+            mode: "in-process",
+            host: "test",
+            startedAt: 1_700_000_000_000 + n * 1000,
+            finishedAt: 1_700_000_000_500 + n * 1000,
+            durationMs: 500,
+            status: "success",
+          },
+          1000,
+        );
+      }
+    }
+
+    it("walks the whole history with `page.next`, and ends with `next: null`", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, "remote", 12);
+
+      const seen: string[] = [];
+      let url = "/runners/remote/history?limit=5";
+      let pages = 0;
+
+      for (;;) {
+        const res = await h.call("GET", url);
+        expect(res.status).toBe(200);
+        seen.push(...res.body.items.map((run: any) => run.runId));
+        pages += 1;
+        if (res.body.page.next === null || pages > 10) {
+          // The end of the walk is a null cursor on a page that still holds
+          // rows, not an extra empty page a client has to ask for.
+          expect(res.body.items.length).toBe(2);
+          expect(res.body.page.offset).toBe(10);
+          break;
+        }
+        url = `/runners/remote/history?limit=5&cursor=${encodeURIComponent(res.body.page.next)}`;
+      }
+
+      expect(pages).toBe(3);
+      // Newest first, nothing missed, nothing twice.
+      expect(seen).toEqual(
+        Array.from(
+          { length: 12 },
+          (_, i) => `remote-r${String(12 - i).padStart(2, "0")}`,
+        ),
+      );
+    });
+
+    it("walks `asc` too, and a cursor reports where the seek landed", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, "remote", 12);
+
+      const first = await h.call(
+        "GET",
+        "/runners/remote/history?limit=4&order=asc",
+      );
+      expect(first.body.items.map((r: any) => r.runId)).toEqual([
+        "remote-r01",
+        "remote-r02",
+        "remote-r03",
+        "remote-r04",
+      ]);
+      const second = await h.call(
+        "GET",
+        `/runners/remote/history?limit=4&order=asc&cursor=${encodeURIComponent(first.body.page.next)}`,
+      );
+      expect(second.body.items.map((r: any) => r.runId)).toEqual([
+        "remote-r05",
+        "remote-r06",
+        "remote-r07",
+        "remote-r08",
+      ]);
+      // Not an echo of the `offset` query (which was never sent): the position
+      // the seek resolved to, so a pager can still say "5–8 of 12".
+      expect(second.body.page).toMatchObject({
+        offset: 4,
+        limit: 4,
+        total: 12,
+        hasMore: true,
+      });
+    });
+
+    it("ignores `offset` when a cursor is sent", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, "remote", 12);
+
+      const first = await h.call("GET", "/runners/remote/history?limit=4");
+      const second = await h.call(
+        "GET",
+        `/runners/remote/history?limit=4&offset=9&cursor=${encodeURIComponent(first.body.page.next)}`,
+      );
+      expect(second.body.items.map((r: any) => r.runId)).toEqual([
+        "remote-r08",
+        "remote-r07",
+        "remote-r06",
+        "remote-r05",
+      ]);
+      expect(second.body.page.offset).toBe(4);
+    });
+
+    it("refuses a cursor it did not issue with 400 INVALID_ARGUMENT", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, "remote", 12);
+
+      for (const bad of [
+        "nonsense",
+        "rh1.",
+        "rh1.!!!",
+        `rh1.${Buffer.from('{"v":1}').toString("base64url")}`,
+      ]) {
+        const res = await h.call(
+          "GET",
+          `/runners/remote/history?cursor=${encodeURIComponent(bad)}`,
+        );
+        // Never a 200 with page one: a client walking a list cannot tell that
+        // apart from the end of the list, and would stop early and silently.
+        expect(res.status, bad).toBe(400);
+        expect(res.body.type).toBe("urn:bun-jobs:error:INVALID_ARGUMENT");
+      }
+    });
+
+    it("refuses one runner's cursor on another, and one order's on the other", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      await seedHistory(h, "remote", 12);
+      await seedHistory(h, "nightly", 12);
+
+      const mine = await h.call("GET", "/runners/remote/history?limit=4");
+      const cursor = encodeURIComponent(mine.body.page.next);
+
+      // The same position means something else in another runner's history,
+      // so resuming there would skip rows without saying so.
+      const elsewhere = await h.call(
+        "GET",
+        `/runners/nightly/history?limit=4&cursor=${cursor}`,
+      );
+      expect(elsewhere.status).toBe(400);
+      expect(elsewhere.body.type).toBe("urn:bun-jobs:error:INVALID_ARGUMENT");
+
+      // And the other direction is a different walk over the same records.
+      const flipped = await h.call(
+        "GET",
+        `/runners/remote/history?limit=4&order=asc&cursor=${cursor}`,
+      );
+      expect(flipped.status).toBe(400);
+      expect(flipped.body.type).toBe("urn:bun-jobs:error:INVALID_ARGUMENT");
+    });
+
+    it("refuses a cursor over the length cap as VALIDATION, before decoding it", async () => {
+      const h = await withRunners({
+        limits: { queueCacheMs: 0, maxHistory: 10 },
+      });
+      const res = await h.call(
+        "GET",
+        `/runners/remote/history?cursor=rh1.${"a".repeat(2100)}`,
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.type).toBe("urn:bun-jobs:error:VALIDATION");
     });
   });
 });

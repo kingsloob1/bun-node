@@ -392,6 +392,12 @@ export interface RemoteRunHistoryPage<TResult = unknown> {
   records: RemoteRunRecord<TResult>[];
   /** How many records the history holds in total, not just on this page. */
   total: number;
+  /**
+   * Where the page's first record sits in the ordered history: the `offset`
+   * asked for, or, when a `RunHistoryQuery.after` cursor was given, the
+   * position the seek resolved to.
+   */
+  offset?: number;
 }
 
 /**
