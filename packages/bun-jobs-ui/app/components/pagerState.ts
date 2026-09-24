@@ -3,6 +3,14 @@
 /** The page sizes offered by default. */
 export const DEFAULT_PAGE_SIZES: readonly number[] = [10, 20, 50, 100];
 
+/**
+ * The largest page count still offered as a `<select>` of every page.
+ * Beyond it the pager shows a bounded number input instead: a thousand-option
+ * listbox is slow to build and impossible to scan, and typing "437" beats
+ * scrolling to it.
+ */
+export const PAGE_SELECT_MAX = 100;
+
 /** A page position: where it starts and how many rows it holds. */
 export interface PageWindow {
   /** Rows skipped. */
@@ -33,10 +41,27 @@ export interface PagerState {
   hasPrev: boolean;
   /** Whether there is a next page. */
   hasNext: boolean;
+  /**
+   * 1-based number of the page shown. Clamped into `1…pageCount` when the
+   * total is known, so an offset past the end reads as the last page rather
+   * than as a page that does not exist.
+   */
+  page: number;
+  /**
+   * How many pages there are, or `null` when the total is unknown — then
+   * nothing can say how many pages follow this one. An empty result is one
+   * (empty) page, never zero.
+   */
+  pageCount: number | null;
 }
 
 /** Formats row numbers with the locale's grouping. */
 const numberFormat = new Intl.NumberFormat();
+
+/** Formats a count with the locale's grouping, as the range text does. */
+export function formatNumber(value: number): string {
+  return numberFormat.format(value);
+}
 
 /**
  * The pager's arithmetic, pure: the shown range and whether prev/next exist.
@@ -67,7 +92,40 @@ export function pagerState({
   const hasNext = known
     ? offset + limit < total
     : (hasMore ?? (itemCount === undefined ? false : itemCount >= limit));
-  return { from, to, text, hasPrev: offset > 0, hasNext };
+  const pageCount =
+    known && limit > 0 ? Math.max(1, Math.ceil(total / limit)) : null;
+  const onPage = limit > 0 ? Math.floor(offset / limit) + 1 : 1;
+  const page = Math.max(1, Math.min(onPage, pageCount ?? onPage));
+  return { from, to, text, hasPrev: offset > 0, hasNext, page, pageCount };
+}
+
+/**
+ * The offset of a 1-based page, clamped into `1…pageCount` when one is given
+ * — the inverse of {@link PagerState.page}, and pure.
+ */
+export function pageOffset(
+  page: number,
+  limit: number,
+  pageCount?: number | null,
+): number {
+  const last =
+    typeof pageCount === "number" && pageCount > 0
+      ? pageCount
+      : Number.POSITIVE_INFINITY;
+  const wanted = Math.floor(page);
+  const clamped = Math.min(
+    Math.max(Number.isFinite(wanted) ? wanted : 1, 1),
+    last,
+  );
+  return (clamped - 1) * Math.max(0, limit);
+}
+
+/** Every page number, `1…pageCount`, for a select listing them all. */
+export function pageNumbers(pageCount: number): number[] {
+  const count = Number.isFinite(pageCount)
+    ? Math.max(0, Math.floor(pageCount))
+    : 0;
+  return Array.from({ length: count }, (_unused, index) => index + 1);
 }
 
 /** The page sizes to offer: the defaults up to `max`, plus the current size and `max` itself. */

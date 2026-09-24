@@ -2,6 +2,9 @@ import type { PageWindow } from "../../../app/components/pagerState";
 import { describe, expect, it, mock } from "bun:test";
 import { Pager } from "../../../app/components/Pager";
 import {
+  PAGE_SELECT_MAX,
+  pageNumbers,
+  pageOffset,
   pagerState,
   pageSizeOptions,
 } from "../../../app/components/pagerState";
@@ -17,6 +20,8 @@ describe("pagerState", () => {
       text: "1–20 of 345",
       hasPrev: false,
       hasNext: true,
+      page: 1,
+      pageCount: 18,
     });
     expect(pagerState({ offset: 340, limit: 20, total: 345 })).toMatchObject({
       from: 341,
@@ -52,6 +57,8 @@ describe("pagerState", () => {
       text: "21–40",
       hasPrev: true,
       hasNext: true,
+      page: 2,
+      pageCount: null,
     });
     expect(
       pagerState({ offset: 40, limit: 20, itemCount: 7, hasMore: false }),
@@ -75,6 +82,45 @@ describe("pagerState", () => {
     expect(pageSizeOptions([10, 20, 50, 100], 20, 30)).toEqual([10, 20, 30]);
     expect(pageSizeOptions([10, 20], 25)).toEqual([10, 20, 25]);
     expect(pageSizeOptions([10, 20, 50], 20, 5)).toEqual([5]);
+  });
+
+  it("numbers the pages, and counts them only when the total is known", () => {
+    const at = (offset: number, total?: number | null) =>
+      pagerState({ offset, limit: 20, total, itemCount: 20 });
+    expect(at(0, 345)).toMatchObject({ page: 1, pageCount: 18 });
+    expect(at(20, 345)).toMatchObject({ page: 2, pageCount: 18 });
+    // The last page is partial, and still a page.
+    expect(at(340, 345)).toMatchObject({ page: 18, pageCount: 18 });
+    // An exact multiple does not invent a trailing empty page.
+    expect(at(0, 340).pageCount).toBe(17);
+    // No rows is one (empty) page, never zero.
+    expect(at(0, 0)).toMatchObject({ page: 1, pageCount: 1 });
+    // An offset past the end reads as the last page, not as page 21 of 18.
+    expect(at(400, 345).page).toBe(18);
+    // Without a total there is nothing to count, but we still know where we are.
+    expect(at(60, null)).toMatchObject({ page: 4, pageCount: null });
+    expect(at(60)).toMatchObject({ page: 4, pageCount: null });
+  });
+
+  it("turns a page back into an offset, clamped to the pages that exist", () => {
+    expect(pageOffset(1, 20, 18)).toBe(0);
+    expect(pageOffset(4, 20, 18)).toBe(60);
+    expect(pageOffset(18, 20, 18)).toBe(340);
+    // Out of range, either way.
+    expect(pageOffset(99, 20, 18)).toBe(340);
+    expect(pageOffset(0, 20, 18)).toBe(0);
+    expect(pageOffset(-3, 20, 18)).toBe(0);
+    expect(pageOffset(Number.NaN, 20, 18)).toBe(0);
+    // Unbounded without a page count.
+    expect(pageOffset(99, 20)).toBe(1960);
+  });
+
+  it("lists every page number", () => {
+    expect(pageNumbers(3)).toEqual([1, 2, 3]);
+    expect(pageNumbers(1)).toEqual([1]);
+    expect(pageNumbers(0)).toEqual([]);
+    expect(pageNumbers(PAGE_SELECT_MAX)).toHaveLength(PAGE_SELECT_MAX);
+    expect(pageNumbers(PAGE_SELECT_MAX).at(-1)).toBe(PAGE_SELECT_MAX);
   });
 });
 
@@ -135,5 +181,220 @@ describe("Pager", () => {
     ]);
     fireEvent.change(select, { target: { value: "50" } });
     expect(onChange).toHaveBeenCalledWith({ offset: 50, limit: 50 });
+  });
+
+  it("lists every page and jumps straight to one", () => {
+    const onChange = mock((_next: PageWindow) => {});
+    render(
+      <Pager
+        offset={20}
+        limit={20}
+        total={345}
+        onChange={onChange}
+      />,
+    );
+    const select = page().getByLabelText("Page") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(
+      Array.from({ length: 18 }, (_unused, index) => String(index + 1)),
+    );
+    // It shows the page the offset is on, and says how many there are.
+    expect(select.value).toBe("2");
+    expect(page().getByText("of 18")).toBeTruthy();
+    fireEvent.change(select, { target: { value: "7" } });
+    expect(onChange).toHaveBeenCalledWith({ offset: 120, limit: 20 });
+  });
+
+  it("jumps to the first and last pages, and disables prev/next there", () => {
+    const onChange = mock((_next: PageWindow) => {});
+    const { rerender } = render(
+      <Pager
+        offset={0}
+        limit={20}
+        total={345}
+        onChange={onChange}
+      />,
+    );
+    const first = page().getByLabelText("Page") as HTMLSelectElement;
+    expect(first.value).toBe("1");
+    expect(
+      (page().getByRole("button", { name: "Previous" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.change(first, { target: { value: "18" } });
+    expect(onChange).toHaveBeenLastCalledWith({ offset: 340, limit: 20 });
+
+    rerender(
+      <Pager
+        offset={340}
+        limit={20}
+        total={345}
+        onChange={onChange}
+      />,
+    );
+    const last = page().getByLabelText("Page") as HTMLSelectElement;
+    expect(last.value).toBe("18");
+    expect(
+      (page().getByRole("button", { name: "Next" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.change(last, { target: { value: "1" } });
+    expect(onChange).toHaveBeenLastCalledWith({ offset: 0, limit: 20 });
+  });
+
+  it("shows the page as text, with no control, when the total is unknown", () => {
+    const { rerender } = render(
+      <Pager
+        offset={40}
+        limit={20}
+        itemCount={20}
+        hasMore
+        onChange={() => {}}
+      />,
+    );
+    const nav = page().getByRole("navigation", { name: "Pagination" });
+    expect(nav.textContent).toContain("Page 3");
+    // No page control at all: nothing can bound it without a page count.
+    expect(page().queryByLabelText("Page")).toBeNull();
+    expect(nav.querySelector(".pager-page-static")).toBeTruthy();
+    // Nothing is rendered disabled-and-unexplained: the size select is still
+    // the only combobox, and prev/next still work.
+    expect(nav.querySelectorAll("select")).toHaveLength(1);
+    expect(nav.querySelectorAll("input")).toHaveLength(0);
+    expect(
+      (page().getByRole("button", { name: "Next" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+
+    // One page and no total: no paging to locate yourself in, so no text.
+    rerender(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={3}
+        hasMore={false}
+        onChange={() => {}}
+      />,
+    );
+    expect(nav.textContent).not.toContain("Page");
+    expect(nav.querySelector(".pager-page-static")).toBeNull();
+    // ...and the rest of the pager is untouched.
+    expect(page().getByLabelText("Rows per page")).toBeTruthy();
+    expect(nav.textContent).toContain("1–3");
+  });
+
+  it("uses a bounded number input beyond the select threshold", () => {
+    const onChange = mock((_next: PageWindow) => {});
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        // 250 pages: far past PAGE_SELECT_MAX, and a select nobody could use.
+        total={5000}
+        onChange={onChange}
+      />,
+    );
+    const input = page().getByLabelText("Page") as HTMLInputElement;
+    expect(input.tagName).toBe("INPUT");
+    expect(input.type).toBe("number");
+    expect(input.min).toBe("1");
+    expect(input.max).toBe("250");
+    expect(input.value).toBe("1");
+    expect(page().getByText("of 250")).toBeTruthy();
+    // Typing alone moves nothing; Enter commits.
+    fireEvent.change(input, { target: { value: "137" } });
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith({ offset: 2720, limit: 20 });
+  });
+
+  it("commits the typed page on blur, clamped to the last page", () => {
+    const onChange = mock((_next: PageWindow) => {});
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        total={5000}
+        onChange={onChange}
+      />,
+    );
+    const input = page().getByLabelText("Page") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "9999" } });
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenCalledWith({ offset: 4980, limit: 20 });
+    // A cleared box is not a page, and moves nothing.
+    onChange.mockClear();
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+    // ...and the box goes back to showing where we are.
+    expect(input.value).toBe("1");
+  });
+
+  it("drops an uncommitted draft when the page moves from elsewhere", () => {
+    const { rerender } = render(
+      <Pager
+        offset={0}
+        limit={20}
+        total={5000}
+        onChange={() => {}}
+      />,
+    );
+    const input = page().getByLabelText("Page") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "137" } });
+    expect(input.value).toBe("137");
+    // Next was pressed instead: the box shows where we now are, and a blur
+    // cannot commit the abandoned number.
+    rerender(
+      <Pager
+        offset={20}
+        limit={20}
+        total={5000}
+        onChange={() => {}}
+      />,
+    );
+    expect((page().getByLabelText("Page") as HTMLInputElement).value).toBe("2");
+  });
+
+  it("switches from the input back to a select when the pages fit", () => {
+    const { rerender } = render(
+      <Pager
+        offset={0}
+        limit={20}
+        total={5000}
+        pageSelectMax={4}
+        onChange={() => {}}
+      />,
+    );
+    expect((page().getByLabelText("Page") as HTMLElement).tagName).toBe(
+      "INPUT",
+    );
+    rerender(
+      <Pager
+        offset={0}
+        limit={20}
+        total={60}
+        pageSelectMax={4}
+        onChange={() => {}}
+      />,
+    );
+    const select = page().getByLabelText("Page") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select.options).toHaveLength(3);
+  });
+
+  it("disables the page control with the rest", () => {
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        total={345}
+        disabled
+        onChange={() => {}}
+      />,
+    );
+    expect((page().getByLabelText("Page") as HTMLSelectElement).disabled).toBe(
+      true,
+    );
   });
 });

@@ -322,6 +322,25 @@
   padding: var(--space-1) var(--space-2);
 }
 
+/* The exact-page control: a select of every page, or an input beyond a threshold. */
+.pager-page {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+/* Room for a five-digit page plus the spinner, not a full-width field. */
+.pager-page-input {
+  width: 9ch;
+  padding: var(--space-1) var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.pager-page-count {
+  font-variant-numeric: tabular-nums;
+}
+
 .pager-buttons {
   display: inline-flex;
   gap: var(--space-2);
