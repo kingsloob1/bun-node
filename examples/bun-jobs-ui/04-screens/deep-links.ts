@@ -26,9 +26,14 @@
  *   `service`, `host`, `state` and `search` on the worker list; `range` and
  *   the `job`-prefixed list parameters plus `finished` on a worker; `range`,
  *   `rangeScope` and the per-section ranges on the Overview; `search`,
- *   `offset` and `limit` on the runner list, `history` and `logs` on a runner;
- *   `channel` and `types` on `/events`; `q` on both docs references), which
- *   the server ignores, so any combination can be bookmarked;
+ *   `offset` and `limit` on the runner list, `history`, `offset`, `logs` and
+ *   `logStream` on a runner; `channel` and `types` on `/events`; `q` on both
+ *   docs references), which the server ignores, so any combination can be
+ *   bookmarked;
+ * - the runner screens' parameters are exactly the ones the package README
+ *   documents for those routes — the links here and that table are checked
+ *   against each other, since a window the docs never mention is a window
+ *   nobody can use;
  * - the shell links exactly one stylesheet and one module script. The queue,
  *   job and runner screens are split chunks the entry imports on demand,
  *   served from the same `assetsPath` with the same immutable caching, and
@@ -44,6 +49,7 @@
  * The screens need the caller's permissions too. `04-screens/permissions.ts`
  * checks those.
  */
+import { join } from "node:path";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi, UI_CONFIG_ELEMENT_ID } from "@kingsleyweb/bun-jobs-ui";
@@ -91,15 +97,24 @@ app.use(api.basePath, api.router);
 app.use(ui.basePath, ui.router);
 
 /* ------------------------------------------------------------------ */
+/** One operation of the API's OpenAPI document, as this example reads it. */
+interface DocOperation {
+  /** Its `operationId`, absent on a path item's non-operation keys. */
+  operationId?: string;
+  /** Its parameters, each with the place it goes and its name. */
+  parameters?: { in: string; name: string }[];
+}
 /** The API's OpenAPI document, for an operationId that really exists. */
 const openapi = (await (await app.fetch("/jobs-api/openapi.json")).json()) as {
-  paths: Record<string, Record<string, { operationId?: string }>>;
+  paths: Record<string, Record<string, DocOperation>>;
 };
+/** Every operation of the document, whatever path it sits under. */
+const operations = Object.values(openapi.paths).flatMap((item) =>
+  Object.values(item),
+);
 /** Every documented operationId. */
-const operationIds = Object.values(openapi.paths).flatMap((item) =>
-  Object.values(item).flatMap((operation) =>
-    typeof operation?.operationId === "string" ? [operation.operationId] : [],
-  ),
+const operationIds = operations.flatMap((operation) =>
+  typeof operation?.operationId === "string" ? [operation.operationId] : [],
 );
 check(
   "the API documents getQueue, the operation linked below",
@@ -184,11 +199,10 @@ const SCREEN_URLS = [
   "/jobs/runners",
   "/jobs/runners?search=night",
   // Its window. This list is read whole and paged in the browser, but the
-  // window is in the URL as `/queues`' is — it is the one pager whose page size
-  // comes from the link rather than from a constant in the app — so a link
-  // reproduces the page being read. The "Rows per page" select offers the
-  // defaults plus whatever `limit` the URL carries, so a size outside them
-  // (`limit=10` here) is honoured rather than dropped.
+  // window is in the URL as `/queues`' is, so a link reproduces the page being
+  // read. The "Rows per page" select offers the defaults plus whatever `limit`
+  // the URL carries, so a size outside them (`limit=10` here) is honoured
+  // rather than dropped.
   "/jobs/runners?offset=25&limit=10",
   // A filter and a window together: a link pasted from the second page of a
   // search. Typing in the filter drops `offset` again (the list narrows under
@@ -198,12 +212,29 @@ const SCREEN_URLS = [
   // An offset past the end. The server answers with the shell either way; the
   // screen lands on the last page that has rows rather than on an empty table.
   "/jobs/runners?offset=100000&limit=10",
-  // One runner, and with the last 25 runs in its history (sent to the API
-  // as `GET /runners/:runner/history?limit=25`).
+  // One runner. Its history is paged on the server, so `history` is the page
+  // size (sent as `GET /runners/:runner/history?limit=25`) and `offset` is
+  // where the page starts — the pager's window, in the URL as the jobs table's
+  // and the runner list's are.
   "/jobs/runners/nightly",
   "/jobs/runners/nightly?history=25",
-  // One run's log open in its history row (`logs` names the run id).
+  // The third page of 25: `offset` is what makes every run the runner has
+  // stored reachable, `limits.maxHistory` bounding the page and not the depth.
+  "/jobs/runners/nightly?history=25&offset=50",
+  // An offset past the end of the history. The shell answers either way, as it
+  // does for `/runners?offset=100000` above — but the screens differ, and this
+  // one is the reason `offset` is checked in the browser too: the runner list
+  // falls back to the last page with rows, while the history keeps the window
+  // it was given and says "No runs on this page".
+  "/jobs/runners/nightly?history=25&offset=100000",
+  // One run's log open in its history row (`logs` names the run id), and a
+  // stream filter over it. A Log button writes `logs` into the query string it
+  // was pressed on, so the link a reader copies carries the window its run is
+  // on; one that does not gets the off-page note
+  // (`data-testid="history-open-log-note"`) rather than opening nothing.
   "/jobs/runners/nightly?logs=00000000-0000-0000-0000-000000000000",
+  "/jobs/runners/nightly?history=10&offset=20&logs=00000000-0000-0000-0000-000000000000",
+  "/jobs/runners/nightly?logs=00000000-0000-0000-0000-000000000000&logStream=stderr",
   // A runner nothing knows: the shell, then "Runner not found"
   // (`data-testid="runner-not-found"`) from the API's 404.
   "/jobs/runners/ghost",
@@ -282,6 +313,146 @@ checkEqual(
   "the queue screen's and the job screen's pages differ only in the nonce",
   job.shell.html.replaceAll(job.shell.configNonce, "NONCE"),
   mail.shell.html.replaceAll(mail.shell.configNonce, "NONCE"),
+);
+
+/* ------------------------------------------------------------------ */
+step("The runner screens carry exactly the parameters the README documents");
+
+// Every check above asserts the shell, and the shell is the same whatever the
+// query string says: the server reads none of it. So what a parameter *means*
+// cannot be checked from here — `06-browser/runner-and-job-tools.ts` drives the
+// real screen for that. What can be checked is *which* parameters exist, and
+// that is where a link and its documentation drift apart: a window nobody
+// documents, or a documented one nothing links. The runner screens are taken
+// because the history's window (`offset`) is the parameter that just landed.
+
+/** One row of the package README's `### URL parameters` table. */
+interface DocumentedParam {
+  /** The screen, as the table spells it, with its backticks stripped. */
+  screen: string;
+  /** The parameter's name. */
+  parameter: string;
+  /** What the row says it means, verbatim. */
+  meaning: string;
+}
+
+/** That table, one entry per parameter: a row may name several. */
+async function documentedParams(): Promise<DocumentedParam[]> {
+  const path = join(import.meta.dir, "../../../packages/bun-jobs-ui/README.md");
+  const lines = (await Bun.file(path).text()).split("\n");
+  const heading = lines.findIndex(
+    (line) => line.trim() === "### URL parameters",
+  );
+  if (heading === -1) {
+    throw new Error(`${path} has no "### URL parameters" section`);
+  }
+  const start = lines.findIndex(
+    (line, index) => index > heading && line.startsWith("|"),
+  );
+  const rows: DocumentedParam[] = [];
+  // Skip the header and the |---| separator; stop at the first non-row.
+  for (let index = start + 2; lines[index]?.startsWith("|"); index++) {
+    const cells = lines[index]!.split("|").map((cell) => cell.trim());
+    for (const match of cells[2]!.matchAll(/`([^`]+)`/g)) {
+      rows.push({
+        screen: cells[1]!.replace(/`/g, ""),
+        parameter: match[1]!,
+        // A meaning holding a `|` of its own is rejoined, as the split broke it.
+        meaning: cells.slice(3, -1).join("|"),
+      });
+    }
+  }
+  return rows;
+}
+
+const documented = await documentedParams();
+/** The parameters the README documents for one screen, sorted. */
+function documentedFor(screen: string): string[] {
+  return [
+    ...new Set(
+      documented
+        .filter((row) => row.screen === screen)
+        .map((row) => row.parameter),
+    ),
+  ].sort();
+}
+/** What one `/runners/:runner` parameter's row says, `""` for one there is none for. */
+function runnerParamMeaning(name: string): string {
+  return (
+    documented.find(
+      (row) => row.screen === "/runners/:runner" && row.parameter === name,
+    )?.meaning ?? ""
+  );
+}
+/** The parameters the links above carry, over the screen paths `match` picks. */
+function linkedParams(match: (screen: string) => boolean): string[] {
+  return [
+    ...new Set(
+      SCREEN_URLS.flatMap((url) => {
+        const [path, query] = url.split("?");
+        const screen = path!.slice(ui.basePath.length) || "/";
+        return match(screen) ? [...new URLSearchParams(query).keys()] : [];
+      }),
+    ),
+  ].sort();
+}
+
+const listLinked = linkedParams((screen) => screen === "/runners");
+const runnerLinked = linkedParams((screen) =>
+  /^\/runners\/[^/]+$/.test(screen),
+);
+show("the runner list's parameters, as this file links them", listLinked);
+show("and one runner's", runnerLinked);
+// Both routes in one assertion, since each is the other's control: the list's
+// window has been in the URL all along, and the history's has just joined it.
+checkEqual(
+  "the two runner screens link exactly the parameters the README documents for them",
+  [listLinked, runnerLinked],
+  [documentedFor("/runners"), documentedFor("/runners/:runner")],
+);
+
+// And the window those two name is a window the route really takes: the README
+// says which query parameter each is sent as, and the API's own OpenAPI
+// document is what says the route has it.
+const history = operations.find(
+  (operation) => operation.operationId === "getRunnerHistory",
+);
+/** The query parameters the route declares, as the API's own document names them. */
+const historyQuery = (history?.parameters ?? [])
+  .filter((one) => one.in === "query")
+  .map((one) => one.name)
+  .sort();
+show(
+  "GET /runners/{runner}/history, as the API documents it",
+  (history?.parameters ?? []).map((one) => `${one.in}:${one.name}`),
+);
+checkEqual(
+  "`history` is that route's `limit` and `offset` its `offset`: the README says so, and the route declares both",
+  [
+    /history\?limit=/.test(runnerParamMeaning("history")),
+    /history\?offset=/.test(runnerParamMeaning("offset")),
+    ["limit", "offset"].filter((name) => !historyQuery.includes(name)),
+  ],
+  [true, true, []],
+);
+// The route also walks by an opaque `cursor`, and this screen does not.
+// Asserted the narrow way round — that nothing here names one — rather than by
+// pinning the route's whole query list: that list is the route's business, and
+// an example about this app's URLs which snapshots it fails every time the
+// route grows a parameter. That is how this very check first broke, on a
+// cursor added a day after it was written.
+// It is also not a thing a link could carry: a cursor is minted by the driver
+// and bound to one walk, so it addresses no page a reader could be handed.
+// The day the history table walks by cursor this fails, and that is the same
+// day the URL rows above gain a parameter.
+checkEqual(
+  "the route offers a cursor, and this screen pages by offset: no row and no link names one",
+  [
+    historyQuery.includes("cursor"),
+    documentedFor("/runners/:runner").filter((name) => /cursor/i.test(name)),
+    SCREEN_URLS.filter((url) => /cursor/i.test(url)),
+  ],
+  [true, [], []],
 );
 
 /* ------------------------------------------------------------------ */
