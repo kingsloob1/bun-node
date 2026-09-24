@@ -72,6 +72,20 @@
  *   the step that checks all this pins `process.memoryUsage.rss()` while it
  *   looks, and asserts every figure against what the API reported for that
  *   row rather than against a number typed into this file.
+ * - **A table's columns are the table's; only its rows are the page's.** A
+ *   server section pages at 25, and a fabricated server of 26 instances whose
+ *   **last** row is the only one reporting `rssBytes` still has the Memory
+ *   column on page 1, where every cell in it is a dash: which columns exist is
+ *   decided over every row the table was given, so a column cannot appear on
+ *   one page and vanish on the next. The three real sections fit a page and
+ *   grow no pager at all.
+ * - **A pager over a route that counts nothing is still fully usable.** A
+ *   worker page's jobs card never sends `total=1`, so its answer says whether
+ *   more rows follow and never how many there are: the range reads "2–2" with
+ *   no "of N", there is no Page control — neither a select nor a bounded input
+ *   can be built from a page count nobody knows — and in its place the page is
+ *   named as plain text ("Page 2"), only while there is somewhere else to go.
+ *   Prev/Next and the size select work exactly as they do with a total.
  * - **The heartbeat's round trip is a tooltip, never a column**, in every
  *   worker table including the queue's panel: appended under the Heartbeat
  *   cell's ISO instant, and absent altogether on a worker reporting none.
@@ -91,6 +105,7 @@ import type {
   WorkerInfo,
 } from "@kingsleyweb/bun-jobs";
 import type { Subprocess } from "bun";
+import type { PagerView } from "./helpers/page";
 import type { RemoteProcess } from "./helpers/remote-process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -120,6 +135,9 @@ import {
   choose,
   clickOn,
   optionsOf,
+  pagerOf,
+  pagersWhen,
+  pagerWhen,
   poll,
   textsWhen,
   toast,
@@ -176,6 +194,69 @@ const QUEUE_CACHE_BOUND_MS = 1_000;
  * in all), plus a margin for a loaded machine.
  */
 const DISCOVERY_BOUND_MS = 2_000 + 1_500;
+
+/**
+ * How many instances the fabricated server section holds: one more than a
+ * page (`SERVER_PAGE_SIZE`, 25), so the section has a second page with exactly
+ * one row on it.
+ */
+const PAGED_ROWS = 26;
+/**
+ * The server those instances claim to run on: a service, host and pid of their
+ * own, so the Workers page draws them as one table with one pager, beside the
+ * real sections that fit a page and have none.
+ */
+const PAGED = {
+  /** Its service, so it is a card of its own. */
+  service: "fleet",
+  /** Its host, which no real worker here reports. */
+  host: "paged-host",
+  /** Its pid, likewise. */
+  pid: 9_001,
+  /** The queue the records are written under. */
+  queue: "reports",
+} as const;
+/** The server heading the page gives it, which its pager is named after. */
+const PAGED_SERVER = `${PAGED.host} · pid ${PAGED.pid}`;
+/**
+ * The one instance of that server reporting its process memory. Ids are
+ * zero-padded so they sort as their numbers do, and the table orders a
+ * server's workers by queue then id — so this one is last, alone on page 2,
+ * which is the point: the Memory column must be on page 1 too.
+ */
+const PAGED_REPORTER = `paged-${PAGED_ROWS}`;
+/** The resident size it reports: mid-unit, so the formatter's one decimal shows. */
+const PAGED_RSS = 132_120_576;
+
+/**
+ * The fabricated server's heartbeat records, in the order the table lists
+ * them. Written straight to the driver, because 26 real worker processes would
+ * be 26 real processes; every field is one a live worker reports, and only the
+ * last carries `rssBytes`.
+ */
+function pagedRecords(): WorkerInfo[] {
+  const now = Date.now();
+  return Array.from({ length: PAGED_ROWS }, (_unused, index) => {
+    // The last row, and the only one reporting its process memory.
+    const reports = index + 1 === PAGED_ROWS;
+    return {
+      id: `paged-${String(index + 1).padStart(2, "0")}`,
+      key: `${PAGED.service}.${PAGED.queue}`,
+      service: PAGED.service,
+      queue: PAGED.queue,
+      host: PAGED.host,
+      pid: PAGED.pid,
+      concurrency: 1,
+      active: 0,
+      paused: false,
+      state: "running" as const,
+      startedAt: now - 60_000,
+      heartbeatAt: now,
+      expiresAt: now + 600_000,
+      ...(reports ? { rssBytes: PAGED_RSS } : {}),
+    };
+  });
+}
 
 /** What a job asks its worker to do. */
 interface JobData {
@@ -1817,6 +1898,163 @@ try {
 
   /* ---------------------------------------------------------------- */
   step(
+    `A server of ${PAGED_ROWS}: the page is the rows', the columns are the table's`,
+  );
+
+  // The interaction worth pinning down. Which columns a workers table has is
+  // decided from the workers it was *given* — Memory exists where some worker
+  // reports `rssBytes` — while a pager shows only some of them. Decide the
+  // columns from the page instead and a column appears on page 1 and vanishes
+  // on page 2, or the reverse: the table's shape would depend on where you
+  // stand in it. So this section's single reporting instance is deliberately
+  // its **last** row, alone on page 2.
+  //
+  // Built here rather than at load, so every record's `expiresAt` is ahead of
+  // now however long the steps above took.
+  const pagedFleet = pagedRecords();
+  for (const record of pagedFleet) {
+    await registerWorkerRecord(
+      apiJobs.driver,
+      apiJobs.queue(PAGED.queue).ref,
+      record,
+    );
+  }
+  await waitFor(`the ${PAGED_ROWS} records to be listed`, async () => {
+    const live = new Set((await listed()).map((worker) => worker.id));
+    return pagedFleet.every((one) => live.has(one.id));
+  });
+  const pagedListed = (await listed()).filter(
+    (worker) => worker.host === PAGED.host,
+  );
+  checkEqual(
+    `the API lists all ${PAGED_ROWS} on one server, and exactly one of them reports rssBytes`,
+    [
+      pagedListed.length,
+      pagedListed
+        .filter((worker) => typeof worker.rssBytes === "number")
+        .map((worker) => [worker.id, worker.rssBytes]),
+    ],
+    [PAGED_ROWS, [[PAGED_REPORTER, PAGED_RSS]]],
+  );
+
+  await open("/workers");
+  const pagedPager = await view.evaluate<PagerView | null>(
+    pagerOf(`Pages of Workers on ${PAGED_SERVER}`),
+  );
+  show("the paged server section's pager", pagedPager);
+  checkEqual(
+    `the pager is the server section's own, and names it: 1–25 of ${PAGED_ROWS}`,
+    [
+      pagedPager?.range,
+      pagedPager?.size,
+      pagedPager?.pageControl?.options,
+      pagedPager?.prev,
+      pagedPager?.next,
+    ],
+    [`1–25 of ${PAGED_ROWS}`, 25, ["1", "2"], false, true],
+  );
+  checkEqual(
+    "and it is the only one on the page: the three sections that fit one page have none",
+    await view.evaluate<string[] | null>(pagersWhen("labels.length >= 1")),
+    [`Pages of Workers on ${PAGED_SERVER}`],
+  );
+
+  /** The first page's rows: the first 25 ids, the reporter not among them. */
+  const firstIds = pagedFleet.slice(0, 25).map((one) => one.id);
+  await view.evaluate(
+    poll(
+      `[...document.querySelectorAll(${JSON.stringify(`[data-testid="worker-server-${PAGED.host}:${PAGED.pid}"] tr[data-testid^="worker-row-"]`)})]
+        .map((row) => row.dataset.testid.slice("worker-row-".length)).join(",") === ${JSON.stringify(firstIds.join(","))} || null`,
+    ),
+  );
+  const firstHeaders = await view.evaluate<string[] | null>(
+    headersOf(firstIds[0]!),
+  );
+  const firstCells = Object.fromEntries(
+    await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
+  );
+  show("page 1 of the section, its columns", firstHeaders);
+  check(
+    "page 1 has the Memory column although not one row on it reports a figure",
+    firstHeaders !== null && firstHeaders.includes("Memory"),
+    firstHeaders,
+  );
+  checkEqual(
+    "so every Memory cell on it is a dash, and the reporter is not on this page",
+    [
+      firstIds.filter((id) => firstCells[id]?.Memory !== "—"),
+      firstIds.includes(PAGED_REPORTER),
+    ],
+    [[], false],
+  );
+
+  check(
+    "Next turns to the last page",
+    await view.evaluate<boolean>(
+      button(
+        `nav.pager[aria-label="Pages of Workers on ${PAGED_SERVER}"]`,
+        "Next",
+        true,
+      ),
+    ),
+  );
+  const secondPage = await view.evaluate<PagerView | null>(
+    pagerWhen(
+      `Pages of Workers on ${PAGED_SERVER}`,
+      `pager.range === ${JSON.stringify(`${PAGED_ROWS}–${PAGED_ROWS} of ${PAGED_ROWS}`)}`,
+    ),
+  );
+  await view.evaluate(rowShown(PAGED_REPORTER, 10_000));
+  const secondHeaders = await view.evaluate<string[] | null>(
+    headersOf(PAGED_REPORTER),
+  );
+  const secondCells = Object.fromEntries(
+    await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
+  );
+  checkEqual(
+    `page 2 is the reporter alone (${PAGED_ROWS}–${PAGED_ROWS} of ${PAGED_ROWS})`,
+    [secondPage?.range, secondPage?.next, secondPage?.prev],
+    [`${PAGED_ROWS}–${PAGED_ROWS} of ${PAGED_ROWS}`, false, true],
+  );
+  checkEqual(
+    "the columns did not change with the page: page 2's headers are page 1's, Memory included",
+    secondHeaders,
+    firstHeaders,
+  );
+  checkEqual(
+    "and now the column has something in it: the figure the API reports for that one instance",
+    plainFigure(secondCells[PAGED_REPORTER]?.Memory ?? ""),
+    plainFigure(formatBytes(PAGED_RSS)),
+  );
+
+  for (const record of pagedFleet) {
+    await removeWorkerRecord(
+      apiJobs.driver,
+      apiJobs.queue(PAGED.queue).ref,
+      record.id,
+    );
+  }
+  await waitFor("the fabricated server's records to go", async () => {
+    const live = (await listed()).map((worker) => worker.id);
+    return pagedFleet.every((one) => !live.includes(one.id));
+  });
+  checkEqual(
+    "removed: /workers is back to the five live workers, and back to no pager",
+    [
+      (await listed()).map((worker) => worker.id).sort(),
+      await (async () => {
+        await open("/workers");
+        await view.evaluate(rowsAre(Object.values(ids)));
+        return view.evaluate<string[] | null>(
+          pagersWhen("labels.length === 0"),
+        );
+      })(),
+    ],
+    [Object.values(ids).sort(), []],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(
     "The housekeeping note: said when nobody sweeps, never when nobody said",
   );
 
@@ -2197,6 +2435,97 @@ try {
     "sent as limit=1&offset=1",
     /limit=1(?:&|$)/.test(sent) && /offset=1(?:&|$)/.test(sent),
     sent,
+  );
+
+  // This card never asks the API to count: `GET /queues/:queue/jobs` counts
+  // only with `total=1`, which it never sends, so the answer says whether more
+  // follow and never how many there are. A pager with no total is therefore
+  // this card's *normal* shape, not a degraded one, and it has to be fully
+  // usable — which is why it is checked here rather than assumed.
+  const uncounted = await read<{
+    page: { offset: number; limit: number; hasMore: boolean; total?: number };
+  }>(sent.split(" ")[1]!.slice(main.api.length));
+  show("the page info the card is built from", uncounted.page);
+  checkEqual(
+    "the read carries hasMore and no total at all: the card never asks for a count",
+    [
+      uncounted.page.hasMore,
+      "total" in uncounted.page,
+      /(?:^|&)total=/.test(sent),
+    ],
+    [true, false, false],
+  );
+  const noTotal = await view.evaluate<PagerView | null>(
+    pagerOf("Pages of this key's jobs"),
+  );
+  show("the pager over a route that counts nothing", noTotal);
+  checkEqual(
+    'the range names the rows and stops there — "2–2", never "of ?" or "of 0"',
+    [noTotal?.range, /\bof\b/.test(noTotal?.range ?? "")],
+    ["2–2", false],
+  );
+  checkEqual(
+    "no Page control and no page count: neither a select nor a bounded input can be built from a page count nobody knows",
+    [noTotal?.pageControl, noTotal?.pageCount],
+    [null, null],
+  );
+  checkEqual(
+    'instead, the fact the control would have shown, as plain text: "Page 2"',
+    noTotal?.pageText,
+    "Page 2",
+  );
+  checkEqual(
+    "and it is as usable as one with a total: both directions live, the size select unchanged",
+    [noTotal?.prev, noTotal?.next, noTotal?.size, noTotal?.sizes],
+    [true, true, 1, [1, 10, 20, 50, 100]],
+  );
+  // Moving from a pager with no total: Next writes the next offset, and the
+  // card is on the row after.
+  check(
+    "Next is a real move",
+    await view.evaluate<boolean>(
+      button('nav.pager[aria-label="Pages of this key\'s jobs"]', "Next", true),
+    ),
+  );
+  checkEqual(
+    "→ 3–3, Page 3, and the row is the third: the window moved without a count to move within",
+    [
+      (
+        await view.evaluate<PagerView | null>(
+          pagerWhen("Pages of this key's jobs", 'pager.pageText === "Page 3"'),
+        )
+      )?.range,
+      await view.evaluate<string[] | null>(
+        jobRows(
+          JOBS,
+          `JSON.stringify(ids) === ${JSON.stringify(JSON.stringify([newestFirst[2]]))}`,
+        ),
+      ),
+    ],
+    ["3–3", [newestFirst[2]]],
+  );
+  // The last row of four: `hasMore` is false, so Next goes dead — and nothing
+  // pretended to know that before the API said so.
+  [sent, shown] = await jobsWith("jobLimit=1&jobOffset=3", "ids.length === 1");
+  const lastRow = await view.evaluate<PagerView | null>(
+    pagerOf("Pages of this key's jobs"),
+  );
+  checkEqual(
+    "the fourth and last: Next disabled, Previous live, and the page still named",
+    [lastRow?.range, lastRow?.pageText, lastRow?.prev, lastRow?.next, shown],
+    ["4–4", "Page 4", true, false, [newestFirst[3]]],
+  );
+  // All four on one page: nowhere to go either way, so the page is not named
+  // at all. The pager is still there — it is this card's size control too —
+  // but it says nothing it cannot back up.
+  [sent, shown] = await jobsWith("jobLimit=20", "ids.length === 4");
+  const onePage = await view.evaluate<PagerView | null>(
+    pagerOf("Pages of this key's jobs"),
+  );
+  checkEqual(
+    "with every row on one page there is no page text either: nothing is shown that could not be acted on",
+    [onePage?.range, onePage?.pageText, onePage?.prev, onePage?.next],
+    ["1–4", null, false, false],
   );
 
   // The window is taken from what the API recorded, not from this process's

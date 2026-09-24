@@ -48,6 +48,13 @@
  *   lines dropped" badge); while the run is still going, "A cap is trimming
  *   this log now". Every log carries the redaction note, and a
  *   `password=…` really is stored as `[REDACTED]`.
+ * - **The history pages within what was fetched, and says so.** "Runs shown"
+ *   is the fetch (`GET /runners/:runner/history?limit=`); the pager under the
+ *   table divides what came back, 25 rows to a page, and the note beside it
+ *   says exactly that — fetch fewer than a page and the pager and the note both
+ *   go, while the runner keeps every run it had. A `?logs=<runId>` link opens
+ *   the page the run is on however far down the history it is, and leaves the
+ *   page alone when the run is already on it.
  * - **Clear history…** (`DELETE /runners/:runner/history`), in the History
  *   card's header (disabled, titled "No runs to clear.", with no runs), removes the
  *   finished runs and keeps a run in progress, record and log whole — on a
@@ -69,6 +76,7 @@ import type {
   JobsApiAuthorize,
 } from "@kingsleyweb/bun-jobs";
 import type { LogRunnerArgs } from "./helpers/log-runner";
+import type { PagerView } from "./helpers/page";
 import type { RunLogLine, SummaryRow } from "./helpers/runner-job-page";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import {
@@ -89,6 +97,7 @@ import {
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 import { LOG_RUNNER_GATES } from "./helpers/log-runner";
+import { pagerOf, pagersWhen, pagerWhen, poll } from "./helpers/page";
 import {
   chooseOption,
   disabledButton,
@@ -138,6 +147,17 @@ const REDEPLOYED = "redeployed-export";
 const LOGGED = "report-render";
 /** The runner whose log cap keeps 3 lines. */
 const TRIMMED = "audit-trim";
+/** The runner whose history is paged: more runs than one page of it. */
+const PAGED = "ledger-sweep";
+/**
+ * How many runs it makes: more than `HISTORY_PAGE_SIZE` (25), and fewer than
+ * the 50 runs the "Runs shown" select starts on — so every one of them is
+ * fetched and the pages divide what came back, with something left over for a
+ * short second page.
+ */
+const PAGED_RUNS = 30;
+/** Runs on a page of the history table. */
+const HISTORY_PAGE = 25;
 /** How many lines the trimmed runner's log keeps. */
 const TRIMMED_KEEPS = 3;
 /** How many lines its runs write. */
@@ -259,6 +279,7 @@ const tickerRunner = await startRunner(jobs, TICKER, { runMode: "parallel" });
 const heldRunner = await startRunner(jobs, HELD);
 const remoteRunner = await startRunner(remote, REMOTE, { runMode: "parallel" });
 const freshRunner = await startRunner(jobs, FRESH);
+const pagedRunner = await startRunner(jobs, PAGED);
 const runners = [
   settingsRunner,
   instanceBound,
@@ -268,6 +289,7 @@ const runners = [
   heldRunner,
   remoteRunner,
   freshRunner,
+  pagedRunner,
 ];
 
 /**
@@ -307,6 +329,12 @@ const remoteRun = await run(remoteRunner, {
   lines: 1,
   hold: gate("remote-run"),
 });
+// Thirty finished runs, one at a time, so the history has more than a page of
+// them. Each writes one line, so each has a log for `?logs=` to open.
+const pagedRuns: string[] = [];
+for (let index = 0; index < PAGED_RUNS; index++) {
+  pagedRuns.push(await run(pagedRunner, { lines: 1 }));
+}
 
 /** What a job asks the worker to do. */
 interface JobData {
@@ -1233,6 +1261,173 @@ try {
         poll();
       })`,
     ),
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(`${PAGED}: ${PAGED_RUNS} runs, paged within what was fetched`);
+
+  /** Page-side: the run ids of the history rows on screen, once `ready(ids)` holds. */
+  function historyRows(ready = "true"): string {
+    return poll(`(() => {
+      const ids = [...document.querySelectorAll('.history-table tr[data-testid^="history-row-"]')]
+        .map((row) => row.dataset.testid.slice("history-row-".length));
+      return (${ready}) ? ids : null;
+    })()`);
+  }
+
+  /** The note under the pager saying what the pages divide, or `null`. */
+  const PAGING_NOTE = '[data-testid="history-paging-note"]';
+
+  check(
+    `${PAGED}'s history opens`,
+    (await openRunner(full, PAGED)) &&
+      (await view.evaluate<boolean>(waitForSelector(".history-table"))),
+  );
+  const fetched = await historyOf(PAGED);
+  checkEqual(
+    `the API has all ${PAGED_RUNS} runs, every one of them finished`,
+    [fetched.length, new Set(fetched.map((one) => one.status)).size],
+    [PAGED_RUNS, 1],
+  );
+  const firstHistory = await view.evaluate<PagerView | null>(
+    pagerOf("History pages"),
+  );
+  show("the history pager", firstHistory);
+  checkEqual(
+    `the pager divides what was fetched: 1–${HISTORY_PAGE} of ${PAGED_RUNS}, two pages`,
+    [
+      firstHistory?.range,
+      firstHistory?.size,
+      firstHistory?.pageControl?.options,
+      firstHistory?.prev,
+      firstHistory?.next,
+    ],
+    [
+      `1–${HISTORY_PAGE} of ${PAGED_RUNS}`,
+      HISTORY_PAGE,
+      ["1", "2"],
+      false,
+      true,
+    ],
+  );
+  const notePaged = await view.evaluate<string | null>(textOf(PAGING_NOTE));
+  show("and it says what it divides", notePaged);
+  check(
+    'the note names the fetch ("Runs shown"), not the runner\'s whole history',
+    notePaged?.includes("the runs fetched") === true &&
+      notePaged.includes("Runs shown") &&
+      notePaged.includes("fetch more"),
+    notePaged,
+  );
+  const historyPage1 = await view.evaluate<string[] | null>(
+    historyRows(`ids.length === ${HISTORY_PAGE}`),
+  );
+  checkEqual(
+    `${HISTORY_PAGE} rows on it, every one a run the API listed`,
+    [
+      historyPage1?.length,
+      (historyPage1 ?? []).filter(
+        (id) => !fetched.some((one) => one.runId === id),
+      ),
+    ],
+    [HISTORY_PAGE, []],
+  );
+  check(
+    "Next turns to the second page",
+    await view.evaluate<boolean>(
+      button('nav.pager[aria-label="History pages"]', "Next", true),
+    ),
+  );
+  const secondHistory = await view.evaluate<PagerView | null>(
+    pagerWhen("History pages", 'pager.pageControl.value === "2"'),
+  );
+  const historyPage2 = await view.evaluate<string[] | null>(
+    historyRows(`ids.length === ${PAGED_RUNS - HISTORY_PAGE}`),
+  );
+  checkEqual(
+    `page 2 is the remaining ${PAGED_RUNS - HISTORY_PAGE}, and Next has nowhere left to go`,
+    [secondHistory?.range, secondHistory?.next, secondHistory?.prev],
+    [`${HISTORY_PAGE + 1}–${PAGED_RUNS} of ${PAGED_RUNS}`, false, true],
+  );
+  checkEqual(
+    "the two pages share no run and cover every run the API listed",
+    [
+      (historyPage2 ?? []).filter((id) => (historyPage1 ?? []).includes(id)),
+      [...(historyPage1 ?? []), ...(historyPage2 ?? [])].slice().sort(),
+    ],
+    [[], fetched.map((one) => one.runId).sort()],
+  );
+
+  // What the note means, demonstrated: fetch fewer than a page and there is
+  // nothing to page. The runs are still there — the *fetch* shrank, which is
+  // the only thing "Runs shown" changes.
+  check(
+    'the "Runs shown" select takes 10',
+    await view.evaluate<boolean>(
+      chooseOption(HISTORY_ACTIONS, "Runs shown", "10"),
+    ),
+  );
+  const tenRows = await view.evaluate<string[] | null>(
+    historyRows("ids.length === 10"),
+  );
+  checkEqual(
+    "ten rows fetched, so no pager and no note: there is nothing left to page",
+    [
+      tenRows?.length,
+      await view.evaluate<string[] | null>(pagersWhen("labels.length === 0")),
+      await view.evaluate<boolean>(gone(PAGING_NOTE)),
+    ],
+    [10, [], true],
+  );
+  checkEqual(
+    `and the runner still has all ${PAGED_RUNS}: the fetch shrank, not the history`,
+    (await historyOf(PAGED)).length,
+    PAGED_RUNS,
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("?logs= opens the page the run is on, wherever in the history it is");
+
+  /** A run on the second page, and one on the first, as the pages showed them. */
+  const onPage2 = historyPage2?.[0];
+  const onPage1 = historyPage1?.[0];
+  check(
+    "a run from each page to link to",
+    typeof onPage1 === "string" && typeof onPage2 === "string",
+    { onPage1, onPage2 },
+  );
+  await openRunner(full, PAGED, `?logs=${onPage2}`);
+  const deepLinked = await view.evaluate<PagerView | null>(
+    pagerWhen("History pages", 'pager.pageControl.value === "2"'),
+  );
+  checkEqual(
+    "a link to a run on page 2 opens page 2, not page 1 with the row missing",
+    [
+      deepLinked?.range,
+      deepLinked?.pageControl?.value,
+      await view.evaluate<boolean>(
+        waitForSelector(`[data-testid="history-row-${onPage2}"]`),
+      ),
+      await view.evaluate<boolean>(
+        waitForSelector(`[data-testid="run-logs-${onPage2}"]`),
+      ),
+    ],
+    [`${HISTORY_PAGE + 1}–${PAGED_RUNS} of ${PAGED_RUNS}`, "2", true, true],
+  );
+  await openRunner(full, PAGED, `?logs=${onPage1}`);
+  const stayed = await view.evaluate<PagerView | null>(
+    pagerOf("History pages"),
+  );
+  checkEqual(
+    "and a link to a run on the page already shown leaves the page where it was",
+    [
+      stayed?.range,
+      stayed?.pageControl?.value,
+      await view.evaluate<boolean>(
+        waitForSelector(`[data-testid="run-logs-${onPage1}"]`),
+      ),
+    ],
+    [`1–${HISTORY_PAGE} of ${PAGED_RUNS}`, "1", true],
   );
 
   /* ---------------------------------------------------------------- */

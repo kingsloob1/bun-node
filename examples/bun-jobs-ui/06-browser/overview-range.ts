@@ -33,6 +33,15 @@
  *   size**: a roll-up, then one batch (`ids=` / `keys=`) for the sparklines
  *   of the rows on screen. With 130 worker keys and 120 runners it is still
  *   two, and the note says "Showing the 100 busiest … of M".
+ * - **A pager only where there is a second page.** With one runner and one
+ *   worker key the Overview draws none at all: prev/next and a page control
+ *   that change nothing are worse than absent. With the fleet's 100 roll-up
+ *   rows against a page of 20 each section grows its own, and the **Page**
+ *   select jumps straight to page 3 or 5 rather than pressing Next. A page
+ *   turn costs the one batch its new rows' sparklines need and **no second
+ *   roll-up** — the rows came back with the first one — and "Rows per page"
+ *   offers nothing above the API's `maxSeries`, because a page is exactly one
+ *   batch request.
  * - **The clamped-range caption**, worded by the API's `reason`: `retention`
  *   (five minutes asked at one-second buckets from a host that keeps two
  *   minutes of them) and `driver` (a host recording minutes only, asked for
@@ -84,6 +93,7 @@ import type {
   JobsDriver,
 } from "@kingsleyweb/bun-jobs";
 import type { OverviewView, RowView } from "./helpers/overview-page";
+import type { PagerView } from "./helpers/page";
 import {
   BunHttpAdapter,
   createDeferred,
@@ -104,7 +114,14 @@ import {
   READ_OVERVIEW,
   TOGGLE_SCOPE,
 } from "./helpers/overview-page";
-import { at, clickOn } from "./helpers/page";
+import {
+  at,
+  choose,
+  clickOn,
+  pagerOf,
+  pagersWhen,
+  pagerWhen,
+} from "./helpers/page";
 
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
@@ -768,6 +785,20 @@ try {
     [runners.truncated, workers.truncated],
     [null, null],
   );
+  // One runner and one worker key against a page of MAX_SERIES, so neither
+  // section has a second page — and a pager with nothing to page is not drawn
+  // at all. Prev/Next, a page control and a size select that change nothing
+  // are worse than absent: they invite a click that does something invisible.
+  checkEqual(
+    "one row each against a page of 20, so the whole Overview draws no pager",
+    await view.evaluate<string[] | null>(pagersWhen("labels.length === 0")),
+    [],
+  );
+  checkEqual(
+    "and every row this range has is on screen: nothing was hidden to hide it",
+    [runners.rows.length, workers.rows.length],
+    [1, 1],
+  );
   checkEqual(
     "an unclamped answer has no caption anywhere",
     captions(screen),
@@ -1348,6 +1379,127 @@ try {
       1,
       [screen.cards.Runners!.rows.map((row) => row.id)],
     ],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step(`Paging the ${MAX_ROWS} rows a page of ${MAX_SERIES} at a time`);
+
+  /** The Workers section's pager. */
+  const WORKER_PAGER = 'nav.pager[aria-label="Worker pages"]';
+  /** Both sections' pagers, since here each section has more rows than a page. */
+  checkEqual(
+    "with more rows than a page, each section grows a pager and nothing else does",
+    await view.evaluate<string[] | null>(
+      pagersWhen("labels.length >= 2", 20_000),
+    ),
+    ["Runner pages", "Worker pages"],
+  );
+  const firstPage = await view.evaluate<PagerView | null>(
+    pagerOf("Worker pages"),
+  );
+  show("the Workers pager on the first page", firstPage);
+  checkEqual(
+    `the range is the page and the total is the rows the roll-up brought back (${MAX_ROWS}), not the ${FLEET_KEYS} keys that exist`,
+    firstPage?.range,
+    `1–${MAX_SERIES} of ${MAX_ROWS}`,
+  );
+  checkEqual(
+    `the Page control is a select of all ${MAX_ROWS / MAX_SERIES} pages, on page 1, with "of 5" beside it`,
+    [
+      firstPage?.pageControl?.kind,
+      firstPage?.pageControl?.value,
+      firstPage?.pageControl?.options,
+      firstPage?.pageCount,
+      firstPage?.pageText,
+    ],
+    [
+      "select",
+      "1",
+      ["1", "2", "3", "4", "5"],
+      `of ${MAX_ROWS / MAX_SERIES}`,
+      null,
+    ],
+  );
+  checkEqual(
+    "on the first page Previous is disabled and Next is not: no control lies about where it can go",
+    [firstPage?.prev, firstPage?.next],
+    [false, true],
+  );
+  // A page's sparklines are one batch request, so a size above `maxSeries`
+  // would cost a second one. The pager is told that cap and offers no size
+  // above it.
+  checkEqual(
+    `"Rows per page" offers nothing above the API's maxSeries (${MAX_SERIES}), because a page is exactly one batch request`,
+    [firstPage?.size, firstPage?.sizes],
+    [MAX_SERIES, [10, MAX_SERIES]],
+  );
+
+  // Jumping straight to page 3 — the control #140 added — rather than pressing
+  // Next twice.
+  const beforeJump = fleet.seen.length;
+  check(
+    "the Page select takes 3",
+    await view.evaluate<boolean>(choose(WORKER_PAGER, "Page", "3")),
+  );
+  const thirdPage = await overviewUntil(
+    "the Workers section to draw the third page and its sparklines",
+    (one) =>
+      workersDrawn(one) &&
+      one.cards.Workers!.rows[0]?.id !== screen.cards.Workers!.rows[0]?.id,
+  );
+  const jumped = await view.evaluate<PagerView | null>(
+    pagerWhen("Worker pages", 'pager.pageControl.value === "3"'),
+  );
+  checkEqual(
+    "page 3 is rows 41–60, and the select says so",
+    [jumped?.range, jumped?.pageControl?.value, jumped?.prev, jumped?.next],
+    [`41–60 of ${MAX_ROWS}`, "3", true, true],
+  );
+  checkEqual(
+    `${MAX_SERIES} rows again, none of them the first page's`,
+    [
+      thirdPage.cards.Workers!.rows.length,
+      thirdPage.cards.Workers!.rows.filter((row) =>
+        screen.cards.Workers!.rows.some((first) => first.id === row.id),
+      ),
+    ],
+    [MAX_SERIES, []],
+  );
+  // The rows themselves came back with the roll-up, so a page turn re-reads no
+  // roll-up: it costs the one batch the new page's sparklines need.
+  const jumpWorkers = split(sent(fleet, beforeJump, "/analytics/workers"));
+  checkEqual(
+    "turning the page costs one batch for the new rows' sparklines and no roll-up at all",
+    [
+      jumpWorkers.rollups.length,
+      jumpWorkers.batches.map((one) => one.query.getAll("keys")),
+    ],
+    [0, [thirdPage.cards.Workers!.rows.map((row) => row.id)]],
+  );
+
+  // The last page, from the same control: Next has nowhere left to go.
+  check(
+    "the Page select takes 5",
+    await view.evaluate<boolean>(choose(WORKER_PAGER, "Page", "5")),
+  );
+  const lastPage = await view.evaluate<PagerView | null>(
+    pagerWhen("Worker pages", 'pager.pageControl.value === "5"'),
+  );
+  show("the Workers pager on the last page", lastPage);
+  checkEqual(
+    "on the last page Next is disabled and Previous is not",
+    [lastPage?.range, lastPage?.pageControl?.value, lastPage?.next],
+    [`81–${MAX_ROWS} of ${MAX_ROWS}`, "5", false],
+  );
+  // The Runners section pages on its own: one pager per table, not one for the
+  // page, so moving the Workers section left it where it was.
+  const runnerPager = await view.evaluate<PagerView | null>(
+    pagerOf("Runner pages"),
+  );
+  checkEqual(
+    "the Runners section stayed on its first page: each section's pager is its table's own",
+    [runnerPager?.range, runnerPager?.pageControl?.value, runnerPager?.prev],
+    [`1–${MAX_SERIES} of ${MAX_ROWS}`, "1", false],
   );
 
   /* ---------------------------------------------------------------- */

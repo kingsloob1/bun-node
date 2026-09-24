@@ -25,10 +25,10 @@
  *   `offset`, `limit`, `total`, `name`, `search`, `order`; `queue`,
  *   `service`, `host`, `state` and `search` on the worker list; `range` and
  *   the `job`-prefixed list parameters plus `finished` on a worker; `range`,
- *   `rangeScope` and the per-section ranges on the Overview; `search` on the
- *   runner list, `history` and `logs` on a runner; `channel` and `types` on
- *   `/events`; `q` on both docs references), which the server ignores, so
- *   any combination can be bookmarked;
+ *   `rangeScope` and the per-section ranges on the Overview; `search`,
+ *   `offset` and `limit` on the runner list, `history` and `logs` on a runner;
+ *   `channel` and `types` on `/events`; `q` on both docs references), which
+ *   the server ignores, so any combination can be bookmarked;
  * - the shell links exactly one stylesheet and one module script. The queue,
  *   job and runner screens are split chunks the entry imports on demand,
  *   served from the same `assetsPath` with the same immutable caching, and
@@ -183,6 +183,21 @@ const SCREEN_URLS = [
   // browser, so nothing is re-fetched as you type.
   "/jobs/runners",
   "/jobs/runners?search=night",
+  // Its window. This list is read whole and paged in the browser, but the
+  // window is in the URL as `/queues`' is — it is the one pager whose page size
+  // comes from the link rather than from a constant in the app — so a link
+  // reproduces the page being read. The "Rows per page" select offers the
+  // defaults plus whatever `limit` the URL carries, so a size outside them
+  // (`limit=10` here) is honoured rather than dropped.
+  "/jobs/runners?offset=25&limit=10",
+  // A filter and a window together: a link pasted from the second page of a
+  // search. Typing in the filter drops `offset` again (the list narrows under
+  // the window, so the window goes back to the start) — which is behaviour of
+  // the screen, checked in `06-browser/pause-and-retry.ts`.
+  "/jobs/runners?search=night&offset=25&limit=10",
+  // An offset past the end. The server answers with the shell either way; the
+  // screen lands on the last page that has rows rather than on an empty table.
+  "/jobs/runners?offset=100000&limit=10",
   // One runner, and with the last 25 runs in its history (sent to the API
   // as `GET /runners/:runner/history?limit=25`).
   "/jobs/runners/nightly",

@@ -35,6 +35,13 @@
  *   is as fast as the app and fails with the name of what never happened.
  * - **The page's own state is not the proof.** The API is: a click counts
  *   when `GET /queues/mail` says `paused: true`.
+ * - **The runner list's window is in the URL, and a filter resets it.** Four
+ *   runners against a page of 25 grow no pager; `?limit=2` makes them two
+ *   pages, Next writes `offset` into the URL, and an `offset` past the end
+ *   lands on the last page with rows rather than on an empty table. Typing in
+ *   the filter drops `offset` and keeps `limit`, so a narrower list starts at
+ *   its beginning. The size the URL asked for is always among the sizes the
+ *   "Rows per page" select offers.
  * - **A hidden job or runner is never fetched.** The job screen asks for
  *   `jobs.read` on the queue's own map (`/meta/permissions?queue=`), and
  *   the runner screen for `runners.read` on the runner's
@@ -50,6 +57,7 @@ import type {
   JobsApiAuthorize,
   MetaDto,
 } from "@kingsleyweb/bun-jobs";
+import type { PagerView } from "./helpers/page";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-jobs-ui";
@@ -62,6 +70,7 @@ import {
 } from "../shared/browser";
 import { check, checkEqual, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
+import { pagerOf, pagersWhen, pagerWhen, poll, typeInto } from "./helpers/page";
 
 // Decide whether to skip before printing anything: run-all.ts recognises a
 // skip by the output *starting* with `skipped:`.
@@ -317,6 +326,25 @@ function statusBadges(ids: string[]): string {
   ])`;
 }
 
+/**
+ * Page-side: the query the URL carries now, as sorted `[name, value]` pairs —
+ * what a screen's state *is*, without depending on the order the app happens
+ * to write the parameters in.
+ */
+const QUERY = `[...new URLSearchParams(location.search).entries()].sort()`;
+
+/**
+ * Page-side: the runner ids of the rows on screen, in order, once `ready(ids)`
+ * holds (a page-side expression over `ids`); `null` when it never does.
+ */
+function runnerRows(ready = "true"): string {
+  return poll(`(() => {
+    const ids = [...document.querySelectorAll('[data-testid="runners-list"] tr[data-testid^="runner-row-"]')]
+      .map((row) => row.dataset.testid.slice("runner-row-".length));
+    return (${ready}) ? ids : null;
+  })()`);
+}
+
 /** A JSON read from the API, bypassing the page. */
 async function read<T>(path: string): Promise<T> {
   const response = await fetch(`${origin}${api.basePath}${path}`);
@@ -551,6 +579,156 @@ try {
       // ...or Active, and Run in flight from isRunning.
       [REMOTE_BUSY, ["Active", "Run in flight"]],
     ],
+  );
+
+  /* ---------------------------------------------------------------- */
+  step("The runner list's window is in the URL, and a filter resets it");
+
+  /** The runner list, and its filter's accessible name. */
+  const RUNNERS = '[data-testid="runners-list"]';
+  /** What the filter box is labelled. */
+  const FILTER_LABEL = "Filter runners by id or name";
+
+  const registered = (
+    await read<{ items: { id: string }[] }>("/runners")
+  ).items.map((item) => item.id);
+  show("the runners the API lists", registered);
+  checkEqual(
+    "four runners against a page of 25, so the list shows no pager at all",
+    [
+      registered.length,
+      await view.evaluate<string[] | null>(
+        runnerRows(`ids.length === ${registered.length}`),
+      ),
+      await view.evaluate<string[] | null>(pagersWhen("labels.length === 0")),
+    ],
+    [4, registered, []],
+  );
+
+  // `/runners` is the one pager whose size comes from the URL rather than a
+  // constant in the app, so `?limit=` is what makes four runners two pages.
+  await view.navigate(`${origin}${ui.basePath}/runners?limit=2`);
+  const firstTwo = await view.evaluate<string[] | null>(
+    runnerRows("ids.length === 2"),
+  );
+  const listPage1 = await view.evaluate<PagerView | null>(
+    pagerOf("Runner pages"),
+  );
+  show("the runner list's pager at ?limit=2", listPage1);
+  checkEqual(
+    "?limit=2 → two pages of the four, the first of them",
+    [
+      listPage1?.range,
+      listPage1?.size,
+      listPage1?.pageControl?.options,
+      listPage1?.prev,
+      listPage1?.next,
+    ],
+    ["1–2 of 4", 2, ["1", "2"], false, true],
+  );
+  // The size in force is always offered, so a `limit` a link carries is never
+  // silently dropped from the select it belongs to. At the default 25 the
+  // select reads 10, 20, 25, 50, 100 for exactly this reason.
+  checkEqual(
+    "and the size the URL asked for is among the sizes offered, beside the defaults",
+    listPage1?.sizes,
+    [2, 10, 20, 50, 100],
+  );
+
+  check(
+    "Next turns the page",
+    await view.evaluate<boolean>(
+      button('nav.pager[aria-label="Runner pages"]', "Next", true),
+    ),
+  );
+  const lastTwo = await view.evaluate<string[] | null>(
+    runnerRows(
+      `ids.length === 2 && ids.join(",") !== ${JSON.stringify((firstTwo ?? []).join(","))}`,
+    ),
+  );
+  const listPage2 = await view.evaluate<PagerView | null>(
+    pagerWhen("Runner pages", 'pager.pageControl.value === "2"'),
+  );
+  checkEqual(
+    "the window is written to the URL, so the page a link opens is the page being read",
+    [
+      await view.evaluate<[string, string][]>(QUERY),
+      listPage2?.range,
+      listPage2?.next,
+    ],
+    [
+      [
+        ["limit", "2"],
+        ["offset", "2"],
+      ],
+      "3–4 of 4",
+      false,
+    ],
+  );
+  checkEqual(
+    "and the two pages share no runner and cover every one the API listed",
+    [
+      (lastTwo ?? []).filter((id) => (firstTwo ?? []).includes(id)),
+      [...(firstTwo ?? []), ...(lastTwo ?? [])].slice().sort(),
+    ],
+    [[], registered.slice().sort()],
+  );
+
+  // An offset past the end lands on the last page with rows, not on an empty
+  // table: these lists poll, so rows go while somebody is reading the last
+  // page of them.
+  await view.navigate(`${origin}${ui.basePath}/runners?offset=1000&limit=2`);
+  const clamped = await view.evaluate<PagerView | null>(
+    pagerOf("Runner pages"),
+  );
+  checkEqual(
+    "?offset=1000 shows the last page with rows on it, never an empty table",
+    [
+      clamped?.range,
+      clamped?.next,
+      await view.evaluate<string[] | null>(runnerRows("ids.length === 2")),
+    ],
+    ["3–4 of 4", false, lastTwo],
+  );
+
+  // The reset: a filter narrows the list under the window, so the window goes
+  // back to the start. Without it, typing on page 2 would answer with the
+  // second page of the matches — or with the end of a list the reader had not
+  // seen the start of.
+  await view.navigate(`${origin}${ui.basePath}/runners?offset=2&limit=2`);
+  await view.evaluate(runnerRows("ids.length === 2"));
+  check(
+    "the filter box takes a letter three of the four runners share",
+    await view.evaluate<boolean>(typeInto(RUNNERS, FILTER_LABEL, "p")),
+  );
+  const matching = registered.filter((id) => id.includes("p"));
+  const filtered = await view.evaluate<PagerView | null>(
+    pagerWhen("Runner pages", `pager.range === "1–2 of ${matching.length}"`),
+  );
+  checkEqual(
+    "the offset is dropped from the URL and the filter kept: the window is back at the start",
+    [
+      await view.evaluate<[string, string][]>(QUERY),
+      filtered?.range,
+      filtered?.pageControl?.value,
+      filtered?.prev,
+    ],
+    [
+      [
+        ["limit", "2"],
+        ["search", "p"],
+      ],
+      `1–2 of ${matching.length}`,
+      "1",
+      false,
+    ],
+  );
+  checkEqual(
+    `the first two of the ${matching.length} matches, in the list's own order`,
+    await view.evaluate<string[] | null>(runnerRows("ids.length === 2")),
+    [...(firstTwo ?? []), ...(lastTwo ?? [])]
+      .filter((id) => matching.includes(id))
+      .slice(0, 2),
   );
 
   /* ---------------------------------------------------------------- */
