@@ -27,7 +27,7 @@ export interface ClientWindow extends PageWindow {
 
 /**
  * The window to show: the one asked for, clamped to the rows there are now,
- * and moved to hold a pinned row.
+ * clamped to the rows there are.
  *
  * Clamping matters because these lists poll: rows go while the reader is on
  * the last page, and an unclamped window would show an empty table with no
@@ -36,24 +36,12 @@ export interface ClientWindow extends PageWindow {
  *
  * @param total The rows the page is cut from.
  * @param window The window asked for (from the URL, or component state).
- * @param pinnedIndex The index of a row that must be on the page whatever page
- * was chosen — a row the URL addresses, such as the run whose log is open.
- * `-1` (the default) pins nothing.
  */
-export function clientWindow(
-  total: number,
-  window: PageWindow,
-  pinnedIndex = -1,
-): ClientWindow {
+export function clientWindow(total: number, window: PageWindow): ClientWindow {
   const limit = Math.max(1, Math.floor(window.limit));
   const lastStart = Math.max(0, Math.ceil(total / limit) - 1) * limit;
-  const chosen = Math.min(Math.max(0, Math.floor(window.offset)), lastStart);
-  const pinned =
-    pinnedIndex >= 0 &&
-    pinnedIndex < total &&
-    (pinnedIndex < chosen || pinnedIndex >= chosen + limit);
   return {
-    offset: pinned ? Math.floor(pinnedIndex / limit) * limit : chosen,
+    offset: Math.min(Math.max(0, Math.floor(window.offset)), lastStart),
     limit,
     paged: total > limit,
   };
@@ -77,12 +65,10 @@ export interface ClientPage<T> extends ClientWindow {
  * @param defaultSize Rows per page to start with, or `null` for no paging at
  * all: every row on one page, and `paged` false. (`null` is for a shared table
  * whose callers opt in — see `WorkerTable`.)
- * @param pinnedIndex A row that must be on the page, as {@link clientWindow}.
  */
 export function useClientPage<T>(
   rows: readonly T[],
   defaultSize: number | null,
-  pinnedIndex = -1,
 ): ClientPage<T> {
   const [asked, setAsked] = useState<PageWindow>(() => ({
     offset: 0,
@@ -99,7 +85,7 @@ export function useClientPage<T>(
       onChange: setAsked,
     };
   }
-  const window = clientWindow(total, asked, pinnedIndex);
+  const window = clientWindow(total, asked);
   return {
     rows: rows.slice(window.offset, window.offset + window.limit),
     ...window,
