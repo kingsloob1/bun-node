@@ -35,6 +35,19 @@ import { useWorkerPagesRouted } from "./routed";
 import { WorkerTable } from "./WorkerTable";
 import "./workers.css";
 
+/**
+ * Workers per page in a server's section.
+ *
+ * Twenty-five: a server usually runs a handful, so the common section is one
+ * page with no pager at all, while a host running a worker per queue — dozens
+ * of rows carrying state, counts, memory and controls — is cut down to a
+ * readable block without hiding which server it belongs to. The pager is per
+ * **server section**, the table it pages: a pager per service card, or one
+ * over the whole page, would have to page across the host headings that say
+ * where a worker runs.
+ */
+const SERVER_PAGE_SIZE = 25;
+
 /** A server's heading: `host · pid N`, or a note when the API hides hosts. */
 function serverTitle(server: WorkerServer): string {
   if (server.host === null && server.pid === null) {
@@ -72,6 +85,7 @@ function ServerSection({
         linkQueues={linkQueues}
         linkKeys={linkKeys}
         showMemory
+        pageSize={SERVER_PAGE_SIZE}
       />
     </section>
   );

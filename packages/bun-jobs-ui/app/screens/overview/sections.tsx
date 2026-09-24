@@ -291,15 +291,17 @@ export function RunnersSection({ range, picker }: SectionProps) {
                 ))}
               </tbody>
             </Table>
-            <Pager
-              label="Runner pages"
-              offset={page.offset}
-              limit={page.limit}
-              total={rows.length}
-              itemCount={visible.length}
-              maxPageSize={maxSeries}
-              onChange={page.setWindow}
-            />
+            {rows.length > page.limit && (
+              <Pager
+                label="Runner pages"
+                offset={page.offset}
+                limit={page.limit}
+                total={rows.length}
+                itemCount={visible.length}
+                maxPageSize={maxSeries}
+                onChange={page.setWindow}
+              />
+            )}
             {rollup.data.truncated && (
               <p
                 className="notice"
@@ -549,15 +551,17 @@ export function WorkersSection({ range, picker }: SectionProps) {
                 ))}
               </tbody>
             </Table>
-            <Pager
-              label="Worker pages"
-              offset={page.offset}
-              limit={page.limit}
-              total={rows.length}
-              itemCount={visible.length}
-              maxPageSize={maxSeries}
-              onChange={page.setWindow}
-            />
+            {rows.length > page.limit && (
+              <Pager
+                label="Worker pages"
+                offset={page.offset}
+                limit={page.limit}
+                total={rows.length}
+                itemCount={visible.length}
+                maxPageSize={maxSeries}
+                onChange={page.setWindow}
+              />
+            )}
             {rollup.data.truncated && (
               <p
                 className="notice"

@@ -15,15 +15,27 @@ import { Button } from "../../../components/Button";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { EmptyState } from "../../../components/EmptyState";
 import { JsonView } from "../../../components/JsonView";
+import { Pager } from "../../../components/Pager";
 import { ProblemBanner } from "../../../components/ProblemBanner";
 import { RelativeTime } from "../../../components/RelativeTime";
 import { Spinner } from "../../../components/Spinner";
 import { Table } from "../../../components/Table";
+import { useClientPage } from "../../../components/useClientPage";
 import { useApiClient } from "../../../context";
 import { formatNumber } from "../../../format";
 import { useApiMutation } from "../../../hooks/useApiMutation";
 import { useRefreshInterval } from "../live";
 import { describeSchedule } from "../queueFormat";
+
+/**
+ * Repeat series per page.
+ *
+ * Twenty: a series' row carries a schedule, a next run, its counts and a JSON
+ * tree of its data, so it is a tall row inside a detail panel of the queue
+ * screen — fewer than a bare list would take. A queue seldom has more, so the
+ * panel usually shows no pager at all.
+ */
+const REPEATABLE_PAGE_SIZE = 20;
 
 /** Props of {@link RepeatablesPanel}. */
 export interface RepeatablesPanelProps {
@@ -106,6 +118,10 @@ export function RepeatablesPanel({
     errorTitle: "Could not change the repeat series",
     invalidate: mutationInvalidations(queue),
   });
+  // Cut before the guards below: the page is a hook, and the panel returns
+  // early while the list loads or fails.
+  const items = repeatables.data?.items ?? [];
+  const page = useClientPage(items, REPEATABLE_PAGE_SIZE);
   if (repeatables.isPending) {
     return (
       <Spinner
@@ -123,8 +139,9 @@ export function RepeatablesPanel({
       />
     );
   }
-  const items = repeatables.data.items;
-  // An actions column only when some row has a button in it.
+  // An actions column only when some row has a button in it. Decided over
+  // every series, not the page, so a column cannot appear on one page and
+  // vanish on the next.
   const hasActions =
     canRemove ||
     items.some((series) => (series.disabled ? canEnable : canDisable));
@@ -160,7 +177,7 @@ export function RepeatablesPanel({
           </tr>
         </thead>
         <tbody>
-          {items.map((series) => (
+          {page.rows.map((series) => (
             <tr
               key={series.key}
               data-testid={`repeatable-row-${series.key}`}
@@ -250,6 +267,16 @@ export function RepeatablesPanel({
           ))}
         </tbody>
       </Table>
+      {page.paged && (
+        <Pager
+          label="Repeatable pages"
+          offset={page.offset}
+          limit={page.limit}
+          total={page.total}
+          itemCount={page.rows.length}
+          onChange={page.onChange}
+        />
+      )}
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}

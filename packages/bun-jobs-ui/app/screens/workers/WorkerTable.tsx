@@ -4,8 +4,10 @@ import type { BadgeTone } from "../../components/Badge";
 import { queuePath } from "../../api/queues";
 import { isStale, workerPath, workerState } from "../../api/workers";
 import { Badge } from "../../components/Badge";
+import { Pager } from "../../components/Pager";
 import { RelativeTime } from "../../components/RelativeTime";
 import { Table } from "../../components/Table";
+import { useClientPage } from "../../components/useClientPage";
 import { formatBytes, formatNumber } from "../../format";
 import { Link } from "../../router";
 import { WorkerActions } from "./actions";
@@ -79,6 +81,17 @@ export interface WorkerTableProps {
    * `false`.
    */
   showMemory?: boolean;
+  /**
+   * Rows per page, and a pager under the table once the workers outnumber it.
+   * Omitted (the default), every worker is a row and there is no pager.
+   *
+   * **Paging is the table's, not the caller's**, although the caller chooses
+   * the size: which columns exist — Memory, Completed/Failed, Actions — is
+   * decided from the workers this table was given, so a caller that sliced the
+   * rows itself would make a column appear on one page and vanish on the next.
+   * The columns are decided over every row; only the rows are cut.
+   */
+  pageSize?: number;
 }
 
 /**
@@ -213,8 +226,10 @@ export function WorkerTable({
   showHost = false,
   linkKeys = false,
   showMemory: offerMemory = false,
+  pageSize,
 }: WorkerTableProps) {
   const canMutate = useCanControlWorkers();
+  const page = useClientPage(workers, pageSize ?? null);
   // Asked for, and reported by somebody: the figure rides the heartbeat, so it
   // costs no read, but a table of workers that predate it would be a column of
   // dashes.
@@ -241,116 +256,129 @@ export function WorkerTable({
     );
   });
   return (
-    <Table label={label}>
-      <thead>
-        <tr>
-          <th scope="col">Worker</th>
-          {showQueue && <th scope="col">Queue</th>}
-          {showHost && <th scope="col">Host</th>}
-          {showHost && (
-            <th
-              scope="col"
-              className="num"
-            >
-              Pid
-            </th>
-          )}
-          <th scope="col">State</th>
-          <th
-            scope="col"
-            className="num"
-          >
-            Active / concurrency
-          </th>
-          {showCounts && (
-            <th
-              scope="col"
-              className="num"
-              title="Jobs this incarnation completed since it started; a restart starts it again."
-            >
-              Completed
-            </th>
-          )}
-          {showCounts && (
-            <th
-              scope="col"
-              className="num"
-              title="Attempts this incarnation failed since it started; a restart starts it again."
-            >
-              Failed
-            </th>
-          )}
-          {showMemory && (
-            <th
-              scope="col"
-              className="num"
-              title={MEMORY_HINT}
-            >
-              Memory
-            </th>
-          )}
-          <th scope="col">Started</th>
-          <th scope="col">Heartbeat</th>
-          {showActions && <th scope="col">Actions</th>}
-        </tr>
-      </thead>
-      <tbody>
-        {workers.map((worker) => (
-          <tr
-            key={`${worker.queue}/${worker.id}`}
-            data-testid={`worker-row-${worker.id}`}
-          >
-            <th scope="row">
-              <code>{worker.id}</code>
-              {linkKeys && worker.key !== undefined && (
-                <div className="worker-key">
-                  <Link
-                    to={workerPath(worker.queue, worker.key)}
-                    title={`Every instance of ${worker.key}, its settings and its numbers`}
-                    data-testid={`worker-key-link-${worker.id}`}
-                  >
-                    {worker.key}
-                  </Link>
-                </div>
-              )}
-            </th>
-            {showQueue && (
-              <td>
-                {linkQueues ? (
-                  <Link to={queuePath(worker.queue)}>{worker.queue}</Link>
-                ) : (
-                  worker.queue
-                )}
-              </td>
+    <>
+      <Table label={label}>
+        <thead>
+          <tr>
+            <th scope="col">Worker</th>
+            {showQueue && <th scope="col">Queue</th>}
+            {showHost && <th scope="col">Host</th>}
+            {showHost && (
+              <th
+                scope="col"
+                className="num"
+              >
+                Pid
+              </th>
             )}
-            {showHost && <td>{worker.host ?? "—"}</td>}
-            {showHost && <td className="num">{worker.pid ?? "—"}</td>}
-            <td>
-              <StateCell worker={worker} />
-            </td>
-            <td className="num">
-              {formatNumber(worker.active)} / {formatNumber(worker.concurrency)}
-            </td>
-            {showCounts && <CounterCell value={worker.completed} />}
-            {showCounts && <CounterCell value={worker.failed} />}
-            {showMemory && <MemoryCell value={worker.rssBytes} />}
-            <td>
-              <RelativeTime value={worker.startedAt} />
-            </td>
-            <td>
-              <RelativeTime
-                value={worker.heartbeatAt}
-                hint={heartbeatHint(worker)}
-              />
-            </td>
-            {showActions && (
-              <td>
-                <WorkerActions worker={worker} />
-              </td>
+            <th scope="col">State</th>
+            <th
+              scope="col"
+              className="num"
+            >
+              Active / concurrency
+            </th>
+            {showCounts && (
+              <th
+                scope="col"
+                className="num"
+                title="Jobs this incarnation completed since it started; a restart starts it again."
+              >
+                Completed
+              </th>
             )}
+            {showCounts && (
+              <th
+                scope="col"
+                className="num"
+                title="Attempts this incarnation failed since it started; a restart starts it again."
+              >
+                Failed
+              </th>
+            )}
+            {showMemory && (
+              <th
+                scope="col"
+                className="num"
+                title={MEMORY_HINT}
+              >
+                Memory
+              </th>
+            )}
+            <th scope="col">Started</th>
+            <th scope="col">Heartbeat</th>
+            {showActions && <th scope="col">Actions</th>}
           </tr>
-        ))}
-      </tbody>
-    </Table>
+        </thead>
+        <tbody>
+          {page.rows.map((worker) => (
+            <tr
+              key={`${worker.queue}/${worker.id}`}
+              data-testid={`worker-row-${worker.id}`}
+            >
+              <th scope="row">
+                <code>{worker.id}</code>
+                {linkKeys && worker.key !== undefined && (
+                  <div className="worker-key">
+                    <Link
+                      to={workerPath(worker.queue, worker.key)}
+                      title={`Every instance of ${worker.key}, its settings and its numbers`}
+                      data-testid={`worker-key-link-${worker.id}`}
+                    >
+                      {worker.key}
+                    </Link>
+                  </div>
+                )}
+              </th>
+              {showQueue && (
+                <td>
+                  {linkQueues ? (
+                    <Link to={queuePath(worker.queue)}>{worker.queue}</Link>
+                  ) : (
+                    worker.queue
+                  )}
+                </td>
+              )}
+              {showHost && <td>{worker.host ?? "—"}</td>}
+              {showHost && <td className="num">{worker.pid ?? "—"}</td>}
+              <td>
+                <StateCell worker={worker} />
+              </td>
+              <td className="num">
+                {formatNumber(worker.active)} /{" "}
+                {formatNumber(worker.concurrency)}
+              </td>
+              {showCounts && <CounterCell value={worker.completed} />}
+              {showCounts && <CounterCell value={worker.failed} />}
+              {showMemory && <MemoryCell value={worker.rssBytes} />}
+              <td>
+                <RelativeTime value={worker.startedAt} />
+              </td>
+              <td>
+                <RelativeTime
+                  value={worker.heartbeatAt}
+                  hint={heartbeatHint(worker)}
+                />
+              </td>
+              {showActions && (
+                <td>
+                  <WorkerActions worker={worker} />
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+      {page.paged && (
+        <Pager
+          label={`Pages of ${label}`}
+          offset={page.offset}
+          limit={page.limit}
+          total={page.total}
+          itemCount={page.rows.length}
+          onChange={page.onChange}
+        />
+      )}
+    </>
   );
 }

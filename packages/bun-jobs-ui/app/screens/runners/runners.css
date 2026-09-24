@@ -151,6 +151,15 @@
   font-size: var(--text-sm);
 }
 
+/*
+ * Under the history's pager: what the pages divide. It is the last thing in
+ * the card, so it is aligned with the pager's range text on the left.
+ */
+.history-paging-note {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
 /* The history table's Log column: a button and, when lines went, a badge. */
 .run-logs-cell {
   display: flex;
