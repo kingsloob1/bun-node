@@ -706,7 +706,7 @@ export class BunRunner<
       );
     } catch (error) {
       this.#emitError(error, "history");
-      return { records: [], total: 0 };
+      return { records: [], total: 0, offset: 0 };
     }
   }
 

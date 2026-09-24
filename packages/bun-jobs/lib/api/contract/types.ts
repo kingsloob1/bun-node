@@ -98,7 +98,10 @@ export interface ErrorDto {
 
 /** Where a page sits in its list. */
 export interface PageInfoDto {
-  /** Items skipped before this page. */
+  /**
+   * Items skipped before this page — and, on a page reached with a `cursor`,
+   * where the seek landed, so a walked page can still say where it sits.
+   */
   offset: number;
   /** Most items the page could hold. */
   limit: number;
@@ -106,6 +109,13 @@ export interface PageInfoDto {
   total?: number;
   /** Whether items follow this page. */
   hasMore: boolean;
+  /**
+   * Opaque cursor continuing the walk after this page's last item — send it
+   * back as `cursor` — or `null` when the walk is complete. Present only where
+   * the route pages by cursor, and `next === null` is that route's
+   * end-of-list signal.
+   */
+  next?: string | null;
 }
 
 /** One page of a list. */
@@ -2530,9 +2540,24 @@ export interface RunnerListDto {
 /** `GET /runners/:runner/history` query. */
 export interface HistoryQuery {
   /**
+   * The previous page's `page.next`, continuing the walk at the record after
+   * the last one shown. **Opaque — never build or parse one**: it holds the
+   * backend's ordering key, and the backends do not agree on it. One this
+   * route did not issue, or one belonging to another runner or the other
+   * `order`, is 400 `INVALID_ARGUMENT`, never a silent restart at page one.
+   * Takes precedence over `offset`.
+   *
+   * A cursor **walks** the list and cannot jump to page N; `offset` samples it
+   * and can. The difference that matters: nothing shifts under a cursor when a
+   * run starts between two requests, and in `asc` nothing shifts under it when
+   * `keepHistory` trims either.
+   */
+  cursor?: string;
+  /**
    * Runs skipped before the page. Defaults to `0`, and has no ceiling: a
    * runner's `keepHistory` may be far larger than `limits.maxHistory`, and
-   * this is what reaches the records past the first page.
+   * this is what reaches the records past the first page. Ignored when
+   * `cursor` is sent.
    */
   offset?: number;
   /**
@@ -2555,7 +2580,9 @@ export interface RunnerHistoryDto {
   /**
    * Where the page sits. Its `total` is always present and exact: the history
    * is a bounded list every backend holds whole, so counting it costs nothing
-   * the page has not already read.
+   * the page has not already read. Its `next` is always present too — the
+   * cursor for the following page, or `null` at the end of the walk — whether
+   * or not this page was reached with one.
    */
   page: PageInfoDto;
 }

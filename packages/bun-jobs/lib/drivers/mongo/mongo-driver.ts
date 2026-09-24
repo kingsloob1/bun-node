@@ -157,6 +157,7 @@ import {
   THROUGHPUT_RETENTION_MS,
   ThroughputBuffer,
 } from "../readApis";
+import { pageRunHistory } from "../runHistory";
 import { emptyRunLog, runLogBytes } from "../runLogs";
 import { resolveSyncOptions } from "../schemaSync";
 
@@ -1938,6 +1939,29 @@ export class MongoDriver implements JobsDriver {
     const kv = await this.#kv();
     const offset = Math.max(0, Math.floor(opts.offset));
     const limit = Math.max(0, Math.floor(opts.limit));
+
+    // A cursor names a record, and `$slice` counts positions: nothing in the
+    // aggregation language can find one JSON string in an array by a field
+    // inside it (`$indexOfArray` matches whole elements, and matching the
+    // encoded text with `$regexMatch` would let a payload quoting a run id
+    // decide where the page starts). So a cursor read takes the array whole,
+    // in one read of the one document, and seeks here. Still one snapshot, so
+    // the page and its total cannot disagree; the cost is the transfer, and
+    // the array is bounded by `keepHistory` — the same bound the file and SQL
+    // drivers pay on *every* page.
+    if (opts.after !== undefined) {
+      const document = await kv.findOne(
+        { _id: this.#stateId(ns, key) },
+        { projection: { _id: 1, history: 1 } },
+      );
+      return pageRunHistory(
+        (document?.history ?? []).map(
+          (entry) => JSON.parse(entry) as RunRecord,
+        ),
+        opts,
+      );
+    }
+
     // `$size` and `$slice` in one `$project`, so the count and the page come
     // from one read of one document — a `countDocuments` beside a `findOne`
     // would be two, and a run starting between them would size a list the
@@ -1970,6 +1994,7 @@ export class MongoDriver implements JobsDriver {
         (entry) => JSON.parse(entry) as RunRecord,
       ),
       total: document?.total ?? 0,
+      offset,
     };
   }
 

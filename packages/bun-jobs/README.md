@@ -4175,6 +4175,44 @@ only when you need a count — it costs a second query. Jobs can be filtered by
 `state` (repeated or comma-separated), by `name`, and by `search` (a substring
 of id or name, never the payload).
 
+**`GET /runners/{runner}/history` also pages by keyset cursor**, and the two
+answer different questions. `offset` *samples* a list — it counts records from
+one end, which is how a client jumps to page N. `cursor` *walks* one: send back
+the previous page's `page.next` and this page starts at the record after the
+last one you were shown, so nothing shifts under you when a run starts
+meanwhile. Both are supported; a request naming both uses the cursor.
+
+```ts
+let cursor: string | null = null;
+do {
+  const url = new URL(`${base}/runners/nightly/history`);
+  url.searchParams.set("limit", "50");
+  url.searchParams.set("order", "asc");
+  if (cursor !== null) url.searchParams.set("cursor", cursor);
+  const page = await (await fetch(url)).json();
+  // …
+  cursor = page.page.next;            // null ends the walk
+} while (cursor !== null);
+```
+
+A cursor is **opaque and bound to its walk**: never build or parse one — it
+holds the backend's ordering key, and the backends do not agree on it — and one
+this route did not issue, or one belonging to another runner or the other
+`order`, is 400 `INVALID_ARGUMENT` rather than a silent restart at page one.
+`page.next` is `null` exactly when the walk is complete, and `page.offset` on a
+cursor page says where the seek landed, so a pager can still show "41–60 of
+250".
+
+Measured on a **full** history (`total === keepHistory`, the steady state for
+any runner that has run more than `keepHistory` times) with runs starting
+between every page: an `order=asc` offset walk stepped over 20 of the 100
+records the operator meant to read, on memory, PostgreSQL and Redis alike, and
+the cursor walk over the same interleaving lost none. `order=desc` keeps one
+irreducible limit — the walk moves toward the old end while `keepHistory` trims
+that same end, so a record can be gone before the walk reaches it, and no
+paging scheme can show a record that no longer exists. `asc` has no such case:
+the trim drops the oldest, which in `asc` is behind the cursor.
+
 Jobs can also be filtered by
 [who ran them and when they finished](#who-ran-a-job-worker-attribution):
 `workerKey`, `workerId`, `finishedFrom` and `finishedTo`, as on

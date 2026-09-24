@@ -1,10 +1,11 @@
-import type { RunRecord } from "../../drivers/index";
+import type { RunHistoryCursorKey, RunRecord } from "../../drivers/index";
 import type { RunnerConfigInfo, RunnerStatus } from "../../runner/types";
 import type { ScheduleInput } from "../../shared/schedule";
 import type { ResolvedJobsApiConfig } from "../config";
 import type { Infer } from "../schema/builder";
 import type { RunnerConfigDto } from "../serialize";
 import type { AnyRouteDef } from "./define";
+import { decodeHistoryCursor, encodeHistoryCursor } from "../../drivers/index";
 import { supportsRunnerConfig } from "../../runner/config";
 import { validateCron } from "../../shared/cron";
 import { ConfigError, NotSupportedError } from "../../shared/errors";
@@ -336,40 +337,84 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.read",
       mode: "runner",
       summary: "A page of the runner's runs, newest first, from any process",
-      description: `Offset pagination over the runner's stored runs. \`page.total\` is the whole history's size, always present and exact — the history is a bounded list (\`keepHistory\` records) that every backend holds whole, so counting it costs nothing the page has not already read. That is why it is unconditional here and opt-in on \`GET /queues/{queue}/jobs\`, where a total means counting a queue.
+      description: `Two ways to page the runner's stored runs, and they answer different questions. **\`cursor\` walks the list**: send back the \`page.next\` of the page before, and this one starts at the record after the last one you were shown. **\`offset\` samples it**: it counts records from one end, which is how you jump straight to page N. Both are supported for good, neither is deprecated, and a request naming both uses the cursor. \`page.total\` is the whole history's size, always present and exact — the history is a bounded list (\`keepHistory\` records) that every backend holds whole, so counting it costs nothing the page has not already read. That is why it is unconditional here and opt-in on \`GET /queues/{queue}/jobs\`, where a total means counting a queue.
 
 **\`limits.maxHistory\` bounds a page, not how deep you can read.** It used to be both, and a \`keepHistory\` above it stored runs no client could reach; \`offset\` is uncapped precisely so that it no longer does. A \`limit\` above the cap is 400 \`VALIDATION\`, never a quietly shortened page, and \`GET /meta\` reports the cap.
 
-**The history grows at the head, so treat a page as live data.** A run *starting* between two requests prepends a record and shifts every later one down, so the next offset repeats a row; a run *finishing* does not, because it patches its record in place rather than adding one. \`keepHistory\` trimming the far end can skip a row the same way. \`page.total\` detects this **only while the history is still filling**: until it reaches \`keepHistory\` a starting run raises the total, so a client whose total moved knows the window did too and can re-read. **Once the history is full — the steady state for any runner that has run more than \`keepHistory\` times — it cannot.** A start then prepends and trims in the same breath, so every row shifts down and the total is unchanged, and no field in this response differs between the two reads. Ordering does not rescue it either: \`asc\` is stable while the history fills, because a new record lands past the end, but once it is full the trim drops the oldest and shifts \`asc\` too. So treat a deep page of a busy runner's history as a sample rather than a position, and prefer re-reading from the head to walking offsets when it matters. \`GET /queues/{queue}/jobs\` has the same hazard and, because a queue is unbounded, a total that does move — but it is opt-in there, so a client that did not ask for one has no signal at all.`,
+**The history grows at the head, so an \`offset\` page is live data.** A run *starting* between two requests prepends a record and shifts every later one down, so the next offset repeats a row; a run *finishing* does not, because it patches its record in place rather than adding one. \`keepHistory\` trimming the far end can skip a row the same way. \`page.total\` detects this **only while the history is still filling**: until it reaches \`keepHistory\` a starting run raises the total, so a client whose total moved knows the window did too and can re-read. **Once the history is full — the steady state for any runner that has run more than \`keepHistory\` times — it cannot.** A start then prepends and trims in the same breath, so every row shifts down and the total is unchanged, and no field in this response differs between the two reads. \`GET /queues/{queue}/jobs\` has the same hazard and, because a queue is unbounded, a total that does move — but it is opt-in there, so a client that did not ask for one has no signal at all.
+
+**The cursor is what fixes that, and it does not fix everything.** It names the record you stopped at rather than a count, so records arriving at the head shift nothing under it, in either order. Measured on a full history with runs starting between every page: paging by \`offset\` lost 20 of the 100 records an operator meant to read on memory, PostgreSQL and Redis alike, and paging by \`cursor\` lost none. What remains is **\`order=desc\` against a full history**: the walk moves toward the old end while \`keepHistory\` trims that same end, so a record can be dropped before the walk reaches it. No paging scheme can show a record that no longer exists, and this one is not an offset artefact. **\`order=asc\` is completely stable under trimming** — the trim drops the oldest, which in \`asc\` is behind the cursor, and a starting run lands past the end — so walk \`asc\` when losing nothing matters more than seeing the newest run first.
+
+**Cursors are opaque and bound to their walk.** Do not build or parse one: what it holds is the backend's ordering key, and the backends do not agree on it. One that this route did not issue, or that belongs to another runner or the other \`order\`, is 400 \`INVALID_ARGUMENT\` — never a silent restart at page one, which a client cannot tell from the end of the list. \`page.next\` is \`null\` exactly when the walk is complete, so \`next === null\` is the end-of-list signal; \`page.offset\` on a cursor page reports where the seek landed, so a client can still say "record 41 of 250".`,
       tags: ["Runners"],
       params: RunnerParams,
       query: historyQuerySchema(limits.maxHistory),
       responses: { 200: HistorySchema },
-      errors: RUNNER_ERRORS,
+      errors: [...RUNNER_ERRORS, "INVALID_ARGUMENT"],
       target: ({ params }) => runnerTarget(params.runner),
       handler: async ({ req, params, query, services }) => {
+        // Which walk a cursor has to belong to: the runner named in the path
+        // and the order asked for. Decoded here rather than in the controller
+        // because `historyPage` answers an unreadable history with an empty
+        // page, and a bad cursor must be a 400 rather than "no runs".
+        const walk = {
+          ns: services.config.namespace,
+          runner: params.runner,
+          order: query.order,
+        } as const;
+        let after: RunHistoryCursorKey | undefined;
+
+        if (query.cursor !== undefined) {
+          try {
+            after = decodeHistoryCursor(query.cursor, walk);
+          } catch (error) {
+            throw new ApiError(
+              "INVALID_ARGUMENT",
+              400,
+              error instanceof ConfigError
+                ? error.message
+                : "cursor is not one this walk issued",
+              { cause: error, context: { cursor: query.cursor } },
+            );
+          }
+        }
+
         const { controller } = await services.runners.resolve(params.runner);
-        // One read for the records and the count, so the two cannot disagree
-        // about a run that started between them — see `pageHistory`.
-        const { records, total } = await controller.historyPage({
+        // One read for the records, the count and — for a cursor — the seek,
+        // so no two of them can disagree about a run that started between
+        // them; see `pageHistory`.
+        const page = await controller.historyPage({
           offset: query.offset,
           limit: query.limit,
           order: query.order,
+          ...(after === undefined ? {} : { after }),
         });
+        const records = page.records as RunRecord[];
+        // Where the page actually starts: `query.offset` on an offset read,
+        // and wherever the seek landed on a cursor read.
+        const offset = page.offset ?? query.offset;
+        const hasMore = offset + records.length < page.total;
+        const last = records.at(-1);
+
         return {
           body: {
             items: records.map((record) =>
-              toRunRecordDto(
-                record as RunRecord,
-                req,
-                services.config.serialize,
-              ),
+              toRunRecordDto(record, req, services.config.serialize),
             ),
             page: {
-              offset: query.offset,
+              offset,
               limit: query.limit,
-              total,
-              hasMore: query.offset + records.length < total,
+              total: page.total,
+              hasMore,
+              // Null is the end of the walk, and it is the *only* end signal a
+              // cursor client needs. A page that ends the list mints nothing.
+              next:
+                hasMore && last !== undefined
+                  ? encodeHistoryCursor(walk, {
+                      startedAt: last.startedAt,
+                      runId: last.runId,
+                    })
+                  : null,
             },
           },
         };

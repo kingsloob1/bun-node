@@ -353,16 +353,31 @@ export const RunnerListSchema = s.object({
   ),
 });
 
+/**
+ * The longest history cursor this route accepts; the ones it mints hold a
+ * namespace, a runner name, an order, a timestamp and a run id, so they are
+ * far shorter. The same cap the apply-defaults walk puts on its cursor.
+ */
+const MAX_HISTORY_CURSOR_LENGTH = 2048;
+
 /** `GET /runners/:runner/history` query. Mirrors `HistoryQuery`. */
 export function historyQuerySchema(maxHistory: number) {
   return s.query(
     s.object({
+      cursor: s.optional(
+        s.string({
+          minLength: 1,
+          maxLength: MAX_HISTORY_CURSOR_LENGTH,
+          description:
+            "The previous page's `page.next`, to continue the walk at the record after the last one you were shown. **Opaque — never build or parse one**: it holds the backend's ordering key, and the backends do not agree on it. One this route did not issue, or one belonging to another runner or the other `order`, is 400 `INVALID_ARGUMENT`, never a silent restart at page one. Takes precedence over `offset`. Unlike an offset it cannot jump to page N — it walks — and unlike an offset nothing shifts under it when a run starts between two requests.",
+        }),
+      ),
       offset: s.optional(
         s.integer({
           minimum: 0,
           default: 0,
           description:
-            "Records skipped before the page. Deliberately uncapped: `keepHistory` may store far more runs than `limits.maxHistory`, and paging is what makes every one of them reachable.",
+            "Records skipped before the page. Deliberately uncapped: `keepHistory` may store far more runs than `limits.maxHistory`, and paging is what makes every one of them reachable. This is how a client jumps to page N; `cursor` is how it walks the list without losing a record to a run starting meanwhile. Ignored when `cursor` is sent.",
         }),
       ),
       limit: s.optional(

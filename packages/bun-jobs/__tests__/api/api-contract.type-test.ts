@@ -202,6 +202,14 @@ export type ErrorFits = Expect<
   Contract.ErrorDto extends Infer<typeof ErrorDtoSchema> ? true : false
 >;
 export type ServerErrorOk = Expect<Equal<Server.ErrorDto, Contract.ErrorDto>>;
+// `PageInfoDto` is declared twice — once for the contract, once beside the
+// serialisers — and five routes answer it. Nothing used to compare the two
+// copies, so a field added to one would have drifted silently; this is what
+// makes them one shape. `PageInfoOk` above ties the contract to the schema, so
+// the three agree together.
+export type ServerPageInfoOk = Expect<
+  Equal<Server.PageInfoDto, Contract.PageInfoDto>
+>;
 
 /* --- jobs ------------------------------------------------------------ */
 
