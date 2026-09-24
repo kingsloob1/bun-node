@@ -1,3 +1,5 @@
+import process from "node:process";
+import { isMainThread } from "node:worker_threads";
 import { defineHandler } from "@kingsleyweb/bun-jobs";
 
 /** Arguments a trigger may pass (the API's trigger dialog sends `args` when allowed). */
@@ -26,6 +28,19 @@ export interface WorkArgs {
 export default defineHandler<WorkArgs, string>(async (ctx) => {
   const ms = ctx.args?.ms ?? 2_000 + Math.floor(Math.random() * 6_000);
   ctx.logger.info("working", { ms });
+  // Where this run is executing, with the evidence rather than only the
+  // label: a `spawn` run is a pid of its own, a `worker` run shares the
+  // parent's pid off the main thread, and `in-process` is the parent's pid on
+  // it. `archive` is the runner whose mode can be changed from the UI
+  // (Settings… offers all three), so switching it and triggering a run shows
+  // this line change.
+  ctx.log(
+    `running ${ctx.mode} — pid ${process.pid}, main thread ${String(isMainThread)}`,
+    {
+      level: "info",
+      fields: { mode: ctx.mode, pid: process.pid, mainThread: isMainThread },
+    },
+  );
   ctx.log("starting", { level: "info", fields: { ms } });
   // A made-up credential: the stored line has its value redacted.
   console.info(`connecting to upstream with apiKey=pk_demo_${ctx.runnerId}`);

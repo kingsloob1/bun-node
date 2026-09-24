@@ -1,4 +1,5 @@
 import type { BunJobs, BunRunner } from "@kingsleyweb/bun-jobs";
+import { playgroundDriver } from "./backend";
 
 /**
  * Runners for the runner screens, all in-process with `handlers/work.ts`:
@@ -53,6 +54,25 @@ export async function startRunners(jobs: BunJobs): Promise<PlaygroundRunners> {
     executionMode: "in-process",
     schedule: { cron: "30 4 * * 0", tz: "Europe/London" },
     waitToExit: false,
+    // The one runner whose **execution mode** can be changed from the UI.
+    //
+    // A child process or a `Worker` has to reach the backend on its own, so
+    // it needs a driver *config* it can rebuild on the far side. This
+    // playground shares one driver **instance** between its two services, and
+    // an instance cannot be handed to a child — so every runner here offers
+    // only `in-process`, plus its code's own mode where that is already a
+    // child mode (`backup` and `reindex` keep `spawn` that way). Giving this
+    // one a config of its own is what puts `spawn` and `worker` in its
+    // Settings… dialog.
+    //
+    // What the config reaches depends on the backend: with
+    // `PLAYGROUND_DRIVER=sqlite` (or postgres, redis, mongo) the child opens
+    // the same store this process uses, so a handler could read its queues.
+    // On the default memory driver it builds a `Map` of its own, which is
+    // harmless here — `handlers/work.ts` sleeps, logs and returns, and never
+    // touches the backend — but a handler that enqueued a job would find its
+    // work in a store nobody else can see.
+    childDriver: playgroundDriver(),
   });
   const reindex = jobs.runner({
     id: "reindex",
