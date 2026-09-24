@@ -1,9 +1,9 @@
 /**
- * Page-side helpers for `06-browser/workers.ts` and `overview-range.ts`,
- * beside the shared ones in `../../shared/browser.ts`. Each returns the
- * source of a promise for `view.evaluate`, and every one waits on a condition
- * with a deadline — never on time — so a step fails naming what never
- * appeared.
+ * Page-side helpers for `06-browser/workers.ts`, `overview-range.ts`,
+ * `runner-and-job-tools.ts` and `pause-and-retry.ts`, beside the shared ones
+ * in `../../shared/browser.ts`. Each returns the source of a promise for
+ * `view.evaluate`, and every one waits on a condition with a deadline — never
+ * on time — so a step fails naming what never appeared.
  */
 
 /**
@@ -145,6 +145,115 @@ export function toast(text: string, ms = 15_000): string {
 /** Page-side: the text of every button inside `scope`, in order (empty when there is none). */
 export function buttonsIn(scope: string): string {
   return `[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].map((button) => button.textContent.trim())`;
+}
+
+/** The Page control a pager offers, when it offers one. */
+export interface PageControlView {
+  /**
+   * `"select"` for a listbox of every page (up to the pager's
+   * `pageSelectMax`), `"input"` for the bounded number box beyond it.
+   */
+  kind: "select" | "input";
+  /** The page it holds now, as the control's own value. */
+  value: string;
+  /** Every page it offers, for a `select`; `null` for the input. */
+  options: string[] | null;
+  /** The input's `max` — the last page — or `null` for the select. */
+  max: string | null;
+}
+
+/** What a `Pager` shows: its range, its controls and which way it can move. */
+export interface PagerView {
+  /** The range text: `"1–20 of 345"`, or `"1–20"` where the route counts no total. */
+  range: string;
+  /** The rows-per-page in force. */
+  size: number;
+  /** Every size the "Rows per page" select offers, in order. */
+  sizes: number[];
+  /** The Page control, or `null` where there is no total to build one from. */
+  pageControl: PageControlView | null;
+  /** The `"of N"` beside the Page control, or `null` when there is none. */
+  pageCount: string | null;
+  /**
+   * The muted text naming the page where there is no Page control — `"Page 3"`
+   * — or `null`. Shown only while there is another page to go to.
+   */
+  pageText: string | null;
+  /** Whether Previous is there and enabled (`null` when there is no such button). */
+  prev: boolean | null;
+  /** Whether Next is there and enabled (`null` when there is no such button). */
+  next: boolean | null;
+}
+
+/** Page-side expression: the pager named `label` as a {@link PagerView}, or `null`. */
+function readPager(label: string): string {
+  return `(() => {
+    const nav = document.querySelector(${JSON.stringify(`nav.pager[aria-label="${label}"]`)});
+    if (!nav) return null;
+    const size = nav.querySelector(".pager-size select");
+    if (!size) return null;
+    const pageSelect = nav.querySelector(".pager-page select");
+    const pageInput = nav.querySelector(".pager-page input");
+    const named = (text) => [...nav.querySelectorAll(".pager-buttons button")]
+      .find((candidate) => candidate.textContent.trim() === text) ?? null;
+    const prev = named("Previous");
+    const next = named("Next");
+    return {
+      range: nav.querySelector(".pager-range")?.textContent.trim() ?? "",
+      size: Number(size.value),
+      sizes: [...size.options].map((option) => Number(option.value)),
+      pageControl: pageSelect
+        ? { kind: "select", value: pageSelect.value, options: [...pageSelect.options].map((option) => option.value), max: null }
+        : pageInput
+          ? { kind: "input", value: pageInput.value, options: null, max: pageInput.getAttribute("max") }
+          : null,
+      pageCount: nav.querySelector(".pager-page-count")?.textContent.trim() ?? null,
+      pageText: nav.querySelector(".pager-page-static")?.textContent.trim() ?? null,
+      prev: prev ? !prev.disabled : null,
+      next: next ? !next.disabled : null,
+    };
+  })()`;
+}
+
+/**
+ * Page-side: the pager whose accessible name is `label` (`Pager`'s `label`
+ * prop, e.g. "Runner pages"), as a {@link PagerView}, once it is on screen;
+ * `null` after `ms`.
+ */
+export function pagerOf(label: string, ms = 15_000): string {
+  return poll(readPager(label), ms);
+}
+
+/**
+ * Page-side: the same, once `ready(pager)` holds for it — a page-side
+ * expression over `pager`, a {@link PagerView}. For reading a pager *after* a
+ * move, where the wait is for the move to land rather than for the pager to
+ * exist; `null` after `ms`, so a failure prints what the pager last said.
+ */
+export function pagerWhen(label: string, ready: string, ms = 15_000): string {
+  return poll(
+    `(() => {
+      const pager = ${readPager(label)};
+      return pager && (${ready}) ? pager : null;
+    })()`,
+    ms,
+  );
+}
+
+/**
+ * Page-side: the accessible name of every pager on screen, in document order,
+ * once `ready(labels)` holds (a page-side expression over `labels`); `null`
+ * after `ms`. A table that fits one page must grow no pager, so the check for
+ * one that is *absent* has to wait for the screen it is absent from.
+ */
+export function pagersWhen(ready: string, ms = 15_000): string {
+  return poll(
+    `(() => {
+      const labels = [...document.querySelectorAll("nav.pager")].map((nav) => nav.getAttribute("aria-label"));
+      return (${ready}) ? labels : null;
+    })()`,
+    ms,
+  );
 }
 
 /** Page-side: the current path and query, once the path is `path`; `null` after `ms`. */
