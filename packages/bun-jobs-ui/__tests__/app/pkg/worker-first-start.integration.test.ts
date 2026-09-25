@@ -120,9 +120,9 @@ const QUEUES = {
   /** The same, with the first-start frame dropped. */
   freshControl: "fresh-control",
   /** The Workers page, a worker another context starts on a new queue. */
-  remotePage: "remote-page",
+  nonLocalPage: "remote-page",
   /** The same, with the `queue-discovered` gap dropped. */
-  remoteControl: "remote-control",
+  nonLocalControl: "remote-control",
 } as const;
 
 /** One frame the server sent, with when it arrived. */
@@ -841,7 +841,7 @@ describe("the worker screens pick a first start up from the socket", () => {
   }, 30_000);
 
   it("the Workers page hears a worker another process starts on a new queue, by a queue-discovered gap", async () => {
-    const queue = QUEUES.remotePage;
+    const queue = QUEUES.nonLocalPage;
     const wire = newWire();
     const { ui, from } = await mountSettled(
       "/jobs/workers",
@@ -882,7 +882,7 @@ describe("the worker screens pick a first start up from the socket", () => {
   }, 30_000);
 
   it("control: the queue-discovered gap withheld, the page shows no row", async () => {
-    const queue = QUEUES.remoteControl;
+    const queue = QUEUES.nonLocalControl;
     const wire = newWire();
     wire.suppressDiscoveryGaps = true;
     const { ui, from } = await mountSettled(

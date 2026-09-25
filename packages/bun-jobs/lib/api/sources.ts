@@ -1,7 +1,7 @@
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { ResolvedJobsApiConfig } from "./config";
-import { RemoteRunner } from "../runner/RemoteRunner";
+import { RunnerController } from "../runner/RunnerController";
 import { ConfigError } from "../shared/errors";
 import { assertSegment } from "../shared/keys";
 import { ApiError } from "./errors";
@@ -325,7 +325,7 @@ export type ResolvedRunner =
       /** The runner's id. */
       id: string;
       /** Controls it; delegates to {@link runner}. */
-      controller: RemoteRunner<any, any>;
+      controller: RunnerController<any, any>;
       /** The runner itself, for what only its own process can do (kill, reset stats). */
       runner: BunRunner<any, any>;
     }
@@ -335,7 +335,7 @@ export type ResolvedRunner =
       /** The runner's id. */
       id: string;
       /** Controls it through the backend. There is no remote kill. */
-      controller: RemoteRunner<any, any>;
+      controller: RunnerController<any, any>;
     };
 
 /** Why a runner operation needs the runner in this process, for the 409 detail. */
@@ -385,16 +385,16 @@ export class RunnerSource {
    * (runners registered by other processes). A fixed list of runners
    * discovers nothing beyond itself.
    */
-  async list(): Promise<{ local: BunRunner<any, any>[]; remote: string[] }> {
+  async list(): Promise<{ local: BunRunner<any, any>[]; nonLocal: string[] }> {
     const local = this.local();
     if (!this.#discovered) {
-      return { local, remote: [] };
+      return { local, nonLocal: [] };
     }
     const localIds = new Set(local.map((runner) => runner.id));
-    const remote = [...(await this.#discovered.get())]
+    const nonLocal = [...(await this.#discovered.get())]
       .filter((id) => !localIds.has(id))
       .sort();
-    return { local, remote };
+    return { local, nonLocal };
   }
 
   /**
@@ -409,7 +409,7 @@ export class RunnerSource {
    * window however many misses arrive (`TtlSet.has`), so a runner another
    * process started a moment ago is not a 404 for the rest of the window and
    * an id nothing knows still cannot turn into a backend read per request.
-   * `RemoteRunner` still checks the runner exists on each call it makes; that
+   * `RunnerController` still checks the runner exists on each call it makes; that
    * check is the runner package's, not this cache's.
    */
   async resolve(value: unknown): Promise<ResolvedRunner> {
@@ -423,7 +423,7 @@ export class RunnerSource {
           local: true,
           id,
           runner,
-          controller: new RemoteRunner({
+          controller: new RunnerController({
             id,
             namespace: manager.namespace,
             local: runner,
@@ -436,7 +436,7 @@ export class RunnerSource {
       return {
         local: false,
         id,
-        controller: new RemoteRunner({
+        controller: new RunnerController({
           id,
           namespace: manager.namespace,
           driver: manager.driver,
@@ -448,7 +448,7 @@ export class RunnerSource {
     if (!runner) {
       throw notFound(id);
     }
-    const controller = new RemoteRunner({
+    const controller = new RunnerController({
       id,
       namespace: runner.namespace,
       local: runner,

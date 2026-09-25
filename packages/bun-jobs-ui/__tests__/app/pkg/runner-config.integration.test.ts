@@ -217,7 +217,7 @@ interface Deployment {
   driver: JobsDriver;
   /** A driver config a child could reach the same backend with. */
   childDriver: DriverConfig;
-  /** Whether the backend pushes `control` events (so `remoteControl: "auto"` subscribes). */
+  /** Whether the backend pushes `control` events (so `control: "auto"` subscribes). */
   pushes: boolean;
   /** The context serving the API and owning the local runners. */
   api: BunJobs;
@@ -569,7 +569,7 @@ for (const label of ["memory", "SQLite"]) {
         const id = "cfg-view";
         await startRunner(deploy, deploy.api, id, {
           childDriver: deploy.childDriver,
-          remoteConfig: { executionModes: ["in-process", "worker"] },
+          allowedOverrides: { executionModes: ["in-process", "worker"] },
         });
         const config = await configOf(deploy, id);
         expect(config).toMatchObject({
@@ -845,7 +845,7 @@ for (const label of ["memory", "SQLite"]) {
         const limited = "cfg-limited";
         await startRunner(deploy, deploy.api, limited, {
           childDriver: deploy.childDriver,
-          remoteConfig: { executionModes: ["in-process", "worker"] },
+          allowedOverrides: { executionModes: ["in-process", "worker"] },
         });
         const spawn = await direct(
           deploy,
@@ -906,7 +906,7 @@ for (const label of ["memory", "SQLite"]) {
         dialog.setExecutionMode("spawn");
         await before.stop({ force: true });
         await startRunner(deploy, deploy.renewed, narrowed, {
-          remoteConfig: { executionModes: ["in-process"] },
+          allowedOverrides: { executionModes: ["in-process"] },
         });
         expect((await configOf(deploy, narrowed)).allowed).toEqual([
           "in-process",

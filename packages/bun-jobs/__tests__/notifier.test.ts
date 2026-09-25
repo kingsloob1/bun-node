@@ -495,7 +495,7 @@ describe("the worker kind", () => {
       namespace,
       driver,
       publish: true,
-      remoteControl: true,
+      control: true,
       reportInterval: 200,
       pollInterval: 10,
       waitToExit: false,

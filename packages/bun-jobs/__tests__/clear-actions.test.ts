@@ -20,7 +20,7 @@ import { testNamespace, waitFor } from "./helpers";
 
 /**
  * The two clear actions above the driver: `BunQueue.clearJobLogs` and
- * `Job.clearLogs`, and `BunRunner.clearHistory` / `RemoteRunner.clearHistory`
+ * `Job.clearLogs`, and `BunRunner.clearHistory` / `RunnerController.clearHistory`
  * with the rule that decides which runs are still in progress.
  *
  * The driver half — exactly which records and lines go — is the shared
@@ -336,7 +336,7 @@ describe("clearing a runner's history", () => {
     await finishRuns(runner, 1);
     const live = await holdRun(runner);
 
-    const remote = await observer.remote("history");
+    const remote = await observer.controller("history");
     expect(remote.isLocal).toBe(false);
 
     // A recent `running` record is in progress by default...
@@ -361,7 +361,7 @@ describe("clearing a runner's history", () => {
     await finishRuns(runner, 1);
     const live = await holdRun(runner);
 
-    const remote = await observer.remote("history");
+    const remote = await observer.controller("history");
     // `staleAfter: 0` takes age out of it: only the live lock vouches.
     expect(await remote.clearHistory({ staleAfter: 0 })).toEqual({
       removed: 1,
@@ -400,7 +400,7 @@ describe("clearing a runner's history", () => {
       await driver.acquireLock(namespace, key, newToken(), 1, crashedAt),
     ).toBe(true);
 
-    const remote = await observer.remote("history");
+    const remote = await observer.controller("history");
     expect(await remote.clearHistory()).toEqual({ removed: 1, kept: [] });
     expect(await remote.history()).toEqual([]);
   });
@@ -424,7 +424,7 @@ describe("clearing a runner's history", () => {
     await finishRuns(runner, 1);
 
     await expect(runner.clearHistory()).rejects.toThrow(NotSupportedError);
-    const remote = await observer.remote("history");
+    const remote = await observer.controller("history");
     await expect(remote.clearHistory()).rejects.toThrow(NotSupportedError);
     expect(await runner.history()).toHaveLength(1);
   });
@@ -438,7 +438,7 @@ describe("clearing a runner's history", () => {
         ConfigError,
       );
     }
-    await expect(observer.remote("nobody")).rejects.toThrow(
+    await expect(observer.controller("nobody")).rejects.toThrow(
       RunnerNotFoundError,
     );
   });

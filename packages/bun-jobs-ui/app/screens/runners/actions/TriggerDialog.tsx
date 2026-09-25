@@ -90,7 +90,7 @@ export function TriggerDialog({ runner, onClose }: RunnerDialogProps) {
         <p
           className="runner-note"
           role="note"
-          data-testid="trigger-remote-note"
+          data-testid="trigger-non-local-note"
         >
           This runner is registered in another process, so the run is queued for
           it: its owner starts it at its next sync.

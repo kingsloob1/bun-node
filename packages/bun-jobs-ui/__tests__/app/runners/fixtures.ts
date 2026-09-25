@@ -126,7 +126,7 @@ export function runningRunnerFixture(
 }
 
 /** A runner only another process registered: no `local`, and the optional settings absent. */
-export function remoteRunnerFixture(
+export function nonLocalRunnerFixture(
   overrides: Partial<RunnerInfoDto> = {},
 ): RunnerInfoDto {
   return {

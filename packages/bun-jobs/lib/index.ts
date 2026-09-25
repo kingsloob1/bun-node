@@ -135,10 +135,10 @@ export {
   type JobDefaultsApplyState,
 } from "./api/contract/constants";
 /**
- * Remote runner configuration: the execution modes, the settings an override
- * may replace and the bounds on the numeric one — the browser-safe
- * contract's, beside `WORKER_CONFIG_KEYS`/`WORKER_CONFIG_BOUNDS`, so a form is
- * built from the very values an owner enforces. Their types are
+ * Runner configuration from another process: the execution modes, the
+ * settings an override may replace and the bounds on the numeric one — the
+ * browser-safe contract's, beside `WORKER_CONFIG_KEYS`/`WORKER_CONFIG_BOUNDS`,
+ * so a form is built from the very values an owner enforces. Their types are
  * `ExecutionMode` and `RunnerConfigKey`, exported with the drivers and the
  * runner.
  */
@@ -584,10 +584,10 @@ export {
   type WhenDeclared,
   type WhenUndeclared,
   type WorkerConfigResult,
+  type WorkerControlOptions,
   type WorkerControlResult,
   type WorkerEventsOf,
-  type WorkerRemoteControlOptions,
-  type WorkerTarget,
+  type WorkerSelector,
 } from "./queue/index";
 /** Queue job defaults, the queue side: see the contract's keys and bounds above. */
 export {
@@ -636,8 +636,8 @@ export {
 } from "./queue/index";
 
 /* ------------------------------------------------------------------ *
- * Remote worker control: what a worker can be asked to be, what may be
- * changed about it, and the controller that writes both.
+ * Worker control from another process: what a worker can be asked to be, what
+ * may be changed about it, and the controller that writes both.
  *
  * The constants are the single source the management API's browser-safe
  * contract mirrors — a UI builds its form from `WORKER_CONFIG_BOUNDS` rather
@@ -651,9 +651,6 @@ export {
   readWorkerConfig,
   readWorkerControl,
   readWorkerStop,
-  RemoteWorker,
-  RemoteWorkerManager,
-  type RemoteWorkerOptions,
   removeWorkerControl,
   supportsWorkerControl,
   sweepWorkerControls,
@@ -667,6 +664,9 @@ export {
   workerConfigName,
   type WorkerConfigOverride,
   type WorkerControlEntry,
+  WorkerController,
+  WorkerControllerManager,
+  type WorkerControllerOptions,
   workerControlName,
   type WorkerControlSweep,
   type WorkerStopEntry,
@@ -676,7 +676,7 @@ export {
   writeWorkerControl,
   writeWorkerStop,
 } from "./queue/index";
-export { WorkerStateConflictError } from "./queue/RemoteWorker";
+export { WorkerStateConflictError } from "./queue/WorkerController";
 export type {
   IsolatedJob,
   IsolatedJobProcessor,
@@ -730,6 +730,7 @@ export {
   type RunLogRedactor,
   type RunLogTotals,
   RUNNER_CONFIG_STATE,
+  type RunnerAllowedOverrides,
   runnerConfigFields,
   type RunnerConfigFieldsOptions,
   type RunnerConfigInfo,
@@ -739,7 +740,6 @@ export {
   type RunnerConfigValues,
   type RunnerHandler,
   type RunnerInfo,
-  type RunnerRemoteConfigOptions,
   type RunnerStats,
   type RunnerStatus,
   type RunOutcome,
@@ -755,14 +755,15 @@ export {
   writeRunnerConfig,
 } from "./runner/index";
 
-// Remote runner control: a runner registered by any process sharing the
-// driver and namespace, reached through `BunRunnerManager.remote()`.
+// Runner control from another process: a runner registered by any process
+// sharing the driver and namespace, reached through
+// `BunRunnerManager.controller()`.
 export {
-  RemoteRunner,
-  type RemoteRunnerInfo,
-  type RemoteRunnerOptions,
-  type RemoteRunRecord,
+  RunnerController,
+  type RunnerControllerOptions,
+  type SharedRunnerInfo,
   type TruncatedRunResult,
+  type TypedRunRecord,
 } from "./runner/index";
 
 export type {

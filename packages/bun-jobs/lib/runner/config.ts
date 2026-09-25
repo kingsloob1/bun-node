@@ -13,8 +13,8 @@ import {
 import { ConfigError } from "../shared/errors";
 
 /**
- * Remote runner configuration: where the override lives, how a controller
- * writes it, and how an owner resolves what to run with.
+ * Runner configuration from another process: where the override lives, how a
+ * controller writes it, and how an owner resolves what to run with.
  *
  * The override cannot live in the `executionMode`/`runMode`/`maxConcurrency`
  * state fields the runner already writes, because `BunRunner.start()`
@@ -33,7 +33,7 @@ import { ConfigError } from "../shared/errors";
 /**
  * The state fields the override lives in. The owner keeps writing the plain
  * `executionMode`/`runMode`/`maxConcurrency` fields with the **effective**
- * values, so `RemoteRunner.info()` and older clients are unchanged.
+ * values, so `RunnerController.info()` and older clients are unchanged.
  */
 export const RUNNER_CONFIG_STATE = {
   /** The execution-mode override; absent when there is none. */
@@ -291,7 +291,7 @@ function canSwitchTo(
 /**
  * The execution modes an owner publishes as `allowed` (`config:allowed`, and
  * `RunnerConfigInfo.allowed`): those its code permits
- * (`remoteConfig.executionModes`) **and** it can adopt. A runner built from a
+ * (`allowedOverrides.executionModes`) **and** it can adopt. A runner built from a
  * driver instance has no config for a child, so it leaves out every child
  * mode but its code's own — otherwise a controller, the management API or the
  * UI would accept a value the owner is certain to refuse. May be empty, which

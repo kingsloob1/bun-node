@@ -18,9 +18,9 @@ import {
   callTo,
   dialogButton,
   finishedHistory,
+  nonLocalRunner,
   openClearHistory,
   openDialog,
-  remoteRunner,
   renderActions,
   runnerFixture,
   toastSays,
@@ -61,7 +61,7 @@ describe("clear history: the confirmation", () => {
 
   it("has no parallel-run small print for a remote single-mode runner", async () => {
     await renderActions({
-      runner: remoteRunner({ runMode: "single" }),
+      runner: nonLocalRunner({ runMode: "single" }),
       history: finishedHistory(),
     });
     await openClearHistory();
@@ -70,7 +70,7 @@ describe("clear history: the confirmation", () => {
 
   it("warns about long parallel runs on a remote parallel runner", async () => {
     await renderActions({
-      runner: remoteRunner({ runMode: "parallel" }),
+      runner: nonLocalRunner({ runMode: "parallel" }),
       history: finishedHistory(),
     });
     await openClearHistory();
@@ -92,7 +92,7 @@ describe("clear history: the confirmation", () => {
     };
     await renderActions({
       history: finishedHistory(),
-      runner: remoteRunner({ runMode: "parallel", config }),
+      runner: nonLocalRunner({ runMode: "parallel", config }),
     });
     await openClearHistory();
     expect(page().queryByTestId("clear-history-parallel-note")).toBeNull();
@@ -140,7 +140,7 @@ describe("clear history: the request", () => {
   it("is offered on a remote runner and sends the same DELETE", async () => {
     const { calls } = await renderActions({
       history: finishedHistory(),
-      runner: remoteRunner(),
+      runner: nonLocalRunner(),
       handlers: {
         "DELETE /runners/nightly/history": { body: { removed: 1, kept: [] } },
       },

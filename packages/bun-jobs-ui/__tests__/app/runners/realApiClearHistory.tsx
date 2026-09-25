@@ -28,7 +28,7 @@ export interface ClearHistoryView {
   /** Whether the History card is rendered at all. */
   hasHistoryCard: boolean;
   /** The "registered in another process" hint's text, or `null` when absent. */
-  remoteHint: string | null;
+  nonLocalHint: string | null;
   /** The run ids of the history rows, newest first; `[]` for "No runs yet". */
   history: string[];
   /** Whether the "No runs yet" empty state is shown. */
@@ -93,7 +93,8 @@ function read(): ClearHistoryView {
     inActionGroup,
     hasActionGroup: group !== null,
     hasHistoryCard: page().queryByRole("region", { name: "History" }) !== null,
-    remoteHint: page().queryByTestId("runner-remote-hint")?.textContent ?? null,
+    nonLocalHint:
+      page().queryByTestId("runner-non-local-hint")?.textContent ?? null,
     history: Array.from(
       document.querySelectorAll<HTMLElement>('tr[data-testid^="history-row-"]'),
       (row) => row.dataset.testid!.slice("history-row-".length),

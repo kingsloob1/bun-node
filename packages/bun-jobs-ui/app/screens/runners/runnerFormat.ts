@@ -57,8 +57,8 @@ export const RUN_IN_FLIGHT: RunnerBadge = {
   hint: "A run is executing somewhere right now (the runner's lock or active runs say so).",
 };
 
-/** The badge of a remote runner that is not paused. */
-export const REMOTE_ACTIVE: RunnerBadge = {
+/** The badge of an unpaused runner registered in another process. */
+export const NON_LOCAL_ACTIVE: RunnerBadge = {
   label: "Active",
   tone: "neutral",
   hint: "Not paused. Its owner's own status shows only on the owner's API.",
@@ -137,9 +137,9 @@ export function describeQueueing(runner: RunnerInfoDto): string | null {
 }
 
 /**
- * The header's badges: the local instance's status (or, for a remote runner,
- * paused or active from the shared flag), plus "Run in flight" while a run
- * executes anywhere.
+ * The header's badges: the local instance's status (or, for a runner
+ * registered in another process, paused or active from the shared flag), plus
+ * "Run in flight" while a run executes anywhere.
  */
 export function runnerBadges(runner: RunnerInfoDto): RunnerBadge[] {
   const badges: RunnerBadge[] = [
@@ -147,7 +147,7 @@ export function runnerBadges(runner: RunnerInfoDto): RunnerBadge[] {
       ? RUNNER_STATUS[runner.local.status]
       : runner.isPaused
         ? RUNNER_STATUS.paused
-        : REMOTE_ACTIVE,
+        : NON_LOCAL_ACTIVE,
   ];
   if (runner.isRunning || (runner.local?.activeRuns.length ?? 0) > 0) {
     badges.push(RUN_IN_FLIGHT);
@@ -193,13 +193,14 @@ export function runDuration(run: RunRecordDto): string | null {
   return ms === undefined ? null : formatMs(Math.max(0, ms));
 }
 
-/** The sentence a remote runner's screen carries. */
-export const REMOTE_RUNNER_NOTE =
+/** The sentence on the screen of a runner registered in another process. */
+export const NON_LOCAL_RUNNER_NOTE =
   "This runner is registered by another process; changes are adopted at its owner's next sync.";
 
 /**
- * Orders the list: local runners first, then remote ones, each group in the
- * order the API gave (local by registration, remote sorted by id).
+ * Orders the list: local runners first, then those registered in other
+ * processes, each group in the order the API gave (local by registration,
+ * the others sorted by id).
  */
 export function orderRunners(
   items: readonly RunnerListItemDto[],

@@ -273,8 +273,8 @@ export class RunnerStoppedError extends JobsError {
 
 /**
  * No runner by that id is registered in this process or known to the backend
- * in this namespace — raised by `BunRunnerManager.remote()` and by a
- * {@link RemoteRunner} whose runner has since been purged.
+ * in this namespace — raised by `BunRunnerManager.controller()` and by a
+ * {@link RunnerController} whose runner has since been purged.
  */
 export class RunnerNotFoundError extends JobsError {
   /** The runner id that was asked for, and the namespace it was looked up in. */

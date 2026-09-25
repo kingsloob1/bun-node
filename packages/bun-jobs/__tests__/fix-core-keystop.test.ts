@@ -32,7 +32,7 @@ function context(driver: MemoryDriver, ns: string, service?: string): BunJobs {
 const OVERRIDABLE = {
   stopPersistence: "process",
   stopPersistenceOverridable: true,
-  remoteControl: { interval: 100 },
+  control: { interval: 100 },
   waitToExit: false,
 } as const;
 
@@ -56,7 +56,7 @@ async function stopForGood(
   jobs: BunJobs,
   worker: BunQueueWorker<unknown, unknown>,
 ): Promise<void> {
-  const remote = context(driver, ns).workers.remote("q");
+  const remote = context(driver, ns).workers.controller("q");
   await remote.stop({ id: worker.id }, { persist: "key" });
   await waitFor(() => worker.state === "stopped", { timeout: 3_000 });
   await jobs.close();
@@ -86,7 +86,8 @@ describe("key stops on an overridable worker (B14)", () => {
     expect(replacement.state).toBe("stopped");
 
     // A plain start, with no `persist` of its own.
-    await context(driver, ns).workers.remote("q").start({ id: replacement.id });
+    const workers = context(driver, ns).workers.controller("q");
+    await workers.start({ id: replacement.id });
     await waitFor(() => replacement.state === "running", { timeout: 3_000 });
     await waitFor(
       async () =>
@@ -131,7 +132,7 @@ describe("key stops on an overridable worker (B14)", () => {
     ).not.toBeNull();
     const plain = await started(context(driver, ns, "svc"), {
       stopPersistence: "process",
-      remoteControl: { interval: 100 },
+      control: { interval: 100 },
       waitToExit: false,
     });
     await Bun.sleep(150);

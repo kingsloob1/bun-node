@@ -21,12 +21,12 @@ import type {
  */
 import type {
   ExecutionMode,
+  RunnerAllowedOverrides,
   RunnerConfigInfo,
   RunnerConfigKey,
   RunnerConfigPatch,
   RunnerConfigValues,
   RunnerInfo,
-  RunnerRemoteConfigOptions,
 } from "../lib/index";
 
 /** `true` only when the two types are mutually assignable. */
@@ -97,7 +97,7 @@ export const singleWithCap: RunnerConfigPatch = {
   concurrency: { runMode: "single", maxConcurrency: 2 },
 };
 
-export const badAllowList: RunnerRemoteConfigOptions = {
+export const badAllowList: RunnerAllowedOverrides = {
   // @ts-expect-error — the allow-list holds execution modes, not any text.
   executionModes: ["in-process", "fork"],
 };

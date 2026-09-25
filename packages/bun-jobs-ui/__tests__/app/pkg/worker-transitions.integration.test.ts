@@ -250,7 +250,7 @@ describe("the worker screens against a real API, mid-transition", () => {
   it("counts the entry Reset empties as nothing stored, and stops offering Reset", async () => {
     const queue = QUEUES.offline;
     const key = `${SERVICE}.${queue}`;
-    await jobs.workers.remote(queue).setConfig(key, { concurrency: 4 });
+    await jobs.workers.controller(queue).setConfig(key, { concurrency: 4 });
 
     const { mountWorkerPage } = await load<WorkerPageModule>(
       ["..", "workers", "realApiWorkerPage"].join("/"),

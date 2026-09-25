@@ -104,7 +104,7 @@ interface ClearHistoryView {
   /** Whether the History card is rendered at all. */
   hasHistoryCard: boolean;
   /** The "registered in another process" hint's text, or `null`. */
-  remoteHint: string | null;
+  nonLocalHint: string | null;
   /** The history rows' run ids, newest first. */
   history: string[];
   /** Whether "No runs yet" is shown. */
@@ -180,7 +180,7 @@ interface Deployment {
   /** The runner registered in `api`. */
   local: BunRunner;
   /** The runner registered in `remote`. */
-  remoteRunner: BunRunner;
+  nonLocalRunner: BunRunner;
   /** The finished runs of each runner, by runner id. */
   finished: Record<string, string[]>;
   /** The run each runner holds in progress, by runner id. */
@@ -472,7 +472,7 @@ async function populate(
     exchanges,
     worker,
     local: await startRunner(api, LOCAL_RUNNER),
-    remoteRunner: await startRunner(remote, REMOTE_RUNNER),
+    nonLocalRunner: await startRunner(remote, REMOTE_RUNNER),
     finished: {},
     holding: {},
   };
@@ -488,7 +488,7 @@ async function populate(
     "active",
   );
 
-  for (const runner of [deployment.local, deployment.remoteRunner]) {
+  for (const runner of [deployment.local, deployment.nonLocalRunner]) {
     const finished: string[] = [];
     for (
       let index = 0;
@@ -527,7 +527,7 @@ afterAll(async () => {
   }
   for (const deployment of deployments) {
     await deployment.worker.close({ force: true }).catch(() => undefined);
-    for (const runner of [deployment.local, deployment.remoteRunner]) {
+    for (const runner of [deployment.local, deployment.nonLocalRunner]) {
       await runner.stop({ force: true }).catch(() => undefined);
     }
     // The contexts share one driver, which the first to close closes.
@@ -881,11 +881,11 @@ async function expectClear(
     inActionGroup: false,
   });
   if (isLocal) {
-    expect(before.remoteHint).toBeNull();
+    expect(before.nonLocalHint).toBeNull();
   } else {
     // The hint names what a remote runner cannot do here; clearing is not
     // among them.
-    expect(before.remoteHint ?? "").not.toMatch(/clear|history/i);
+    expect(before.nonLocalHint ?? "").not.toMatch(/clear|history/i);
   }
 
   const { dialog, toast } = await ui.clear();

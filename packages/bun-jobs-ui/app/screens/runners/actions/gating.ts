@@ -28,7 +28,7 @@ export interface RunnerActionGates {
    */
   clearHistory: boolean;
   /** The caller could kill or reset stats, but the runner is registered only in another process. */
-  remoteOnly: boolean;
+  nonLocalOnly: boolean;
 }
 
 /**
@@ -44,7 +44,8 @@ export function hasLocalRuns(runner: RunnerInfoDto): boolean {
  * The actions to offer for `runner`, given a predicate that is true only
  * for a permitted action on a writable API (`useCanMutate`). Kill and stats
  * reset need the runner registered in the API's process (anything else is
- * 409 `RUNNER_NOT_LOCAL`), so they are not offered for a remote one.
+ * 409 `RUNNER_NOT_LOCAL`), so they are not offered for one registered in
+ * another process.
  * Configuring needs the runner to report a `config`; without one the API
  * answers 409 `RUNNER_NOT_CONFIGURABLE`. Clearing the history needs neither.
  */
@@ -63,7 +64,7 @@ export function runnerActionGates(
     kill: canKill && hasLocalRuns(runner),
     resetStats: canReset && runner.isLocal,
     clearHistory: canMutate("runners.clearHistory"),
-    remoteOnly: !runner.isLocal && (canKill || canReset),
+    nonLocalOnly: !runner.isLocal && (canKill || canReset),
   };
 }
 

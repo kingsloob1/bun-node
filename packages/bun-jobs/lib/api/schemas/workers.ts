@@ -116,7 +116,7 @@ export const WorkerControlSchema = s.named(
   s.object({
     enabled: s.boolean({
       description:
-        "Whether the worker listens for control at all: its `remoteControl` option, and a backend that can store the desired state.",
+        "Whether the worker listens for control at all: its `control` option, and a backend that can store the desired state.",
     }),
     mode: s.enum(["subscribe", "poll"], {
       description:

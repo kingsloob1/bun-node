@@ -62,7 +62,7 @@ async function setup(
     reportInterval: 500,
     pollInterval: 20,
     waitToExit: false,
-    remoteControl: { interval: 100 },
+    control: { interval: 100 },
   });
   cleanups.push(async () => {
     await jobs.close();

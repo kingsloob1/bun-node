@@ -20,7 +20,7 @@ import type {
 import type { BunQueue } from "../queue/BunQueue";
 import type { BunRunner } from "../runner/BunRunner";
 import type { BunRunnerManager } from "../runner/BunRunnerManager";
-import type { RemoteRunnerInfo } from "../runner/types";
+import type { SharedRunnerInfo } from "../runner/types";
 import type { JobsApiAction, JobsApiMode } from "./contract/constants";
 import type { JobsApiInfo } from "./contract/types";
 import type {
@@ -164,7 +164,7 @@ export interface JobsApiSerializers {
    */
   runner?: (
     dto: RunnerInfoDto,
-    info: RemoteRunnerInfo,
+    info: SharedRunnerInfo,
     req: BunRequest,
   ) => RunnerInfoDto;
   /** Maps one run record (history, activeRuns, lastRun). */

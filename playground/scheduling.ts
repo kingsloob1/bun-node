@@ -142,7 +142,7 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
       // on; subscribing (rather than polling) makes a Pause from the UI land
       // in tens of milliseconds on every driver, and `interval` is the
       // fallback read for the drivers where a subscription is itself a poll.
-      remoteControl: { enabled: true, subscribe: true, interval: 1_000 },
+      control: { enabled: true, subscribe: true, interval: 1_000 },
       // A Stop from the UI is recorded against the *key*, so it survives a
       // restart of the playground and would reach every replica carrying that
       // key — and `stopPersistenceOverridable` lets the Stop dialog offer the

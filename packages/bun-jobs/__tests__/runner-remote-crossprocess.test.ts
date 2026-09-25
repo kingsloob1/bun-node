@@ -32,7 +32,7 @@ interface Observation {
  * Process A (`runner-owner.ts`) owns the runner and never touches it. This
  * test's own process is B: it holds no runner at all, only a driver, and
  * pauses, resumes, reschedules and triggers A's runner through
- * `BunRunnerManager.remote()`. Every assertion about an effect is read from
+ * `BunRunnerManager.controller()`. Every assertion about an effect is read from
  * what A reported, so nothing here can pass by sharing a heap with the owner.
  */
 
@@ -133,7 +133,7 @@ for (const { name, config, available } of READY) {
     it("controls a runner another process owns", async () => {
       const namespace = testNamespace(`remote-${name}`);
       const { owner, observed, log } = await startOwner(config, namespace, {
-        REMOTE_CONTROL: "1",
+        RUNNER_CONTROL: "1",
       });
 
       const driver = createDriver(config);
@@ -144,7 +144,7 @@ for (const { name, config, available } of READY) {
         logger: noopLogger,
       });
 
-      const remote = await manager.remote<
+      const remote = await manager.controller<
         { marker?: string; log?: string; ms?: number },
         string
       >("reports");
@@ -231,7 +231,7 @@ for (const { name, config, available } of READY) {
   });
 }
 
-describe("remote runner across processes: without remoteControl", () => {
+describe("remote runner across processes: without control", () => {
   it("is adopted at the owner's next sync", async () => {
     const tmp = await makeTmpDir("bun-jobs-remote-sync");
     cleanups.push(tmp.cleanup);
@@ -242,13 +242,13 @@ describe("remote runner across processes: without remoteControl", () => {
     const namespace = testNamespace("remote-sync");
 
     const { owner, observed } = await startOwner(config, namespace, {
-      REMOTE_CONTROL: "0",
+      RUNNER_CONTROL: "0",
       SYNC_INTERVAL: "200",
     });
 
     const driver = createDriver(config);
     cleanups.push(() => driver.close());
-    const remote = await new BunRunnerManager({ namespace, driver }).remote(
+    const remote = await new BunRunnerManager({ namespace, driver }).controller(
       "reports",
     );
 

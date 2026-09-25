@@ -173,5 +173,5 @@ export function toEpoch(value: number | string): number {
 }
 
 /** How soon a change reaches a runner registered in another process. */
-export const REMOTE_LATENCY_NOTE =
-  'For a runner registered in another process the change is stored at once and adopted at the owner\'s next sync — every 30s by default — or as soon as it is published when the owner listens for `control` events, which `remoteControl: "auto"` (the default) does on Redis and memory and `remoteControl: true` does everywhere, in about 25–50ms on a polling backend. A trigger for such a runner is queued for an owner to drain.';
+export const NON_LOCAL_LATENCY_NOTE =
+  'For a runner registered in another process the change is stored at once and adopted at the owner\'s next sync — every 30s by default — or as soon as it is published when the owner listens for `control` events, which `control: "auto"` (the default) does on Redis and memory and `control: true` does everywhere, in about 25–50ms on a polling backend. A trigger for such a runner is queued for an owner to drain.';

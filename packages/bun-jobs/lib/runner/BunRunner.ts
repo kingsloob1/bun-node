@@ -162,7 +162,7 @@ export class BunRunner<
   #maxConcurrency: number;
   /** What this process's own options asked for, before any override. */
   readonly #codeConfig: RunnerConfigValues;
-  /** The execution modes this runner's code permits an override to choose (`remoteConfig.executionModes`). */
+  /** The execution modes this runner's code permits an override to choose (`allowedOverrides.executionModes`). */
   readonly #permittedModes: readonly ExecutionMode[];
   /**
    * The execution modes an override may choose *and* this owner can adopt:
@@ -252,7 +252,7 @@ export class BunRunner<
   #draining = false;
   /** The drain of triggers queued while nothing ran here, while one is in flight. */
   #drainingQueued: Promise<void> | undefined;
-  /** Ends the `control` subscription, while `remoteControl` holds one. */
+  /** Ends the `control` subscription, while `control` holds one. */
   #unsubscribeControl: (() => Promise<void>) | undefined;
 
   constructor(options: BunRunnerOptions<TArgs>) {
@@ -280,9 +280,9 @@ export class BunRunner<
     this.#executionMode = resolved.executionMode;
     this.#runMode = resolved.runMode;
     this.#maxConcurrency = resolved.maxConcurrency;
-    this.#permittedModes = resolved.remoteConfig.executionModes;
+    this.#permittedModes = resolved.allowedOverrides.executionModes;
     this.#allowedModes = adoptableExecutionModes(
-      resolved.remoteConfig.executionModes,
+      resolved.allowedOverrides.executionModes,
       resolved.executionMode,
       resolved.childDriver !== undefined,
     );
@@ -938,13 +938,13 @@ export class BunRunner<
 
   /**
    * Subscribes to this runner's `control` events when the resolved
-   * `remoteControl` asks — which `"auto"`, the default, decides from the
+   * `control` asks — which `"auto"`, the default, decides from the
    * driver: yes where events are pushed or local, no where they are polled —
    * so a remote change is adopted as soon as it is published rather than at
    * the next sync. A failure is reported and the sync carries on regardless.
    */
   async #subscribeControl(): Promise<void> {
-    if (!this.options.remoteControl || this.#unsubscribeControl) {
+    if (!this.options.control || this.#unsubscribeControl) {
       return;
     }
 
@@ -996,7 +996,7 @@ export class BunRunner<
    * `parallel` → `single` never kills one.
    *
    * @throws ConfigError when the patch is empty, out of bounds, or asks for
-   * an execution mode this runner's `remoteConfig` does not permit.
+   * an execution mode this runner's `allowedOverrides` does not permit.
    */
   async updateConfig(patch: RunnerConfigPatch): Promise<RunnerConfigInfo> {
     const fields = runnerConfigFields(patch, { allowed: this.#allowedModes });
@@ -1012,7 +1012,7 @@ export class BunRunner<
    * Stores an override, adopts it here, drains what it may have released, and
    * announces it — so the runner's other owners adopt it within the driver's
    * event latency rather than at their next sync (`syncInterval`, 30 s by
-   * default). The same `control` event `RemoteRunner` publishes.
+   * default). The same `control` event `RunnerController` publishes.
    */
   async #writeAndAdopt(
     fields: Record<string, string | null>,
@@ -1029,7 +1029,7 @@ export class BunRunner<
 
   /**
    * Publishes a `control` event for this runner's other owners, whatever the
-   * `publish` option says: like `RemoteRunner`'s, it is addressed to the
+   * `publish` option says: like `RunnerController`'s, it is addressed to the
    * processes that own the runner, not to dashboards. The change is already
    * stored, so a failure is logged rather than thrown — the others still
    * adopt it at their next sync.
@@ -1151,7 +1151,7 @@ export class BunRunner<
 
   /**
    * The state fields an owner writes: the effective values under their
-   * original names — so `RemoteRunner.info()` and older clients are unchanged
+   * original names — so `RunnerController.info()` and older clients are unchanged
    * — plus what only an owner knows.
    */
   #configStateFields(): Record<string, string | number | null> {

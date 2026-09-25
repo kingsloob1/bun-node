@@ -7,8 +7,8 @@ import {
   clearHistoryButton,
   finishedHistory,
   historyCard,
+  nonLocalRunner,
   openDialog,
-  remoteRunner,
   renderActions,
   runnerFixture,
   runningRunner,
@@ -94,19 +94,19 @@ describe("which runner actions are offered", () => {
   });
 
   it("drops kill and reset stats on a remote runner, with a hint", async () => {
-    await renderActions({ runner: remoteRunner() });
+    await renderActions({ runner: nonLocalRunner() });
     expect(actionNames()).toEqual(["Trigger…", "Pause", "Reschedule…"]);
-    expect(page().getByTestId("runner-remote-hint").textContent).toContain(
+    expect(page().getByTestId("runner-non-local-hint").textContent).toContain(
       "kill and reset stats are only available from the API of the process that runs it",
     );
   });
 
   it("shows no remote hint when the caller could not kill or reset anyway", async () => {
     await renderActions({
-      runner: remoteRunner(),
+      runner: nonLocalRunner(),
       scoped: { "runners.kill": false, "runners.resetStats": false },
     });
-    expect(page().queryByTestId("runner-remote-hint")).toBeNull();
+    expect(page().queryByTestId("runner-non-local-hint")).toBeNull();
   });
 
   it("offers nothing in the header when clear history is the only write granted", async () => {
@@ -166,18 +166,21 @@ describe("clear history: in the History card, not the header", () => {
 
   it("is offered on a remote runner, and does not bring up the remote hint", async () => {
     await renderActions({
-      runner: remoteRunner(),
+      runner: nonLocalRunner(),
       history: finishedHistory(),
       scoped: { "runners.kill": false, "runners.resetStats": false },
     });
     expect(clearHistoryButton()).not.toBeNull();
-    expect(page().queryByTestId("runner-remote-hint")).toBeNull();
+    expect(page().queryByTestId("runner-non-local-hint")).toBeNull();
   });
 
   it("is offered on a remote runner beside the remote hint for kill and reset stats", async () => {
-    await renderActions({ runner: remoteRunner(), history: finishedHistory() });
+    await renderActions({
+      runner: nonLocalRunner(),
+      history: finishedHistory(),
+    });
     expect(clearHistoryButton()).not.toBeNull();
-    expect(page().getByTestId("runner-remote-hint").textContent).not.toMatch(
+    expect(page().getByTestId("runner-non-local-hint").textContent).not.toMatch(
       /clear|history/i,
     );
   });
@@ -245,16 +248,16 @@ describe("runnerActionGates", () => {
   });
 
   it("keeps kill closed for a runner running elsewhere", () => {
-    const gates = runnerActionGates(remoteRunner({ isRunning: true }), all);
+    const gates = runnerActionGates(nonLocalRunner({ isRunning: true }), all);
     expect(gates.kill).toBe(false);
     expect(gates.resetStats).toBe(false);
-    expect(gates.remoteOnly).toBe(true);
+    expect(gates.nonLocalOnly).toBe(true);
   });
 
   it("opens clear history on a remote runner, without making it remote-only", () => {
     const onlyClear = (action: string) => action === "runners.clearHistory";
-    const gates = runnerActionGates(remoteRunner(), onlyClear);
+    const gates = runnerActionGates(nonLocalRunner(), onlyClear);
     expect(gates.clearHistory).toBe(true);
-    expect(gates.remoteOnly).toBe(false);
+    expect(gates.nonLocalOnly).toBe(false);
   });
 });

@@ -31,8 +31,9 @@ import "./runners.css";
 const RUNNER_PAGE_SIZE = 25;
 
 /**
- * One row: a local runner with its name and lifecycle status, or a remote id
- * with its shared paused flag; either one's run in flight is marked.
+ * One row: a local runner with its name and lifecycle status, or the id of one
+ * registered in another process, with its shared paused flag; either one's
+ * run in flight is marked.
  */
 function RunnerRow({ item }: { item: RunnerListItemDto }) {
   const status = item.status ? RUNNER_STATUS[item.status] : null;
@@ -59,7 +60,7 @@ function RunnerRow({ item }: { item: RunnerListItemDto }) {
             tone="neutral"
             title="Registered by another process: its name shows on its own screen."
           >
-            Remote
+            Other process
           </Badge>
         )}
       </td>
@@ -244,7 +245,7 @@ export function RunnersListScreen() {
               data-testid="runners-count"
             >
               {plural(localCount, "local runner")},{" "}
-              {plural(all.length - localCount, "remote runner")}
+              {plural(all.length - localCount, "runner")} in other processes
               {shown.length < all.length && ` (${shown.length} shown)`}
             </p>
           </>

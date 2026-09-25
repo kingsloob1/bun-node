@@ -5,7 +5,7 @@ import { BunRunner, createDriver, noopLogger } from "./shared";
 
 /**
  * A process that owns one runner and does nothing else, for another process
- * to control through `BunRunnerManager.remote()`.
+ * to control through `BunRunnerManager.controller()`.
  *
  * It never pauses, reschedules or triggers anything itself. Everything it
  * observes is appended to `EVENTS` as JSON lines, so the controlling test can
@@ -37,10 +37,10 @@ const runner = new BunRunner<
   executionMode: "in-process",
   runMode: "single",
   schedule: 3_600_000,
-  remoteControl: process.env.REMOTE_CONTROL === "1",
+  control: process.env.RUNNER_CONTROL === "1",
   ...(process.env.EXECUTION_MODES
     ? {
-        remoteConfig: {
+        allowedOverrides: {
           executionModes: process.env.EXECUTION_MODES.split(",") as (
             | "spawn"
             | "worker"

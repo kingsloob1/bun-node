@@ -9,13 +9,13 @@ import {
   ConfigError,
   JobsError,
   MemoryDriver,
-  RemoteRunner,
+  RunnerController,
   RunnerNotFoundError,
 } from "../lib/index";
 import { testNamespace, waitFor } from "./helpers";
 
 /**
- * `BunRunnerManager.remote()` in one process, on the memory driver.
+ * `BunRunnerManager.controller()` in one process, on the memory driver.
  *
  * Two managers sharing a driver stand in for two processes: one registers and
  * owns the runner, the other only knows its id. What the second sees and does
@@ -89,7 +89,7 @@ function finishedRuns(
   return runs;
 }
 
-describe("BunRunnerManager.remote(): local and remote agree", () => {
+describe("BunRunnerManager.controller(): local and remote agree", () => {
   it("reads the same state, history and stats either way", async () => {
     const { owner, observer } = cluster();
     const runner = addRunner(owner, { schedule: { cron: "0 3 * * *" } });
@@ -98,8 +98,8 @@ describe("BunRunnerManager.remote(): local and remote agree", () => {
     await runner.trigger();
     await waitFor(() => runs.length === 1);
 
-    const local = await owner.remote<AppendArgs, string>("reports");
-    const remote = await observer.remote<AppendArgs, string>("reports");
+    const local = await owner.controller<AppendArgs, string>("reports");
+    const remote = await observer.controller<AppendArgs, string>("reports");
     expect([local.isLocal, remote.isLocal]).toEqual([true, false]);
 
     const { local: localView, isLocal: _l, ...localInfo } = await local.info();
@@ -150,7 +150,7 @@ describe("BunRunnerManager.remote(): local and remote agree", () => {
     const runs = finishedRuns(runner);
     await runner.start();
 
-    const local = await owner.remote<AppendArgs, string>("reports");
+    const local = await owner.controller<AppendArgs, string>("reports");
     expect((await local.trigger()).outcome).toBe("started");
     await waitFor(() => runs.length === 1);
     expect(runs[0]?.record.source).toBe("manual");
@@ -176,7 +176,7 @@ describe("BunRunnerManager.remote(): local and remote agree", () => {
     await runner.start();
 
     const outcome = await runner.trigger();
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     const info = await remote.info();
 
     expect(info.isRunning).toBe(true);
@@ -191,23 +191,23 @@ describe("BunRunnerManager.remote(): local and remote agree", () => {
     const { owner, observer } = cluster();
     await addRunner(owner).start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     expect("kill" in remote).toBe(false);
-    expect(remote).toBeInstanceOf(RemoteRunner);
+    expect(remote).toBeInstanceOf(RunnerController);
   });
 });
 
-describe("BunRunnerManager.remote(): changes reach the owner", () => {
-  it("applies pause, schedule and resume at once with remoteControl", async () => {
+describe("BunRunnerManager.controller(): changes reach the owner", () => {
+  it("applies pause, schedule and resume at once with control", async () => {
     const { owner, observer } = cluster();
     // No sync timer at all, so only the control event can deliver the change.
-    const runner = addRunner(owner, { remoteControl: true, syncInterval: 0 });
+    const runner = addRunner(owner, { control: true, syncInterval: 0 });
     const events: string[] = [];
     runner.on("paused", () => events.push("paused"));
     runner.on("resumed", () => events.push("resumed"));
     await runner.start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
 
     await remote.pause();
     await waitFor(() => runner.status === "paused");
@@ -227,14 +227,14 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
     expect((await remote.info()).isPaused).toBe(false);
   });
 
-  it("applies them at the next sync with remoteControl off", async () => {
+  it("applies them at the next sync with control off", async () => {
     const { owner, observer } = cluster();
     // Explicitly off: the memory driver's events are local, so the default
     // (`"auto"`) would subscribe and deliver them before the sync ever fired.
-    const runner = addRunner(owner, { syncInterval: 40, remoteControl: false });
+    const runner = addRunner(owner, { syncInterval: 40, control: false });
     await runner.start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     await remote.pause();
     await waitFor(() => runner.status === "paused");
 
@@ -247,11 +247,11 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
   it("queues a trigger the owner runs, with its default args", async () => {
     const { owner, observer } = cluster();
     // `queueRuns` is off: a remote trigger is queued regardless.
-    const runner = addRunner(owner, { remoteControl: true });
+    const runner = addRunner(owner, { control: true });
     const runs = finishedRuns(runner);
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("reports");
+    const remote = await observer.controller<AppendArgs, string>("reports");
 
     expect(await remote.trigger()).toEqual({ outcome: "queued", position: 1 });
     await waitFor(() => runs.length === 1);
@@ -279,11 +279,11 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
 
   it("skips a trigger while paused, unless forced", async () => {
     const { owner, observer } = cluster();
-    const runner = addRunner(owner, { remoteControl: true });
+    const runner = addRunner(owner, { control: true });
     const runs = finishedRuns(runner);
     await runner.start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     await remote.pause();
     await waitFor(() => runner.status === "paused");
 
@@ -302,13 +302,13 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
     const { owner, observer } = cluster();
     const runner = addRunner(owner, {
       runMode: "parallel",
-      remoteControl: true,
+      control: true,
       args: { marker: "parallel", ms: 50 },
     });
     const runs = finishedRuns(runner);
     await runner.start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     await remote.trigger();
     await remote.trigger();
     await waitFor(() => runs.length === 2);
@@ -321,7 +321,7 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
     await first.start();
     await first.stop();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     expect((await remote.trigger()).outcome).toBe("queued");
     expect((await remote.info()).queuedTriggers).toBe(1);
 
@@ -350,7 +350,7 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
     // Stopped, so nothing drains what is queued.
     await runner.stop();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     expect(await remote.trigger()).toEqual({ outcome: "queued", position: 1 });
     expect(await remote.trigger()).toEqual({
       outcome: "skipped",
@@ -360,11 +360,11 @@ describe("BunRunnerManager.remote(): changes reach the owner", () => {
   });
 });
 
-describe("BunRunnerManager.remote(): errors", () => {
+describe("BunRunnerManager.controller(): errors", () => {
   it("rejects an id nobody registered with RunnerNotFoundError", async () => {
     const { namespace, observer } = cluster();
 
-    const error = await observer.remote("nope").catch((caught) => caught);
+    const error = await observer.controller("nope").catch((caught) => caught);
     expect(error).toBeInstanceOf(RunnerNotFoundError);
     expect(error).toBeInstanceOf(JobsError);
     expect(error).toMatchObject({
@@ -379,12 +379,16 @@ describe("BunRunnerManager.remote(): errors", () => {
 
   it("rejects without a driver when the runner is not registered", async () => {
     const manager = new BunRunnerManager({ namespace: testNamespace() });
-    expect(manager.remote("nope")).rejects.toBeInstanceOf(RunnerNotFoundError);
+    expect(manager.controller("nope")).rejects.toBeInstanceOf(
+      RunnerNotFoundError,
+    );
   });
 
   it("rejects an unusable id with ConfigError", async () => {
     const { observer } = cluster();
-    expect(observer.remote("not:valid")).rejects.toBeInstanceOf(ConfigError);
+    expect(observer.controller("not:valid")).rejects.toBeInstanceOf(
+      ConfigError,
+    );
   });
 
   it("rejects once the runner has been purged, and writes nothing", async () => {
@@ -393,7 +397,7 @@ describe("BunRunnerManager.remote(): errors", () => {
     await runner.start();
     await runner.stop();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     await driver.purge(namespace);
 
     for (const call of [
@@ -416,7 +420,7 @@ describe("BunRunnerManager.remote(): errors", () => {
     const { owner, observer } = cluster();
     await addRunner(owner).start();
 
-    const remote = await observer.remote("reports");
+    const remote = await observer.controller("reports");
     expect(remote.updateSchedule("not a cron")).rejects.toBeInstanceOf(
       ConfigError,
     );

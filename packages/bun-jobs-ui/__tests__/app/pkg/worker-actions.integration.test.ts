@@ -422,7 +422,7 @@ describe("a worker's row against a real API", () => {
     await ui.awaitButton("Resume");
 
     // …then somebody stops it elsewhere, without the row hearing of it.
-    await jobs.workers.remote(queue).stop({ id: worker.id });
+    await jobs.workers.controller(queue).stop({ id: worker.id });
     await until(
       () => worker.state === "stopped",
       () => `the worker is ${worker.state}`,

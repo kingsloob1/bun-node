@@ -42,8 +42,8 @@ type OpenDialog =
  * The action buttons (and their dialogs) for one runner, each present only
  * when the runner-scoped permission is held and the API is not read-only.
  * Kill and reset stats exist only for a runner registered in the API's
- * process; for a remote one a hint says why they are absent. Clearing the
- * history works on any runner.
+ * process; for one registered in another process a hint says why they are
+ * absent. Clearing the history works on any runner.
  */
 export function RunnerActions({ runner }: RunnerActionsProps) {
   const api = useApiClient();
@@ -77,7 +77,7 @@ export function RunnerActions({ runner }: RunnerActionsProps) {
     gates.configure ||
     gates.kill ||
     gates.resetStats;
-  if (!any && !gates.remoteOnly) {
+  if (!any && !gates.nonLocalOnly) {
     return null;
   }
 
@@ -129,10 +129,10 @@ export function RunnerActions({ runner }: RunnerActionsProps) {
           Kill…
         </Button>
       )}
-      {gates.remoteOnly && (
+      {gates.nonLocalOnly && (
         <p
           className="runner-actions-hint"
-          data-testid="runner-remote-hint"
+          data-testid="runner-non-local-hint"
         >
           Registered in another process: kill and reset stats are only available
           from the API of the process that runs it, and other changes reach it

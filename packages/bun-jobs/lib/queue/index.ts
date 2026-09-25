@@ -94,15 +94,6 @@ export {
   shortenJobId,
 } from "./options";
 export {
-  type LocalWorker,
-  RemoteWorker,
-  RemoteWorkerManager,
-  type RemoteWorkerOptions,
-  type WorkerConfigResult,
-  type WorkerControlResult,
-  type WorkerTarget,
-} from "./RemoteWorker";
-export {
   nextOccurrence,
   repeatJobId,
   repeatKeyFor,
@@ -169,8 +160,8 @@ export type {
   UpdateDataOf,
   WhenDeclared,
   WhenUndeclared,
+  WorkerControlOptions,
   WorkerEventsOf,
-  WorkerRemoteControlOptions,
 } from "./types";
 export {
   assertWritableStateName,
@@ -212,3 +203,12 @@ export {
   writeWorkerControl,
   writeWorkerStop,
 } from "./workerControl";
+export {
+  type LocalWorker,
+  type WorkerConfigResult,
+  WorkerController,
+  WorkerControllerManager,
+  type WorkerControllerOptions,
+  type WorkerControlResult,
+  type WorkerSelector,
+} from "./WorkerController";

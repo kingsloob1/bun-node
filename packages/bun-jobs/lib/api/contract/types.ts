@@ -1714,7 +1714,7 @@ export interface WorkerConfigDto {
 
 /** What a worker says about being controlled from outside its process. */
 export interface WorkerControlDto {
-  /** Whether this worker listens for control at all: its `remoteControl` option, and a backend that can store the desired state. */
+  /** Whether this worker listens for control at all: its `control` option, and a backend that can store the desired state. */
   enabled: boolean;
   /** How it hears about a change: a driver subscription, or only its own polling. */
   mode: WorkerControlMode;
@@ -2426,7 +2426,7 @@ export interface RunnerConfigDto {
   overridden: RunnerConfigKey[];
   /**
    * The execution modes an override may choose and this runner's owner can adopt:
-   * its `remoteConfig.executionModes`, less `spawn` and `worker` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.
+   * its `allowedOverrides.executionModes`, less `spawn` and `worker` when it was built from a driver instance (unless one is its code's own mode). May be empty. Absent means all three.
    */
   allowed?: ExecutionModeDto[];
   /** The override's version; `0` when nothing is stored. */
@@ -2965,9 +2965,10 @@ export interface MetaDto {
     /** Worker listing. */
     workers: boolean;
     /**
-     * Remote worker control: the backend can both list workers and record
-     * what they should be, so the lifecycle and configuration routes exist.
-     * A worker also has to be started with `remoteControl` to obey them,
+     * Worker control from another process: the backend can both list workers
+     * and record what they should be, so the lifecycle and configuration
+     * routes exist. A worker also has to be started with `control` (a
+     * `BunJobs` context's `workerControl`, on by default) to obey them,
      * which `WorkerDto.control.enabled` says worker by worker.
      */
     workerControl: boolean;

@@ -1,5 +1,5 @@
 /**
- * Compile-time assertions for `BunRunnerManager.remote()` and `RemoteRunner`.
+ * Compile-time assertions for `BunRunnerManager.controller()` and `RunnerController`.
  *
  * Checked by the tests typecheck (`bun scripts/typecheck.ts`), not by
  * `bun test`. Every `@ts-expect-error` is a negative control: if the error
@@ -7,12 +7,12 @@
  */
 import type {
   BunRunnerManager,
-  RemoteRunner,
-  RemoteRunnerInfo,
-  RemoteRunRecord,
+  RunnerController,
   RunnerStats,
+  SharedRunnerInfo,
   TriggerOutcome,
   TruncatedRunResult,
+  TypedRunRecord,
 } from "../lib/index";
 
 type Equal<X, Y> =
@@ -35,16 +35,16 @@ interface CleanupResult {
 
 declare const _manager: BunRunnerManager;
 
-/* --- remote() carries the declared types --------------------------- */
+/* --- controller() carries the declared types --------------------------- */
 
 type _remote = Expect<
   Equal<
-    Awaited<ReturnType<typeof _manager.remote<CleanupArgs, CleanupResult>>>,
-    RemoteRunner<CleanupArgs, CleanupResult>
+    Awaited<ReturnType<typeof _manager.controller<CleanupArgs, CleanupResult>>>,
+    RunnerController<CleanupArgs, CleanupResult>
   >
 >;
 
-declare const cleanup: RemoteRunner<CleanupArgs, CleanupResult>;
+declare const cleanup: RunnerController<CleanupArgs, CleanupResult>;
 
 void cleanup.trigger({ args: { olderThanDays: 30 }, force: true });
 // @ts-expect-error args are the runner's argument type
@@ -56,25 +56,25 @@ type _trigger = Expect<
 type _history = Expect<
   Equal<
     Awaited<ReturnType<typeof cleanup.history>>,
-    RemoteRunRecord<CleanupResult>[]
+    TypedRunRecord<CleanupResult>[]
   >
 >;
 type _result = Expect<
   Equal<
-    RemoteRunRecord<CleanupResult>["result"],
+    TypedRunRecord<CleanupResult>["result"],
     CleanupResult | TruncatedRunResult | undefined
   >
 >;
 type _info = Expect<
   Equal<
     Awaited<ReturnType<typeof cleanup.info>>,
-    RemoteRunnerInfo<CleanupResult>
+    SharedRunnerInfo<CleanupResult>
   >
 >;
 type _lastRun = Expect<
   Equal<
-    RemoteRunnerInfo<CleanupResult>["lastRun"],
-    RemoteRunRecord<CleanupResult> | undefined
+    SharedRunnerInfo<CleanupResult>["lastRun"],
+    TypedRunRecord<CleanupResult> | undefined
   >
 >;
 type _stats = Expect<
@@ -93,6 +93,6 @@ cleanup.send({ ping: true });
 
 /* --- undeclared, it accepts anything, as a runner does ------------- */
 
-declare const open: RemoteRunner;
+declare const open: RunnerController;
 void open.trigger({ args: 42 });
-type _openResult = Expect<Equal<RemoteRunRecord["result"], unknown>>;
+type _openResult = Expect<Equal<TypedRunRecord["result"], unknown>>;

@@ -781,7 +781,7 @@ Examples:
 | `waitToExit` | `boolean` | `true` | Keep the process alive while waiting for work. `false` lets a script exit when its own work is done. The Redis, Postgres and MongoDB clients hold the process on their own, so close the driver in that case. |
 | `publish` | `boolean` | `false` | Publish job events (active, progress, completed, failed, stalled, and so on) for other processes. |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
-| `remoteControl` | `boolean \| WorkerRemoteControlOptions` | `false`; `true` for a worker `BunJobs` builds | Obey pause, resume, stop, start and configuration overrides written by another process, such as the [management API](#routes). `true` subscribes where the driver pushes events and polls where it does not (one change counter per queue per driver instance every `interval`, shared by all its workers there; a worker reads its own instructions only when that counter moves); `{ enabled, subscribe, interval }` overrides either choice, `interval` defaulting to `2000`. The heartbeat re-reads the stored instructions too, so a lost event costs at most one `reportInterval`. On a driver without queue state the worker reports `control.enabled: false` and simply runs. |
+| `control` | `boolean \| WorkerControlOptions` | `false`; `true` for a worker `BunJobs` builds | Obey pause, resume, stop, start and configuration overrides written by another process, such as the [management API](#routes). `true` subscribes where the driver pushes events and polls where it does not (one change counter per queue per driver instance every `interval`, shared by all its workers there; a worker reads its own instructions only when that counter moves); `{ enabled, subscribe, interval }` overrides either choice, `interval` defaulting to `2000`. The heartbeat re-reads the stored instructions too, so a lost event costs at most one `reportInterval`. On a driver without queue state the worker reports `control.enabled: false` and simply runs. |
 | `stopPersistence` | `"process" \| "key"` | `"process"` | How long a remote `stop` lasts. `"process"` records it against this incarnation, so a restart brings the worker back running; `"key"` also records it against `key`, so every worker with that key applies it at startup until somebody starts it. |
 | `stopPersistenceOverridable` | `boolean` | `false` | Whether one instruction may ask for the other `stopPersistence`. Off, the process rather than the caller decides whether a stop outlives it. On, the worker also obeys a stop recorded against its key at startup (as a `persist: "key"` stop writes), and any start clears that record. |
 | `metrics` | `MetricsOptions` | everything on | What this worker records for [analytics](#analytics): its jobs completed and failed, under its stable key, and a busyness sample on each heartbeat report. `{ workers: false }` stops both, whatever the driver, and is the first lever for a large fleet. `resolution` and `secondRetentionMs` reach only a driver built here from a config. See [The `metrics` option](#the-metrics-option). |
@@ -1001,9 +1001,9 @@ Examples:
 
 ### Controlling workers from another process
 
-`jobs.workers.remote(queue)` returns a `RemoteWorker`, which pauses, resumes,
+`jobs.workers.controller(queue)` returns a `WorkerController`, which pauses, resumes,
 stops and starts the workers of one queue, and overrides their settings,
-wherever they run. It works the way [`RemoteRunner`](#bunrunnermanager) does:
+wherever they run. It works the way [`RunnerController`](#bunrunnermanager) does:
 each call stores what it asks for in the driver and publishes a worker
 `control` event, and the worker applies it when it hears the event, at its
 next control poll, or at its next heartbeat report if the event is lost. No
@@ -1014,7 +1014,7 @@ const jobs = new BunJobs({ namespace: "shop", driver, service: "billing" });
 jobs.worker("mail", sendMail); // key "billing.mail"
 
 // In any process sharing the driver and namespace:
-const mail = jobs.workers.remote("mail");
+const mail = jobs.workers.controller("mail");
 
 await mail.pause({ key: "billing.mail" }); // every replica with that key
 await mail.resume({ key: "billing.mail" });
@@ -1031,7 +1031,7 @@ await mail.resetConfig("billing.mail"); // back to what the code asks for
 
 A worker has two identities, and the two kinds of call use different ones:
 
-- **Pause, resume, stop and start** take a `WorkerTarget`: `{ id }` for one
+- **Pause, resume, stop and start** take a `WorkerSelector`: `{ id }` for one
   incarnation, or `{ key }`, which reaches every live worker carrying that
   stable key. The instruction records the incarnation it was written for, so
   the process that replaces a worker never applies it: a deployment comes
@@ -1076,12 +1076,12 @@ effective `lockDuration`, or an entry written by hand or by a newer version),
 keeps its own value for that field, and reports why in `control.lastError`. An override never stops a worker from
 running.
 
-**`RemoteWorker` checks less than the [management API](#routes).** It is the
+**`WorkerController` checks less than the [management API](#routes).** It is the
 lower-level call, and the API's checks sit on top of it:
 
 - A target that matches no live worker is not an error: `instances` is empty.
   The API answers 404 `WORKER_NOT_FOUND`.
-- It does not check that the worker obeys. One built with `remoteControl`
+- It does not check that the worker obeys. One built with `control`
   off never applies the instruction, and its record says
   `control.enabled: false`. The API answers 409 `WORKER_NOT_CONTROLLABLE`.
 - `pause()` and `resume()` refuse a `stopped` or `stopping` worker with
@@ -1095,11 +1095,11 @@ Every call except `list()`, `get()`, `listConfigs()` and `getConfig()` throws
 `NotSupportedError` on a driver without queue state (`getQueueState`,
 `setQueueState` and `listQueueState`). Every built-in driver has it.
 
-**On the worker's side.** A worker obeys only with `remoteControl` on, which
-`BunJobs` turns on for every worker it builds (`workerRemoteControl: false`
+**On the worker's side.** A worker obeys only with `control` on, which
+`BunJobs` turns on for every worker it builds (`workerControl: false`
 opts a context out) and which is off for a `BunQueueWorker` you construct. It
 subscribes to its instructions where the driver pushes events (Redis,
-memory) and polls every `remoteControl.interval` elsewhere. It exposes:
+memory) and polls every `control.interval` elsewhere. It exposes:
 
 - `key`, `service` and `processStartedAt`, the start time that identifies
   this incarnation;
@@ -1112,7 +1112,7 @@ memory) and polls every `remoteControl.interval` elsewhere. It exposes:
   `configSeq`, `pending`, `stopPersistence`, `stopPersistenceOverridable` and
   `lastError`;
 - `syncControl()`, which reads its stored instructions now instead of
-  waiting for the next event or poll. A `RemoteWorker` in the same process
+  waiting for the next event or poll. A `WorkerController` in the same process
   calls it after each lifecycle call.
 
 A worker with `publish` on (or `publishEvents` on its `BunJobs`) publishes a
@@ -1297,7 +1297,7 @@ Examples:
 | `publishEvents` | `boolean` | `false` | Every queue, worker and runner created here publishes its events. A `publish` option on an individual object still wins. |
 | `processEvery` | `number \| string` | | How often the registry worker looks for due work. The same as calling `processEvery()` before `start()`. See [Registry polling](#registry-polling). |
 | `service` | `string` | | What this service is called. Every worker created here reports it, and it is the first segment of each worker's stable key, `[service.]queue[.name\|.ordinal]`. Set it whenever several services share a backend and a namespace: otherwise a [configuration override](#controlling-workers-from-another-process) written for `mail` reaches whichever of them consumes a queue called `mail`. |
-| `workerRemoteControl` | `boolean` | `true` | Whether the workers created here obey pause, resume, stop, start and configuration overrides written by another process. It is passed as each worker's `remoteControl`, and a worker's own `remoteControl` option wins. On by default here, unlike on a `BunQueueWorker` you construct. It costs one subscription per worker where the driver pushes events, and, where it does not, one read per queue per driver instance every `remoteControl.interval` (2 seconds by default), plus each worker's two reads only when an instruction or override was written. See [Controlling workers from another process](#controlling-workers-from-another-process). |
+| `workerControl` | `boolean` | `true` | Whether the workers created here obey pause, resume, stop, start and configuration overrides written by another process. It is passed as each worker's `control`, and a worker's own `control` option wins. On by default here, unlike on a `BunQueueWorker` you construct. It costs one subscription per worker where the driver pushes events, and, where it does not, one read per queue per driver instance every `control.interval` (2 seconds by default), plus each worker's two reads only when an instruction or override was written. See [Controlling workers from another process](#controlling-workers-from-another-process). |
 | `metrics` | `MetricsOptions` | everything on, per-second, 5 minutes of it | What is recorded for [analytics](#analytics). Handed to the driver the context builds from a config (a config naming its own `metrics` wins), and merged field by field under every runner and worker created here, whose own `metrics` wins. See [The `metrics` option](#the-metrics-option). |
 
 The context has these members:
@@ -1310,7 +1310,7 @@ The context has these members:
 | `driverConfig` | The config form of the backend, if the context was built from one. |
 | `service` | The `service` option, or `undefined`. |
 | `runners` | The context's [`BunRunnerManager`](#bunrunnermanager). |
-| `workers` | The context's `RemoteWorkerManager`: `workers.remote(queue)` returns the [`RemoteWorker`](#controlling-workers-from-another-process) for that queue's workers, in any process. |
+| `workers` | The context's `WorkerControllerManager`: `workers.controller(queue)` returns the [`WorkerController`](#controlling-workers-from-another-process) for that queue's workers, in any process. |
 | `queue(name, opts?)` | The queue by that name. |
 | `worker(name, processor, opts?)` | Creates a worker on a queue. |
 | `runner(opts)` | Creates a runner. |
@@ -2513,17 +2513,17 @@ Examples:
 | `publish` | `boolean` | `false` | Publish `started`, `succeeded`, `failed`, `timeout`, `killed`, `queued` and `skipped` for other processes, and the `logs` hint while a run's log grows (see [Following a run's log live](#following-a-runs-log-live)). |
 | `publishGate` | `() => Promise<void>` | | Awaited before each publish. |
 | `metrics` | `MetricsOptions` | everything on | What this runner records for [analytics](#analytics): its runs by outcome and their durations, each run in the bucket it finished in. `runners: false` stops the series and `durations: false` the durations, whatever the driver; `resolution` and `secondRetentionMs` reach only a driver built here from a config. The lifetime `stats()` counters are kept either way. See [The `metrics` option](#the-metrics-option). |
-| `remoteControl` | `boolean \| "auto"` | `"auto"` | Subscribe to `control` events, so a change made through `BunRunnerManager.remote()` applies within the driver's event latency instead of at the next `syncInterval`. `"auto"` listens where it is cheap — on a driver whose events are pushed (Redis) or held in this process (memory) — and not on one that polls (SQL, MongoDB, the file driver), where a subscription is a query every few dozen milliseconds per runner on the file driver, and on SQL and MongoDB one more channel in the namespace's shared poll (one query per `pollInterval` per namespace, however many subscribe). `true` subscribes on every backend, `false` on none. The sync adopts every change either way, so this decides latency, never whether remote control works. |
-| `remoteConfig` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"spawn"` and `"worker"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
+| `control` | `boolean \| "auto"` | `"auto"` | Subscribe to `control` events, so a change made through `BunRunnerManager.controller()` applies within the driver's event latency instead of at the next `syncInterval`. `"auto"` listens where it is cheap — on a driver whose events are pushed (Redis) or held in this process (memory) — and not on one that polls (SQL, MongoDB, the file driver), where a subscription is a query every few dozen milliseconds per runner on the file driver, and on SQL and MongoDB one more channel in the namespace's shared poll (one query per `pollInterval` per namespace, however many subscribe). `true` subscribes on every backend, `false` on none. The sync adopts every change either way, so this decides latency, never whether remote control works. |
+| `allowedOverrides` | `{ executionModes?: ExecutionMode[] }` | every mode | What a [remote configuration override](#changing-a-runners-configuration-remotely) may choose. `executionModes` lists the execution modes an override may switch to: list only `"spawn"` and `"worker"` to keep the handler out of the owner's own process. A runner built from a driver instance, with no `childDriver`, has nothing to hand a child. So of the modes listed it publishes, and a controller or the management API accepts, only `in-process` and its code's own mode; the other child mode is refused up front (a `ConfigError` with `reason: "not-allowed"`; over the API, 409 `CONFIG_NOT_ALLOWED`). An empty list, or a mode that does not exist, is a `ConfigError`. Leaving the option out does not turn remote configuration off; over the management API it needs `runners.configure`, which is off by default. |
 | `spawn` | `SpawnOptions` | | `cwd`, `env`, `args`, `execPath`, `stdout`/`stderr` (`"pipe"` by default while `captureLogs` is on, `"inherit"` when it is off, or `"ignore"`), and `startTimeout` (`10000`). |
 | `worker` | `WorkerOptions` | | `smol`, `name`, `env`, `argv`. |
 | `inProcess` | `InProcessOptions` | | `reloadOnEachRun`: re-import the file on every run. This is for development, and it leaks one module instance per run. |
 
 **Upgrading: two runner defaults changed.**
 
-- `remoteControl` was `false` and is now `"auto"`, so a runner on Redis or
+- `control` was `false` and is now `"auto"`, so a runner on Redis or
   memory subscribes to its `control` events without being asked. Pass
-  `remoteControl: false` for the old behaviour. On SQL, MongoDB and the file
+  `control: false` for the old behaviour. On SQL, MongoDB and the file
   driver nothing changes.
 - `spawn.stdout` and `spawn.stderr` were `"inherit"` and are now `"pipe"`
   while `captureLogs` is on, which it is by default. The output still reaches
@@ -2559,7 +2559,7 @@ leaves the queue exactly as it is, in order, until `resume()` drains it.
 - The drainer goes by the paused flag as it last read it, the same one
   `trigger()` checks. A pause set in another process applies at its next
   sync, or at once where the runner subscribes to `control` events — on Redis
-  and memory by default, elsewhere with `remoteControl: true`.
+  and memory by default, elsewhere with `control: true`.
 - `resume()` drains the held-back triggers, oldest first, before a
   `triggerNow` run, which queues behind them.
 
@@ -2936,11 +2936,11 @@ const { removed, kept } = await runner.clearHistory();
 logger.info("history cleared", { removed, kept });
 
 // From any process sharing the driver and namespace:
-const remote = await jobs.runners.remote("cleanup");
-await remote.clearHistory({ staleAfter: 3 * 86_400_000 });
+const cleanup = await jobs.runners.controller("cleanup");
+await cleanup.clearHistory({ staleAfter: 3 * 86_400_000 });
 ```
 
-`RemoteRunner.clearHistory()` works on a runner registered in **another
+`RunnerController.clearHistory()` works on a runner registered in **another
 process**: it acts on what the backend stores, so it needs no owner to be
 reachable — unlike `kill()`, which only the executing process can do. For a
 runner registered here it delegates to the runner itself.
@@ -2998,23 +2998,23 @@ process that owns the runner adopts it, and so does one started later.
 const report = jobs.runner({
   id: "report",
   file: "./jobs/report.ts",
-  remoteConfig: { executionModes: ["spawn", "worker"] }, // never in-process
+  allowedOverrides: { executionModes: ["spawn", "worker"] }, // never in-process
 });
 await report.start();
 
 // In any process sharing the driver and namespace:
-const remote = await jobs.runners.remote("report");
-await remote.updateConfig({ executionMode: "worker" });
-await remote.updateConfig({ concurrency: { runMode: "parallel", maxConcurrency: 3 } });
-export const config = await remote.config(); // effective, code, overridden, seq, ...
-await remote.resetConfig(); // back to what the code asks for
+const controller = await jobs.runners.controller("report");
+await controller.updateConfig({ executionMode: "worker" });
+await controller.updateConfig({ concurrency: { runMode: "parallel", maxConcurrency: 3 } });
+export const config = await controller.config(); // effective, code, overridden, seq, ...
+await controller.resetConfig(); // back to what the code asks for
 ```
 
 `updateConfig(patch)` takes a merge patch: a field left out is untouched, and
 `null` clears that override.
 
 - `executionMode` is `"spawn"`, `"worker"` or `"in-process"`, and must be one
-  the runner's `remoteConfig.executionModes` permits.
+  the runner's `allowedOverrides.executionModes` permits.
 - `concurrency` writes `runMode` and `maxConcurrency` together, because a cap
   only means something in `parallel` mode: `{ runMode: "single" }`, or
   `{ runMode: "parallel", maxConcurrency }` with a whole number from 1 to 1000,
@@ -3027,7 +3027,7 @@ await remote.resetConfig(); // back to what the code asks for
 | `effective` | What the owner runs with now: `{ executionMode, runMode, maxConcurrency }`, `null` meaning unlimited. |
 | `code` | What the owner's own options asked for. |
 | `overridden` | Which settings an override is stored for, including one the owner refused. |
-| `allowed` | The execution modes the owner's `remoteConfig` permits. |
+| `allowed` | The execution modes the owner's `allowedOverrides` permits. |
 | `seq` | The override's version, `0` when nothing was ever stored. |
 | `appliedSeq` | The version an owner has adopted. Below `seq`, no owner has picked it up yet. |
 | `error` | `{ at, message, keys }`, when an owner refused all or part of the override. `keys` names the refused settings in `executionMode, runMode, maxConcurrency` order; every other overridden setting was adopted. A whole refusal names every overridden key, and an error stored by an older owner reads as `keys: []`. |
@@ -3035,17 +3035,17 @@ await remote.resetConfig(); // back to what the code asks for
 
 The same three members are on `BunRunner` itself: `runner.updateConfig(patch)`
 and `runner.resetConfig()` store the override, adopt it in this process at
-once, and publish the same `control` event a `RemoteRunner` does, so owners in
+once, and publish the same `control` event a `RunnerController` does, so owners in
 other processes adopt it as described under **When it applies**.
 `runner.config` is this instance's own view, read without a driver round trip.
-`jobs.runners.remote(id)` on a local runner delegates to it and publishes
-nothing more. On a `RemoteRunner`, `config()` is a method and reads what the
+`jobs.runners.controller(id)` on a local runner delegates to it and publishes
+nothing more. On a `RunnerController`, `config()` is a method and reads what the
 owners stored. It resolves to `undefined` for a runner no owner has started
 since remote configuration shipped.
 
 **When it applies.** An owner adopts an override at its next sync
 (`syncInterval`, 30 seconds by default), or as soon as it hears the `control`
-event, which `remoteControl: "auto"` means on Redis and memory. It applies from
+event, which `control: "auto"` means on Redis and memory. It applies from
 the **next** run. A run in flight keeps the mode it started with, a lower
 `maxConcurrency` only holds back new runs, and switching from `parallel` to
 `single` never kills a run. That switch is not immediate across processes
@@ -3055,7 +3055,7 @@ exclusivity matters.
 **What an owner refuses.** An owner that cannot honour a field drops it, keeps
 its code's value, records why in `error` (naming the field in `error.keys`),
 and logs a warning. That happens for
-a mode its `remoteConfig` does not permit, and for `"spawn"` or `"worker"` on a
+a mode its `allowedOverrides` does not permit, and for `"spawn"` or `"worker"` on a
 runner built from a driver instance with no `childDriver`, whose handler would
 then reach no backend. Both are refused up front by `updateConfig()` and the
 management API (the owner publishes only the modes it can adopt), so an owner
@@ -3068,14 +3068,14 @@ why:
 - `"empty"`: the patch sets neither field (`updateConfig()`);
 - `"invalid"`: an unknown mode or `runMode`, or a `maxConcurrency` out of
   bounds (`updateConfig()`);
-- `"not-allowed"`: an execution mode the runner's `remoteConfig` forbids, or
+- `"not-allowed"`: an execution mode the runner's `allowedOverrides` forbids, or
   one it cannot adopt for want of a `childDriver` (`updateConfig()`);
-- `"not-configurable"`: from a `RemoteRunner` for a runner registered in
+- `"not-configurable"`: from a `RunnerController` for a runner registered in
   another process, when no owner has started since remote configuration
   shipped, so nothing would ever adopt the override (`updateConfig()` and
   `resetConfig()`).
 
-A `RemoteRunner` for a runner the backend does not know throws
+A `RunnerController` for a runner the backend does not know throws
 `RunnerNotFoundError`. Over the management API this is
 `PUT` and `DELETE /runners/:runner/config`, with the action `runners.configure`,
 which is off by default. See [Routes](#routes).
@@ -3098,9 +3098,9 @@ A registry of the runners in one namespace. `jobs.runners` is one.
 | `stopAll({ timeout?, force? })` | Stops every runner. Failures are collected into one `AggregateError`. |
 | `info()` | Returns a snapshot of every registered runner. |
 | `discover()` | Runner ids the backend knows about, including other processes' runners. |
-| `remote(id)` | A `RemoteRunner` that controls a runner registered by any process sharing the driver and namespace. Rejects with `RunnerNotFoundError` for an id that is neither registered here nor known to the backend. |
+| `controller(id)` | A `RunnerController` that controls a runner registered by any process sharing the driver and namespace. Rejects with `RunnerNotFoundError` for an id that is neither registered here nor known to the backend. |
 
-`get()`, `list()` and `info()` only see this process's runners. `remote(id)`
+`get()`, `list()` and `info()` only see this process's runners. `controller(id)`
 reaches the others, through what every runner already keeps in the driver:
 its state, its lock, its history and its trigger queue.
 
@@ -3108,7 +3108,7 @@ its state, its lock, its history and its trigger queue.
 A runner also has a record in the driver, written by every `start()`, and
 nothing removes it — not `remove()`, not stopping the runner, not the process
 exiting. So after `remove(id)` the runner is gone from `get()`, `list()`,
-`info()` and `size`, and still there in `discover()`, `remote(id)` and the
+`info()` and `size`, and still there in `discover()`, `controller(id)` and the
 management API: `GET /runners/<id>` answers 200 and every runner mutation still
 applies. A pause or a rescheduled cron set on it stays stored, and the next
 process to register that id adopts it.
@@ -3123,7 +3123,7 @@ runner record is [`jobs.purge()`](#the-bunjobs-registry-and-builder), which
 erases the whole namespace, jobs and all.
 
 ```ts
-const cleanup = await jobs.runners.remote<CleanupArgs, CleanupResult>(
+const cleanup = await jobs.runners.controller<CleanupArgs, CleanupResult>(
   "cleanup",
 );
 
@@ -3143,9 +3143,9 @@ How each call reaches the process that owns the runner:
 | Call | What it does | When the owner acts on it |
 |---|---|---|
 | `info()` | Reads the persisted configuration, paused flag and schedule, the lock (`runningOn`: host, pid, run id, since when), the queue depth, the counters and the last run. | Nothing to act on. |
-| `pause()`, `resume()` | Write the shared paused flag. | Immediately on Redis and memory, where `remoteControl: "auto"` subscribes. Elsewhere at its next sync (`syncInterval`, 30s by default), or with `remoteControl: true` within the driver's event latency: about 25ms on the file driver, 50ms on SQL and MongoDB. |
+| `pause()`, `resume()` | Write the shared paused flag. | Immediately on Redis and memory, where `control: "auto"` subscribes. Elsewhere at its next sync (`syncInterval`, 30s by default), or with `control: true` within the driver's event latency: about 25ms on the file driver, 50ms on SQL and MongoDB. |
 | `updateSchedule(schedule)` | Validates the schedule, then writes it. | Same as `pause()`. The owner re-arms its ticker. |
-| `trigger({ args?, force? })` | Pushes a trigger onto the runner's queue in the driver, whatever `queueRuns` says, up to the owner's `maxQueuedRuns`. Resolves to `queued`, or `skipped` with `paused` or `queue-full`. | An idle owner drains it at once where it subscribes to `control` events (Redis and memory by default, elsewhere with `remoteControl: true`), and otherwise at its next sync. A busy one drains it when its run finishes. The run has source `queued` and the owner's default `args` when none are given. |
+| `trigger({ args?, force? })` | Pushes a trigger onto the runner's queue in the driver, whatever `queueRuns` says, up to the owner's `maxQueuedRuns`. Resolves to `queued`, or `skipped` with `paused` or `queue-full`. | An idle owner drains it at once where it subscribes to `control` events (Redis and memory by default, elsewhere with `control: true`), and otherwise at its next sync. A busy one drains it when its run finishes. The run has source `queued` and the owner's default `args` when none are given. |
 | `history(limit?)`, `stats()` | Read the shared history and counters. | Nothing to act on. |
 | `clearHistory({ staleAfter? })` | Removes the finished runs, record and log, keeping those in progress. See [Clearing run history](#clearing-run-history). | Nothing to act on: it works on what the backend stores. A run the owner is executing stays in progress by its record — `running`, under the live lock or younger than `staleAfter`. |
 | `updateConfig(patch)`, `resetConfig()` | Validate the patch against the modes the owner permits, then write the override (or clear it). See [Changing a runner's configuration remotely](#changing-a-runners-configuration-remotely). | Same as `pause()`. The owner applies it from its next run. |
@@ -3153,8 +3153,8 @@ How each call reaches the process that owns the runner:
 
 The calls publish a `control` runner event, whether or not the runner
 publishes its own. An owner subscribed to them re-reads its state when it
-hears one — which `remoteControl: "auto"`, the default, means on Redis and
-memory, and `remoteControl: true` means everywhere. Every owner also re-reads
+hears one — which `control: "auto"`, the default, means on Redis and
+memory, and `control: true` means everywhere. Every owner also re-reads
 at each sync and drains triggers queued while it was idle. It does the same on
 `start()`, so a trigger queued while no owner was running waits for one to
 start.
@@ -3162,7 +3162,7 @@ start.
 Limits:
 
 - **There is no remote kill.** Only the process executing a run can stop it,
-  with `BunRunner.kill()`. `RemoteRunner` has no `kill` or `send`.
+  with `BunRunner.kill()`. `RunnerController` has no `kill` or `send`.
 - A remote `trigger({ force: true })` records `force` on the queued trigger,
   so a paused owner drains it. The head-only rule in
   [Triggers and run modes](#triggers-and-run-modes) applies: a forced trigger
@@ -3243,8 +3243,8 @@ for await (const event of notifier) {
   `type`, narrows the payload.
 - **Control events.** A runner event of type `control` (`payload.action`:
   `pause`, `resume`, `schedule`, `trigger` or `config`) is published by
-  `BunRunnerManager.remote()` whenever it changes a runner. It is addressed
-  to the runner's owners, which follow it wherever `remoteControl` subscribes:
+  `BunRunnerManager.controller()` whenever it changes a runner. It is addressed
+  to the runner's owners, which follow it wherever `control` subscribes:
   on Redis and memory by default, elsewhere with `true`. A notifier following
   that runner hears it too.
 - **Worker events.** An event with `kind: "worker"` has the queue as its
@@ -3962,15 +3962,15 @@ Worker routes reach workers in any process too. `:worker` is one
 reaches every replica carrying it, and `authorize` sees it as `workerKey`.
 Both come with `queue`. A lifecycle action is stored and announced rather
 than applied in place, so it reaches the worker within milliseconds when the
-worker subscribes to its instructions, within `remoteControl.interval` (2
+worker subscribes to its instructions, within `control.interval` (2
 seconds by default) when it polls, and within one `reportInterval` even if
 the announcement is lost; `?wait=` (ms) waits for the acknowledgement and answers 200 once it
-lands, or 202 when the wait runs out. A worker built without `remoteControl`
+lands, or 202 when the wait runs out. A worker built without `control`
 answers 409 `WORKER_NOT_CONTROLLABLE` (`BunJobs` turns it on for the workers
 it builds). `workers.configure` is off by default, like `jobs.add`: one write
 reaches every replica, and its lock settings decide whether a job can run
 twice. The library call underneath is
-[`RemoteWorker`](#controlling-workers-from-another-process), which makes
+[`WorkerController`](#controlling-workers-from-another-process), which makes
 fewer of these checks.
 
 `GET /runners/:runner/runs/:runId/logs` serves one run's captured output — see
@@ -4120,7 +4120,7 @@ registered in this process holds in memory: at least this many, since a
 `parallel` run in another process holds no lock to see. `GET /analytics/runners`
 reads locks only for the rows it returns (at most 100); its envelope's
 `runningNow` adds the in-process runs of local runners beyond that cap, and
-reads no remote runner beyond it.
+reads no runner registered in another process beyond it.
 
 **One worker key.** `GET /queues/:queue/analytics/workers/:key` answers by the
 stable key, so a key with nothing counted reads as zeros, not 404 — a worker
@@ -5151,13 +5151,13 @@ so a caller can add to them but never overwrite them.
 | `RunKilledError` | `RUN_KILLED` | A run was stopped on request (`reason`). |
 | `InvalidHandlerError` | `INVALID_HANDLER` | A handler or processor file has no usable default export. |
 | `RunnerStoppedError` | `RUNNER_STOPPED` | A runner was triggered manually after `stop()`. |
-| `RunnerNotFoundError` | `RUNNER_NOT_FOUND` | `BunRunnerManager.remote(id)`, or a `RemoteRunner` call, names a runner that is neither registered in this process nor known to the backend (`context.id`, `context.namespace`). |
+| `RunnerNotFoundError` | `RUNNER_NOT_FOUND` | `BunRunnerManager.controller(id)`, or a `RunnerController` call, names a runner that is neither registered in this process nor known to the backend (`context.id`, `context.namespace`). |
 | `QueueClosedError` | `QUEUE_CLOSED` | A queue was used after `close()`. |
 | `WorkerClosedError` | `WORKER_CLOSED` | A worker was used after `close()`. |
 | `QueueFullError` | `QUEUE_FULL` | A bounded queue of triggers or jobs is full (`what`, `max`). |
 | `JobDefaultsChangedError` | `DEFAULTS_CHANGED` | `queue.applyJobDefaults()` was asked to apply a `seq` that is no longer the stored one (`queue`, `expectedSeq`, `seq`). Nothing was written. |
 | `SerializationError` | `SERIALIZATION` | A value (job data, a result) is not JSON-serialisable. |
-| `WorkerStateConflictError` | `WORKER_STATE_CONFLICT` | `RemoteWorker.pause()` or `resume()` addressed a worker that is `stopped` or `stopping` (`action`, and `workers`: each refused worker's `id` and `state`). Nothing was written. The management API answers 409 `WORKER_STATE_CONFLICT`. |
+| `WorkerStateConflictError` | `WORKER_STATE_CONFLICT` | `WorkerController.pause()` or `resume()` addressed a worker that is `stopped` or `stopping` (`action`, and `workers`: each refused worker's `id` and `state`). Nothing was written. The management API answers 409 `WORKER_STATE_CONFLICT`. |
 | `ProtocolError` | `PROTOCOL` | A message between processes did not have the shape its protocol promises, such as a malformed job-channel reply. It means the two sides disagree (a rolling upgrade, a bug), not that the operation failed. |
 
 `ErrorContext<Reserved>` types the extra detail you can pass to the
@@ -5311,7 +5311,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
 | | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | | [`manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
-| | [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts) | `remote(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
+| | [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts) | `controller(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
 | | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
 | [`08-drivers`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers) | [`choosing-a-driver.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/choosing-a-driver.ts) | every config shape, capabilities, one workload on each available backend |
 | | [`sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts) | `SqlDriver` on SQLite, `tablePrefix`, `syncSchema` repairing a drifted schema |
@@ -5344,7 +5344,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
 | [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is |
 | [`job-methods.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-methods.ts) | `job.fail()` inside a processor and from outside (a pending job buried at once, an active one's worker aborting at its next heartbeat); `schedule()`, `update()` and `this \| null`; `disable()` / `enable()` on an occurrence; the queue's `disableRepeatable()` / `enableRepeatable()`; `remove()` / `promote()` / `retry()` emitting and publishing; `progress` as `RunProgress \| null` and `extendLock()` only from the processor's view |
-| [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `remote()` |
+| [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `controller()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
 | [`draft-and-process-every.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/draft-and-process-every.ts) | every `JobDraft` member and `RepeatEveryOptions` field, saving twice; `processEvery` and a worker's runtime `pollInterval` / `maxBlock`, per driver |
 | [`read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts) | every `ListJobsOptions` field; `search` taken literally and folded for case per engine; `page` totals; `getJobs` order, gaps and repeats; `listWorkers` fields, `reportInterval` and a lapsed record; `getThroughput` bounds, buckets and retried failures; `getQueueSummaries`; each driver fallback |
@@ -5358,7 +5358,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`job-defaults.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-defaults.ts) | queue job defaults: the stored override and its precedence, propagation, the `applyJobDefaults()` walk and its refusals, and the four API routes with their opt-ins |
 | [`analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts) | the `metrics` option, what is recorded, range resolution and every clamp reason, the analytics routes; `processedBy` and the worker filters; `countAdded()` and `sort: "createdAt"`, and their fallbacks per driver |
 | [`run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts) | run-log capture per execution mode, the `logs` hint, the caps and redaction; clearing a job's log and a runner's history, on every driver |
-| [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts) | `RemoteWorker` lifecycle and configuration, how long a stop lasts, the API's 409s, a runner's configuration changed by one owner and adopted by another; a buried flow retried in either order |
+| [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts) | `WorkerController` lifecycle and configuration, how long a stop lasts, the API's 409s, a runner's configuration changed by one owner and adopted by another; a buried flow retried in either order |
 
 Supporting files for the tours:
 

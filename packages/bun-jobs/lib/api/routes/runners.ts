@@ -46,7 +46,7 @@ import {
 import { defineRoute } from "./define";
 import {
   mapBounded,
-  REMOTE_LATENCY_NOTE,
+  NON_LOCAL_LATENCY_NOTE,
   RunnerParams,
   runnerTarget,
   toEpoch,
@@ -158,7 +158,7 @@ const CONFIG_ISSUE_PATH: Record<string, string> = {
  * How soon a configuration change reaches the owners, for the route
  * descriptions.
  */
-const CONFIG_LATENCY_NOTE = `The override is stored and announced. Each owner adopts it when it hears — as soon as it is published where it listens for \`control\` events (\`remoteControl: "auto"\`, the default, does on Redis and memory), and at its next sync otherwise — and reports back through \`appliedSeq\`. It applies from the **next** run: a run in flight keeps the mode it started with, and lowering \`maxConcurrency\` or switching \`parallel\` → \`single\` never kills one. An owner that cannot honour a field drops it, keeps its code's value and says why in \`error\`.`;
+const CONFIG_LATENCY_NOTE = `The override is stored and announced. Each owner adopts it when it hears — as soon as it is published where it listens for \`control\` events (\`control: "auto"\`, the default, does on Redis and memory), and at its next sync otherwise — and reports back through \`appliedSeq\`. It applies from the **next** run: a run in flight keeps the mode it started with, and lowering \`maxConcurrency\` or switching \`parallel\` → \`single\` never kills one. An owner that cannot honour a field drops it, keeps its code's value and says why in \`error\`.`;
 
 /**
  * Turns the runtime's `ConfigError` into the right problem, by its
@@ -269,7 +269,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       tags: ["Runners"],
       responses: { 200: RunnerListSchema },
       handler: async ({ services }) => {
-        const { local, remote } = await services.runners.list();
+        const { local, nonLocal } = await services.runners.list();
         // One backend read per runner, bounded: paused and running come from
         // the backend, as `GET /runners/:runner` reports them.
         const flags = async (id: string) => {
@@ -294,7 +294,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
             status: runner.status,
             ...(await flags(runner.id)),
           }))),
-          ...(await mapBounded(remote, async (id) => ({
+          ...(await mapBounded(nonLocal, async (id) => ({
             id,
             isLocal: false,
             local: false,
@@ -584,7 +584,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.trigger",
       mode: "runner",
       summary: "Ask for a run",
-      description: `202 when the run started or was queued, 200 when it was skipped (with the reason). \`args\` is refused unless the API was created with \`runnerTriggerArgs: true\`. ${REMOTE_LATENCY_NOTE}`,
+      description: `202 when the run started or was queued, 200 when it was skipped (with the reason). \`args\` is refused unless the API was created with \`runnerTriggerArgs: true\`. ${NON_LOCAL_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       body: TriggerBodySchema,
@@ -620,7 +620,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.pause",
       mode: "runner",
       summary: "Pause the runner everywhere",
-      description: `Owners stop starting scheduled and manual runs; a run in flight carries on. ${REMOTE_LATENCY_NOTE}`,
+      description: `Owners stop starting scheduled and manual runs; a run in flight carries on. ${NON_LOCAL_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       responses: { 200: RunnerPausedSchema },
@@ -640,7 +640,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.resume",
       mode: "runner",
       summary: "Resume the runner everywhere",
-      description: `\`triggerNow\` also asks for a run. ${REMOTE_LATENCY_NOTE}`,
+      description: `\`triggerNow\` also asks for a run. ${NON_LOCAL_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       body: ResumeBodySchema,
@@ -662,7 +662,7 @@ export function runnerRoutes(config: ResolvedJobsApiConfig): AnyRouteDef[] {
       action: "runners.reschedule",
       mode: "runner",
       summary: "Replace and persist the runner's schedule",
-      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. An interval below 1, or a time a \`Date\` cannot hold (epoch ms above ${MAX_DATE_MS}, or a string that is not an RFC 3339 date-time), is 400 \`VALIDATION\`. A cron expression or time zone the scheduler refuses is 400 \`INVALID_SCHEDULE\`, with one \`issues\` entry whose \`path\` names the part at fault — \`schedule.cron\`, \`schedule.tz\`, or \`schedule\` for a bare cron string — and nothing is written. ${REMOTE_LATENCY_NOTE}`,
+      description: `A cron expression, an interval in ms, \`{ cron, tz? }\`, \`{ every, anchor? }\`, \`{ at }\`, or \`null\` for none. An interval below 1, or a time a \`Date\` cannot hold (epoch ms above ${MAX_DATE_MS}, or a string that is not an RFC 3339 date-time), is 400 \`VALIDATION\`. A cron expression or time zone the scheduler refuses is 400 \`INVALID_SCHEDULE\`, with one \`issues\` entry whose \`path\` names the part at fault — \`schedule.cron\`, \`schedule.tz\`, or \`schedule\` for a bare cron string — and nothing is written. ${NON_LOCAL_LATENCY_NOTE}`,
       tags: ["Runners"],
       params: RunnerParams,
       body: ScheduleBodySchema,

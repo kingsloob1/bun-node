@@ -88,7 +88,7 @@ export interface QueueEventPayloads {
  * What a `control` event says changed: a remote controller paused, resumed or
  * rescheduled a runner, queued a trigger for it, or changed its executor and
  * overlap configuration (`config`, written and reset through
- * `RemoteRunner.updateConfig`/`resetConfig`).
+ * `RunnerController.updateConfig`/`resetConfig`).
  */
 export type RunnerControlAction =
   | "pause"
@@ -100,11 +100,11 @@ export type RunnerControlAction =
 /** What each runner event carries on the wire, by name. */
 export interface RunnerEventPayloads {
   /**
-   * A controller (`BunRunnerManager.remote()`) changed the runner's persisted
+   * A controller (`BunRunnerManager.controller()`) changed the runner's persisted
    * state or queued a trigger. Published whatever the runner's `publish`
    * option says, because it is addressed to the processes that own the
    * runner: one subscribed to them re-reads its state on hearing it, which
-   * `remoteControl: "auto"` — the default — means on a driver whose events
+   * `control: "auto"` — the default — means on a driver whose events
    * are not polled. An owner that does not subscribe adopts the change at its
    * next `syncInterval` instead.
    */

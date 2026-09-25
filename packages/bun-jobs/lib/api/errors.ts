@@ -437,7 +437,7 @@ function classify(error: unknown): Classified {
     return { status: 500, code: "SERIALIZATION" };
   }
   if (error instanceof JobsError && error.code === "WORKER_STATE_CONFLICT") {
-    // `WorkerStateConflictError` from `RemoteWorker.pause()`/`resume()`, when
+    // `WorkerStateConflictError` from `WorkerController.pause()`/`resume()`, when
     // a worker changed state between a lifecycle route's own check and the
     // call — answered as that check answers: 409, naming the first worker.
     const workers = (

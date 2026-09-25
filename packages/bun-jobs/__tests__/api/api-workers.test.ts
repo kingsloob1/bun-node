@@ -140,7 +140,7 @@ function startWorker(
   const worker = new BunQueueWorker<unknown, unknown>(queue, async () => "ok", {
     namespace: jobs.namespace,
     driver: jobs.driver,
-    remoteControl: true,
+    control: true,
     reportInterval: 1_000,
     pollInterval: 10,
     waitToExit: false,
@@ -612,7 +612,7 @@ describe("lifecycle control", () => {
   ])(
     "answers $action with 409 WORKER_STATE_CONFLICT, not a 500, when the worker stops between the route's check and the call",
     async ({ action, from }) => {
-      // The route reads the worker once (allowed), then `RemoteWorker` resolves
+      // The route reads the worker once (allowed), then `WorkerController` resolves
       // it again: from then on the backend says it is stopped, as if it
       // stopped in between, so the library's own check refuses it.
       const memory = new MemoryDriver();

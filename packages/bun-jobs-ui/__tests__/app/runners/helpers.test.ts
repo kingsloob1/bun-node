@@ -23,7 +23,7 @@ import {
 } from "../../../app/screens/runners/runnerFormat";
 import { setupDom } from "../dom";
 import {
-  remoteRunnerFixture,
+  nonLocalRunnerFixture,
   runFixture,
   runnerFixture,
   runnerListFixture,
@@ -75,7 +75,7 @@ describe("the runner's settings", () => {
   it("describes trigger queueing, and leaves it out when a remote runner does not say", () => {
     expect(describeQueueing(runnerFixture())).toBe("Yes, up to 100");
     expect(describeQueueing(runnerFixture({ queueRuns: false }))).toBe("No");
-    expect(describeQueueing(remoteRunnerFixture())).toBeNull();
+    expect(describeQueueing(nonLocalRunnerFixture())).toBeNull();
   });
 
   it("badges the local status, or the shared flags of a remote runner", () => {
@@ -100,16 +100,16 @@ describe("the runner's settings", () => {
         }),
       ).map((b) => b.label),
     ).toEqual(["Idle", "Run in flight"]);
-    expect(runnerBadges(remoteRunnerFixture()).map((b) => b.label)).toEqual([
+    expect(runnerBadges(nonLocalRunnerFixture()).map((b) => b.label)).toEqual([
       "Paused",
     ]);
     expect(
       runnerBadges(
-        remoteRunnerFixture({ isPaused: true, isRunning: true }),
+        nonLocalRunnerFixture({ isPaused: true, isRunning: true }),
       ).map((b) => b.label),
     ).toEqual(["Paused", "Run in flight"]);
     expect(
-      runnerBadges(remoteRunnerFixture({ isPaused: false })).map(
+      runnerBadges(nonLocalRunnerFixture({ isPaused: false })).map(
         (b) => b.label,
       ),
     ).toEqual(["Active"]);
@@ -217,7 +217,7 @@ describe("polling intervals", () => {
   it("re-reads a busy runner every 5 s, an idle one every 15 s, the list every 10 s", () => {
     expect(runnerRefetchInterval(runningRunnerFixture())).toBe(5_000);
     expect(
-      runnerRefetchInterval(remoteRunnerFixture({ isRunning: true })),
+      runnerRefetchInterval(nonLocalRunnerFixture({ isRunning: true })),
     ).toBe(5_000);
     expect(runnerRefetchInterval(runnerFixture())).toBe(15_000);
     // Started (status `running`) with nothing in flight is not busy.

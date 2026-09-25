@@ -4,7 +4,7 @@ import {
   BunQueueWorker,
   FileDriver,
   MemoryDriver,
-  RemoteWorker,
+  WorkerController,
   writeWorkerStop,
 } from "../lib/index";
 import { makeTmpDir, testNamespace, waitFor } from "./helpers";
@@ -70,7 +70,7 @@ function makeWorker(
       namespace: ns,
       driver,
       publish: true,
-      remoteControl: true,
+      control: true,
       reportInterval: 200,
       pollInterval: 10,
       waitToExit: false,
@@ -188,7 +188,11 @@ describe("a worker's first start, stopped against its key", () => {
     expect(Object.hasOwn(seen[0]!, "previous")).toBe(false);
 
     // Started remotely, it is a transition.
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
