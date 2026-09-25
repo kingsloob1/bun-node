@@ -45,6 +45,7 @@ export {
   WORKER_CONFIG_KEYS,
   WORKER_STATES,
   WORKER_STOP_PERSISTENCE,
+  WORKER_TARGET_KINDS,
 } from "@kingsleyweb/bun-jobs/api/contract";
 export type {
   AnalyticsPreset,
@@ -64,6 +65,7 @@ export type {
   WorkerDesiredState,
   WorkerState,
   WorkerStopPersistence,
+  WorkerTargetKind,
 } from "@kingsleyweb/bun-jobs/api/contract";
 
 /** HTTP methods the API treats as mutations for CSRF: every one but `GET`/`HEAD`/`OPTIONS` (contract §3.2). */

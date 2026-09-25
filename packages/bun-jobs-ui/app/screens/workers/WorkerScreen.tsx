@@ -17,6 +17,7 @@ import { WorkerAnalyticsCard } from "./WorkerAnalyticsCard";
 import { WorkerConfigCard } from "./WorkerConfigCard";
 import { WorkerJobsCard } from "./WorkerJobsCard";
 import { WorkerTable } from "./WorkerTable";
+import { WorkerTargetCard } from "./WorkerTargetCard";
 import "./workers.css";
 
 /**
@@ -46,9 +47,9 @@ function storedOverride(
 
 /**
  * `/workers/:queue/:key`: one **stable worker key** — every live instance of
- * it with its controls, the configuration the key's override gives them, its
- * throughput and busyness, and the jobs whose last attempt it ran (where the
- * backend records that, `features.jobAttribution`).
+ * it with its controls, where its attempts run, the configuration the key's
+ * override gives them, its throughput and busyness, and the jobs whose last
+ * attempt it ran (where the backend records that, `features.jobAttribution`).
  *
  * Addressed by the pair, because a key is unique only within its queue. The
  * route sits inside the queue's `PermissionScope`, since worker actions
@@ -195,6 +196,10 @@ export function WorkerScreen() {
               )}
             </div>
           </Card>
+          <WorkerTargetCard
+            workerKey={key}
+            instances={instances}
+          />
           <WorkerConfigCard
             queue={queue}
             workerKey={key}
