@@ -57,7 +57,7 @@ const RUN_ALONE = [
   "10-options/driver-options.ts",
   "10-options/notifier.ts",
   "10-options/cross-process-control.ts",
-  "10-options/worker-isolation.ts",
+  "10-options/worker-targets.ts",
   "10-options/worker-options.ts",
   "11-management-api/live-events-delivery.ts",
 ];

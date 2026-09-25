@@ -4,8 +4,8 @@
  * asserted.
  *
  * ```bash
- * bun 10-options/worker-isolation.ts
- * EXAMPLE_DRIVER=sqlite bun 10-options/worker-isolation.ts
+ * bun 10-options/worker-targets.ts
+ * EXAMPLE_DRIVER=sqlite bun 10-options/worker-targets.ts
  * ```
  *
  * Worth knowing:
@@ -88,7 +88,7 @@ const logger: LogSink = (event) => {
 };
 
 const driver = createDriver(exampleDriver());
-const namespace = exampleNamespace("worker-isolation");
+const namespace = exampleNamespace("worker-targets");
 const processors = join(import.meta.dir, "processors");
 const reportFile = join(processors, "isolation-report.ts");
 /** The processor whose one write is still in flight when its attempt ends. */
