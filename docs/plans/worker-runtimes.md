@@ -9,6 +9,21 @@ Written 2026-09-22 against `develop` (`feat/ui-followups`, `8396815`).
 **No code was changed.** Platform facts are marked verified or unverified; see
 §3.5 for the provenance of each.
 
+**Updated 2026-09-25** against `develop` at `d54d1fe`, after two decisions by
+the user:
+
+- **Both summon-compute and real remote execution will be built.** This plan
+  used to recommend choosing one of them.
+- **The control planes are renamed first**, in a new Phase 0. `RemoteWorker`
+  becomes `WorkerController` and `RemoteRunner` becomes `RunnerController`;
+  [`control-plane-rename.md`](control-plane-rename.md) has the detail. That
+  frees the names `RemoteWorker` and `RemoteRunner` for Phase 2.
+
+The phase plan in §11 now has Phases 0, 1, 1.5, 2, 3 and 4. Summon-compute has
+its own plan, [`summon-compute.md`](summon-compute.md). References below use
+the post-rename names, and name the old one where it helps a reader find the
+code as it stands today.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -48,8 +63,9 @@ them.
 
 Half of this is already built and is not called what the ask calls it.
 `isolation: "worker" | "spawn"` already runs a job's processor in a `Worker`
-or a child process through the runner's executors, and `RemoteWorker.ts`
-already controls workers in other processes. What does not exist is a *data*
+or a child process through the runner's executors, and the control plane
+(`WorkerController` after Phase 0; `RemoteWorker.ts` in today's tree) already
+controls workers in other processes. What does not exist is a *data*
 plane: any way for a job to reach code that does not hold the driver
 connection. That is the whole of the new work, and it resolves into one
 option (`target: { endpoint }`), one wire specification, and a set of adapters
@@ -66,8 +82,8 @@ that are mostly type declarations.
 | 5 | **The contract is its own surface, not an extension of `createJobsApi`.** | Opposite direction, incompatible auth model (cookies+CSRF+48 admin actions vs a shared secret), and `lib/api/` cannot load in a V8 isolate. It *reuses* `api/schema`, `ProblemDto` and the OpenAPI emitter. §5.1 |
 | 6 | **Signing is Stripe/Inngest-shaped: HMAC-SHA256 over `t + "." + rawBody`, 300 s replay window, responses signed too.** | It is the scheme implementers already know, and response signing is what stops a DNS hijack marking jobs complete. §5.6 |
 | 7 | **Adapters ship as `./adapters/*` subpaths with zero cloud dependencies** — the platform types are declared structurally and checked against the real SDK types in a devDependency type-test. | `CLAUDE.md`'s dependency rule, satisfied by not needing an exception. Every new entry is `"browser": true` in `consumer-check.json`, and `checkPeerScopes` has nothing to check. §6.2-6.3 |
-| 8 | **There is a cheaper fourth option — *summon-compute* — that this plan does not build, and the maintainer should rule it in or out before phase 2.** | Temporal shipped serverless workers on 2026-07-17 by making the *scheduler* able to invoke compute, while the worker contract stayed exactly what it was. The bun-jobs analogue is: notice queue depth with no live worker, invoke a Lambda or Cloud Run job that runs an ordinary `BunQueueWorker`, let it drain and exit. No protocol, no signing, no adapters — and it works on every host in §3.5 that can hold its own lease. §3.8.1 |
-| 9 | **Phase 1 is the `target` option, local only, and it should ship on its own.** | It is a widening of something already shipped, carries no protocol and no security surface, and the `WorkerTargetFactory` escape hatch it adds is the market research for whether phase 2 is worth building. §11 |
+| 8 | **Summon-compute is built as Phase 1.5, and real remote execution as Phase 2. Both are committed** (the user's decision, 2026-09-25). | Temporal shipped serverless workers on 2026-07-17 by making the *scheduler* able to invoke compute, while the worker contract stayed exactly what it was. The bun-jobs analogue: notice demand with no live worker, start compute that runs an ordinary `BunQueueWorker`, let it drain and exit. It works on every host in §3.5 that can hold its own lease. Phase 2 covers the hosts that cannot. §3.8.1, [`summon-compute.md`](summon-compute.md) |
+| 9 | **Phase 0 renames the control planes; Phase 1 is the `target` option, local only.** Each ships on its own. | The rename frees `RemoteWorker`/`RemoteRunner` for the Phase 2 feature ([`control-plane-rename.md`](control-plane-rename.md)). Phase 1 widens something already shipped, and carries no protocol and no security surface. §11 |
 
 ### One finding worth putting in the README, not just the plan
 
@@ -114,8 +130,8 @@ ingress; Azure Container Apps jobs run any container too. `bun-jobs` runs on
 all three **unchanged**, with a real driver, a real lease and a real loop. So
 does Fly, so does a VM. The protocol work in §5 is for the case where that is
 not available — an edge isolate, a per-invocation FaaS, or a team that only
-has one of those. Deciding whether that case is real is §10.11's first open
-question, and it should be answered before phase 2, not after.
+has one of those. Making that container start *only when there is work* is
+Phase 1.5, summon-compute ([`summon-compute.md`](summon-compute.md)).
 
 One more piece of luck worth knowing before choosing where to validate:
 **Vercel now supports Bun as a first-class function runtime (public beta)**,
@@ -171,23 +187,31 @@ method by method:
 8. **`close()`** drains `#active`, `#settling`, `#publishing` — all local
    promise sets.
 
-### 2.2 `RemoteWorker.ts` is **not** a remote worker
+### 2.2 `WorkerController` is a control plane, not a remote worker
 
-This is the most important finding for the ask, and it is a naming collision.
-`packages/bun-jobs/lib/queue/RemoteWorker.ts` is a **remote control plane for
-local workers**: `pause`, `resume`, `stop`, `start`, `setConfig`,
+This was the most important finding for the ask, and it was a naming
+collision. Until Phase 0 the class lives in
+`packages/bun-jobs/lib/queue/RemoteWorker.ts` under the name `RemoteWorker`;
+Phase 0 renames it `WorkerController`. It is a **control plane for workers
+wherever they run**: `pause`, `resume`, `stop`, `start`, `setConfig`,
 `resetConfig`, `list`, `get`, `listConfigs`, `getConfig`. It writes
-queue-state entries (`workerControl.ts`) that a `BunQueueWorker` running
-somewhere else reads and applies. It never runs a job, never claims, never
-carries a payload. `RemoteRunner.ts` is its twin for runners.
+queue-state entries (`workerControl.ts`) that a `BunQueueWorker` in any
+process reads and applies. It never runs a job, never claims, never carries a
+payload. `RunnerController` (today `RemoteRunner.ts`) is its twin for runners.
 
-So: **the control plane for off-process workers is done.** What does not exist
+So: **the control plane for non-local workers is done.** What does not exist
 is a *data* plane — anything that moves a job to a process that is not holding
 the driver.
 
-Naming consequence: the new thing cannot be called `RemoteWorker`. This plan
-uses **worker gateway** (the bun-jobs side) and **remote executor** (the
-foreign side).
+Naming consequence, now settled: Phase 0 renames the control planes
+([`control-plane-rename.md`](control-plane-rename.md)), and after it,
+**`RemoteWorker` and `RemoteRunner` mean a worker or runner that executes on
+another machine or platform**. That is the Phase 2 feature. Inside it this plan
+still uses **worker gateway** for the bun-jobs half of the push contract and
+**remote executor** for the foreign half. `RemoteWorker` is the user-facing
+name of a worker whose gateway pushes to a remote executor (§11, Phase 2).
+After Phase 0, "remote" in an identifier means **executes elsewhere**. "Lives
+in another process" is **non-local**.
 
 ### 2.3 `IsolatedProcessor` — off-thread execution already ships
 
@@ -229,7 +253,7 @@ generalise.
 | `executors/{in-process,spawn,worker}.ts` | the three implementations |
 | `protocol.ts` | `PROTOCOL_VERSION = 1`, `CHILD_ENV`, `SerializableContext`, `ParentToChild` (`start`/`message`/`close`), `ChildToParent` (`ready`/`started`/`progress`/`message`/`log`/`output`/`done`/`error`), `JOB_CHANNEL` |
 | `bootstrap/{spawn,worker}-entry.ts`, `child-runtime.ts` | the child side |
-| `RemoteRunner.ts` | control plane, like `RemoteWorker` |
+| `RemoteRunner.ts` (`RunnerController.ts` after Phase 0) | control plane, like `WorkerController` |
 
 **Verdict on reuse: reuse the `Executor` *shape*, do not reuse the
 executors, and do not extend `ParentToChild`/`ChildToParent` over the
@@ -309,7 +333,8 @@ with `?wait=` acknowledgement polling.
 ### 2.7 `BunJobs`, definitions, notifier
 
 - `BunJobs.ts` fixes namespace + driver, owns `#workers`, assigns worker
-  ordinals, creates `RemoteWorkerManager` with `locals: () => this.#workers`,
+  ordinals, creates the worker control-plane manager (`WorkerControllerManager`
+  after Phase 0; `RemoteWorkerManager` today) with `locals: () => this.#workers`,
   and holds `JobDefinitions`.
 - `queue/definitions.ts`: `JobDefinition { name, handler, options }`,
   `JobDefinitions` map, `names()`, `all()`. **This is the registry a remote
@@ -337,7 +362,7 @@ with `?wait=` acknowledgement polling.
 |---|---|
 | Run the *processor* off-thread / off-process | **Done** — `isolation: "worker" \| "spawn"` |
 | Run the *processor* from a file | **Done** — file processor + `defineProcessor` |
-| Control a worker from another process | **Done** — `RemoteWorker`, `workerControl.ts`, API routes, UI |
+| Control a worker from another process | **Done** — `WorkerController` (today `RemoteWorker`), `workerControl.ts`, API routes, UI |
 | Run the whole *worker loop* in a separate Bun process from a runner file | **Not built**, but trivially composable today (a `.ts` file that constructs a `BunQueueWorker`, run by `BunRunner`) — needs sugar, not machinery |
 | A documented wire contract a non-Bun system implements | **Nothing** |
 | Push a claimed job to an HTTP endpoint | **Nothing** |
@@ -419,7 +444,8 @@ with the scheduling problem solved by invoking the remote rather than by
 giving it a protocol — Temporal's 2026 answer, and the cheapest thing on this
 page. It needs the summoned process to reach the driver, so it covers exactly
 the hosts in §3.5 that can hold their own lease and none of the edge runtimes.
-See §3.8.1.
+See §3.8.1. It is Phase 1.5, with its own plan in
+[`summon-compute.md`](summon-compute.md).
 
 ### 3.4 What the platforms force
 
@@ -787,22 +813,35 @@ changing who starts the process.* Inngest is the counter-example — it started
 with HTTP push and had to define a whole second protobuf protocol (Connect)
 later to get unreachable workers back.
 
-**What this means for bun-jobs, honestly.** There is a fourth option this plan
-does not offer, and it is cheaper than §5:
+**What this means for bun-jobs.** The 2026-09-22 draft called this "a fourth
+option this plan does not offer". It is now Phase 1.5:
 
-> **Summon-compute.** A `BunQueue` (or a small controller beside it) notices
-> the queue has depth and no live worker, and invokes *something* — a Lambda,
-> a Cloud Run job, a container — whose only job is to run an ordinary
-> `BunQueueWorker` against the real driver until the queue drains, then exit.
-> No wire protocol, no signing, no fencing, no adapters. One option shaped
-> like `onDemand: { invoke, idleTimeout }`, and a documented worker file.
+> **Summon-compute.** A controller beside the queue notices that it has
+> demand and no live worker, and starts *something* — an ECS task, a Fly
+> Machine, a Cloud Run job, a process on a host over SSH. The only job of that
+> compute is to run an ordinary `BunQueueWorker` against the real driver
+> until the queue drains, then exit. No wire protocol, no signing, no fencing.
 
-It **only works where the summoned thing can reach the driver** — so Lambda
-(VPC), Cloud Run jobs and worker pools, ACA jobs and Cloudflare Containers,
-but never an edge isolate. That is precisely the §3.5 list of hosts that can
-hold their own lease. It is strictly less capable than the push contract and
-**perhaps a tenth of the work**. It belongs in §10.11 as an open question the
-maintainer should answer before phase 2, and arguably as a phase 1.5.
+It **only works where the summoned thing can reach the driver**: ECS, Lambda
+(in a VPC, and inside one invocation), Cloud Run jobs and worker pools, ACA
+jobs, Fly, Render, a host of your own, and Cloudflare Containers through a
+shim. Never an edge isolate. That is the §3.5 list of hosts that can hold their
+own lease.
+
+The draft's sketch, `onDemand: { invoke, idleTimeout }`, turned out to be too
+small, for four reasons the evidence found in bun-jobs' own source:
+
+- **Demand is not `waiting`.** With no worker running, due delayed jobs, due
+  retries and stalled jobs never become `waiting`.
+- **A summoned worker registers late**, so each summon needs an in-flight
+  marker.
+- **Nothing in `lib/queue/` handles signals.**
+- **`countJobs` scans retained history** on SQL and Mongo.
+
+The design, the six first-party summoners, the depth endpoint for
+KEDA-shaped platforms, and the re-estimate are in
+[`summon-compute.md`](summon-compute.md). The evidence it rests on is indexed
+in [`evidence/summon-compute/README.md`](evidence/summon-compute/README.md).
 
 #### Hatchet is building this exact project, right now, and its design corroborates §5
 
@@ -1091,6 +1130,20 @@ resolution stories, and the API must not pretend otherwise.
 `isolation` is kept and deprecated-in-docs, not removed: it is shipped, it is
 in the README, and it is in `WORKER_CONFIG_KEYS`-adjacent documentation. The
 new option is `target`, and `isolation: m` is exactly `target: m`.
+
+**A name collision to resolve before Phase 1 lands (found 2026-09-25).**
+`WorkerTarget` is already an exported type. It names *which workers a control
+instruction addresses*, `{ id } | { key }` (`lib/queue/RemoteWorker.ts:41`,
+re-exported at `lib/queue/index.ts:103` and `lib/index.ts:590`).
+`control-plane-rename.md` §3.1 keeps that name through Phase 0. The type below
+would be a second, unrelated `WorkerTarget`. One of them must move:
+
+- The existing one could become `WorkerSelector`, in Phase 0's window, since
+  that rename already touches its file.
+- Or the new one could become `WorkerPlacement`.
+
+Since the packages are unpublished, either is free. Decide it with the
+rename's owner. Until then this section keeps the name as written.
 
 ```ts
 /**
@@ -2703,8 +2756,9 @@ identically. Good. But:
 - **`Bun.serve`'s `idleTimeout`** on the gateway side is irrelevant (it is the
   client here), but a reference adapter served by `Bun.serve` has a default
   idle timeout that will cut a long job. Name it in the adapter docs.
-- **The `RemoteWorker` name collision** (§2.2) will cause a documentation
-  accident if the new work is not named deliberately from day one.
+- **The `RemoteWorker` name collision** (§2.2) is resolved by Phase 0, which
+  renames the control plane `WorkerController` and frees `RemoteWorker` for
+  Phase 2. One related collision remains, `WorkerTarget` (§4.2).
 
 ### 10.10 The adjacent project this keeps colliding with: platform queues as drivers
 
@@ -2731,18 +2785,14 @@ demand actually is.**
 
 ### 10.11 Open questions for the maintainer
 
-1. **Is push-remote worth it at all, versus documenting "run a second Bun
-   process"?** The honest case for it is narrow: code that can only run on
-   that platform, or a team that only has that platform. Worth deciding
-   before phase 2, not after.
-1b. **Or versus *summon-compute*?** (§3.8.1.) An `onDemand: { invoke,
-   idleTimeout }` option that invokes a Lambda or Cloud Run job running an
-   ordinary `BunQueueWorker` is perhaps a tenth of phase 2's work, needs no
-   protocol, no signing, no fencing and no adapters, and covers every host
-   that can reach the driver. It cannot reach an edge isolate. **If the real
-   demand turns out to be "I do not want a worker running 24/7" rather than
-   "my code only runs on Cloudflare", this is the answer and §5 is not.**
-   Establish which before committing to phase 2.
+1. ~~**Is push-remote worth it at all, versus documenting "run a second Bun
+   process"?**~~ **Decided 2026-09-25: yes.** Real remote execution is built as
+   Phase 2, under the freed names `RemoteWorker` and `RemoteRunner`.
+1b. ~~**Or versus *summon-compute*?**~~ **Decided 2026-09-25: both.**
+   Summon-compute is Phase 1.5 ([`summon-compute.md`](summon-compute.md)).
+   The two answer different needs — "I do not want a worker running 24/7"
+   and "my code can only run on this platform" — and the user chose to serve
+   both rather than pick one.
 2. **Sync-only, or sync + async callback?** This plan recommends sync-only for
    phases 1–3 and treats async as a separate project (§10.4, §10.6).
 3. **Does the contract get a spec document of its own** (a versioned
@@ -2759,16 +2809,62 @@ Each phase is independently shippable, independently testable, and leaves the
 package in a coherent state if the next one never happens. Effort is in
 focused days for someone who wrote this code.
 
-### Phase 1 — the `target` option, local only (**recommended first ship**)
+**The sequence changed on 2026-09-25.** The 2026-09-22 draft recommended
+shipping Phase 1, then choosing *between* summon-compute (1.5) and the remote
+contract (2). The user has decided to build both. A rename now comes first,
+so that the Phase 2 feature can take the names `RemoteWorker` and
+`RemoteRunner`. The draft's decision gate before Phase 2 is removed, and the
+rest of the phases are as before.
+
+| Phase | What | Effort (bun-jobs session) | Other owners |
+|---|---|---|---|
+| **0** | Rename the control planes | ~1.5 d | examples PR; UI copy |
+| **1** | `target` option, local only | ~7.5 d | UI badge (in the estimate) |
+| **1.5** | Summon-compute | ~32.5 d (the minimum useful ship, 1.5a + 1.5b, is ~17.5 d) | UI ~3 d, examples ~2 d |
+| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner` | ~19 d | — |
+| **3** | Conformance kit + first adapters | ~11 d | — |
+| **4** | Benchmarks, remaining adapters, hardening | ~9 d | — |
+| | **Total** | **~80.5 d** | **~5 d + the rename's PRs** |
+
+### Phase 0 — rename the control planes
+
+**Scope.** Everything in [`control-plane-rename.md`](control-plane-rename.md),
+under the user's decisions:
+
+- `RemoteWorker` → `WorkerController`, `RemoteWorkerManager` →
+  `WorkerControllerManager`, `RemoteRunner` → `RunnerController`, and the
+  accessor `.remote(x)` → `.controller(x)`.
+- The options `remoteControl` → `control`, and `remoteConfig` →
+  `allowedOverrides`.
+- "Remote" in the sense of *registered by another process* → *non-local*.
+
+The packages are unpublished, so there are no aliases and no deprecation
+cycle. **After it, `RemoteWorker` and `RemoteRunner` are free**, and in this
+plan they mean only a worker or runner that executes on another machine or
+platform (Phase 2).
+
+**Also decide here: the `WorkerTarget` collision (§4.2).** The existing
+exported `WorkerTarget` (the addressee of a control instruction) moves with
+the renamed file under its old name. Phase 1 needs the name for something
+else. Renaming the existing one in this window costs one more row in the
+rename's mapping.
+
+| Work | Effort |
+|---|---|
+| Mechanical rename, prose pass, the non-local strings, and the two option families (`control-plane-rename.md` §8.1: roughly 8–10 h across (a), D3 and D2 (b)) | ~1 d |
+| Gate: `scripts/typecheck.ts`, lint, suites, `examples/bun-jobs` on 8 backends | ~0.5 d |
+| **Total** | **~1.5 d**, plus the examples session's own PR |
+
+### Phase 1 — the `target` option, local only
 
 **Scope.** `target` on `BunQueueWorkerOptions`, the `"thread"`/`"process"`
 spellings, `LocalFileTarget`, `WorkerTargetFactory`, `defineProcessors()`,
 `target` on the heartbeat record, the Workers-page badge, the "worker in a
 second Bun process via `BunRunner`" documentation + example.
 
-**Why first.** It is the API the other phases hang off, it is almost entirely
-a rename and a widening of something already shipped, it carries no protocol,
-no security surface and no network, and it is useful on its own — the
+**Why here.** It is the API the later phases hang off. It is almost entirely a
+rename and a widening of something already shipped. It carries no protocol, no
+security surface and no network, and it is useful on its own: the
 `WorkerTargetFactory` escape hatch alone lets a user build anything this plan
 defers.
 
@@ -2781,42 +2877,90 @@ defers.
 | UI badge + Target card | 1 d |
 | Tests: parity (the `runner-modes.test.ts` shape), config errors, custom target | 1.5 d |
 | README section, option tour example, `examples/bun-jobs/07-runner/` worker-file example | 1 d |
-| **Total** | **~7 d** |
+| The `WorkerTarget` name, if Phase 0 did not settle it | 0.5 d |
+| **Total** | **~7.5 d** |
 
 **Ships nothing that can break an existing user.** No new dependency, no new
 `exports` key, no `consumer-check.json` change beyond `defineProcessors`.
 
-### Phase 1.5 — summon-compute (optional, and possibly instead of phases 2–4)
+### Phase 1.5 — summon-compute (committed)
 
-**Scope.** An `onDemand` option on `BunQueue` or a small controller beside it:
-watch queue depth and the live-worker inventory (`listWorkerRecords` already
-provides both), and when there is work and no worker, call a user-supplied
-`invoke()` — a Lambda invocation, a Cloud Run Jobs `run`, a container start.
-The invoked process runs an ordinary `BunQueueWorker` from a worker file until
-`idleTimeout` of quiet, then exits. Take `shutdownDeadlineBufferMs` from
-Temporal: begin the graceful stop *before* the platform's deadline.
+**Scope, in one paragraph.** A `SummonController` per queue runs in a
+bun-jobs process that is already awake. It is triggered by `add()`, by driver
+events and by a poll.
 
-| Work | Effort |
-|---|---|
-| `onDemand` option, depth/worker check, debounce, and a stampede guard | 2 d |
-| Worker-file recipe + `examples/bun-jobs/` tour + README | 1 d |
-| Tests: invokes once, not per job; does not invoke when a worker is live; exits on idle | 1.5 d |
-| **Total** | **~4.5 d** |
+- It reads **demand** through a new optional driver method, `countDemand`:
+  waiting + due + stalled, zero while paused, plus "active jobs and no live
+  worker".
+- It claims a summon slot by **compare-and-set** on a reserved queue-state
+  entry, and only then calls a **`Summoner`**.
+- The summoned process runs an ordinary `BunQueueWorker` under
+  **`drainAndExit()`**, which owns the idle threshold, the deadline, the signal
+  handlers and the exit code.
+- When its first heartbeat record appears carrying the summon id, the slot is
+  released.
+- A **depth endpoint** (`demand`, `outstanding`, with Prometheus exposition)
+  serves KEDA-shaped platforms.
+- A one-shot `check()` serves scheduled checkers.
 
-**No protocol, no signing, no fencing, no adapters, no new dependency**, and
-the summoned worker is a first-class `BunQueueWorker` — so remote control, the
+The full plan is [`summon-compute.md`](summon-compute.md).
+
+| Sub-phase | What | Effort |
+|---|---|---|
+| 1.5a | Core: `countDemand` on every driver, the controller, the marker, `drainAndExit`, provenance on the worker record, and `defineSummoner({ invoke })` for any platform | ~13 d |
+| 1.5b | Depth endpoint, summon status/manual/reset routes, KEDA/ACA/CREMA/GKE recipes | ~4.5 d |
+| 1.5c | SigV4 + credentials; ECS `RunTask`, Lambda `Invoke`, Fly Machines; the `./summon/*` subpaths | ~6.5 d |
+| 1.5d | Google/Azure token helper; Cloud Run jobs and worker pools; ACA manual jobs | ~4 d |
+| 1.5e | Render one-off jobs; SSH via `systemd-run` | ~3 d |
+| 1.5f | UI (the UI session, ~3 d) and examples (the examples session, ~2 d) | — |
+| 1.5g | Live verification, one summon per adapter, time-to-first-claim | ~1.5 d |
+| | **Total (bun-jobs session)** | **~32.5 d** |
+
+**Why the estimate grew from the draft's ~4.5 d.** The draft's
+`onDemand: { invoke, idleTimeout }` did not know four things the 2026-09-25
+evidence found in bun-jobs' own source:
+
+- **Demand is not `waiting`.** `promoteDelayed`'s only caller is the worker
+  (`BunQueueWorker.ts:2119`).
+- **A worker registers late.** Its record follows `connect()` and
+  `ensureQueue()` (`:1303-1304`), so each summon needs an in-flight marker.
+- **Nothing in `lib/queue/` handles signals.**
+- **`countJobs` on SQL scans retained history** (`sql-driver.ts:4302-4313`).
+
+It also did not include first-party summoners, credentials or the depth
+endpoint. 1.5a + 1.5b (~17.5 d) are the **minimum useful ship**: every
+platform reachable, through `invoke()` or the endpoint.
+
+**Still no protocol, no signing, no fencing, and no new dependency.** The
+summoned worker is a first-class `BunQueueWorker`, so the control plane, the
 Workers page, limits and analytics all work unchanged. It cannot reach an edge
-isolate. See §3.8.1 and §10.11 question 1b: **if this is what people actually
-want, phases 2–4 do not need to happen.**
+isolate; Phase 2 exists for that.
 
-### Phase 2 — the remote contract and the gateway
+### Phase 2 — real remote execution: the contract, the gateway, `RemoteWorker` and `RemoteRunner`
 
-**Scope.** `remote/protocol.ts` (the versioned wire spec), `RemoteTarget`
-implementing `Executor`, signing/verification over `crypto.subtle`, handshake
-+ caching, batching, the circuit breaker, `HandlerNotFoundError`, the three
-new `WORKER_CONFIG_KEYS`, `PROTOCOL.md`, and `createRemoteExecutor()` — the
-framework-agnostic `Request → Response` reference implementation, which is
-both the thing adapters wrap and the thing tier-1 tests point at.
+**Scope.** Everything the draft put in Phase 2:
+
+- `remote/protocol.ts` (the versioned wire spec);
+- `RemoteTarget` implementing `Executor`;
+- signing and verification over `crypto.subtle`;
+- handshake + caching, batching, the circuit breaker;
+- `HandlerNotFoundError`, and the three new `WORKER_CONFIG_KEYS`;
+- `PROTOCOL.md`;
+- `createRemoteExecutor()`: the framework-agnostic `Request → Response`
+  reference implementation, which is both the thing adapters wrap and the
+  thing tier-1 tests point at.
+
+The phase now also delivers the user-facing names that Phase 0 freed:
+
+- **`RemoteWorker`**: a worker whose attempts run on a remote executor. It is
+  a thin, named construction over `BunQueueWorker` with `target: { kind:
+  "endpoint", … }`, reached as `jobs.remoteWorker(queue, endpoint)`. Its
+  gateway holds the claim and the lease exactly as §5.9 describes.
+- **`RemoteRunner`**: a runner whose run executes on a remote executor. The
+  §5 envelope carries a job attempt. A run needs a second, small envelope
+  kind (`kind: "run"`, keyed by runner id, with no lease to renew, because a
+  run is not claimed from a queue). **This is new design beyond §5 and must be
+  specified in `PROTOCOL.md` before it is built.**
 
 | Work | Effort |
 |---|---|
@@ -2825,13 +2969,16 @@ both the thing adapters wrap and the thing tier-1 tests point at.
 | `RemoteTarget` executor: invoke, timeout, transport retry, breaker | 2.5 d |
 | Batching + the batch/outcome mapping | 1.5 d |
 | `createRemoteExecutor()` reference handler | 2 d |
-| Tier-1 test suite (§7.2) incl. adversarial cases | 3 d |
+| `RemoteWorker` (named construction, `jobs.remoteWorker`, JSDoc, README) | 0.5 d |
+| `RemoteRunner`: the `run` envelope in `PROTOCOL.md`, the runner-side executor, the reference handler's run path | 3 d |
+| Tier-1 test suite (§7.2) incl. adversarial cases, both kinds | 3.5 d |
 | `PROTOCOL.md` (RFC 2119, with literal request/response transcripts) + `LIMITATIONS.md` (typed "this transport cannot do that" errors, per Hatchet) + README + OpenAPI emission | 2.5 d |
-| **Total** | **~15.5 d** |
+| **Total** | **~19 d** |
 
-**Decision gate before starting:** §10.11 question 1. If the answer is "a
-second Bun process is enough", phases 2–4 do not happen and phase 1 is the
-whole project.
+There is no longer a decision gate before starting: the user has decided.
+What remains worth watching, as the draft said, is whether anyone builds an
+endpoint target with Phase 1's `WorkerTargetFactory` first. That is still the
+best early evidence of which adapters Phase 3 should ship.
 
 ### Phase 3 — the conformance kit and the first two adapters
 
@@ -2849,6 +2996,10 @@ Vercel, Netlify, Deno Deploy and Hono/Elysia in one export).
 | `exports`/`dts`/`consumer-check.json`/`checkPeerScopes` wiring for the new subpaths | 1.5 d |
 | Docs + a 15-line snippet per platform | 1.5 d |
 | **Total** | **~11 d** |
+
+Phase 1.5 will already have added `./summon/*` subpaths by then. The two
+families stay separate: `./summon/*` start compute from the server side, and
+`./adapters/*` are browser-safe executor wrappers.
 
 ### Phase 4 — benchmarks, remaining adapters, hardening
 
@@ -2870,25 +3021,25 @@ large-payload handling; the tier-3 manual e2e script.
 - **Async/callback completion** — §10.4, §10.6. It is a second state machine
   and a public write surface; it deserves its own plan.
 - **Running the whole worker loop remotely.** There is no such thing: a worker
-  loop needs a driver. What people mean by it is either pull (needs a driver)
-  or push (this plan).
+  loop needs a driver. What people mean by it is either pull (needs a driver
+  — summon-compute, Phase 1.5, starts such a process) or push (Phase 2).
 - **A hosted service.** Trigger.dev's model is a product, not a library
   feature.
 
 ### Recommendation
 
-**Ship phase 1 alone, then stop and decide.** It closes most of the ask's
-"where can it run" half at low risk, and it makes the answer to the second
-half visible: once `WorkerTargetFactory` exists, whether anyone builds an
-endpoint target with it is the market research for phase 2.
+**Ship in order: 0, 1, 1.5a–b, then the rest of 1.5 and Phase 2 in parallel
+if two people are available.** Phases 0 and 1 are small and unblock
+everything else.
 
-**And when you do decide, decide between phase 1.5 and phase 2 rather than
-scheduling both.** They answer different questions — "I do not want a worker
-running 24/7" versus "my code can only run on Cloudflare" — and only the
-second justifies a wire protocol. ~4.5 days against ~15.5, plus a protocol to
-version and defend for as long as anyone implements it. Hatchet shipped a
-serverless transport in 2024, let it go undocumented, and is rebuilding it
-this month; that is the cost of getting this decision wrong.
+Phase 1.5's minimum useful ship (1.5a + 1.5b, ~17.5 d) serves the commonest
+request, "I do not want a worker running 24/7", on every host that can reach
+the driver. Phase 2 then serves the hosts that cannot.
+
+The one lesson from the draft that still applies to Phase 2 is Hatchet's:
+it shipped a serverless transport in 2024, let it go undocumented, and is
+rebuilding it this month. **Phase 2 ships with `PROTOCOL.md`, the conformance
+kit (Phase 3) and a version, or it does not ship.**
 
 ---
 
@@ -2912,3 +3063,20 @@ code it described.
 
 That is the argument for keeping the workings rather than the conclusions. The
 survey is what made those reversals possible to find.
+
+**Summon-compute (Phase 1.5)** rests on three further evidence files, all
+gathered on 2026-09-25 and indexed in
+[`evidence/summon-compute/README.md`](evidence/summon-compute/README.md):
+
+- [`aws.md`](evidence/summon-compute/aws.md): ECS, Lambda, EC2, EKS, Batch
+  and the rest, plus a measured SigV4 signer.
+- [`google-azure.md`](evidence/summon-compute/google-azure.md): Cloud Run,
+  GKE, ACA, ACI and KEDA, plus a token helper. It is also where the
+  zero-worker blind spot was found.
+- [`paas-ssh.md`](evidence/summon-compute/paas-ssh.md): Fly, Render, Heroku,
+  Railway, SSH, Kubernetes and Nomad. It is also where the late-registration
+  finding was made.
+
+They use the same provenance tags, and
+[`summon-compute.md`](summon-compute.md) carries those tags into every fact it
+quotes.
