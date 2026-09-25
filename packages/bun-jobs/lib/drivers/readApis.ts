@@ -286,6 +286,16 @@ export async function findJobsByScan(
       return { jobs };
     }
 
+    // A page and a total from two different reads, which on a driver whose
+    // listing filters more than its count would not agree. `SqlDriver` writes
+    // an `IS NOT NULL` into a single state's listing where a partial index
+    // serves it, and `countJobs` shares it (`#countNotNull`) precisely so this
+    // stays true. It is latent for that driver either way — it has a native
+    // `findJobs`, which answers page and total from one `where`, so this line
+    // is only reached for a driver without one, or through `findJobsByScan`
+    // called directly. Written down because a latent inconsistency nobody
+    // wrote down is how the `countJobs` one survived as long as it did: a
+    // driver added here that filters a listing must filter its count too.
     return { jobs, total: sumStates(await driver.countJobs(q), query.states) };
   }
 

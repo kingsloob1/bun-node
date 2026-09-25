@@ -856,7 +856,10 @@ export class BunQueue<
     // A driver's own `findJobs` may answer without the total it was asked for.
     // The page's length is not the total — reporting it as one would be a
     // number that looks right and is wrong — so the scan counts it instead,
-    // exactly as `page()` does.
+    // exactly as `page()` does. That total is the scan's, from the driver's
+    // `listJobs`/`countJobs`, so it agrees with the page above only as far as
+    // those two agree — see the note beside it in `findJobsByScan`. Never
+    // reached for `SqlDriver`, which answers the total it was asked for.
     const total =
       options?.total !== true
         ? undefined
@@ -907,7 +910,9 @@ export class BunQueue<
     const page = await findJobPage(this.driver, this.ref, query);
 
     // A driver's own `findJobs` may answer without the total it was asked
-    // for. The page's length is not the total, so the scan counts it instead.
+    // for. The page's length is not the total, so the scan counts it instead —
+    // with the same caveat `list()` carries above, and unreached for the same
+    // reason on a driver that answers its own total.
     const total =
       page.total ??
       (
