@@ -19,7 +19,7 @@ the user:
   [`control-plane-rename.md`](control-plane-rename.md) has the detail. That
   frees the names `RemoteWorker` and `RemoteRunner` for Phase 2.
 
-The phase plan in §11 now has Phases 0, 1, 1.5, 2, 3 and 4. Summon-compute has
+The phase plan in §11 now has Phases 0, 1, 1r, 1.5, 2, 3 and 4. Summon-compute has
 its own plan, [`summon-compute.md`](summon-compute.md).
 
 **Updated again 2026-09-25: a plugin system for compute providers.** At the
@@ -32,6 +32,28 @@ written), both on the public API that bun-jobs' own adapters must use. §4.6
 summarises it; §4.2, §6, §7 and §11 have been updated to match. References below use
 the post-rename names, and name the old one where it helps a reader find the
 code as it stands today.
+
+**Updated again 2026-09-25: the Phase 1 design check**, against `develop` at
+`688d376`, after Phase 0 merged (`a29b06e`). §4.2–§4.5 and the Phase 1 section
+of §11 are rewritten to be implementation-ready under four decisions by the
+user:
+
+- the local targets are `"in-process"`, `"worker-thread"` and `"child-process"`;
+- `isolation` is replaced, not aliased, because the packages are unpublished.
+  The draft's premise that it had to be kept "because it is shipped" was
+  false;
+- runners keep `"spawn"`/`"worker"` for now. Their spellings are a new,
+  migration-bearing Phase 1r;
+- `{ endpoint }` is Phase 2.
+
+The names were approved by the user on 2026-09-25; §4.2.7 records each
+choice and its reason.
+
+**Phase 1 is implemented, awaiting merge** (2026-09-25, on
+`feat/bun-jobs-worker-target`). §4.2–§4.5 were reconciled with the code: they
+describe what was built, every citation points into the implementation (or is
+pinned to `688d376` where it describes the code before), and the Phase 1
+section of §11 records the gate as measured.
 
 ### Contents
 
@@ -88,12 +110,12 @@ that are mostly type declarations.
 | 1 | **Keep two axes apart: *where the attempt runs* and *who owns the claim*.** | They have different failure modes and different phases. Conflating them is how this design goes wrong. §3 |
 | 2 | **The remote never claims. bun-jobs claims and pushes.** | No edge runtime can reach a built-in driver, and no frozen FaaS can hold a lease. Verified: Cloudflare gives six simultaneous outbound connections per isolate and timers "only inside the Request Context". §3.5 |
 | 3 | **The gateway keeps the lease for the whole round trip, and this needs no new code.** | `#heartbeat()` already runs on an interval for every in-flight job. In push mode the job is in flight for the duration of the HTTP call, so the process holding the lease is by construction the one that is awake. §5.9 |
-| 4 | **The new target is an `Executor`** — the existing `runner/executors/executor.ts` interface — **but not the existing executors and not the existing IPC protocol.** | `ExecutorHandle { done, stop, send }` is exactly right. `ParentToChild`/`ChildToParent` is a stateful duplex channel with a `ready` handshake, and stretching it over HTTP would force every implementer to re-model framing a request/response transport already has. §2.4 |
+| 4 | **The new target is a `WorkerTargetExecutor`: one `run(attempt)` returning a promise, cancelled through the attempt's signal.** It is not the runner's `Executor`, not the existing executors, and not the existing IPC protocol. *(Revised 2026-09-25 by the Phase 1 design check; the draft said "an `Executor`". The name is pending, N5.)* | `Executor.mode` is the closed, persisted `ExecutionMode` and `ExecutorStartOptions.file` is required, so a custom target cannot be one without fabricating a runner's context (§4.2.6). `ParentToChild`/`ChildToParent` is a stateful duplex channel with a `ready` handshake, and stretching it over HTTP would force every implementer to re-model framing a request/response transport already has. §2.4 |
 | 5 | **The contract is its own surface, not an extension of `createJobsApi`.** | Opposite direction, incompatible auth model (cookies+CSRF+48 admin actions vs a shared secret), and `lib/api/` cannot load in a V8 isolate. It *reuses* `api/schema`, `ProblemDto` and the OpenAPI emitter. §5.1 |
 | 6 | **Signing is Stripe/Inngest-shaped: HMAC-SHA256 over `t + "." + rawBody`, 300 s replay window, responses signed too.** | It is the scheme implementers already know, and response signing is what stops a DNS hijack marking jobs complete. §5.6 |
 | 7 | **Adapters ship as `./adapters/*` subpaths with zero cloud dependencies** — the platform types are declared structurally and checked against the real SDK types in a devDependency type-test. | `CLAUDE.md`'s dependency rule, satisfied by not needing an exception. Every new entry is `"browser": true` in `consumer-check.json`, and `checkPeerScopes` has nothing to check. §6.2-6.3 |
 | 8 | **Summon-compute is built as Phase 1.5, and real remote execution as Phase 2. Both are committed** (the user's decision, 2026-09-25). | Temporal shipped serverless workers on 2026-07-17 by making the *scheduler* able to invoke compute, while the worker contract stayed exactly what it was. The bun-jobs analogue: notice demand with no live worker, start compute that runs an ordinary `BunQueueWorker`, let it drain and exit. It works on every host in §3.5 that can hold its own lease. Phase 2 covers the hosts that cannot. §3.8.1, [`summon-compute.md`](summon-compute.md) |
-| 9 | **Phase 0 renames the control planes; Phase 1 is the `target` option, local only.** Each ships on its own. | The rename frees `RemoteWorker`/`RemoteRunner` for the Phase 2 feature ([`control-plane-rename.md`](control-plane-rename.md)). Phase 1 widens something already shipped, and carries no protocol and no security surface. §11 |
+| 9 | **Phase 0 renames the control planes; Phase 1 is the `target` option, local only.** Each ships on its own. | The rename frees `RemoteWorker`/`RemoteRunner` for the Phase 2 feature ([`control-plane-rename.md`](control-plane-rename.md)). Phase 1 replaces `isolation` with `target` (unpublished, so no alias) and carries no protocol and no security surface. Runner spellings follow in Phase 1r. §11 |
 | 10 | **Third-party compute providers plug in through one versioned API with facets**: `summon` (Phase 1.5) and `execute` (Phase 2), plus a runtime-adapter kit for the platform side (Phase 3). bun-jobs' own adapters use only that API. | A real provider offers both summoning and remote execution from one account and one credential; the platform side runs elsewhere and is governed by the wire protocol. [`compute-provider-plugins.md`](compute-provider-plugins.md) §4, §4.6 below |
 
 ### One finding worth putting in the README, not just the plan
@@ -1124,8 +1146,9 @@ Nothing can serialise it, and no amount of protocol design changes that. So
 there are exactly three ways for a job to reach code on the other side of a
 boundary:
 
-1. **A file path both sides can resolve** — what `IsolatedProcessor` already
-   does. Works for `"thread"`, `"process"`, `{ file }`.
+1. **A file path both sides can resolve** — what `FileTargetExecutor` does
+   (it was `IsolatedProcessor` before Phase 1). Works for `"worker-thread"` and `"child-process"`, and for a file run
+   `"in-process"`.
 2. **A name both sides agreed on beforehand** — the registry. `JobDefinitions`
    already keys handlers by name; a remote executor publishes the names it can
    run and the gateway matches `record.name` against them. Works for
@@ -1133,96 +1156,665 @@ boundary:
 3. **Code shipped at deploy time** — out of scope; that is Trigger.dev's
    business model, not a library's.
 
-So `{ file }` resolves through `Bun.resolveSync` (as `resolveProcessorFile`
-already does) and `{ endpoint }` resolves through **names**. Two different
+So a processor file resolves through `Bun.resolveSync` (as
+`resolveProcessorFile` does, `queue/workerTarget.ts:891-915`) and
+`{ endpoint }` resolves through **names**. Two different
 resolution stories, and the API must not pretend otherwise.
 
 ### 4.2 The new option
 
-`isolation` is kept and deprecated-in-docs, not removed: it is shipped, it is
-in the README, and it is in `WORKER_CONFIG_KEYS`-adjacent documentation. The
-new option is `target`, and `isolation: m` is exactly `target: m`.
+**Rewritten 2026-09-25 by the Phase 1 design check**, against `origin/develop`
+at `688d376` (Phase 0 merged at `a29b06e`), and **reconciled the same day with
+the implementation** on `feat/bun-jobs-worker-target` (base `688d376`). §4.2–§4.5
+now describe what was built, not a proposal. Every `file:line` in them is
+against that implementation; paths are under `packages/bun-jobs/` unless they
+say otherwise. A citation of the code as it stood *before* Phase 1 is pinned
+to its commit and written `688d376:<path>:<line>`, so it cannot drift. Four
+decisions by the user frame it:
 
-**A name collision, resolved in Phase 0 (found and decided 2026-09-25).**
-Before Phase 0, `WorkerTarget` was already an exported type naming *which
-workers a control instruction addresses*, `{ id } | { key }`
-(`lib/queue/RemoteWorker.ts:41`, re-exported at `lib/queue/index.ts:103` and
-`lib/index.ts:590`). The user decided (decision D4 in
-`control-plane-rename.md`) to rename that one **`WorkerSelector`** — it selects
-which workers an instruction reaches, never where they run — in Phase 0's
-window, since that rename already touched its file. So `WorkerTarget` is free,
-and the type below takes it, matching the `target` option it types. The
-rejected alternative was naming this new type `WorkerPlacement`, which would
-have left the option and its type with different names.
+| # | Decision (the user's) | Consequence here |
+|---|---|---|
+| U1 | The local targets are **`"in-process"` \| `"worker-thread"` \| `"child-process"`** | JavaScript may yet gain real threads, and `"thread"` would then be ambiguous. `worker-thread` names what bun-jobs actually uses, a Web `Worker` (`runner/executors/worker.ts:68`). `child-process` is the symmetric name. The pair mirrors `node:worker_threads` and `node:child_process`, which is where a reader has met both words before |
+| U2 | **`isolation` is replaced by `target`, not aliased.** Its worker-level spellings `"worker"` and `"spawn"` go with it | The text that stood here kept `isolation`, deprecated in docs, "because it is shipped". **That premise was false**: the packages are unpublished, which is the same fact `control-plane-rename.md` §1 built Phase 0 on. There is no compatibility obligation, so there is no alias, no deprecation and no dual-option `ConfigError` |
+| U3 | **Runners are out of scope.** `ExecutionMode` (`"spawn" \| "worker" \| "in-process"`, `drivers/driver.ts:163`) does not change | It is persisted (`RunRecord.mode`, `driver.ts:179`; the stored `config:executionMode` and `config:allowed`) and on the wire (`EXECUTION_MODES`, `api/contract/constants.ts:564`; `ExecutionModeDto`, `api/contract/types.ts:2305`). The two vocabularies coexist until the runner follow-up (Phase 1r, §11), and §4.2.5 says where a user meets both |
+| U4 | **`{ endpoint }` is Phase 2** | `WorkerTarget` ships without it, but every object form carries a `kind` discriminant, so Phase 2 widens the union without breaking a `switch` |
+
+**The name `WorkerTarget` is free.** Phase 0 renamed the old addressee type
+to `WorkerSelector` (decision D4 in `control-plane-rename.md`), and `git grep
+-w WorkerTarget -- packages examples playground` finds nothing on `688d376`.
+
+Every name below was approved by the user on 2026-09-25 (N1–N9, §4.2.7, which
+records each choice, the alternatives it was chosen over, and why).
+
+#### 4.2.1 The option
 
 ```ts
+// On BunQueueWorkerOptions (queue/types.ts:1091-1129), replacing `isolation`
+// and `isolationOptions` (688d376:packages/bun-jobs/lib/queue/types.ts:1091-1109).
+
 /**
- * Where each attempt actually runs.
+ * Where each attempt runs. Defaults to `"in-process"`.
  *
- * The worker always owns the claim, the lease and the settle — only the
- * *processor* moves. `"in-process"` is the default and is byte-for-byte the
- * behaviour every worker has had: the processor is called on the claim
- * loop's own thread.
+ * The worker always owns the claim, the lease and the settle; only the
+ * *processor call* moves. Every write an attempt makes (progress, a log line,
+ * a lock extension, `job.fail()`) still goes through the worker's own `Job`,
+ * so it lands before the record of how the job ended, whichever target ran it.
  *
- * - `"in-process"` — call it here. A function processor only ever does this.
- * - `"thread"` — a fresh `Worker` per attempt: a separate JavaScript context
- *   that can be terminated, in this process. Needs a file processor.
- * - `"process"` — a fresh child process per attempt: the only mode where a
- *   processor that ignores its signal can be killed for certain. Needs a
- *   file processor.
- * - `{ file }` — a file processor with per-target options, so the file can
- *   be given here rather than to the constructor.
- * - `{ endpoint }` — **push mode**: the attempt is sent over HTTP to a
- *   conforming remote executor (§5) and its answer is the outcome. The
- *   worker still holds the lease for the whole round trip.
- * - a {@link WorkerTargetFactory} — anything else, including a transport
- *   this package does not ship.
+ * - `"in-process"`: call it on the claim loop's own thread. A function
+ *   processor does this; a processor *file* is imported once and then called
+ *   the same way.
+ * - `"worker-thread"`: a fresh Web `Worker` per attempt, in this process. A
+ *   separate JavaScript context that can be terminated. Needs a processor file.
+ * - `"child-process"`: a fresh child process per attempt. The only target
+ *   where a processor that ignores its signal is certain to be killed
+ *   (`SIGTERM`, then `SIGKILL`). Needs a processor file.
+ * - `{ kind, … }`: one of the three above, with its tuning. See
+ *   {@link LocalWorkerTarget}.
+ * - a {@link WorkerTargetFactory}: anything else, including a transport this
+ *   package does not ship.
  *
- * `"spawn"` and `"worker"` are accepted as the previous spellings of
- * `"process"` and `"thread"`; {@link BunQueueWorkerOptions.isolation} is the
- * previous name of this option and means the same thing. Giving both is a
- * `ConfigError`.
+ * Runners name the same two mechanisms differently: a runner's
+ * `executionMode` says `"worker"` and `"spawn"`, a worker's target
+ * `"worker-thread"` and `"child-process"` — different fields, in different
+ * vocabularies. Inside the processor the runner's spelling survives: an
+ * attempt on a worker thread runs with `BUN_JOBS_MODE=worker`, one in a
+ * child process with `BUN_JOBS_MODE=spawn`.
+ *
+ * Not remotely configurable: changing where code runs is a rebuild.
  */
 target?: WorkerTarget;
 ```
 
+#### 4.2.2 The types
+
+As implemented, abridged to the declarations (`lib/queue/workerTarget.ts:75-252`;
+the file's own JSDoc is the fuller text):
+
 ```ts
-/** Where a worker's attempts run. */
+// lib/queue/workerTarget.ts  (N4)
+
+/**
+ * The three places this machine can run an attempt. The string form of
+ * {@link WorkerTarget}, the `kind` of its object form, and three of the
+ * values of the heartbeat record's `target.kind`. (N1)
+ */
+export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
+
+/**
+ * Where a worker's attempts run: the `target` option.
+ * Phase 2 adds `RemoteEndpointTarget` (`{ kind: "endpoint", … }`, §4.2.8).
+ */
 export type WorkerTarget =
   | WorkerTargetMode
-  | LocalFileTarget
-  | RemoteEndpointTarget
+  | LocalWorkerTarget
   | WorkerTargetFactory;
 
 /**
- * The three local modes, plus the two previous spellings.
- * `"spawn"` === `"process"`, `"worker"` === `"thread"`.
+ * A local target with its tuning. The string `"child-process"` is exactly
+ * `{ kind: "child-process" }`. (N2)
  */
-export type WorkerTargetMode =
-  | "in-process"
-  | "thread"
-  | "process"
-  | "spawn"
-  | "worker";
+export type LocalWorkerTarget =
+  | InProcessTarget
+  | WorkerThreadTarget
+  | ChildProcessTarget;
 
-/** A file processor run locally, with its own executor options. */
-export interface LocalFileTarget {
-  /** Marks the variant. */
-  kind: "file";
-  /**
-   * The processor file: a path relative to the working directory, or a URL.
-   * Default-exports `(job, ctx) => result`; `defineProcessor` types it.
-   * Resolved with `Bun.resolveSync` at construction, so a bad path is a
-   * `ConfigError` at once rather than on the first claim.
-   */
-  file: string | URL;
-  /** Where each attempt runs. Defaults to `"process"`. */
-  mode?: "in-process" | "thread" | "process";
-  /** Executor tuning: close/kill timeouts, spawn and `Worker` options. */
-  options?: IsolationOptions;
+/** `"in-process"` as an object, so every local mode has one. */
+export interface InProcessTarget {
+  /** Marks the variant: the processor runs on the claim loop's own thread. */
+  kind: "in-process";
 }
 
-/** A conforming remote executor reached over HTTP. See §5. */
+/** A fresh Web `Worker` per attempt. */
+export interface WorkerThreadTarget {
+  /** Marks the variant: a fresh `Worker` per attempt, in this process. */
+  kind: "worker-thread";
+  /**
+   * After the worker asks an attempt to stop (a timeout, a lost lock, a
+   * close), how long the attempt has to unwind before its `Worker` is
+   * terminated, in milliseconds. Defaults to 5000 (`DEFAULT_CLOSE_TIMEOUT`,
+   * `shared/constants.ts:28`).
+   */
+  closeTimeout?: number;
+  /**
+   * Options for each `Worker`: `env`, `argv`, `smol` and the rest. The
+   * runner's `WorkerOptions` (`runner/types.ts:519`), unchanged.
+   */
+  worker?: WorkerOptions;
+}
+
+/** A fresh child process per attempt. */
+export interface ChildProcessTarget {
+  /** Marks the variant: a fresh child process per attempt. */
+  kind: "child-process";
+  /**
+   * After the worker asks an attempt to stop, how long the child has to
+   * unwind before it is sent `SIGTERM`, in milliseconds. Defaults to 5000.
+   */
+  closeTimeout?: number;
+  /**
+   * After `SIGTERM`, how long before `SIGKILL`, in milliseconds. Defaults to
+   * 2000 (`DEFAULT_KILL_TIMEOUT`, `shared/constants.ts:31`).
+   */
+  killTimeout?: number;
+  /**
+   * Options for each child: `cwd`, `env`, `args` and the rest. The runner's
+   * `SpawnOptions` (`runner/types.ts:495`), unchanged. `cwd` is also where a
+   * relative processor file is resolved from, as it was for `isolation`
+   * (`resolveWorkerTarget`, `queue/workerTarget.ts:482-489`).
+   */
+  spawn?: SpawnOptions;
+}
+
+/**
+ * Builds the executor for a target this package does not ship: a gRPC pool,
+ * a message bus, a platform SDK a published package must not depend on.
+ * Called once, from the worker's constructor, after its `id` and logger
+ * exist. Synchronous, because the constructor is; connect lazily in `run()`.
+ */
+export type WorkerTargetFactory = (
+  context: WorkerTargetContext,
+) => WorkerTargetExecutor;
+
+/**
+ * What a {@link WorkerTargetFactory} is told about the worker it serves.
+ *
+ * **There is deliberately no driver here, nor any driver configuration.** A
+ * custom target reaches the store only through `attempt.job`, whose driver is
+ * private to it (`Job`'s `readonly #driver`) — which is what keeps every write
+ * an attempt makes on the attempt's own write lane, so I1–I3 (§4.5) hold for
+ * a custom target by construction. Do not add one.
+ */
+export interface WorkerTargetContext {
+  /** The namespace the worker consumes from. */
+  namespace: string;
+  /** The queue it consumes. */
+  queue: string;
+  /** The worker's incarnation id, `worker.id`. */
+  workerId: string;
+  /** The worker's logger, already bound to it. */
+  logger: Logger;
+  /**
+   * What the worker was constructed with: a function, or the absolute path
+   * a processor file resolved to. A target that ships attempts to code
+   * deployed elsewhere may ignore it; one that wraps a processor (a warm
+   * `Worker` pool, a tracing shim) runs it.
+   */
+  processor:
+    | {
+        /** The processor is a function. */
+        kind: "function";
+        /** The function itself. */
+        fn: JobProcessor<unknown, unknown>;
+      }
+    | {
+        /** The processor is a file. */
+        kind: "file";
+        /** Its absolute path, resolved at construction. */
+        path: string;
+      };
+}
+
+/**
+ * Runs a worker's attempts somewhere this package does not know about.
+ * What a {@link WorkerTargetFactory} returns. (N5)
+ */
+export interface WorkerTargetExecutor {
+  /**
+   * What this target is called, reported as the heartbeat record's
+   * `target.name` and in log lines: `"grpc-pool"`, say. Free text, 1 to 64
+   * characters. It is **not** an `ExecutionMode`, and it is never written to
+   * run history.
+   */
+  readonly name: string;
+  /**
+   * Runs one attempt. Resolves with the processor's result; rejects with its
+   * error. An error named `UnrecoverableJobError` ends the job's retries,
+   * whether or not it is an instance of the class (`BunQueueWorker.ts:3231-3237`
+   * matches by name for exactly this reason). Must stop promptly when
+   * `attempt.context.signal` aborts: the worker aborts it on a timeout, a
+   * lost lock or a close, and waits only a bounded time after that.
+   */
+  run: (attempt: WorkerTargetAttempt) => Promise<unknown>;
+  /**
+   * Releases what the target holds between attempts: a connection, a pool.
+   * Optional. Called once from `worker.close()`, after the worker's attempts
+   * have settled or been abandoned, and **bounded** like the built-in kinds'
+   * stop: after `DEFAULT_CLOSE_TIMEOUT` (5000 ms) the worker logs a warning
+   * and finishes closing without it, so a drain that never ends cannot hang a
+   * shutdown. A rejection is logged the same way.
+   */
+  close?: () => void | Promise<void>;
+}
+
+/** One attempt, as a {@link WorkerTargetExecutor} is handed it. */
+export interface WorkerTargetAttempt {
+  /**
+   * The worker's own `Job` for this attempt. **Every write the attempt makes
+   * goes through it, never through the driver**: progress, a log line, a
+   * lock extension, `fail()`. That is what puts those writes on the attempt's
+   * `AttemptWrites` lane, which the worker settles before it records how the
+   * job ended (§4.5, invariant I1).
+   */
+  job: Job<unknown, unknown>;
+  /**
+   * The claimed record, as stored: the serialisable view to send across a
+   * boundary. The same value `job.toJSON()` returns (`queue/Job.ts:692`),
+   * without the copy. Do not mutate it.
+   */
+  record: JobRecord;
+  /**
+   * The processor context: `signal`, `logger`, `heartbeat`, `log`,
+   * `workerId`, `attempt`. `signal` is the worker's own abort signal for the
+   * attempt.
+   */
+  context: ProcessorContext;
+}
+```
+
+Every type these reference is a root export: `Job` (`lib/index.ts:515`),
+`JobRecord` (`:286`), `JobProcessor` (`:536`), `ProcessorContext` (`:549`),
+`Logger` (`:868`), `SpawnOptions` (`:756`) and `WorkerOptions` (`:762`). The
+new names are exported beside them (`lib/index.ts:508` `defineProcessors`;
+`:500`, `:514`, `:543` and `:592-598` the target types; `:892`
+`WORKER_TARGET_KINDS`; `:905-906` `WorkerTargetInfo`/`WorkerTargetKind`; and
+`queue/index.ts:209-222`), and each is listed in `consumer-check.json`.
+
+**Why the tuning moved into the target.** `isolationOptions` was a sibling
+option that applied to two of three modes, and its type let a `"worker"`
+worker carry `spawn` options that were silently ignored
+(`688d376:packages/bun-jobs/lib/queue/isolation.ts:64-76` was one flat
+interface). A per-kind object makes `spawn` a type error on a `worker-thread`
+target (asserted, with a negative control, in
+`__tests__/workerTarget.type-test.ts`) and removes one option name. From plain
+JavaScript the same mistake is a `ConfigError` (§4.2.3). The alternatives it
+was chosen over are in §4.2.7, N2.
+
+**No `file` on the target.** The draft's `LocalFileTarget` carried a `file`,
+"so the file can be given here rather than to the constructor". The
+constructor's `processor` argument already takes a path or a URL
+(`BunQueueWorker.ts:906-911`, and `BunJobs.worker`, `BunJobs.ts:568-571`), so
+a second place would buy only a rule for when the two disagree. Phase 2 can
+revisit it, since an endpoint target needs no processor at all.
+
+#### 4.2.3 Resolution and errors
+
+Validation is `resolveWorkerTarget` (`queue/workerTarget.ts:434-490`), called
+at the top of the constructor (`BunQueueWorker.ts:917-920`), before the worker
+has any side effects. It builds nothing. In this order:
+
+1. **A leftover `isolation` key** (plain JavaScript, or a cast) throws
+   `ConfigError`: *`isolation was replaced by target: use target:
+   "child-process" (was "spawn") or "worker-thread" (was "worker")`*
+   (`:446-451`). This is not an alias, which U2 rules out. It exists because
+   the silent alternative is dangerous: a file meant for a child process would
+   run on the claim loop's thread, with nothing to say so. It costs one
+   property read. **Implemented and tested**
+   (`__tests__/worker-target.test.ts:728`). A leftover **`isolationOptions`**
+   key throws too (`:452-457`): *`isolationOptions was replaced by target: give
+   the settings on the target itself, as { kind: "child-process",
+   closeTimeout, killTimeout, spawn } or { kind: "worker-thread",
+   closeTimeout, worker }`*.
+2. **A string or object target** must be one of the three modes
+   (`toLocalTarget`, `:493-539`; the message is built by `notATarget`,
+   `:408-427`). The old spellings get their own hint, because they are the
+   runner's `executionMode` values, and a user who knows runners will type
+   them:
+   - `target must be "in-process", "worker-thread" or "child-process", not "thread"`
+   - `target must be "in-process", "worker-thread" or "child-process", not "spawn": "spawn" is a runner's executionMode; a worker's is "child-process"`
+   - the same for `"worker"`, pointing to `"worker-thread"`;
+   - an object is described by its kind: `… not { kind: "remote" }`.
+
+   These keep one prefix, `target must be`, so one pattern matches all of
+   them. The old message was `isolation must be …`
+   (`688d376:packages/bun-jobs/lib/queue/isolation.ts:128`), which
+   `688d376:examples/bun-jobs/10-options/worker-isolation.ts:1102` asserts with
+   `/isolation must be/`. That assertion moves to `/target must be/` in the
+   examples PR.
+
+   **Plain-JavaScript guards on the object form**, the runtime half of N2's
+   type error: a setting that belongs to another kind throws *`target { kind:
+   "worker-thread" } does not take spawn: it takes closeTimeout, worker`* (an
+   in-process target "takes no settings"), and a `closeTimeout` or
+   `killTimeout` that is not a finite, non-negative number throws *`target
+   killTimeout must be a number of milliseconds, not …`* (`:510-534`). An
+   `undefined` setting is ignored, and a `null` or `undefined` target is the
+   default. **The object is copied** (`:536-538`), so a caller changing it
+   later cannot retune a running worker.
+3. **`"worker-thread"` or `"child-process"` with a function processor**
+   throws: `target "child-process" needs a processor file: a function cannot
+   be sent to another process or Worker`, with context `{ target:
+   "child-process" }` (`:472-480`). The wording deliberately keeps `needs a
+   processor file`, the old phrase
+   (`688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:907`), because
+   three example checks match on exactly that and nothing else:
+   `688d376:examples/bun-jobs/10-options/errors.ts:333` and
+   `688d376:examples/bun-jobs/10-options/worker-isolation.ts:1072,1082`. With that phrase kept, they pass
+   unchanged. Only their labels and the option keys they build with move.
+4. **A factory** is accepted with either kind of processor (`:462-468`), and
+   is called by `buildTargetExecutor` (`:717-767`) from the constructor at
+   `BunQueueWorker.ts:1057`, once `this.id` (`:945`) and `#logger` (`:1047`)
+   exist. Before Phase 1 the `IsolatedProcessor` was built before both
+   (`688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:916`), so the
+   construction moved down while validation (steps 1–3, 5) stayed at the top.
+   **What the factory returns is validated**: anything but `{ name, run,
+   close? }` with a `name` of 1 to 64 characters and functions for `run` and
+   `close` throws *`A target factory must return { name, run, close? }, with a
+   name of 1 to 64 characters`* (`:740-758`).
+5. **A file processor that does not resolve** keeps its message, `Cannot
+   resolve the processor file …` (`queue/workerTarget.ts:907-914`), asserted by
+   `688d376:examples/bun-jobs/10-options/worker-isolation.ts:1112`. A
+   processor that is **neither a function nor a path or URL** (plain
+   JavaScript) throws *`A worker's processor must be a function, or a
+   processor file's path or URL`* (`:892-897`) rather than a `TypeError` from
+   inside the resolver.
+
+Every message above is asserted in `__tests__/worker-target.test.ts:638-768`
+("target: resolution and errors"), and the factory's in `:917-938`.
+
+`jobs.start()` (`BunJobs.ts:915-919`) takes the same options minus
+`namespace`, `driver` and `concurrency`, and its processor is a function
+(`:933-948`). So `target: "worker-thread"` there fails at step 3, as
+`isolation: "worker"` did. The way to run a registry off-thread is a
+`defineProcessors()` file (§4.4) given to `jobs.worker(...)`.
+
+#### 4.2.4 The heartbeat record and `WorkerDto`: `target`
+
+**This is the only new wire field in Phase 1.** `isolation` was never
+persisted or sent anywhere. On `688d376`, `git grep -i isolat` finds nothing in
+`lib/api/**` (the contract, `serialize.ts`, the schemas, the OpenAPI and
+AsyncAPI emitters), nothing in `WorkerInfo`
+(`688d376:packages/bun-jobs/lib/drivers/driver.ts:1426-1574`; now
+`drivers/driver.ts:1427-1591`), nothing in `WORKER_CONFIG_KEYS`
+(`shared/workers.ts:44-54`, `api/contract/constants.ts:488-498`), and nothing in the config-override
+store (`WorkerConfigOverride`, `queue/workerControl.ts:206-217`). So its
+removal needs no reader, and nothing stored changes.
+
+It also needs no driver change. All five drivers store the record as one JSON
+value: SQL `info` column (`drivers/sql/sql-driver.ts:4806-4817`), Redis
+`JSON.stringify` (`drivers/redis/redis-driver.ts:2371-2386`), MongoDB `value`
+(`drivers/mongo/mongo-driver.ts:4479-4494`), file (`drivers/file-driver.ts:2809-2813`)
+and memory (`drivers/memory-driver.ts:1570-1580`). The queue-state fallback
+stores the whole object too (`drivers/readApis.ts:601-625`).
+
+**Where the types live.** `WorkerTargetInfo`, `WorkerTargetKind` and the
+runtime copy of `WORKER_TARGET_KINDS` live in **`lib/shared/workers.ts`**
+(`:220-263`), beside `WORKER_CONFIG_KEYS`, not in `driver.ts`. So the one
+change inside `lib/drivers/**` is additive: `driver.ts` imports the type
+(`:14`) and declares the field on `WorkerInfo` (`:1565-1579`). The contract
+keeps its own browser-safe copy of the constant and the DTO, and drift tests
+hold the two copies equal (below). As implemented:
+
+```ts
+// drivers/driver.ts:1565-1579, on WorkerInfo:
+
+/**
+ * Where this worker's attempts run, as it is actually running them.
+ *
+ * Written on every report from the same resolved target the worker dispatches
+ * to, the way `sweeps` is written from the value maintenance branches on, so
+ * the record cannot disagree with what the worker does.
+ *
+ * **Absent on a record from a worker older than this field, and absent is
+ * not `"in-process"`.** `"in-process"` is the default, so reading absence as
+ * in-process would confidently mislabel every worker that has not been
+ * upgraded. Absent means "too old to say". Show it as unknown, never as a
+ * default.
+ */
+target?: WorkerTargetInfo;
+
+// shared/workers.ts:230-263
+/**
+ * A worker's target as its heartbeat record describes it: what it is, never
+ * the option it was built from. A factory cannot be serialised, and a path is
+ * deployment detail. (N6)
+ *
+ * The combinations that occur, since a function cannot be sent to a thread
+ * or a process: `"in-process"` with `"function"` or `"file"`;
+ * `"worker-thread"` and `"child-process"` with `"file"` only; `"custom"`
+ * with `"function"` or `"file"`.
+ */
+export interface WorkerTargetInfo {
+  /**
+   * Where the attempts run: `"in-process"`, `"worker-thread"`,
+   * `"child-process"` or `"custom"` (a {@link WorkerTargetFactory}). A closed
+   * list, `WORKER_TARGET_KINDS`, that a reader can switch on. Phase 2 adds
+   * `"endpoint"`, which widens it. A reader meeting a kind it does not know
+   * shows the raw string.
+   */
+  kind: WorkerTargetKind;
+  /**
+   * Whether the attempts run a function or a processor file. The pairs that
+   * occur: `"in-process"` + `"function"` | `"file"`; `"worker-thread"` +
+   * `"file"`; `"child-process"` + `"file"`; `"custom"` + `"function"` |
+   * `"file"`. (Checked against `resolveWorkerTarget` and `describeTarget`,
+   * `queue/workerTarget.ts:434-490,773-785`, and asserted pair by pair in
+   * `__tests__/worker-target.test.ts:1111`.)
+   */
+  processor: "function" | "file";
+  /** For `"custom"`: the executor's own `name`. Absent for every other kind. */
+  name?: string;
+  /**
+   * For a file processor: the absolute path it resolved to. The management
+   * API omits it unless `serialize.exposeProcessorFiles` is on. (N7)
+   */
+  file?: string;
+}
+
+/** One of {@link WORKER_TARGET_KINDS}. (N8) */
+export type WorkerTargetKind = (typeof WORKER_TARGET_KINDS)[number];
+
+// shared/workers.ts:220-228 (runtime) and api/contract/constants.ts:473-481
+// (browser-safe), each beside its WORKER_CONFIG_KEYS:
+/** Every value a worker record's `target.kind` can take, for a UI to enumerate. */
+export const WORKER_TARGET_KINDS = [
+  "in-process",
+  "worker-thread",
+  "child-process",
+  "custom",
+] as const;
+```
+
+Why these choices, including where they depart from the bun-jobs session's
+proposal:
+
+- **A kind, not the option.** The record reports a descriptor with a closed
+  `kind` and optional detail. That follows the bun-jobs session's point 8.
+- **`"file"` is not a kind.** The bun-jobs session proposed `kind: "in-process"
+  | "worker-thread" | "child-process" | "file" | "custom"`, and noted that a
+  `"file"` kind would also need to say which mode it runs in. That note is the
+  argument against it. A file processor runs in one of the three modes (an
+  `"in-process"` file is imported once and called on the claim thread,
+  `queue/workerTarget.ts:592-599`), so `"file"` answers a different question from
+  the others. `kind` says where; `processor` says what. A UI then needs no
+  second lookup to place a file worker.
+- **A different field name from the runner's.** Workers report `target`, and
+  runners keep `executionMode`/`mode` until Phase 1r. Calling the worker field
+  `executionMode` for symmetry would make one field's vocabulary depend on who
+  wrote it (the bun-jobs session's point 5).
+- **The path is gated by a flag that defaults to `false`, not by
+  `exposeHosts`.** The bun-jobs session proposed `exposeHosts`
+  (`api/config.ts:192-197`). That defaults to `true`, so every deployment
+  would publish filesystem paths. The precedent for exactly this information
+  is the runner's handler file, gated by `exposeRunnerFiles`, default `false`
+  (`api/config.ts:183-184`, applied at `api/serialize.ts:708`). The worker's
+  processor file gets the same treatment under its own name (N7):
+  `exposeProcessorFiles` sits beside it (`api/config.ts:185-191`), resolves to
+  `false` (`:1490`), and is one of the four defaulted switches of
+  `ResolvedJobsApiSerializers` (`:737-748`).
+
+The DTO and the schema mirror it:
+
+- `WorkerDto.target?: WorkerTargetInfoDto` in `api/contract/types.ts`
+  (`:1886-1898`), right after `sweeps` (`:1863-1885`). Its JSDoc carries the
+  same "absent is not `"in-process"`" paragraph that `sweeps` carries for
+  "absent is not `false`", and says it is unrelated to a worker event
+  envelope's `target`. `WorkerTargetInfoDto` itself is `:1716-1747`, with the
+  reachable pairs in its JSDoc.
+- The server's `WorkerDto` (`api/serialize.ts:353`) extends
+  `Omit<WorkerInfo, "host" | "pid">`, so it inherits the field.
+- `toWorkerDto` (`api/serialize.ts:813-894`) copies `kind`, `processor` and
+  `name`, and copies `file` only with the flag (`:873-882`). It copies the
+  field only when the record carries it, the same rule as `rssBytes` and
+  `sweeps` (`:860-870`). **Its options type takes `exposeProcessorFiles` as
+  optional** — `Pick<…, "exposeHosts"> & Partial<Pick<…,
+  "exposeProcessorFiles">>` (`:814-816`) — and absent means off, so existing
+  callers that pass only `exposeHosts` compile unchanged and withhold the path.
+- The schema is `target: s.optional(WorkerTargetInfoSchema)` (`:246`) in
+  `WorkerSchema` (`api/schemas/workers.ts:185-258`); the component itself is
+  `:148-178`. It is **optional, not required**. The builder has no
+  per-property description for a `$ref`, so the absent-is-unknown sentence and
+  the reachable pairs live in the component's own `description`. It is
+  named `"WorkerTargetInfo"`, not `"WorkerTarget"`: the repo's convention
+  (`WorkerControlInfo` ↔ `WorkerControlDto` ↔ schema `"WorkerControl"`) would
+  give the component the name of the *option* type, a different shape under
+  the same name in the generated document.
+- **Drift guards, updated:** the `DeepEqual<Contract.WorkerDto,
+  Infer<typeof WorkerSchema>>` assertion
+  (`__tests__/api/api-contract.type-test.ts:539`), now joined by
+  `WorkerTargetInfoOk` (`:544`), `WorkerTargetKindsValueOk` (`:1513`) and
+  `WorkerTargetInfoRuntimeOk` (`:1520`), which hold the runtime and contract
+  copies equal; the value check in `api-contract.test.ts`; and the round trip
+  (`__tests__/api/api-sources.test.ts:731-737`), whose fixture now carries
+  `target` with a `file` and passes `exposeProcessorFiles: true`, and whose
+  second assertion checks the path is withheld without it. The OpenAPI
+  component list pinned in `__tests__/api/api-workers.test.ts` gains
+  `"WorkerTargetInfo"`.
+- **A near-collision to know about.** A worker *event*'s envelope already has
+  a `target` field, holding the **queue name** (`api/contract/ws.ts:243-253`,
+  `shared/events.ts:148`). No worker event payload carries a `WorkerDto`
+  (`ws.ts:151-162`), so the two never nest in one object. But a client reads
+  both, and the `WorkerDto.target` JSDoc and the schema description say that
+  it is unrelated to the envelope's `target`.
+
+The UI renders absent as "—" (the UI session's rule). Nothing in Phase 1 adds
+a `?target=` filter to `GET /workers`; the UI filters client-side if it wants
+to.
+
+#### 4.2.5 Two vocabularies, until Phase 1r
+
+A worker says `worker-thread`/`child-process`; a runner still says
+`worker`/`spawn`. Both describe the same executors, so a reader meets both:
+
+| Worker `target` | Runner `executionMode`, `RunRecord.mode`, `EXECUTION_MODES` | `BUN_JOBS_MODE` in the child |
+|---|---|---|
+| `"in-process"` | `"in-process"` | unset |
+| `"worker-thread"` | `"worker"` | `worker` (`runner/executors/worker.ts:76`) |
+| `"child-process"` | `"spawn"` | `spawn` (`runner/executors/spawn.ts:110`) |
+
+What stays in the runner's vocabulary on purpose, because it is the runner's
+protocol and U3 leaves it alone:
+
+- the `BUN_JOBS_MODE` value a job child sees;
+- the internal `RunContext.mode` the target builds for the shared executors.
+  Before Phase 1 it was `mode: this.mode`
+  (`688d376:packages/bun-jobs/lib/queue/isolation.ts:167`), which worked only
+  because the two vocabularies were identical. It is now `mode:
+  RUNNER_MODE[target.kind]` (`queue/workerTarget.ts:613`), where `RUNNER_MODE`
+  (`:371-376`) maps `"worker-thread"` → `"worker"` and `"child-process"` →
+  `"spawn"`, and the executor choice in `#executorFor` (`:698-709`) switches on
+  the target's kind;
+- `SerializableContext.mode` (`runner/protocol.ts:55`).
+
+A job's processor never sees `RunContext`. It gets a `ProcessorContext`, built
+in the child by `isolatedJob` (`runner/bootstrap/child-runtime.ts:545-556`),
+which carries no mode. So the only runner spelling a processor can observe is
+the environment variable. `__tests__/worker-target.test.ts:103` asserts it per
+target: `spawn` for child-process, `worker` for worker-thread, unset
+in-process.
+
+**The mapping sentence must appear, verbatim in meaning, in:**
+
+- the `target` JSDoc (§4.2.1, `queue/types.ts:1120-1125`) and the
+  `WorkerTargetMode` JSDoc (`queue/workerTarget.ts:71-73`) — done;
+- the README's target section (`README.md:2410-2422`, with the table), and
+  the runner's `executionMode` row (`README.md:2592`) — both done;
+- `examples/bun-jobs/10-options/worker-isolation.ts` and
+  `examples/bun-jobs/07-runner/execution-modes.ts`, which show a worker's
+  target beside a runner's mode (the examples session's requirement; the
+  stacked examples PR). `688d376:examples/bun-jobs/10-options/worker-isolation.ts:237-239` asserts `BUN_JOBS_MODE === mode`, which goes
+  from true to false once `mode` is `"worker-thread"`. That is a runtime
+  coupling the compiler cannot see; it must compare against the mapped value.
+  `:1158` and `:1164` compare `BUN_JOBS_MODE` with the literals `"spawn"` and
+  `"worker"`, stay correct, and are the natural place to show the mapping;
+- the playground's `processors/checksum.ts:77` and `processors/preview.ts:66`,
+  which report `BUN_JOBS_MODE` under a field called `isolation` (the UI
+  session's rewrite).
+
+#### 4.2.6 Why the factory does not return the runner's `Executor`
+
+The draft said a custom target "is an `Executor` whose `mode` is a string of
+its own". That does not type-check. `Executor.mode` is the closed,
+persisted `ExecutionMode` (`runner/executors/executor.ts:136`), and
+`ExecutorStartOptions.file` is required (`:101`). Widening either would widen
+a persisted enum or make every runner executor handle a missing file.
+
+Wrapping `Executor` was considered and rejected, because what a job needs from
+a target is much smaller than what `Executor` carries:
+
+- `Executor.start()` takes a runner's `RunContext`: `runId`, `runnerId`,
+  `source`, `args`, `deadline` and run-log callbacks. For a job the target has
+  to fabricate all of it with no-op functions. `FileTargetExecutor.run` does
+  exactly that (`queue/workerTarget.ts:604-627`), and its comment at
+  `:619-621` says so.
+- `ExecutorEvents` are runner-shaped: `onOutput`, `onPid`, `onConsole`
+  (`executor.ts:47-84`).
+- The job-channel request/reply (`JOB_CHANNEL`, `answer()` and `valueFor()`,
+  `queue/workerTarget.ts:788-888`) is internal protocol that no third party
+  should implement.
+- `ExecutorHandle.stop` duplicates the abort signal the worker already owns.
+  `FileTargetExecutor.run()` only ever turns the signal into `stop()`
+  (`:669-675`, removed again at `:693`).
+
+What the worker actually needs is visible in `#process()`
+(`BunQueueWorker.ts:2260-2274`): a promise of the result, cancelled through
+the attempt's signal, with `withTimeout` and the settle path left to the
+worker. `WorkerTargetExecutor.run()` is that and nothing more. It has no
+`mode` (the record's `kind` is `"custom"`, and `name` carries the free text),
+and it has no `file` (the factory gets the processor in its context if it
+wants it). Both of the draft's problems go away by construction.
+
+The built-in file targets are one internal implementation of the same
+interface: `FileTargetExecutor` (`queue/workerTarget.ts:556-710`, N3; it was
+`IsolatedProcessor`), whose `name` is its kind (`"child-process"`, say,
+`:558`). So `#process()` has one call for every non-function path. The Phase 2 gateway (`RemoteTarget`) implements it
+too, rather than the runner's `Executor`, and §4.6's `execute` facet sits
+behind it.
+
+#### 4.2.7 Names approved (2026-09-25)
+
+The "Replaces" column cites the code as it stood before Phase 1, pinned to
+`688d376`; every name in the "Approved" column is implemented as written.
+
+The user approved every name the replacement forces, in each case the
+candidate this check recommended. "Unused" in the last column means `git grep
+-I -i -w '<name>' -- packages examples playground` printed nothing on
+`688d376`.
+
+| # | Replaces | **Approved** | Chosen over | Reason | Collision check |
+|---|---|---|---|---|---|
+| **N1** | `IsolationMode` (`688d376:packages/bun-jobs/lib/queue/isolation.ts:61`, root export `688d376:packages/bun-jobs/lib/index.ts:513`), and the worker-level spellings `"worker"`/`"spawn"` | **`WorkerTargetMode`** = `"in-process" \| "worker-thread" \| "child-process"`; `IsolationMode` is **removed**, not renamed in place | `LocalTargetMode`; `WorkerTargetKind` | Its values change (U1), so it is a new type, not a rename. `WorkerTargetMode` keeps the `WorkerTarget*` family and is the name the draft already used. `WorkerTargetKind` is kept for the record's wider union (N8) | unused in code |
+| **N2** | `IsolationOptions` (`688d376:packages/bun-jobs/lib/queue/isolation.ts:64`, root export `688d376:packages/bun-jobs/lib/index.ts:514`) and the option `isolationOptions` | **Per-kind target objects, no options type**: `LocalWorkerTarget` = `InProcessTarget` \| `WorkerThreadTarget` (`closeTimeout?`, `worker?`) \| `ChildProcessTarget` (`closeTimeout?`, `killTimeout?`, `spawn?`), with the string modes as shorthand. The target has no `file` field: the processor file is the constructor's processor argument | (b) the draft's `{ kind: "file", file, mode, options }` with `LocalTargetOptions`; (c) a sibling `targetOptions: WorkerTargetOptions` | Removes an option, makes options for the wrong kind (`spawn` on a `worker-thread` target) a type error where today they are silently ignored, and gives Phase 2's `{ kind: "endpoint", … }` a uniform place. (b) mixes *where* with *what* and needs a rule for a file given twice; (c) is the smallest diff and keeps the flaw | all unused |
+| **N3** | `IsolatedProcessor` (`688d376:packages/bun-jobs/lib/queue/isolation.ts:105`; root export `688d376:packages/bun-jobs/lib/index.ts:512`, `688d376:packages/bun-jobs/lib/queue/index.ts:29`) | **`FileTargetExecutor`, internal** (not exported from `lib/index.ts` or `lib/queue/index.ts`); now `queue/workerTarget.ts:556`, and its `name` is its kind | `LocalTargetExecutor`, internal; public `ProcessorFileExecutor` | It was exported as a value, but no consumer could use it: `run()` took a `Runner` whose type is not exported (`688d376:packages/bun-jobs/lib/queue/isolation.ts:95-102`). Nothing outside `lib/` constructed it, and `consumer-check.json` did not list it. Making it internal removes a public name instead of renaming one | unused |
+| **N4** | the file `lib/queue/isolation.ts` | **`lib/queue/workerTarget.ts`**, moved with `git mv` as its own step | `lib/queue/target.ts`; `lib/queue/targets.ts` | Matches its neighbours `workerControl.ts`, `workerMetrics.ts`, `attemptWrites.ts`; a separate move keeps blame following the file | no such file in the repo |
+| **N5** | (new) what a `WorkerTargetFactory` returns | **`WorkerTargetExecutor`** (`{ readonly name; run(attempt); close?() }`), with **`WorkerTargetAttempt`** and **`WorkerTargetContext`**; the factory is `(ctx: WorkerTargetContext) => WorkerTargetExecutor` | `TargetExecutor` / `TargetAttempt`; `AttemptRunner` | Keeps the family prefix, so `WorkerTarget`, `WorkerTargetFactory` and `WorkerTargetExecutor` read as one API. `TargetExecutor` reads as the runner's `Executor` family (`SpawnExecutor`, `WorkerExecutor`) | all unused |
+| **N6** | (new) the record's field and its types | field **`target`**; types **`WorkerTargetInfo`** (runtime, in `shared/workers.ts`; §4.2.4) / **`WorkerTargetInfoDto`** (contract); OpenAPI schema **`"WorkerTargetInfo"`** | `WorkerTargetDto` with schema `"WorkerTarget"`; a field named `runtime` | The field has the option's name. `Info`/`Dto` keeps the house pairing while avoiding a schema component that shares its name with the option type (§4.2.4). `runtime` would collide with Phase 2's `remote.runtime` and with "runtime" meaning Bun | types unused. `target` exists on event envelopes (the queue name) and validation issues, never on a worker record |
+| **N7** | (new) the flag that exposes the processor file path | **`exposeProcessorFiles`**, default `false`, beside `exposeRunnerFiles` in `api/config.ts` | reuse `exposeRunnerFiles`; reuse `exposeHosts`; no `file` on the record | The runner's handler path is the same kind of information and is off by default. `exposeRunnerFiles` would misname it; `exposeHosts` defaults to `true` and would publish paths everywhere | unused |
+| **N8** | (new) the record's `kind` union and its constant | **`WorkerTargetKind`** / **`WORKER_TARGET_KINDS`** | `WorkerTargetInfoKind` / `WORKER_TARGET_INFO_KINDS` | Mirrors `WorkerConfigKey` / `WORKER_CONFIG_KEYS` | both unused |
+| **N9** | the child-side `IsolatedJob`, `IsolatedJobProcessor` (`runner/executors/executor.ts:157,168`) and the message `job.X() is not available in an isolated job` (`runner/bootstrap/child-runtime.ts:434`) | **kept, unchanged** | `TargetJob` / `TargetJobProcessor` | They live in `lib/runner/**`, and the child's job *is* isolated from the driver. The message is asserted at runtime by `__tests__/worker-target.test.ts:568,594` (renamed from `worker-isolation.test.ts`) and the examples. Keeping them keeps a runner-owned surface out of this PR | — |
+
+Also new and unambiguous, so never a choice: `defineProcessors` (§4.4) and
+`WorkerTargetFactory`.
+
+#### 4.2.8 Phase 2, not shipped in Phase 1: `RemoteEndpointTarget`
+
+Kept here because the union above must leave room for it. It joins
+`WorkerTarget` as `{ kind: "endpoint", … }`, and `WORKER_TARGET_KINDS` gains
+`"endpoint"`, which is a contract change the UI must handle. Its shape and
+JSDoc are as the 2026-09-22 draft wrote them. Only `url`, `secret` and the
+`kind` are settled; the rest is Phase 2's to confirm against §5.
+
+```ts
+/** A conforming remote executor reached over HTTP. See §5. PHASE 2. */
 export interface RemoteEndpointTarget {
   /** Marks the variant. */
   kind: "endpoint";
@@ -1286,82 +1878,107 @@ export interface RemoteEndpointTarget {
    * key is unchanged, so a remote that already ran it answers from its cache
    * (§5.8).
    */
-  transportRetry?: { attempts?: number; maxDelay?: number };
+  transportRetry?: {
+    /** Tries in all, the first included. Defaults to `3`. */
+    attempts?: number;
+    /** The longest backoff between two tries, in ms. */
+    maxDelay?: number;
+  };
 }
-
-/**
- * Builds an executor for a transport this package does not ship — gRPC, a
- * message bus, a platform-specific SDK a published package must not depend on.
- * Called once per worker, at construction.
- */
-export type WorkerTargetFactory = (context: {
-  /** The namespace the worker consumes from. */
-  namespace: string;
-  /** The queue it consumes. */
-  queue: string;
-  /** The worker's incarnation id. */
-  workerId: string;
-  /** The worker's logger, already bound. */
-  logger: Logger;
-}) => Executor;
 ```
 
-`Executor` is the existing `runner/executors/executor.ts` interface. **That is
-not yet enough for a third party (corrected 2026-09-25, from source at
-`ca3ed21`).** The sentence that stood here said "a custom target is an
-`Executor` whose `mode` is a string of its own". Against today's types it is
-not: `Executor.mode` is `ExecutionMode` (`executor.ts:136`), a closed union
-`"spawn" | "worker" | "in-process"` (`drivers/driver.ts:162`) that §4.5
-rightly refuses to widen because it is persisted, and
-`ExecutorStartOptions.file` is required (`executor.ts:101`), which a remote
-executor does not have. So Phase 1 must give `WorkerTargetFactory` a
-target-level executor type with an open `mode` and an optional `file`, or wrap
-`Executor`. That work belongs in Phase 1's "Executor-based custom target" row.
-It is also why the Phase 2 `execute` facet (§4.6) does not ask a plugin to
-implement an executor at all.
+Phase 2 also adds `endpoint` (the origin only) and `remote` to
+`WorkerTargetInfo` (§8.1). The endpoint's `processor` question does not arise:
+a Phase 2 endpoint worker is built by `jobs.remoteWorker(queue, endpoint)`,
+which needs no processor argument.
 
 ### 4.3 What changes inside `BunQueueWorker`
 
-Small, and localised:
+Small and localised. As implemented: the left column pins the code before
+Phase 1 to `688d376`, the right one cites the implementation.
 
-| Where | Change |
+| Where, before (`688d376`) | Change, as implemented |
 |---|---|
-| constructor | resolve `target` ?? `isolation`; a `ConfigError` when both are given, or when a non-`"in-process"` target is paired with a function processor *and* no `{ endpoint }` |
-| `#isolated` field | becomes `#target: JobTarget \| undefined` — `IsolatedProcessor` grows an `endpoint` mode, or a sibling `RemoteTarget` implementing the same `run(job, record, context, controller, runner)` |
-| `#process()` | unchanged apart from which object `run()` is called on. The timeout, the abort, the heartbeat interval, the settle path are all untouched |
-| `#report()` | the heartbeat record gains `target: { mode, endpoint? }` so the Workers page can show it (§8) |
-| nothing else | claim, lease, settle, control, limits, maintenance are unaware |
+| `688d376:packages/bun-jobs/lib/queue/types.ts:28` imported `IsolationMode`, `IsolationOptions` from `./isolation`; `:1091-1109` declared `isolation?` and `isolationOptions?` | one option, `target?: WorkerTarget` (`queue/types.ts:1091-1129`, §4.2.1), imported from `./workerTarget` (`:30`, N4) |
+| constructor, `688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:900-921`: the function-processor check (`:901-911`), then `new IsolatedProcessor(processor, options.isolation ?? "in-process", options.isolationOptions)` (`:916-920`) | validation (§4.2.3 steps 1–3 and 5) at the top, `resolveWorkerTarget` (`BunQueueWorker.ts:917-920`). The executor is built **after `this.id` (`:945`) and `#logger` (`:1047`)**, by `buildTargetExecutor` (`:1057-1062`), because a factory's context needs both. Two fields result: `#target: WorkerTargetExecutor \| undefined` (`:601`; undefined only for a function processor with an in-process target) and `#targetInfo: WorkerTargetInfo` (`:606`), derived once by `describeTarget` from the same resolved target (`:1063`) |
+| `#isolated` field, `688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:589` | became `#target` (above) |
+| `#process()`, `688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:2217-2229`: `this.#isolated ? this.#isolated.run(job, record, context, controller, { namespace, queue, workerId }) : Promise.resolve(this.#processor!(job, context))` | `this.#target ? this.#target.run({ job, record, context }) : Promise.resolve(this.#processor!(job, context))` (`BunQueueWorker.ts:2260-2266`). **The function-processor branch is byte-identical**: it is the hot path the bench guard measures, and an attempt object per job there buys nothing. The diff touches only the condition and the target branch, and `#target` is undefined in exactly the case `#isolated` was. `controller` is no longer passed: `context.signal` *is* `controller.signal` (`:2240`), and it was the only use of `controller` inside the target. The per-worker runner identity moved to `FileTargetExecutor`'s constructor and the factory's context, given once |
+| the timeout, the abort, the heartbeat interval, `AttemptWrites` and the settle path (`688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:2160`, `:2231-2248`, `#awaitWrites` `:2334-2360`) | **untouched** (now `BunQueueWorker.ts:2203`, `:2267-2290`, `#awaitWrites` `:2371-2397`). See §4.5's invariants |
+| `close()`: `#unregister()` on both paths (`688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:1623` forced, `:1675` normal) | `await this.#closeTarget()` just before each (`BunQueueWorker.ts:1630` forced, `:1683` normal), once the active attempts have settled or been abandoned. `#closeTarget` (`:1708-1733`) calls the target's optional `close()` **bounded by `DEFAULT_CLOSE_TIMEOUT`** (5000 ms, the built-in kinds' `closeTimeout` default): **on expiry or rejection it logs at `warn` and continues closing**, since the worker's own state has settled by then. It is new: `IsolatedProcessor` held executors and never released them — harmless for the built-in ones (`FileTargetExecutor` has no `close`), but not for a custom target holding a connection. **Gate test:** `__tests__/worker-target.test.ts:983`, a target whose `close()` never resolves, must not stop `worker.close()` returning; its negative control, run side by side, is the same `close()` awaited without a bound, which must still be pending when the bounded close has returned. Removing the bound was measured to fail it ("closed" expected, "hung" received). A rejecting `close()` is covered at `:1040`, and close ordering and once-only at `:940` |
+| `#report()`, the `registerWorkerRecord` call at `688d376:packages/bun-jobs/lib/queue/BunQueueWorker.ts:4139-4165` | `target: this.#targetInfo` (`BunQueueWorker.ts:4206`) beside `sweeps: this.#sweeps` (`:4202`), which is the precedent: written from the value the worker acts on. It is always written, so absence means only an older worker |
+| `688d376:packages/bun-jobs/lib/queue/isolation.ts` → `queue/workerTarget.ts` | moved with `git mv` first. `IsolatedProcessor` became the internal `FileTargetExecutor` (`queue/workerTarget.ts:556-710`, N3), implementing `WorkerTargetExecutor`, with `name` set to its kind (`:558`). Its constructor validation (`688d376:packages/bun-jobs/lib/queue/isolation.ts:126-131`) became §4.2.3's messages in `resolveWorkerTarget`; its executor choice (`#executorFor`, `:698-709`) switches on the kind; `RunContext.mode` is mapped to the runner vocabulary (`:613`, §4.2.5). `defineProcessor` (`:271-275`) moved with it, unchanged, beside the new `defineProcessors` (§4.4) |
+| `688d376:packages/bun-jobs/lib/queue/index.ts:27-32`, `688d376:packages/bun-jobs/lib/index.ts:506-514` | export `defineProcessors`, `WorkerTarget`, `WorkerTargetMode`, `LocalWorkerTarget` and its three members, `WorkerTargetFactory`, `WorkerTargetContext`, `WorkerTargetExecutor` and `WorkerTargetAttempt` (`queue/index.ts:209-222`; `lib/index.ts`, §4.2.2), plus `WORKER_TARGET_KINDS`, `WorkerTargetKind` and `WorkerTargetInfo` from `shared/workers.ts`. `IsolatedProcessor`, `IsolationMode` and `IsolationOptions` are no longer exported (removed, not aliased) |
+| `drivers/driver.ts` `WorkerInfo`, `api/contract/constants.ts`, `api/contract/types.ts` `WorkerDto`, `api/schemas/workers.ts` `WorkerSchema`, `api/serialize.ts` `toWorkerDto`, `api/config.ts` (the N7 flag) | §4.2.4, with every citation there. `lib/drivers/**` changed only additively (`driver.ts:14` import, `:1565-1579` the field) |
+| nothing else | claim, lease, settle, control, limits, maintenance and `WORKER_CONFIG_KEYS` are unaware. `target` is **not** a remotely configurable key: changing where code runs is a rebuild, and `WORKER_CONFIG_KEYS` admits only what "can be applied to a running worker in place" (`shared/workers.ts:36-43`) |
 
 **That is the whole point of the design.** The lease stays with the process
 that holds the driver. No new failure mode is introduced into claiming.
 
-### 4.4 The `{ file }` / registry resolution story
+### 4.4 The processor file / registry resolution story
 
 A file target and the definition registry are two ways of answering "what runs
 this job", and they compose:
 
 - **One file, one processor.** `export default defineProcessor(...)`. The
   worker dispatches on nothing; every claimed job goes to that function. This
-  is what ships today.
-- **One file, many names.** The file imports the app's `defineJob` calls and
+  is what shipped before Phase 1.
+- **One file, many names.** The file imports the app's definitions and
   default-exports a dispatcher. Nothing new is needed — but it is boilerplate
-  everybody writes, so add:
+  everybody writes, so Phase 1 adds `defineProcessors`
+  (`queue/workerTarget.ts:277-351`, root export `lib/index.ts:508`). As
+  implemented:
 
 ```ts
 /**
- * A processor file that dispatches on the job's name.
- *
- * Takes the same {@link JobDefinition}s `BunJobs.define()` takes, so one
- * module of definitions can be imported by the producer (which needs the
- * names and options) and default-exported here (which needs the handlers).
- * A name with no definition throws {@link HandlerNotFoundError}, which is
- * unrecoverable: no number of retries will find a handler that was not
- * deployed.
+ * One entry defineProcessors dispatches to: a name and its handler, which is
+ * the part of a JobDefinition a processor file needs. Any handler fits — its
+ * job's data and result types are its own.
+ */
+interface ProcessorDefinition {
+  readonly name: string;
+  /**
+   * A method, deliberately: its parameter is then checked both ways, so a
+   * handler typed for its own data fits, and an inline one is still handed a
+   * `Job` rather than `never`.
+   */
+  // eslint-disable-next-line ts/method-signature-style
+  handler(job: Job<unknown, unknown>, ctx: ProcessorContext): unknown;
+}
+
+/**
+ * A processor that dispatches on the job's name: one processor file for many
+ * job names. Takes what `BunJobs.define()` records — `jobs.definitions()`, a
+ * JobDefinitions, or plain `{ name, handler }` objects. A job whose name has no
+ * definition fails with an UnrecoverableJobError. A name given twice keeps the
+ * later handler, as a second `define()` does.
  */
 export function defineProcessors(
-  definitions: readonly JobDefinition<any, any>[] | JobDefinitions,
+  definitions: readonly ProcessorDefinition[] | JobDefinitions,
 ): JobProcessor<unknown, unknown>;
 ```
+
+  **Why this input type.** The draft's `readonly JobDefinition<any, any>[]`
+  needs a lazy `any`. `JobDefinition<never, never>` rejects any handler that
+  returns something (`Promise<number>` is not `Promise<never>`), and a
+  property typed `(job: never, …) => unknown` accepts every handler but hands
+  an inline one `job: never`. A method signature is bivariant in its
+  parameter under `strictFunctionTypes`, so a handler written for
+  `Job<{ to: string }, number>` fits, `jobs.definitions()` fits, and an inline
+  `async (job) => job.name.length` gets a real `Job`. All three are asserted in
+  `__tests__/workerTarget.type-test.ts`, beside a negative control (a
+  definition without a handler). Entries are checked at runtime too: a missing
+  or empty `name`, or a `handler` that is not a function, throws `ConfigError`
+  (`:323-332`).
+
+  **Why `UnrecoverableJobError`, not `HandlerNotFoundError`.** An unknown name
+  throws `new UnrecoverableJobError('No processor is defined for "<name>" in
+  this processor file', { name, defined })` (`:343-348`). `HandlerNotFoundError`
+  does not exist until Phase 2 (§11), and `UnrecoverableJobError` is what the
+  worker already recognises **by name** as well as by class
+  (`BunQueueWorker.ts:3231-3237`) — which is what makes an error rebuilt on
+  the far side of a child process stop the retries. Measured: an unknown name
+  with `attempts: 3` dies after one attempt, in-process and under
+  `target: "child-process"` (`__tests__/worker-target.test.ts:1205`).
 
 - **A separate Bun process from a runner file.** Already composable and should
   stay that way rather than becoming an option — a file that builds a
@@ -1372,19 +1989,125 @@ export function defineProcessors(
   the control subscription and the heartbeat record into the child, and would
   then be a second, worse `BunRunner`.
 
-### 4.5 Backward compatibility, precisely
+### 4.5 Backward compatibility, and what must not change
 
-- `target` absent → `IsolationMode` path exactly as today.
-- `isolation: "in-process" | "spawn" | "worker"` → maps to `target` with no
-  behaviour change; `runner-modes.test.ts`-style parity test asserts it.
-- `IsolationMode`, `IsolationOptions`, `IsolatedProcessor`, `defineProcessor`
-  stay exported with their current types. `consumer-check.json` keeps
-  `defineProcessor`.
-- `ExecutionMode` in `drivers/driver.ts` (`"spawn" | "worker" | "in-process"`)
-  is **not** changed: it is stored in `RunRecord.mode` and a driver's rows.
-  The new spellings are a worker-level alias only. This is deliberate and the
-  plan should not be talked out of it — renaming a persisted enum is a
-  migration for no gain.
+**There is no compatibility to keep for `isolation`.** The 2026-09-22 text
+here kept `isolation`, `IsolationMode`, `IsolationOptions` and
+`IsolatedProcessor` exported "with their current types", mapped
+`isolation: m` to `target: m`, and made giving both a `ConfigError`. All of
+that rested on the premise that `isolation` is shipped. It is not: the
+packages are unpublished (U2, and `control-plane-rename.md` §1 for the same
+fact). So in Phase 1 `isolation`, `isolationOptions`, `IsolationMode`,
+`IsolationOptions` and the worker-level spellings `"worker"`/`"spawn"` are
+**removed**, not aliased, and `IsolatedProcessor` became internal (N3). The
+only trace left is the guard in §4.2.3 step 1 — implemented and tested, for
+both `isolation` and `isolationOptions` — which throws; it does not
+translate.
+
+**Nothing persisted or on the wire changes because of the removal.**
+`isolation` was never written anywhere (§4.2.4). The one wire change in
+Phase 1 is an **addition**, the optional `target` on the worker record and
+`WorkerDto`. A reader older than Phase 1 ignores it, and a reader newer than a
+worker sees it absent.
+
+**The runner's `ExecutionMode` is untouched, and this plan should not be
+talked out of that inside Phase 1.** `"spawn" | "worker" | "in-process"`
+(`drivers/driver.ts:163`) is stored in `RunRecord.mode` (`:179`) inside every
+driver's history blob. It is stored in the runner's `config:executionMode` and
+`config:allowed` entries (`runner/config.ts:38-58`, the do-not-change list in
+`control-plane-rename.md` §6.1). It is the API's `EXECUTION_MODES`
+(`api/contract/constants.ts:564`) and `ExecutionModeDto`
+(`api/contract/types.ts:2305`, used at `:2329,2421,2439,2478,2522`). It is the
+value of `BUN_JOBS_MODE` in every child (`runner/executors/spawn.ts:110`,
+`worker.ts:76`). Renaming it is a migration: a reader that accepts both
+spellings, a DTO change, and a sweep of the UI and the examples. That is
+Phase 1r (§11), deliberately separate so that Phase 1 carries no migration.
+
+#### Do not change: strings
+
+- **The runner vocabulary:** `ExecutionMode`, `EXECUTION_MODES`,
+  `ExecutionModeDto`, `RunRecord.mode`, `config:executionMode`,
+  `config:allowed`, `SerializableContext.mode` (`runner/protocol.ts:55`),
+  `CHILD_ENV` and the `BUN_JOBS_MODE` values, and the internal check
+  `ctx.mode === "worker"` at `runner/bootstrap/child-runtime.ts:306`.
+- **SQL transaction isolation**, a different sense of the word, one of them
+  live SQL:
+  - `lib/drivers/sql/dialect.ts:1684`: `"SET TRANSACTION ISOLATION LEVEL READ COMMITTED"`;
+  - comments at `dialect.ts:522,1028,1676` and `sql-driver.ts:6399,7348,7349`.
+
+  **`lib/drivers/**` is out of the sweep's scope entirely.** The sweep's
+  mapping is scoped by file and by exact identifier, and **never a bare,
+  case-insensitive `isolation` word rule**: one would break MySQL
+  transactions at runtime, not just prose. **Verified after the change:** the
+  eight `isolat` lines in `lib/drivers/**` (the seven SQL transaction lines
+  above and `mongo-driver.ts:484`) are identical in text and line number, and
+  `driver.ts` has only additions (§4.2.4).
+- **Other senses, never renamed:**
+  - *test isolation*, which is every match in `packages/bun-jobs-ui` (7 lines:
+    `__tests__/app/queryIsolation.test.ts`, `__tests__/app/isolation/*`,
+    `domLeak.test.ts:105`, `e2e/profile.ts:23`), in `packages/bun-nest` (13
+    lines), and `bun-jobs/__tests__/namespace.test.ts:84,194` and
+    `helpers/driverContract.ts:7449-7450`;
+  - English in `bun-common` and `benchmarks/`, `CLAUDE.md:460,587`,
+    `mongo-driver.ts:484` and `README.md:4824,5428` (`:4722,5325` on
+    `688d376`);
+  - the runner's own "isolation" prose in `bench/**`,
+    `688d376:examples/bun-jobs/07-runner/execution-modes.ts:9` and
+    `scheduled-runner.ts:32`.
+
+  §11's inventory counts them.
+- **The child-side names** `IsolatedJob`, `IsolatedJobProcessor` and the
+  message `job.X() is not available in an isolated job`
+  (`runner/bootstrap/child-runtime.ts:434`, asserted at runtime by
+  `__tests__/worker-target.test.ts:568,594` — the renamed
+  `worker-isolation.test.ts` — and
+  `688d376:examples/bun-jobs/10-options/worker-isolation.ts:20,792`). Kept, as
+  N9 decided.
+- **Every existing `WorkerInfo`/`WorkerDto` field**, and the do-not-change
+  list of `control-plane-rename.md` §6.
+
+#### Do not change: behaviour (the invariants the swap must keep)
+
+These come from the bun-jobs session, which worked in these paths this week.
+They were verified against the tree before the change, and hold after it
+(cited against the implementation):
+
+- **I1. One write funnel for every target.** A child's progress arrives as
+  `void job.updateProgress(value)` (`queue/workerTarget.ts:646-654`). A log
+  line arrives through `job.log` (`:859`). Both join the attempt's
+  `AttemptWrites` lane (`queue/attemptWrites.ts:39`, built per attempt at
+  `BunQueueWorker.ts:2203`), which `#awaitWrites` (`:2371`) settles before the
+  job's ending is recorded. **Every target, the custom one included, writes
+  through `Job` and never through the driver.** Otherwise #122's ordering fix
+  silently comes undone for whichever target skips it. `WorkerTargetAttempt`
+  hands a custom target the `Job` for exactly this reason, and its JSDoc says
+  so. `WorkerTargetContext` carries **no driver**, deliberately
+  (`queue/workerTarget.ts:163-171`), so a custom target *cannot* write around
+  the `Job`: I1–I3 hold for it by construction.
+- **I2. The two write caps differ on purpose.** An attempt that ended itself
+  waits `Math.max(WRITE_SETTLE_TIMEOUT, lockDuration / 4)`
+  (`BunQueueWorker.ts:2385`). One the worker abandoned waits a flat
+  `WRITE_SETTLE_TIMEOUT = 250` (`:237`). An uncapped wait was measured holding
+  a concurrency slot for ever on one un-awaited `job.log()` (README "The wait
+  is always capped").
+- **I3. A progress value reported after an abort is dropped, in every
+  target**: no write and no event. The lane reads the attempt's abort signal
+  (`new AttemptWrites(controller.signal)`, `:2203`). No new target may surface
+  late values. A custom target inherits this by writing through `Job` (I1).
+- **I4. Required-green gate tests for the swap**, beyond the suite as a
+  whole, each re-pointed to the new spellings and none weakened:
+  - `__tests__/fix-attempt-write-ordering.test.ts`
+  - `__tests__/fix-progress-ordering.test.ts`
+  - `__tests__/fix-progress-timeout.test.ts`
+  - `__tests__/worker-target.test.ts` (renamed from `worker-isolation.test.ts`
+    with `git mv`)
+
+  `fix-attempt-write-ordering` gained three **custom-target** cases
+  (`:563-635`): a factory whose `run()` reports progress after the abort sees
+  it dropped, with no write and no event; one whose unawaited writes are slow
+  sees the completion wait for them; and one whose write hangs sees the
+  completion wait only up to the ended-itself cap (500 ms at a 2 s
+  `lockDuration`). All four files passed; see Phase 1's gate record (§11).
 
 ### 4.6 Provider plugins: the `execute` facet
 
@@ -1429,7 +2152,9 @@ it bears on remote execution. That document is the design.
   `runRuntimeAdapterConformance` for the event mapping, and §7's
   `conformRemoteExecutor` unchanged for the platform side.
 - **`WorkerTargetFactory` stays** as the low-level hook for a transport that is
-  not request/response at all (§4.2, and the correction there).
+  not request/response at all. Since the Phase 1 design check it returns a
+  `WorkerTargetExecutor`, not the runner's `Executor` (§4.2.6), and the
+  gateway, `RemoteTarget`, implements the same interface.
 - **Stability**: `execute` is `experimental` (`0.x`) until the Cloudflare,
   Lambda and generic HTTP adapters, `httpsExecute`, `lambdaExecute` and one
   outside provider pass both kits (Phase 4's gate).
@@ -2525,20 +3250,23 @@ targeting `browser`, and fail on any server marker in the output.
 
 ### 8.1 What a push-mode remote is, in the inventory
 
-**It is not a worker.** The `WorkerInfo` record (`drivers/driver.ts:1339`) is
+**It is not a worker.** The `WorkerInfo` record (`drivers/driver.ts:1426` on `688d376`) is
 written by `#report()` from a process that holds the driver: `id`, `key`,
 `service`, `host`, `pid`, `concurrency`, `active`, `state`, `processStartedAt`,
 `version`, `completed`, `failed`, `config`, `control`. A Cloudflare Worker
 writes none of that, and cannot — it has no driver.
 
 So in push mode the **gateway** is the worker, exactly as it is today, and the
-endpoint is an attribute of it. Three additions:
+endpoint is an attribute of it. Phase 1 already puts `target` on the record,
+as `WorkerTargetInfo` (§4.2.4: `kind`, `processor`, `name?`, `file?`; absent
+means a worker too old to say, **not** in-process). Phase 2 adds `"endpoint"`
+to `kind` and two fields:
 
 ```ts
-/** Where this worker's attempts run. Absent means in-process, as before. */
+/** Phase 2's additions to WorkerTargetInfo (§4.2.4). */
 target?: {
-  /** `"in-process" | "thread" | "process" | "endpoint"`, or a custom mode. */
-  mode: string;
+  /** Phase 1's closed list, plus `"endpoint"` from Phase 2. */
+  kind: "in-process" | "worker-thread" | "child-process" | "custom" | "endpoint";
   /** For `"endpoint"`: the URL, origin only — never the path or a query. */
   endpoint?: string;
   /** For `"endpoint"`: what the remote said about itself at the last handshake. */
@@ -2602,7 +3330,7 @@ Be explicit about this on the Workers page rather than showing an empty card:
   because the gateway writes it.
 
 Concretely: `WorkerTable.tsx` gets a target badge; `WorkerScreen.tsx` gets a
-"Target" card showing mode, origin, last handshake, negotiated protocol,
+"Target" card showing kind, processor (function or file), a custom target's name, and in Phase 2 the origin, last handshake, negotiated protocol,
 advertised names, consecutive failures; `WorkerConfigCard.tsx` picks up the
 three new keys automatically since it renders `WORKER_CONFIG_KEYS`.
 
@@ -2634,8 +3362,8 @@ of them is a bench scenario to be written (§9.3):
 | Target | Added cost per attempt | Expected throughput vs in-process |
 |---|---|---|
 | in-process | 0 | 1× |
-| `"thread"` | `Worker` spawn + structured clone | already measured by `worker-isolation`; dominated by spawn, so batch-per-worker would help and does not exist |
-| `"process"` | `Bun.spawn` + JSON IPC | worst of the local three; a process per attempt |
+| `"worker-thread"` | `Worker` spawn + structured clone | already measured by `worker-isolation`; dominated by spawn, so batch-per-worker would help and does not exist |
+| `"child-process"` | `Bun.spawn` + JSON IPC | worst of the local three; a process per attempt |
 | `{ endpoint }`, batch 1, same region | 1 RTT + TLS session resumption + remote cold-start | hundreds/s, not tens of thousands. The RTT is the throughput, not the CPU |
 | `{ endpoint }`, batch 25 | 1 RTT per 25 | ~25× the above, minus the tail: a batch is as slow as its slowest job |
 | `{ endpoint }`, cross-region | +60–150 ms RTT | do not do this |
@@ -2919,12 +3647,13 @@ The first-party summoners and adapters are built on the public API.
 | Phase | What | Effort (bun-jobs session) | Other owners |
 |---|---|---|---|
 | **0** | Rename the control planes | ~1.5 d | examples PR; UI copy |
-| **1** | `target` option, local only | ~7.5 d | UI badge (in the estimate) |
+| **1** | `target` option, local only, replacing `isolation` — **implemented, awaiting merge** | **~7 d** (was ~7.5 d, which included the UI badge) | examples ~1.5 d (stacked PR); UI ~2 d (badge, Target card, playground prose) |
+| **1r** | Runner spellings: `worker-thread`/`child-process` for runners, a reader that accepts the old stored values, the DTO change | ~3 d | examples ~1.5 d, UI ~1 d |
 | **1.5** | Summon-compute, including the provider plugin API (1.5p) and the summon stability gate (1.5s) | **~47 d** (was ~32.5 d; the minimum useful ship, 1.5a + 1.5b, is still ~17.5 d) | UI ~3.5 d, examples ~3 d |
 | **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, and the `execute` facet | **~22.5 d** (was ~19 d) | — |
 | **3** | Conformance kits, the runtime-adapter kit, and the first adapters built on it | **~17 d** (was ~11 d) | examples ~1 d |
 | **4** | Benchmarks, remaining adapters, hardening, the execute stability gate | **~10 d** (was ~9 d) | — |
-| | **Total** | **~105.5 d** (was ~80.5 d) | **~8.5 d + the rename's PRs** (was ~5 d) |
+| | **Total** | **~108 d** (was ~105.5 d before the Phase 1 design check; ~80.5 d in the draft) | **~14.5 d + the rename's PRs** (was ~8.5 d) |
 
 ### Phase 0 — rename the control planes
 
@@ -2957,31 +3686,251 @@ rename's mapping.
 
 ### Phase 1 — the `target` option, local only
 
-**Scope.** `target` on `BunQueueWorkerOptions`, the `"thread"`/`"process"`
-spellings, `LocalFileTarget`, `WorkerTargetFactory`, `defineProcessors()`,
-`target` on the heartbeat record, the Workers-page badge, the "worker in a
-second Bun process via `BunRunner`" documentation + example.
+**Status: implemented, awaiting merge** (2026-09-25). PR 1, the library, is
+built on `feat/bun-jobs-worker-target` (base `688d376`) and passes its own gate
+(the gate record below). It is not green alone, by design: it lands together
+with the stacked examples PR (Sequencing, step 3).
 
-**Why here.** It is the API the later phases hang off. It is almost entirely a
-rename and a widening of something already shipped. It carries no protocol, no
-security surface and no network, and it is useful on its own: the
-`WorkerTargetFactory` escape hatch alone lets a user build anything this plan
-defers.
+**Revised 2026-09-25 by the Phase 1 design check** (against `688d376`), and
+reconciled with the implementation the same day. The design is §4.2–§4.5,
+which now describe what was built, and the names, approved 2026-09-25, are
+§4.2.7 (N1–N9).
 
-| Work | Effort |
+**Scope.**
+
+- `target` on `BunQueueWorkerOptions`, **replacing** `isolation` and
+  `isolationOptions` (U2): the three local modes `"in-process"`,
+  `"worker-thread"` and `"child-process"` (U1), their object forms with
+  tuning, and `WorkerTargetFactory` with its `WorkerTargetExecutor` (§4.2.6).
+- `defineProcessors()` (§4.4).
+- `target` on the heartbeat record and `WorkerDto`, optional, with absence
+  meaning "too old to say" (§4.2.4).
+- The README section, and the vocabulary mapping wherever a user meets both
+  vocabularies (§4.2.5).
+- **Out of scope:** runners (U3; that is Phase 1r), `{ endpoint }` (U4;
+  Phase 2), a `?target=` filter on `GET /workers`, and `target` as a remotely
+  configurable key (§4.3, last row).
+
+**Why here.** It is the API the later phases hang off, it carries no
+protocol, no security surface and no network, and the `WorkerTargetFactory`
+escape hatch alone lets a user build anything this plan defers.
+
+#### The inventory: everything `isolation` touches
+
+The scan is case-insensitive (`git grep -i isolat`), plus the worker-level
+literals `"spawn"`/`"worker"`/`"in-process"` in every file that uses the
+option. That is **508 lines**. Each line is classified by **sense** first,
+because the word has at least four, and only one of them is renamed:
+
+| Sense | Files | Lines | Occ. | Treatment |
+|---|--:|--:|--:|---|
+| **W** the worker option (`isolation`, `isolationOptions`, `IsolationMode`, `IsolationOptions`, `IsolatedProcessor`, `isolation.ts`, the values `"worker"`/`"spawn"`, and prose about them) | 35 | 353 | 439 | **the sweep** |
+| J the child-side job (`IsolatedJob`, `IsolatedJobProcessor`, "not available in an isolated job") | 15 | 53 | 54 | keep (N9) |
+| R the runner's execution modes, and "isolation" prose about runners | 9 | 47 | 45 | never (U3, Phase 1r) |
+| T test isolation | 10 | 24 | 24 | never |
+| X SQL transaction isolation, one line live SQL | 4 | 9 | 9 | **do not change** (§4.5) |
+| E other English ("isolates serialization", namespaces, `--linker isolated`) | 11 | 15 | 15 | never |
+| N a literal match that is not about isolation (`kind: "worker"` events, `ClaimStatementOptions["worker"]`) | 3 | 7 | 8 | never |
+
+**Is it persisted or on the wire? No.** See §4.2.4. The new `target` field is
+Phase 1's only wire change.
+
+The **W** lines, by package and coupling. COUPLED-compile means the
+compiler rejects the line once the option changes. COUPLED-runtime means
+only a run shows the mismatch. UNCOUPLED lines are names a consumer chose.
+"Survives" means an `"in-process"`-only line whose value is unchanged.
+
+| Area | Owner (role) | Compile | Runtime | Uncoupled | Survives | Prose | **Total lines / occ. / files** |
+|---|---|--:|--:|--:|--:|--:|---|
+| `packages/bun-jobs/lib` | the bun-jobs session | 28 | 2 (the two messages, §4.2.3) | 3 (`#isolated`) | 1 | 16 | **50 / 62 / 6** |
+| `packages/bun-jobs/__tests__` | the bun-jobs session | 31 | 0 | 15 | 4 | 10 | **60 / 63 / 6** |
+| `packages/bun-jobs/README.md` | the bun-jobs session | — | — | — | — | 24 (including the option table, `:775-776`, and the sample, `:2373-2374`) | **24 / 40 / 1** |
+| `examples/bun-jobs` | the examples session | 46 | 2 (`10-options/worker-isolation.ts:239`, `:1102`) | 58 | 3 | 43 | **154 / 189 / 15** (plus 2 lines to keep: `:1158`, `:1164`) |
+| `playground` | the UI session | 8 (`isolated.ts:87-88,123-124,156-157,183-184`) | 0 | 16 | 0 | 41 | **65 / 85 / 7** |
+| `packages/bun-jobs-ui` | the UI session | 0 | 0 | 0 | 0 | 0 | **0**: every match is test isolation. Excluded from the rename table |
+| `packages/bun-nest`, `bun-common`, `benchmarks/`, `bench/` | — | 0 | 0 | 0 | 0 | 0 | **0 W**. All other senses |
+
+`consumer-check.json` has no isolation entry; it lists `defineProcessor`
+(`:24`) and gains `defineProcessors`. `lib/runner/**` has one W line, the
+comment at `runner/bootstrap/child-runtime.ts:507` that names
+`IsolatedProcessor.run`. Its other matches are J. So the examples session's
+review of `lib/runner/**` public surface is triggered only if N9 renames.
+
+**Reading the examples half.** The examples session measured **91 lines /
+102 occurrences in 14 files** with its own pattern. The table above is 154
+lines / 189 occurrences in 15 files because it also counts two things. First,
+the worker-level literal values on lines that do not say "isolation" (for
+example `mode: "worker"` at `worker-isolation.ts:144`, and the `for (const
+mode of ["spawn", "worker"] …)` loops at `:341,749,808,853`). Second, the
+uncoupled local names in `10-options/errors.ts:1126-1179`
+(`isolatedQueue`, `isolatedWorker`, `isolatedDead`, `isolatedStored`). Size
+the work by the coupled columns (48 lines, 68 occurrences) and read it by
+lines. `10-options/worker-isolation.ts` alone is 84 of the lines.
+
+**Runtime-only couplings the compiler will not catch:**
+
+- `examples/bun-jobs/10-options/worker-isolation.ts:237-239` asserts
+  `BUN_JOBS_MODE === mode`. That is false once `mode` is `"worker-thread"`
+  (§4.2.5). It must compare against the runner spelling.
+- `worker-isolation.ts:1102` asserts `/isolation must be/`, which becomes
+  `/target must be/`.
+- `errors.ts:333` and `worker-isolation.ts:1072,1082` assert `/needs a
+  processor file/`. They **pass unchanged**, because §4.2.3 keeps the phrase.
+- **Seven files named after the concept**, loaded by path string: the
+  example `10-options/worker-isolation.ts` (in `RUN_ALONE`, `run-all.ts:60`),
+  and the processors `10-options/processors/isolation-{report,slow-write,unavailable,fail,job-fail,hang}.ts`.
+  They are referenced by eight path strings in `worker-isolation.ts`,
+  including the bare `processor: "./isolation-report.ts"` at `:159`. **The
+  examples session's proposal**, and its call: keep the processor file names,
+  because running a job isolated from its caller is still what they
+  demonstrate, in plain English. "Isolation" is not being given a new meaning,
+  unlike "remote" in Phase 0. Rename `worker-isolation.ts` after its subject
+  in a follow-up, not in this window.
+- The playground's `processors/checksum.ts:77,113` and
+  `processors/preview.ts:66,86,111` put `BUN_JOBS_MODE` into a job result
+  field named `isolation`. That is user data, uncoupled, and it shows the
+  runner spelling next to a worker built with the new one.
+
+**The playground split** (the UI session's, accepted):
+
+- The library PR takes the **8 compile-coupled lines** in
+  `playground/isolated.ts` mechanically, so the playground typechecks in the
+  same window.
+- The UI session rewrites the rest afterwards: the 16 uncoupled code lines
+  (`IsolatedWorld`, `startIsolated`, the `isolation` result fields, the
+  imports in `simulation.ts:2,135,142,231-232`) and the 41 prose lines (the
+  `isolated.ts` header, three processor files' doc comments, the README's
+  worker table and its "Isolated workers" section at `playground/README.md:64,84-90`).
+  It will probably rename `isolated.ts` → `targets.ts`.
+- The UI session's own count was "18 code uses, about 37 prose". The
+  difference is classification: 8 lines are compile-coupled, and the rest of
+  the code lines are names the playground chose.
+
+#### Work and effort
+
+| Work | Owner | Effort |
+|---|---|---|
+| `target` types, resolution, the `ConfigError` messages of §4.2.3, JSDoc on every property | bun-jobs | 1 d |
+| `isolation.ts` → `workerTarget.ts` (`git mv`); `IsolatedProcessor` → internal `FileTargetExecutor`; `WorkerTargetExecutor` / factory / `close()`; the `RunContext.mode` mapping | bun-jobs | 1.5 d |
+| `defineProcessors()` + a registry-dispatch fixture | bun-jobs | 0.5 d |
+| `WorkerInfo.target`, `WORKER_TARGET_KINDS`, both `WorkerDto`s, the schema, `toWorkerDto` + the N7 flag, and the two drift tests (§4.2.4) | bun-jobs | 1 d |
+| Tests: the four I4 files re-pointed; parity across the three targets (the `688d376:packages/bun-jobs/__tests__/worker-isolation.test.ts:82` loop, now `worker-target.test.ts:103`); every `ConfigError`; a custom target, including the I1–I3 cases; the record's `target`, present and absent | bun-jobs | 1.5 d |
+| README: the target section replacing "Isolated processors" (`688d376:packages/bun-jobs/README.md:2347-2469`; now `README.md:2361-2571`), the option table (`:775-776`; now `:778`), the mapping sentence, the TOC (`:98`; now `:98-101`) | bun-jobs | 0.5 d |
+| The mechanical sweep of `__tests__` (60 lines) and the 8 playground lines | bun-jobs | 0.5 d |
+| Gate (below) | bun-jobs | 0.5 d |
+| **Total, the library PR** | | **~7 d** (was ~7.5 d including the UI's 1 d; the `WorkerTarget` row is gone, Phase 0 settled it) |
+| The examples' sweep: 48 coupled lines and the prose, the mapping sentence in `worker-isolation.ts` and `07-runner/execution-modes.ts`, and a `defineProcessors` / worker-file example in `07-runner/` | examples | ~1.5 d |
+| The Workers-page target badge and the Target card; absent renders as "—"; the `What each element needs` row, reported to the examples session because `examples/bun-jobs-ui/04-screens/permissions.ts` parses it | UI | ~1.5 d |
+| The playground's prose and names rewrite | UI | ~0.5 d |
+
+#### Sequencing
+
+1. **The user approves N1–N9** (§4.2.7). Done 2026-09-25: every name is
+   the recommended candidate, and §4.2.7 records the choices.
+2. **PR 1, the library** (the features session, on
+   `feat/bun-jobs-worker-target`): bun-jobs `lib/`, `__tests__/`, `README.md`,
+   `consumer-check.json`, and the 8 compile-coupled playground lines. Sign-offs:
+   the bun-jobs session for `lib/**`, `__tests__/**` and the README; the UI
+   session for the 8 playground lines and for the `WorkerDto.target` shape it
+   will render; the examples session only if N9 renames a `lib/runner/**` name.
+3. **PR 2, the examples** (the examples session, stacked on PR 1): the
+   `examples/**` sweep, including the two runtime couplings and the mapping
+   sentence. `scripts/typecheck.ts` typechecks the examples, so **neither PR is
+   green alone**. As in Phase 0, run the gate on PR 2's head, merge PR 2 into
+   PR 1's branch, and land PR 1 as one merge commit, so `develop` never
+   carries a red commit.
+4. **PR 3, the UI** (the UI session, a separate feature *after* PR 1 lands the
+   API field): the badge, the Target card and the playground prose. It depends
+   only on the `WorkerDto.target` contract, so it can be built against PR 1's
+   branch while PR 1 is in review.
+
+**Gate** (PR 2's head, a fresh worktree, `@kingsleyweb/*` resolving inside
+it):
+
+- `bun scripts/typecheck.ts`;
+- `CI=1 bunx eslint .` in `packages/bun-jobs`, `examples/bun-jobs` and
+  `playground`;
+- `bun run build:types` and `bun scripts/consumer-check.ts packages/bun-jobs`,
+  where the baseline is 96/96 and `defineProcessors` is added;
+- `bun test` in `packages/bun-jobs` with every database URL exported, with
+  **the four I4 files named as required-green**;
+- `bun run-all.ts` in `examples/bun-jobs` on memory plus one server, and the
+  full 8-backend sweep once (71 of 71 per backend, all five URLs exported),
+  quoting what ran;
+- the §4.5 do-not-change check: the X lines and the runner vocabulary
+  unchanged, run as `git grep -c` on the base and on the head.
+
+**Gate record — PR 1 alone, measured 2026-09-25** on
+`feat/bun-jobs-worker-target` (base `688d376`), after `bun install` at the
+root and in the three bench directories, with every `@kingsleyweb/*` package
+resolving inside the worktree and no `dts/` or `bun-jobs-ui/dist` present:
+
+| Check | Result |
 |---|---|
-| `target` resolution + `ConfigError`s + JSDoc | 1 d |
-| `IsolatedProcessor` → target dispatch; `Executor`-based custom target, including the target-level executor type with an open `mode` and optional `file` that §4.2's correction requires | 1 d |
-| `defineProcessors()` + registry-dispatch file | 0.5 d |
-| `WorkerInfo.target` + serializer switch + API DTO + schema | 1 d |
-| UI badge + Target card | 1 d |
-| Tests: parity (the `runner-modes.test.ts` shape), config errors, custom target | 1.5 d |
-| README section, option tour example, `examples/bun-jobs/07-runner/` worker-file example | 1 d |
-| The `WorkerTarget` name, if Phase 0 did not settle it | 0.5 d |
-| **Total** | **~7.5 d** |
+| `bun scripts/typecheck.ts` | **15 of 16 projects clean.** The one failure is `examples/bun-jobs`: 23 errors, every one an isolation name (`isolation` as an option key ×21 in `02-queues/isolated-processors.ts`, `10-options/errors.ts` and `10-options/worker-isolation.ts`; the removed `IsolationMode` and `IsolationOptions` imports ×2). Closed by the stacked examples PR, as Sequencing step 3 expects |
+| `CI=1 bunx eslint .` | `packages/bun-jobs`: 0 errors (31 `no-console` warnings, none from this change's code); `playground`: 0 errors, 0 warnings |
+| bun-jobs `bun test`, all five URLs exported (MariaDB 3306, MySQL 3307, Postgres, Redis, MongoDB) | **5,147 pass, 20 skip, 0 fail** (5,167 tests, 185 files), first run. The 20 skips are `skipIf` guards unrelated to the backends (an opt-in docs-network suite, optional validators); a set but unreachable URL would have failed the run |
+| The four I4 files (§4.5), required-green | `fix-attempt-write-ordering`, `fix-progress-ordering`, `fix-progress-timeout` and `worker-target`: green in the full run, and 82 of 82 on a re-run of the four alone |
+| bun-jobs-ui `bun test` | **1,566 pass, 0 fail** in file order, under `--randomize --seed=1234`, and under `--seed=98765`. The optional `WorkerDto.target` needed no fixture change |
+| `bun run build:types`, then `bun scripts/consumer-check.ts packages/bun-jobs` | declarations verified; **96/96 cells OK**, every spelling loading under Bun, with the new names added to `consumer-check.json` |
+| Mutation checks | removing the bound in `#closeTarget` makes the close gate test fail ("closed" expected, "hung" received); removing the `@ts-expect-error` from the wrong-kind case in `workerTarget.type-test.ts` makes the typecheck fail (`TS2353`, `spawn` does not exist on `WorkerThreadTarget`) |
+| Stale identifiers | a scoped grep for the worker-sense names finds 71 lines on `688d376` (the negative control) and, after, only the intentional ones: the leftover-key guard, its test, the type-test's negative control, and three playground prose lines the UI session owns |
+| §4.5 do-not-change | the eight `isolat` lines in `lib/drivers/**` identical in text and line number; the runner vocabulary and child-side name counts identical in every file but the moved one, whose extra lines are the new mapping code |
+| Function-processor hot path | byte-identical: the `#process()` diff touches only the condition and the target branch (§4.3) |
 
-**Ships nothing that can break an existing user.** No new dependency, no new
-`exports` key, no `consumer-check.json` change beyond `defineProcessors`.
+Not yet run, because it needs PR 2's head: the typecheck with the examples
+green, `CI=1 bunx eslint .` in `examples/bun-jobs`, and the `run-all.ts`
+sweeps. The benchmarks were not run; peers schedule quiet windows for them.
+
+**Nothing in it can break a user who upgrades everything at once**, because
+there are no published users. It is a breaking change for the user's own
+running `playground/` only in its option spellings. Its stored data is
+untouched.
+
+### Phase 1r — runner spellings (a separate, migration-bearing follow-up)
+
+**Not part of Phase 1** (U3). It gives runners the same words as workers, so
+that the vocabulary table in §4.2.5 can be deleted. It is a migration because
+the old spellings are stored and on the wire:
+
+- **New public spellings.** `executionMode` and `allowedOverrides.executionModes`
+  take `"in-process" | "worker-thread" | "child-process"`. `ExecutionMode`
+  (`drivers/driver.ts:162`) and `RunContext.mode` (`runner/types.ts:103`,
+  which a handler *does* see) change with them. `BUN_JOBS_MODE`'s value is
+  decided here too.
+- **A reader that accepts both.** Normalise `"spawn"` → `"child-process"` and
+  `"worker"` → `"worker-thread"` wherever a stored value is read: run history
+  (`RunRecord.mode`, JSON inside every driver's state blob, e.g.
+  `sql-driver.ts:1840-1851`), `config:executionMode` and `config:allowed`
+  (`runner/config.ts:38-58`). Write only the new spellings. No
+  rolling-upgrade guarantee is needed (unpublished), but the user's running
+  playground and any deployment's history must read cleanly.
+- **The API DTO change.** `EXECUTION_MODES` (`api/contract/constants.ts:547`)
+  and `ExecutionModeDto` (`api/contract/types.ts:2258`, used at
+  `:2282,2374,2392,2431,2475`) move to the new spellings. The config route
+  accepts the old ones on input for one release, since a UI tab open across
+  the upgrade will send them.
+
+**Size, measured on `688d376`** (`git grep -E
+'executionModes?|ExecutionMode|EXECUTION_MODES|BUN_JOBS_MODE|ctx\.mode|context\.mode'`,
+before classification, so an upper bound):
+
+| Area | Files | Lines |
+|---|--:|--:|
+| `packages/bun-jobs/lib` | 22 | 175 |
+| `packages/bun-jobs/__tests__` | 44 | 257 |
+| `packages/bun-jobs/README.md` | 1 | 9 |
+| `packages/bun-jobs-ui` | 17 | 133 |
+| `examples` | 36 | 137 |
+| `playground` | 4 | 9 |
+
+**Effort:** bun-jobs ~3 d (spellings, the normalising reader on every driver
+with old-value fixtures, the DTO and OpenAPI, tests), examples ~1.5 d, UI
+~1 d. It needs the same stacked-PR merge as Phase 1, and its own
+do-not-change list: the `r:` key, the `config:` state *names* and the
+cursors stay exactly as `control-plane-rename.md` §6 lists them. **Place:**
+after Phase 1, independent of 1.5 and 2. It can run whenever the examples and
+UI sessions have a window.
 
 ### Phase 1.5 — summon-compute (committed)
 
@@ -3045,10 +3994,22 @@ isolate; Phase 2 exists for that.
 **Scope.** Everything the draft put in Phase 2:
 
 - `remote/protocol.ts` (the versioned wire spec);
-- `RemoteTarget` implementing `Executor`;
+- `RemoteTarget` implementing `WorkerTargetExecutor` (§4.2.6; the draft said
+  the runner's `Executor`);
 - signing and verification over `crypto.subtle`;
 - handshake + caching, batching, the circuit breaker;
-- `HandlerNotFoundError`, and the three new `WORKER_CONFIG_KEYS`;
+- `HandlerNotFoundError`, and the three new `WORKER_CONFIG_KEYS`. **The
+  worker's unrecoverable check must learn the new name**: it matches
+  `UnrecoverableJobError` by class *and by name*
+  (`BunQueueWorker.ts:3231-3237`, as of Phase 1), because an error rebuilt
+  from a wire format or a child process is no longer an instance of any
+  class. A `HandlerNotFoundError` that extends `UnrecoverableJobError` is still
+  caught by `instanceof` in-process, but once serialised its name is
+  `"HandlerNotFoundError"`, which the by-name half would not match, so a
+  remote "no such handler" would be retried. Add the name to that check (or
+  match on the error's `code`), with a test that crosses a boundary. Decide
+  then whether `defineProcessors` (§4.4), which throws
+  `UnrecoverableJobError` in Phase 1, should switch to it;
 - `PROTOCOL.md`;
 - `createRemoteExecutor()`: the framework-agnostic `Request → Response`
   reference implementation, which is both the thing adapters wrap and the
@@ -3149,7 +4110,9 @@ large-payload handling; the tier-3 manual e2e script.
 
 **Ship in order: 0, 1, 1.5a–b, then the rest of 1.5 and Phase 2 in parallel
 if two people are available.** Phases 0 and 1 are small and unblock
-everything else.
+everything else. Phase 1r (runner spellings) depends only on Phase 1 and fits
+any window the examples and UI sessions have. Until it lands, §4.2.5's
+vocabulary table is the documented bridge.
 
 Phase 1.5's minimum useful ship (1.5a + 1.5b, ~17.5 d) serves the commonest
 request, "I do not want a worker running 24/7", on every host that can reach
