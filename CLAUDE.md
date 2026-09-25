@@ -109,15 +109,24 @@ is not.
 
 The repo's own tooling in the root `scripts/` (`typecheck.ts`,
 `setup-databases.ts`, `consumer-check.ts`) belongs to no package, so it has its
-own lint config; after touching one, lint it from there:
+own lint config and its own tests; after touching one, check it from there:
 
 ```bash
 cd scripts && bunx eslint .   # 0 errors, and 0 warnings
+cd scripts && bun test        # scripts/__tests__/
 ```
 
 It is the packages' config except that `no-console` and
 `antfu/no-top-level-await` are off: every file there is a CLI entry point, whose
-output is its product and which nothing imports.
+output is its product. A script a test needs to reach exports what the test
+calls and starts only under `if (import.meta.main)`, so importing it runs
+nothing — `consumer-check.ts` is the first, for its leak scanner.
+
+That scanner reads a declaration's imports with `ts.preProcessFile`, not a
+regex: tsc copies JSDoc into `dts/`, so prose containing `from "…"` read as an
+import of a package with that sentence for a name, and the check exited 1 on a
+clean package. A guard that fires on prose gets routed around, so the fix went
+in the scanner rather than the comment.
 
 **Lint the whole package, not `lib __tests__`.** That narrower scope was what
 the workflow said for a long time, and it had the same blind spot the
