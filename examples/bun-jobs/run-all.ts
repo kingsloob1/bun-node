@@ -70,7 +70,7 @@ const RUN_ALONE = [
  */
 const SLOW_FIRST = [
   // 61s, and the longest example in the package by a factor of three: it boots
-  // a Worker and a child process per isolation mode, then waits out a runaway
+  // a Worker and a child process, one per target, then waits out a runaway
   // processor's kill. Starting it last would leave the pool waiting on it alone.
   "02-queues/isolated-processors.ts",
   "10-options/runner-options.ts",

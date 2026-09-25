@@ -6,7 +6,7 @@
  * With `ignoreSigterm` it also installs a `SIGTERM` listener, which a blocked
  * thread never gets to run, so `SIGTERM` does nothing and only the `SIGKILL`
  * that follows `killTimeout` ends it. Run by `worker-isolation.ts` under
- * `isolation: "spawn"`; not meant to be run on its own.
+ * `target: "child-process"`; not meant to be run on its own.
  */
 import process from "node:process";
 import { defineProcessor } from "@kingsleyweb/bun-jobs";

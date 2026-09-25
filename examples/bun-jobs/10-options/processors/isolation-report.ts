@@ -2,7 +2,7 @@
  * An isolated processor that reports where it ran and what the job channel
  * answered: its log, its lock, its heartbeats.
  *
- * Run by `worker-isolation.ts` in each isolation mode. Not meant to be run on
+ * Run by `worker-isolation.ts` on each local target. Not meant to be run on
  * its own.
  */
 import process from "node:process";
@@ -33,11 +33,21 @@ export interface Report {
   pid: number;
   /** Whether it ran on a process's main thread (false inside a `Worker`). */
   isMainThread: boolean;
-  /** `BUN_JOBS_CHILD`, set to `"1"` by the spawn and worker executors. */
+  /**
+   * `BUN_JOBS_CHILD`, set to `"1"` on a `"worker-thread"` or `"child-process"`
+   * target (by the runner's worker and spawn executors, which they share).
+   */
   child: string | null;
-  /** `BUN_JOBS_MODE`, the executor that started it. */
+  /**
+   * `BUN_JOBS_MODE`, the executor that started it, in the runner's spelling:
+   * `"worker"` on a `"worker-thread"` target, `"spawn"` on a `"child-process"`
+   * one, unset in-process.
+   */
   mode: string | null;
-  /** `TOUR_ISOLATION_ENV`, set through `isolationOptions.spawn/worker.env`. */
+  /**
+   * `TOUR_ISOLATION_ENV`, set through the target's `spawn.env` or
+   * `worker.env`.
+   */
   env: string | null;
   /** The working directory it ran in. */
   cwd: string;

@@ -322,12 +322,12 @@ await checkConfig(
   /cannot be both debounced and throttled/,
 );
 await checkConfig(
-  "isolation without a processor file",
+  "a child-process target without a processor file",
   () => {
     return new BunQueueWorker("errors", () => null, {
       namespace,
       driver,
-      isolation: "spawn",
+      target: "child-process",
     });
   },
   /needs a processor file/,
@@ -1130,7 +1130,7 @@ const isolatedQueue = new BunQueue<{ orderId: string }, never>(
 const isolatedWorker = new BunQueueWorker<{ orderId: string }, never>(
   "errors-isolated",
   helper("errors-unrecoverable.ts"),
-  { namespace, driver, isolation: "spawn", pollInterval: 10 },
+  { namespace, driver, target: "child-process", pollInterval: 10 },
 );
 /** The error the isolated worker's `dead` event carried. */
 let isolatedDead: Error | undefined;
@@ -1153,23 +1153,23 @@ await waitFor(
 );
 const isolatedStored = await isolatedJob.refresh();
 checkEqual(
-  "spawn: one attempt of five",
+  "child-process: one attempt of five",
   [isolatedStored?.attemptsMade, isolatedStored?.maxAttempts],
   [1, 5],
 );
 checkEqual(
-  "spawn: failedReason name and message",
+  "child-process: failedReason name and message",
   [isolatedStored?.failedReason?.name, isolatedStored?.failedReason?.message],
   ["UnrecoverableJobError", "card expired"],
 );
 checkEqual(
-  "spawn: context crossed two boundaries",
+  "child-process: context crossed two boundaries",
   fields(isolatedStored?.failedReason).context,
   { orderId: "o-9" },
 );
 await waitFor("the isolated dead event", () => isolatedDead !== undefined);
 check(
-  "spawn: the dead event is a rebuilt Error, recognised by name",
+  "child-process: the dead event is a rebuilt Error, recognised by name",
   isolatedDead?.name === "UnrecoverableJobError" &&
     !(isolatedDead instanceof UnrecoverableJobError),
   isolatedDead,
