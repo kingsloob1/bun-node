@@ -164,10 +164,9 @@ Four things follow, and each is visible on the screen:
   would make the walk cost what the offset cost. Today SQL and MongoDB never
   number a walked page; memory and Redis always do, from the rank their seek
   resolved; the file driver does when it can compare marker names (one state,
-  no filter) or when a total was asked for and counted them anyway. A walk in
-  an order a driver does not seek at all is served by the shared scan instead,
-  which walks the listing and so numbers it — the file driver's
-  `sort=createdAt` is the case. The route's own description is the list to
+  no filter) or when a total was asked for and counted them anyway. A walk a
+  driver declines to seek is served by the shared scan instead, which walks
+  the listing and so numbers it. The route's own description is the list to
   trust, since it changes with the drivers. A numbered
   walked page is the position in the list *as it is now*: after five jobs are
   taken, page two of a walk reads "6–15".
