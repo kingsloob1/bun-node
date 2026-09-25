@@ -511,6 +511,51 @@ D3, and stay on their owner's schedule.
 
 Both were green in the simulated typecheck; their runtime result is in §10.4.
 
+### 7.1 Examples: decisions and corrections (the examples session, 2026-09-25)
+
+Measured by the examples session on `ca3ed21`. They correct the examples half
+of this section.
+
+- **The parsed gate name appears twice** in
+  `examples/bun-jobs-ui/04-screens/permissions.ts` — `:1592`
+  (`name: "runner: remote hint"`) and `:4344` (`"runner: remote hint": false`,
+  in an expectation map). Both change in the same commit as the UI README row
+  "Runner remote hint" → "Runner non-local hint". This is the one coupling that
+  cannot be split between PR 1 and PR 2.
+- **Only one testid reaches the examples:** `runner-remote-hint`
+  (`06-browser/runner-and-job-tools.ts:2221`). `trigger-remote-note` and
+  `remote-note` have no hits in `examples/**`.
+- **No example asserts the user-visible copy** ("Remote" badge, "N remote
+  runners", "No (remote)").
+- **Coupled prose:** `examples/bun-jobs/10-options/remote-control.ts:860` has a
+  check *name* containing `RemoteRunner.config()`. Leaving it would make the
+  check name false, so it is in PR 2 — coupled, not uncoupled.
+- **Excluded, so a sweep never reaches it:**
+  `examples/bun-common/12-options/native-utilities.ts` has `name: "Remote"`,
+  which is demo data for a native helper and unrelated to this rename.
+
+**Decision — example file names follow the subject, in a follow-up PR, not in
+this window.** The examples session's call as owner:
+
+| Old | New | Why |
+|---|---|---|
+| `examples/bun-jobs/10-options/remote-control.ts` | `10-options/cross-process-control.ts` | Its subject is controlling workers and runners from another process. After the rename no single option names it (`control` on workers, `allowedOverrides` on runners), and its siblings are subject-named (`worker-options.ts`, `driver-options.ts`, `job-defaults.ts`) |
+| `examples/bun-jobs/07-runner/remote-control.ts` | `07-runner/controller.ts` | The API is the name after the rename — `BunRunnerManager.controller(id)` — and it sits beside `manager.ts`, mirroring `BunRunnerManager` / `RunnerController` |
+| `examples/bun-jobs-ui/06-browser/helpers/remote-process.ts` | `other-process.ts` (later, owner's schedule, with `RemoteProcess` / `startRemoteWorker`) | It starts a worker in a second OS process on the same machine — the non-local sense, not remote execution |
+
+The principle, recorded because it generalises: **name a file after its
+subject, not after the option it currently demonstrates** — the subject
+survives the next rename.
+
+Why a follow-up rather than this window: moving the two `remote-control.ts`
+files also changes six links in `packages/bun-jobs/README.md` (`:1130`,
+`:1829`, `:3084`, `:3179`, `:5314`, `:5361`), which the bun-jobs session owns,
+plus `examples/bun-jobs/run-all.ts:59` (`RUN_ALONE`), a cross-reference in the
+first file's header, and two examples-README rows. Inside a 67-line identifier
+rename that is noise; on its own it is a five-minute review where a missed link
+is obvious. `run-all.ts`'s stale-list guard fails loudly if `RUN_ALONE` names a
+missing file, so a half-done file rename cannot pass quietly.
+
 ## 8. Ownership and sequencing
 
 Owners, by role:

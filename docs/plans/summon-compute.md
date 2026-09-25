@@ -13,6 +13,13 @@ option (Phase 1). It comes before real remote execution (Phase 2).
 
 Written 2026-09-25 against `develop` at `d54d1fe`. **No code was changed.**
 
+**Updated 2026-09-25: summoners are now provider plugins.** Every summoner,
+first-party or third-party, is a *compute provider* with a `summon` facet,
+written against one public, versioned plugin API. That design lives in
+[`compute-provider-plugins.md`](compute-provider-plugins.md), which also covers
+the `execute` facet of Phases 2–4. §14 below summarises what it changes here.
+Sections 4.1, 4.10, 7, 8, 9.3, 11.1 and 13 have been updated to match.
+
 ### Contents
 
 1. [Executive summary](#1-executive-summary)
@@ -28,6 +35,7 @@ Written 2026-09-25 against `develop` at `d54d1fe`. **No code was changed.**
 11. [Testing](#11-testing)
 12. [Risks and open questions](#12-risks-and-open-questions)
 13. [Phased delivery](#13-phased-delivery)
+14. [Provider plugins](#14-provider-plugins)
 
 ### How to read the markings
 
@@ -76,8 +84,11 @@ Two more ways in share the same core. The **depth endpoint** lets a platform
 (KEDA, ACA event jobs, GKE's HPA, CREMA) do the summoning. A **one-shot
 `check()`** lets a cloud scheduler do it with nothing of ours always on. There
 are six first-party summoners, all written with `fetch` and WebCrypto, or
-`Bun.spawn(["ssh", …])`. Every other platform goes through the
-`defineSummoner({ invoke })` escape hatch.
+`Bun.spawn(["ssh", …])`. Each is a **provider plugin** written against the same
+public API a third party uses ([`compute-provider-plugins.md`](compute-provider-plugins.md)).
+Every other platform goes through a third-party plugin or the
+`defineSummoner({ invoke })` escape hatch, which now builds an anonymous
+provider.
 
 ### The decisions it rests on
 
@@ -91,7 +102,8 @@ are six first-party summoners, all written with `fetch` and WebCrypto, or
 | 6 | **`countDemand` is an optional driver method, bounded by a cap.** | `countJobs` on SQL is a `GROUP BY state` over the queue's whole retained history (`sql-driver.ts:4302-4313`) [S]. Polling that every 30 s is the wrong cost. §6.4 |
 | 7 | **The depth endpoint returns `demand` and `outstanding`, and does not reuse `/counts`.** | Reading `waiting` has the blind spot in decision 2. On an app-style scaler, a `waiting`-only metric also SIGTERMs a busy worker after cooldown [I, google-azure §6.3]. §6 |
 | 8 | **No cloud SDK. Providers ship as subpaths with no dependencies.** | `CLAUDE.md`'s dependency policy. A SigV4 signer reproduced AWS's published signatures for 5 vectors and differed on 2 [M, aws §5.2]. The Google and Azure token helper is 65 lines [M, google-azure §2.3], and was never run against either cloud [U]. §8 |
-| 9 | **Six first-party summoners, in this order: ECS `RunTask`, Fly Machines, Cloud Run (jobs and worker pools), ACA manual jobs, Render one-off jobs, SSH via `systemd-run`.** Lambda ships beside ECS because it costs little once the signer exists. Everything else is a recipe on `invoke()`. | Drawn from the three evidence rankings. §7 |
+| 9 | **Six first-party summoners, in this order: ECS `RunTask`, Fly Machines, Cloud Run (jobs and worker pools), ACA manual jobs, Render one-off jobs, SSH via `systemd-run`.** Lambda ships beside ECS because it costs little once the signer exists. Everything else is a recipe on `invoke()` or a third-party plugin. | Drawn from the three evidence rankings. §7 |
+| 10 | **Summoners are provider plugins with declared capabilities, and the first-party ones get no privileged internals.** The plugin API and its conformance kit are built (sub-phase 1.5p) before the first-party summoners, and stay `experimental` until those six and one outside provider pass the kit. | The platforms differ on every axis the controller reads (style, dedupe, boot budget, shutdown), so the controller must read declarations rather than know platforms by name. Building the API first means six real implementations test it before it is promised. §14, and [`compute-provider-plugins.md`](compute-provider-plugins.md) §5, §10.4, §16 |
 
 ### What it is not
 
@@ -227,7 +239,7 @@ the worker it summoned. When `summonedFromEnv()` (§5.3) finds a summon id,
 ```ts
 // check.ts: run by EventBridge Scheduler → Lambda, Cloud Scheduler → Cloud Run job, cron, …
 import { SummonController } from "@kingsleyweb/bun-jobs";
-import { ecsRunTask } from "@kingsleyweb/bun-jobs/summon/aws";
+import { ecsRunTask } from "@kingsleyweb/bun-jobs/providers/aws";
 
 const controller = new SummonController({
   driver, namespace: "shop", queue: "emails",
@@ -248,13 +260,15 @@ console.log(result);          // { action: "summoned" | "none" | "skipped", … 
 
 | Piece | File | Exported from |
 |---|---|---|
-| `SummonController`, `SummonPolicy`, `defineSummoner`, the `Summoner` contract | `lib/summon/controller.ts`, `lib/summon/types.ts` | `lib/summon/index.ts`, and the package root |
+| `SummonController`, `SummonPolicy`, `defineSummoner` | `lib/summon/controller.ts`, `lib/summon/types.ts` | `lib/summon/index.ts`, and the package root |
+| the provider core and the `summon` facet types (`defineComputeProvider`, `ProviderError`, `SummonFacet`, `SummonCapabilities`, …) | `lib/provider/` | `./provider` ([`compute-provider-plugins.md`](compute-provider-plugins.md) §6–§7, §11) |
+| the conformance kit and `fakePlatform()` | `lib/provider/testing/` | `./provider/testing` (plugins §12) |
 | demand reading (`readDemand`, the fallback formula) | `lib/drivers/readApis.ts` beside `listWorkerRecords` (`:657`) [S] | `./lib/drivers` |
 | `countDemand` driver method | each driver, contract in `lib/drivers/driver.ts` | — |
 | the marker (reserved entry `__win:summon`) | `lib/summon/marker.ts`, written with `setReservedState` (`queue/windows.ts:79`) [S] | not exported |
 | `drainAndExit`, `summonedFromEnv`, `SUMMON_ENV` | `lib/summon/worker.ts` | root |
-| provider summoners | `lib/summon/providers/{aws,google,azure,fly,render,ssh}.ts` | subpaths (§8.4) |
-| signing helpers | `lib/summon/auth/{sigv4,aws-credentials,google-token,azure-token,jwt}.ts` | with their provider |
+| first-party providers | `lib/providers/{aws,google,azure,fly,render,ssh}.ts`, importing only the public entries (plugins §5) | `./providers/*` subpaths (§8.4) |
+| signing helpers | `lib/provider/auth/{sigv4,aws-credentials,google-token,azure-token,jwt}.ts` | `./provider/auth`, public (plugins §6.4) |
 
 `setReservedState` writes with the package's internal token. Nothing outside
 the package can forge a write to a `__win:` name (`driver.ts:2618-2637`,
@@ -381,7 +395,10 @@ interface PendingSummon {
      and which is not already attributed to another attempt.
    - It is **lost** if `until ≤ now` and it never registered. Drop it,
      increment `failures`, set `backoffUntil`, and emit `summon` with outcome
-     `lost` (§9.1).
+     `lost` (§9.1). When the summoner's facet has `status()`, ask it once and
+     put the platform's reason in `last.detail`; when it also has `cancel()`
+     and the unit is still pending, cancel it so it cannot start late
+     ([`compute-provider-plugins.md`](compute-provider-plugins.md) §7.3).
 3. If `paused`, or there is no demand and no orphan: if the marker changed,
    write it back. Otherwise return `none`. Scale-style summoners get their
    scale-down check here (§4.7).
@@ -394,7 +411,10 @@ interface PendingSummon {
    count: want }` and write with `expected = version`. If the CAS fails,
    another controller moved first: return `skipped: contended`. **Nothing has
    been called yet, so a lost race costs nothing.**
-7. **Call** `summoner.summon(request)` under `summonTimeout`.
+7. **Call** the summon facet, `summoner.summon.summon(request, context)`,
+   under `summonTimeout`. A thrown `ProviderError`'s kind decides step 8's
+   backoff and whether the circuit opens at once
+   ([`compute-provider-plugins.md`](compute-provider-plugins.md) §6.5).
 8. **Record** the result with a second CAS (retried against a fresh read, up to
    three times [D]). `started`, `deduped` and `already-running` keep the
    pending entry and add its handles. `unavailable` or a throw removes it,
@@ -473,20 +493,28 @@ attempt id** [I, aws §1 item 5]. Concretely:
   `BUN_JOBS_SUMMON_MAX_LIFETIME_MS` (a *duration*), plus the policy's static
   `env`. **No `summonedAt`.** The worker reads its start time from its own
   clock, and the controller knows `at` from the marker.
-- `request.dedupeKey` is `request.id` clipped to 64 characters of
-  `[A-Za-z0-9-]`. That fits ECS `clientToken` (≤ 64, ASCII 33–126), EC2
-  `ClientToken` (≤ 64) [V, aws §4.1, §4.8] and a Kubernetes name. Cloud Run's
-  `runExecutionToken` needs job name + token < 63 characters [V, google-azure
-  §3.2], so that adapter shortens further.
+- `request.dedupeKey` is `request.id` clipped to the summoner's declared
+  `dedupe.maxLength` and `dedupe.charset`, and to 64 characters of
+  `[A-Za-z0-9-]` when it declares none. The controller computes it, so no
+  provider builds its own key. 64 fits ECS `clientToken` (≤ 64, ASCII
+  33–126), EC2 `ClientToken` (≤ 64) [V, aws §4.1, §4.8] and a Kubernetes name.
+  Cloud Run's `runExecutionToken` needs job name + token < 63 characters [V,
+  google-azure §3.2], so that provider declares a `maxLength` computed from its
+  configured job name ([`compute-provider-plugins.md`](compute-provider-plugins.md) §7.1).
 
 ### 4.7 Launch-style and scale-style summoners
+
+A third style, **`wake`**, is declared by a provider that starts one of a fixed
+pool of pre-created units (Fly Machines, a stopped VM). It behaves as launch
+here, except that starting a started unit is harmless and `maxWorkers` is
+clamped to the declared `poolSize` ([`compute-provider-plugins.md`](compute-provider-plugins.md) §7.1).
 
 | | launch (`style: "launch"`) | scale (`style: "scale"`) |
 |---|---|---|
 | Call | start N units: `RunTask`, `jobs:run`, `POST /jobs`, `systemd-run` | set the count to `target`: worker pool `manualInstanceCount`, ECS `desiredCount`, ASG `SetDesiredCapacity` |
 | Duplicate on a race | yes | no, idempotent by construction [I, aws §4.3; google-azure §3.3] |
 | Worker mode | `launch`: exits on idle | `service`: never exits on idle, because the platform would restart it [I, google-azure §5] |
-| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via `summoner.release({ target: 0 })`, once `outstanding == 0` has held for `scaleDown.after` (default `300_000` ms) [D] |
+| Who scales to zero | nobody: the unit ends when the process exits | **the controller**, via the facet's `release({ target: 0 }, context)`, once `outstanding == 0` has held for `scaleDown.after` (default `300_000` ms) [D] |
 
 A scale-style release uses `outstanding`, never `demand`. So it never sets a
 count to zero while a job is active, which is the ScaledObject hazard of §2.2
@@ -598,9 +626,11 @@ export interface SummonRequest {
    */
   id: string;
   /**
-   * `id` clipped to 64 characters of `[A-Za-z0-9-]`: fit for ECS
-   * `clientToken`, EC2 `ClientToken` and a Kubernetes name. Pass it wherever
-   * the platform offers idempotency.
+   * `id` clipped to the summoner's declared `dedupe.maxLength` and
+   * `dedupe.charset` (64 characters of `[A-Za-z0-9-]` when it declares
+   * none): fit for ECS `clientToken`, EC2 `ClientToken` and a Kubernetes name.
+   * Computed by the controller, never by the provider. Pass it wherever the
+   * platform offers idempotency.
    */
   dedupeKey: string;
   /** How many workers a launch-style summoner should start. At least `1`. */
@@ -630,10 +660,8 @@ export interface SummonRequest {
    * An adapter maps it onto the platform's own cap where one exists.
    */
   maxLifetimeMs: number;
-  /** Aborted when `summonTimeout` passes or the controller closes. */
-  signal: AbortSignal;
-  /** The controller's logger, bound to the queue and the attempt. */
-  logger: Logger;
+  // `signal` and `logger` moved to `ProviderCallContext`, the second argument
+  // of every facet call (compute-provider-plugins.md §6.2), with `fetch` and `now`.
 }
 
 /** What a scale-style summoner is asked to do when demand has gone. */
@@ -644,10 +672,7 @@ export interface SummonReleaseRequest {
   queue: string;
   /** The count to set. `0` scales to zero. */
   target: number;
-  /** Aborted when `summonTimeout` passes or the controller closes. */
-  signal: AbortSignal;
-  /** The controller's logger. */
-  logger: Logger;
+  // `signal` and `logger` are on `ProviderCallContext`, as for `SummonRequest`.
 }
 
 /** What a summoner reports back. A throw means `failed`. */
@@ -679,63 +704,59 @@ export type SummonResult =
       retryAfterMs?: number;
     };
 
-/** Something that can start compute for a queue. */
-export interface Summoner {
-  /** A short kind for logs, events and the UI: `"ecs"`, `"fly"`, `"custom"`. */
-  readonly kind: string;
-  /** Whether it launches units (`"launch"`) or sets a count (`"scale"`). See §4.7. */
-  readonly style: "launch" | "scale";
-  /**
-   * The default in-flight TTL, in ms: how long an attempt counts as a worker
-   * on its way before it is declared lost. Covers the platform's cold start,
-   * Bun boot, driver connect and the first report. Overridden by
-   * {@link SummonPolicy.bootBudget}.
-   */
-  readonly bootBudget: number;
-  /**
-   * How the platform passes per-attempt values to the process: `"env"` per
-   * run, `"argv"` only, or `"none"` (the unit's config is fixed, as for a
-   * pre-created Fly Machine). With `"none"`, attempts are released by start
-   * time rather than by id (§4.3).
-   */
-  readonly passes: "env" | "argv" | "none";
-  /** Starts compute for one attempt. */
-  summon: (request: SummonRequest) => Promise<SummonResult>;
-  /** Scale-style only: sets the platform's count, usually to zero. */
-  release?: (request: SummonReleaseRequest) => Promise<void>;
-  /**
-   * Secret-free facts for the status route and the UI: a region, a cluster,
-   * an app name. Never a token, a key or a URL with credentials in it.
-   */
-  describe: () => Readonly<Record<string, string>>;
-}
+/**
+ * Something that can start compute for a queue: a configured compute provider
+ * that has a `summon` facet. Made by a provider plugin (`ecsRunTask(options)`,
+ * a third party's factory) or by `defineSummoner`. The facet's types —
+ * `SummonFacet`, `SummonCapabilities` (style `"launch" | "scale" | "wake"`,
+ * `dedupe`, `passes`, `bootBudgetMs`, `shutdown`, `maxLifetimeMs`, …),
+ * `ProviderCallContext`, `ProviderError` — are defined once, in
+ * compute-provider-plugins.md §6–§7, and exported from `./provider`.
+ *
+ * What used to be top-level fields here (`kind`, `style`, `bootBudget`,
+ * `passes`, `summon`, `release`, `describe`) now live on the provider's
+ * identity (`kind`), its facet's `capabilities`, and the facet's hooks.
+ */
+export type Summoner = ConfiguredProvider & {
+  /** The summon facet the controller calls. */
+  readonly summon: SummonFacet;
+};
 
 /**
- * The escape hatch: a summoner from a plain function, for any platform this
- * package has no adapter for. A function that returns nothing counts as
+ * The escape hatch: a summoner from a plain function, for any platform with
+ * no provider plugin. It builds an anonymous provider (`name: "custom:" +
+ * kind`, the host's own `apiVersion`, no schema) and configures it in one
+ * call. A function that returns nothing counts as
  * `{ status: "started", handles: [] }`.
  */
 export function defineSummoner(options: {
   /** The kind shown in logs and the UI. Defaults to `"custom"`. */
   kind?: string;
-  /** `"launch"` (default) or `"scale"`. A scale summoner must also give `release`. */
-  style?: "launch" | "scale";
+  /** `"launch"` (default), `"scale"` or `"wake"`. A scale summoner must also give `release`. */
+  style?: "launch" | "scale" | "wake";
   /** The in-flight TTL in ms. Defaults to `180_000`: a conservative guess, since nothing was measured. */
   bootBudget?: number;
   /** How the platform passes per-attempt values. Defaults to `"env"`. */
   passes?: "env" | "argv" | "none";
-  /** Starts compute. Throw to report a failure; the controller backs off. */
-  invoke: (request: SummonRequest) => Promise<SummonResult | void>;
+  /** How the platform dedupes. Defaults to `{ kind: "none" }`: the marker is the whole guard. */
+  dedupe?: SummonDedupe;
+  /** The stop signal and grace. Defaults to `{ signal: "SIGTERM", graceMs: 10_000 }`. */
+  shutdown?: SummonCapabilities["shutdown"];
+  /** Starts compute. Throw a `ProviderError` to say how the controller should back off (plugins §6.5). */
+  invoke: (request: SummonRequest, context: ProviderCallContext) => Promise<SummonResult | void>;
   /** Scale-style only: sets the count. */
-  release?: (request: SummonReleaseRequest) => Promise<void>;
+  release?: (request: SummonReleaseRequest, context: ProviderCallContext) => Promise<void>;
   /** Secret-free description for the UI. Defaults to `{ kind }`. */
   describe?: () => Record<string, string>;
 }): Summoner;
 
 /** How a queue is summoned for. */
 export interface SummonPolicy {
-  /** What starts compute. A bare function is shorthand for `defineSummoner({ invoke })`. */
-  summoner: Summoner | ((request: SummonRequest) => Promise<SummonResult | void>);
+  /**
+   * What starts compute: a configured provider with a summon facet. A bare
+   * function is shorthand for `defineSummoner({ invoke })`.
+   */
+  summoner: Summoner | ((request: SummonRequest, context: ProviderCallContext) => Promise<SummonResult | void>);
   /** What makes the controller check. */
   triggers?: {
     /**
@@ -760,7 +781,7 @@ export interface SummonPolicy {
   };
   /**
    * How long an attempt counts as a worker on its way, in ms. Defaults to the
-   * summoner's `bootBudget`. Too short summons twice; too long delays the
+   * summoner's declared `capabilities.bootBudgetMs`. Too short summons twice; too long delays the
    * retry of a start that silently failed.
    */
   bootBudget?: number;
@@ -873,8 +894,19 @@ export interface SummonStatus {
   queue: string;
   /** Whether a controller runs in *this* process (so a manual summon is possible here). */
   local: boolean;
-  /** The summoner's kind and `describe()` output, when local. */
-  summoner?: { kind: string; style: "launch" | "scale"; facts: Record<string, string> };
+  /**
+   * The summoner, when local: its provider's identity (`name`, `version`,
+   * `kind`, `apiVersion`), its declared capabilities, and its `describe()`
+   * facts with secrets redacted (compute-provider-plugins.md §14.1).
+   */
+  summoner?: {
+    /** Who the provider is. */
+    provider: ProviderIdentity;
+    /** What it declared. */
+    capabilities: SummonCapabilities;
+    /** Secret-free facts from `describe()`. */
+    facts: Record<string, string>;
+  };
   /** Attempts in flight. */
   pending: readonly PendingSummon[];
   /** Consecutive failures. */
@@ -1358,17 +1390,24 @@ poll logs one `warn` naming the driver.
 
 ## 7. First-party summoners
 
+Every summoner below is a **provider plugin** under `lib/providers/`, built
+with `defineComputeProvider` and importing only the public entries, so a third
+party could have written it ([`compute-provider-plugins.md`](compute-provider-plugins.md)
+§5). The columns of §7.1 are what each declares in its `SummonCapabilities`
+(plugins §7.1), not facts the controller knows about platforms. Each is tested
+with the published conformance kit against a `fakePlatform()` fake (§11.1).
+
 ### 7.1 The order, and why
 
 | # | Summoner | Style | Dedupe | Default `bootBudget` [I] | Why here |
 |---|---|---|---|---|---|
-| 1 | **ECS `RunTask`**, `./summon/aws` | launch | `clientToken`, per cluster, ≤ 24 h [V, aws §4.1] | 180 s | One adapter covers Fargate, Fargate Spot, ECS Managed Instances and ECS-on-EC2, which differ only in `launchType`/`capacityProviderStrategy` [V, aws §1]. It has the best dedupe of any launch API here. It exercises the SigV4 signer, the largest shared piece |
+| 1 | **ECS `RunTask`**, `./providers/aws` | launch | `clientToken`, per cluster, ≤ 24 h [V, aws §4.1] | 180 s | One adapter covers Fargate, Fargate Spot, ECS Managed Instances and ECS-on-EC2, which differ only in `launchType`/`capacityProviderStrategy` [V, aws §1]. It has the best dedupe of any launch API here. It exercises the SigV4 signer, the largest shared piece |
 | 1b | **Lambda `Invoke` (Event)**, same subpath | launch, in-handler worker | **none**; async may deliver twice [V, aws §4.4] | 60 s | About 20 lines once the signer exists [I, aws §1]. Short jobs only (900 s [V]). The in-handler mode is exactly what Temporal shipped [V-plan] |
-| 2 | **Fly Machines**, `./summon/fly` | launch over a pool, which behaves like set-N | Machine id; Machines lease [V, paas-ssh §5.1] | 60 s | Every row verified and favourable: REST start, a vendor-stated sub-second wake, stops on exit, per-second billing [V, paas-ssh §9]. The smallest adapter. It exercises the SIGINT and 5-second grace path |
-| 3 | **Cloud Run jobs** and **worker pools**, `./summon/google` | jobs: launch. Pools: **scale** | jobs: **none** [V~]. Pools: idempotent count [I] | 180 s: Direct VPC may add "a minute or more" [V, google-azure §3.2] | Google documents both for this workload [P]. Pools are the first-party scale-style path. Exercises the token helper |
-| 4 | **ACA manual jobs**, `./summon/azure` | launch | **none**; the name is platform-generated [V, google-azure §4.2] | 180 s | For immediacy on Azure. **The recommended Azure path is ACA event jobs on the depth endpoint (§2.2)**, which needs no summoner |
-| 5 | **Render one-off jobs**, `./summon/render` | launch | **none** [V, paas-ssh §4.2] | 180 s | The nicest PaaS launch API. Bun is native, and the base can be the existing web service [V, paas-ssh §4.2] |
-| 6 | **SSH + `systemd-run`**, `./summon/ssh` | launch on a host | fixed unit name [M, paas-ssh §4.4] | 60 s | Serves "I already have a box". It ships last because it alone adds a system dependency and a security surface [I, paas-ssh §9] |
+| 2 | **Fly Machines**, `./providers/fly` | **wake**: start one of a pool of pre-created Machines | Machine id; Machines lease [V, paas-ssh §5.1] | 60 s | Every row verified and favourable: REST start, a vendor-stated sub-second wake, stops on exit, per-second billing [V, paas-ssh §9]. The smallest adapter. It exercises the SIGINT and 5-second grace path |
+| 3 | **Cloud Run jobs** and **worker pools**, `./providers/google` | jobs: launch. Pools: **scale** | jobs: **none** [V~]. Pools: idempotent count [I] | 180 s: Direct VPC may add "a minute or more" [V, google-azure §3.2] | Google documents both for this workload [P]. Pools are the first-party scale-style path. Exercises the token helper |
+| 4 | **ACA manual jobs**, `./providers/azure` | launch | **none**; the name is platform-generated [V, google-azure §4.2] | 180 s | For immediacy on Azure. **The recommended Azure path is ACA event jobs on the depth endpoint (§2.2)**, which needs no summoner |
+| 5 | **Render one-off jobs**, `./providers/render` | launch | **none** [V, paas-ssh §4.2] | 180 s | The nicest PaaS launch API. Bun is native, and the base can be the existing web service [V, paas-ssh §4.2] |
+| 6 | **SSH + `systemd-run`**, `./providers/ssh` | launch on a host | fixed unit name [M, paas-ssh §4.4] | 60 s | Serves "I already have a box". It ships last because it alone adds a system dependency and a security surface [I, paas-ssh §9] |
 
 The evidence rankings put Fly first on PaaS [I, paas-ssh §9], ECS first on AWS
 [V/I, aws §1], and Cloud Run jobs, then worker pools, first on Google
@@ -1380,8 +1419,10 @@ The evidence rankings put Fly first on PaaS [I, paas-ssh §9], ECS first on AWS
 - Google and Azure next, because they share the token helper.
 - Render, then SSH.
 
-**Behind `defineSummoner({ invoke })`, as documented recipes** (sketches
-exist in the evidence):
+**Behind `defineSummoner({ invoke })`, as documented recipes, or as
+third-party provider plugins** (sketches exist in the evidence). Each is a
+candidate for the "provider written outside the bun-jobs session" that the
+summon facet's stability gate needs ([`compute-provider-plugins.md`](compute-provider-plugins.md) §10.4):
 
 - EC2 `RunInstances` with terminate-on-shutdown [V, aws §4.8], and ASG
   `SetDesiredCapacity` [V, aws §4.10].
@@ -1602,10 +1643,12 @@ and throws a `ConfigError` if it is missing [I, paas-ssh §7.1].
   - a credential cache that refreshes five minutes before expiry.
 - **Cross-account** copies Temporal: a role trusted with an `ExternalId`
   condition [V-plan, aws §7 item 14].
-- **Where it lives**: `lib/summon/auth/sigv4.ts` and
-  `lib/summon/auth/aws-credentials.ts`, used only by `providers/aws.ts`. The
-  signer is exported from `./summon/aws` as `signAwsRequest`, for users
-  writing their own `invoke()` against another AWS API [D].
+- **Where it lives**: `lib/provider/auth/sigv4.ts` and
+  `lib/provider/auth/aws-credentials.ts`. Both are **public**, from
+  `./provider/auth`, as `signAwsRequest` and `resolveAwsCredentials`, for
+  plugin authors and for users writing their own `invoke()` against another AWS
+  API. Being public makes them API: they freeze with the plugin core at 1.0,
+  which waits on Q2 ([`compute-provider-plugins.md`](compute-provider-plugins.md) §6.4, §10.4) [D].
 
 ### 8.2 Google and Azure: one token helper
 
@@ -1629,9 +1672,10 @@ Google Workload Identity Federation is **not** in the 65 lines. It adds about
 15 lines, plus SigV4 for an AWS subject [I, google-azure §2.3], and is
 deferred.
 
-Where it lives: `lib/summon/auth/jwt.ts` (base64url and RS256 signing, shared),
-`google-token.ts` and `azure-token.ts`. Each is imported only by its provider
-file.
+Where it lives: `lib/provider/auth/jwt.ts` (base64url and RS256 signing,
+shared), `google-token.ts` and `azure-token.ts`, all public from
+`./provider/auth` as `getGoogleToken`, `getAzureToken` and `signJwtRs256`, on
+the same terms as the AWS helpers (Q15 must close before the core's 1.0).
 
 ### 8.3 Nothing new in `dependencies`
 
@@ -1643,23 +1687,30 @@ cheaper here because summoners are server-side (no browser entry to protect).
 
 ### 8.4 The exact `package.json` shape
 
-**One subpath per provider, not one `./summoners` entry** [D]. The reasons:
+**One subpath per provider, not one `./summoners` entry** [D]. The subpaths
+are named for the **provider**, `./providers/<name>`, not for summoning,
+because a provider may carry both facets: AWS's entry holds `ecsRunTask` and
+`lambdaInvoke` to summon, and later `lambdaExecute` to carry remote attempts
+([`compute-provider-plugins.md`](compute-provider-plugins.md) §11.1). The
+reasons for one per provider:
 
-- Importing `./summon/fly` should not load the SigV4 signer, the JWT code or
+- Importing `./providers/fly` should not load the SigV4 signer, the JWT code or
   `Bun.spawn`. Bun runs `lib/` as source, so there is no tree-shaking at run
-  time.
-- The SSH summoner's system dependency stays behind a spelling that says
+  time. (The credential helpers live in `./provider/auth`, which the Fly
+  provider does not import.)
+- The SSH provider's system dependency stays behind a spelling that says
   what it is.
-- A provider's docs, its `consumer-check.json` entry and its type-test map
-  one to one.
+- A provider's docs, its `consumer-check.json` entry, its fake platform and its
+  conformance run map one to one.
 
-Providers are **files**, not directories:
-`lib/summon/providers/<provider>.ts`. That matters because the packaging test
-requires an explicit `./lib/<dir>` key for **every directory with an
-`index.ts`** (`__tests__/packaging.test.ts:46-56`, `:92`) [S]. Files need only
-their short key. The existing `./lib/*.ts`, `./lib/*.js` and `./lib/*`
-patterns already cover the long spellings. The one new directory with an index
-is `lib/summon/`.
+Providers are **files**, not directories: `lib/providers/<provider>.ts`. That
+matters because the packaging test requires an explicit `./lib/<dir>` key for
+**every directory with an `index.ts`** (`__tests__/packaging.test.ts:46-56`,
+`:92`) [S]. Files need only their short key. The existing `./lib/*.ts`,
+`./lib/*.js` and `./lib/*` patterns already cover the long spellings. The new
+directories with an index are `lib/summon/` here, and `lib/provider/`,
+`lib/provider/auth/` and `lib/provider/testing/` from the plugin API (plugins
+§11.1), each with its `./lib/…` key.
 
 ```jsonc
 {
@@ -1674,16 +1725,21 @@ is `lib/summon/`.
       "types": "./dts/summon/index.d.ts",
       "default": "./lib/summon/index.ts"
     },
-    "./summon/aws": {
-      "@kingsleyweb/source": "./lib/summon/providers/aws.ts",
-      "types": "./dts/summon/providers/aws.d.ts",
-      "default": "./lib/summon/providers/aws.ts"
+    // New, from the plugin API (compute-provider-plugins.md §11.1): same shape.
+    "./provider":         { "...": "same shape → ./lib/provider/index.ts" },
+    "./provider/auth":    { "...": "same shape → ./lib/provider/auth/index.ts" },
+    "./provider/testing": { "...": "same shape → ./lib/provider/testing/index.ts" },
+
+    "./providers/aws": {
+      "@kingsleyweb/source": "./lib/providers/aws.ts",
+      "types": "./dts/providers/aws.d.ts",
+      "default": "./lib/providers/aws.ts"
     },
-    "./summon/google": { "...": "same shape → ./lib/summon/providers/google.ts" },
-    "./summon/azure":  { "...": "same shape → ./lib/summon/providers/azure.ts" },
-    "./summon/fly":    { "...": "same shape → ./lib/summon/providers/fly.ts" },
-    "./summon/render": { "...": "same shape → ./lib/summon/providers/render.ts" },
-    "./summon/ssh":    { "...": "same shape → ./lib/summon/providers/ssh.ts" },
+    "./providers/google": { "...": "same shape → ./lib/providers/google.ts" },
+    "./providers/azure":  { "...": "same shape → ./lib/providers/azure.ts" },
+    "./providers/fly":    { "...": "same shape → ./lib/providers/fly.ts" },
+    "./providers/render": { "...": "same shape → ./lib/providers/render.ts" },
+    "./providers/ssh":    { "...": "same shape → ./lib/providers/ssh.ts" },
 
     "./lib": { "...": "unchanged" },
     "./lib/api": { "...": "unchanged" },
@@ -1696,6 +1752,9 @@ is `lib/summon/`.
       "types": "./dts/summon/index.d.ts",
       "default": "./lib/summon/index.ts"
     },
+    "./lib/provider":         { "...": "same shape → ./lib/provider/index.ts" },
+    "./lib/provider/auth":    { "...": "same shape → ./lib/provider/auth/index.ts" },
+    "./lib/provider/testing": { "...": "same shape → ./lib/provider/testing/index.ts" },
     "./lib/*.ts": { "...": "unchanged" },
     "./lib/*.js": { "...": "unchanged" },
     "./lib/*": { "...": "unchanged" },
@@ -1705,24 +1764,30 @@ is `lib/summon/`.
 ```
 
 Every entry uses the order `@kingsleyweb/source`, `types`, `default`, and no
-entry is a fallback array (`CLAUDE.md`). `lib/summon/**` sits under `rootDir:
-lib`, so `scripts/build-declarations.ts` covers it unchanged, including its
-"every `lib` module has a declaration" check.
+entry is a fallback array (`CLAUDE.md`). `lib/summon/**`, `lib/provider/**`
+and `lib/providers/**` sit under `rootDir: lib`, so
+`scripts/build-declarations.ts` covers them unchanged, including its "every
+`lib` module has a declaration" check.
 
 `consumer-check.json` gains one entry per new spelling. **None is `"browser":
-true`**: they read `process.env` and run under Bun. None lists `"peers"`:
+true`**: they read `process.env` and run under Bun. None lists `"peers"`. The
+`./provider*` entries, including a snippet that writes a provider against the
+packed tarball, are in plugins §11.1:
 
 ```jsonc
 { "spelling": "@kingsleyweb/bun-jobs/summon",
   "values": ["SummonController", "defineSummoner", "drainAndExit", "summonedFromEnv", "SUMMON_ENV"],
   "types": ["SummonPolicy", "Summoner", "SummonRequest", "SummonResult", "QueueDemand", "DrainAndExitOptions"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/aws",    "values": ["ecsRunTask", "lambdaInvoke", "signAwsRequest"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/google", "values": ["cloudRunJob", "cloudRunWorkerPool", "getGoogleToken"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/azure",  "values": ["acaJob", "getAzureToken"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/fly",    "values": ["flyMachines"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/render", "values": ["renderJob"] },
-{ "spelling": "@kingsleyweb/bun-jobs/summon/ssh",    "values": ["sshSystemdRun"] }
+{ "spelling": "@kingsleyweb/bun-jobs/providers/aws",    "values": ["ecsRunTask", "lambdaInvoke"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/google", "values": ["cloudRunJob", "cloudRunWorkerPool"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/azure",  "values": ["acaJob"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/fly",    "values": ["flyMachines"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/render", "values": ["renderJob"] },
+{ "spelling": "@kingsleyweb/bun-jobs/providers/ssh",    "values": ["sshSystemdRun"] }
 ```
+
+`signAwsRequest`, `getGoogleToken` and `getAzureToken` moved to the
+`./provider/auth` entry (§8.1, §8.2).
 
 The root spelling's `values` gain `SummonController` and `drainAndExit`. Each
 new cell set joins bun-jobs' existing 96/96 [per `CLAUDE.md`].
@@ -1774,6 +1839,7 @@ analytics, limits and events are unchanged.
 |---|---|---|
 | demand on the queue screen | `GET /queues/:queue/demand` (§6.2) | the bun-jobs session |
 | summon status: pending attempts, failures, backoff, circuit, budget, last outcome, summoner facts | `GET /queues/:queue/summon` → `SummonStatusDto` | the bun-jobs session |
+| the provider behind the summoner: name, version, `apiVersion`, declared capabilities, an experimental badge, "Test connection" | `SummonStatusDto.summoner.provider` and `.capabilities`; `GET /providers`; `POST /providers/:id/validate` (action `providers.validate`) ([`compute-provider-plugins.md`](compute-provider-plugins.md) §14) | the bun-jobs session (routes, DTO); the UI session (card, badge, button) |
 | a "Summon now" button, and "Reset" when the circuit is open | `POST …/summon`, `POST …/summon/reset`, gated on `queues.summon` | the bun-jobs session (routes); the UI session (buttons) |
 | the badge and handle on the Workers page and worker screen | `WorkerDto.summon` | the bun-jobs session (DTO); the UI session (render) |
 | the `summon` events in the event feed and filters | `QUEUE_EVENT_TYPES` + AsyncAPI | the bun-jobs session (contract); the UI session (filters) |
@@ -1901,8 +1967,15 @@ say which choice incurs which line.
 - **`countDemand` in the driver contract suite**, on every driver: exact
   figures on a seeded queue, `capped` at the cap, paused ignored (the caller
   adds it), and no counting of `completed` or `dead`.
-- **Adapter tests against `Bun.serve` stubs on port 0**, one per API. Each
-  asserts the request shape and maps every documented answer:
+- **Provider tests with the published conformance kit**, one per first-party
+  provider. Each provider's stub is a `FakePlatform` built with
+  `fakePlatform()` on port 0, and its test is `assertConformance(await
+  runProviderConformance(…))` plus the cases below, so first-party providers
+  pass exactly the checks a third party's must ([`compute-provider-plugins.md`](compute-provider-plugins.md)
+  §12). The fakes ship in `./provider/testing` as worked examples. The
+  fixture worker and the fake platform above move there too, so the kit's
+  end-to-end handoff check is this tier's. Each fake asserts the request shape
+  and maps every documented answer:
   - **ECS** (JSON 1.1): `x-amz-target`, a signed `content-type`,
     `clientToken` = `dedupeKey`. It answers `tasks`, `failures`-only and
     `ConflictException`.
@@ -2069,7 +2142,13 @@ plan unless it says so.
     that name (§3.1). `worker-runtimes.md` §4.2 proposes a *new* exported
     `WorkerTarget` meaning "where attempts run". One of them must be renamed,
     in Phase 0 or Phase 1. This does not touch summoning, but it is recorded
-    here because it was found while reading for it.
+    here because it was found while reading for it. (The rename's decided
+    names settle it: the existing type becomes `WorkerSelector`.)
+36. **Q36** **The plugin API's own questions** are in
+    [`compute-provider-plugins.md`](compute-provider-plugins.md) §17.2
+    (Q-P1–Q-P10). The two that touch summoning directly: whether
+    `./provider/auth` is public before Q2 and Q15 close (Q-P2), and whether
+    capacity and quota need separate error kinds (Q-P6).
 
 ### 12.3 Risks
 
@@ -2090,6 +2169,11 @@ plan unless it says so.
   at N leaves it billing "as active … even if … idle" [V, google-azure §8].
   Mitigation: prefer launch-style, and give every scale-style recipe a
   platform-side backstop (a scheduled scale-to-zero).
+- **A third-party summoner that lies about its capabilities.** A
+  `bootBudgetMs` that is too short summons twice; a dedupe token declared
+  non-strict that is strict turns retries into `conflict`s. The kit catches
+  what a fake can show; the rest appears as `lost` and `conflict` outcomes
+  naming the provider ([`compute-provider-plugins.md`](compute-provider-plugins.md) §12.5, §17.1).
 - **Platform quotas on new accounts**: Fargate vCPU 6 [V, aws §1], Lambda
   concurrency "reduced" on new accounts [V, aws §7], Cloud Run admin writes
   180/60 s [V, google-azure §8], and Render's 100 jobs/min [V, paas-ssh
@@ -2111,11 +2195,17 @@ growth is not padding, and each of these adds real work:
 - the late registration means the marker and its CAS;
 - the missing signal handling means `drainAndExit`;
 - the `countJobs` cost means a bounded read;
-- the providers each need an adapter and credentials.
+- the providers each need an adapter and credentials;
+- **the provider plugin system** (added 2026-09-25 at the user's request):
+  a public, versioned API, a conformance kit and its documentation, built
+  before the first-party providers so that they are written on it
+  ([`compute-provider-plugins.md`](compute-provider-plugins.md) §16).
 
 ### 1.5a — Core: controller, marker, demand, `drainAndExit` (**the minimum useful ship**)
 
-It works on every platform through `defineSummoner({ invoke })`.
+It works on every platform through `defineSummoner({ invoke })`. If 1.5p has
+not landed yet, `defineSummoner` builds its summoner on an internal stand-in
+for the provider types, and 1.5p replaces the stand-in with the public ones.
 
 | Work | Effort |
 |---|---|
@@ -2140,54 +2230,120 @@ It works on every platform through `defineSummoner({ invoke })`.
 After 1.5a and 1.5b (**~17.5 d**), every platform in the evidence is reachable:
 Kubernetes and ACA by the endpoint, everything else by `invoke()`.
 
-### 1.5c — AWS and Fly
+### 1.5p — The provider plugin API, `experimental` (new)
+
+The core and the `summon` facet of
+[`compute-provider-plugins.md`](compute-provider-plugins.md), its conformance
+kit, its documentation and its starter template, all at `apiVersion` `0.1`.
+It comes **before 1.5c**, so every first-party summoner is built on it.
 
 | Work | Effort |
 |---|---|
-| SigV4 signer + AWS vector tests; credential chain with cache, skew retry, throttling backoff | 2 d |
-| `ecsRunTask` + `lambdaInvoke` + stubs | 2 d |
-| `flyMachines` + stub | 1 d |
-| `exports`, `consumer-check.json`, the packaging test, and the `dts` build for the new subpaths (§8.4) | 1 d |
+| `lib/provider/`: identity, brand, `defineComputeProvider`, config validation (sync and async Standard Schema), the per-facet version check and the per-process name map, `ProviderError` and its mapping into the controller's gates, contexts, redaction (plugins §6, §9, §10, §13) | 2.5 d |
+| The summon facet: capabilities read by the controller (dedupe key, `wake`, shutdown → grace env, lifetime cap), `status`/`cancel`, `Summoner` redefined, `defineSummoner` as a wrapper (plugins §7) | 1.5 d |
+| `./provider/testing`: report, `assertConformance`, `fakePlatform()`, the summon checks, the handoff harness moved from `__tests__/helpers/summon.ts` (plugins §12) | 3.5 d |
+| The first-party import test; `exports`, `dts`, `consumer-check.json` and the packaging test for `./provider`, `./provider/auth`, `./provider/testing`, `./providers/*` (plugins §5, §11) | 1 d |
+| Docs: author guide (summon half) with its worked example, the API reference and its drift test, the user guide, the security page (plugins §15) | 3 d |
+| `templates/compute-provider/` (summon half), wired into the gate (plugins §11.3) | 1 d |
+| **Total** | **~12.5 d** |
+
+### 1.5c — AWS and Fly, on the provider API
+
+| Work | Effort |
+|---|---|
+| SigV4 signer + AWS vector tests; credential chain with cache, skew retry, throttling backoff, in `./provider/auth` | 2 d |
+| `ecsRunTask` + `lambdaInvoke`, their `fakePlatform()` fakes and kit runs | 2.25 d |
+| `flyMachines` (the `wake` style), its fake and kit run | 1.25 d |
+| `exports` and `consumer-check.json` rows for `./providers/aws` and `./providers/fly` (the wiring itself is 1.5p's) | 0.5 d |
 | Recipes: worker Dockerfile, ECS task definition notes, Fly `fly.toml` (`kill_signal`, `kill_timeout`) | 0.5 d |
 | **Total** | **~6.5 d** |
 
-### 1.5d — Google and Azure
+### 1.5d — Google and Azure, on the provider API
 
 | Work | Effort |
 |---|---|
-| Token helper: JWT, Google key and metadata, Azure secret, federated and managed identity | 1.5 d |
-| `cloudRunJob` + `cloudRunWorkerPool` (the scale path, `release`) + stubs | 1.5 d |
-| `acaJob` + stub + the scoped-identity README section | 1 d |
-| **Total** | **~4 d** |
+| Token helper: JWT, Google key and metadata, Azure secret, federated and managed identity, in `./provider/auth` | 1.5 d |
+| `cloudRunJob` + `cloudRunWorkerPool` (the scale path, `release`), fakes and kit runs | 1.75 d |
+| `acaJob`, its fake and kit run, and the scoped-identity README section | 1.25 d |
+| **Total** | **~4.5 d** |
 
-### 1.5e — Render and SSH
+### 1.5e — Render and SSH, on the provider API
 
 | Work | Effort |
 |---|---|
-| `renderJob` + stub | 0.5 d |
-| `sshSystemdRun`: pinned options, known-hosts file from `hostKey`, host choice, the `authorized_keys` and `bun-jobs-summon` recipe, tier-2 systemd test | 2.5 d |
-| **Total** | **~3 d** |
+| `renderJob` (the `argv` path), its fake and kit run | 0.75 d |
+| `sshSystemdRun`: pinned options, known-hosts file from `hostKey`, host choice, the `authorized_keys` and `bun-jobs-summon` recipe, a fake `ssh` for the kit, tier-2 systemd test | 2.75 d |
+| **Total** | **~3.5 d** |
 
 ### 1.5f — UI and examples (other owners)
 
 | Work | Owner | Effort |
 |---|---|---|
 | Queue screen demand and summon card; Workers-page badge; "Summon now" and "Reset"; event filter; `### What each element needs` rows | the UI session | ~3 d |
+| The provider card, the experimental badge, "Test connection", the Providers section (plugins §14) | the UI session | ~0.5 d |
 | One example per first-party summoner against the fake platform; the invoke recipe; the model (c) one-shot | the examples session | ~2 d |
+| A custom summon provider against a local fake that passes the kit (plugins §15.5). It is also the outside provider the stability gate needs | the examples session | ~1 d |
 
 ### 1.5g — Live verification
 
 | Work | Effort |
 |---|---|
-| The tier-3 script and one run per first-party summoner, closing the [U]s it can and recording time-to-first-claim | 1.5 d + cents |
+| The tier-3 script and one run per first-party summoner, closing the [U]s it can (Q2 and Q15 among them) and recording time-to-first-claim | 1.5 d + cents |
+
+### 1.5s — The summon facet's stability gate (new)
+
+| Work | Effort |
+|---|---|
+| Confirm the six first-party providers and one outside provider pass the kit, across all three styles and all three `passes` values; review the API; move `summon` to `1.0`; move `core` to `1.0` only if the execute gate has also passed (plugins §10.4) | ~1 d |
 
 ### Totals
 
 | Scope | bun-jobs session | Other owners |
 |---|---|---|
 | 1.5a + 1.5b (minimum useful) | ~17.5 d | UI ~1 d for the demand card |
-| All of 1.5 | **~32.5 d** | UI ~3 d, examples ~2 d |
+| All of 1.5 | **~47 d** (was ~32.5 d; +12.5 d for 1.5p, +1 d for fakes and kit runs in 1.5d–e, +1 d for 1.5s) | UI ~3.5 d, examples ~3 d |
 
-The order is 1.5a → 1.5b → 1.5c → 1.5d → 1.5e, with 1.5f following each
-bun-jobs sub-phase it depends on and 1.5g before the release that ships an
-adapter. 1.5b and 1.5c are independent after 1.5a and can run in parallel.
+The order is 1.5a → (1.5b ∥ 1.5p) → 1.5c → 1.5d → 1.5e → 1.5g → 1.5s, with
+1.5f following each bun-jobs sub-phase it depends on and 1.5g before the
+release that ships an adapter. 1.5b is independent of 1.5p and 1.5c.
+
+---
+
+## 14. Provider plugins
+
+Summary of [`compute-provider-plugins.md`](compute-provider-plugins.md) as it
+bears on summoning. That document is the design; this section only says what
+it changes here.
+
+- **A summoner is a configured provider with a `summon` facet** (§4.10). A
+  provider plugin is made with `defineComputeProvider` from `./provider`: an
+  identity (`name`, `version`, `kind`), an `apiVersion` per facet, a config
+  schema as a Standard Schema, declared secret fields, `describe()` and an
+  optional `validate()`.
+- **The controller reads declared capabilities**, not platform names: style
+  (`launch`, `scale`, and the new `wake`), dedupe kind and key limits,
+  `passes`, `bootBudgetMs`, the shutdown signal and grace, the platform's
+  lifetime cap. §4.6, §4.7 and §7 now point at those declarations (plugins
+  §7.1).
+- **Errors come back as one of six kinds** (`transient`, `throttled`,
+  `quota`, `auth`, `misconfigured`, `conflict`), which set §4.4's backoff and
+  whether the circuit opens at once (plugins §6.5).
+- **Optional hooks** `status()` and `cancel()` explain a lost attempt and stop
+  a late one (§4.3 step 2; plugins §7.3).
+- **`defineSummoner({ invoke })` stays**, as a wrapper that builds an
+  anonymous provider (plugins §7.4).
+- **First-party summoners get no privileged internals**: they live in
+  `lib/providers/`, import only the public entries, and a test fails on any
+  other import (plugins §5). Their subpaths are `./providers/*`, not
+  `./summon/*` (§8.4), and the credential helpers are public from
+  `./provider/auth` (§8.1, §8.2).
+- **A published conformance kit** (`./provider/testing`) runs any provider
+  against a local fake of its platform, with no cloud credentials. The
+  first-party providers are tested with it (§11.1; plugins §12).
+- **The API is `experimental` (`0.x`)** until the six first-party summoners
+  and one provider written outside the bun-jobs session pass the kit (1.5s;
+  plugins §10.4).
+- **Documentation is a deliverable**: an author guide with a worked example,
+  an API reference with a drift test, a user guide, a security page and a
+  starter template (1.5p; plugins §15).
+- **Cost**: ~14.5 d more in Phase 1.5 (§13).

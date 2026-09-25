@@ -20,7 +20,16 @@ the user:
   frees the names `RemoteWorker` and `RemoteRunner` for Phase 2.
 
 The phase plan in §11 now has Phases 0, 1, 1.5, 2, 3 and 4. Summon-compute has
-its own plan, [`summon-compute.md`](summon-compute.md). References below use
+its own plan, [`summon-compute.md`](summon-compute.md).
+
+**Updated again 2026-09-25: a plugin system for compute providers.** At the
+user's request, third-party compute providers can publish plugins for both
+summoning and remote execution. The design is
+[`compute-provider-plugins.md`](compute-provider-plugins.md). For this plan it
+adds an **`execute` facet** (the host-side transport a `RemoteWorker` or
+`RemoteRunner` uses) and a **runtime-adapter kit** (how the platform side is
+written), both on the public API that bun-jobs' own adapters must use. §4.6
+summarises it; §4.2, §6, §7 and §11 have been updated to match. References below use
 the post-rename names, and name the old one where it helps a reader find the
 code as it stands today.
 
@@ -33,7 +42,8 @@ code as it stands today.
    [Cloudflare](#36-cloudflare-in-detail--the-platform-that-decides-the-design),
    [AWS Lambda](#37-aws-lambda-in-detail--the-freeze-and-the-2026-exception) and
    [prior art](#38-how-comparable-systems-solve-this)
-4. [Execution-target API design](#4-execution-target-api-design)
+4. [Execution-target API design](#4-execution-target-api-design) — including
+   [provider plugins](#46-provider-plugins-the-execute-facet)
 5. [The remote-worker contract](#5-the-remote-worker-contract)
 6. [First-party adapter utilities](#6-first-party-adapter-utilities)
 7. [Conformance test kit](#7-conformance-test-kit)
@@ -64,7 +74,7 @@ them.
 Half of this is already built and is not called what the ask calls it.
 `isolation: "worker" | "spawn"` already runs a job's processor in a `Worker`
 or a child process through the runner's executors, and the control plane
-(`WorkerController` after Phase 0; `RemoteWorker.ts` in today's tree) already
+(`WorkerController`, `lib/queue/WorkerController.ts`, since Phase 0) already
 controls workers in other processes. What does not exist is a *data*
 plane: any way for a job to reach code that does not hold the driver
 connection. That is the whole of the new work, and it resolves into one
@@ -84,6 +94,7 @@ that are mostly type declarations.
 | 7 | **Adapters ship as `./adapters/*` subpaths with zero cloud dependencies** — the platform types are declared structurally and checked against the real SDK types in a devDependency type-test. | `CLAUDE.md`'s dependency rule, satisfied by not needing an exception. Every new entry is `"browser": true` in `consumer-check.json`, and `checkPeerScopes` has nothing to check. §6.2-6.3 |
 | 8 | **Summon-compute is built as Phase 1.5, and real remote execution as Phase 2. Both are committed** (the user's decision, 2026-09-25). | Temporal shipped serverless workers on 2026-07-17 by making the *scheduler* able to invoke compute, while the worker contract stayed exactly what it was. The bun-jobs analogue: notice demand with no live worker, start compute that runs an ordinary `BunQueueWorker`, let it drain and exit. It works on every host in §3.5 that can hold its own lease. Phase 2 covers the hosts that cannot. §3.8.1, [`summon-compute.md`](summon-compute.md) |
 | 9 | **Phase 0 renames the control planes; Phase 1 is the `target` option, local only.** Each ships on its own. | The rename frees `RemoteWorker`/`RemoteRunner` for the Phase 2 feature ([`control-plane-rename.md`](control-plane-rename.md)). Phase 1 widens something already shipped, and carries no protocol and no security surface. §11 |
+| 10 | **Third-party compute providers plug in through one versioned API with facets**: `summon` (Phase 1.5) and `execute` (Phase 2), plus a runtime-adapter kit for the platform side (Phase 3). bun-jobs' own adapters use only that API. | A real provider offers both summoning and remote execution from one account and one credential; the platform side runs elsewhere and is governed by the wire protocol. [`compute-provider-plugins.md`](compute-provider-plugins.md) §4, §4.6 below |
 
 ### One finding worth putting in the README, not just the plan
 
@@ -190,14 +201,15 @@ method by method:
 ### 2.2 `WorkerController` is a control plane, not a remote worker
 
 This was the most important finding for the ask, and it was a naming
-collision. Until Phase 0 the class lives in
+collision. Before Phase 0 the class lived in
 `packages/bun-jobs/lib/queue/RemoteWorker.ts` under the name `RemoteWorker`;
-Phase 0 renames it `WorkerController`. It is a **control plane for workers
+Phase 0 renamed it `WorkerController` (`lib/queue/WorkerController.ts`). It is
+a **control plane for workers
 wherever they run**: `pause`, `resume`, `stop`, `start`, `setConfig`,
 `resetConfig`, `list`, `get`, `listConfigs`, `getConfig`. It writes
 queue-state entries (`workerControl.ts`) that a `BunQueueWorker` in any
 process reads and applies. It never runs a job, never claims, never carries a
-payload. `RunnerController` (today `RemoteRunner.ts`) is its twin for runners.
+payload. `RunnerController` (`lib/runner/RunnerController.ts`, named `RemoteRunner` before Phase 0) is its twin for runners.
 
 So: **the control plane for non-local workers is done.** What does not exist
 is a *data* plane — anything that moves a job to a process that is not holding
@@ -333,8 +345,8 @@ with `?wait=` acknowledgement polling.
 ### 2.7 `BunJobs`, definitions, notifier
 
 - `BunJobs.ts` fixes namespace + driver, owns `#workers`, assigns worker
-  ordinals, creates the worker control-plane manager (`WorkerControllerManager`
-  after Phase 0; `RemoteWorkerManager` today) with `locals: () => this.#workers`,
+  ordinals, creates the worker control-plane manager (`WorkerControllerManager`,
+  named `RemoteWorkerManager` before Phase 0) with `locals: () => this.#workers`,
   and holds `JobDefinitions`.
 - `queue/definitions.ts`: `JobDefinition { name, handler, options }`,
   `JobDefinitions` map, `names()`, `all()`. **This is the registry a remote
@@ -362,7 +374,7 @@ with `?wait=` acknowledgement polling.
 |---|---|
 | Run the *processor* off-thread / off-process | **Done** — `isolation: "worker" \| "spawn"` |
 | Run the *processor* from a file | **Done** — file processor + `defineProcessor` |
-| Control a worker from another process | **Done** — `WorkerController` (today `RemoteWorker`), `workerControl.ts`, API routes, UI |
+| Control a worker from another process | **Done** — `WorkerController` (named `RemoteWorker` before Phase 0), `workerControl.ts`, API routes, UI |
 | Run the whole *worker loop* in a separate Bun process from a runner file | **Not built**, but trivially composable today (a `.ts` file that constructs a `BunQueueWorker`, run by `BunRunner`) — needs sugar, not machinery |
 | A documented wire contract a non-Bun system implements | **Nothing** |
 | Push a claimed job to an HTTP endpoint | **Nothing** |
@@ -1131,19 +1143,17 @@ resolution stories, and the API must not pretend otherwise.
 in the README, and it is in `WORKER_CONFIG_KEYS`-adjacent documentation. The
 new option is `target`, and `isolation: m` is exactly `target: m`.
 
-**A name collision to resolve before Phase 1 lands (found 2026-09-25).**
-`WorkerTarget` is already an exported type. It names *which workers a control
-instruction addresses*, `{ id } | { key }` (`lib/queue/RemoteWorker.ts:41`,
-re-exported at `lib/queue/index.ts:103` and `lib/index.ts:590`).
-`control-plane-rename.md` §3.1 keeps that name through Phase 0. The type below
-would be a second, unrelated `WorkerTarget`. One of them must move:
-
-- The existing one could become `WorkerSelector`, in Phase 0's window, since
-  that rename already touches its file.
-- Or the new one could become `WorkerPlacement`.
-
-Since the packages are unpublished, either is free. Decide it with the
-rename's owner. Until then this section keeps the name as written.
+**A name collision, resolved in Phase 0 (found and decided 2026-09-25).**
+Before Phase 0, `WorkerTarget` was already an exported type naming *which
+workers a control instruction addresses*, `{ id } | { key }`
+(`lib/queue/RemoteWorker.ts:41`, re-exported at `lib/queue/index.ts:103` and
+`lib/index.ts:590`). The user decided (decision D4 in
+`control-plane-rename.md`) to rename that one **`WorkerSelector`** — it selects
+which workers an instruction reaches, never where they run — in Phase 0's
+window, since that rename already touched its file. So `WorkerTarget` is free,
+and the type below takes it, matching the `target` option it types. The
+rejected alternative was naming this new type `WorkerPlacement`, which would
+have left the option and its type with different names.
 
 ```ts
 /**
@@ -1296,9 +1306,19 @@ export type WorkerTargetFactory = (context: {
 }) => Executor;
 ```
 
-`Executor` is the existing `runner/executors/executor.ts` interface, unchanged.
-That is the whole extension point: a custom target is an `Executor` whose
-`mode` is a string of its own.
+`Executor` is the existing `runner/executors/executor.ts` interface. **That is
+not yet enough for a third party (corrected 2026-09-25, from source at
+`ca3ed21`).** The sentence that stood here said "a custom target is an
+`Executor` whose `mode` is a string of its own". Against today's types it is
+not: `Executor.mode` is `ExecutionMode` (`executor.ts:136`), a closed union
+`"spawn" | "worker" | "in-process"` (`drivers/driver.ts:162`) that §4.5
+rightly refuses to widen because it is persisted, and
+`ExecutorStartOptions.file` is required (`executor.ts:101`), which a remote
+executor does not have. So Phase 1 must give `WorkerTargetFactory` a
+target-level executor type with an open `mode` and an optional `file`, or wrap
+`Executor`. That work belongs in Phase 1's "Executor-based custom target" row.
+It is also why the Phase 2 `execute` facet (§4.6) does not ask a plugin to
+implement an executor at all.
 
 ### 4.3 What changes inside `BunQueueWorker`
 
@@ -1365,6 +1385,54 @@ export function defineProcessors(
   The new spellings are a worker-level alias only. This is deliberate and the
   plan should not be talked out of it — renaming a persisted enum is a
   migration for no gain.
+
+### 4.6 Provider plugins: the `execute` facet
+
+Summary of [`compute-provider-plugins.md`](compute-provider-plugins.md) §8 as
+it bears on remote execution. That document is the design.
+
+- **Three layers, one of them pluggable.** The gateway (`RemoteTarget`: claim,
+  lease, envelope, signing, verification, settle) stays bun-jobs' and is the
+  same for everyone. The **transport**, how signed bytes reach the platform,
+  is the `execute` facet of a provider plugin. The **remote executor** on the
+  platform is written with the runtime-adapter kit.
+- **The `execute` facet, host side**: `send(request, ctx) → Response`, an
+  optional `locate()` that turns a named endpoint (a function name) into a URL,
+  and declared limits: `maxDurationMs`, `maxRequestBytes`,
+  `maxResponseBytes`, `streaming`, `maxConcurrency`, `callback` (always
+  `false` while the contract is sync-only). A platform failure is a
+  `ProviderError` of one of six kinds; a status the *remote* answered comes
+  back as a `Response`, so §5.5's rules still apply to it.
+- **The facet never sees the signing secret.** bun-jobs signs the request and
+  verifies the response (§5.6), so a transport can fail to deliver an outcome
+  but cannot forge one. `RemoteEndpointTarget.secret` stays on the target, not
+  in the provider's config.
+- **Limits are reconciled**: the gateway uses the smaller of the facet's
+  declaration and the remote's handshake (§5.4), and warns when they differ.
+- **`{ kind: "endpoint", url, secret }`** is shorthand for the built-in
+  `httpsExecute({ url })` provider, which is itself written on the API.
+  `jobs.remoteWorker(queue, { provider, secret, … })` takes any provider with
+  an `execute` facet. `RemoteRunner` uses the same facet with
+  `ctx.kind = "run"`.
+- **The platform side is not a facet.** A runtime adapter is made with
+  `defineRuntimeAdapter()` from the browser-safe `./remote` entry. It maps the
+  platform's invocation to a `Request` (raw body bytes intact) and the core's
+  `Response` back. The first-party Cloudflare, Lambda and Azure wrappers of
+  §6.4 are built with it. A third-party plugin package ships its runtime
+  adapter as a second, browser-safe entry (`./runtime`) beside its host entry.
+- **Versioning**: the `execute` facet has its own `apiVersion`, independent of
+  `summon`'s, so it can change during Phase 2 without breaking summon plugins
+  shipped in Phase 1.5. The runtime-adapter helper has `RUNTIME_ADAPTER_API`;
+  the wire protocol keeps `WORKER_PROTOCOL_VERSION` and its per-feature
+  strings.
+- **Conformance**: `runExecuteConformance` for the host side,
+  `runRuntimeAdapterConformance` for the event mapping, and §7's
+  `conformRemoteExecutor` unchanged for the platform side.
+- **`WorkerTargetFactory` stays** as the low-level hook for a transport that is
+  not request/response at all (§4.2, and the correction there).
+- **Stability**: `execute` is `experimental` (`0.x`) until the Cloudflare,
+  Lambda and generic HTTP adapters, `httpsExecute`, `lambdaExecute` and one
+  outside provider pass both kits (Phase 4's gate).
 ## 5. The remote-worker contract
 
 This is the centrepiece: a versioned wire specification precise enough to
@@ -2080,6 +2148,14 @@ export function createRemoteExecutor(options: {
 }): (request: Request) => Promise<Response>;
 ```
 
+**The wrappers are built with the public runtime-adapter kit** (added
+2026-09-25). `defineRuntimeAdapter()`, exported from `./remote`, is what
+`createCloudflareHandler`, `createLambdaHandler` and `createAzureHandler` are
+made with, and what a third party uses for a platform bun-jobs does not
+cover. The first-party adapters may import only `./remote`, and a test fails
+on any other import ([`compute-provider-plugins.md`](compute-provider-plugins.md)
+§5, §8.4).
+
 `RemoteJobHandler` is `(job: RemoteJob, ctx: RemoteContext) => unknown`, where
 `RemoteJob` is a **reduced** `Job` — the readonly fields plus `log()`,
 `updateProgress()` and `heartbeat()`, which travel back in the response or on
@@ -2192,6 +2268,14 @@ is `"browser": true`**:
   "values": ["createCloudflareHandler"]
 }
 ```
+
+Two further entries come from the plugin system
+([`compute-provider-plugins.md`](compute-provider-plugins.md) §11.1):
+`./remote/testing` (the conformance kits, not browser-safe: it is run by an
+author, not deployed) and the host-side `./providers/*` entries that Phase 1.5
+introduces, which gain `execute` facets here (`httpsExecute`,
+`lambdaExecute`). `./remote`'s values also gain `defineRuntimeAdapter` and
+`RUNTIME_ADAPTER_API`.
 
 `"browser": true` is the load-bearing bit: `CLAUDE.md` records that it checks
 the entry "with no ambient Node/Bun types", which is exactly the property an
@@ -2326,7 +2410,11 @@ await worker.run();
 ### 7.1 For a third-party implementer
 
 Ship a **runnable conformance suite** as part of the package, not a document.
-It is the only thing that makes "a documented contract" real.
+It is the only thing that makes "a documented contract" real. It is exported
+from `./remote/testing`, beside `runRuntimeAdapterConformance` (the
+platform-event mapping) and, from `./provider/testing`, `runExecuteConformance`
+(the host-side transport). All three return the same `ConformanceReport`
+shape as the summon kit ([`compute-provider-plugins.md`](compute-provider-plugins.md) §12).
 
 ```ts
 /**
@@ -2803,6 +2891,11 @@ demand actually is.**
    is cleaner for dependency isolation and worse for discovery.
 5. **Is `workerd`/miniflare in CI worth its weight?** §7 says one smoke test,
    skipped visibly when absent, in the style of the Chrome E2E tests.
+6. **The plugin system's own questions** are in
+   [`compute-provider-plugins.md`](compute-provider-plugins.md) §17.2. The one
+   that touches this plan most: whether the shared core (one provider object
+   for both facets) earns its keep if no provider ships both facets by the
+   execute gate (Q-P1).
 ## 11. Phased delivery
 
 Each phase is independently shippable, independently testable, and leaves the
@@ -2816,15 +2909,22 @@ so that the Phase 2 feature can take the names `RemoteWorker` and
 `RemoteRunner`. The draft's decision gate before Phase 2 is removed, and the
 rest of the phases are as before.
 
+**Revised again on 2026-09-25 for the compute-provider plugin system**
+([`compute-provider-plugins.md`](compute-provider-plugins.md) §16): its core,
+`summon` facet and kit land in Phase 1.5 (new sub-phase 1.5p, before the
+first-party summoners); the `execute` facet with Phase 2; the runtime-adapter
+kit and the execute kits with Phase 3; the execute stability gate in Phase 4.
+The first-party summoners and adapters are built on the public API.
+
 | Phase | What | Effort (bun-jobs session) | Other owners |
 |---|---|---|---|
 | **0** | Rename the control planes | ~1.5 d | examples PR; UI copy |
 | **1** | `target` option, local only | ~7.5 d | UI badge (in the estimate) |
-| **1.5** | Summon-compute | ~32.5 d (the minimum useful ship, 1.5a + 1.5b, is ~17.5 d) | UI ~3 d, examples ~2 d |
-| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner` | ~19 d | — |
-| **3** | Conformance kit + first adapters | ~11 d | — |
-| **4** | Benchmarks, remaining adapters, hardening | ~9 d | — |
-| | **Total** | **~80.5 d** | **~5 d + the rename's PRs** |
+| **1.5** | Summon-compute, including the provider plugin API (1.5p) and the summon stability gate (1.5s) | **~47 d** (was ~32.5 d; the minimum useful ship, 1.5a + 1.5b, is still ~17.5 d) | UI ~3.5 d, examples ~3 d |
+| **2** | Real remote execution: the contract, the gateway, `RemoteWorker`, `RemoteRunner`, and the `execute` facet | **~22.5 d** (was ~19 d) | — |
+| **3** | Conformance kits, the runtime-adapter kit, and the first adapters built on it | **~17 d** (was ~11 d) | examples ~1 d |
+| **4** | Benchmarks, remaining adapters, hardening, the execute stability gate | **~10 d** (was ~9 d) | — |
+| | **Total** | **~105.5 d** (was ~80.5 d) | **~8.5 d + the rename's PRs** (was ~5 d) |
 
 ### Phase 0 — rename the control planes
 
@@ -2871,7 +2971,7 @@ defers.
 | Work | Effort |
 |---|---|
 | `target` resolution + `ConfigError`s + JSDoc | 1 d |
-| `IsolatedProcessor` → target dispatch; `Executor`-based custom target | 1 d |
+| `IsolatedProcessor` → target dispatch; `Executor`-based custom target, including the target-level executor type with an open `mode` and optional `file` that §4.2's correction requires | 1 d |
 | `defineProcessors()` + registry-dispatch file | 0.5 d |
 | `WorkerInfo.target` + serializer switch + API DTO + schema | 1 d |
 | UI badge + Target card | 1 d |
@@ -2909,12 +3009,14 @@ The full plan is [`summon-compute.md`](summon-compute.md).
 |---|---|---|
 | 1.5a | Core: `countDemand` on every driver, the controller, the marker, `drainAndExit`, provenance on the worker record, and `defineSummoner({ invoke })` for any platform | ~13 d |
 | 1.5b | Depth endpoint, summon status/manual/reset routes, KEDA/ACA/CREMA/GKE recipes | ~4.5 d |
-| 1.5c | SigV4 + credentials; ECS `RunTask`, Lambda `Invoke`, Fly Machines; the `./summon/*` subpaths | ~6.5 d |
-| 1.5d | Google/Azure token helper; Cloud Run jobs and worker pools; ACA manual jobs | ~4 d |
-| 1.5e | Render one-off jobs; SSH via `systemd-run` | ~3 d |
-| 1.5f | UI (the UI session, ~3 d) and examples (the examples session, ~2 d) | — |
+| **1.5p** | **The provider plugin API, `experimental`**: core, `summon` facet, conformance kit, first-party import test, `./provider*` entries, author guide, reference with drift test, user guide, security page, starter template | **~12.5 d** |
+| 1.5c | SigV4 + credentials in `./provider/auth`; ECS `RunTask`, Lambda `Invoke`, Fly Machines as providers on the API, each with a fake and a kit run; the `./providers/*` subpaths | ~6.5 d |
+| 1.5d | Google/Azure token helper; Cloud Run jobs and worker pools; ACA manual jobs; fakes and kit runs | ~4.5 d |
+| 1.5e | Render one-off jobs; SSH via `systemd-run`; fakes and kit runs | ~3.5 d |
+| 1.5f | UI (the UI session, ~3.5 d) and examples (the examples session, ~3 d, including a custom summon provider) | — |
 | 1.5g | Live verification, one summon per adapter, time-to-first-claim | ~1.5 d |
-| | **Total (bun-jobs session)** | **~32.5 d** |
+| **1.5s** | **Summon stability gate**: six first-party providers and one outside provider pass the kit; `summon` → `1.0` | **~1 d** |
+| | **Total (bun-jobs session)** | **~47 d** |
 
 **Why the estimate grew from the draft's ~4.5 d.** The draft's
 `onDemand: { invoke, idleTimeout }` did not know four things the 2026-09-25
@@ -2928,8 +3030,10 @@ evidence found in bun-jobs' own source:
 - **`countJobs` on SQL scans retained history** (`sql-driver.ts:4302-4313`).
 
 It also did not include first-party summoners, credentials or the depth
-endpoint. 1.5a + 1.5b (~17.5 d) are the **minimum useful ship**: every
-platform reachable, through `invoke()` or the endpoint.
+endpoint, and, since 2026-09-25, the provider plugin API (+14.5 d: 1.5p, the
+fakes and kit runs in 1.5d–e, and 1.5s). 1.5a + 1.5b (~17.5 d) are still the
+**minimum useful ship**: every platform reachable, through `invoke()` or the
+endpoint.
 
 **Still no protocol, no signing, no fencing, and no new dependency.** The
 summoned worker is a first-class `BunQueueWorker`, so the control plane, the
@@ -2948,7 +3052,9 @@ isolate; Phase 2 exists for that.
 - `PROTOCOL.md`;
 - `createRemoteExecutor()`: the framework-agnostic `Request → Response`
   reference implementation, which is both the thing adapters wrap and the
-  thing tier-1 tests point at.
+  thing tier-1 tests point at;
+- the **`execute` facet** of the provider plugin API (§4.6), so the transport
+  is pluggable from the first release of `RemoteWorker`.
 
 The phase now also delivers the user-facing names that Phase 0 freed:
 
@@ -2973,7 +3079,9 @@ The phase now also delivers the user-facing names that Phase 0 freed:
 | `RemoteRunner`: the `run` envelope in `PROTOCOL.md`, the runner-side executor, the reference handler's run path | 3 d |
 | Tier-1 test suite (§7.2) incl. adversarial cases, both kinds | 3.5 d |
 | `PROTOCOL.md` (RFC 2119, with literal request/response transcripts) + `LIMITATIONS.md` (typed "this transport cannot do that" errors, per Hatchet) + README + OpenAPI emission | 2.5 d |
-| **Total** | **~19 d** |
+| **The `execute` facet, host side** (§4.6): types, `send()` inside `RemoteTarget` (core signs, facet sends, core verifies), `locate()`, limit reconciliation with the handshake, `ProviderError` into the breaker, `httpsExecute` as the built-in for `{ endpoint }`, `lambdaExecute` if Q2 is closed (else Phase 3) | 2.5 d |
+| The author guide's execute-host chapter and its reference entries | 1 d |
+| **Total** | **~22.5 d** |
 
 There is no longer a decision gate before starting: the user has decided.
 What remains worth watching, as the draft said, is whether anyone builds an
@@ -2985,7 +3093,9 @@ best early evidence of which adapters Phase 3 should ship.
 **Scope.** `conformRemoteExecutor()` + the CLI, then Cloudflare Workers and
 AWS Lambda adapters — the two that motivated the ask — plus the generic
 `Request → Response` one (which covers Cloud Run, Next.js route handlers,
-Vercel, Netlify, Deno Deploy and Hono/Elysia in one export).
+Vercel, Netlify, Deno Deploy and Hono/Elysia in one export). Since 2026-09-25
+also the runtime-adapter kit those adapters are built with, and the two
+further kits a third party runs on its execute provider (§4.6).
 
 | Work | Effort |
 |---|---|
@@ -2995,11 +3105,19 @@ Vercel, Netlify, Deno Deploy and Hono/Elysia in one export).
 | `./adapters/lambda` + event-mapping unit tests | 1.5 d |
 | `exports`/`dts`/`consumer-check.json`/`checkPeerScopes` wiring for the new subpaths | 1.5 d |
 | Docs + a 15-line snippet per platform | 1.5 d |
-| **Total** | **~11 d** |
+| **`defineRuntimeAdapter` + `RUNTIME_ADAPTER_API`**; the three adapters above built on it, with the first-party import test extended to `lib/remote/adapters/` | 1.5 d |
+| `runRuntimeAdapterConformance` (event mapping) | 1.5 d |
+| `runExecuteConformance` (host transport) and its fake | 1.5 d |
+| The runtime-adapter guide, the Acme Functions worked example, the template's execute half | 1.5 d |
+| **Total** | **~17 d** |
 
-Phase 1.5 will already have added `./summon/*` subpaths by then. The two
-families stay separate: `./summon/*` start compute from the server side, and
-`./adapters/*` are browser-safe executor wrappers.
+Phase 1.5 will already have added the host-side `./providers/*` subpaths by
+then (they were `./summon/*` in an earlier draft). The two families stay
+separate: `./providers/*` run in the bun-jobs process and may carry both a
+`summon` and an `execute` facet; `./adapters/*` are browser-safe runtime
+adapters that run on the platform. The examples session writes a custom
+execute provider and runtime adapter against a local fake that passes both
+kits (~1 d, [`compute-provider-plugins.md`](compute-provider-plugins.md) §15.5).
 
 ### Phase 4 — benchmarks, remaining adapters, hardening
 
@@ -3013,7 +3131,8 @@ large-payload handling; the tier-3 manual e2e script.
 | Cancellation + progress/log streaming (SSE or chunked) | 3 d |
 | Remaining adapters | 2 d |
 | Tier-3 script | 1 d |
-| **Total** | **~9 d** |
+| **Execute stability gate**: the first-party adapters, `httpsExecute`, `lambdaExecute` and one outside provider pass both kits; `execute` → `1.0`, and `core` → `1.0` if the summon gate has passed | 1 d |
+| **Total** | **~10 d** |
 
 ### Explicitly out of scope
 
@@ -3039,7 +3158,9 @@ the driver. Phase 2 then serves the hosts that cannot.
 The one lesson from the draft that still applies to Phase 2 is Hatchet's:
 it shipped a serverless transport in 2024, let it go undocumented, and is
 rebuilding it this month. **Phase 2 ships with `PROTOCOL.md`, the conformance
-kit (Phase 3) and a version, or it does not ship.**
+kit (Phase 3) and a version, or it does not ship.** The same lesson is why the
+plugin system ships its author guide, reference and kit in the same
+sub-phase as its API ([`compute-provider-plugins.md`](compute-provider-plugins.md) §15).
 
 ---
 
