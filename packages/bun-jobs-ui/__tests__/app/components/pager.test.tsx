@@ -1,4 +1,4 @@
-import type { PageWindow } from "../../../app/components/pagerState";
+import type { PageMove } from "../../../app/components/pagerState";
 import { describe, expect, it, mock } from "bun:test";
 import { Pager } from "../../../app/components/Pager";
 import {
@@ -126,7 +126,7 @@ describe("pagerState", () => {
 
 describe("Pager", () => {
   it("renders the range and moves by a page", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     render(
       <Pager
         offset={20}
@@ -163,7 +163,7 @@ describe("Pager", () => {
   });
 
   it("changes the page size, keeping the first visible row, within maxPageSize", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     render(
       <Pager
         offset={60}
@@ -180,11 +180,17 @@ describe("Pager", () => {
       "50",
     ]);
     fireEvent.change(select, { target: { value: "50" } });
-    expect(onChange).toHaveBeenCalledWith({ offset: 50, limit: 50 });
+    // `resize` marks the one move a walked list answers by keeping its
+    // cursor; an offset pager reads the window and ignores it.
+    expect(onChange).toHaveBeenCalledWith({
+      offset: 50,
+      limit: 50,
+      resize: true,
+    });
   });
 
   it("lists every page and jumps straight to one", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     render(
       <Pager
         offset={20}
@@ -206,7 +212,7 @@ describe("Pager", () => {
   });
 
   it("jumps to the first and last pages, and disables prev/next there", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     const { rerender } = render(
       <Pager
         offset={0}
@@ -284,7 +290,7 @@ describe("Pager", () => {
   });
 
   it("uses a bounded number input beyond the select threshold", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     render(
       <Pager
         offset={0}
@@ -309,7 +315,7 @@ describe("Pager", () => {
   });
 
   it("commits the typed page on blur, clamped to the last page", () => {
-    const onChange = mock((_next: PageWindow) => {});
+    const onChange = mock((_next: PageMove) => {});
     render(
       <Pager
         offset={0}
@@ -396,5 +402,142 @@ describe("Pager", () => {
     expect((page().getByLabelText("Page") as HTMLSelectElement).disabled).toBe(
       true,
     );
+  });
+});
+
+describe("Pager, walking by cursor", () => {
+  it("counts the rows, and numbers nothing, on a page whose position is unknown", () => {
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={20}
+        hasMore
+        walk={{ canNext: true, canPrev: true, unnumbered: true }}
+        onChange={() => {}}
+      />,
+    );
+    const nav = page().getByRole("navigation", { name: "Pagination" });
+    // Not "1–20": a walked page on a backend that does not count what
+    // precedes it has no row numbers, and inventing them would be a lie in
+    // exactly the place a reader trusts.
+    expect(nav.textContent).toContain("20 rows");
+    expect(nav.textContent).not.toContain("1–20");
+    // And no page number either, for the same reason.
+    expect(nav.textContent).not.toContain("Page");
+    expect(page().queryByLabelText("Page")).toBeNull();
+  });
+
+  it("numbers the range again where the walked page does know where it sits", () => {
+    render(
+      <Pager
+        offset={40}
+        limit={20}
+        itemCount={20}
+        hasMore
+        walk={{ canNext: true, canPrev: true }}
+        onChange={() => {}}
+      />,
+    );
+    expect(
+      page().getByRole("navigation", { name: "Pagination" }).textContent,
+    ).toContain("41–60");
+  });
+
+  it("asks to walk, not to move the offset, with Previous and Next", () => {
+    const onChange = mock((_next: PageMove) => {});
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={20}
+        hasMore
+        walk={{ canNext: true, canPrev: true, unnumbered: true }}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.click(page().getByRole("button", { name: "Next" }));
+    fireEvent.click(page().getByRole("button", { name: "Previous" }));
+    expect(onChange.mock.calls).toEqual([
+      [{ offset: 0, limit: 20, step: "next" }],
+      [{ offset: 0, limit: 20, step: "prev" }],
+    ]);
+  });
+
+  it("walks back although the offset says there is nothing behind it", () => {
+    const onChange = mock((_next: PageMove) => {});
+    render(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={20}
+        hasMore={false}
+        walk={{ canNext: false, canPrev: true, unnumbered: true }}
+        onChange={onChange}
+      />,
+    );
+    const prev = page().getByRole("button", { name: "Previous" });
+    expect((prev as HTMLButtonElement).disabled).toBe(false);
+    // The end of a walk: nothing to walk on to, and no offset to fall back on.
+    expect(
+      (page().getByRole("button", { name: "Next" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.click(prev);
+    expect(onChange.mock.calls).toEqual([
+      [{ offset: 0, limit: 20, step: "prev" }],
+    ]);
+  });
+
+  it("falls back to the offset where the list cannot be walked", () => {
+    const onChange = mock((_next: PageMove) => {});
+    render(
+      <Pager
+        offset={20}
+        limit={20}
+        itemCount={20}
+        hasMore
+        // What the Active tab looks like: the API mints no cursor for it, so
+        // there is nothing to walk and the offset pager is what is left.
+        walk={{ canNext: false, canPrev: false }}
+        onChange={onChange}
+      />,
+    );
+    const next = page().getByRole("button", { name: "Next" });
+    expect((next as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(next);
+    fireEvent.click(page().getByRole("button", { name: "Previous" }));
+    expect(onChange.mock.calls).toEqual([
+      [{ offset: 40, limit: 20 }],
+      [{ offset: 0, limit: 20 }],
+    ]);
+  });
+
+  it("puts the walk's hint on the buttons that walk, and on no others", () => {
+    const { rerender } = render(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={20}
+        hasMore
+        walk={{ canNext: true, canPrev: false, hint: "what a walk misses" }}
+        onChange={() => {}}
+      />,
+    );
+    expect(page().getByRole("button", { name: "Next" }).title).toBe(
+      "what a walk misses",
+    );
+    // Previous moves the offset here, so the walk's hint is not its business.
+    expect(page().getByRole("button", { name: "Previous" }).title).toBe("");
+    rerender(
+      <Pager
+        offset={0}
+        limit={20}
+        itemCount={20}
+        hasMore
+        onChange={() => {}}
+      />,
+    );
+    expect(page().getByRole("button", { name: "Next" }).title).toBe("");
   });
 });

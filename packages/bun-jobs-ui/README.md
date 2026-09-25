@@ -116,7 +116,7 @@ worker's Failed) and a runner's Failed runs keep their names.
 |---|---|
 | `/` | The Overview: namespace-wide counts per state (`GET /overview`) and a filterable queue table, paged in the browser at 20 rows (the pager appears only once more queues came back than one page holds), with a throughput sparkline per row, then a Runners and a Workers section (`GET /analytics/runners`, `GET /analytics/workers`), all read over a chosen time range (presets from 60 seconds to 24 hours, or a custom start/end span). Each of those two sections shows a summed series with its totals, then a table of rows paged at `meta.analytics.maxSeries`, with sparklines for the visible page only (one batch read per page, whatever the row count). A Workers row is a worker key that did work in the range or is live now — who did the work in this window, not a list of running workers — so a stopped worker with counts in range keeps its row, and a live idle one shows zeros. A runner's Failed counts runs that threw; timeouts and kills are counted apart (the "Timed out / killed" column), so it is not the runner's lifetime failed count. The range control and its "Apply date filter to page" toggle sit at the right of the title row; the toggle decides whether that one control drives every section or each section carries its own. Throughput belongs to the range, so there is no fixed-window figure: a backend recording no analytics shows none rather than one that contradicts the range on screen. The "Over the range" tile keeps two groups apart: "Finished in range", the analytics series' completed jobs and failed attempts, counted when they finished; and, where the backend can count by creation time (`features.addedByState`), "Added in range, where they are now (still stored)": of the jobs added in the range and still stored, how many are in each state now (`GET /overview/added`, polled every 20 s), with a total; its "Retrying" is the `failed` state, not the failed attempts above it. One counts by finish time and the other by creation time, and the second leaves out jobs already removed (a queue that removes finished jobs shows few completed there), so the two are not expected to agree. When the caller has no Overview entry, `/` redirects to the first nav entry, or says there is nothing to show. |
 | `/queues` | Every queue, searchable by name (case-insensitive) and paged. Each row links to its queue. |
-| `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging, bulk actions; newest added first on every tab where the backend sorts by creation time, `features.addedByState`, and each tab's natural order otherwise; where the backend records it, `features.jobAttribution`, a "Processed by" column naming the worker that ran each job's **last** attempt, its stable key linked to its worker page, the incarnation id when no key was recorded, and "—" when no worker is) and the detail panels: limits, job defaults (every option a job gets when its `add()` does not pass it, what the code asks for and whether the queue's stored override replaces it, and the jobs pending in each state it can be applied to; with Settings… to edit them and Apply to N pending jobs… to rewrite pending jobs, a separate action that walks the queue in batches), workers (the same table and controls as the Workers page, for this queue alone, paged at 25), throughput and repeatables (paged at 20). |
+| `/queues/:queue` | The queue's header (paused badge, job total, last update), its actions, the jobs table (a tab per state, filters, paging by page number or by walking the list a page at a time, bulk actions; newest added first on every tab where the backend sorts by creation time, `features.addedByState`, and each tab's natural order otherwise; where the backend records it, `features.jobAttribution`, a "Processed by" column naming the worker that ran each job's **last** attempt, its stable key linked to its worker page, the incarnation id when no key was recorded, and "—" when no worker is) and the detail panels: limits, job defaults (every option a job gets when its `add()` does not pass it, what the code asks for and whether the queue's stored override replaces it, and the jobs pending in each state it can be applied to; with Settings… to edit them and Apply to N pending jobs… to rewrite pending jobs, a separate action that walks the queue in batches), workers (the same table and controls as the Workers page, for this queue alone, paged at 25), throughput and repeatables (paged at 20). |
 | `/queues/:queue/jobs/:id` | One job: its summary, the failure with its cause chain and the failure history, data, return value, flow parent and children, logs and options, with Retry, Promote, Fail…, Remove and Edit, and Clear logs… in the logs section (`DELETE /queues/:queue/jobs/:id/logs`: the log is emptied for good and its line count starts again from zero; not while the job is `active`, since its worker is still writing the log). The summary's "Held by" names the worker holding the job, shown only while it is `active` (`workerId`). Where the backend records it (`features.jobAttribution`), "Processed by" names the worker that ran the job's **last** attempt (`processedBy`): its stable key, linked to its worker page (the job's queue and the key), its incarnation id, and host and pid when the API exposes them. Earlier attempts are not recorded. With no worker recorded (never claimed, or claimed before the backend recorded attribution) it says so. |
 | `/workers` | Every live worker in the namespace (`GET /workers`), grouped by the service that runs them (`service`, with processes that named none last) and then by the server hosting each (host and pid; one group named "Hosts hidden by the API" when `serialize.exposeHosts` is off). Each **server's** table is paged on its own, at 25 rows, so a page never crosses the heading that says where a worker runs; a server with fewer workers than that shows no pager, and the heading's count is the server's, not the page's. A row shows the worker's queue (linked to its screen with `queues.list`), whether it is running or paused, its active jobs against its concurrency, and when it started and last reported. It also has a Memory column: the resident memory of the **process** the worker runs in at its last report (`rssBytes`), so workers sharing a pid repeat one figure and the column must not be added up — to size a host, take one row per pid. A worker that reports none shows "—", never `0 B`, and the column is absent when no worker in the table reports one. Where a worker reports its heartbeat's round trip (`heartbeatRttMs`), the Heartbeat cell's tooltip adds how long that write took: the previous report's sample of the driver round trip, not a network ping and not an average. Each row also carries its controls: Pause, Resume, Stop… and Start (one running worker, by its per-incarnation `id`) and Settings… (the settings of every worker sharing its stable `key`). Filtered on the server by queue, service, host (offered only when the API exposes hosts) and state, each a select over the values the unfiltered list has, and by id, key, service, queue, host or pid in the browser. A row's stable key links to its worker page; every instance of a key leads to the same page, and a worker reporting no key has no link. It follows the `workers` channel: a worker announces its first start (a `state` event with no `previous`: `running`; `paused` when it starts paused; or `stopped` when a stop recorded against its key holds it parked), its state changes (paused, resumed, stopping/stopped, started again, restarting) and config changes, and each refreshes the list. A queue another process creates after the page subscribed is followed from the API's next discovery pass (`discoveryInterval`, 2 s by default); a worker's first start on it comes before that, so the API sends a `gap` (reason `queue-discovered`) instead, which refreshes the list too. The listing itself comes from the worker's heartbeat, written when it starts — at once on a queue the API already knows, and within `limits.queueCacheMs` (2 s by default) on a queue the API has not seen yet — and its row then refreshes every `reportInterval` (10 s by default). So the list also re-reads every 5 seconds, relaxed while live. |
 | `/workers/:queue/:key` | One stable worker key, addressed with its queue because a key is unique only within its queue: the key, its queue (linked with `queues.list`) and its service; its live instances (`GET /workers?queue=<queue>&key=<key>&includeOffline=true`) in the Workers page's table, paged at 10 (one key usually has one or two, so the pager is rarely there), with the same controls, the same Memory column (one figure per process, so two instances in one process repeat it and it must not be added up) and the same heartbeat round-trip tooltip; its full configuration, every setting with the value it runs with, the value its code asks for and whether the key's override replaces it, with Edit settings… (the Settings dialog) and a "Change pending" badge; its throughput and busyness over a chosen range (`GET /queues/:queue/analytics/workers/:key`), each captioned from its own response's range, since busyness is served coarser; and the jobs whose last attempt this key ran (`GET /queues/:queue/jobs?workerKey=<key>`), where the backend records attribution (`features.jobAttribution`). A job that failed on another worker and then ran on this one is listed on this page only. The jobs list has the queue table's state tabs (without counts), name and search filters, order, rows, bulk actions and pager (without a total). It covers a range over `finishedOn`, the last 24 hours by default. A job with no finish time never matches a range, so All lists only completed and dead jobs. On the Waiting, Delayed, Active, Retrying and Waiting-children tabs the range is dropped, with a note saying so, and every job of that state the key last ran is listed. Which worker ran a job is kept only as long as the job is, so jobs removed on completion are not listed. A key containing a comma cannot be sent as one filter value (the API splits values at commas), so for such a key the section says the list cannot be filtered to it and reads nothing. With no live instance it says the configuration cannot be shown until one reports, lists the override stored for the key (the listing's `offline`), and still offers Reset to code values…. |
@@ -128,6 +128,70 @@ worker's Failed) and a runner's Failed runs keep their names.
 | `/docs/http/:operationId` | One operation: method, path and operationId, the permission marker, whether it is a mutation, its CSRF rules and the driver methods it needs, its parameters, body and responses as schema trees, and its try-it panel. An operationId the document lacks shows "No such operation" (the API prunes operations by its mode, read-only setting and actions). |
 | `/docs/ws` | The WebSocket reference, from the API's AsyncAPI 3.0 document: the title and version, the server (URL, host, path, protocol, subprotocol) and security panels, then a searchable sidebar of the connection's panels, channels, operations, control messages and event messages. With no item, the connection channel is shown. |
 | `/docs/ws/:item` | One item, by slug: `channel-<key>`, `operation-<key>` or `message-<key>` (e.g. `message-queue.completed`), or one of the connection's panels, `limits`, `close-codes` and `upgrade-refusals`. A slug the document has nothing for shows "No such item". |
+
+### Paging the jobs table
+
+The jobs table **jumps by offset and walks by cursor**, and the two mix
+freely. The page control and the rows-per-page select do what they always did:
+they count jobs, which is how you get to page 7. **Previous** and **Next**
+send the page's `page.next` instead, so the next page starts at the job after
+the last one you were shown.
+
+That matters because an offset page of a live queue loses rows. Jobs are
+claimed off the head, so under a fixed offset the window slides backwards and
+the next page steps over jobs in the middle that nobody touched — no repeat,
+no error, nothing in the response to notice. A cursor names the job you
+stopped at rather than a count, so a job leaving the list ahead of you shifts
+nothing.
+
+Four things follow, and each is visible on the screen:
+
+- **Every page mints a cursor, including a page you jumped to.** So a reader
+  can go to page 7 and then walk on from it, which is the only way to have
+  both a page number and a walk that loses nothing.
+- **The Active tab keeps the offset pager.** Its order is the lock expiry,
+  which every worker rewrites each time it renews a lock, several times a
+  minute per job. The API mints no cursor there and refuses one, so the tab
+  pages as it always has.
+- **A walked page may have no row numbers.** The range then counts the rows —
+  "20 rows" — instead of numbering them, and there is no page selector,
+  because nothing knows which page it is. **Whether a page is numbered is a
+  property of the answer, not of the backend**: the UI reads `page.offset` off
+  each page rather than deciding from the driver, because the same driver
+  numbers one page and not another. A driver reports the position only when
+  its seek already knew it — counting the jobs before a walked page is an
+  index scan of exactly the size the offset would have walked, and paying it
+  would make the walk cost what the offset cost. Today SQL and MongoDB never
+  number a walked page; memory and Redis always do, from the rank their seek
+  resolved; the file driver does when it can compare marker names (one state,
+  no filter) or when a total was asked for and counted them anyway. A walk a
+  driver declines to seek is served by the shared scan instead, which walks
+  the listing and so numbers it. The route's own description is the list to
+  trust, since it changes with the drivers. A numbered
+  walked page is the position in the list *as it is now*: after five jobs are
+  taken, page two of a walk reads "6–15".
+- **Changing a filter, the order, the state tab or "Count total" starts
+  again.** A cursor belongs to one walk — its queue, states, sort and order —
+  and one sent into another walk is refused with a message saying so, never a
+  silent restart at page one. "Count total" is in that list because counting
+  changes the sort.
+
+The cursor is not in the URL. It is opaque and up to 2 kB, and walking back
+needs the whole trail of them, so the walk lives in the screen while the URL
+keeps saying where it started. A reload, or a copied link, therefore lands on
+that offset page rather than resuming a walk — which loses nothing, since an
+offset page is where every walk begins.
+
+**What a walk does not fix**, said plainly: a job that *joins* the states you
+are reading behind the point you have reached is not shown, and nothing
+announces it. A job promoted or retried into the queue is the case to know
+about, since the Waiting tab is where such a job arrives and the jobs table is
+where someone both pages and re-prioritises. Previous and Next carry that
+sentence as their tooltip while they walk. It costs about one job per
+promotion, against the twenty in a hundred that ordinary draining costs an
+offset page, so it is a real residue and not a rounding error — and a job that
+*leaves* the list is missed by every paging scheme there is, because nothing
+can show a row that is no longer there.
 
 ### Failing a job, and disabling a repeat series
 
@@ -231,7 +295,7 @@ default.
 | `/queues` | `offset` | Rows skipped. Defaults to `0`. |
 | `/queues` | `limit` | Page size, `1` to `limits.maxQueues`. Defaults to the smaller of `limits.defaultPageSize` and `limits.maxQueues`. |
 | `/queues/:queue` | `state` | The state tab: `waiting`, `delayed`, `active`, `completed`, `failed` (the tab labelled Retrying), `dead` or `waiting-children`. Absent means All. |
-| `/queues/:queue` | `offset` | Jobs skipped. Defaults to `0`. |
+| `/queues/:queue` | `offset` | Jobs skipped, and where a walk starts. Defaults to `0`. Previous and Next walk the list by cursor from here, which the URL does not carry: a cursor is opaque and up to 2 kB, and walking back needs every one of them. So a reload or a copied link lands on this page, and a walk from it begins again. |
 | `/queues/:queue` | `limit` | Page size, `1` to `limits.maxPageSize`. Defaults to `limits.defaultPageSize`. |
 | `/queues/:queue` | `total=1` | Asks the API to count `page.total` ("Count total"). |
 | `/queues/:queue` | `name` | Exact job names as a comma list. The request sends each name as its own `name` key. |

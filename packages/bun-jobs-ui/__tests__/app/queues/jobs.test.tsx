@@ -491,3 +491,271 @@ describe("bulk actions", () => {
     expect(countsFixture().failed).toBe(2);
   });
 });
+
+/**
+ * A backend that pages by cursor: every page mints the cursor continuing the
+ * walk, **including an offset page**, so a reader can jump to page N and then
+ * walk on from it. A walked page reports no `page.offset` — the SQL and
+ * MongoDB case, where counting the jobs before the key would cost what the
+ * offset cost. `state=active` on its own mints none, as the API refuses to
+ * walk a list whose order every lock renewal rewrites.
+ */
+function walkedJobs(total = 60) {
+  const ids = (start: number, size: number) =>
+    Array.from({ length: size }, (_unused, index) => `j-${start + index}`);
+  return (call: RecordedCall) => {
+    const cursor = call.query.get("cursor");
+    const limit = Number(call.query.get("limit") ?? 20);
+    const walkable = call.query.getAll("state").join() !== "active";
+    if (cursor !== null && !walkable) {
+      throw new Error("a cursor reached a walk the API refuses");
+    }
+    const start =
+      cursor === null
+        ? Number(call.query.get("offset") ?? 0)
+        : Number(cursor.replace("after-", "")) + 1;
+    const size = Math.max(0, Math.min(limit, total - start));
+    const hasMore = start + size < total;
+    return {
+      body: {
+        items: ids(start, size).map((id) => jobFixture({ id })),
+        page: {
+          // Only an offset page knows where it sits here.
+          ...(cursor === null ? { offset: start } : {}),
+          limit,
+          hasMore,
+          ...(walkable
+            ? { next: hasMore && size > 0 ? `after-${start + size - 1}` : null }
+            : {}),
+        },
+      },
+    };
+  };
+}
+
+/** The jobs pager. */
+function jobPager() {
+  return page().getByRole("navigation", { name: "Job pages" });
+}
+
+/**
+ * Presses one of the pager's buttons and waits for `firstRow` to be the page
+ * shown. Waiting on the rows rather than on a request is deliberate: walking
+ * back re-asks for a page this screen has already read, which the query cache
+ * answers without going to the API at all.
+ */
+async function turn(name: "Next" | "Previous", firstRow: string) {
+  fireEvent.click(within(jobPager()).getByRole("button", { name }));
+  await atFirstRow(firstRow);
+}
+
+/** The id of the table's first row, or `""` when it has none. */
+function firstRowId(): string {
+  const row = document.querySelector<HTMLElement>('[data-testid^="job-row-"]');
+  return (row?.dataset.testid ?? "").replace("job-row-", "");
+}
+
+/** Waits until the table's first row is `id`, whatever is in flight. */
+async function atFirstRow(id: string) {
+  await waitFor(() => expect(firstRowId()).toBe(id));
+}
+
+/** The `cursor` of every jobs request sent, `null` where none was. */
+function cursors(calls: RecordedCall[]): (string | null)[] {
+  return jobCalls(calls).map((call) => call.query.get("cursor"));
+}
+
+describe("the jobs table, walking by cursor", () => {
+  it("walks on with the page's cursor, and never with an offset beside it", async () => {
+    const { calls } = renderQueue({
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    // The first page is an offset page: it carries no cursor and knows where
+    // it sits, so it is numbered as it always was.
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+    expect(within(jobPager()).getByText("1–20")).toBeTruthy();
+
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+    // The offset would decide nothing, and the API ignores it: not sent.
+    expect(lastJobs(calls).query.has("offset")).toBe(false);
+    expect(await within(jobPager()).findByText("20 rows")).toBeTruthy();
+
+    await turn("Next", "j-40");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-39");
+
+    // Back through the trail, page by page, to the offset page it began on —
+    // which is the only page here that can say where it sits.
+    await turn("Previous", "j-20");
+    await turn("Previous", "j-0");
+    expect(await within(jobPager()).findByText("1–20")).toBeTruthy();
+
+    // Every cursor sent was one the API minted for this walk, and no request
+    // ever carried a cursor and an offset at once.
+    expect(cursors(calls)).toEqual([null, "after-19", "after-39"]);
+    for (const call of jobCalls(calls)) {
+      expect(call.query.has("cursor") && call.query.has("offset")).toBe(false);
+    }
+  });
+
+  it("counts the rows of a walked page instead of numbering them, and offers no page number", async () => {
+    renderQueue({
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    await turn("Next", "j-20");
+    const pager = jobPager();
+    // "21–40" would be a guess: nothing counted what precedes this page, and
+    // jobs may have left the list since the walk started.
+    expect(pager.textContent).not.toContain("21–40");
+    expect(pager.textContent).toContain("20 rows");
+    expect(pager.textContent).not.toContain("Page");
+    // And the walk's honesty note is on the button that walks.
+    expect(within(pager).getByRole("button", { name: "Next" }).title).toContain(
+      "behind",
+    );
+  });
+
+  it("jumps by offset and then walks on from where the jump landed", async () => {
+    const { calls } = renderQueue({
+      path: "/queues/emails?offset=40",
+      handlers: { "GET /queues/emails/jobs": walkedJobs(200) },
+    });
+    await jobsTable();
+    expect(lastJobs(calls).query.get("offset")).toBe("40");
+    await page().findByTestId("job-row-j-40");
+    await turn("Next", "j-60");
+    // The jumped-to page minted a cursor of its own, so the walk continues
+    // from where the jump landed rather than from the top of the list.
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-59");
+    expect(lastJobs(calls).query.has("offset")).toBe(false);
+  });
+
+  it("drops the walk when a filter changes, so no stale cursor is sent", async () => {
+    const { calls } = renderQueue({
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+
+    // A cursor belongs to one walk — the queue, the states, the sort and the
+    // order — and the filters restart paging besides. Applying one must
+    // therefore start again, not send a cursor minted for what came before.
+    fireEvent.change(page().getByLabelText("Search"), {
+      target: { value: "j-4" },
+    });
+    fireEvent.click(page().getByRole("button", { name: "Apply" }));
+    await waitFor(() =>
+      expect(lastJobs(calls).query.get("search")).toBe("j-4"),
+    );
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+    await atFirstRow("j-0");
+    expect(within(jobPager()).getByText("1–20")).toBeTruthy();
+
+    // So does the order, and so does the state tab.
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+    fireEvent.change(page().getByLabelText("Order"), {
+      target: { value: "asc" },
+    });
+    await waitFor(() => expect(lastJobs(calls).query.has("order")).toBe(false));
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+    await atFirstRow("j-0");
+
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+    fireEvent.click(page().getByRole("tab", { name: /Retrying/ }));
+    await waitFor(() =>
+      expect(lastJobs(calls).query.getAll("state")).toEqual(["failed"]),
+    );
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+  });
+
+  it("drops the walk when Count total changes, since that changes the sort", async () => {
+    const { calls } = renderQueue({
+      handlers: {
+        "GET /meta": {
+          body: metaFixture({
+            features: { ...metaFixture().features, addedByState: true },
+          }),
+        },
+        "GET /queues/emails/jobs": walkedJobs(),
+      },
+    });
+    await jobsTable();
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.get("sort")).toBe("createdAt");
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+    // Counting drops `sort=createdAt` for the tab's natural order, and a
+    // cursor is bound to the sort it was minted under.
+    fireEvent.click(page().getByLabelText("Count total"));
+    await waitFor(() =>
+      expect(lastJobs(calls).query.get("total")).toBe("true"),
+    );
+    expect(lastJobs(calls).query.has("sort")).toBe(false);
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+  });
+
+  it("keeps the walk's place when only the page size changes", async () => {
+    const { calls } = renderQueue({
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    await turn("Next", "j-20");
+    fireEvent.change(page().getByLabelText("Rows per page"), {
+      target: { value: "50" },
+    });
+    await waitFor(() => expect(lastJobs(calls).query.get("limit")).toBe("50"));
+    // The same cursor with a new size: the page still starts at the row it
+    // started at, which is what the size control means everywhere else.
+    expect(lastJobs(calls).query.get("cursor")).toBe("after-19");
+    await page().findByTestId("job-row-j-20");
+  });
+
+  it("names promotion in the walk's hint on the tab a promoted job arrives on", async () => {
+    const { calls } = renderQueue({
+      path: "/queues/emails?state=waiting",
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    // Waiting is where the queue screen's own Promote selected puts a job,
+    // and a job that joins the list behind the walk is the one thing the
+    // cursor costs that the offset did not. So the button that walks says so.
+    const waiting = within(jobPager()).getByRole("button", {
+      name: "Next",
+    }).title;
+    expect(waiting).toContain("promoted");
+    expect(waiting).toContain("behind this point");
+
+    // Elsewhere the same fact is stated without naming a tab's own action.
+    fireEvent.click(page().getByRole("tab", { name: /Completed/ }));
+    await waitFor(() =>
+      expect(lastJobs(calls).query.getAll("state")).toEqual(["completed"]),
+    );
+    await waitFor(() =>
+      expect(
+        within(jobPager()).getByRole("button", { name: "Next" }).title,
+      ).not.toContain("promoted"),
+    );
+  });
+
+  it("leaves the Active tab on the offset pager, since its cursor is refused", async () => {
+    const { calls } = renderQueue({
+      path: "/queues/emails?state=active",
+      handlers: { "GET /queues/emails/jobs": walkedJobs() },
+    });
+    await jobsTable();
+    expect(lastJobs(calls).query.getAll("state")).toEqual(["active"]);
+    // The API mints no cursor for it, so the pager has nothing to walk with
+    // and moves the offset — as it always did on every tab.
+    await turn("Next", "j-20");
+    expect(lastJobs(calls).query.has("cursor")).toBe(false);
+    expect(lastJobs(calls).query.get("offset")).toBe("20");
+    expect(await within(jobPager()).findByText("21–40")).toBeTruthy();
+    expect(within(jobPager()).getByRole("button", { name: "Next" }).title).toBe(
+      "",
+    );
+  });
+});

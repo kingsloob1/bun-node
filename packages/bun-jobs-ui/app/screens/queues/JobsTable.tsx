@@ -20,6 +20,7 @@ import {
   listJobs,
   mutationInvalidations,
   queueKeys,
+  sortsByCreation,
 } from "../../api/queues";
 import { workerPath } from "../../api/workers";
 import { Button } from "../../components/Button";
@@ -56,12 +57,31 @@ import {
   readJobFilters,
   truncate,
 } from "./jobFilters";
+import { useJobWalk } from "./jobWalk";
 import { useRefreshInterval } from "./live";
 import { listIds } from "./queueFormat";
 import { splitList, useUrlParams } from "./urlState";
 
 /** Query parameters that restart paging when they change. */
 const PAGING_PARAMS = ["offset"] as const;
+
+/**
+ * What walking this tab by cursor does and does not show, put on Previous and
+ * Next while they walk.
+ *
+ * Both sentences are true of every tab; the Waiting one names promotion
+ * because that is the tab a promoted job **arrives** on, and the queue
+ * screen's own Promote selected is what puts it there. A job that leaves the
+ * states being walked is missed by every paging scheme there is — nothing can
+ * show a row that is no longer there — but a job that *joins* behind the point
+ * a walk has reached is missed silently, which is the one thing the cursor
+ * costs that the offset did not.
+ */
+function walkHint(tab: StateTab): string {
+  return tab === "waiting"
+    ? "Walks from where this page ended, so no waiting job is skipped by the queue draining. A job promoted or retried into the queue while you page can land behind this point, and is then not on any page of this walk."
+    : "Walks from where this page ended, so no job is skipped by the list changing under you. A job that joins these states behind the point you have reached is not on any page of this walk.";
+}
 
 /** Props of {@link JobsTable}. */
 export interface JobsTableProps {
@@ -96,7 +116,26 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
     })),
   ];
   const tab = useUrlTab<StateTab>("state", tabs, ALL_STATES);
-  const filters = readJobFilters(params, tab, meta.limits);
+  const createdOrder = meta.features.addedByState;
+  const start = readJobFilters(params, tab, meta.limits);
+  // Every parameter a cursor is bound to (the queue, the states, the sort and
+  // the order), plus the filters and the offset the walk started from: change
+  // one and this is a different walk, so its cursors are gone before the next
+  // request goes out. The page size is deliberately not here — see
+  // {@link useJobWalk}.
+  const walk = useJobWalk(
+    JSON.stringify([
+      queue,
+      start.state,
+      start.offset,
+      start.order,
+      start.names,
+      start.search,
+      start.total,
+      sortsByCreation(start, createdOrder),
+    ]),
+  );
+  const filters = readJobFilters(params, tab, meta.limits, walk.cursor);
   const refetchInterval = useRefreshInterval("jobs");
 
   const jobs = useQuery({
@@ -105,9 +144,7 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
     // `createdAt`; elsewhere each tab's natural order (the flag's absence
     // means the API refuses `sort=createdAt`).
     queryFn: ({ signal }) =>
-      listJobs(api, queue, filters, signal, {
-        createdOrder: meta.features.addedByState,
-      }),
+      listJobs(api, queue, filters, signal, { createdOrder }),
     refetchInterval,
     placeholderData: keepPreviousData,
   });
@@ -163,19 +200,58 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
           />
           <Pager
             label="Job pages"
-            offset={filters.offset}
+            // Where the API says the page sits, which on a walked page is
+            // where the seek landed. Absent only on a walked page whose
+            // backend did not count what precedes it (SQL and MongoDB, so
+            // that a walk does not cost what the offset cost): `unnumbered`
+            // then tells the pager to count the rows rather than number them.
+            offset={jobs.data.page.offset ?? filters.offset}
             limit={filters.limit}
             total={jobs.data.page.total}
             itemCount={jobs.data.items.length}
             hasMore={jobs.data.page.hasMore}
+            walk={{
+              // The API mints `page.next` on every page it can be walked on,
+              // offset pages included, and on none it cannot — the Active tab
+              // alone, whose order every lock renewal rewrites. So the
+              // presence of a cursor is the whole rule, and that tab keeps
+              // the offset pager it has always had.
+              canNext: typeof jobs.data.page.next === "string",
+              canPrev: walk.canPrev,
+              // Read from the page shown, not from the walk being asked for:
+              // while a move is in flight the rows are still the previous
+              // page's, and a range numbered from the new request would
+              // number the wrong rows. Only a walked page omits its offset.
+              unnumbered: jobs.data.page.offset === undefined,
+              hint: walkHint(tab),
+            }}
             maxPageSize={meta.limits.maxPageSize}
             disabled={jobs.isFetching && jobs.isPlaceholderData}
-            onChange={(next) =>
+            onChange={(next) => {
+              const cursor = jobs.data.page.next;
+              if (next.step === "next" && typeof cursor === "string") {
+                walk.forward(cursor);
+                return;
+              }
+              if (next.step === "prev") {
+                walk.back();
+                return;
+              }
+              // Resizing keeps the walk: the cursor that produced this page
+              // is re-sent with the new size, so the page keeps its first
+              // row. Every other move is a jump, which abandons the walk —
+              // an offset and a cursor cannot both decide where a page
+              // starts, and the API ignores the offset when both are sent.
+              if (next.resize === true && walk.cursor !== undefined) {
+                update({ limit: String(next.limit) });
+                return;
+              }
+              walk.reset();
               update({
                 offset: next.offset > 0 ? String(next.offset) : null,
                 limit: String(next.limit),
-              })
-            }
+              });
+            }}
           />
         </>
       )}

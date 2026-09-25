@@ -43,6 +43,18 @@ export interface JobListFilters {
   state: JobState | null;
   /** Rows skipped. */
   offset: number;
+  /**
+   * The `page.next` of the page before, to walk on from it rather than count
+   * to it; absent to page by {@link JobListFilters.offset}. The API ignores
+   * `offset` when it is sent, so {@link jobListQuery} leaves the offset out.
+   *
+   * **Opaque, and bound to its walk** — the queue, the states, the sort and
+   * the order. Never build, parse, store or compare one: it is meaningful
+   * only to the walk that minted it, and one belonging to another walk is a
+   * 400 rather than a silent restart at page one. So every change to one of
+   * those must clear it, which is what the jobs table's walk key does.
+   */
+  cursor?: string;
   /** Rows per page. */
   limit: number;
   /** Order within the states. */
@@ -196,6 +208,10 @@ function base(queue: string, suffix = ""): string {
  * the API's defaults, arrays as repeated keys, never `include`. The
  * attribution filters are added only with `options.attribution` true, and
  * `sort=createdAt` only as {@link sortsByCreation} allows.
+ *
+ * A `cursor` replaces the `offset` rather than joining it: the API ignores an
+ * offset sent with a cursor, and sending one anyway would put a number in the
+ * URL that decides nothing.
  */
 export function jobListQuery(
   filters: JobListFilters,
@@ -211,9 +227,11 @@ export function jobListQuery(
   )
     ? "createdAt"
     : undefined;
+  const walking = filters.cursor !== undefined && filters.cursor !== "";
   return {
     state: filters.state === null ? undefined : [filters.state],
-    offset: filters.offset > 0 ? filters.offset : undefined,
+    cursor: walking ? filters.cursor : undefined,
+    offset: !walking && filters.offset > 0 ? filters.offset : undefined,
     limit: filters.limit,
     order: filters.order === "desc" ? "desc" : undefined,
     sort,

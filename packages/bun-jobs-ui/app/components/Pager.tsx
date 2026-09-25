@@ -1,4 +1,4 @@
-import type { PageWindow } from "./pagerState";
+import type { PageMove, PagerWalk, PageWindow } from "./pagerState";
 import { useId, useState } from "react";
 import { Button } from "./Button";
 import { cx } from "./classNames";
@@ -20,8 +20,19 @@ export interface PagerProps extends PageWindow {
   itemCount?: number;
   /** Whether the API reports more rows after this page (when there is no total). */
   hasMore?: boolean;
-  /** Called with the new window. Changing the size keeps the first visible row on the new page. */
-  onChange: (next: PageWindow) => void;
+  /**
+   * Cursor navigation: what Previous and Next may walk, and whether this page
+   * knows where it sits. Omit it — every list but the queue's jobs does — and
+   * the pager moves by offset exactly as it always has.
+   */
+  walk?: PagerWalk;
+  /**
+   * Called with the move asked for. Changing the size keeps the first visible
+   * row on the new page. A walked list is moved by {@link PageMove.step}
+   * rather than by `offset`; a pager without {@link PagerProps.walk} never
+   * sets it.
+   */
+  onChange: (next: PageMove) => void;
   /** Page sizes to offer. Defaults to {@link DEFAULT_PAGE_SIZES}. */
   pageSizes?: readonly number[];
   /** The API's largest `limit` (e.g. `/meta.limits`); sizes above it are not offered. */
@@ -51,6 +62,11 @@ export interface PagerProps extends PageWindow {
  * static text, and only while there is another page to go to. Nothing is
  * rendered disabled and unexplained, and prev/next and the size select stay
  * exactly as usable as they are with a total.
+ *
+ * With {@link PagerProps.walk} the same controls page a list by **cursor**:
+ * Previous and Next report a `step` instead of a new offset, the Page control
+ * still jumps by offset, and a page whose backend did not count what precedes
+ * it shows neither a page number nor row numbers, because it has none.
  */
 export function Pager({
   offset,
@@ -58,6 +74,7 @@ export function Pager({
   total,
   itemCount,
   hasMore,
+  walk,
   onChange,
   pageSizes = DEFAULT_PAGE_SIZES,
   maxPageSize,
@@ -69,7 +86,18 @@ export function Pager({
   const sizeId = useId();
   const pageId = useId();
   const countId = useId();
-  const state = pagerState({ offset, limit, total, itemCount, hasMore });
+  const state = pagerState({
+    offset,
+    limit,
+    total,
+    itemCount,
+    hasMore,
+    unnumbered: walk?.unnumbered,
+  });
+  /** Whether Previous walks back through the cursor trail rather than moving the offset. */
+  const walksBack = walk?.canPrev === true;
+  /** Whether Next walks on with the page's cursor rather than moving the offset. */
+  const walksOn = walk?.canNext === true;
   const sizes = pageSizeOptions(pageSizes, limit, maxPageSize);
   /**
    * What is typed in the page input before it is committed, and the page it
@@ -109,6 +137,11 @@ export function Pager({
       <span
         className="pager-range"
         aria-live="polite"
+        title={
+          walk?.unnumbered === true
+            ? "This backend does not count the rows before a walked page, so the rows are counted rather than numbered."
+            : undefined
+        }
       >
         {state.text}
       </span>
@@ -121,7 +154,11 @@ export function Pager({
           disabled={disabled}
           onChange={(event) => {
             const next = Number(event.target.value);
-            onChange({ offset: Math.floor(offset / next) * next, limit: next });
+            onChange({
+              offset: Math.floor(offset / next) * next,
+              limit: next,
+              resize: true,
+            });
           }}
         >
           {sizes.map((size) => (
@@ -136,7 +173,10 @@ export function Pager({
       </span>
       {pageCount === null ? (
         // No total, no page count, so nothing to pick from: say where we are
-        // instead, and only while there is somewhere else to be.
+        // instead, and only while there is somewhere else to be — and never
+        // on a walked page whose position nothing knows, where "Page 1" would
+        // be the pager inventing the one fact it is missing.
+        walk?.unnumbered !== true &&
         (state.hasPrev || state.hasNext) && (
           <span className="pager-page pager-page-static">
             {`Page ${formatNumber(page)}`}
@@ -198,17 +238,29 @@ export function Pager({
       <span className="pager-buttons">
         <Button
           size="sm"
-          disabled={disabled || !state.hasPrev}
+          disabled={disabled || !(state.hasPrev || walksBack)}
+          title={walksBack ? walk?.hint : undefined}
           onClick={() =>
-            onChange({ offset: Math.max(0, offset - limit), limit })
+            onChange(
+              walksBack
+                ? { offset, limit, step: "prev" }
+                : { offset: Math.max(0, offset - limit), limit },
+            )
           }
         >
           Previous
         </Button>
         <Button
           size="sm"
-          disabled={disabled || !state.hasNext}
-          onClick={() => onChange({ offset: offset + limit, limit })}
+          disabled={disabled || !(state.hasNext || walksOn)}
+          title={walksOn ? walk?.hint : undefined}
+          onClick={() =>
+            onChange(
+              walksOn
+                ? { offset, limit, step: "next" }
+                : { offset: offset + limit, limit },
+            )
+          }
         >
           Next
         </Button>

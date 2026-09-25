@@ -17,6 +17,13 @@ import {
   readJobFilters,
   truncate,
 } from "../../../app/screens/queues/jobFilters";
+import {
+  emptyWalk,
+  walkBack,
+  walkCursor,
+  walkFor,
+  walkForward,
+} from "../../../app/screens/queues/jobWalk";
 import { refreshInterval } from "../../../app/screens/queues/live";
 import {
   draftFromLimits,
@@ -177,5 +184,65 @@ describe("the queue screens' pure helpers", () => {
   it("polls counts and the jobs page at the app's interval, from one module", () => {
     expect(refreshInterval("counts")).toBe(POLL_INTERVAL_MS);
     expect(refreshInterval("jobs")).toBe(POLL_INTERVAL_MS);
+  });
+});
+
+describe("walking the jobs list by cursor", () => {
+  it("sends the cursor instead of the offset, never both", () => {
+    const params = new URLSearchParams("offset=40&state=waiting");
+    const jumped = readJobFilters(params, "waiting", LIMITS);
+    expect(serializeQuery(jobListQuery(jumped))).toBe(
+      "?state=waiting&offset=40&limit=20&order=desc",
+    );
+    // The API ignores an offset sent with a cursor, so sending one would put
+    // a number in the URL that decides nothing.
+    const walked = readJobFilters(params, "waiting", LIMITS, "opaque-cursor");
+    expect(walked.cursor).toBe("opaque-cursor");
+    expect(serializeQuery(jobListQuery(walked))).toBe(
+      "?state=waiting&cursor=opaque-cursor&limit=20&order=desc",
+    );
+    // No cursor asked for, none sent, and the filters are as they were.
+    expect(readJobFilters(params, "waiting", LIMITS).cursor).toBeUndefined();
+    expect(jobListQuery(jumped).cursor).toBeUndefined();
+  });
+
+  it("keeps a cursor out of the query key's way: one key per page walked", () => {
+    const base = readJobFilters(new URLSearchParams(""), "waiting", LIMITS);
+    const first = queueKeys.jobs("emails", base);
+    const second = queueKeys.jobs("emails", { ...base, cursor: "c1" });
+    const third = queueKeys.jobs("emails", { ...base, cursor: "c2" });
+    expect(JSON.stringify(first)).not.toBe(JSON.stringify(second));
+    expect(JSON.stringify(second)).not.toBe(JSON.stringify(third));
+  });
+
+  it("walks forward and back through the trail, and starts empty", () => {
+    const start = emptyWalk("k");
+    expect(walkCursor(start)).toBeUndefined();
+    const second = walkForward(start, "c1");
+    const third = walkForward(second, "c2");
+    expect(walkCursor(second)).toBe("c1");
+    expect(walkCursor(third)).toBe("c2");
+    // Back is the exact inverse: the cursor that produced the page before.
+    expect(walkCursor(walkBack(third))).toBe("c1");
+    expect(walkCursor(walkBack(walkBack(third)))).toBeUndefined();
+    // At the page it started from there is nothing behind it.
+    expect(walkBack(start)).toBe(start);
+    // Pure: walking on leaves the walk it came from alone.
+    expect(walkCursor(start)).toBeUndefined();
+    expect(walkCursor(second)).toBe("c1");
+  });
+
+  it("drops every cursor when the walk it belongs to changes", () => {
+    const walked = walkForward(walkForward(emptyWalk("k"), "c1"), "c2");
+    expect(walkFor(walked, "k")).toBe(walked);
+    // A filter, the order, the sort or the queue changed: these cursors
+    // belong to a walk that no longer exists, and one of them sent back is a
+    // 400 with a walk-specific message, not a restart at page one. So they
+    // are gone on the render that changed the key, before a request can
+    // carry one.
+    const other = walkFor(walked, "k2");
+    expect(other.trail).toEqual([]);
+    expect(walkCursor(other)).toBeUndefined();
+    expect(other.key).toBe("k2");
   });
 });
