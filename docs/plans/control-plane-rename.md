@@ -516,12 +516,29 @@ Both were green in the simulated typecheck; their runtime result is in §10.4.
 Measured by the examples session on `ca3ed21`. They correct the examples half
 of this section.
 
-- **The parsed gate name appears twice** in
-  `examples/bun-jobs-ui/04-screens/permissions.ts` — `:1592`
-  (`name: "runner: remote hint"`) and `:4344` (`"runner: remote hint": false`,
-  in an expectation map). Both change in the same commit as the UI README row
-  "Runner remote hint" → "Runner non-local hint". This is the one coupling that
-  cannot be split between PR 1 and PR 2.
+- **The parsed-table coupling is three sites**, all in
+  `examples/bun-jobs-ui/04-screens/permissions.ts` and all in one commit with
+  the UI README row "Runner remote hint" → "Runner non-local hint":
+  `:1592` (`name: "runner: remote hint"`), **`:1593` (`row: "Runner remote
+  hint"`)**, and `:4344` (`"runner: remote hint": false`, in an expectation
+  map). An earlier version of this section said two: searching for the gate
+  *name* misses `:1593`, which reaches the README through a different string
+  (capital R, no colon). `permissions.ts` kept failing until it changed too.
+  This is the one coupling that cannot be split between PR 1 and PR 2.
+- **Clearing the type errors is not the definition of done.** Three couplings
+  are invisible to the compiler: eleven prose sites naming the method as a
+  bare `remote(id)` with no leading dot; the *expected* value at
+  `examples/bun-jobs/10-options/runner-options.ts:295` inside a `checkEqual`,
+  where typecheck flags only the actual at `:264`; and the
+  `runner-remote-hint` testid. The mapping listed all three — its bare
+  `remote(id)` / `remote()` rows included — but applying only the rows that
+  produced compiler errors missed them. **Apply the whole mapping; do not
+  drive a rename from the error list.** Measured on the stack (`dbff58f` +
+  `d729732`): 16 of 16 projects typecheck; `examples/bun-jobs-ui` 17 of 17;
+  `examples/bun-jobs` 71 of 71 on each of the eight backends, nothing skipped —
+  including `10-options/remote-control.ts`, whose control state a second
+  process reads back from the store, which confirms end to end that nothing
+  persisted changed.
 - **Only one testid reaches the examples:** `runner-remote-hint`
   (`06-browser/runner-and-job-tools.ts:2221`). `trigger-remote-note` and
   `remote-note` have no hits in `examples/**`.
@@ -822,6 +839,14 @@ Run on the simulated head, with no database URLs set, so the SQL, Redis and Mong
   resolved `Logger`. **Prose pass adds one sentence** to the option's JSDoc:
   the getter reports live control state rather than echoing the option.
   `BunRunner` has no `control` getter, so the runner side is clean.
+- **The runner option `control` and the wire event `type: "control"`**
+  (raised by the examples session; kept by the user, 2026-09-25). The event
+  type (`RunnerController.ts:614`, `BunRunner.ts:1044`) is on the wire and does
+  not move. The option shares the name deliberately: it decides whether the
+  runner subscribes to exactly those `control` events (`"auto"` does on Redis
+  and memory, `true` on every backend), so the name describes the
+  relationship. Renaming the runner option alone would also break its symmetry
+  with the worker's `control`.
 - **The description-text assertion at `api-runners.test.ts:979-987`** must
   assert the backticked `` `control: true` `` / `` `control: "auto"` `` form,
   not bare `control` (agreed with the bun-jobs session). `remoteControl` was a
