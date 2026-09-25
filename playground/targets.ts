@@ -9,18 +9,21 @@ import type { WedgeData, WedgeResult } from "./processors/wedge";
 
 /**
  * The half of the playground that runs its processors **somewhere else**: a
- * worker given a processor *file* plus `isolation: "spawn"` or
- * `isolation: "worker"` runs every attempt in a child process, or in a fresh
- * `Worker`, instead of on its own thread.
+ * worker given a processor *file* plus `target: "child-process"` or
+ * `target: "worker-thread"` runs every attempt in a child process, or in a
+ * fresh `Worker`, instead of on its own thread.
  *
- * | Queue       | Worker (stable key)            | Isolation | What it shows |
- * |-------------|--------------------------------|-----------|---------------|
- * | `checksums` | `api.checksums.hasher`         | `spawn`   | a CPU-bound processor that would otherwise hold the claim loop |
- * | `previews`  | `api.previews`                 | `worker`  | a fresh JavaScript context per attempt, in this process |
- * | `previews`  | `api.previews.2`               | `spawn`   | the *same* processor file in a child process, side by side |
- * | `imports`   | `api.imports.wedged`           | `spawn`   | a processor that ignores its signal, killed when the job times out |
+ * | Queue       | Worker (stable key)            | Target          | What it shows |
+ * |-------------|--------------------------------|-----------------|---------------|
+ * | `checksums` | `api.checksums.hasher`         | `child-process` | a CPU-bound processor that would otherwise hold the claim loop |
+ * | `previews`  | `api.previews`                 | `worker-thread` | a fresh JavaScript context per attempt, in this process |
+ * | `previews`  | `api.previews.2`               | `child-process` | the *same* processor file in a child process, side by side |
+ * | `imports`   | `api.imports.wedged`           | `child-process` | a processor that ignores its signal, killed when the job times out |
  *
- * **The child needs no driver of its own.** Everything an isolated processor
+ * The Workers page badges each of them with its target, and a worker's page
+ * says where it runs and which file it runs.
+ *
+ * **The child needs no driver of its own.** Everything a processor run off-thread
  * asks of the store — a log line, a lock renewal, a flow's children — travels
  * the executor's message channel and is answered by the worker, which keeps
  * the driver; progress is forwarded the same way. That is why these queues
@@ -32,8 +35,8 @@ import type { WedgeData, WedgeResult } from "./processors/wedge";
  * that produced it.
  */
 
-/** The isolated queues, their workers, and how to feed and stop them. */
-export interface IsolatedWorld {
+/** The off-thread queues, their workers, and how to feed and stop them. */
+export interface TargetWorld {
   /** The workers, so the caller can close them with the rest. */
   workers: BunQueueWorker<any, any>[];
   /** Adds one checksum job, for the producer to call now and then. */
@@ -55,8 +58,8 @@ function pick<T>(items: readonly T[]): T {
 const ARCHIVES = ["catalogue.tar.gz", "orders-2026-09.zip", "legacy-crm.7z"];
 const ASSETS = ["hero.png", "avatar.jpg", "chart.svg", "banner.webp"];
 
-/** Creates the isolated queues, starts their workers, and seeds each one. */
-export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
+/** Creates the off-thread queues, starts their workers, and seeds each one. */
+export async function startTargets(jobs: BunJobs): Promise<TargetWorld> {
   const checksums = jobs.queue<ChecksumData, ChecksumResult>("checksums");
   const previews = jobs.queue<PreviewData, PreviewResult>("previews");
   const imports = jobs.queue<WedgeData, WedgeResult>("imports");
@@ -110,8 +113,8 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     },
   );
 
-  // Two workers on ONE queue, running ONE processor file in two isolation
-  // modes, so the difference is visible rather than described. Neither is
+  // Two workers on ONE queue, running ONE processor file on two targets,
+  // so the difference is visible rather than described. Neither is
   // given a `name`, so `BunJobs` numbers them: `api.previews` and
   // `api.previews.2`.
   const previewWorker = jobs.worker<PreviewData, PreviewResult>(
@@ -198,7 +201,8 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     // `run()` — which is why it is missing from the loop below.
     autorun: true,
     // Maintenance stays **on**, and the reason is the point of this queue:
-    // isolation means the blocked thread is the child's, not the worker's,
+    // a child-process target means the blocked thread is the child's, not the
+    // worker's,
     // so there is nothing to spare it. It is also the only worker on
     // `imports`, and this queue depends on the two things maintenance used to
     // gate: promoting a delayed retry, and recovering a job whose child was
@@ -256,7 +260,7 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
       { archive },
       {
         // The worker aborts the attempt here; the child ignores that, so the
-        // escalation in `isolationOptions` is what actually ends it.
+        // escalation on the worker's `target` is what actually ends it.
         timeout: 4_000,
         attempts: 2,
         backoff: 5_000,

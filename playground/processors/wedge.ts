@@ -3,7 +3,7 @@ import { defineProcessor } from "@kingsleyweb/bun-jobs";
 
 /**
  * A processor that **ignores its abort signal** — the case only
- * `isolation: "spawn"` can answer.
+ * `target: "child-process"` can answer.
  *
  * It stands in for the third-party library everybody has: a synchronous
  * import that takes a minute, checks nothing, and cannot be persuaded to

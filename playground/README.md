@@ -61,7 +61,7 @@ than piled onto one (each is commented where it is set):
 | `control` | the object form on `api.notifications.scheduler`: `{ enabled, subscribe, interval }` |
 | `stopPersistence` / `stopPersistenceOverridable` | `"key"` on `api.notifications.scheduler`, so a Stop from the UI outlives a restart; `api.emails.transactional` keeps the default and only makes it overridable |
 | `service` / `name` / `key` / `keyOrdinal` | `service` and `name` on most; `key` set outright on `api.dead-letters.archive`; `keyOrdinal` pinned on `api.previews.2` |
-| `isolation` / `isolationOptions` | the three isolated queues above |
+| `target` | `"child-process"` on `api.checksums.hasher`, `api.previews.2` and `api.imports.wedged`, each with its close and kill timeouts; `"worker-thread"` on `api.previews`, with `smol` and a thread name. See below |
 | `backoffStrategies` | `"decode-ramp"` on both `previews` workers, `"triage"` on `api.notifications.scheduler` |
 | `deadLetterQueue` | `dead-letters`, on the `previews` workers and on `api.notifications.scheduler` |
 
@@ -81,18 +81,20 @@ Disable/Enable), a delayed `reminder-tomorrow`, and a flow
 backlog — pause that worker and it waits for good. A new job arrives
 every `PLAYGROUND_INTERVAL_MS` (default 2000).
 
-### Isolated workers (`isolated.ts`, `processors/`)
+### Workers on other targets (`targets.ts`, `processors/`)
 
 A worker given a processor **file** instead of a function can run every
-attempt somewhere other than its own thread. Three queues do, and each one
-exists to show a different reason to:
+attempt somewhere other than its own thread: its `target`. Three queues do,
+and each one exists to show a different reason to. The Workers page badges
+every worker with where it runs, and a worker's page has a Target card naming
+the target and the processor file.
 
-| Queue | Worker | Isolation | What you see |
+| Queue | Worker | Target | What you see |
 |---|---|---|---|
-| `checksums` | `api.checksums.hasher` | `spawn` | a CPU-bound processor (`processors/checksum.ts`) that blocks its thread outright. In-process it would hold the claim loop, the heartbeats and every other job on that worker; in a child process the worker carries on. Its `returnValue` records the **pid**, which is not the playground's. |
-| `previews` | `api.previews` | `worker` | the *same* file (`processors/preview.ts`) in a fresh `Worker` per attempt — a separate JavaScript context, in this process. `returnValue.mainThread` is `false`. |
-| `previews` | `api.previews.2` | `spawn` | and in a child process, side by side on one queue, so the difference is visible rather than described. |
-| `imports` | `api.imports.wedged` | `spawn` | a processor that **ignores its abort signal** (`processors/wedge.ts`). The job's 4 s `timeout` fires, the executor asks the child to close, then `SIGTERM` after a second and `SIGKILL` half a second later. The job fails with a `JobTimeoutError` and is retried in a fresh child; the worker never stops claiming. |
+| `checksums` | `api.checksums.hasher` | `child-process` | a CPU-bound processor (`processors/checksum.ts`) that blocks its thread outright. In-process it would hold the claim loop, the heartbeats and every other job on that worker; in a child process the worker carries on. Its `returnValue` records the **pid**, which is not the playground's. |
+| `previews` | `api.previews` | `worker-thread` | the *same* file (`processors/preview.ts`) in a fresh `Worker` per attempt — a separate JavaScript context, in this process. `returnValue.mainThread` is `false`. |
+| `previews` | `api.previews.2` | `child-process` | and in a child process, side by side on one queue, so the difference is visible rather than described. |
+| `imports` | `api.imports.wedged` | `child-process` | a processor that **ignores its abort signal** (`processors/wedge.ts`). The job's 4 s `timeout` fires, the executor asks the child to close, then `SIGTERM` after a second and `SIGKILL` half a second later. The job fails with a `JobTimeoutError` and is retried in a fresh child; the worker never stops claiming. |
 
 **The child needs no driver of its own.** A log line, a lock renewal, a
 progress update or a flow's children travel the executor's message channel and
@@ -129,7 +131,7 @@ queue chose is legible, and one seeded job per scheduling option. Its data's
 | `keepLogs` | writes 21 lines, keeps the last 5 |
 | `keepStacktraces` | four attempts, two traces on the failure panel |
 | `deadLetter` | the job's own dead-letter queue, which wins over the worker's |
-| flows | `publish-release-2026-09` waits on a child in **another queue** (`previews`, where an isolated worker runs it) and on one that always fails with `ignoreFailure` — the parent completes anyway, with the failure beside the other child's result |
+| flows | `publish-release-2026-09` waits on a child in **another queue** (`previews`, where an off-thread worker runs it) and on one that always fails with `ignoreFailure` — the parent completes anyway, with the failure beside the other child's result |
 
 Retention as a **count** is on `imports` instead (`removeOnFail: { count: 4 }`),
 because a count sweeps the whole queue's finished set rather than one job's own
@@ -185,7 +187,8 @@ run's because capture attributes each `console` call to the run that made it
 - In any run's log, the first `stdout` line prints `apiKey=pk_demo_…`; the stored line has that value redacted.
 - Watch a running run's log on the runner screen: new lines appear as the runner announces them on the live socket, not on a timer.
 - Open a completed `checksums` job and read its `returnValue`: the `pid` is not the playground's, because a child process hashed it.
-- Open two completed `previews` jobs, one from each worker: `api.previews` reports `mainThread: false` (a `Worker`), `api.previews.2` a different `pid` (a child process) — one file, two isolation modes.
+- Open two completed `previews` jobs, one from each worker: `api.previews` reports `mainThread: false` (a `Worker`), `api.previews.2` a different `pid` (a child process) — one file, two targets. Each result's `mode` is the mode its attempt's process reports in `BUN_JOBS_MODE`.
+- Workers page: the State cell of each worker says where it runs. "Child process" on the three child-process workers, "Worker thread" on `api.previews`, "In process" on every function worker. Open `api.previews.2` for its Target card and the processor file it runs.
 - Add job on `imports`, then watch it: a log line from the child, progress stuck at `blocked`, and four seconds later a `JobTimeoutError` — the child was killed, and the worker never paused.
 - Open `preview-broken-header` on `previews`: dead on attempt 1 of 4, because the processor called `job.fail()` from inside the child.
 - Queues → `notifications` → Delayed: the `delay`, `runAt` and `debounce` seeds all waiting, with the option each one demonstrates in its `about`.

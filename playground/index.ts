@@ -75,8 +75,10 @@ const api = createJobsApi({
   runnerTriggerArgs: true,
   // The UI reads this from `api.info` and sends it on every mutation.
   csrf: { header: "x-bun-jobs-csrf" },
-  // Failure panels show stack traces.
-  serialize: { exposeStacks: true },
+  // Failure panels show stack traces, and a worker's Target card shows the
+  // processor file it runs (see targets.ts). Both are paths a real host may
+  // prefer to keep to itself; the playground's are in this repo anyway.
+  serialize: { exposeStacks: true, exposeProcessorFiles: true },
   // Queue state straight from the backend, so Pause shows at once.
   limits: { queueCacheMs: 0 },
   logger: noopLogger,

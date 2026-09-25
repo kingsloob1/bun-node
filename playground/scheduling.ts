@@ -82,7 +82,7 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
   );
   // `dead-letters` is not opened here: nothing produces to it directly. It is
   // created by the first letter filed into it — which, with the seeds below
-  // and the corrupt preview in `isolated.ts`, is a few seconds away.
+  // and the corrupt preview in `targets.ts`, is a few seconds away.
 
   /**
    * A custom backoff, resolved by name on the worker below.
@@ -184,7 +184,7 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
       // housekeeping pass alone. Delayed jobs are still promoted and stalled
       // ones recovered on every worker, whatever it says — which is why a
       // dead letter added here is still archived. Before #121 this same line
-      // stranded jobs on `imports` (see `isolated.ts`).
+      // stranded jobs on `imports` (see `targets.ts`).
       maintenance: false,
     },
   );
@@ -340,7 +340,7 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
   // worth knowing: a count sweeps the **whole queue's** finished set down to
   // that many, not this job's own copies. On a queue shared by a dozen
   // demonstrations it would quietly delete the other eleven. `imports`, in
-  // `isolated.ts`, is where the count form is shown — nothing else runs there.
+  // `targets.ts`, is where the count form is shown — nothing else runs there.
   for (let i = 1; i <= 3; i++) {
     await notifications.add(
       "notify",
@@ -395,7 +395,7 @@ export async function startScheduling(jobs: BunJobs): Promise<ScheduledWorld> {
   // A flow: the parent is added `waiting-children` and runs once both children
   // have settled, reading their results with `job.getChildrenValues()`.
   //
-  // - `render-cover` is in **another queue** (`previews`), where an isolated
+  // - `render-cover` is in **another queue** (`previews`), where an off-thread
   //   worker runs it — a flow spans the queues of one namespace.
   // - `lint-notes` **always fails**, and `ignoreFailure` says the parent
   //   carries on anyway, with the failure available beside the other child's
