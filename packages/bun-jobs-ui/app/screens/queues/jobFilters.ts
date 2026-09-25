@@ -16,15 +16,26 @@ export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** Reads the jobs-list filters from the URL, clamped to the API's limits. */
+/**
+ * Reads the jobs-list filters from the URL, clamped to the API's limits,
+ * plus `cursor` where the reader is walking the list rather than jumping
+ * about in it.
+ *
+ * The cursor is the one thing here that is **not** a URL parameter: it is
+ * opaque and up to 2 kB, and walking back needs the whole trail of them, so
+ * the walk lives in the screen's own state and the URL keeps saying where
+ * that walk started.
+ */
 export function readJobFilters(
   params: URLSearchParams,
   tab: StateTab,
   limits: { defaultPageSize: number; maxPageSize: number },
+  cursor?: string,
 ): JobListFilters {
   return {
     state: tab === ALL_STATES ? null : tab,
     offset: intParam(params, "offset", 0),
+    ...(cursor === undefined ? {} : { cursor }),
     limit: clampLimit(
       intParam(params, "limit", limits.defaultPageSize),
       limits.maxPageSize,
@@ -41,8 +52,13 @@ export function readJobFilters(
     // invisible to the client. Asking for a total made some of them visible
     // and not others, which is why a total is not a safety net — a shifted
     // window can leave every field of the response unchanged. So this line
-    // keeps a reader on the direction whose losses leave a trace, until the
-    // jobs list pages by cursor.
+    // keeps a reader on the direction whose losses leave a trace.
+    //
+    // The list walks by cursor now, and a walk loses none of that in either
+    // direction. It does not retire this line: a reader still *jumps* by
+    // offset, every walk starts from an offset page, and the Active tab
+    // cannot be walked at all. So the direction whose losses leave a trace is
+    // still the one to start on.
     //
     // Deliberately no figures: a count in a comment is a count nothing
     // compares against its source, and the first version of this one carried
