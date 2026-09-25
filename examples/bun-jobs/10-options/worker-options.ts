@@ -30,8 +30,7 @@
  *   not part of it: such a worker still promotes due delayed jobs and still
  *   recovers stalled ones, so a queue whose only worker opted out runs
  *   normally; it just keeps what nobody is tidying away.
- * - Isolation (`isolation`, `isolationOptions`) has its own tour:
- *   `worker-isolation.ts`.
+ * - Where attempts run (`target`) has its own tour: `worker-isolation.ts`.
  * - Sections 7 and 15 start child processes, so on the memory default they use
  *   a temporary SQLite file (`crossProcessDriver()`).
  */

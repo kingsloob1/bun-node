@@ -14,6 +14,12 @@
  *
  * Pick `spawn` for anything long, heavy or untrusted; `in-process` for small,
  * frequent, well-behaved work where start-up cost dominates.
+ *
+ * A queue worker can run its attempts the same ways, through its `target`
+ * option (`02-queues/isolated-processors.ts`). Runners and workers name the
+ * same two mechanisms differently: a runner's `executionMode` is `"worker"` /
+ * `"spawn"`, a worker's `target` is `"worker-thread"` / `"child-process"`, and
+ * the attempt's own process still sees `BUN_JOBS_MODE=worker` / `spawn`.
  */
 import type { ExecutionMode } from "@kingsleyweb/bun-jobs";
 import type { WhoAmI } from "./handlers/whoami";

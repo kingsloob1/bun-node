@@ -34,9 +34,9 @@ export interface SlowWriteData {
 
 export default defineProcessor<SlowWriteData, string>(async (job) => {
   if (job.data.progress !== undefined) {
-    // Awaited. In an isolated mode this means the worker has the value and
-    // will write it; in-process it is the driver write itself, and the one the
-    // tour holds past the deadline.
+    // Awaited. On a worker thread or in a child process this means the worker
+    // has the value and will write it; in-process it is the driver write
+    // itself, and the one the tour holds past the deadline.
     await job.updateProgress(job.data.progress);
   }
 

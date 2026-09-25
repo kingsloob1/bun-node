@@ -1,7 +1,7 @@
 /**
  * A job processor file that fails unrecoverably. Run by `10-options/errors.ts`
- * with `isolation: "spawn"`, so the error crosses a process boundary and the
- * worker has to recognise it by name. Not meant to be run alone.
+ * with `target: "child-process"`, so the error crosses a process boundary and
+ * the worker has to recognise it by name. Not meant to be run alone.
  */
 import { defineProcessor, UnrecoverableJobError } from "@kingsleyweb/bun-jobs";
 

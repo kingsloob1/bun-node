@@ -5,14 +5,19 @@
  * bun 02-queues/isolated-processors.ts
  * ```
  *
- * Give a worker a processor **file** instead of a function, and `isolation`
+ * Give a worker a processor **file** instead of a function, and its `target`
  * decides where each attempt runs:
  *
- * | `isolation` | Where | Can be stopped by force | Cost per attempt |
+ * | `target` | Where | Can be stopped by force | Cost per attempt |
  * |---|---|---|---|
  * | `"in-process"` (default) | the worker's thread, imported once | no | nothing |
- * | `"worker"` | a fresh `Worker`: own JS context, same process | yes (`terminate`) | a thread |
- * | `"spawn"` | a child process | yes (`SIGTERM` → `SIGKILL`) | a process |
+ * | `"worker-thread"` | a fresh `Worker`: own JS context, same process | yes (`terminate`) | a thread |
+ * | `"child-process"` | a child process | yes (`SIGTERM` → `SIGKILL`) | a process |
+ *
+ * A target is the string, or `{ kind, ...tuning }` when it needs settings —
+ * and each kind takes only its own: `worker` and `closeTimeout` for
+ * `"worker-thread"`; `spawn`, `closeTimeout` and `killTimeout` for
+ * `"child-process"`; nothing for `"in-process"`.
  *
  * Reach for it when a processor is CPU-heavy, leaky, uses native code that can
  * crash, or must be killable even when it ignores `ctx.signal`. The worker —
@@ -22,6 +27,7 @@
  * that change the stored job directly (`updateData`, `remove`, ...) are not
  * available there.
  */
+import type { LocalWorkerTarget } from "@kingsleyweb/bun-jobs";
 import type { Thumbnail, ThumbnailResult } from "./processors/thumbnail";
 import process from "node:process";
 import {
@@ -42,10 +48,17 @@ const thumbnailFile = new URL("./processors/thumbnail.ts", import.meta.url);
 show("this process", { pid: process.pid });
 
 /* ------------------------------------------------------------------ */
-step("The same processor file in each isolation mode");
+step("The same processor file on each target");
 
-for (const isolation of ["in-process", "worker", "spawn"] as const) {
-  const queueName = `thumbnails-${isolation}`;
+/** Each local target, with the tuning its own kind takes and nothing else. */
+const targets: LocalWorkerTarget[] = [
+  { kind: "in-process" }, // takes no settings
+  { kind: "worker-thread", worker: { smol: true } },
+  { kind: "child-process", spawn: { env: { THUMBNAIL_QUALITY: "80" } } },
+];
+
+for (const target of targets) {
+  const queueName = `thumbnails-${target.kind}`;
   const queue = new BunQueue<Thumbnail, ThumbnailResult>(queueName, {
     namespace,
     driver,
@@ -57,11 +70,7 @@ for (const isolation of ["in-process", "worker", "spawn"] as const) {
     {
       namespace,
       driver,
-      isolation,
-      isolationOptions: {
-        spawn: { env: { THUMBNAIL_QUALITY: "80" } },
-        worker: { smol: true },
-      },
+      target,
       pollInterval: 20,
     },
   );
@@ -69,12 +78,12 @@ for (const isolation of ["in-process", "worker", "spawn"] as const) {
 
   const started = performance.now();
   const job = await queue.add("shrink", { imageId: 7, size: 128 });
-  await waitFor(`the ${isolation} job`, async () => {
+  await waitFor(`the ${target.kind} job`, async () => {
     return (await job.refresh())?.state === "completed";
   });
 
   const done = await job.refresh();
-  show(isolation.padEnd(10), {
+  show(target.kind.padEnd(13), {
     result: done?.returnValue,
     sameProcess: done?.returnValue?.pid === process.pid,
     progress: done?.progress,
@@ -99,8 +108,8 @@ const guarded = new BunQueueWorker<{ spinMs: number }, string>(
   {
     namespace,
     driver,
-    isolation: "spawn",
-    isolationOptions: {
+    target: {
+      kind: "child-process",
       closeTimeout: 200, // after the timeout aborts it: time to unwind…
       killTimeout: 200, // …then SIGTERM, and this long before SIGKILL
     },
@@ -131,14 +140,14 @@ await guarded.close();
 await runaway.close();
 
 /* ------------------------------------------------------------------ */
-step("A function cannot be isolated");
+step("A function cannot leave the worker's thread");
 
 try {
   // eslint-disable-next-line no-new
   new BunQueueWorker("nope", async () => "x", {
     namespace,
     driver,
-    isolation: "spawn",
+    target: "child-process",
   });
 } catch (error) {
   if (!(error instanceof ConfigError)) throw error;
