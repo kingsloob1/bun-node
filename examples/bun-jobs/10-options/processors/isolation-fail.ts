@@ -1,6 +1,6 @@
 /**
  * Fails every attempt — unrecoverably when the job says so — so
- * `worker-isolation.ts` can see that an error crossing the process or thread
+ * `worker-targets.ts` can see that an error crossing the process or thread
  * boundary still decides retries. Not meant to be run on its own.
  */
 import { defineProcessor, UnrecoverableJobError } from "@kingsleyweb/bun-jobs";

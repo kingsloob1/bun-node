@@ -1,5 +1,5 @@
 /**
- * Calls `job.fail()` from an isolated processor, so `worker-isolation.ts` can
+ * Calls `job.fail()` from an isolated processor, so `worker-targets.ts` can
  * see that it works in a child process and in a `Worker` as it does
  * in-process. What `fail()` answered is reported as progress. Not meant to be
  * run on its own.

@@ -4,7 +4,7 @@
  *
  * In a child process or a `Worker` the driver stays in the worker, so each of
  * these rejects, saying so. In-process the job is the real `Job` and they
- * work. Run by `worker-isolation.ts`; not meant to be run on its own.
+ * work. Run by `worker-targets.ts`; not meant to be run on its own.
  */
 import { defineProcessor } from "@kingsleyweb/bun-jobs";
 

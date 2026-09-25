@@ -3,7 +3,7 @@
  * worker records how its job ended — the two ways that happens.
  *
  * It reports a progress value and waits for it, and it logs a line and does
- * not. `worker-isolation.ts` runs it against a driver that holds those two
+ * not. `worker-targets.ts` runs it against a driver that holds those two
  * writes back, so the ordering its step 3 asserts is a certainty rather than a
  * race: the progress write is still in flight when the job's deadline passes,
  * and the log write is still in flight when the processor returns.

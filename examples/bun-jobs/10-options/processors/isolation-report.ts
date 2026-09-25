@@ -2,7 +2,7 @@
  * An isolated processor that reports where it ran and what the job channel
  * answered: its log, its lock, its heartbeats.
  *
- * Run by `worker-isolation.ts` on each local target. Not meant to be run on
+ * Run by `worker-targets.ts` on each local target. Not meant to be run on
  * its own.
  */
 import process from "node:process";
@@ -22,7 +22,7 @@ export interface ReportData {
    * `100`. Defaults to `0`: the processor then reports `25` and then `100`, as
    * every other step expects. A processor that reports per item makes a burst
    * like this, and it is what makes the *ordering* of an isolated
-   * `updateProgress` observable — see `worker-isolation.ts` step 2.
+   * `updateProgress` observable — see `worker-targets.ts` step 2.
    */
   progressSteps?: number;
 }
