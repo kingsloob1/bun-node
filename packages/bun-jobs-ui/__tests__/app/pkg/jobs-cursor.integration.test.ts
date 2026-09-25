@@ -1,3 +1,4 @@
+import type { BunQueueWorker } from "@kingsleyweb/bun-jobs";
 import type { FetchLike } from "../../../app/api/client";
 import { BunRouter, noopLogger } from "@kingsleyweb/bun-common";
 import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
@@ -97,6 +98,11 @@ interface JobsCall {
   query: URLSearchParams;
   /** The status it answered. */
   status: number;
+  /**
+   * The page's `next` cursor as answered: a string where the walk goes on,
+   * `null` where the route mints none, `undefined` on a refusal.
+   */
+  next?: string | null;
 }
 
 /** Every jobs request served, in order. */
@@ -144,6 +150,7 @@ async function apiGet(path: string): Promise<{
         queue: url.pathname.split("/")[2] ?? "",
         query: url.searchParams,
         status,
+        next: body.page?.next,
       });
     }
     return { status, body };
@@ -203,15 +210,21 @@ beforeAll(() => {
     withBunGlobals(async () => {
       const url = new URL(input, "http://localhost");
       const response = await root.fetch(new native.Request(url.href, init));
+      const text = await response.text();
       if (url.pathname.endsWith("/jobs")) {
+        const body = JSON.parse(text) as {
+          /** Where the page sits, on a page. */
+          page?: { next?: string | null };
+        };
         jobsCalls.push({
           queue: url.pathname.split("/")[3] ?? "",
           query: url.searchParams,
           status: response.status,
+          next: body.page?.next,
         });
       }
       // A plain copy the app reads the same under either implementation.
-      return new Response(await response.text(), {
+      return new Response(text, {
         status: response.status,
         statusText: response.statusText,
         headers: Object.fromEntries(response.headers.entries()),
@@ -397,36 +410,202 @@ describe("the jobs table's cursor navigation against a real API", () => {
     expect(cursor.length).toBeLessThanOrEqual(2048);
   }, 30_000);
 
-  it("leaves the Active tab on the offset pager, which is all the route allows there", async () => {
-    jobsCalls = [];
-    await seed("active-me");
-    const screens = await load<WalkModule>(
-      ["..", "queues", "realApiJobWalk"].join("/"),
-    );
-    await screens.mountJobPages(
-      "active-me",
-      fetchShim,
-      `?state=active&limit=${PAGE}`,
-      0,
-    );
-    const ours = jobsCalls.filter((call) => call.queue === "active-me");
-    expect(ours.length).toBeGreaterThan(0);
-    for (const call of ours) {
-      expect(call.query.getAll("state")).toEqual(["active"]);
-      expect(call.query.has("cursor")).toBe(false);
-      expect(call.status).toBe(200);
-    }
+  /**
+   * The Active tab, over jobs a real worker is holding. The route refuses a
+   * cursor on `active` only in its natural order, `lockExpiresAt`, which every
+   * lock renewal rewrites; in `sort=createdAt` order the key is immutable and
+   * the walk is allowed. The table asks for creation order wherever the
+   * backend records it (`features.addedByState`, which the memory driver
+   * does) and Count total is off — so which pager the Active tab gets is
+   * decided by the order the page was listed in, and these tests hold it to
+   * both halves of that.
+   */
+  describe("the Active tab, over jobs a worker holds", () => {
+    const QUEUE = "active-me";
 
-    // The route mints no cursor there — its order is `lockExpiresAt`, which
-    // every lock renewal rewrites — so the UI has nothing to walk with, and
-    // one sent anyway is refused.
-    const page = await apiGet(`/queues/active-me/jobs?state=active&limit=1`);
-    expect(page.status).toBe(200);
-    expect(page.body.page?.next ?? null).toBeNull();
-    const refused = await apiGet(
-      `/queues/active-me/jobs?state=active&limit=1&cursor=whatever`,
-    );
-    expect(refused.status).toBe(400);
-    expect(refused.body.detail ?? "").toContain("active");
-  }, 30_000);
+    /** Jobs held active: a full page and half of another, so Next exists. */
+    const HELD = PAGE + 5;
+
+    /** The ids of the held jobs, in the order they were added. */
+    let held: string[] = [];
+
+    /** Lets every held job finish. */
+    let release: () => void = () => {};
+
+    let worker: BunQueueWorker<{ index: number }, string>;
+
+    beforeAll(async () => {
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      worker = jobs.worker<{ index: number }, string>(
+        QUEUE,
+        async () => {
+          await gate;
+          return "released";
+        },
+        {
+          concurrency: HELD,
+          pollInterval: 10,
+          // Long enough that no lock is renewed while these tests run: a
+          // renewal rewrites `lockExpiresAt`, which would reorder the
+          // offset-paged arm under it — true, but not what is tested here.
+          lockDuration: 10 * 60_000,
+          waitToExit: false,
+          logger: noopLogger,
+        },
+      );
+      void worker.run();
+      held = [];
+      for (let index = 0; index < HELD; index++) {
+        const job = await jobs.queue(QUEUE).add("held", { index });
+        held.push(job.id);
+      }
+      // Active as the route reports it, not as a timer guesses it.
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const answer = await apiGet(
+          `/queues/${QUEUE}/jobs?state=active&limit=${HELD * 2}`,
+        );
+        if ((answer.body.items ?? []).length === HELD) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            `${QUEUE}: ${(answer.body.items ?? []).length} of ${HELD} jobs became active`,
+          );
+        }
+        await Bun.sleep(10);
+      }
+    });
+
+    afterAll(async () => {
+      release();
+      await worker.close();
+    });
+
+    it("walks the Active tab by cursor in creation order, the table's default here", async () => {
+      jobsCalls = [];
+      const screens = await load<WalkModule>(
+        ["..", "queues", "realApiJobWalk"].join("/"),
+      );
+      const views = await screens.mountJobPages(
+        QUEUE,
+        fetchShim,
+        `?state=active&limit=${PAGE}`,
+        1,
+      );
+      expect(views).toHaveLength(2);
+
+      const ours = jobsCalls.filter((call) => call.queue === QUEUE);
+      const first = ours[0]!;
+      expect(first.query.getAll("state")).toEqual(["active"]);
+      expect(first.query.get("sort")).toBe("createdAt");
+      expect(first.query.has("total")).toBe(false);
+      expect(first.status).toBe(200);
+      // The route minted a cursor on page one, which is what enables the walk.
+      expect(typeof first.next).toBe("string");
+
+      // Next walked: the turn carried the cursor page one answered, in place
+      // of an offset — and no request of this walk carried an offset at all.
+      const turn = ours.find((call) => call.query.has("cursor"));
+      expect(turn).toBeDefined();
+      expect(turn!.query.get("cursor")).toBe(first.next!);
+      expect(turn!.query.has("offset")).toBe(false);
+      expect(turn!.query.get("sort")).toBe("createdAt");
+      expect(turn!.status).toBe(200);
+      expect(ours.some((call) => call.query.has("offset"))).toBe(false);
+
+      // And it reached the rest, in creation order, newest first (the
+      // table's default): page one the ten newest held, page two the five
+      // before them — disjoint, and together every job held.
+      const newestFirst = [...held].reverse();
+      expect(views[0]!.ids).toEqual(newestFirst.slice(0, PAGE));
+      expect(views[1]!.ids).toEqual(newestFirst.slice(PAGE));
+      expect(views[1]!.ids.filter((id) => views[0]!.ids.includes(id))).toEqual(
+        [],
+      );
+      expect(views[1]!.canPrev).toBe(true);
+    }, 30_000);
+
+    it("pages the Active tab by offset with Count total on, which keeps lock-expiry order", async () => {
+      jobsCalls = [];
+      const screens = await load<WalkModule>(
+        ["..", "queues", "realApiJobWalk"].join("/"),
+      );
+      const views = await screens.mountJobPages(
+        QUEUE,
+        fetchShim,
+        `?state=active&total=1&limit=${PAGE}`,
+        1,
+      );
+      expect(views).toHaveLength(2);
+
+      const ours = jobsCalls.filter((call) => call.queue === QUEUE);
+      const first = ours[0]!;
+      expect(first.query.getAll("state")).toEqual(["active"]);
+      expect(first.query.get("total")).toBe("true");
+      // Counting drops the sort, so the page is in `lockExpiresAt` order —
+      // and the route mints no cursor there.
+      expect(first.query.has("sort")).toBe(false);
+      expect(first.status).toBe(200);
+      expect(first.next).toBeNull();
+
+      // So Next moved the offset, and no request carried a cursor.
+      const turn = ours.find((call) => call.query.has("offset"));
+      expect(turn).toBeDefined();
+      expect(turn!.query.get("offset")).toBe(String(PAGE));
+      expect(turn!.query.has("sort")).toBe(false);
+      expect(turn!.status).toBe(200);
+      expect(ours.some((call) => call.query.has("cursor"))).toBe(false);
+
+      // Counted, which is what Count total is for; and page two by offset.
+      expect(views[0]!.range).toBe(`1–${PAGE} of ${HELD}`);
+      expect(views[1]!.range).toBe(`${PAGE + 1}–${HELD} of ${HELD}`);
+      expect(views[1]!.ids).toHaveLength(HELD - PAGE);
+      expect(views[1]!.ids.filter((id) => views[0]!.ids.includes(id))).toEqual(
+        [],
+      );
+    }, 30_000);
+
+    it("the route walks `active` by cursor in creation order and refuses one in lock-expiry order", async () => {
+      const path = `/queues/${QUEUE}/jobs?state=active&limit=${PAGE}`;
+
+      // Creation order: a cursor is minted, and it walks to the rest.
+      const created = await apiGet(`${path}&sort=createdAt`);
+      expect(created.status).toBe(200);
+      const next = created.body.page?.next;
+      expect(typeof next).toBe("string");
+      const walked = await apiGet(
+        `${path}&sort=createdAt&cursor=${encodeURIComponent(next!)}`,
+      );
+      expect(walked.status).toBe(200);
+      const walkedIds = (walked.body.items ?? []).map((job) => job.id);
+      expect(walkedIds).toHaveLength(HELD - PAGE);
+      const pageOne = (created.body.items ?? []).map((job) => job.id);
+      expect(walkedIds.filter((id) => pageOne.includes(id))).toEqual([]);
+
+      // Lock-expiry order, the tab's natural one: a page, but no cursor.
+      const natural = await apiGet(path);
+      expect(natural.status).toBe(200);
+      expect(natural.body.items ?? []).toHaveLength(PAGE);
+      expect(natural.body.page?.hasMore).toBe(true);
+      expect(natural.body.page?.next).toBeNull();
+
+      // And a cursor sent there — even a genuine one, minted by the walk
+      // above — is refused for the order, naming the key that moves.
+      const refused = await apiGet(
+        `${path}&cursor=${encodeURIComponent(next!)}`,
+      );
+      expect(refused.status).toBe(400);
+      expect(refused.body.detail ?? "").toContain("lockExpiresAt");
+
+      // Which is a different refusal from a cursor no walk issued: that one
+      // is about the cursor, and says nothing about the order.
+      const foreign = await apiGet(`${path}&sort=createdAt&cursor=whatever`);
+      expect(foreign.status).toBe(400);
+      expect(foreign.body.detail ?? "").not.toContain("lockExpiresAt");
+      expect(foreign.body.detail ?? "").toContain("not one this walk issued");
+    }, 30_000);
+  });
 });

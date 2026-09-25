@@ -212,10 +212,13 @@ export function JobsTable({ queue, counts }: JobsTableProps) {
             hasMore={jobs.data.page.hasMore}
             walk={{
               // The API mints `page.next` on every page it can be walked on,
-              // offset pages included, and on none it cannot — the Active tab
-              // alone, whose order every lock renewal rewrites. So the
-              // presence of a cursor is the whole rule, and that tab keeps
-              // the offset pager it has always had.
+              // offset pages included, and on none it cannot. The one walk it
+              // refuses is the Active tab in lock-expiry order, which every
+              // lock renewal rewrites; the same tab in creation order — what
+              // this table asks for wherever the backend records it and
+              // Count total is off — is immutable, and walks like any other.
+              // So the presence of a cursor is the whole rule: no tab is
+              // special-cased here, and none should be.
               canNext: typeof jobs.data.page.next === "string",
               canPrev: walk.canPrev,
               // Read from the page shown, not from the walk being asked for:
