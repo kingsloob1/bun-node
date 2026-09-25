@@ -40,7 +40,7 @@ is documented below:
 
 - the runner, with `BunRunnerManager` and per-run captured logs
 - the queue and worker, including repeatable jobs, debounce and throttle,
-  limits, dead letters, flows, isolated processors and job logs
+  limits, dead letters, flows, where attempts run (`target`) and job logs
 - the `BunJobs` context, the job registry and the builder with dates in words
 - `JobsNotifier`, one event stream per namespace
 - remote control from any process: pausing, stopping, starting and
@@ -95,7 +95,10 @@ reference.
 - [Reading a queue: search, totals, workers and throughput](#reading-a-queue-search-totals-workers-and-throughput)
 - [Who ran a job: worker attribution](#who-ran-a-job-worker-attribution)
 - [Jobs added in a range, and sorting by creation time](#jobs-added-in-a-range-and-sorting-by-creation-time)
-- [Isolated processors](#isolated-processors)
+- [Where attempts run: `target`](#where-attempts-run-target)
+  - [One file, many job names: `defineProcessors`](#one-file-many-job-names-defineprocessors)
+  - [A custom target](#a-custom-target)
+  - [What a processor on a worker thread or in a child process can do](#what-a-processor-on-a-worker-thread-or-in-a-child-process-can-do)
 - [BunRunner](#bunrunner)
   - [Runner options](#runner-options)
   - [Triggers and run modes](#triggers-and-run-modes)
@@ -772,8 +775,7 @@ Examples:
 | `maintenance` | `boolean` | `true` | Contend for the queue's **housekeeping** lease and, while holding it, run those sweeps once a minute: pruning expired results, healing repeat series, and sweeping stale debounce/throttle windows and dead workers' leftovers. `false` arms no minute timer and never reads that lease. **It does not reach liveness** — promoting delayed jobs is every worker's own, and every worker contends for the stalled lease that recovers stalled jobs and heals flows, whatever this says (see [Maintenance: liveness and housekeeping](#maintenance-liveness-and-housekeeping)). Reported on the worker's record as `sweeps`. |
 | `autorun` | `boolean` | `false` | Start consuming on construction. |
 | `drainDelay` | `number` | `0` | Milliseconds of quiet before `drained` is emitted. |
-| `isolation` | `"in-process" \| "worker" \| "spawn"` | `"in-process"` | Where a processor file runs. See [Isolated processors](#isolated-processors). |
-| `isolationOptions` | `IsolationOptions` | | Timeouts and executor options for isolated processors. |
+| `target` | `WorkerTarget` | `"in-process"` | Where each attempt runs: `"in-process"`, `"worker-thread"`, `"child-process"`, one of those as `{ kind, … }` with its tuning, or a `WorkerTargetFactory`. See [Where attempts run](#where-attempts-run-target). |
 | `backoffStrategies` | `BackoffStrategies \| Record<string, BackoffStrategy>` | | Named custom backoffs. |
 | `deadLetterQueue` | `string` | | The dead-letter queue for jobs that do not name their own. |
 | `limitsRefreshInterval` | `number` | `1000` | How long stored limits are trusted before being re-read. |
@@ -1181,7 +1183,7 @@ with a job answer `this` type, or `null`: a job narrowed by a
 | `progress`, `returnValue`, `failedReason`, `stacktrace` | Outcome. `progress` is a `RunProgress` (a number or a record), or `null`. Errors are rehydrated as `Error`s. |
 | `workerId`, `lockToken`, `repeatKey`, `isRepeat`, `wasAdded`, `parent`, `queue` | Context. `workerId` is the worker holding the job right now: set while `active`, `null` once the attempt settles. |
 | `processedBy` | The worker that claimed the current or last attempt, as `{ id, key?, host?, pid? }`. It is kept after the job settles, and it is `null` for a job never claimed. See [Who ran a job](#who-ran-a-job-worker-attribution). |
-| `updateProgress(value)` | Records a number or an object, and emits `progress`. Inside a processor the value is written before the worker records how the job ended, whichever way it ended — see [Isolated processors](#isolated-processors). |
+| `updateProgress(value)` | Records a number or an object, and emits `progress`. Inside a processor the value is written before the worker records how the job ended, whichever way it ended — see [Where attempts run](#where-attempts-run-target). |
 | `log(line)` / `getLogs({ offset, limit, order })` | The job's persistent log, capped at `keepLogs`. A line a processor logged is stored before the worker records how the job ended, as its progress is. |
 | `clearLogs()` | Empties the log, as `queue.clearJobLogs(id)` does. Refused while the job is active. See [Clearing a job's log](#clearing-a-jobs-log). |
 | `updateData(data)` | Replaces the data in any state. A running attempt keeps the data it started with. |
@@ -1231,8 +1233,8 @@ const job = await queue.getJob(id);
 await job?.fail("customer cancelled"); // dead now; no more attempts
 ```
 
-In an isolated processor, `fail()` is kept by the child and sent as the
-attempt's error when it settles.
+In a processor on a worker-thread or child-process target, `fail()` is kept by
+the child and sent as the attempt's error when it settles.
 
 ### Clearing a job's log
 
@@ -1259,7 +1261,8 @@ if (result.status === "active") {
 - A driver without `clearJobLogs` throws `NotSupportedError`; nothing falls
   back to anything else.
 
-In an isolated processor, `clearLogs()` is unavailable, as the other methods
+In a processor on a worker-thread or child-process target, `clearLogs()` is
+unavailable, as the other methods
 that act on a job from outside its attempt are. Over the management API it is
 `DELETE /queues/:queue/jobs/:id/logs` — see [Routes](#routes).
 
@@ -1944,7 +1947,8 @@ listing.
 
 **Workers.** Each worker writes a heartbeat record — id, host, pid,
 concurrency, jobs in flight, jobs completed and failed since it started,
-paused, started, last heartbeat, `sweeps`, `rssBytes` and `heartbeatRttMs` —
+paused, started, last heartbeat, `sweeps`, `target`, `rssBytes` and
+`heartbeatRttMs` —
 when it starts,
 every `reportInterval` (10 seconds by default; `0` turns it off), and on pause,
 resume or a concurrency change. **Never per job.** A record lapses three
@@ -1994,6 +1998,16 @@ tidies. Like the two samples it is optional, and **absent is not `false`**: a
 record from before the field exists means the worker is too old to say, so a
 reader that warns "no worker is sweeping this queue" must look for a live
 `true` and treat an absent field as unknown.
+
+**`target` says where the worker's attempts run**, from the very target it
+dispatches to: `kind` is `"in-process"`, `"worker-thread"`, `"child-process"`
+or `"custom"` (one of `WORKER_TARGET_KINDS`), and `processor` is `"function"`
+or `"file"`. The pairs that occur are `in-process` with either, `worker-thread`
+and `child-process` with `"file"` only, and `custom` with either. A custom
+target adds its `name`, and a file processor its resolved `file` — which the
+management API serves only with `serialize.exposeProcessorFiles`. Optional like
+the rest, and **absent is not `"in-process"`**: a record from before the field
+means the worker is too old to say.
 
 Examples:
 
@@ -2344,17 +2358,25 @@ definition every backend is compared against), `inAddedRange`,
 Example:
 [`10-options/analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts).
 
-## Isolated processors
+## Where attempts run: `target`
 
-Give a worker a processor **file** instead of a function, and `isolation`
-decides where each attempt runs:
+A worker always owns the claim, the lease and the settle. Its `target` option
+decides only where the **processor call** runs:
 
-- `"in-process"` (the default) imports the file once and calls it on the
-  worker's thread.
-- `"worker"` runs each attempt in a fresh `Worker`: a separate JavaScript
-  context in the same process, which can be terminated.
-- `"spawn"` runs each attempt in a child process. This is the only mode where a
-  processor that ignores its signal is certain to be killed.
+- `"in-process"` (the default) calls it on the worker's own thread. A function
+  processor runs this way; a processor **file** is imported once and then
+  called the same way.
+- `"worker-thread"` runs each attempt in a fresh `Worker`: a separate
+  JavaScript context in the same process, which can be terminated.
+- `"child-process"` runs each attempt in a child process. This is the only
+  target where a processor that ignores its signal is certain to be killed.
+- `{ kind, … }` is one of those three with its tuning, below.
+- a `WorkerTargetFactory` is anything else — see
+  [A custom target](#a-custom-target).
+
+`"worker-thread"` and `"child-process"` need a processor file, since a function
+cannot be sent to another process or `Worker`: with a function processor they
+throw `ConfigError`.
 
 ```ts
 // processors/resize.ts
@@ -2370,22 +2392,102 @@ export default defineProcessor<{ path: string }, { width: number }>(async (job, 
 export const worker = new BunQueueWorker("images", new URL("./processors/resize.ts", import.meta.url), {
   namespace,
   driver,
-  isolation: "spawn",
-  isolationOptions: { closeTimeout: 2_000, spawn: { env: { SHARP_CONCURRENCY: "1" } } },
+  target: { kind: "child-process", closeTimeout: 2_000, spawn: { env: { SHARP_CONCURRENCY: "1" } } },
 });
 ```
 
-`isolationOptions` accepts:
+Each kind takes its own tuning and nothing else — `spawn` on a
+`"worker-thread"` target is a type error, and a `ConfigError` from plain
+JavaScript:
 
-| Option | Default | Meaning |
+| Kind | Option | Default | Meaning |
+|---|---|---|---|
+| `worker-thread`, `child-process` | `closeTimeout` | `5000` | After asking the attempt to stop, how long it has before being terminated. |
+| `child-process` | `killTimeout` | `2000` | After `SIGTERM`, how long before `SIGKILL`. |
+| `child-process` | `spawn` | | `SpawnOptions`, as in the [runner options](#runner-options). Its `cwd` is where a relative processor file resolves from. |
+| `worker-thread` | `worker` | | `WorkerOptions`, as in the [runner options](#runner-options). |
+
+**Runners name the same two mechanisms differently.** A runner's
+`executionMode` says `"worker"` and `"spawn"` (and its run history records
+those), while a worker's `target` says `"worker-thread"` and `"child-process"`:
+different fields, in different vocabularies. Inside the processor the runner's
+spelling survives — an attempt on a worker thread runs with
+`BUN_JOBS_MODE=worker`, one in a child process with `BUN_JOBS_MODE=spawn` — and
+that environment variable is the only place a processor sees either.
+
+| Worker `target` | Runner `executionMode` | `BUN_JOBS_MODE` in the processor |
 |---|---|---|
-| `closeTimeout` | `5000` | After asking the processor to stop, how long it has before being terminated. |
-| `killTimeout` | `2000` | After `SIGTERM`, how long before `SIGKILL` (spawn only). |
-| `spawn` | | `SpawnOptions`, as in the [runner options](#runner-options). |
-| `worker` | | `WorkerOptions`, as in the [runner options](#runner-options). |
+| `"in-process"` | `"in-process"` | unset |
+| `"worker-thread"` | `"worker"` | `worker` |
+| `"child-process"` | `"spawn"` | `spawn` |
 
-Only a file can be isolated: an `isolation` other than `"in-process"` with a
-function processor throws `ConfigError`.
+`target` is not remotely configurable: changing where code runs is a rebuild.
+The worker's heartbeat record reports it, as
+[`target`](#reading-a-queue-search-totals-workers-and-throughput).
+
+### One file, many job names: `defineProcessors`
+
+A processor file that dispatches on the job's name. It takes what
+`jobs.define()` records — `jobs.definitions()`, a `JobDefinitions`, or plain
+`{ name, handler }` objects — so one module of definitions serves both the
+producer and the file:
+
+```ts
+// processors/all.ts
+import { defineProcessors } from "@kingsleyweb/bun-jobs";
+import { resize, sendEmail } from "../jobs";
+
+export default defineProcessors([resize, sendEmail]);
+```
+
+```ts
+jobs.worker("default", new URL("./processors/all.ts", import.meta.url), { target: "child-process" });
+```
+
+A job whose name nothing defines fails with `UnrecoverableJobError` — no retry
+will find a handler that was not deployed. `jobs.start()` takes a function, so
+the way to run a registry off-thread is a `defineProcessors` file given to
+`jobs.worker(...)`.
+
+### A custom target
+
+A `WorkerTargetFactory` runs attempts anywhere this package does not ship: a
+warm `Worker` pool, a gRPC service, a platform SDK. It is called once, in the
+worker's constructor, with the worker's `namespace`, `queue`, `workerId`,
+`logger` and its `processor` (the function, or the file's resolved path), and
+returns a `WorkerTargetExecutor`:
+
+```ts
+export const worker = new BunQueueWorker("renders", renderFrame, {
+  namespace,
+  driver,
+  target: () => ({
+    name: "render-farm",
+    run: async ({ job, record, context }) => {
+      await job.updateProgress(0);
+      return await farm.submit(record.data, { signal: context.signal });
+    },
+    close: async () => await farm.disconnect(),
+  }),
+});
+```
+
+- **Every write goes through `attempt.job`.** The context carries no driver,
+  deliberately: progress, log lines, lock extensions and `fail()` made through
+  the `Job` join the attempt's writes, so they land before the record of how
+  the job ended and a progress value reported after an abort is dropped —
+  exactly as for the built-in targets.
+- **`run()` must stop promptly when `context.signal` aborts** — a timeout, a
+  lost lock, a closing worker. An error named `UnrecoverableJobError` ends the
+  job's retries, whether or not it is an instance of the class.
+- **`close()` is optional and bounded.** It is called once from
+  `worker.close()`, after the attempts have settled or been abandoned; one that
+  has not returned after 5 seconds (`DEFAULT_CLOSE_TIMEOUT`, the built-in
+  kinds' `closeTimeout`) is logged as a warning and left behind.
+- `name` (1 to 64 characters) is what the heartbeat record reports as
+  `target.name`, with `kind: "custom"`.
+
+### What a processor on a worker thread or in a child process can do
 
 The worker keeps the driver, so a child receives an `IsolatedJob`: a plain
 object with every public member of `Job`.
@@ -2407,7 +2509,7 @@ it — in the order the processor reported it — not that the driver has it
 already.
 
 **What a job wrote lands before the record of how it ended.** Its progress and
-its log lines, in every isolation mode and on every ending: a completion, a
+its log lines, on every target and on every ending: a completion, a
 `job.fail()`, a thrown error, an overrun `opts.timeout`. An attempt keeps a
 record of the writes it has asked for, and the worker settles that record
 before it writes the job's ending — so a reader that waits for
@@ -2421,15 +2523,15 @@ that what a processor sends once its attempt is over is dropped rather than
 written over the finished job's own.
 
 **A progress value reported after the worker gave up on the attempt is dropped
-— in every mode, and silently.** An overrun `opts.timeout` aborts the attempt,
+— on every target, and silently.** An overrun `opts.timeout` aborts the attempt,
 and a value reported after that is not merely written late: it is not written
 at all, and no `progress` event fires for it, because the event is emitted by
 the write. Before this ordering existed such a value could still surface, on
 top of a job that had already failed.
 
 That matters for one combination in particular: **a tight deadline and a wait
-for a progress event** — a caller or a test waiting for the pid an isolated
-child reports, say. If the spawn is slower than the deadline, the value is
+for a progress event** — a caller or a test waiting for the pid a child
+process reports, say. If the spawn is slower than the deadline, the value is
 dropped and the wait never ends. Give such a job a deadline it can comfortably
 beat; a processor that hangs still overruns it. Log lines are not dropped this
 way — each is appended with its own sequence, so one written late is still the
@@ -2487,7 +2589,7 @@ Examples:
 | `name` | `string` | `id` | Display name. |
 | `file` | `string \| URL` | required | The handler file, resolved once, relative to `spawn.cwd` or the cwd. |
 | `schedule` | `ScheduleInput` | none (manual only) | A cron string (five or six fields), interval ms, a `Date`, `{ cron, tz }`, `{ every, anchor }` or `{ at }`. |
-| `executionMode` | `"spawn" \| "worker" \| "in-process"` | `"spawn"` | Where runs execute. |
+| `executionMode` | `"spawn" \| "worker" \| "in-process"` | `"spawn"` | Where runs execute. A worker's `target` names the same mechanisms `"child-process"` and `"worker-thread"`. |
 | `runMode` | `"single" \| "parallel"` | `"single"` | `single` holds a cluster-wide lock. `parallel` lets runs overlap up to `maxConcurrency`, with no lock. |
 | `queueRuns` | `boolean` | `false` | Queue a trigger that cannot start now, instead of dropping it. |
 | `maxQueuedRuns` | `number` | `100` | Trigger queue cap. |
@@ -4535,9 +4637,9 @@ mirror re-encodes anything — or leave the pages off and use the JSON.
   `trustProxy: true` only behind a proxy you control.
 - **Redact with the `serialize` hooks.** `lockToken`, event `origin` tokens,
   `driverConfig` and handler functions are never serialised; stacks
-  (`exposeStacks`), runner file paths (`exposeRunnerFiles`) and worker
-  host/pid (`exposeHosts`, on worker records and on a job's `processedBy`
-  alike) are switches. Run-log lines are scrubbed earlier,
+  (`exposeStacks`), runner file paths (`exposeRunnerFiles`), worker processor
+  file paths (`exposeProcessorFiles`) and worker host/pid (`exposeHosts`, on
+  worker records and on a job's `processedBy` alike) are switches. Run-log lines are scrubbed earlier,
   as they are captured (see [Secrets are redacted](#secrets-are-redacted)).
 - **Keep `docs.ui` off in production** unless the prefix is private.
 
@@ -5181,7 +5283,8 @@ Each queue, worker and runner binds its identity (`namespace`, `queue`,
 `workerId`, `runnerId`). A processor's `ctx.logger` is also bound to the job.
 
 A child's `ctx.logger` is forwarded to the parent's `log` event when
-`forwardLogs` is on (and always for isolated processors). `createJobsLogger`
+`forwardLogs` is on (and always for a worker's processor on a worker-thread or
+child-process target). `createJobsLogger`
 and `resolveLogger` are exported.
 
 ```ts
@@ -5342,7 +5445,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`job-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-options.ts) | every `JobOptions`, `RepeatOptions` and `DebounceOptions` field, retention forms, every backoff form |
 | [`queue-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/queue-options.ts) | every `BunQueueOptions` field, `BunQueue` method and queue event |
 | [`worker-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-options.ts) | every `BunQueueWorkerOptions` field, worker method and event, `ProcessorContext`, the in-flight `Job` |
-| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `isolation` and `isolationOptions` in each mode; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is |
+| [`worker-isolation.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/worker-isolation.ts) | `target` in each local kind; what works inside an isolated job; an awaited `updateProgress` is in the store before the completion is |
 | [`job-methods.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-methods.ts) | `job.fail()` inside a processor and from outside (a pending job buried at once, an active one's worker aborting at its next heartbeat); `schedule()`, `update()` and `this \| null`; `disable()` / `enable()` on an occurrence; the queue's `disableRepeatable()` / `enableRepeatable()`; `remove()` / `promote()` / `retry()` emitting and publishing; `progress` as `RunProgress \| null` and `extendLock()` only from the processor's view |
 | [`runner-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/runner-options.ts) | every `BunRunnerOptions` field, `RunContext`, runner method and event, `BunRunnerManager` and `controller()` |
 | [`bunjobs-options.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/bunjobs-options.ts) | every `BunJobsOptions` field and `BunJobs` method, `jobsFromContext` |
@@ -5365,7 +5468,7 @@ Supporting files for the tours:
 - [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/handlers):
   runner handlers
 - [`processors/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/processors):
-  isolated processors
+  processor files for the worker-target tours
 - [`helpers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/10-options/helpers):
   child scripts for the error and notifier tours
 

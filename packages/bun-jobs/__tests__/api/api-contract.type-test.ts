@@ -115,6 +115,7 @@ import type {
   workerListQuerySchema,
   WorkerListSchema,
   WorkerSchema,
+  WorkerTargetInfoSchema,
 } from "../../lib/api/schemas/workers";
 import type * as Server from "../../lib/api/serialize";
 import type * as Ws from "../../lib/api/ws/events";
@@ -537,6 +538,14 @@ export type OverviewAnalyticsFieldOk = Expect<
 >;
 export type WorkerOk = Expect<
   DeepEqual<Contract.WorkerDto, Infer<typeof WorkerSchema>>
+>;
+// The record's `target`, on its own: the component and the contract type
+// agree, and the field is optional — absent is "too old to say".
+export type WorkerTargetInfoOk = Expect<
+  DeepEqual<Contract.WorkerTargetInfoDto, Infer<typeof WorkerTargetInfoSchema>>
+>;
+export type WorkerTargetFieldOk = Expect<
+  Equal<Contract.WorkerDto["target"], Contract.WorkerTargetInfoDto | undefined>
 >;
 export type WorkerListOk = Expect<
   DeepEqual<Contract.WorkerListDto, Infer<typeof WorkerListSchema>>
@@ -1500,6 +1509,16 @@ export type WorkerStopPersistenceValueOk = Expect<
 >;
 export type WorkerStopPersistenceTypeOk = Expect<
   Equal<Contract.WorkerStopPersistence, Workers.WorkerStopPersistence>
+>;
+export type WorkerTargetKindsValueOk = Expect<
+  Equal<typeof Contract.WORKER_TARGET_KINDS, typeof Workers.WORKER_TARGET_KINDS>
+>;
+export type WorkerTargetKindTypeOk = Expect<
+  Equal<Contract.WorkerTargetKind, Workers.WorkerTargetKind>
+>;
+// The runtime record's `target` and the contract's are one shape.
+export type WorkerTargetInfoRuntimeOk = Expect<
+  DeepEqual<Workers.WorkerTargetInfo, Contract.WorkerTargetInfoDto>
 >;
 /**
  * And the worker payloads the socket sends are the driver's own: no error is

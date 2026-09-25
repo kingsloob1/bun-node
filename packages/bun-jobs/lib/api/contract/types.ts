@@ -18,6 +18,7 @@ import type {
   WorkerDesiredState,
   WorkerState,
   WorkerStopPersistence,
+  WorkerTargetKind,
 } from "./constants";
 
 /**
@@ -1712,6 +1713,39 @@ export interface WorkerConfigDto {
   updatedAt?: number;
 }
 
+/**
+ * Where a worker's attempts run, as its record describes it
+ * (`WorkerDto.target`).
+ *
+ * The combinations that occur, since a function cannot be sent to a thread
+ * or a process: `"in-process"` with `"function"` or `"file"`;
+ * `"worker-thread"` and `"child-process"` with `"file"` only; `"custom"`
+ * with `"function"` or `"file"`. A UI need not render any other pair.
+ */
+export interface WorkerTargetInfoDto {
+  /**
+   * Where the attempts run: `"in-process"`, `"worker-thread"`,
+   * `"child-process"`, or `"custom"` (a target the application supplied).
+   * One of `WORKER_TARGET_KINDS`; a kind this client does not know should be
+   * shown as the raw string, since a later server may add one.
+   */
+  kind: WorkerTargetKind;
+  /**
+   * Whether the attempts run a function or a processor file. The pairs that
+   * occur: `"in-process"` + `"function"` | `"file"`; `"worker-thread"` +
+   * `"file"`; `"child-process"` + `"file"`; `"custom"` + `"function"` |
+   * `"file"`.
+   */
+  processor: "function" | "file";
+  /** For `"custom"`: the target's own name, e.g. `"grpc-pool"`. Absent for every other kind. */
+  name?: string;
+  /**
+   * For a file processor: the absolute path it resolved to. Omitted unless
+   * the server enables `serialize.exposeProcessorFiles`.
+   */
+  file?: string;
+}
+
 /** What a worker says about being controlled from outside its process. */
 export interface WorkerControlDto {
   /** Whether this worker listens for control at all: its `control` option, and a backend that can store the desired state. */
@@ -1849,6 +1883,19 @@ export interface WorkerDto {
    * then, "may be nobody": a worker too old to say may be sweeping unseen.
    */
   sweeps?: boolean;
+  /**
+   * Where its attempts run: in-process, on a worker thread, in a child
+   * process, or a custom target — and whether it runs a function or a file.
+   *
+   * Absent on an older worker, and **absent is not `"in-process"`**: it means
+   * the worker is too old to say. `"in-process"` is the default, so reading
+   * absence as in-process would mislabel every worker that has not been
+   * upgraded. Show absence as unknown ("—"), never as a default.
+   *
+   * Unrelated to the `target` of a worker *event*'s envelope, which is the
+   * queue name.
+   */
+  target?: WorkerTargetInfoDto;
   /** Its settings. Absent on an older worker, and when the backend keeps no config. */
   config?: WorkerConfigDto;
   /** Its control state. Absent on a worker that predates remote control — treat that as not controllable. */

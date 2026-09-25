@@ -1151,6 +1151,7 @@ describe("the documents", () => {
       "WorkerControlResult",
       "WorkerState",
       "WorkerStopPersistence",
+      "WorkerTargetInfo",
     ]);
 
     // The statuses the design fixed: 200 and 202 on a control route, 200 on a
@@ -1192,5 +1193,64 @@ describe("the documents", () => {
     ).toMatchObject({ name: "x-csrf", required: true });
     // A read carries none.
     expect(headerOf("/queues/{queue}/workers/{worker}", "get")).toBeUndefined();
+  });
+});
+
+describe("a worker's target", () => {
+  const target = {
+    kind: "child-process" as const,
+    processor: "file" as const,
+    file: "/srv/app/jobs/resize.ts",
+  };
+
+  it("serves target without the processor file's path by default", async () => {
+    const jobs = jobsContext("api-workers-target");
+    const h = harness({ jobs });
+    await putWorker(jobs, { target });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+    const list = await h.call("GET", "/workers");
+
+    expect(one.status).toBe(200);
+    expect(one.body.target).toEqual({
+      kind: "child-process",
+      processor: "file",
+    });
+    expect(list.body.items[0].target).toEqual({
+      kind: "child-process",
+      processor: "file",
+    });
+    expect(one.text).not.toContain("/srv/app/jobs");
+  });
+
+  it("serves the path with exposeProcessorFiles, and a custom target's name", async () => {
+    const jobs = jobsContext("api-workers-target-files");
+    const h = harness({ jobs, serialize: { exposeProcessorFiles: true } });
+    await putWorker(jobs, { target });
+    await putWorker(jobs, {
+      id: "mail.2",
+      target: { kind: "custom", processor: "function", name: "grpc-pool" },
+    });
+
+    const file = await h.call("GET", "/queues/mail/workers/mail.1");
+    const custom = await h.call("GET", "/queues/mail/workers/mail.2");
+
+    expect(file.body.target).toEqual(target);
+    expect(custom.body.target).toEqual({
+      kind: "custom",
+      processor: "function",
+      name: "grpc-pool",
+    });
+  });
+
+  it("leaves target off an older worker's record: absent, never in-process", async () => {
+    const jobs = jobsContext("api-workers-target-old");
+    const h = harness({ jobs, serialize: { exposeProcessorFiles: true } });
+    await putWorker(jobs);
+
+    const res = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("target");
   });
 });

@@ -11,6 +11,7 @@ import type {
   WorkerControlMode,
   WorkerState,
   WorkerStopPersistence,
+  WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobCursorKey } from "./jobCursor";
 import type {
@@ -1561,6 +1562,21 @@ export interface WorkerInfo {
    * since a worker too old to say may well be sweeping unseen.
    */
   sweeps?: boolean;
+  /**
+   * Where this worker's attempts run, as it is actually running them.
+   *
+   * Written on every report from the same resolved target the worker
+   * dispatches to, the way {@link WorkerInfo.sweeps} is written from the value
+   * maintenance branches on, so the record cannot disagree with what the
+   * worker does.
+   *
+   * Absent on a record from a worker older than this field, like
+   * {@link WorkerInfo.rssBytes} — and **absent is not `"in-process"`**.
+   * `"in-process"` is the default, so reading absence as in-process would
+   * confidently mislabel every worker that has not been upgraded. Absent
+   * means "too old to say": show it as unknown, never as a default.
+   */
+  target?: WorkerTargetInfo;
   /**
    * Its settings: what it runs with, what its own code asked for, and which of
    * them an override replaces. Absent on a worker from before remote

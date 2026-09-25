@@ -84,8 +84,8 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     {
       // A child process per attempt: the processor blocks its thread outright,
       // and this is the mode where that thread is not the worker's.
-      isolation: "spawn",
-      isolationOptions: {
+      target: {
+        kind: "child-process",
         // Hashing checks its signal between blocks, so it unwinds well within
         // this; the kill timeout is the backstop if a block runs long.
         closeTimeout: 3_000,
@@ -120,8 +120,8 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     {
       // A fresh `Worker` per attempt: a separate JavaScript context in this
       // same process, so nothing a processor leaves behind survives its job.
-      isolation: "worker",
-      isolationOptions: {
+      target: {
+        kind: "worker-thread",
         closeTimeout: 2_000,
         worker: {
           // Low-memory mode: a preview render is short-lived, and a smaller
@@ -153,8 +153,11 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
     PREVIEW,
     {
       // The same file, in a child process.
-      isolation: "spawn",
-      isolationOptions: { closeTimeout: 2_000, killTimeout: 1_000 },
+      target: {
+        kind: "child-process",
+        closeTimeout: 2_000,
+        killTimeout: 1_000,
+      },
       concurrency: 1,
       backoffStrategies: decodeRamp,
       deadLetterQueue: "dead-letters",
@@ -180,8 +183,8 @@ export async function startIsolated(jobs: BunJobs): Promise<IsolatedWorld> {
   );
 
   const wedged = jobs.worker<WedgeData, WedgeResult>("imports", WEDGE, {
-    isolation: "spawn",
-    isolationOptions: {
+    target: {
+      kind: "child-process",
       // Short on purpose, so the escalation is quick to watch: close, then
       // `SIGTERM` after a second, then `SIGKILL` half a second later. This
       // processor answers none of them, so every step is taken.

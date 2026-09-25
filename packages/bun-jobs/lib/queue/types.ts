@@ -25,9 +25,9 @@ import type {
   BackoffStrategy,
   JobBackoffOptions,
 } from "./backoff";
-import type { IsolationMode, IsolationOptions } from "./isolation";
 import type { Job } from "./Job";
 import type { JobDefaultsPatch } from "./jobDefaults";
+import type { WorkerTarget } from "./workerTarget";
 
 /**
  * The queue's public types.
@@ -1089,24 +1089,44 @@ export interface BunQueueWorkerOptions {
    */
   metrics?: MetricsOptions;
   /**
-   * Where a processor *file* runs each attempt:
+   * Where each attempt runs. Defaults to `"in-process"`.
    *
-   * - `"in-process"` (the default) imports it once and calls it on the
-   *   worker's thread, exactly like a function processor.
-   * - `"worker"` runs each attempt in a fresh `Worker`: a separate JavaScript
-   *   context that can be terminated, in the same process.
-   * - `"spawn"` runs each attempt in a child process: the only mode where a
-   *   processor that ignores its signal can be killed for certain.
+   * The worker always owns the claim, the lease and the settle; only the
+   * processor call* moves. Every write an attempt makes (progress, a log
+   * line, a lock extension, `job.fail()`) still goes through the worker's own
+   * `Job`, so it lands before the record of how the job ended, whichever
+   * target ran it.
    *
-   * Only for a processor given as a file path or URL. The file default-exports
-   * the same `(job, ctx) => result` a function processor is; `defineProcessor`
-   * types it. In a child, `job.log`, `job.updateProgress`, `job.touch` and
+   * - `"in-process"`: call it on the claim loop's own thread. A function
+   *   processor does this; a processor *file* is imported once and then
+   *   called the same way.
+   * - `"worker-thread"`: a fresh Web `Worker` per attempt, in this process. A
+   *   separate JavaScript context that can be terminated. Needs a processor
+   *   file.
+   * - `"child-process"`: a fresh child process per attempt. The only target
+   *   where a processor that ignores its signal is certain to be killed
+   *   (`SIGTERM`, then `SIGKILL`). Needs a processor file.
+   * - `{ kind, … }`: one of the three above, with its tuning (`closeTimeout`,
+   *   and `worker` or `killTimeout`/`spawn`). See `LocalWorkerTarget`.
+   * - a `WorkerTargetFactory`: anything else, including a transport this
+   *   package does not ship. Accepted with a function or a file.
+   *
+   * A processor file default-exports the same `(job, ctx) => result` a
+   * function processor is; `defineProcessor` types it. In a `Worker` or a
+   * child, `job.log`, `job.updateProgress`, `job.touch` and
    * `ctx.heartbeat` work through the worker; operations that change the
    * stored job directly are unavailable.
+   *
+   * Runners name the same two mechanisms differently: a runner's
+   * `executionMode` says `"worker"` and `"spawn"`, a worker's target
+   * `"worker-thread"` and `"child-process"` — different fields, in different
+   * vocabularies. Inside the processor the runner's spelling survives: an
+   * attempt on a worker thread runs with `BUN_JOBS_MODE=worker`, one in a
+   * child process with `BUN_JOBS_MODE=spawn`.
+   *
+   * Not remotely configurable: changing where code runs is a rebuild.
    */
-  isolation?: IsolationMode;
-  /** Timeouts and executor options for isolated processors. */
-  isolationOptions?: IsolationOptions;
+  target?: WorkerTarget;
   /**
    * Named backoff strategies, for jobs whose `backoff.type` names one.
    *

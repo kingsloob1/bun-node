@@ -2,11 +2,12 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   ClaimOptions,
   FailOutcome,
-  IsolationMode,
   JobRecord,
   QueueRef,
   Retention,
   RunProgress,
+  WorkerTargetAttempt,
+  WorkerTargetMode,
 } from "../lib/index";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
@@ -16,9 +17,9 @@ import { testNamespace, waitFor } from "./helpers";
 
 /**
  * Every write a job made lands before the record of how that job ended — in
- * every isolation mode, and on every ending.
+ * every target, and on every ending.
  *
- * #115 ordered an isolated processor's progress against its completion, and
+ * #115 ordered an off-thread processor's progress against its completion, and
  * #117 kept that ordering when a deadline abandoned the run. Two holes were
  * left, and both are closed here:
  *
@@ -27,7 +28,7 @@ import { testNamespace, waitFor } from "./helpers";
  *   `void answer(...)`, so a line still in flight when the attempt ends could
  *   land after the ending record. Nothing about that is timeout-specific: the
  *   completion write is deliberately not awaited either.
- * - **`"in-process"` mode.** There is no fire-and-forget hop to order: the
+ * - **the `"in-process"` target.** There is no fire-and-forget hop to order: the
  *   processor calls the real `Job.updateProgress` and awaits it. A deadline
  *   abandons it wherever it stands, including inside that write, and the
  *   worker had no handle on it.
@@ -179,7 +180,7 @@ afterEach(async () => {
 });
 
 /** A queue and a worker running `file` in `mode`, on the late-write driver. */
-function setup(mode: IsolationMode, file: string) {
+function setup(mode: WorkerTargetMode, file: string) {
   const driver = new LateWriteDriver();
   const namespace = testNamespace();
   const queue = new BunQueue("attempt-writes", {
@@ -192,8 +193,12 @@ function setup(mode: IsolationMode, file: string) {
     driver,
     logger: noopLogger,
     pollInterval: 5,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 200, killTimeout: 200 },
+    target:
+      mode === "child-process"
+        ? { kind: mode, closeTimeout: 200, killTimeout: 200 }
+        : mode === "worker-thread"
+          ? { kind: mode, closeTimeout: 200 }
+          : mode,
     waitToExit: false,
   });
   closers.push(
@@ -258,7 +263,7 @@ async function runUntilDone(
 
 /* --- residual 1: a log line from a child ---------------------------------- */
 
-for (const mode of ["spawn", "worker"] as const) {
+for (const mode of ["child-process", "worker-thread"] as const) {
   describe(`attempt write ordering: ${mode} job.log`, () => {
     it("writes a log line the child asked for before the failure record", async () => {
       const { driver, queue } = setup(mode, "job-log-timeout");
@@ -299,7 +304,7 @@ for (const mode of ["spawn", "worker"] as const) {
 describe("attempt write ordering: a chatty child's log", () => {
   it("stores every line before the completion, without serialising them", async () => {
     const lines = 50;
-    const { driver, queue } = setup("worker", "job-log-many");
+    const { driver, queue } = setup("worker-thread", "job-log-many");
     driver.delay = SLOW_WRITE_MS;
 
     await runUntilDone(queue, "chatty log", { lines });
@@ -384,7 +389,7 @@ describe("attempt write ordering: a plain function processor", () => {
       logger: noopLogger,
     });
     // No processor file at all: the commonest shape of worker there is, and
-    // the one that never went near an isolated attempt's barrier.
+    // the one that never went near an off-thread attempt's barrier.
     const worker = new BunQueueWorker(
       "attempt-writes",
       async (job) => {
@@ -501,7 +506,7 @@ describe("attempt write ordering: a write that never answers", () => {
 
 describe("attempt write ordering: a driver that never answers", () => {
   it("records the failure without waiting for a hung log write", async () => {
-    const { driver, queue } = setup("worker", "job-log-timeout");
+    const { driver, queue } = setup("worker-thread", "job-log-timeout");
     driver.delay = "hang";
 
     await runUntilDead(queue, "hanging log");
@@ -510,5 +515,121 @@ describe("attempt write ordering: a driver that never answers", () => {
     expect(failed).toBeDefined();
     // The bound, not the hung write, is what the failure record waited for.
     expect(failed!.at - (driver.claimedAt + TIMEOUT_MS)).toBeLessThan(1_500);
+  }, 30_000);
+});
+
+/* --- a custom target writes through the same Job -------------------------- */
+
+/**
+ * A worker whose attempts go to a {@link WorkerTargetAttempt}-taking `run`,
+ * as a `WorkerTargetFactory` would build, on the late-write driver. The
+ * processor is a function the target never calls: what a target runs is its
+ * own business, and every write it makes goes through `attempt.job`.
+ */
+function setupCustom(
+  run: (attempt: WorkerTargetAttempt) => Promise<unknown>,
+  options: {
+    /** The worker's `lockDuration`, which sets the ended-itself cap. */
+    lockDuration?: number;
+  } = {},
+) {
+  const driver = new LateWriteDriver();
+  const namespace = testNamespace();
+  const queue = new BunQueue("attempt-writes", {
+    namespace,
+    driver,
+    logger: noopLogger,
+  });
+  const worker = new BunQueueWorker("attempt-writes", async () => "unused", {
+    namespace,
+    driver,
+    logger: noopLogger,
+    pollInterval: 5,
+    target: () => ({ name: "test-target", run }),
+    waitToExit: false,
+    ...options,
+  });
+  const progress: unknown[] = [];
+  worker.on("progress", (_job, value) => progress.push(value));
+  closers.push(
+    () => queue.close(),
+    () => worker.close({ force: true }),
+  );
+  void worker.run();
+  return { driver, queue, worker, progress };
+}
+
+describe("attempt write ordering: a custom target", () => {
+  it("drops progress a custom target reports after the abort: no write, no event", async () => {
+    let reportedLate = false;
+    const { driver, queue, progress } = setupCustom(
+      async ({ job, context }) => {
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        // After the deadline aborted the attempt: the lane is closed to it.
+        void job.updateProgress(99).catch(() => undefined);
+        reportedLate = true;
+        throw new Error("stopped");
+      },
+    );
+    driver.delay = 0;
+
+    await runUntilDead(queue, "custom late progress");
+    await waitFor(() => reportedLate, { timeout: 5_000 });
+    // Long enough for a zero-delay write to have landed had it been made.
+    await Bun.sleep(200);
+
+    expect(driver.writes.map((write) => write.kind)).toEqual(["fail"]);
+    expect(progress).toEqual([]);
+  }, 30_000);
+
+  it("writes a custom target's slow, unawaited writes before the completion record", async () => {
+    const { driver, queue, progress } = setupCustom(async ({ job }) => {
+      // Neither awaited: the ending must still wait for both.
+      void job.updateProgress(50).catch(() => undefined);
+      void job.log("from the custom target").catch(() => undefined);
+      return "done";
+    });
+    driver.delay = SLOW_WRITE_MS;
+
+    const id = await runUntilDone(queue, "custom slow writes");
+
+    expect(driver.writes.map((write) => write.kind).sort()).toEqual([
+      "complete",
+      "log",
+      "progress",
+    ]);
+    expect(driver.writes.at(-1)!.kind).toBe("complete");
+    expect(progress).toEqual([50]);
+    const stored = await queue.getJob(id);
+    expect(stored?.progress).toBe(50);
+  }, 30_000);
+
+  it("waits for a custom target's writes only up to the cap", async () => {
+    const lockDuration = 2_000;
+    let returnedAt = 0;
+    const { driver, queue } = setupCustom(
+      async ({ job }) => {
+        void job.log("never answered").catch(() => undefined);
+        returnedAt = Date.now();
+        return "done";
+      },
+      { lockDuration },
+    );
+    driver.delay = "hang";
+
+    await runUntilDone(queue, "custom hung write");
+
+    const completed = driver.writes.find((write) => write.kind === "complete");
+    expect(completed).toBeDefined();
+    // The ended-itself cap is max(250, lockDuration / 4) = 500ms here: the
+    // completion waited for it, and no longer.
+    const waited = completed!.at - returnedAt;
+    expect(waited).toBeGreaterThanOrEqual(400);
+    expect(waited).toBeLessThan(lockDuration);
+    expect(driver.writes.map((write) => write.kind)).toEqual(["complete"]);
   }, 30_000);
 });

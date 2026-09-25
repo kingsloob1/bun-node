@@ -1,4 +1,4 @@
-import type { JobRecord } from "../drivers/index";
+import type { ExecutionMode, JobRecord } from "../drivers/index";
 import type {
   Executor,
   ExecutorHandle,
@@ -11,6 +11,9 @@ import type {
   JobChannelRequest,
 } from "../runner/protocol";
 import type { RunContext, SpawnOptions, WorkerOptions } from "../runner/types";
+import type { Logger } from "../shared/logger";
+import type { WorkerTargetInfo, WorkerTargetKind } from "../shared/workers";
+import type { JobDefinition, JobDefinitions } from "./definitions";
 import type { Job } from "./Job";
 import type { JobProcessor, ProcessorContext } from "./types";
 import process from "node:process";
@@ -25,23 +28,25 @@ import {
   DEFAULT_KILL_TIMEOUT,
   DEFAULT_START_TIMEOUT,
 } from "../shared/constants";
-import { ConfigError } from "../shared/errors";
+import { ConfigError, UnrecoverableJobError } from "../shared/errors";
 
 /**
- * Running a job's processor somewhere other than the worker's own thread.
+ * Where a worker's attempts run: the `target` option.
  *
- * A worker given a *file* rather than a function can run each attempt in
- * a child process or a `Worker`, through the same executors `BunRunner` uses —
- * so a processor that blocks its thread, leaks, or has to be killable for
- * certain does so away from the claim loop, the heartbeats and every other
- * job. The processor file default-exports the same `(job, ctx)` function it
- * would be in-process; `defineProcessor` types it.
+ * The worker always owns the claim, the lease and the settle; a target moves
+ * only the *processor call*. A worker given a *file* rather than a function
+ * can run each attempt in a `Worker` or a child process, through the same
+ * executors `BunRunner` uses — so a processor that blocks its thread, leaks,
+ * or has to be killable for certain does so away from the claim loop, the
+ * heartbeats and every other job. The processor file default-exports the
+ * same `(job, ctx)` function it would be in-process; `defineProcessor` types
+ * it, and `defineProcessors` builds one that dispatches on the job's name.
  *
- * The worker keeps the driver. What an isolated processor needs of it — its
- * log, its lock — is asked for over the executor's message channel and
- * answered from here, and its progress is written here too. Everything else
- * that would change the stored job directly is unavailable in the child, and
- * says so.
+ * The worker keeps the driver. What a processor in a `Worker` or a child
+ * needs of it — its log, its lock — is asked for over the executor's message
+ * channel and answered from here, and its progress is written here too.
+ * Everything else that would change the stored job directly is unavailable in
+ * the child, and says so.
  *
  * Progress is the one of those that is *sent* rather than asked: a child's
  * `job.updateProgress()` does not wait for a reply, so an update costs no
@@ -54,25 +59,203 @@ import { ConfigError } from "../shared/errors";
  * job ended, including when it gave up on the run and never came back here at
  * all, and an abort ends the attempt for its writes too — so a value a child
  * sends while it is being stopped is dropped rather than written over a job
- * that has already failed.
+ * that has already failed. A custom target ({@link WorkerTargetFactory})
+ * writes through the same `Job`, so the same holds for it.
  */
 
-/** How a job's processor is run. */
-export type IsolationMode = "in-process" | "spawn" | "worker";
+/**
+ * The three places this machine can run an attempt: the string form of
+ * {@link WorkerTarget}, the `kind` of its object form, and three of the values
+ * of the heartbeat record's `target.kind`.
+ *
+ * Runners spell two of these differently: a `"worker-thread"` target is what
+ * a runner calls `executionMode: "worker"`, and a `"child-process"` one is
+ * `"spawn"` — the values a job's child sees in `BUN_JOBS_MODE`.
+ */
+export type WorkerTargetMode = "in-process" | "worker-thread" | "child-process";
 
-/** Tuning for isolated processors. */
-export interface IsolationOptions {
+/**
+ * Where a worker's attempts run: one of the three {@link WorkerTargetMode}s, a
+ * {@link LocalWorkerTarget} (the same, with its tuning), or a
+ * {@link WorkerTargetFactory} for a target this package does not ship.
+ */
+export type WorkerTarget =
+  | WorkerTargetMode
+  | LocalWorkerTarget
+  | WorkerTargetFactory;
+
+/**
+ * A local target with its tuning. The string `"child-process"` is exactly
+ * `{ kind: "child-process" }`, and the tuning a kind takes is only its own:
+ * `spawn` on a `"worker-thread"` target is a type error, and a `ConfigError`
+ * from plain JavaScript.
+ */
+export type LocalWorkerTarget =
+  | InProcessTarget
+  | WorkerThreadTarget
+  | ChildProcessTarget;
+
+/** `"in-process"` as an object, so every local mode has one. */
+export interface InProcessTarget {
   /**
-   * After asking an isolated processor to stop, how long it has to unwind
-   * before it is terminated. Defaults to 5 seconds.
+   * Marks the variant: the processor runs on the claim loop's own thread. A
+   * processor file is imported once and then called the way a function is.
+   */
+  kind: "in-process";
+}
+
+/** A fresh Web `Worker` per attempt, in this process. */
+export interface WorkerThreadTarget {
+  /** Marks the variant: a fresh `Worker` per attempt, in this process. */
+  kind: "worker-thread";
+  /**
+   * After the worker asks an attempt to stop (a timeout, a lost lock, a
+   * close), how long the attempt has to unwind before its `Worker` is
+   * terminated, in milliseconds. Defaults to 5000 (`DEFAULT_CLOSE_TIMEOUT`).
    */
   closeTimeout?: number;
-  /** After `SIGTERM`, how long before `SIGKILL` (spawn only). Defaults to 2 seconds. */
-  killTimeout?: number;
-  /** Child-process options, for `"spawn"`. */
-  spawn?: SpawnOptions;
-  /** `Worker` options, for `"worker"`. */
+  /**
+   * Options for each `Worker`: `env`, `argv`, `smol` and `name`. The
+   * runner's {@link WorkerOptions}, unchanged.
+   */
   worker?: WorkerOptions;
+}
+
+/** A fresh child process per attempt. */
+export interface ChildProcessTarget {
+  /**
+   * Marks the variant: a fresh child process per attempt. The only target
+   * where a processor that ignores its signal is certain to be killed
+   * (`SIGTERM`, then `SIGKILL`).
+   */
+  kind: "child-process";
+  /**
+   * After the worker asks an attempt to stop, how long the child has to
+   * unwind before it is sent `SIGTERM`, in milliseconds. Defaults to 5000
+   * (`DEFAULT_CLOSE_TIMEOUT`).
+   */
+  closeTimeout?: number;
+  /**
+   * After `SIGTERM`, how long before `SIGKILL`, in milliseconds. Defaults to
+   * 2000 (`DEFAULT_KILL_TIMEOUT`).
+   */
+  killTimeout?: number;
+  /**
+   * Options for each child: `cwd`, `env`, `args` and the rest. The runner's
+   * {@link SpawnOptions}, unchanged. `cwd` is also where a relative processor
+   * file is resolved from.
+   */
+  spawn?: SpawnOptions;
+}
+
+/**
+ * Builds the executor for a target this package does not ship: a gRPC pool,
+ * a message bus, a platform SDK a published package must not depend on.
+ *
+ * Called once, from the worker's constructor, after its `id` and logger
+ * exist. Synchronous, because the constructor is: connect lazily, in `run()`.
+ * Accepted with a function processor and with a processor file alike.
+ */
+export type WorkerTargetFactory = (
+  context: WorkerTargetContext,
+) => WorkerTargetExecutor;
+
+/**
+ * What a {@link WorkerTargetFactory} is told about the worker it serves.
+ *
+ * **There is deliberately no driver here, nor any driver configuration.** A
+ * custom target reaches the store only through `attempt.job`, whose driver is
+ * private to it — which is what keeps every write an attempt makes on the
+ * attempt's own write lane, so the ordering and abort guarantees hold for a
+ * custom target by construction. Do not add one.
+ */
+export interface WorkerTargetContext {
+  /** The namespace the worker consumes from. */
+  namespace: string;
+  /** The queue it consumes. */
+  queue: string;
+  /** The worker's incarnation id, `worker.id`. */
+  workerId: string;
+  /** The worker's logger, already bound to it. */
+  logger: Logger;
+  /**
+   * What the worker was constructed with: a function, or the absolute path a
+   * processor file resolved to. A target that ships attempts to code deployed
+   * elsewhere may ignore it; one that wraps a processor (a warm `Worker`
+   * pool, a tracing shim) runs it.
+   */
+  processor:
+    | {
+        /** The processor is a function. */
+        kind: "function";
+        /** The function itself. */
+        fn: JobProcessor<unknown, unknown>;
+      }
+    | {
+        /** The processor is a file. */
+        kind: "file";
+        /** Its absolute path, resolved at construction. */
+        path: string;
+      };
+}
+
+/**
+ * Runs a worker's attempts somewhere this package does not know about: what a
+ * {@link WorkerTargetFactory} returns.
+ *
+ * It is handed no driver (see {@link WorkerTargetContext}): every write goes
+ * through `attempt.job`, deliberately.
+ */
+export interface WorkerTargetExecutor {
+  /**
+   * What this target is called, reported as the heartbeat record's
+   * `target.name` and in log lines: `"grpc-pool"`, say. Free text, 1 to 64
+   * characters. It is **not** a runner's `ExecutionMode`, and it is never
+   * written to run history.
+   */
+  readonly name: string;
+  /**
+   * Runs one attempt. Resolves with the processor's result; rejects with its
+   * error. An error named `UnrecoverableJobError` ends the job's retries,
+   * whether or not it is an instance of the class, so one rebuilt from a wire
+   * format still does. Must stop promptly when `attempt.context.signal`
+   * aborts: the worker aborts it on a timeout, a lost lock or a close, and
+   * waits only a bounded time after that.
+   */
+  run: (attempt: WorkerTargetAttempt) => Promise<unknown>;
+  /**
+   * Releases what the target holds between attempts: a connection, a pool.
+   * Optional. Called once from `worker.close()`, after the worker's attempts
+   * have settled or been abandoned, and **bounded** like the built-in kinds'
+   * stop: after `DEFAULT_CLOSE_TIMEOUT` (5000 ms) the worker logs a warning
+   * and finishes closing without it, so a drain that never ends cannot hang a
+   * shutdown. A rejection is logged the same way.
+   */
+  close?: () => void | Promise<void>;
+}
+
+/** One attempt, as a {@link WorkerTargetExecutor} is handed it. */
+export interface WorkerTargetAttempt {
+  /**
+   * The worker's own `Job` for this attempt. **Every write the attempt makes
+   * goes through it, never around it**: progress, a log line, a lock
+   * extension, `fail()`. That is what puts those writes on the attempt's
+   * write lane, which the worker settles before it records how the job ended,
+   * and which drops a progress value reported after the attempt was aborted.
+   */
+  job: Job<unknown, unknown>;
+  /**
+   * The claimed record, as stored: the serialisable view to send across a
+   * boundary — the same value `job.toJSON()` returns, without the copy. Do
+   * not mutate it.
+   */
+  record: JobRecord;
+  /**
+   * The processor context: `signal`, `logger`, `heartbeat`, `log`,
+   * `workerId`, `attempt`. `signal` is the worker's own abort signal for the
+   * attempt.
+   */
+  context: ProcessorContext;
 }
 
 /**
@@ -91,7 +274,271 @@ export function defineProcessor<TData = unknown, TResult = unknown>(
   return processor;
 }
 
-/** Who is running an isolated attempt, for its context and diagnostics. */
+/**
+ * One entry {@link defineProcessors} dispatches to: a name and its handler,
+ * which is the part of a {@link JobDefinition} a processor file needs. Any
+ * handler fits — its job's data and result types are its own.
+ */
+interface ProcessorDefinition {
+  /** The job name it runs. */
+  readonly name: string;
+  /**
+   * What runs a job of that name. A method, deliberately: its parameter is
+   * then checked both ways, so a handler typed for its own data fits, and an
+   * inline one is still handed a `Job` rather than `never`.
+   */
+  // eslint-disable-next-line ts/method-signature-style
+  handler(job: Job<unknown, unknown>, ctx: ProcessorContext): unknown;
+}
+
+/**
+ * A processor that dispatches on the job's name: one processor file for
+ * many job names.
+ *
+ * Takes the same definitions `BunJobs.define()` records — `jobs.definitions()`,
+ * a {@link JobDefinitions}, or plain `{ name, handler }` objects — so one
+ * module of definitions can be imported by the producer (which needs the names
+ * and options) and default-exported here (which needs the handlers):
+ *
+ * ```ts
+ * // jobs/processor.ts
+ * import { sendEmail, resize } from "./definitions";
+ * export default defineProcessors([sendEmail, resize]);
+ * ```
+ *
+ * A job whose name has no definition fails with an
+ * {@link UnrecoverableJobError}: no number of retries will find a handler that
+ * was not deployed. A name given twice keeps the later handler, as a second
+ * `define()` does.
+ */
+export function defineProcessors(
+  definitions: readonly ProcessorDefinition[] | JobDefinitions,
+): JobProcessor<unknown, unknown> {
+  const byName = new Map<string, JobProcessor<unknown, unknown>>();
+  const list: readonly ProcessorDefinition[] = Array.isArray(definitions)
+    ? definitions
+    : (definitions as JobDefinitions).all();
+
+  for (const definition of list) {
+    if (
+      typeof definition?.name !== "string" ||
+      definition.name.length === 0 ||
+      typeof definition.handler !== "function"
+    ) {
+      throw new ConfigError(
+        "defineProcessors() takes definitions of the form { name, handler }",
+        { name: definition?.name },
+      );
+    }
+    // Each handler's own types are its definition's, which the dispatcher
+    // cannot know; it hands every one the job it was given.
+    byName.set(
+      definition.name,
+      definition.handler as JobProcessor<unknown, unknown>,
+    );
+  }
+
+  return async (job, context) => {
+    const handler = byName.get(job.name);
+    if (!handler) {
+      throw new UnrecoverableJobError(
+        `No processor is defined for "${job.name}" in this processor file`,
+        { name: job.name, defined: [...byName.keys()] },
+      );
+    }
+    return await handler(job, context);
+  };
+}
+
+/** The three local kinds, for checking a value off the options. */
+const LOCAL_KINDS: ReadonlySet<string> = new Set<WorkerTargetMode>([
+  "in-process",
+  "worker-thread",
+  "child-process",
+]);
+
+/** The tuning keys each local kind takes, beside `kind`. */
+const LOCAL_KEYS: Readonly<Record<WorkerTargetMode, readonly string[]>> = {
+  "in-process": [],
+  "worker-thread": ["closeTimeout", "worker"],
+  "child-process": ["closeTimeout", "killTimeout", "spawn"],
+};
+
+/**
+ * The runner's spelling of each off-thread kind: what the shared executors
+ * are built for, and the `BUN_JOBS_MODE` a job's child sees.
+ */
+const RUNNER_MODE: Readonly<
+  Record<Exclude<WorkerTargetMode, "in-process">, ExecutionMode>
+> = {
+  "worker-thread": "worker",
+  "child-process": "spawn",
+};
+
+/** The allowed modes, as the messages below spell them. */
+const MODES_TEXT = '"in-process", "worker-thread" or "child-process"';
+
+/**
+ * A `target` option after validation: what the worker dispatches on and
+ * describes in its heartbeat record. Internal.
+ */
+export interface ResolvedWorkerTarget {
+  /** Where the attempts run. */
+  kind: WorkerTargetKind;
+  /** The local target, normalised to its object form; for the three local kinds. */
+  local?: LocalWorkerTarget;
+  /** The factory, for `"custom"`. */
+  factory?: WorkerTargetFactory;
+  /** The processor file's absolute path, when the processor is a file. */
+  file?: string;
+}
+
+/** Describes a bad `target` value for a message. */
+function describe(value: unknown): string {
+  if (typeof value === "string") {
+    return `"${value}"`;
+  }
+  if (value && typeof value === "object" && "kind" in value) {
+    return `{ kind: ${describe((value as { kind: unknown }).kind)} }`;
+  }
+  return String(value);
+}
+
+/** The `ConfigError` for a value that is not a target, with a hint when one helps. */
+function notATarget(value: unknown): ConfigError {
+  const mode =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object"
+        ? (value as { kind?: unknown }).kind
+        : undefined;
+  // The runner's spellings get their own hint: a user who knows runners will
+  // type them, and they are the right values one level over.
+  const hint =
+    mode === "spawn"
+      ? ': "spawn" is a runner\'s executionMode; a worker\'s is "child-process"'
+      : mode === "worker"
+        ? ': "worker" is a runner\'s executionMode; a worker\'s is "worker-thread"'
+        : "";
+  return new ConfigError(
+    `target must be ${MODES_TEXT}, not ${describe(value)}${hint}`,
+    { target: typeof value === "function" ? "function" : value },
+  );
+}
+
+/**
+ * Validates a worker's `target` against its processor, and resolves a
+ * processor file. Throws a `ConfigError` for a bad value, before the worker
+ * has any side effects; builds nothing.
+ */
+export function resolveWorkerTarget(
+  /** The worker's options, read as plain JavaScript may have written them. */
+  options: {
+    target?: unknown;
+    isolation?: unknown;
+    isolationOptions?: unknown;
+  },
+  /** The worker's processor: a function, or a file's path or URL. */
+  processor: unknown,
+): ResolvedWorkerTarget {
+  // Not an alias: silently ignoring the old key would run a file meant for a
+  // child process on the claim loop's own thread, with nothing to say so.
+  if (options.isolation !== undefined) {
+    throw new ConfigError(
+      'isolation was replaced by target: use target: "child-process" (was "spawn") or "worker-thread" (was "worker")',
+      { isolation: options.isolation },
+    );
+  }
+  if (options.isolationOptions !== undefined) {
+    throw new ConfigError(
+      'isolationOptions was replaced by target: give the settings on the target itself, as { kind: "child-process", closeTimeout, killTimeout, spawn } or { kind: "worker-thread", closeTimeout, worker }',
+      { isolationOptions: options.isolationOptions },
+    );
+  }
+
+  const target = options.target ?? "in-process";
+  const isFunction = typeof processor === "function";
+
+  if (typeof target === "function") {
+    return {
+      kind: "custom",
+      factory: target as WorkerTargetFactory,
+      ...(isFunction ? {} : { file: resolveProcessorFile(processor) }),
+    };
+  }
+
+  const local = toLocalTarget(target);
+
+  if (isFunction) {
+    if (local.kind !== "in-process") {
+      throw new ConfigError(
+        `target "${local.kind}" needs a processor file: a function cannot be sent to another process or Worker`,
+        { target: local.kind },
+      );
+    }
+    return { kind: "in-process", local };
+  }
+
+  return {
+    kind: local.kind,
+    local,
+    file: resolveProcessorFile(
+      processor,
+      local.kind === "child-process" ? local.spawn?.cwd : undefined,
+    ),
+  };
+}
+
+/** A string or object target as its object form, or a `ConfigError`. */
+function toLocalTarget(target: unknown): LocalWorkerTarget {
+  if (typeof target === "string") {
+    if (!LOCAL_KINDS.has(target)) {
+      throw notATarget(target);
+    }
+    return { kind: target as WorkerTargetMode };
+  }
+
+  if (!target || typeof target !== "object" || Array.isArray(target)) {
+    throw notATarget(target);
+  }
+
+  const { kind } = target as { kind?: unknown };
+  if (typeof kind !== "string" || !LOCAL_KINDS.has(kind)) {
+    throw notATarget(target);
+  }
+
+  const allowed = LOCAL_KEYS[kind as WorkerTargetMode];
+  for (const [key, value] of Object.entries(target)) {
+    if (key === "kind" || value === undefined) {
+      continue;
+    }
+    if (!allowed.includes(key)) {
+      throw new ConfigError(
+        `target { kind: "${kind}" } does not take ${key}${
+          allowed.length === 0
+            ? ": it takes no settings"
+            : `: it takes ${allowed.join(", ")}`
+        }`,
+        { target: kind, key },
+      );
+    }
+    if (
+      (key === "closeTimeout" || key === "killTimeout") &&
+      (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    ) {
+      throw new ConfigError(
+        `target ${key} must be a number of milliseconds, not ${String(value)}`,
+        { target: kind, [key]: value },
+      );
+    }
+  }
+
+  // A copy, so a caller changing its object later cannot change a running
+  // worker's tuning under it.
+  return { ...(target as LocalWorkerTarget) };
+}
+
+/** Who is running an attempt off-thread, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
   namespace: string;
@@ -101,38 +548,38 @@ interface Runner {
   workerId: string;
 }
 
-/** A processor file, and the executor that runs it. */
-export class IsolatedProcessor {
+/**
+ * The built-in executor for a processor file, in any of the three local
+ * kinds: imported once and called in-process, or run per attempt in a fresh
+ * `Worker` or child process. Internal; a worker builds one from its `target`.
+ */
+export class FileTargetExecutor implements WorkerTargetExecutor {
+  /** The kind, as the executor's name: `"child-process"`, say. */
+  readonly name: WorkerTargetMode;
   /** The processor file, resolved to an absolute path. */
   readonly file: string;
-  /** Where each attempt runs. */
-  readonly mode: IsolationMode;
 
-  /** Tuning, with defaults applied where the executors need them. */
-  readonly #options: IsolationOptions;
-  /** The executor, for `"spawn"` and `"worker"`. */
+  /** The target with its tuning. */
+  readonly #target: LocalWorkerTarget;
+  /** Who runs the attempts, for the run context the executors need. */
+  readonly #runner: Runner;
+  /** The executor, for `"worker-thread"` and `"child-process"`. */
   #executor: Executor | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
 
   constructor(
-    /** The processor file: a path, relative to the working directory, or a URL. */
-    file: string | URL,
-    /** Where each attempt runs. */
-    mode: IsolationMode,
-    /** Tuning. */
-    options: IsolationOptions = {},
+    /** The local target, in its object form. */
+    target: LocalWorkerTarget,
+    /** The processor file, already resolved to an absolute path. */
+    file: string,
+    /** Who runs the attempts. */
+    runner: Runner,
   ) {
-    if (mode !== "in-process" && mode !== "spawn" && mode !== "worker") {
-      throw new ConfigError(
-        `isolation must be "in-process", "spawn" or "worker", not "${String(mode)}"`,
-        { isolation: mode },
-      );
-    }
-
-    this.file = resolveProcessorFile(file, options.spawn?.cwd);
-    this.mode = mode;
-    this.#options = options;
+    this.name = target.kind;
+    this.file = file;
+    this.#target = target;
+    this.#runner = runner;
   }
 
   /**
@@ -140,14 +587,9 @@ export class IsolatedProcessor {
    * its error — rebuilt by name when it crossed a boundary, so a worker can
    * still tell an `UnrecoverableJobError` from any other.
    */
-  async run(
-    job: Job<unknown, unknown>,
-    record: JobRecord,
-    context: ProcessorContext,
-    controller: AbortController,
-    runner: Runner,
-  ): Promise<unknown> {
-    if (this.mode === "in-process") {
+  async run({ job, record, context }: WorkerTargetAttempt): Promise<unknown> {
+    const target = this.#target;
+    if (target.kind === "in-process") {
       this.#inProcess ??= import(this.file).then((module: unknown) =>
         toHandler(module, this.file, "job"),
       );
@@ -156,7 +598,9 @@ export class IsolatedProcessor {
       )(job, context);
     }
 
-    const executor = this.#executorFor();
+    const { signal } = context;
+    const runner = this.#runner;
+    const executor = this.#executorFor(target);
     const runContext = {
       runId: `${record.id}.${record.attemptsMade}`,
       runnerId: runner.queue,
@@ -164,15 +608,17 @@ export class IsolatedProcessor {
       namespace: runner.namespace,
       attempt: record.attemptsMade,
       source: "queued",
-      mode: this.mode,
+      // The runner's vocabulary: the shared executors, and the child's
+      // `BUN_JOBS_MODE`, speak it.
+      mode: RUNNER_MODE[target.kind],
       startedAt: Date.now(),
       deadline: null,
       args: null,
-      signal: controller.signal,
+      signal,
       logger: context.logger,
-      // An isolated *job* has no run log: run logs are keyed by a runner's run
-      // id, and this context stands in for one only so the executors can be
-      // shared. A processor logs through `ctx.logger` and `job.log()`.
+      // An off-thread *job* has no run log: run logs are keyed by a runner's
+      // run id, and this context stands in for one only so the executors can
+      // be shared. A processor logs through `ctx.logger` and `job.log()`.
       log: () => {},
       flushLogs: async () => {},
       progress: () => {},
@@ -185,11 +631,13 @@ export class IsolatedProcessor {
     const handle: ExecutorHandle = executor.start({
       context: runContext,
       file: this.file,
-      // The worker owns the timeout — it aborts `controller`, which stops the
-      // run below — so the executor does not keep a second clock.
+      // The worker owns the timeout — it aborts the attempt's signal, which
+      // stops the run below — so the executor does not keep a second clock.
       timeout: 0,
-      closeTimeout: this.#options.closeTimeout ?? DEFAULT_CLOSE_TIMEOUT,
-      killTimeout: this.#options.killTimeout ?? DEFAULT_KILL_TIMEOUT,
+      closeTimeout: target.closeTimeout ?? DEFAULT_CLOSE_TIMEOUT,
+      killTimeout:
+        (target.kind === "child-process" ? target.killTimeout : undefined) ??
+        DEFAULT_KILL_TIMEOUT,
       waitToExit: false,
       forwardLogs: true,
       kind: "job",
@@ -205,7 +653,7 @@ export class IsolatedProcessor {
           void job.updateProgress(value).catch(() => undefined);
         },
         onMessage: (data) => {
-          void answer(handle, data, job, context, controller);
+          void answer(handle, data, job, context, signal);
         },
         onLog: (level, message, fields) => {
           // `level` is typed by the protocol but arrives over IPC, so the
@@ -219,10 +667,10 @@ export class IsolatedProcessor {
     });
 
     const stop = () => {
-      handle.stop(String(controller.signal.reason ?? "stop"));
+      handle.stop(String(signal.reason ?? "stop"));
     };
-    controller.signal.addEventListener("abort", stop, { once: true });
-    if (controller.signal.aborted) {
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) {
       stop();
     }
 
@@ -236,27 +684,104 @@ export class IsolatedProcessor {
       throw deserializeError(
         outcome.error ??
           serializeError(
-            new Error(`The isolated job ended with status ${outcome.status}`),
+            new Error(
+              `The ${target.kind} job ended with status ${outcome.status}`,
+            ),
           ),
       );
     } finally {
-      controller.signal.removeEventListener("abort", stop);
+      signal.removeEventListener("abort", stop);
     }
   }
 
-  /** The executor for this mode, built on first use. */
-  #executorFor(): Executor {
+  /** The executor for this kind, built on first use. */
+  #executorFor(target: WorkerThreadTarget | ChildProcessTarget): Executor {
     this.#executor ??=
-      this.mode === "spawn"
+      target.kind === "child-process"
         ? new SpawnExecutor({
             stdout: "inherit",
             stderr: "inherit",
             startTimeout: DEFAULT_START_TIMEOUT,
-            ...this.#options.spawn,
+            ...target.spawn,
           })
-        : new WorkerExecutor({ ...this.#options.worker });
+        : new WorkerExecutor({ ...target.worker });
     return this.#executor;
   }
+}
+
+/**
+ * The executor a resolved target dispatches to: `undefined` only for a
+ * function processor run in-process, which the worker calls directly.
+ * Called from the worker's constructor once its id and logger exist.
+ */
+export function buildTargetExecutor(
+  /** The resolved target. */
+  resolved: ResolvedWorkerTarget,
+  /** The worker's processor, handed to a factory. */
+  processor: unknown,
+  /** The worker, as a factory's context describes it. */
+  worker: Runner & { logger: Logger },
+): WorkerTargetExecutor | undefined {
+  if (resolved.factory) {
+    const executor = resolved.factory({
+      namespace: worker.namespace,
+      queue: worker.queue,
+      workerId: worker.workerId,
+      logger: worker.logger,
+      processor:
+        resolved.file === undefined
+          ? {
+              kind: "function",
+              fn: processor as JobProcessor<unknown, unknown>,
+            }
+          : { kind: "file", path: resolved.file },
+    }) as Partial<WorkerTargetExecutor> | null | undefined;
+
+    if (
+      !executor ||
+      typeof executor !== "object" ||
+      typeof executor.run !== "function" ||
+      typeof executor.name !== "string" ||
+      executor.name.length === 0 ||
+      executor.name.length > 64 ||
+      (executor.close !== undefined && typeof executor.close !== "function")
+    ) {
+      throw new ConfigError(
+        "A target factory must return { name, run, close? }, with a name of 1 to 64 characters",
+        {
+          name:
+            executor && typeof executor === "object"
+              ? executor.name
+              : undefined,
+        },
+      );
+    }
+    return executor as WorkerTargetExecutor;
+  }
+
+  if (resolved.file === undefined) {
+    return undefined;
+  }
+
+  return new FileTargetExecutor(resolved.local!, resolved.file, worker);
+}
+
+/**
+ * The heartbeat record's `target`: derived from the very target the worker
+ * dispatches to, so the record cannot disagree with what the worker does.
+ */
+export function describeTarget(
+  /** The resolved target. */
+  resolved: ResolvedWorkerTarget,
+  /** The executor built for it, for a custom target's name. */
+  executor: WorkerTargetExecutor | undefined,
+): WorkerTargetInfo {
+  return {
+    kind: resolved.kind,
+    processor: resolved.file === undefined ? "function" : "file",
+    ...(resolved.kind === "custom" && executor ? { name: executor.name } : {}),
+    ...(resolved.file === undefined ? {} : { file: resolved.file }),
+  };
 }
 
 /** Every operation the job channel carries, for checking a request off the wire. */
@@ -274,7 +799,7 @@ function isJobChannelOperation(value: unknown): value is JobChannelOperation {
 }
 
 /**
- * Answers one request an isolated job made of its worker, using the real
+ * Answers one request an off-thread job made of its worker, using the real
  * `Job` here in the worker, which has the driver the child lacks.
  */
 async function answer(
@@ -282,7 +807,7 @@ async function answer(
   data: unknown,
   job: Job<unknown, unknown>,
   context: ProcessorContext,
-  controller: AbortController,
+  signal: AbortSignal,
 ): Promise<void> {
   const request = data as Partial<JobChannelRequest> | null;
 
@@ -302,7 +827,7 @@ async function answer(
     reply = {
       [JOB_CHANNEL]: "reply",
       seq,
-      value: await valueFor(operation, request, job, context, controller),
+      value: await valueFor(operation, request, job, context, signal),
     };
   } catch (error) {
     // `log` and `heartbeat` keep their long-standing fallbacks: a line that
@@ -327,7 +852,7 @@ async function valueFor(
   request: Partial<JobChannelRequest>,
   job: Job<unknown, unknown>,
   context: ProcessorContext,
-  controller: AbortController,
+  signal: AbortSignal,
 ): Promise<JobChannelReplies[JobChannelOperation]> {
   switch (operation) {
     case "log":
@@ -337,10 +862,10 @@ async function valueFor(
       // renew for the worker's own lockDuration, as before.
       if (request.ms === undefined) {
         await context.heartbeat();
-        return !controller.signal.aborted;
+        return !signal.aborted;
       }
       // `job.extendLock(ms)` in the child. A given-up attempt keeps no lock.
-      if (controller.signal.aborted) {
+      if (signal.aborted) {
         return false;
       }
       return (
@@ -348,7 +873,7 @@ async function valueFor(
           // A non-number (NaN arrives as null over JSON) falls back to
           // extendLock's own default, as it would in-process.
           typeof request.ms === "number" ? request.ms : undefined,
-        )) && !controller.signal.aborted
+        )) && !signal.aborted
       );
     case "childrenValues":
       return await job.getChildrenValues();
@@ -363,7 +888,14 @@ async function valueFor(
 }
 
 /** An absolute path for a processor file, or a `ConfigError` saying why not. */
-function resolveProcessorFile(file: string | URL, cwd?: string): string {
+function resolveProcessorFile(file: unknown, cwd?: string): string {
+  if (typeof file !== "string" && !(file instanceof URL)) {
+    throw new ConfigError(
+      "A worker's processor must be a function, or a processor file's path or URL",
+      { processor: typeof file },
+    );
+  }
+
   if (file instanceof URL) {
     return fileURLToPath(file);
   }

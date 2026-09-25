@@ -22,6 +22,8 @@
         "createJobsApi",
         "defineHandler",
         "defineProcessor",
+        "defineProcessors",
+        "WORKER_TARGET_KINDS",
         "ConfigError",
         "encodeJobId",
         "JOBS_API_WS_SUBPROTOCOL"
@@ -32,6 +34,14 @@
         "JobsApiAuthorizeResult",
         "BunQueueOptions",
         "BunQueueWorkerOptions",
+        "WorkerTarget",
+        "WorkerTargetMode",
+        "LocalWorkerTarget",
+        "WorkerTargetFactory",
+        "WorkerTargetExecutor",
+        "WorkerTargetAttempt",
+        "WorkerTargetContext",
+        "WorkerTargetInfo",
         "BunRunnerOptions",
         "JobOptions",
         "JobsDriver",
@@ -53,14 +63,16 @@
         "JOBS_API_PROTOCOL_VERSION",
         "QUEUE_EVENT_TYPES",
         "MAX_JOB_ID_LENGTH",
-        "JOB_STATES"
+        "JOB_STATES",
+        "WORKER_TARGET_KINDS"
       ],
       "types": [
         "MetaDto",
         "OverviewDto",
         "QueueListDto",
         "EventName",
-        "ProblemDto"
+        "ProblemDto",
+        "WorkerTargetInfoDto"
       ]
     },
     {
@@ -93,8 +105,8 @@
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/queue",
-      "values": ["BunQueue", "BunQueueWorker", "Job"],
-      "types": ["JobOptions"]
+      "values": ["BunQueue", "BunQueueWorker", "Job", "defineProcessors"],
+      "types": ["JobOptions", "WorkerTarget"]
     },
     {
       "spelling": "@kingsleyweb/bun-jobs/lib/runner",

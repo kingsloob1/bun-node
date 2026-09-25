@@ -805,12 +805,15 @@ export function isWorkerStale(
 }
 
 /**
- * Shapes a worker; host and pid only with `exposeHosts`, and `stale` computed
- * here because the record carries the heartbeat rather than the verdict.
+ * Shapes a worker; host and pid only with `exposeHosts`, a processor file's
+ * path only with `exposeProcessorFiles` (off when not given), and `stale`
+ * computed here because the record carries the heartbeat rather than the
+ * verdict.
  */
 export function toWorkerDto(
   worker: WorkerInfoLike,
-  options: Pick<ResolvedJobsApiSerializers, "exposeHosts">,
+  options: Pick<ResolvedJobsApiSerializers, "exposeHosts"> &
+    Partial<Pick<ResolvedJobsApiSerializers, "exposeProcessorFiles">>,
   now: number = Date.now(),
 ): WorkerDto {
   const stale = isWorkerStale(worker, now);
@@ -864,6 +867,18 @@ export function toWorkerDto(
   // to say", which a reader must not read as `false`.
   if (worker.sweeps !== undefined) {
     dto.sweeps = worker.sweeps;
+  }
+  // And for `target`: absent is "too old to say", never "in-process". Field
+  // by field, so the path goes out only when the operator said so.
+  if (worker.target !== undefined) {
+    dto.target = {
+      kind: worker.target.kind,
+      processor: worker.target.processor,
+      ...(worker.target.name === undefined ? {} : { name: worker.target.name }),
+      ...(options.exposeProcessorFiles && worker.target.file !== undefined
+        ? { file: worker.target.file }
+        : {}),
+    };
   }
   if (worker.config !== undefined) {
     dto.config = toWorkerConfigDto(worker.config);

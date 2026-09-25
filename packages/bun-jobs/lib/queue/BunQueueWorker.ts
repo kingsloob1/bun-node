@@ -25,6 +25,7 @@ import type {
   WorkerEventName,
   WorkerState,
   WorkerStopPersistence,
+  WorkerTargetInfo,
 } from "../shared/workers";
 import type { JobEvent } from "./Job";
 import type { Reservation } from "./limits";
@@ -39,6 +40,7 @@ import type {
   WorkerEventsOf,
 } from "./types";
 import type { WorkerControlEntry } from "./workerControl";
+import type { WorkerTargetExecutor } from "./workerTarget";
 import process from "node:process";
 import {
   createDeferred,
@@ -61,6 +63,7 @@ import {
   supportsWorkers,
 } from "../drivers/index";
 import {
+  DEFAULT_CLOSE_TIMEOUT,
   DEFAULT_LOCK_DURATION,
   DEFAULT_MAX_BLOCK,
   DEFAULT_MAX_STALLED,
@@ -91,7 +94,6 @@ import { BackoffStrategies, nextBackoff } from "./backoff";
 import { BunQueue } from "./BunQueue";
 import { addDeadLetter, selfLetterError } from "./deadLetter";
 import { noteScheduled, scheduleEpoch } from "./delayedHints";
-import { IsolatedProcessor } from "./isolation";
 import { Job } from "./Job";
 import { JobDefaultsCache, overlayJobDefaults } from "./jobDefaults";
 import { QueueLimiter } from "./limits";
@@ -120,6 +122,11 @@ import {
   writeWorkerStop,
 } from "./workerControl";
 import { WorkerMetricsRecorder } from "./workerMetrics";
+import {
+  buildTargetExecutor,
+  describeTarget,
+  resolveWorkerTarget,
+} from "./workerTarget";
 
 /**
  * The queue-state entry naming the one worker that runs the queue's
@@ -585,8 +592,18 @@ export class BunQueueWorker<
 
   /** What to run for each job. */
   readonly #processor: JobProcessor<TData, TResult> | undefined;
-  /** The processor file and where it runs, when the processor is a file. */
-  readonly #isolated: IsolatedProcessor | undefined;
+  /**
+   * Where each attempt runs, when not simply a call to `#processor`: a
+   * processor file in any local target, or a custom target's executor.
+   * `undefined` only for a function processor run in-process, which
+   * `#process()` calls directly.
+   */
+  readonly #target: WorkerTargetExecutor | undefined;
+  /**
+   * The heartbeat record's `target`, derived once from the very target
+   * `#target` was built from, so the record cannot disagree with it.
+   */
+  readonly #targetInfo: WorkerTargetInfo;
   /** Options with defaults applied. */
   readonly #options: Required<
     Pick<
@@ -888,8 +905,8 @@ export class BunQueueWorker<
     queueName: string,
     /**
      * What runs each job: a function, or the path (or URL) of a file that
-     * default-exports one — which `isolation` can then run in a child process
-     * or a `Worker`.
+     * default-exports one — which `target` can then run in a `Worker` or a
+     * child process.
      */
     processor: JobProcessor<TData, TResult> | string | URL,
     options: BunQueueWorkerOptions,
@@ -898,27 +915,10 @@ export class BunQueueWorker<
 
     this.queueName = assertSegment(queueName, "queue name");
     this.namespace = assertNamespace(options.namespace);
-    if (typeof processor === "function") {
-      if (
-        options.isolation !== undefined &&
-        options.isolation !== "in-process"
-      ) {
-        throw new ConfigError(
-          `isolation "${options.isolation}" needs a processor file: a function cannot be sent to another process or Worker`,
-          { isolation: options.isolation },
-        );
-      }
-
-      this.#processor = processor;
-      this.#isolated = undefined;
-    } else {
-      this.#processor = undefined;
-      this.#isolated = new IsolatedProcessor(
-        processor,
-        options.isolation ?? "in-process",
-        options.isolationOptions,
-      );
-    }
+    // Validated here, before the worker has any side effects; the executor
+    // is built below, once the id and logger a factory is handed exist.
+    const target = resolveWorkerTarget(options, processor);
+    this.#processor = typeof processor === "function" ? processor : undefined;
     this.processStartedAt = Math.round(performance.timeOrigin);
     this.service =
       options.service === undefined
@@ -1054,6 +1054,13 @@ export class BunQueueWorker<
       },
       `worker:${this.queueName}`,
     );
+    this.#target = buildTargetExecutor(target, processor, {
+      namespace: this.namespace,
+      queue: this.queueName,
+      workerId: this.id,
+      logger: this.#logger,
+    });
+    this.#targetInfo = describeTarget(target, this.#target);
     this.#metrics = new WorkerMetricsRecorder({
       driver,
       ref: this.ref,
@@ -1620,6 +1627,7 @@ export class BunQueueWorker<
       // Deliberately no wait. A processor that ignores its signal must not
       // hold shutdown hostage; its lock lapses and the stalled sweep returns
       // the job to the queue, so the work is delayed rather than lost.
+      await this.#closeTarget();
       await this.#unregister();
       await this.#flushThroughput();
       await this.#metrics.close();
@@ -1672,6 +1680,7 @@ export class BunQueueWorker<
       await this.#stopped.promise;
     }
 
+    await this.#closeTarget();
     await this.#unregister();
     await this.#flushThroughput();
     await this.#metrics.close();
@@ -1687,6 +1696,40 @@ export class BunQueueWorker<
     this.#running = false;
     this.#releaseProcess();
     this.safeEmit("closed");
+  }
+
+  /**
+   * Releases what a custom target holds, once the attempts have settled or
+   * been abandoned. Bounded like a built-in target's stop, by
+   * `DEFAULT_CLOSE_TIMEOUT`: the worker's own state has settled by now, so a
+   * `close()` that never returns is logged and left behind rather than
+   * allowed to hang the shutdown. A rejection is logged the same way.
+   */
+  async #closeTarget(): Promise<void> {
+    const target = this.#target;
+    if (!target?.close) {
+      return;
+    }
+
+    try {
+      const closed = await Promise.race([
+        Promise.resolve(target.close()).then(() => "closed" as const),
+        sleep(DEFAULT_CLOSE_TIMEOUT, { unref: true }).then(
+          () => "timeout" as const,
+        ),
+      ]);
+      if (closed === "timeout") {
+        this.#logger.warn(
+          `Target "${target.name}" did not close within ${DEFAULT_CLOSE_TIMEOUT}ms; closing without it`,
+          { target: target.name, timeout: DEFAULT_CLOSE_TIMEOUT },
+        );
+      }
+    } catch (error) {
+      this.#logger.warn(`Target "${target.name}" failed to close`, {
+        target: target.name,
+        error,
+      });
+    }
   }
 
   /**
@@ -2214,18 +2257,12 @@ export class BunQueueWorker<
     void this.#publish("active", { id: record.id });
 
     try {
-      const running = this.#isolated
-        ? this.#isolated.run(
-            job as Job<unknown, unknown>,
+      const running = this.#target
+        ? this.#target.run({
+            job: job as Job<unknown, unknown>,
             record,
             context,
-            controller,
-            {
-              namespace: this.namespace,
-              queue: this.queueName,
-              workerId: this.id,
-            },
-          )
+          })
         : Promise.resolve(this.#processor!(job, context));
       // No timeout, no wrapper around it.
       const result =
@@ -3191,8 +3228,9 @@ export class BunQueueWorker<
     const attempt = record.attemptsMade;
     const retryable =
       attempt < record.maxAttempts &&
-      // By name too: an error from an isolated processor is rebuilt from its
-      // serialized form, and is no longer an instance of the class.
+      // By name too: an error from a worker-thread, child-process or custom
+      // target is rebuilt from a serialized form, and is no longer an instance
+      // of the class.
       !(
         error instanceof UnrecoverableJobError ||
         (error instanceof Error && error.name === "UnrecoverableJobError")
@@ -4162,6 +4200,10 @@ export class BunQueueWorker<
           // sweep" — and it is the housekeeping half only: this worker keeps
           // the queue live either way.
           sweeps: this.#sweeps,
+          // The same rule: derived from the target the worker dispatches to,
+          // and always written, so absent means "a worker too old to say" —
+          // never "in-process".
+          target: this.#targetInfo,
           config: this.config,
           control: this.control,
         });

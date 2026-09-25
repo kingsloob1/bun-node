@@ -183,6 +183,13 @@ export interface JobsApiSerializers {
   /** Include a runner's absolute handler `file` path. Defaults to `false`. */
   exposeRunnerFiles?: boolean;
   /**
+   * Include a worker's absolute processor file path, `target.file` on a
+   * worker record. Defaults to `false`: a path is deployment detail, the
+   * same kind as a runner's handler file (`exposeRunnerFiles`). Off, the
+   * rest of `target` is still served.
+   */
+  exposeProcessorFiles?: boolean;
+  /**
    * Include host/pid on workers, run records, `runningOn` and a job's
    * `processedBy`; off, the worker listing's `host` filter is refused too.
    * Defaults to `true` (operators need it).
@@ -726,13 +733,16 @@ export interface JobsApi {
   close: () => Promise<void>;
 }
 
-/** The serializer hooks with the three switches defaulted. */
+/** The serializer hooks with the four switches defaulted. */
 export type ResolvedJobsApiSerializers = JobsApiSerializers &
   Readonly<
     Required<
       Pick<
         JobsApiSerializers,
-        "exposeStacks" | "exposeRunnerFiles" | "exposeHosts"
+        | "exposeStacks"
+        | "exposeRunnerFiles"
+        | "exposeProcessorFiles"
+        | "exposeHosts"
       >
     >
   >;
@@ -1477,6 +1487,7 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
       ...serialize,
       exposeStacks: serialize.exposeStacks ?? false,
       exposeRunnerFiles: serialize.exposeRunnerFiles ?? false,
+      exposeProcessorFiles: serialize.exposeProcessorFiles ?? false,
       exposeHosts: serialize.exposeHosts ?? true,
     },
     runnerTriggerArgs: config.runnerTriggerArgs ?? false,

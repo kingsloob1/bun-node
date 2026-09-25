@@ -8,6 +8,7 @@ export default defineProcessor<
     doubled: number;
     pid: number;
     child: string | null;
+    mode: string | null;
     logged: number;
     lockHeld: boolean;
   }
@@ -21,6 +22,7 @@ export default defineProcessor<
     doubled: job.data.n * 2,
     pid: process.pid,
     child: process.env.BUN_JOBS_CHILD ?? null,
+    mode: process.env.BUN_JOBS_MODE ?? null,
     logged,
     lockHeld,
   };
