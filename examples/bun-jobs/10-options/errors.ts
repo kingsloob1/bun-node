@@ -662,8 +662,8 @@ checkEqual(
 step("RunnerNotFoundError: controlling a runner nobody registered");
 
 const notFound = await checkRejects(
-  "BunRunnerManager.remote() with an unknown id",
-  () => new BunRunnerManager({ namespace, driver }).remote("nobody"),
+  "BunRunnerManager.controller() with an unknown id",
+  () => new BunRunnerManager({ namespace, driver }).controller("nobody"),
   {
     name: "RunnerNotFoundError",
     code: "RUNNER_NOT_FOUND",

@@ -599,7 +599,7 @@ checkEqual(
   ["running", false, ["workers"]],
 );
 await home.workers
-  .remote("imports")
+  .controller("imports")
   .pause({ id: stateOf(importsFirst).worker });
 const importsPaused = await onWorkers.next(
   "event",

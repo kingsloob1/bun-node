@@ -625,7 +625,7 @@ await waitFor(
   "digests' worker to register",
   async () => (await record(digests.id)) !== undefined,
 );
-await apiJobs.workers.remote("digests").setConfig(KEY.digests, {
+await apiJobs.workers.controller("digests").setConfig(KEY.digests, {
   concurrency: 4,
 });
 await digests.close();
@@ -1241,7 +1241,7 @@ try {
   // From here the page's worker reads wait, as over a slow network…
   workerReadGate = Promise.withResolvers<void>();
   // …while somebody else stops the worker.
-  await apiJobs.workers.remote("reports").stop({ id: ids.reports });
+  await apiJobs.workers.controller("reports").stop({ id: ids.reports });
   await waitFor("api.reports to stop", () => reports.state === "stopped");
   since = mark();
   check(

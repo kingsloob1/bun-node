@@ -1,5 +1,5 @@
 /**
- * Controlling a runner another process owns — `BunRunnerManager.remote()`.
+ * Controlling a runner another process owns — `BunRunnerManager.controller()`.
  *
  * ```bash
  * bun 07-runner/remote-control.ts                        # a shared SQLite file
@@ -11,7 +11,7 @@
  * `helpers/runner-owner.ts` runs as its own process and owns the runner. This
  * process registers no runner at all: an admin service would look like this.
  * It only knows the id, the namespace and the backend, and through
- * `remote(id)` it reads the runner's state, pauses and resumes it,
+ * `controller(id)` it reads the runner's state, pauses and resumes it,
  * reschedules it and asks for a run, which the owner executes.
  *
  * Worth knowing:
@@ -19,7 +19,7 @@
  * - **Every call goes through the backend**, never to the owner directly, so
  *   none of them needs the owner to be reachable. An owner subscribed to
  *   changes hears each one within the driver's event latency; one that is not
- *   adopts them at its next `syncInterval`. `remoteControl` defaults to
+ *   adopts them at its next `syncInterval`. `control` defaults to
  *   `"auto"`: subscribed on a driver whose events are not polled (memory,
  *   Redis), not on one that would poll for them (SQL, MongoDB, file).
  * - **A remote trigger is queued**, and the owner drains it. The outcome is
@@ -95,15 +95,15 @@ show("owner pid", owner.pid);
 show("this pid", process.pid);
 
 /* ------------------------------------------------------------------ */
-step("remote(id) from a process that registered nothing");
+step("controller(id) from a process that registered nothing");
 
 const driver = createDriver(config);
-// `jobs.runners.remote(id)` on a `BunJobs` is the same call.
+// `jobs.runners.controller(id)` on a `BunJobs` is the same call.
 const manager = new BunRunnerManager({ namespace, driver });
 show("registered here", manager.size);
 show("known to the backend", await manager.discover());
 
-const cleanup = await manager.remote<CleanupArgs, CleanupResult>(
+const cleanup = await manager.controller<CleanupArgs, CleanupResult>(
   "nightly-cleanup",
 );
 const info = await cleanup.info();
@@ -118,8 +118,8 @@ show("info()", {
   isRunning: info.isRunning,
 });
 
-await manager.remote("no-such-runner").catch((error: Error) => {
-  show("remote('no-such-runner')", `${error.name}: ${error.message}`);
+await manager.controller("no-such-runner").catch((error: Error) => {
+  show("controller('no-such-runner')", `${error.name}: ${error.message}`);
 });
 
 /* ------------------------------------------------------------------ */

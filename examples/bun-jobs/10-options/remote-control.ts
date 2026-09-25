@@ -1,6 +1,6 @@
 /**
  * Option tour: controlling workers and runners from another process —
- * `RemoteWorker`, runner configuration overrides — and, at the end, a buried
+ * `WorkerController`, runner configuration overrides — and, at the end, a buried
  * flow retried in either order.
  *
  * ```bash
@@ -102,7 +102,7 @@ function mailWorker(
   options: Parameters<BunJobs["worker"]>[2] = {},
 ): BunQueueWorker {
   const worker = jobs.worker<unknown, unknown>("mail", async () => "sent", {
-    remoteControl: { interval: 100 },
+    control: { interval: 100 },
     ...options,
   });
   void worker.run();
@@ -111,7 +111,7 @@ function mailWorker(
 
 /** An admin service: a context with no workers or runners of its own. */
 const admin = context();
-const mail = admin.workers.remote("mail");
+const mail = admin.workers.controller("mail");
 
 /** Waits until every worker given reports `state`, locally and in its record. */
 async function reaches(
@@ -513,7 +513,7 @@ function digestWorker(
 ): BunQueueWorker {
   return context(service).worker<unknown, unknown>("digest", async () => "ok", {
     publish: true,
-    remoteControl: { interval: 100 },
+    control: { interval: 100 },
     ...options,
   });
 }
@@ -587,7 +587,7 @@ checkEqual(
   ],
   ["stopped", "stopped persistently", false],
 );
-await admin.workers.remote("digest").start({ id: parked.id });
+await admin.workers.controller("digest").start({ id: parked.id });
 await statesFrom(parked, 2);
 checkEqual("started remotely, it is a transition", stepsOf(parked), [
   "first:stopped",
@@ -695,7 +695,7 @@ checkEqual(
   [409, "WORKER_NOT_CONTROLLABLE"],
 );
 checkEqual(
-  "while RemoteWorker, the lower-level call, writes it anyway",
+  "while WorkerController, the lower-level call, writes it anyway",
   (await mail.pause({ id: direct.id })).instances.length,
   1,
 );
@@ -726,10 +726,10 @@ const reportOptions: Omit<
   id: "report",
   file: new URL("./handlers/runner-work.ts", import.meta.url),
   executionMode: "in-process",
-  remoteConfig: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker"] },
   // "auto", the default, subscribes on Redis and memory only; true subscribes
   // everywhere, so the other owner hears the change on every backend.
-  remoteControl: true,
+  control: true,
 };
 const ownerContext = context("a");
 const ownerA = ownerContext.runner<WorkArgs, WorkResult>(reportOptions);
@@ -807,7 +807,11 @@ checkEqual(
 
 for (const [label, patch, reason] of [
   ["an empty patch", {}, "empty"],
-  ["a mode remoteConfig forbids", { executionMode: "spawn" }, "not-allowed"],
+  [
+    "a mode allowedOverrides forbids",
+    { executionMode: "spawn" },
+    "not-allowed",
+  ],
   [
     "maxConcurrency 0",
     { concurrency: { runMode: "parallel", maxConcurrency: 0 } },
@@ -828,7 +832,7 @@ for (const [label, patch, reason] of [
   checkEqual(`  context.reason is "${reason}"`, error?.context?.reason, reason);
 }
 
-const remoteReport = await admin.runners.remote("report");
+const remoteReport = await admin.runners.controller("report");
 checkEqual("from the admin, the runner is remote", remoteReport.isLocal, false);
 await remoteReport.updateConfig({
   concurrency: { runMode: "parallel", maxConcurrency: 3 },
@@ -857,7 +861,7 @@ await waitFor(
   WAIT,
 );
 checkEqual(
-  "RemoteRunner.config() reads what the owners stored",
+  "RunnerController.config() reads what the owners stored",
   [
     remoteView?.effective,
     remoteView?.overridden.slice().sort(),
@@ -870,11 +874,11 @@ checkEqual(
   ],
 );
 
-// On the owner's own context, remote(id) is local: it delegates to the
+// On the owner's own context, controller(id) is local: it delegates to the
 // runner, which announces the change once — not once more on top.
-const localController = await ownerContext.runners.remote("report");
+const localController = await ownerContext.runners.controller("report");
 checkEqual(
-  "on the owner's context, remote(id) is local",
+  "on the owner's context, controller(id) is local",
   localController.isLocal,
   true,
 );
@@ -930,7 +934,7 @@ contexts.push(bare);
 const bareRunner = bare.runner<WorkArgs, WorkResult>({
   ...reportOptions,
   id: "bare-report",
-  remoteControl: false,
+  control: false,
 });
 await bareRunner.start();
 checkEqual(
@@ -960,7 +964,7 @@ step("A refusal names the settings it refused: config.error.keys");
 //
 // This owner's code permits `worker`, but it was built from a driver instance
 // with no `childDriver`, so it cannot move its handler out of the process.
-// It publishes only `in-process`, so `updateConfig()`, `RemoteRunner` and the
+// It publishes only `in-process`, so `updateConfig()`, `RunnerController` and the
 // API all refuse `worker` up front; the override below is written straight to
 // the store, as an owner that had a `childDriver` — or an older controller —
 // would have stored it before this one started.
@@ -968,7 +972,7 @@ const keysRunner = bare.runner<WorkArgs, WorkResult>({
   ...reportOptions,
   id: "keys-report",
   runMode: "parallel",
-  remoteControl: false,
+  control: false,
   // Polls the store every 100ms rather than every 30 s, so the tour is quick.
   syncInterval: 100,
 });
@@ -1001,8 +1005,8 @@ check(
   keysRunner.config.error,
 );
 checkEqual(
-  "  another process reads the same keys (RemoteRunner.config())",
-  (await (await admin.runners.remote("keys-report")).config())?.error?.keys,
+  "  another process reads the same keys (RunnerController.config())",
+  (await (await admin.runners.controller("keys-report")).config())?.error?.keys,
   ["executionMode"],
 );
 // The API finds a runner another context owns through its cached discovery
