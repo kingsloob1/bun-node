@@ -270,6 +270,13 @@ function columnIndices(columns: readonly string[]): readonly number[] {
   return indices;
 }
 
+/**
+ * What an overriding `COUNT(*)` branch reports in place of its state, so the
+ * row it contributes cannot be mistaken for the grouped count's own row for
+ * that state. No `JobState` begins with it. See `#countNotNull`.
+ */
+const COUNT_OVERRIDE = "~";
+
 /** Every job state, in the order `countJobs` reports them. */
 const STATES: JobState[] = [
   "waiting",
@@ -4299,31 +4306,61 @@ export class SqlDriver implements JobsDriver {
     return rows.map((row) => this.#toRecord(row));
   }
 
+  /**
+   * How many jobs the queue holds in each state: one `GROUP BY state`, and a
+   * branch per state whose listing carries a predicate ({@link
+   * SqlDriver.listJobs}, through `#countNotNull`), whose count replaces the
+   * grouped one. So a state's count is the number of rows a listing of that
+   * state would actually return — never one more, which is what it was before.
+   *
+   * The grouped statement itself is untouched by the branches, deliberately:
+   * its plan is what makes this nearly free, and `#countNotNull` says what
+   * that costs on which engine.
+   */
   async countJobs(q: QueueRef): Promise<Record<JobState, number>> {
     await this.connect();
 
     const { bind, values } = this.#binder();
-    const rows = await this.#all<{ state: JobState; total: number | string }>(
+    const overrides = this.#countNotNull();
+    const rows = await this.#all<{ state: string; total: number | string }>(
       `SELECT state, COUNT(*) AS total FROM ${this.#tables.jobs}
         WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
-        GROUP BY state`,
+        GROUP BY state${overrides
+          .map(
+            ({ state, condition }) => `
+      UNION ALL
+      SELECT '${COUNT_OVERRIDE}${state}', COUNT(*) FROM ${this.#tables.jobs}
+        WHERE ns = ${bind(q.ns)} AND queue = ${bind(q.queue)}
+          AND state = '${state}' AND ${condition}`,
+          )
+          .join("")}`,
       values,
     );
 
-    const counts = {
-      waiting: 0,
-      delayed: 0,
-      active: 0,
-      completed: 0,
-      failed: 0,
-      dead: 0,
-      "waiting-children": 0,
-    } satisfies Record<JobState, number>;
+    const counts = emptyCounts();
+    const overridden = new Map<JobState, number>();
 
     for (const row of rows) {
-      if (STATES.includes(row.state)) {
-        counts[row.state] = Number(row.total);
+      const label = String(row.state);
+
+      if (label.startsWith(COUNT_OVERRIDE)) {
+        overridden.set(
+          label.slice(COUNT_OVERRIDE.length) as JobState,
+          Number(row.total),
+        );
+        continue;
       }
+
+      if (STATES.includes(label as JobState)) {
+        counts[label as JobState] = Number(row.total);
+      }
+    }
+
+    // Taken from the branch that was asked, not from the rows that came back:
+    // a state whose branch counted nothing is zero, not whatever the grouped
+    // count said about it.
+    for (const { state } of overrides) {
+      counts[state] = overridden.get(state) ?? 0;
     }
 
     return counts;
@@ -4477,6 +4514,69 @@ export class SqlDriver implements JobsDriver {
     }
 
     return [];
+  }
+
+  /**
+   * The same `IS NOT NULL` {@link SqlDriver.listJobs} emits, per state, for the
+   * counts to apply — so a count and a listing of one state can never disagree
+   * about how many there are.
+   *
+   * Derived by asking `#listNotNull` for each state on its own rather than
+   * repeating its rule, which is the whole point: the gates on which engine has
+   * an index to unlock live in one place, and a count cannot drift from the
+   * listing it is read beside.
+   *
+   * **A count cannot simply `AND` these on**, and measuring that is how this
+   * shape was chosen. `countJobs` is one `GROUP BY state` over a single
+   * contiguous `(ns, queue)` index range covering every state at once, and
+   * neither column is in the index serving it, so a predicate naming one turns
+   * an index-only scan into a heap read: measured 400,000 rows over 8 queues,
+   * Postgres 10.8ms became 141.8ms (13x, 542 buffers became 17,754) and SQLite
+   * 3.1ms became 37.7ms (12x, the plan losing `COVERING`). Each state is
+   * therefore counted **again** in its own branch, over its own partial index,
+   * and that branch's answer replaces the grouped one — leaving the grouped
+   * statement's own plan exactly as it was, which is what keeps this cheap.
+   *
+   * **What it costs, deliberately.** Medians through the driver, each variant
+   * run against the other twice on a settled table, over a namespace of 8
+   * queues holding what a live one holds (49,064 rows each: 64 `active`, 5,000
+   * `waiting`, 2,000 `delayed`, 40,000 `completed`, 1,000 `failed`, 500
+   * `dead`, 500 `waiting-children`):
+   *
+   * - **Postgres: free, both counts.** `countJobs` 7.6/8.2ms before against
+   *   8.0/8.3ms after; `countJobsByQueue` 46.8/49.0ms against 46.0/49.2ms.
+   *   Only `active` is guarded here ({@link hasFinishedIndex} is SQLite's
+   *   alone) and `active` is bounded by worker concurrency, so its branch
+   *   reads 64 index entries — 3 buffers, 0.04ms.
+   * - **SQLite: `countJobs` 3.3ms against 5.3ms (+62%), and
+   *   `countJobsByQueue` 33.8ms against 83.1ms (2.5x).** It guards `completed`
+   *   and `dead` too, and those are the largest states a queue has. The
+   *   overview count pays the most because it spans the namespace: with no
+   *   queue bound, each branch scans that engine's whole `ix_…_fin` range
+   *   rather than one queue's slice of it.
+   *
+   * That trade is the deliberate one: counts that agree with the listing
+   * beside them, bought with a slower count on one engine. The alternative was
+   * a listing that hides a row while the count beside it still counts it —
+   * which is what the negative control in
+   * `__tests__/sql-listing-predicates.test.ts` measures, and what it asserts
+   * against now — and on an overview read a discrepancy nobody can explain
+   * costs more than 49ms.
+   *
+   * @returns One entry per state that carries a predicate on this engine,
+   *   each with the condition to count it by; empty on MySQL and MariaDB,
+   *   where the counts are then byte-for-byte the statements they always were.
+   */
+  #countNotNull(): { state: JobState; condition: string }[] {
+    return STATES.flatMap((state) => {
+      // Joined rather than taken at [0]: one condition is all `#listNotNull`
+      // returns today, and a second must not be silently dropped here.
+      const conditions = this.#listNotNull([state]);
+
+      return conditions.length === 0
+        ? []
+        : [{ state, condition: conditions.join(" AND ") }];
+    });
   }
 
   /**
@@ -4771,30 +4871,78 @@ export class SqlDriver implements JobsDriver {
     );
   }
 
-  /** One `GROUP BY queue, state` over the namespace's rows. */
+  /**
+   * One `GROUP BY queue, state` over the namespace's rows, and — as
+   * {@link SqlDriver.countJobs} does for one queue — a branch per guarded state
+   * (`#countNotNull`), grouped by queue as well, replacing that state's count
+   * in every queue.
+   *
+   * **This is the more exposed of the two.** `countQueues` reads it for the
+   * overview, so it is the number a user sees beside a queue's name while a job
+   * list of that state is one screen away; the two disagreeing is the harm.
+   *
+   * It is also where the predicate costs the most, and the cost does not
+   * follow {@link SqlDriver.countJobs}'s: these branches have no queue to bind,
+   * so each scans the whole namespace's partial index rather than one queue's
+   * slice. Free on Postgres, 2.5x on SQLite — measured in `#countNotNull`,
+   * which is also where the reason to pay it is written down.
+   */
   async countJobsByQueue(
     ns: string,
   ): Promise<Record<string, Record<JobState, number>>> {
     await this.connect();
 
     const { bind, values } = this.#binder();
+    const overrides = this.#countNotNull();
     const rows = await this.#all<{
       queue: string;
-      state: JobState;
+      state: string;
       total: number | string;
     }>(
       `SELECT queue, state, COUNT(*) AS total FROM ${this.#tables.jobs}
         WHERE ns = ${bind(ns)}
-        GROUP BY queue, state`,
+        GROUP BY queue, state${overrides
+          .map(
+            ({ state, condition }) => `
+      UNION ALL
+      SELECT queue, '${COUNT_OVERRIDE}${state}', COUNT(*) FROM ${this.#tables.jobs}
+        WHERE ns = ${bind(ns)} AND state = '${state}' AND ${condition}
+        GROUP BY queue`,
+          )
+          .join("")}`,
       values,
     );
 
     const result: Record<string, Record<JobState, number>> = {};
+    const overridden = new Map<string, Map<JobState, number>>();
 
     for (const row of rows) {
-      const counts = (result[String(row.queue)] ??= emptyCounts());
-      if (STATES.includes(row.state)) {
-        counts[row.state] = Number(row.total);
+      const queue = String(row.queue);
+      const label = String(row.state);
+      const counts = (result[queue] ??= emptyCounts());
+
+      if (label.startsWith(COUNT_OVERRIDE)) {
+        const branch = overridden.get(queue) ?? new Map<JobState, number>();
+        branch.set(
+          label.slice(COUNT_OVERRIDE.length) as JobState,
+          Number(row.total),
+        );
+        overridden.set(queue, branch);
+        continue;
+      }
+
+      if (STATES.includes(label as JobState)) {
+        counts[label as JobState] = Number(row.total);
+      }
+    }
+
+    // Every queue, not only the ones a branch answered for. These branches
+    // group by queue, so a queue whose guarded rows are every one of them
+    // hidden contributes no row at all — and the grouped count this has to
+    // replace would otherwise stand, which is the bug in a subtler dress.
+    for (const [queue, counts] of Object.entries(result)) {
+      for (const { state } of overrides) {
+        counts[state] = overridden.get(queue)?.get(state) ?? 0;
       }
     }
 
@@ -4806,6 +4954,14 @@ export class SqlDriver implements JobsDriver {
    * ({@link countAddedStatement}); `{}` without a query when `to <= from`.
    * Counts arrive as strings on Postgres and MySQL once they are big, so each
    * is read through `Number()`.
+   *
+   * **Deliberately no `#countNotNull` here**, unlike the two counts above, and
+   * consistent rather than an omission: this count answers for a listing
+   * sorted by creation, and `findJobs` emits no predicate for one of those
+   * either (`sortsByCreated`, where no index over a sort column is being
+   * unlocked because the sort is on another column entirely). Adding it here
+   * would make this count disagree with the listing it is read beside — the
+   * exact harm the other two exist to prevent, in reverse.
    */
   async countAddedJobs(
     ns: string,

@@ -4,14 +4,21 @@ import process from "node:process";
 import { SQL } from "bun";
 import { Database } from "bun:sqlite";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import { hasPartialIndexes } from "../lib/drivers/sql/schema";
-import { dialectFor, newToken, SQL_TABLES, SqlDriver } from "../lib/index";
+import { hasFinishedIndex, hasPartialIndexes } from "../lib/drivers/sql/schema";
+import {
+  countQueues,
+  dialectFor,
+  newToken,
+  SQL_TABLES,
+  SqlDriver,
+} from "../lib/index";
 import { takeBooleanParam } from "../lib/shared/connection";
 import { makeJob, makeTmpDir, testNamespace } from "./helpers";
 
 /**
  * The `IS NOT NULL` the SQL listing writes so a partial index can serve its
- * order (`SqlDriver`'s `#listNotNull`).
+ * order (`SqlDriver`'s `#listNotNull`), and the counts that share it
+ * (`#countNotNull`, read by `countJobs` and `countJobsByQueue`).
  *
  * The predicate is only sound because every `active` row has a
  * `lock_expires_at` and every `completed`/`dead` row a `finished_on`. That is
@@ -253,7 +260,7 @@ for (const engine of ENGINES) {
       );
       expect(Number(finished!.n)).toBe(0);
 
-      // And that the listing agrees with the counts, which never carry a
+      // And that the listing agrees with the counts, which carry the same
       // predicate: a hidden row would show up here as a short page.
       const counts = await made.driver.countJobs(q);
       for (const [state, ids] of Object.entries(expected)) {
@@ -281,13 +288,50 @@ for (const engine of ENGINES) {
         limit: 50,
         order: "asc",
       });
-      // Which is exactly the harm the invariant prevents — on the engines that
-      // write the predicate, the row is gone from the listing while `countJobs`
-      // still counts it.
+      // On the engines that write the predicate the row is gone from the
+      // listing — which is what the predicate is for, and is only safe because
+      // the invariant above holds.
       expect(after.map((job) => job.id)).toEqual(
         hasPartialIndexes(dialectFor(engine.adapter)) ? ["j6"] : ["j5", "j6"],
       );
-      expect((await made.driver.countJobs(q)).active).toBe(2);
+
+      // And every count agrees with that listing, whichever way it went. This
+      // is the assertion that inverted: the counts used to carry no predicate,
+      // so this read 2 against a listing of one row, and a queue could show
+      // `active: 2` beside a list with one job in it.
+      const visible = after.length;
+      expect((await made.driver.countJobs(q)).active).toBe(visible);
+      expect((await made.driver.countJobsByQueue(q.ns))[q.queue]?.active).toBe(
+        visible,
+      );
+      // Through `countQueues`, which is the path the overview actually reads.
+      expect((await countQueues(made.driver, q.ns)).get(q.queue)?.active).toBe(
+        visible,
+      );
+
+      // The other half of the rule, on the engine that has the index for it:
+      // a finished job with no finish time. `completed` and `dead` are the big
+      // states, so this is the branch that costs something — and the one that
+      // would be tempting to leave out.
+      await made.raw(
+        `UPDATE ${table} SET finished_on = NULL WHERE state = 'completed' AND id = 'j0'`,
+      );
+      const stillListed = await made.driver.listJobs(q, ["completed"], {
+        offset: 0,
+        limit: 50,
+        order: "asc",
+      });
+      // Sorted: this listing orders by `finished_on`, and where the row is
+      // still in it its NULL sorts first on one engine and last on another.
+      expect(stillListed.map((job) => job.id).sort()).toEqual(
+        hasFinishedIndex(dialectFor(engine.adapter)) ? ["j1"] : ["j0", "j1"],
+      );
+      expect((await made.driver.countJobs(q)).completed).toBe(
+        stillListed.length,
+      );
+      expect(
+        (await countQueues(made.driver, q.ns)).get(q.queue)?.completed,
+      ).toBe(stillListed.length);
     }, 60_000);
 
     it("returns the same rows, in the same order, as the same listing read without the predicate", async () => {
