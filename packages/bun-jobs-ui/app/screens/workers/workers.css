@@ -83,3 +83,13 @@
 .worker-analytics > * + * {
   margin-top: var(--space-4);
 }
+
+/* The worker page's Target card: the note that the target is not a setting. */
+.worker-target-note {
+  margin: 0 0 var(--space-3);
+}
+
+/* A processor file's absolute path: long, and never worth a horizontal scroll. */
+.worker-target-file {
+  overflow-wrap: anywhere;
+}
