@@ -19,6 +19,60 @@ export interface PageWindow {
   limit: number;
 }
 
+/**
+ * One move a `Pager` asks for: the window it wants, and how it was made.
+ *
+ * The extra fields exist for a list paged by **cursor**, where Previous and
+ * Next walk rather than count. A pager without
+ * {@link PagerWalk} never sets either, so a caller that reads
+ * `offset` and `limit` alone — every list but the queue's jobs — sees exactly
+ * what it saw before.
+ */
+export interface PageMove extends PageWindow {
+  /**
+   * Set when Previous or Next moved a **walked** list. The caller follows its
+   * walk's cursor; `offset` then repeats the offset the pager was given
+   * (there is no new one to report, and on a page whose backend did not count
+   * what precedes it there is no old one either — it is `0`).
+   */
+  step?: "next" | "prev";
+  /**
+   * Whether only the page size changed. A walked list keeps its cursor for
+   * one of these, so the page it re-reads starts at the row it starts at now;
+   * `offset`/`limit` are the window a list paged by offset should move to.
+   */
+  resize?: boolean;
+}
+
+/**
+ * Cursor navigation for a `Pager`: what it may walk, and whether this page
+ * knows where it sits. Omitted by every list that pages by offset alone.
+ */
+export interface PagerWalk {
+  /**
+   * Whether Next can walk on — the API minted a cursor for the page after
+   * this one (`page.next`). When it is false Next still moves by offset if
+   * there is a next page, which is what a list the API refuses to walk (the
+   * Active tab) falls back to.
+   */
+  canNext: boolean;
+  /** Whether Previous can walk back to a page this walk has already shown. */
+  canPrev: boolean;
+  /**
+   * Whether this page's row numbers are unknown: a walked page whose backend
+   * did not count what precedes it (`page.offset` absent — SQL and MongoDB,
+   * deliberately). The range then counts the rows shown rather than
+   * numbering them, and no page number is offered, because nothing here knows
+   * which page this is. Defaults to `false`.
+   */
+  unnumbered?: boolean;
+  /**
+   * A sentence explaining what walking this list does and does not show,
+   * put on Previous and Next while they walk. Omit it for no tooltip.
+   */
+  hint?: string;
+}
+
 /** Inputs of {@link pagerState}. */
 export interface PagerStateInput extends PageWindow {
   /** Total rows, when the API counted them. */
@@ -27,6 +81,12 @@ export interface PagerStateInput extends PageWindow {
   itemCount?: number;
   /** Whether the API said there are more rows after this page (used when `total` is unknown). */
   hasMore?: boolean;
+  /**
+   * Whether this page's row numbers are unknown ({@link PagerWalk.unnumbered}):
+   * the range counts the rows instead of numbering them, `from`/`to` are `0`,
+   * and there is no page count. Defaults to `false`.
+   */
+  unnumbered?: boolean;
 }
 
 /** What {@link pagerState} works out. */
@@ -67,6 +127,10 @@ export function formatNumber(value: number): string {
  * The pager's arithmetic, pure: the shown range and whether prev/next exist.
  * Without a total, "next" exists when `hasMore` says so, or (when `hasMore`
  * is not given) when the page came back full.
+ *
+ * With `unnumbered` the range counts the rows rather than numbering them,
+ * since nothing knows where the page sits: "1–20" would be a guess, and a
+ * guess that reads like a fact is worse than a count.
  */
 export function pagerState({
   offset,
@@ -74,8 +138,31 @@ export function pagerState({
   total,
   itemCount,
   hasMore,
+  unnumbered,
 }: PagerStateInput): PagerState {
   const known = typeof total === "number";
+  if (unnumbered === true) {
+    const shown = Math.max(0, itemCount ?? limit);
+    const rows = `${numberFormat.format(shown)} ${shown === 1 ? "row" : "rows"}`;
+    return {
+      from: 0,
+      to: 0,
+      text:
+        shown === 0
+          ? known
+            ? `No rows of ${numberFormat.format(total)}`
+            : "No rows"
+          : known
+            ? `${rows} of ${numberFormat.format(total)}`
+            : rows,
+      // Where the page sits is unknown, so an offset step back is not a move
+      // anything here can work out: only the walk can go back.
+      hasPrev: false,
+      hasNext: hasMore ?? shown >= limit,
+      page: 1,
+      pageCount: null,
+    };
+  }
   const count = Math.max(
     0,
     itemCount ?? (known ? Math.min(limit, total - offset) : limit),
