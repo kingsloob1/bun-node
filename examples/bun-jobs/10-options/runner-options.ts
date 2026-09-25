@@ -261,7 +261,7 @@ step("Defaults, and what is rejected at construction");
       forwardLogs: options.forwardLogs,
       captureLogs: options.captureLogs.enabled,
       publish: options.publish,
-      remoteControl: options.remoteControl,
+      control: options.control,
       schedule: options.schedule,
       spawn: options.spawn,
     },
@@ -292,7 +292,7 @@ step("Defaults, and what is rejected at construction");
       publish: false,
       // `"auto"`: on for a driver that pushes or delivers events locally
       // (this one, the default in-memory driver), off for one that polls.
-      remoteControl: true,
+      control: true,
       schedule: null,
       spawn: { stdout: "pipe", stderr: "pipe", startTimeout: 10_000 },
     },
@@ -2083,7 +2083,7 @@ step("BunRunnerManager");
 }
 
 /* ------------------------------------------------------------------ */
-step("BunRunnerManager.remote(): a runner another instance owns");
+step("BunRunnerManager.controller(): a runner another instance owns");
 
 {
   const { runner: owned, t } = makeRunner({
@@ -2091,7 +2091,7 @@ step("BunRunnerManager.remote(): a runner another instance owns");
     schedule: 3_600_000,
     maxQueuedRuns: 2,
     // Hear control events now; the sync timer is off, so nothing else could.
-    remoteControl: true,
+    control: true,
     syncInterval: 0,
   });
   const ownerManager = new BunRunnerManager({ namespace, driver: shared });
@@ -2100,10 +2100,12 @@ step("BunRunnerManager.remote(): a runner another instance owns");
 
   // Registers nothing: as far as it can tell, the runner lives elsewhere.
   const admin = new BunRunnerManager({ namespace, driver: shared });
-  const local = await ownerManager.remote<WorkArgs, WorkResult>("remote-owned");
-  const remote = await admin.remote<WorkArgs, WorkResult>("remote-owned");
+  const local = await ownerManager.controller<WorkArgs, WorkResult>(
+    "remote-owned",
+  );
+  const remote = await admin.controller<WorkArgs, WorkResult>("remote-owned");
   checkEqual(
-    "remote(id): isLocal where it is registered, not elsewhere",
+    "controller(id): isLocal where it is registered, not elsewhere",
     [local.isLocal, remote.isLocal],
     [true, false],
   );
@@ -2219,18 +2221,18 @@ step("BunRunnerManager.remote(): a runner another instance owns");
 
   checkEqual("no remote kill", "kill" in remote, false);
   await checkRejects(
-    "remote(): an id nobody registered",
-    () => admin.remote("remote-nobody"),
+    "controller(): an id nobody registered",
+    () => admin.controller("remote-nobody"),
     { name: "RunnerNotFoundError", code: "RUNNER_NOT_FOUND" },
   );
   await checkRejects(
-    "remote(): without a driver, only registered runners",
-    () => new BunRunnerManager({ namespace }).remote("remote-owned"),
+    "controller(): without a driver, only registered runners",
+    () => new BunRunnerManager({ namespace }).controller("remote-owned"),
     { name: "RunnerNotFoundError", code: "RUNNER_NOT_FOUND" },
   );
   await checkRejects(
-    "remote(): an unusable id",
-    () => admin.remote("not a runner id"),
+    "controller(): an unusable id",
+    () => admin.controller("not a runner id"),
     { name: "ConfigError", code: "CONFIG" },
   );
   await checkRejects(

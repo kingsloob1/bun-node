@@ -17,9 +17,9 @@ import {
   MemoryDriver,
   readWorkerConfig,
   readWorkerControl,
-  RemoteWorker,
   RUNNER_CONFIG_BOUNDS,
   RUNNER_CONFIG_KEYS,
+  WorkerController,
   WorkerStateConflictError,
   writeWorkerConfig,
 } from "../lib/index";
@@ -50,7 +50,7 @@ function makeWorker(
   const worker = new BunQueueWorker<unknown, unknown>("mail", processor, {
     namespace: ns,
     driver,
-    remoteControl: true,
+    control: true,
     reportInterval: 200,
     pollInterval: 10,
     waitToExit: false,
@@ -66,7 +66,7 @@ async function fleet(key?: string): Promise<{
   driver: MemoryDriver;
   ns: string;
   worker: BunQueueWorker<unknown, unknown>;
-  remote: RemoteWorker;
+  remote: WorkerController;
 }> {
   const driver = new MemoryDriver();
   const ns = testNamespace("fu-remote");
@@ -77,14 +77,14 @@ async function fleet(key?: string): Promise<{
     key === undefined ? {} : { key },
   );
   void worker.run();
-  const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+  const remote = new WorkerController({ namespace: ns, queue: "mail", driver });
   await waitFor(async () => (await remote.get(worker.id)) !== null, {
     message: "the worker never registered",
   });
   return { driver, ns, worker, remote };
 }
 
-describe("RemoteWorker.pause() and resume() on a parked worker", () => {
+describe("WorkerController.pause() and resume() on a parked worker", () => {
   it("refuses a stopped worker rather than starting it, and writes nothing", async () => {
     const { driver, ns, worker, remote } = await fleet();
 
@@ -134,7 +134,11 @@ describe("RemoteWorker.pause() and resume() on a parked worker", () => {
     const two = makeWorker(driver, ns, undefined, { key: "svc.mail" });
     void one.run();
     void two.run();
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length === 2, {
       message: "both workers never registered",
     });
@@ -309,7 +313,7 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
         // No sync: the other owner can only hear about the change through
         // the `control` event.
         syncInterval: 0,
-        remoteControl: true,
+        control: true,
         logger: noopLogger,
       });
     const first = build();
@@ -338,7 +342,7 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
     });
   });
 
-  it("publishes one control event per change, also through a local RemoteRunner", async () => {
+  it("publishes one control event per change, also through a local RunnerController", async () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("fu-runner");
     const manager = new BunRunnerManager({
@@ -376,7 +380,7 @@ describe("BunRunner.updateConfig() / resetConfig() called directly", () => {
     });
     expect(seen[0]!.payload).toEqual({ action: "config" });
 
-    const remote = await manager.remote("configurable");
+    const remote = await manager.controller("configurable");
     expect(remote.isLocal).toBe(true);
     await remote.resetConfig();
 

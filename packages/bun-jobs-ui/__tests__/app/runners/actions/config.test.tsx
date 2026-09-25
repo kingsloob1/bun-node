@@ -243,7 +243,7 @@ describe("the settings editor: what it shows", () => {
     expect(options).toEqual(["worker", "in-process"]);
     const note = within(dialog).getByTestId("config-modes-limited");
     expect(note.textContent).toContain("spawn");
-    expect(note.textContent).toContain("remoteConfig.executionModes");
+    expect(note.textContent).toContain("allowedOverrides.executionModes");
     expect(note.textContent).toContain("CONFIG_NOT_ALLOWED");
   });
 
@@ -537,7 +537,7 @@ describe("the settings editor: failures", () => {
     fireEvent.click(dialogButton(dialog, "Save settings"));
     const banner = await within(dialog).findByRole("alert");
     expect(banner.textContent).toContain("CONFIG_NOT_ALLOWED");
-    expect(banner.textContent).toContain("remoteConfig.executionModes");
+    expect(banner.textContent).toContain("allowedOverrides.executionModes");
     expect(openDialog()).not.toBeNull();
   });
 

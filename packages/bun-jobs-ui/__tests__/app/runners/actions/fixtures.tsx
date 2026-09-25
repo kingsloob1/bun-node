@@ -100,7 +100,7 @@ export function runningRunner(
 }
 
 /** A runner registered only by another process. */
-export function remoteRunner(
+export function nonLocalRunner(
   overrides: Partial<RunnerInfoDto> = {},
 ): RunnerInfoDto {
   const { local: _local, ...rest } = runnerFixture({

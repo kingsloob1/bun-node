@@ -67,7 +67,7 @@ async function owner(
     file: ECHO_HANDLER,
     executionMode: "in-process",
     runMode: "parallel",
-    remoteConfig: { executionModes },
+    allowedOverrides: { executionModes },
     waitToExit: false,
     syncInterval: 25,
     logger: noopLogger,
@@ -113,7 +113,7 @@ describe("a runner config refusal names the refused settings", () => {
       driver,
       logger: noopLogger,
     });
-    const remote = await observer.remote("keys");
+    const remote = await observer.controller("keys");
     expect((await remote.config())?.error?.keys).toEqual(["executionMode"]);
 
     // The DTO copies the list rather than sharing it.

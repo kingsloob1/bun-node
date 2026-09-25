@@ -738,7 +738,7 @@ export class BunQueueWorker<
   /** Settings whose code value was derived rather than given. */
   readonly #derivedConfig: WorkerConfigKey[];
   /** How this worker hears about instructions, and how often it looks. */
-  readonly #remote: {
+  readonly #controlOptions: {
     /** Whether it listens at all. */
     enabled: boolean;
     /** Whether it subscribes rather than only polling. */
@@ -997,20 +997,20 @@ export class BunQueueWorker<
       drainDelay: this.#options.drainDelay,
     };
 
-    const remote = options.remoteControl ?? false;
-    const remoteOptions =
-      typeof remote === "object" ? remote : { enabled: remote };
-    this.#remote = {
-      enabled: remoteOptions.enabled ?? true,
+    const control = options.control ?? false;
+    const controlOptions =
+      typeof control === "object" ? control : { enabled: control };
+    this.#controlOptions = {
+      enabled: controlOptions.enabled ?? true,
       // A subscription on a driver that polls is one query every few dozen
       // milliseconds per queue, so it is opt-in there and automatic where the
       // backend pushes. Either way the heartbeat re-reads the entries, so the
       // choice is about latency, never about whether control works.
       subscribe:
-        remoteOptions.subscribe ?? driver.capabilities.events !== "poll",
+        controlOptions.subscribe ?? driver.capabilities.events !== "poll",
       interval: Math.max(
         100,
-        remoteOptions.interval ??
+        controlOptions.interval ??
           Math.min(
             DEFAULT_CONTROL_INTERVAL,
             reportInterval || DEFAULT_CONTROL_INTERVAL,
@@ -1248,7 +1248,7 @@ export class BunQueueWorker<
   get control(): WorkerControlInfo {
     return {
       enabled: this.#controlEnabled(),
-      mode: this.#remote.subscribe ? "subscribe" : "poll",
+      mode: this.#controlOptions.subscribe ? "subscribe" : "poll",
       appliedSeq: this.#appliedSeq,
       configSeq: this.#configSeq,
       pending: this.#controlPending,
@@ -1277,7 +1277,7 @@ export class BunQueueWorker<
 
   /** Whether this worker listens for instructions, and can reach where they live. */
   #controlEnabled(): boolean {
-    return this.#remote.enabled && supportsWorkerControl(this.driver);
+    return this.#controlOptions.enabled && supportsWorkerControl(this.driver);
   }
 
   /** The worker's logger. */
@@ -3617,7 +3617,7 @@ export class BunQueueWorker<
       return;
     }
 
-    if (this.#remote.subscribe) {
+    if (this.#controlOptions.subscribe) {
       void this.#subscribeControl();
       return;
     }
@@ -3625,7 +3625,7 @@ export class BunQueueWorker<
     this.#controlUnwatch = watchWorkerChanges(
       this.driver,
       this.ref,
-      this.#remote.interval,
+      this.#controlOptions.interval,
       () => {
         if (!this.#closing) {
           void this.#adoptControl();

@@ -299,7 +299,7 @@ describe("what it refuses", () => {
 
   it("answers 409 CONFIG_NOT_ALLOWED, naming the modes the runner's code permits", async () => {
     const h = withRunner("api-runner-config-notallowed", {
-      remoteConfig: { executionModes: ["in-process"] },
+      allowedOverrides: { executionModes: ["in-process"] },
     });
 
     const res = await h.call("PUT", "/runners/nightly/config", {

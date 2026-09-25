@@ -7,10 +7,10 @@ import {
   callTo,
   dialogButton,
   errorToasts,
+  nonLocalRunner,
   notifications,
   openAction,
   openDialog,
-  remoteRunner,
   renderActions,
   toastSays,
 } from "./fixtures";
@@ -186,7 +186,7 @@ describe("trigger", () => {
 
   it("notes that a remote runner's trigger is queued for its owner", async () => {
     await renderActions({
-      runner: remoteRunner(),
+      runner: nonLocalRunner(),
       handlers: {
         [`POST ${PATH}`]: {
           status: 202,
@@ -196,7 +196,7 @@ describe("trigger", () => {
     });
     const dialog = await openAction("Trigger…");
     expect(
-      within(dialog).getByTestId("trigger-remote-note").textContent,
+      within(dialog).getByTestId("trigger-non-local-note").textContent,
     ).toContain("its owner starts it at its next sync");
     fireEvent.click(dialogButton(dialog, "Trigger"));
     await toastSays("Run queued on nightly");

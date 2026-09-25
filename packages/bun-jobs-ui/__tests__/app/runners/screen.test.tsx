@@ -1,6 +1,6 @@
 import type { RunnerInfoDto, RunnerScheduleDto } from "../../../app/api/types";
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { REMOTE_RUNNER_NOTE } from "../../../app/screens/runners/runnerFormat";
+import { NON_LOCAL_RUNNER_NOTE } from "../../../app/screens/runners/runnerFormat";
 import { fireEvent, page, setupDom, waitFor, within } from "../dom";
 import { permissionsFixture, problem } from "../fixtures";
 import {
@@ -8,7 +8,7 @@ import {
   AWKWARD_RUNNER,
   AWKWARD_RUNNER_ENCODED,
   historyFixture,
-  remoteRunnerFixture,
+  nonLocalRunnerFixture,
   renderRunner,
   runFixture,
   runnerApiPath,
@@ -96,7 +96,7 @@ describe("the runner screen", () => {
     expect(summaryValue("Running on")).toBe("—");
     expect(summaryValue("Last error")).toBe("—");
     expect(summaryValue("Next run")).not.toBe("Not scheduled");
-    expect(page().queryByTestId("remote-note")).toBeNull();
+    expect(page().queryByTestId("non-local-note")).toBeNull();
 
     await waitFor(() => expect(tiles().Success).toBe("41"));
     expect(tiles()).toEqual({
@@ -180,16 +180,20 @@ describe("the runner screen", () => {
   });
 
   it("shows a remote runner: its shared flags, the sync note, no local runs, absent settings as missing", async () => {
-    await renderLoaded(remoteRunnerFixture());
+    await renderLoaded(nonLocalRunnerFixture());
     expect(await heading()).toBe("billing");
-    expect(page().getByTestId("runner-status").textContent).toBe(
-      "PausedRemote",
+    // One assertion per badge: the concatenated text would also pass if a
+    // single badge read "PausedOther process".
+    const badges = Array.from(
+      page().getByTestId("runner-status").children,
+      (badge) => badge.textContent,
     );
+    expect(badges).toEqual(["Paused", "Other process"]);
     expect(page().queryByTestId("runner-id")).toBeNull();
-    expect(page().getByTestId("remote-note").textContent).toBe(
-      REMOTE_RUNNER_NOTE,
+    expect(page().getByTestId("non-local-note").textContent).toBe(
+      NON_LOCAL_RUNNER_NOTE,
     );
-    expect(summaryValue("Registered here")).toBe("No (remote)");
+    expect(summaryValue("Registered here")).toBe("No (another process)");
     expect(summaryValue("Schedule")).toBe(
       "Every 30s, aligned to 2026-09-18 10:00:00 UTC",
     );

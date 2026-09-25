@@ -210,8 +210,8 @@ export function ResetStatsDialog({ runner, onClose }: RunnerDialogProps) {
 /**
  * `DELETE /runners/:runner/history`: finished runs and their logs go, runs in
  * progress stay whole, the counters and charts are untouched. Offered for a
- * remote runner too; the small print about long parallel runs shows only
- * where it can apply.
+ * runner registered in another process too; the small print about long
+ * parallel runs shows only where it can apply.
  */
 export function ClearHistoryDialog({ runner, onClose }: RunnerDialogProps) {
   const api = useApiClient();

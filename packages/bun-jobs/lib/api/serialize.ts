@@ -13,9 +13,9 @@ import type {
   WorkerInfo,
 } from "../drivers/index";
 import type {
-  RemoteRunnerInfo,
   RunnerConfigInfo,
   RunnerStatus,
+  SharedRunnerInfo,
 } from "../runner/types";
 import type { RunProgress } from "../shared/progress";
 import type { ResolvedJobsApiSerializers } from "./config";
@@ -294,11 +294,11 @@ export interface RunLogLineDto extends Omit<RunLogLine, "text"> {
 
 /**
  * A runner snapshot as a client sees it, for a runner registered in any
- * process: the backend's view (`RemoteRunnerInfo`), plus this process's own
+ * process: the backend's view (`SharedRunnerInfo`), plus this process's own
  * view under `local` when the runner is registered here.
  */
 export interface RunnerInfoDto extends Omit<
-  RemoteRunnerInfo,
+  SharedRunnerInfo,
   "file" | "nextRunAt" | "lastRun" | "runningOn" | "local"
 > {
   /** The handler file; only with `exposeRunnerFiles`, and only when it was persisted. */
@@ -666,11 +666,12 @@ export function toRunnerConfigDto(config: RunnerConfigInfo): RunnerConfigDto {
 }
 
 /**
- * Shapes a runner snapshot — what `RemoteRunner.info()` returns, for a local
- * or a remote runner alike — then applies `serialize.runner`.
+ * Shapes a runner snapshot — what `RunnerController.info()` returns, for a
+ * runner registered here or in another process alike — then applies
+ * `serialize.runner`.
  */
 export function toRunnerInfoDto(
-  info: RemoteRunnerInfo,
+  info: SharedRunnerInfo,
   req: BunRequest,
   options: ResolvedJobsApiSerializers,
 ): RunnerInfoDto {

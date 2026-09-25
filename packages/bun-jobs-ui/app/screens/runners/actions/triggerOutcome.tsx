@@ -5,8 +5,8 @@ import { SKIP_REASONS } from "./explain";
 
 /**
  * Toasts a trigger's outcome: started (with the run id to copy), queued
- * (with its position, and for a remote runner who starts it), or skipped
- * (with the reason in words).
+ * (with its position, and for a runner registered in another process who
+ * starts it), or skipped (with the reason in words).
  */
 export function toastTriggerOutcome(
   toast: ToastApi,

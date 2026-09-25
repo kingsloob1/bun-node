@@ -884,7 +884,7 @@ export interface BunQueueOptions {
  * How a worker hears about instructions written by another process, when the
  * defaults are not what you want.
  */
-export interface WorkerRemoteControlOptions {
+export interface WorkerControlOptions {
   /** Listen at all. Defaults to `true` when the object form is given. */
   enabled?: boolean;
   /**
@@ -990,8 +990,13 @@ export interface BunQueueWorkerOptions {
    *
    * It needs a driver with queue state; on one without, the worker reports
    * `control.enabled: false` and simply runs.
+   *
+   * The worker's `control` getter is not this option read back: it returns a
+   * `WorkerControlInfo` reporting the live control state (whether it is on,
+   * the mode, the applied sequence, what is pending) — the same in-and-out
+   * split as `logger`, which takes a `LoggerLike` and returns a `Logger`.
    */
-  remoteControl?: boolean | WorkerRemoteControlOptions;
+  control?: boolean | WorkerControlOptions;
   /**
    * How long a remote `stop` lasts.
    *

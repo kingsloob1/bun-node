@@ -53,7 +53,7 @@ export interface RouteServices {
   config: ResolvedJobsApiConfig;
   /** Queue membership and lookup. */
   queues: QueueSource;
-  /** Runner lookup, local or remote. */
+  /** Runner lookup, local or registered in another process. */
   runners: RunnerSource;
   /** Every registered route, after pruning. */
   routes: () => readonly JobsApiRouteInfo[];

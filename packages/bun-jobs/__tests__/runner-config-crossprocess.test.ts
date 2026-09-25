@@ -14,7 +14,7 @@ import { spawnBun } from "./helpers/spawnBun";
  *
  * Process A (`runner-owner.ts`) owns the runner and never reconfigures it.
  * This test's process holds no runner at all, only a driver, and changes A's
- * `executionMode` and overlap settings through `BunRunnerManager.remote()`.
+ * `executionMode` and overlap settings through `BunRunnerManager.controller()`.
  * Every assertion about an effect is read from what A reported, so nothing
  * here can pass by sharing a heap with the owner.
  */
@@ -130,7 +130,7 @@ for (const { name, config, available } of READY) {
       it("reconfigures a runner another process owns", async () => {
         const namespace = testNamespace(`runner-config-${name}`);
         const { owner, observed } = await startOwner(config, namespace, {
-          REMOTE_CONTROL: "1",
+          RUNNER_CONTROL: "1",
           // The owner's code forbids `spawn`, so the allow-list is exercised
           // from a process that never saw the option.
           EXECUTION_MODES: "in-process,worker",
@@ -142,7 +142,7 @@ for (const { name, config, available } of READY) {
           namespace,
           driver,
           logger: noopLogger,
-        }).remote("reports");
+        }).controller("reports");
         expect(remote.isLocal).toBe(false);
 
         // What the owner persisted about its configuration, read from here.

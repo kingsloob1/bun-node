@@ -25,7 +25,7 @@ const runner = new BunRunner<CleanupArgs, CleanupResult>({
   schedule: "0 2 * * *",
   args: { olderThanDays: 90 },
   // Hear control events as they are published, rather than every 30s.
-  remoteControl: true,
+  control: true,
   waitToExit: false,
 });
 

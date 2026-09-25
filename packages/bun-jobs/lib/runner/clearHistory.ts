@@ -11,7 +11,7 @@ import { ConfigError, NotSupportedError } from "../shared/errors";
  */
 export const DEFAULT_STALE_RUN_AFTER = 86_400_000;
 
-/** Options for `BunRunner.clearHistory` and `RemoteRunner.clearHistory`. */
+/** Options for `BunRunner.clearHistory` and `RunnerController.clearHistory`. */
 export interface ClearHistoryOptions {
   /**
    * How long a `running` record with nothing else vouching for it is still
@@ -111,7 +111,7 @@ export function planHistoryClear(input: HistoryClearInput): HistoryClearPlan {
 /**
  * Clears one runner's finished runs, record and log, keeping those still in
  * progress (see {@link planHistoryClear}). What `BunRunner.clearHistory` and
- * `RemoteRunner.clearHistory` both run; `local` is the executing process's
+ * `RunnerController.clearHistory` both run; `local` is the executing process's
  * active runs when there is one.
  *
  * Throws `NotSupportedError` on a driver without `removeRuns`, rather than

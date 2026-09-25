@@ -374,7 +374,7 @@ describe("DELETE /runners/:runner/history", () => {
     expect((await runner.history()).map((run) => run.runId)).toEqual([runId]);
     expect(await runner.stats()).toEqual(statsBefore);
 
-    // The same through a `RemoteRunner` in the API's context, after another
+    // The same through a `RunnerController` in the API's context, after another
     // finished run: the one in progress stays.
     runner.send("release", runId);
     await waitFor(
@@ -382,7 +382,7 @@ describe("DELETE /runners/:runner/history", () => {
     );
     const second = await runner.trigger({ args: { gap: 10 } });
     const secondId = (second as { runId: string }).runId;
-    const remote = await h.jobs.runners.remote("elsewhere");
+    const remote = await h.jobs.runners.controller("elsewhere");
     expect(remote.isLocal).toBe(false);
     expect(await remote.clearHistory()).toEqual({
       removed: 1,

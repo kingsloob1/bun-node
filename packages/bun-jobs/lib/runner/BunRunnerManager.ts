@@ -4,7 +4,7 @@ import type { BunRunnerOptions, RunnerInfo } from "./types";
 import { ConfigError, RunnerNotFoundError } from "../shared/errors";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { BunRunner } from "./BunRunner";
-import { RemoteRunner } from "./RemoteRunner";
+import { RunnerController } from "./RunnerController";
 
 /** Options for a {@link BunRunnerManager}. */
 export interface BunRunnerManagerOptions {
@@ -30,7 +30,7 @@ export interface BunRunnerManagerOptions {
  *
  * **Registration here is process-local; the backend's is permanent.** A
  * runner also has a record in the driver, written by every `start()` and read
- * by {@link discover}, {@link remote} and the management API. Nothing ever
+ * by {@link discover}, {@link controller} and the management API. Nothing ever
  * removes that record — not {@link remove}, not stopping the runner, not the
  * process exiting — because it carries what the cluster has decided about the
  * runner (paused, schedule, configuration overrides), which has to outlive
@@ -138,7 +138,7 @@ export class BunRunnerManager {
    * to. Returns `false` when the id is not registered here.
    *
    * It does not unregister the runner from the backend. Its record stays, so
-   * `driver.listRunners()` — and with it {@link discover}, {@link remote},
+   * `driver.listRunners()` — and with it {@link discover}, {@link controller},
    * the management API's `GET /runners/<id>` and every runner mutation —
    * still answers for the id, and the runner stays remotely controllable: a
    * pause or a rescheduled cron set on it is still stored, and is still
@@ -200,7 +200,7 @@ export class BunRunnerManager {
    * `updateSchedule`, `trigger`, `history` and `stats`.
    *
    * When the runner is registered here the controller delegates to it;
-   * otherwise it works through the backend alone — see {@link RemoteRunner}
+   * otherwise it works through the backend alone — see {@link RunnerController}
    * for how each call reaches the owning process, and how soon. A run cannot
    * be killed remotely: only the process executing it can stop it.
    *
@@ -208,9 +208,9 @@ export class BunRunnerManager {
    * registered here nor known to the backend, and with a `ConfigError` when
    * it is not a valid runner id.
    */
-  async remote<TArgs = unknown, TResult = unknown>(
+  async controller<TArgs = unknown, TResult = unknown>(
     id: string,
-  ): Promise<RemoteRunner<TArgs, TResult>> {
+  ): Promise<RunnerController<TArgs, TResult>> {
     assertSegment(id, "runner id");
     // As with get(): the caller names the types it registered the runner with.
     const local = this.get<TArgs, TResult>(id);
@@ -221,7 +221,7 @@ export class BunRunnerManager {
       });
     }
 
-    const controller = new RemoteRunner<TArgs, TResult>({
+    const controller = new RunnerController<TArgs, TResult>({
       id,
       namespace: this.namespace,
       driver: this.driver,

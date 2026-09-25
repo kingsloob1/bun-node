@@ -59,7 +59,10 @@ function base(id: string, suffix = ""): string {
   return `/runners/${segment(id)}${suffix}`;
 }
 
-/** `GET /runners`: local runners (with name and status), then remote ids. */
+/**
+ * `GET /runners`: local runners (with name and status), then the ids of those
+ * registered in other processes.
+ */
 export function listRunners(
   api: ApiClient,
   signal?: AbortSignal,

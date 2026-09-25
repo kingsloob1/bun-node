@@ -58,7 +58,7 @@ than piled onto one (each is commented where it is set):
 | `maintenance` | off on `api.previews.2`, where `api.previews` takes part in that queue's housekeeping anyway (the pass is leased, so one worker holds it per pass while the rest stand down), and on `api.dead-letters.archive`, which is its queue's **only** worker — so that queue has nobody doing the housekeeping and its Workers panel says so, which is what the setting is there to show. Since bun-jobs #121 `maintenance` decides the housekeeping pass alone (pruning expired results, healing repeat series, sweeping stale queue state): promoting delayed jobs and recovering stalled ones happen on every worker whatever it says. Before #121 this same line on `imports` stranded jobs — one `active` for 45 minutes with no logs, four frozen at attempt 1 of 2 |
 | `autorun` | `api.imports.wedged` starts consuming as it is constructed, instead of waiting for `run()` |
 | `metrics` | `{ workers: false }` on `api.dead-letters.archive` |
-| `remoteControl` | the object form on `api.notifications.scheduler`: `{ enabled, subscribe, interval }` |
+| `control` | the object form on `api.notifications.scheduler`: `{ enabled, subscribe, interval }` |
 | `stopPersistence` / `stopPersistenceOverridable` | `"key"` on `api.notifications.scheduler`, so a Stop from the UI outlives a restart; `api.emails.transactional` keeps the default and only makes it overridable |
 | `service` / `name` / `key` / `keyOrdinal` | `service` and `name` on most; `key` set outright on `api.dead-letters.archive`; `keyOrdinal` pinned on `api.previews.2` |
 | `isolation` / `isolationOptions` | the three isolated queues above |

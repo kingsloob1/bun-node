@@ -598,7 +598,7 @@ describe("BunRunnerManager", () => {
     // still finds it and it stays controllable.
     expect(await driver.listRunners(namespace)).toContain("nightly");
     expect(await manager.discover()).toContain("nightly");
-    const controller = await manager.remote("nightly");
+    const controller = await manager.controller("nightly");
     expect(controller.isLocal).toBe(false);
     expect((await controller.info()).isPaused).toBe(true);
 

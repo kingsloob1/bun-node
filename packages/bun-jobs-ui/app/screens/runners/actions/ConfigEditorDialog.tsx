@@ -221,8 +221,8 @@ export function ConfigEditorDialog({
           >
             {missingModes.join(", ")} {missingModes.length === 1 ? "is" : "are"}{" "}
             not offered: this runner's code permits only {modes.join(", ")} (its{" "}
-            <code>remoteConfig.executionModes</code>). The API refuses any other
-            with 409 <code>CONFIG_NOT_ALLOWED</code>.
+            <code>allowedOverrides.executionModes</code>). The API refuses any
+            other with 409 <code>CONFIG_NOT_ALLOWED</code>.
           </p>
         )}
 

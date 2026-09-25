@@ -123,14 +123,16 @@ describe("remote runner configuration", () => {
       maxConcurrency: 3,
       syncInterval: 25,
       // The sync is what this test watches. The memory driver's events are
-      // local, so `remoteControl: "auto"` would subscribe and the owner would
-      // have adopted before the write returned — the path `remoteControl: true`
+      // local, so `control: "auto"` would subscribe and the owner would
+      // have adopted before the write returned — the path `control: true`
       // has its own test below.
-      remoteControl: false,
+      control: false,
     });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     const written = await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 1 },
     });
@@ -156,7 +158,7 @@ describe("remote runner configuration", () => {
     const runner = addRunner(owner);
     await runner.start();
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     expect(remote.isLocal).toBe(true);
 
     await remote.updateConfig({ executionMode: "spawn" });
@@ -171,7 +173,9 @@ describe("remote runner configuration", () => {
     const first = addRunner(owner, { runMode: "parallel" });
     await first.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 2 },
     });
@@ -204,7 +208,9 @@ describe("remote runner configuration", () => {
     const runner = addRunner(owner, { syncInterval: 25 });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({ executionMode: "worker" });
 
     await waitFor(() => runner.executionMode === "worker", {
@@ -213,13 +219,15 @@ describe("remote runner configuration", () => {
     });
   });
 
-  it("adopts an override on the control event, with remoteControl on", async () => {
+  it("adopts an override on the control event, with control on", async () => {
     const { owner, observer } = cluster();
     // No sync at all: only the `control` event can carry this.
-    const runner = addRunner(owner, { syncInterval: 0, remoteControl: true });
+    const runner = addRunner(owner, { syncInterval: 0, control: true });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({ executionMode: "worker" });
 
     await waitFor(() => runner.executionMode === "worker", {
@@ -235,7 +243,7 @@ describe("remote runner configuration", () => {
     runner.on("configured", (config) => seen.push(config.effective.runMode));
     await runner.start();
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 2 },
     });
@@ -252,7 +260,9 @@ describe("remote runner configuration", () => {
     const runner = addRunner(owner, { runMode: "parallel", syncInterval: 25 });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({ executionMode: "worker" });
     await waitFor(() => runner.executionMode === "worker", { timeout: 4000 });
 
@@ -280,7 +290,9 @@ describe("remote runner configuration", () => {
     });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     const overridden = await remote.updateConfig({
       executionMode: "worker",
       concurrency: { runMode: "single" },
@@ -311,7 +323,7 @@ describe("remote runner configuration", () => {
     });
     await runner.start();
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     const config = await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: null },
     });
@@ -325,11 +337,13 @@ describe("remote runner configuration — validation", () => {
   it("refuses an execution mode the runner's code does not permit", async () => {
     const { owner, observer } = cluster();
     const runner = addRunner(owner, {
-      remoteConfig: { executionModes: ["in-process", "worker"] },
+      allowedOverrides: { executionModes: ["in-process", "worker"] },
     });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     const failure = await remote
       .updateConfig({ executionMode: "spawn" })
       .catch((error: unknown) => error);
@@ -348,7 +362,7 @@ describe("remote runner configuration — validation", () => {
     const runner = addRunner(owner);
     await runner.start();
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
 
     for (const maxConcurrency of [0, 1001, 2.5]) {
       const failure = await remote
@@ -373,7 +387,7 @@ describe("remote runner configuration — validation", () => {
       runMode: "parallel",
       maxConcurrency: 4,
       syncInterval: 25,
-      remoteConfig: { executionModes: ["in-process"] },
+      allowedOverrides: { executionModes: ["in-process"] },
     });
     await runner.start();
 
@@ -435,7 +449,7 @@ describe("remote runner configuration — validation", () => {
       driver,
       logger: noopLogger,
     });
-    const remote = await manager.remote<AppendArgs, string>("configurable");
+    const remote = await manager.controller<AppendArgs, string>("configurable");
     await expect(
       remote.updateConfig({ executionMode: "spawn" }),
     ).rejects.toThrow(/does not permit executionMode "spawn"/);
@@ -455,7 +469,7 @@ describe("remote runner configuration — validation", () => {
       [RUNNER_CONFIG_STATE.allowed]: null,
     });
 
-    const remote = await observer.remote("configurable");
+    const remote = await observer.controller("configurable");
     const failure = await remote
       .updateConfig({ executionMode: "worker" })
       .catch((error: unknown) => error);
@@ -468,7 +482,7 @@ describe("remote runner configuration — validation", () => {
     expect((await remote.info()).config).toBeUndefined();
   });
 
-  it("rejects a remoteConfig option that permits nothing, or nonsense", () => {
+  it("rejects a allowedOverrides option that permits nothing, or nonsense", () => {
     const driver = new MemoryDriver();
     const namespace = testNamespace("runner-config");
     const build = (executionModes: string[]) =>
@@ -479,7 +493,7 @@ describe("remote runner configuration — validation", () => {
         file: fixture("append"),
         waitToExit: false,
         logger: noopLogger,
-        remoteConfig: {
+        allowedOverrides: {
           executionModes: executionModes as ("spawn" | "worker")[],
         },
       });
@@ -507,7 +521,7 @@ describe("remote runner configuration — semantics", () => {
     await runner.trigger();
     await waitFor(() => runner.activeRuns.size === 1);
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     await remote.updateConfig({ executionMode: "spawn" });
     expect(runner.executionMode).toBe("spawn");
 
@@ -534,7 +548,7 @@ describe("remote runner configuration — semantics", () => {
     await runner.trigger();
     await waitFor(() => runner.activeRuns.size === 2);
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 1 },
     });
@@ -558,7 +572,7 @@ describe("remote runner configuration — semantics", () => {
     await waitFor(() => runner.activeRuns.size === 1);
     expect(await driver.getLock(namespace, KEY, Date.now())).not.toBeNull();
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 4 },
     });
@@ -591,7 +605,7 @@ describe("remote runner configuration — semantics", () => {
     expect((await runner.trigger()).outcome).toBe("queued");
     expect(await driver.countQueuedTriggers(namespace, KEY)).toBe(0);
 
-    const remote = await owner.remote<AppendArgs, string>("configurable");
+    const remote = await owner.controller<AppendArgs, string>("configurable");
     await remote.updateConfig({ concurrency: { runMode: "single" } });
 
     // Single mode never drains the local queue, so the parked trigger has to
@@ -622,11 +636,13 @@ describe("remote runner configuration — semantics", () => {
     // One parked here …
     expect((await runner.trigger()).outcome).toBe("queued");
     // … and one already in the driver's queue, which is now at its cap.
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     expect((await remote.trigger()).outcome).toBe("queued");
 
     const before = (await runner.stats()).skipped;
-    const local = await owner.remote<AppendArgs, string>("configurable");
+    const local = await owner.controller<AppendArgs, string>("configurable");
     await local.updateConfig({ concurrency: { runMode: "single" } });
 
     expect(await driver.countQueuedTriggers(namespace, KEY)).toBe(1);
@@ -635,17 +651,17 @@ describe("remote runner configuration — semantics", () => {
 });
 
 /**
- * `remoteControl` decides whether a runner *subscribes* to its `control`
+ * `control` decides whether a runner *subscribes* to its `control`
  * events or waits for its sync. The option is authoritative wherever it is
  * given; `"auto"` — the default — asks the driver, and listens only where a
  * subscription costs nothing: the same rule `BunQueueWorker` resolves its own
- * `remoteControl.subscribe` with.
+ * `control.subscribe` with.
  */
-describe("remoteControl defaults to listening where it is cheap", () => {
+describe("control defaults to listening where it is cheap", () => {
   /** The resolved option, for one driver and one spelling. */
   function resolvedFor(
     driver: MemoryDriver | FileDriver,
-    remoteControl?: boolean | "auto",
+    control?: boolean | "auto",
   ): boolean {
     const manager = new BunRunnerManager({
       namespace: testNamespace("runner-auto"),
@@ -658,10 +674,10 @@ describe("remoteControl defaults to listening where it is cheap", () => {
       executionMode: "in-process",
       waitToExit: false,
       syncInterval: 0,
-      ...(remoteControl === undefined ? {} : { remoteControl }),
+      ...(control === undefined ? {} : { control }),
     });
     started.push(runner);
-    return runner.options.remoteControl;
+    return runner.options.control;
   }
 
   it("subscribes on a driver whose events are local or pushed, not on one that polls", async () => {
@@ -690,17 +706,19 @@ describe("remoteControl defaults to listening where it is cheap", () => {
 
   it("adopts a remote change with no sync at all, because the default subscribed", async () => {
     const { owner, observer } = cluster();
-    // No sync timer, no `remoteControl`: only the subscription the default
+    // No sync timer, no `control`: only the subscription the default
     // takes out on the memory driver can deliver this.
     const runner = addRunner(owner, {
       runMode: "parallel",
       maxConcurrency: 3,
       syncInterval: 0,
     });
-    expect(runner.options.remoteControl).toBe(true);
+    expect(runner.options.control).toBe(true);
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 1 },
     });
@@ -717,11 +735,13 @@ describe("remoteControl defaults to listening where it is cheap", () => {
       runMode: "parallel",
       maxConcurrency: 3,
       syncInterval: 0,
-      remoteControl: false,
+      control: false,
     });
     await runner.start();
 
-    const remote = await observer.remote<AppendArgs, string>("configurable");
+    const remote = await observer.controller<AppendArgs, string>(
+      "configurable",
+    );
     await remote.updateConfig({
       concurrency: { runMode: "parallel", maxConcurrency: 1 },
     });
@@ -744,14 +764,14 @@ describe("remoteControl defaults to listening where it is cheap", () => {
         executionMode: "in-process",
         waitToExit: false,
       });
-      expect(runner.options.remoteControl).toBe(true);
+      expect(runner.options.control).toBe(true);
 
       // And `runnerDefaults` still wins, as every other option does.
       const off = new BunJobs({
         namespace: testNamespace("runner-auto-off"),
         driver: new MemoryDriver(),
         logger: noopLogger,
-        runnerDefaults: { remoteControl: false },
+        runnerDefaults: { control: false },
       });
       const quiet = off.runner<AppendArgs, string>({
         id: "quiet",
@@ -759,7 +779,7 @@ describe("remoteControl defaults to listening where it is cheap", () => {
         executionMode: "in-process",
         waitToExit: false,
       });
-      expect(quiet.options.remoteControl).toBe(false);
+      expect(quiet.options.control).toBe(false);
       await off.close();
     } finally {
       await jobs.close();

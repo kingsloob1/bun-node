@@ -137,10 +137,10 @@ export {
   jobNotFound,
   JobParams,
   mapBounded,
+  NON_LOCAL_LATENCY_NOTE,
   QueueNameSchema,
   QueueParams,
   queueTarget,
-  REMOTE_LATENCY_NOTE,
   RepeatableParams,
   RunnerParams,
   runnerTarget,
@@ -153,7 +153,7 @@ export {
   workerTarget,
 } from "./routes/support";
 export {
-  supportsRemoteWorkerControl,
+  supportsWorkerControlRoutes,
   WORKER_ACK_POLL_MS,
   workerRoutes,
   workerStateOf,

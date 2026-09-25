@@ -1,6 +1,5 @@
 import type { BunRequest } from "@kingsleyweb/bun-common";
 import type { WorkerInfo } from "../../drivers/index";
-import type { RemoteWorker } from "../../queue/RemoteWorker";
 import type { WorkerConfigOverride } from "../../queue/workerControl";
 import type {
   WorkerConfigKey,
@@ -17,12 +16,12 @@ import type { Infer } from "../schema/builder";
 import type { AnyRouteDef, RouteServices } from "./define";
 import { sleep } from "@kingsleyweb/bun-common";
 import { supportsWorkers } from "../../drivers/index";
-import { RemoteWorker as RemoteWorkerController } from "../../queue/RemoteWorker";
 import {
   listWorkerConfigs,
   readWorkerControl,
   supportsWorkerControl,
 } from "../../queue/workerControl";
+import { WorkerController } from "../../queue/WorkerController";
 import {
   WORKER_CONFIG_KEYS,
   workerConfigCrossFieldIssue,
@@ -94,10 +93,10 @@ const CONTROL_ERRORS = [
 
 /** How soon a control change reaches a worker, for the route descriptions. */
 const CONTROL_LATENCY_NOTE =
-  "The instruction is stored and announced, and the worker applies it when it hears: within milliseconds on a driver that pushes events, within its `remoteControl.interval` (2s by default) on one that does not, and within one `reportInterval` (10s) even if the announcement is lost. `?wait=` (ms) polls the worker's record for the acknowledgement and answers 200 with the re-read worker once it lands, or 202 when the wait runs out; it is also accepted in the body, and the query wins when both are sent. `timeout` and `persist` are stop semantics and are body-only.";
+  "The instruction is stored and announced, and the worker applies it when it hears: within milliseconds on a driver that pushes events, within its `control.interval` (2s by default) on one that does not, and within one `reportInterval` (10s) even if the announcement is lost. `?wait=` (ms) polls the worker's record for the acknowledgement and answers 200 with the re-read worker once it lands, or 202 when the wait runs out; it is also accepted in the body, and the query wins when both are sent. `timeout` and `persist` are stop semantics and are body-only.";
 
 /** Whether a driver can both list workers and store what they should be. */
-export function supportsRemoteWorkerControl(
+export function supportsWorkerControlRoutes(
   config: Pick<ResolvedJobsApiConfig, "driver">,
 ): boolean {
   return supportsWorkers(config.driver) && supportsWorkerControl(config.driver);
@@ -108,11 +107,11 @@ export function supportsRemoteWorkerControl(
  * a worker in this process is nudged directly rather than waiting for its
  * poll; without a context the API builds one over the same driver.
  */
-function workersOf(services: RouteServices, queue: string): RemoteWorker {
+function workersOf(services: RouteServices, queue: string): WorkerController {
   const { config } = services;
   return config.jobs
-    ? config.jobs.workers.remote(queue)
-    : new RemoteWorkerController({
+    ? config.jobs.workers.controller(queue)
+    : new WorkerController({
         namespace: config.namespace,
         queue,
         driver: config.driver,
@@ -147,16 +146,16 @@ function workerNotFound(queue: string, worker: string): ApiError {
  */
 async function requireWorker(
   services: RouteServices,
-  remote: RemoteWorker,
+  controller: WorkerController,
   queue: string,
   id: string,
 ): Promise<WorkerInfo> {
-  const found = await remote.get(id);
+  const found = await controller.get(id);
   if (found) {
     return found;
   }
   const stored = supportsWorkerControl(services.config.driver)
-    ? await readWorkerControl(services.config.driver, remote.ref, id)
+    ? await readWorkerControl(services.config.driver, controller.ref, id)
     : null;
   if (stored) {
     throw new ApiError(
@@ -236,14 +235,14 @@ type ControlName = keyof typeof CONTROL_ACTIONS;
 
 /** Waits for the worker to report `appliedSeq >= seq`, or gives up at `waitMs`. */
 async function waitForAck(
-  remote: RemoteWorker,
+  controller: WorkerController,
   id: string,
   seq: number,
   waitMs: number,
 ): Promise<WorkerInfo | undefined> {
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const worker = await remote.get(id);
+    const worker = await controller.get(id);
     if (worker && (worker.control?.appliedSeq ?? 0) >= seq) {
       return worker;
     }
@@ -264,7 +263,7 @@ function controlRoute(name: ControlName, summary: string): AnyRouteDef {
     operationId: `${name}Worker`,
     action: `workers.${name}`,
     mode: "jobs",
-    enabledWhen: supportsRemoteWorkerControl,
+    enabledWhen: supportsWorkerControlRoutes,
     summary,
     description:
       name === "stop"
@@ -286,10 +285,10 @@ function controlRoute(name: ControlName, summary: string): AnyRouteDef {
       // original spelling and still honoured, with the query winning.
       const wait = query.wait ?? body.wait;
       await services.queues.get(params.queue);
-      const remote = workersOf(services, params.queue);
+      const controller = workersOf(services, params.queue);
       const worker = await requireWorker(
         services,
-        remote,
+        controller,
         params.queue,
         params.worker,
       );
@@ -342,7 +341,7 @@ function controlRoute(name: ControlName, summary: string): AnyRouteDef {
 
       const result =
         name === "stop"
-          ? await remote.stop(
+          ? await controller.stop(
               { id: worker.id },
               {
                 ...(body.persist === undefined
@@ -353,7 +352,7 @@ function controlRoute(name: ControlName, summary: string): AnyRouteDef {
                   : { timeout: body.timeout }),
               },
             )
-          : await remote[name]({ id: worker.id });
+          : await controller[name]({ id: worker.id });
       const instance = result.instances.at(0);
       if (!instance) {
         // The record lapsed between the read and the write: the instruction
@@ -368,7 +367,7 @@ function controlRoute(name: ControlName, summary: string): AnyRouteDef {
         already || instance.applied
           ? worker
           : wait
-            ? await waitForAck(remote, worker.id, instance.seq, wait)
+            ? await waitForAck(controller, worker.id, instance.seq, wait)
             : undefined;
 
       const dto: WorkerControlResultDto = {
@@ -614,10 +613,10 @@ export function workerRoutes(): AnyRouteDef[] {
       target: ({ params }) => workerTarget(params.queue, params.worker),
       handler: async ({ params, services }) => {
         await services.queues.get(params.queue);
-        const remote = workersOf(services, params.queue);
+        const controller = workersOf(services, params.queue);
         const worker = await requireWorker(
           services,
-          remote,
+          controller,
           params.queue,
           params.worker,
         );
@@ -634,7 +633,7 @@ export function workerRoutes(): AnyRouteDef[] {
       operationId: "listWorkerConfigs",
       action: "workers.read",
       mode: "jobs",
-      enabledWhen: supportsRemoteWorkerControl,
+      enabledWhen: supportsWorkerControlRoutes,
       summary: "Every configuration override stored on the queue",
       description:
         "Keyed by the workers' **stable** keys, so an override outlives the worker that had it: one whose `instances` is empty is stored for a key no worker currently carries, and can be deleted from here.",
@@ -645,10 +644,10 @@ export function workerRoutes(): AnyRouteDef[] {
       target: ({ params }) => queueTarget(params.queue),
       handler: async ({ params, services }) => {
         await services.queues.get(params.queue);
-        const remote = workersOf(services, params.queue);
+        const controller = workersOf(services, params.queue);
         const [overrides, live] = await Promise.all([
-          remote.listConfigs(),
-          remote.list(),
+          controller.listConfigs(),
+          controller.list(),
         ]);
         return {
           body: {
@@ -663,7 +662,7 @@ export function workerRoutes(): AnyRouteDef[] {
       operationId: "configureWorker",
       action: "workers.configure",
       mode: "jobs",
-      enabledWhen: supportsRemoteWorkerControl,
+      enabledWhen: supportsWorkerControlRoutes,
       summary: "Merge settings into one stable key's override",
       description:
         "A **merge patch**: a setting left out is untouched, and `null` clears it so the worker's own value applies again. Keyed by the stable key, so it reaches every replica carrying it — including one started tomorrow — and survives restarts. Each setting is bounded by `WORKER_CONFIG_BOUNDS`; `heartbeatInterval` must also be at most half the *effective* `lockDuration` of every live worker it reaches, which is 400 `VALIDATION` with the issue on the offending field. Send `expectedSeq` for a safe read-modify-write: 409 `CONTROL_CONTENDED` when somebody wrote first, and nothing is changed. There is no `wait` here: `instances[].applied` is a snapshot taken immediately after the write, so a worker that has not applied the new version *yet* reads `false` even where it is about to within milliseconds. Poll `GET /queues/{queue}/workers` and compare `control.configSeq` with the `seq` this returned to watch it land.",
@@ -675,7 +674,7 @@ export function workerRoutes(): AnyRouteDef[] {
       target: ({ params }) => workerKeyTarget(params.queue, params.key),
       handler: async ({ params, body, services }) => {
         await services.queues.get(params.queue);
-        const remote = workersOf(services, params.queue);
+        const controller = workersOf(services, params.queue);
         const values: Partial<Record<WorkerConfigKey, number | null>> = {};
         for (const key of WORKER_CONFIG_KEYS) {
           const value = body[key];
@@ -683,14 +682,14 @@ export function workerRoutes(): AnyRouteDef[] {
             values[key] = value;
           }
         }
-        const live = await remote.list();
-        await checkCrossField(remote, params.key, values, live);
-        const result = await remote.setConfig(params.key, values, {
+        const live = await controller.list();
+        await checkCrossField(controller, params.key, values, live);
+        const result = await controller.setConfig(params.key, values, {
           ...(body.expectedSeq === undefined
             ? {}
             : { expectedSeq: body.expectedSeq }),
         });
-        return { body: await configResult(remote, result, live) };
+        return { body: await configResult(controller, result, live) };
       },
     }),
     defineRoute({
@@ -699,7 +698,7 @@ export function workerRoutes(): AnyRouteDef[] {
       operationId: "resetWorkerConfig",
       action: "workers.configure",
       mode: "jobs",
-      enabledWhen: supportsRemoteWorkerControl,
+      enabledWhen: supportsWorkerControlRoutes,
       summary: "Drop one stable key's override entirely",
       description:
         "Its workers go back to what their own code asks for. The entry is emptied rather than deleted — a deleted entry's version would restart at 1, and a worker that had applied version 3 would believe it was up to date — so this answers 200 with the new version rather than 204. There is no `wait` here: `instances[].applied` is a snapshot taken immediately after the write, so a worker that has not applied the new version *yet* reads `false` even where it is about to within milliseconds. Poll `GET /queues/{queue}/workers` and compare `control.configSeq` with the `seq` this returned to watch it land.",
@@ -710,10 +709,10 @@ export function workerRoutes(): AnyRouteDef[] {
       target: ({ params }) => workerKeyTarget(params.queue, params.key),
       handler: async ({ params, services }) => {
         await services.queues.get(params.queue);
-        const remote = workersOf(services, params.queue);
-        const live = await remote.list();
-        const result = await remote.resetConfig(params.key);
-        return { body: await configResult(remote, result, live) };
+        const controller = workersOf(services, params.queue);
+        const live = await controller.list();
+        const result = await controller.resetConfig(params.key);
+        return { body: await configResult(controller, result, live) };
       },
     }),
   ];
@@ -731,12 +730,12 @@ export function workerRoutes(): AnyRouteDef[] {
  * tomorrow is still refused today.
  */
 async function checkCrossField(
-  remote: RemoteWorker,
+  controller: WorkerController,
   key: string,
   patch: Readonly<Partial<Record<WorkerConfigKey, number | null>>>,
   live: readonly WorkerInfo[],
 ): Promise<void> {
-  const stored = await remote.getConfig(key);
+  const stored = await controller.getConfig(key);
   const merged: Partial<Record<WorkerConfigKey, number>> = {
     ...stored.values,
   };
@@ -776,7 +775,7 @@ async function checkCrossField(
 
 /** The answer both configuration routes give, refusing a write somebody else won. */
 async function configResult(
-  remote: RemoteWorker,
+  controller: WorkerController,
   result: {
     /** The key it was stored for. */ key: string;
     /** What is stored now. */ values: WorkerConfigOverride["values"];
@@ -796,9 +795,9 @@ async function configResult(
   // Re-read, so `state` and `applied` describe the workers as they are after
   // the write rather than before it; the list read for the cross-field check
   // is the fallback when the re-read fails to reach the backend.
-  const live = await remote.list().catch(() => before);
+  const live = await controller.list().catch(() => before);
   return {
-    queue: remote.queue,
+    queue: controller.queue,
     key: result.key,
     values: { ...result.values },
     seq: result.seq,

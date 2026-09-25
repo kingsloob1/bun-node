@@ -5,13 +5,13 @@ import type { RunnerSchedule, ScheduleInput } from "../shared/schedule";
 import type { BunRunner } from "./BunRunner";
 import type { ClearHistoryOptions, ClearHistoryResult } from "./clearHistory";
 import type {
-  RemoteRunHistoryPage,
-  RemoteRunnerInfo,
-  RemoteRunRecord,
   RunnerConfigInfo,
   RunnerConfigPatch,
   RunnerStats,
+  SharedRunnerInfo,
   TriggerOutcome,
+  TypedRunHistoryPage,
+  TypedRunRecord,
 } from "./types";
 import { readHistoryPage } from "../drivers/runHistory";
 import { DEFAULT_LOCK_TTL, DEFAULT_MAX_QUEUED_RUNS } from "../shared/constants";
@@ -30,8 +30,8 @@ import {
   writeRunnerConfig,
 } from "./config";
 
-/** Options for a {@link RemoteRunner}. */
-export interface RemoteRunnerOptions<TArgs = unknown, TResult = unknown> {
+/** Options for a {@link RunnerController}. */
+export interface RunnerControllerOptions<TArgs = unknown, TResult = unknown> {
   /** The runner's id. */
   id: string;
   /** The namespace the runner belongs to. */
@@ -64,10 +64,10 @@ const STAT_FIELDS = [
 /**
  * Controls a runner registered by **any** process sharing the driver and
  * namespace — this one or another. Get one with
- * `BunRunnerManager.remote(id)`.
+ * `BunRunnerManager.controller(id)`.
  *
  * ```ts
- * const cleanup = await jobs.runners.remote<CleanupArgs>("cleanup");
+ * const cleanup = await jobs.runners.controller<CleanupArgs>("cleanup");
  * await cleanup.pause();
  * await cleanup.trigger({ args: { olderThanDays: 30 } }); // queued for an owner
  * const { isRunning, runningOn } = await cleanup.info();
@@ -80,7 +80,7 @@ const STAT_FIELDS = [
  * - `pause`, `resume` and `updateSchedule` write the shared state. An owner
  *   adopts it at its next sync (`syncInterval`, 30s by default), or within the
  *   driver's event latency when it is listening for `control` events — which
- *   `remoteControl: "auto"`, the default, does on Redis and memory.
+ *   `control: "auto"`, the default, does on Redis and memory.
  * - `trigger` queues the run in the driver, and an owner drains it: at once
  *   when it is idle and follows `control` events, at its next sync otherwise,
  *   or when its current run finishes.
@@ -93,7 +93,7 @@ const STAT_FIELDS = [
  * **There is no remote kill.** A run can only be stopped by the process
  * executing it, with `BunRunner.kill()`; nothing here claims to stop one.
  */
-export class RemoteRunner<TArgs = unknown, TResult = unknown> {
+export class RunnerController<TArgs = unknown, TResult = unknown> {
   /** The runner's id. */
   readonly id: string;
   /** The namespace the runner belongs to. */
@@ -110,7 +110,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
   /** Logger for publish failures. */
   readonly #logger: Logger;
 
-  constructor(options: RemoteRunnerOptions<TArgs, TResult>) {
+  constructor(options: RunnerControllerOptions<TArgs, TResult>) {
     this.id = assertSegment(options.id, "runner id");
     this.namespace = assertNamespace(options.namespace);
 
@@ -127,7 +127,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: this.namespace, runnerId: this.id },
-      "remote-runner",
+      "runner-controller",
     );
   }
 
@@ -228,7 +228,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
    * moment cannot lose each other's write. Its owners adopt it at their next
    * sync (`syncInterval`, 30 s by default), or within the driver's event
    * latency when they are listening for `control` events — which
-   * `remoteControl: "auto"`, the default, does on Redis and memory.
+   * `control: "auto"`, the default, does on Redis and memory.
    *
    * The change applies from the **next** run: a run in flight keeps the mode
    * it started with, `parallel` → `single` never kills one, and a lowered
@@ -241,7 +241,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
    * returned snapshot's `appliedSeq` says whether an owner has adopted it.
    *
    * @throws ConfigError with `context.reason` `"empty"`, `"invalid"`,
-   * `"not-allowed"` (the runner's `remoteConfig` forbids that execution mode)
+   * `"not-allowed"` (the runner's `allowedOverrides` forbids that execution mode)
    * or `"not-configurable"` (no owner has started since remote configuration
    * shipped, so nothing would ever adopt it).
    */
@@ -371,11 +371,11 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
   /* --- introspection ---------------------------------------------------- */
 
   /** Run history, newest first, from any process that ran it. */
-  async history(limit?: number): Promise<RemoteRunRecord<TResult>[]> {
+  async history(limit?: number): Promise<TypedRunRecord<TResult>[]> {
     // The stored result is whatever the handler returned — the declared
     // result type — or the marker `maxResultBytes` put in its place.
     if (this.#local) {
-      return (await this.#local.history(limit)) as RemoteRunRecord<TResult>[];
+      return (await this.#local.history(limit)) as TypedRunRecord<TResult>[];
     }
 
     await this.#assertKnown();
@@ -383,23 +383,23 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
       this.namespace,
       this.#key,
       limit,
-    )) as RemoteRunRecord<TResult>[];
+    )) as TypedRunRecord<TResult>[];
   }
 
   /**
    * A page of the run history, with the whole history's size, from any
    * process that ran it.
    *
-   * What {@link RemoteRunner.history} cannot do: reach past the first `limit`
+   * What {@link RunnerController.history} cannot do: reach past the first `limit`
    * records, which `keepHistory` may hold far more than.
    */
   async historyPage(
     opts: RunHistoryQuery,
-  ): Promise<RemoteRunHistoryPage<TResult>> {
+  ): Promise<TypedRunHistoryPage<TResult>> {
     if (this.#local) {
       return (await this.#local.historyPage(
         opts,
-      )) as RemoteRunHistoryPage<TResult>;
+      )) as TypedRunHistoryPage<TResult>;
     }
 
     await this.#assertKnown();
@@ -408,7 +408,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
       this.namespace,
       this.#key,
       opts,
-    )) as RemoteRunHistoryPage<TResult>;
+    )) as TypedRunHistoryPage<TResult>;
   }
 
   /**
@@ -457,7 +457,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
    * and the last run. `local` adds this process's view when the runner is
    * registered here.
    */
-  async info(): Promise<RemoteRunnerInfo<TResult>> {
+  async info(): Promise<SharedRunnerInfo<TResult>> {
     await this.#assertKnown();
     const now = Date.now();
     const [state, lock, queuedTriggers, history] = await Promise.all([
@@ -474,7 +474,7 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
     const lockTtl =
       Number(state.lockTtl) || local?.options.lockTtl || DEFAULT_LOCK_TTL;
     const owner = lock ? parseToken(lock.token) : null;
-    const lastRun = history[0] as RemoteRunRecord<TResult> | undefined;
+    const lastRun = history[0] as TypedRunRecord<TResult> | undefined;
 
     return {
       id: this.id,
@@ -485,9 +485,9 @@ export class RemoteRunner<TArgs = unknown, TResult = unknown> {
       schedule,
       nextRunAt: nextFireDate(schedule),
       executionMode:
-        (state.executionMode as RemoteRunnerInfo["executionMode"]) ??
+        (state.executionMode as SharedRunnerInfo["executionMode"]) ??
         local?.executionMode,
-      runMode: (state.runMode as RemoteRunnerInfo["runMode"]) ?? local?.runMode,
+      runMode: (state.runMode as SharedRunnerInfo["runMode"]) ?? local?.runMode,
       queueRuns:
         state.queueRuns === undefined
           ? local?.options.queueRuns

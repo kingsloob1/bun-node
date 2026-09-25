@@ -38,7 +38,7 @@ export interface LocalWorker {
 }
 
 /** Which workers an instruction is addressed to. */
-export type WorkerTarget =
+export type WorkerSelector =
   | {
       /** One incarnation, by its id. */
       id: string;
@@ -156,8 +156,8 @@ const REFUSED_FROM: Partial<
   resume: { states: ["stopped", "stopping"], instead: "use start" },
 };
 
-/** Options for a {@link RemoteWorker}. */
-export interface RemoteWorkerOptions {
+/** Options for a {@link WorkerController}. */
+export interface WorkerControllerOptions {
   /** The namespace the queue belongs to. */
   namespace: string;
   /** The queue whose workers this controls. */
@@ -178,13 +178,13 @@ export interface RemoteWorkerOptions {
  * Controls the workers of one queue, wherever they run.
  *
  * ```ts
- * const mail = jobs.workers.remote("mail");
+ * const mail = jobs.workers.controller("mail");
  * await mail.pause({ key: "billing.mail" });   // every replica
  * await mail.setConfig("billing.mail", { concurrency: 16 });
  * await mail.stop({ id: liveWorker.id });      // one incarnation
  * ```
  *
- * The same shape as `RemoteRunner`, and for the same reason: everything goes
+ * The same shape as `RunnerController`, and for the same reason: everything goes
  * through what the workers already read, so no process has to be reachable
  * for a call to succeed. The event that follows each write is a hint that
  * saves a poll; the stored entry is the truth.
@@ -200,7 +200,7 @@ export interface RemoteWorkerOptions {
  * - **Configuration** is addressed by the stable key alone, so it survives
  *   restarts and reaches every replica — including one started tomorrow.
  */
-export class RemoteWorker {
+export class WorkerController {
   /** The namespace the queue belongs to. */
   readonly namespace: string;
   /** The queue whose workers this controls. */
@@ -215,7 +215,7 @@ export class RemoteWorker {
   /** Logger for publish failures. */
   readonly #logger: Logger;
 
-  constructor(options: RemoteWorkerOptions) {
+  constructor(options: WorkerControllerOptions) {
     this.namespace = assertNamespace(options.namespace);
     this.queue = assertSegment(options.queue, "queue name");
     this.driver = options.driver;
@@ -223,7 +223,7 @@ export class RemoteWorker {
     this.#logger = createJobsLogger(
       options.logger,
       { namespace: this.namespace, queue: this.queue },
-      "remote-worker",
+      "worker-controller",
     );
   }
 
@@ -280,10 +280,10 @@ export class RemoteWorker {
    * Refused with a {@link WorkerStateConflictError} — before anything is
    * written — when an addressed worker is `stopped` or `stopping`: pausing
    * one would start it first, which is never what holding it parked meant.
-   * Use {@link RemoteWorker.start}, then pause. For a `{ key }` target one
+   * Use {@link WorkerController.start}, then pause. For a `{ key }` target one
    * parked replica refuses the whole call; address the running ones by id.
    */
-  async pause(target: WorkerTarget): Promise<WorkerControlResult> {
+  async pause(target: WorkerSelector): Promise<WorkerControlResult> {
     return await this.#instruct(target, "paused", "pause");
   }
 
@@ -292,18 +292,18 @@ export class RemoteWorker {
    *
    * Refused with a {@link WorkerStateConflictError} — before anything is
    * written — when an addressed worker is `stopped` or `stopping`: a parked
-   * worker is brought back with {@link RemoteWorker.start}, which also calls
+   * worker is brought back with {@link WorkerController.start}, which also calls
    * off a stop still draining. For a `{ key }` target one parked replica
    * refuses the whole call.
    */
-  async resume(target: WorkerTarget): Promise<WorkerControlResult> {
+  async resume(target: WorkerSelector): Promise<WorkerControlResult> {
     return await this.#instruct(target, "running", "resume");
   }
 
   /**
    * Parks the target: it stops claiming and doing maintenance, drains the
    * jobs it has, and stays registered and heartbeating so
-   * {@link RemoteWorker.start} can reach it.
+   * {@link WorkerController.start} can reach it.
    *
    * How long that lasts is the *worker's* choice, not the caller's — it is
    * reported as `control.stopPersistence`. `persist` asks for the other one,
@@ -312,7 +312,7 @@ export class RemoteWorker {
    * rather than assume.
    */
   async stop(
-    target: WorkerTarget,
+    target: WorkerSelector,
     options?: {
       /** Ask for a persistence other than the worker's own. */
       persist?: WorkerStopPersistence;
@@ -338,7 +338,7 @@ export class RemoteWorker {
   }
 
   /** Brings a parked target back, and clears `paused` with it. */
-  async start(target: WorkerTarget): Promise<WorkerControlResult> {
+  async start(target: WorkerSelector): Promise<WorkerControlResult> {
     return await this.#instruct(target, "running", "start");
   }
 
@@ -389,7 +389,7 @@ export class RemoteWorker {
 
   /** Records what the target should be, and announces it. */
   async #instruct(
-    target: WorkerTarget,
+    target: WorkerSelector,
     desired: WorkerDesiredState,
     action: WorkerControlAction,
     stop: {
@@ -438,7 +438,8 @@ export class RemoteWorker {
 
       // A worker in this process hears it without a round trip. It still
       // re-reads the stored entry, so this is only latency saved, never a
-      // second path a local worker could take and a remote one could not.
+      // second path a local worker could take and one in another process
+      // could not.
       void this.#local(worker.id)
         ?.syncControl()
         .catch(() => undefined);
@@ -491,7 +492,7 @@ export class RemoteWorker {
   }
 
   /** The live workers an instruction is addressed to. */
-  async #resolve(target: WorkerTarget): Promise<WorkerInfo[]> {
+  async #resolve(target: WorkerSelector): Promise<WorkerInfo[]> {
     const live = await this.#live();
 
     return "id" in target
@@ -575,7 +576,7 @@ function stateOf(worker: WorkerInfo): WorkerState {
  * The workers of a namespace, and the controller for each queue's — the
  * counterpart of `jobs.runners`.
  */
-export class RemoteWorkerManager {
+export class WorkerControllerManager {
   /** The namespace it covers. */
   readonly namespace: string;
 
@@ -586,7 +587,7 @@ export class RemoteWorkerManager {
   /** Logger for the controllers it builds. */
   readonly #logger: LoggerLike | undefined;
   /** One controller per queue, since each is stateless but not free to build. */
-  readonly #controllers = new Map<string, RemoteWorker>();
+  readonly #controllers = new Map<string, WorkerController>();
 
   constructor(options: {
     /** The namespace it covers. */
@@ -605,7 +606,7 @@ export class RemoteWorkerManager {
   }
 
   /** The controller for one queue's workers. */
-  remote(queue: string): RemoteWorker {
+  controller(queue: string): WorkerController {
     const name = assertSegment(queue, "queue name");
     const existing = this.#controllers.get(name);
 
@@ -613,7 +614,7 @@ export class RemoteWorkerManager {
       return existing;
     }
 
-    const controller = new RemoteWorker({
+    const controller = new WorkerController({
       namespace: this.namespace,
       queue: name,
       driver: this.#driver,

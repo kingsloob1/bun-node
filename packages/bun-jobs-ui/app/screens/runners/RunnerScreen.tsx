@@ -27,7 +27,7 @@ import {
   describeSchedule,
   isRunnerDenied,
   isRunnerNotFound,
-  REMOTE_RUNNER_NOTE,
+  NON_LOCAL_RUNNER_NOTE,
   runnerBadges,
 } from "./runnerFormat";
 import { RunnerHistory } from "./RunnerHistory";
@@ -109,7 +109,7 @@ export function RunnerSummary({ runner }: RunnerSummaryProps) {
         { label: "Namespace", value: <code>{runner.namespace}</code> },
         {
           label: "Registered here",
-          value: runner.isLocal ? "Yes (local)" : "No (remote)",
+          value: runner.isLocal ? "Yes (local)" : "No (another process)",
           key: "isLocal",
         },
         runner.file !== undefined && {
@@ -270,7 +270,7 @@ function RunnerDetail({
                 {badge.label}
               </Badge>
             ))}
-            {!runner.isLocal && <Badge tone="neutral">Remote</Badge>}
+            {!runner.isLocal && <Badge tone="neutral">Other process</Badge>}
           </span>
           {runner.name !== runner.id && (
             <code
@@ -288,9 +288,9 @@ function RunnerDetail({
         <p
           className="notice"
           role="note"
-          data-testid="remote-note"
+          data-testid="non-local-note"
         >
-          {REMOTE_RUNNER_NOTE}
+          {NON_LOCAL_RUNNER_NOTE}
         </p>
       )}
 

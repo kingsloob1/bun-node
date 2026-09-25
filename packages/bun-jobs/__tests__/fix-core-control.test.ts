@@ -53,7 +53,7 @@ function makeWorker(
       namespace: ns,
       driver,
       logger: noopLogger,
-      remoteControl: { subscribe: false, interval: 100 },
+      control: { subscribe: false, interval: 100 },
       // Long, so only the control poll can carry a change inside the test.
       reportInterval: 60_000,
       pollInterval: 20,

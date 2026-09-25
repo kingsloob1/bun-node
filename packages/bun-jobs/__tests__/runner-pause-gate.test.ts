@@ -468,12 +468,12 @@ function gateSuite(
         driver,
         logger: noopLogger,
       });
-      return await observer.remote<GateArgs, string>(ID);
+      return await observer.controller<GateArgs, string>(ID);
     }
 
     it("a paused owner drains a forced remote trigger", async () => {
       const { namespace } = await setup();
-      const owner = makeRunner(driver, namespace, { remoteControl: true });
+      const owner = makeRunner(driver, namespace, { control: true });
       await owner.start();
       const remote = await remoteFor(namespace);
 
@@ -511,7 +511,7 @@ function gateSuite(
       ).toBe("queued");
 
       // The owner adopts the paused flag on start and drains, awaited.
-      const owner = makeRunner(driver, namespace, { remoteControl: true });
+      const owner = makeRunner(driver, namespace, { control: true });
       await owner.start();
       await settle(owner);
 

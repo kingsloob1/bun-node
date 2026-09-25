@@ -37,7 +37,7 @@ for await (const line of console) {
       pollInterval: 25,
       // Polls its instructions every 100ms where the driver cannot push them,
       // so the parent's remote pause lands quickly on every backend.
-      remoteControl: { interval: 100 },
+      control: { interval: 100 },
     });
     worker = started;
     void started.run();

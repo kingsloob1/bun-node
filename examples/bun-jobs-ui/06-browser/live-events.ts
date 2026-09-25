@@ -798,7 +798,7 @@ try {
   const heldBefore = jobs.worker(QUEUE, async () => "sent", heldOptions);
   void heldBefore.run();
   await view.evaluate<WorkerRow[]>(workerEvents(heldBefore.id, 1));
-  await jobs.workers.remote(QUEUE).stop({ id: heldBefore.id });
+  await jobs.workers.controller(QUEUE).stop({ id: heldBefore.id });
   await waitFor(
     `${heldBefore.key} to stop`,
     () => heldBefore.state === "stopped",
@@ -822,7 +822,7 @@ try {
     ],
   );
   // Released, so nothing later on this queue inherits the stop.
-  await jobs.workers.remote(QUEUE).start({ id: heldAgain.id });
+  await jobs.workers.controller(QUEUE).start({ id: heldAgain.id });
   await heldAgain.close({ timeout: 1_000 });
 
   /* ---------------------------------------------------------------- */

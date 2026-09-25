@@ -43,7 +43,11 @@ import { BackoffStrategies } from "./queue/backoff";
 import { addDefinedJob, splitDefinitionDefaults } from "./queue/BunQueue";
 import { MAX_TIMER_MS } from "./queue/BunQueueWorker";
 import { JobDefinitions } from "./queue/definitions";
-import { BunQueue, BunQueueWorker, RemoteWorkerManager } from "./queue/index";
+import {
+  BunQueue,
+  BunQueueWorker,
+  WorkerControllerManager,
+} from "./queue/index";
 import { JobBuilder } from "./queue/JobBuilder";
 import { JobDraft } from "./queue/JobDraft";
 import { BunRunnerManager } from "./runner/index";
@@ -123,10 +127,10 @@ export interface BunJobsOptions {
    * could be listed but not controlled is the more surprising default. It
    * costs one subscription per worker where the driver pushes events, and
    * where it does not (poll mode), two reads per worker every
-   * `remoteControl.interval` — 2 s by default, and never longer than the
+   * `control.interval` — 2 s by default, and never longer than the
    * worker's `reportInterval`. Either way each heartbeat re-reads them too.
    */
-  workerRemoteControl?: boolean;
+  workerControl?: boolean;
   /**
    * What is recorded into the analytics buckets — per-second and per-minute
    * series of every queue's jobs, each runner's runs and durations, and each
@@ -297,10 +301,10 @@ export class BunJobs<
   readonly runners: BunRunnerManager;
   /**
    * The workers of this namespace, and the controller for each queue's —
-   * `jobs.workers.remote("mail")` pauses, stops, starts and reconfigures
+   * `jobs.workers.controller("mail")` pauses, stops, starts and reconfigures
    * workers wherever they run.
    */
-  readonly workers: RemoteWorkerManager;
+  readonly workers: WorkerControllerManager;
 
   /** Whether this context built the driver and must close it. */
   readonly #ownsDriver: boolean;
@@ -336,7 +340,7 @@ export class BunJobs<
   /** The `metrics` option, merged under every runner's and worker's own. */
   readonly #metrics: MetricsOptions | undefined;
   /** Whether workers created here obey instructions from other processes. */
-  readonly #workerRemoteControl: boolean;
+  readonly #workerControl: boolean;
   /**
    * How many workers have been created here for each queue, so the second one
    * on a queue gets an ordinal in its stable key and the first keeps the
@@ -376,7 +380,7 @@ export class BunJobs<
       options.service === undefined
         ? undefined
         : assertSegment(options.service, "service");
-    this.#workerRemoteControl = options.workerRemoteControl ?? true;
+    this.#workerControl = options.workerControl ?? true;
     this.#processEvery =
       options.processEvery === undefined
         ? undefined
@@ -392,7 +396,7 @@ export class BunJobs<
       `jobs:${this.namespace}`,
     );
 
-    this.workers = new RemoteWorkerManager({
+    this.workers = new WorkerControllerManager({
       namespace: this.namespace,
       driver: this.driver,
       locals: () => this.#workers,
@@ -574,7 +578,7 @@ export class BunJobs<
       publishGate: this.#publishGate,
       ...(this.service === undefined ? {} : { service: this.service }),
       keyOrdinal: ordinal,
-      remoteControl: this.#workerRemoteControl,
+      control: this.#workerControl,
       ...options,
       ...this.#mergeMetrics(options?.metrics),
       namespace: this.namespace,

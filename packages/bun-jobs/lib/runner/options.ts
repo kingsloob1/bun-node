@@ -62,7 +62,7 @@ function resolveFile(file: string | URL, cwd?: string): string {
  *
  * Defaults to all three. An empty list is refused rather than silently
  * meaning "none": a runner nobody can reconfigure is spelled by leaving
- * `remoteConfig` out and never granting the action.
+ * `allowedOverrides` out and never granting the action.
  */
 function resolveExecutionModes(
   modes: ExecutionMode[] | undefined,
@@ -73,7 +73,7 @@ function resolveExecutionModes(
 
   if (modes.length === 0) {
     throw new ConfigError(
-      "remoteConfig.executionModes must name at least one execution mode",
+      "allowedOverrides.executionModes must name at least one execution mode",
       { executionModes: modes },
     );
   }
@@ -81,7 +81,7 @@ function resolveExecutionModes(
   for (const mode of modes) {
     if (!(EXECUTION_MODES as readonly string[]).includes(mode)) {
       throw new ConfigError(
-        `remoteConfig.executionModes must only contain ${EXECUTION_MODES.join(", ")}`,
+        `allowedOverrides.executionModes must only contain ${EXECUTION_MODES.join(", ")}`,
         { executionModes: modes, offending: mode },
       );
     }
@@ -99,16 +99,16 @@ function resolveExecutionModes(
  * (Redis) or holds them in this process (memory) costs nothing to listen on,
  * while one that polls (SQL, MongoDB, the file driver) would run a query every
  * few dozen milliseconds **per runner**. The sync adopts every change either
- * way, so this decides latency alone. `BunQueueWorker` resolves its
- * `remoteControl.subscribe` with the very same rule.
+ * way, so this decides latency alone. `BunQueueWorker` resolves the
+ * `subscribe` of its own `control` option with the very same rule.
  */
-function resolveRemoteControl(
-  remoteControl: boolean | "auto" | undefined,
+function resolveControl(
+  control: boolean | "auto" | undefined,
   driver: JobsDriver,
 ): boolean {
-  return remoteControl === undefined || remoteControl === "auto"
+  return control === undefined || control === "auto"
     ? driver.capabilities.events !== "poll"
-    : remoteControl;
+    : control;
 }
 
 /**
@@ -218,12 +218,12 @@ export function resolveRunnerOptions<TArgs>(options: BunRunnerOptions<TArgs>): {
     captureLogs,
     metrics: resolveMetricsOptions(options.metrics),
     publish: options.publish ?? false,
-    remoteControl: resolveRemoteControl(options.remoteControl, driver),
+    control: resolveControl(options.control, driver),
     args: options.args,
     childDriver,
-    remoteConfig: {
+    allowedOverrides: {
       executionModes: resolveExecutionModes(
-        options.remoteConfig?.executionModes,
+        options.allowedOverrides?.executionModes,
       ),
     },
     spawn: {

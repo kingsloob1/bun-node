@@ -63,7 +63,6 @@ export {
   DEFAULT_REDACT_REPLACEMENT,
   type RunLogRedactor,
 } from "./redact";
-export { RemoteRunner, type RemoteRunnerOptions } from "./RemoteRunner";
 export {
   cutToBytes,
   renderRunLogLine,
@@ -72,12 +71,14 @@ export {
   type RunLogTotals,
 } from "./runLogCapture";
 export {
+  RunnerController,
+  type RunnerControllerOptions,
+} from "./RunnerController";
+export {
   type BunRunnerEvents,
   type BunRunnerOptions,
   defineHandler,
   type InProcessOptions,
-  type RemoteRunnerInfo,
-  type RemoteRunRecord,
   type ResolvedRunLogCaptureOptions,
   type ResolvedRunnerOptions,
   type RunContext,
@@ -85,18 +86,20 @@ export {
   type RunLogCaptureOptions,
   type RunLogOptions,
   type RunLogRedactOptions,
+  type RunnerAllowedOverrides,
   type RunnerConfigInfo,
   type RunnerConfigKey,
   type RunnerConfigPatch,
   type RunnerConfigValues,
   type RunnerHandler,
   type RunnerInfo,
-  type RunnerRemoteConfigOptions,
   type RunnerStats,
   type RunnerStatus,
   type RunProgress,
+  type SharedRunnerInfo,
   type SpawnOptions,
   type TriggerOutcome,
   type TruncatedRunResult,
+  type TypedRunRecord,
   type WorkerOptions,
 } from "./types";

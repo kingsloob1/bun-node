@@ -6,9 +6,9 @@ import type {
 import type {
   DriverEvent,
   JobRecord,
-  RemoteRunnerInfo,
   RepeatRecord,
   RunRecord,
+  SharedRunnerInfo,
 } from "../../lib/index";
 import { createTestLogger } from "@kingsleyweb/bun-common";
 import { afterAll, describe, expect, it } from "bun:test";
@@ -319,7 +319,10 @@ describe("RunnerSource", () => {
     await registerElsewhere(jobs, "remote");
 
     const source = new RunnerSource(resolve(jobs));
-    expect(await source.list()).toEqual({ local: [local], remote: ["remote"] });
+    expect(await source.list()).toEqual({
+      local: [local],
+      nonLocal: ["remote"],
+    });
 
     const here = await source.resolve("local");
     expect(here.local).toBe(true);
@@ -383,7 +386,7 @@ describe("RunnerSource", () => {
     await source.list();
     expect(discoveries).toBe(1);
     time.advance(5_000);
-    expect(await source.list()).toEqual({ local: [], remote: ["remote"] });
+    expect(await source.list()).toEqual({ local: [], nonLocal: ["remote"] });
     expect(discoveries).toBe(2);
   });
 
@@ -398,7 +401,7 @@ describe("RunnerSource", () => {
     await registerElsewhere(jobs, "remote");
 
     const fixed = new RunnerSource(resolve(jobs, { runners: [listed] }));
-    expect(await fixed.list()).toEqual({ local: [listed], remote: [] });
+    expect(await fixed.list()).toEqual({ local: [listed], nonLocal: [] });
     const found = await fixed.resolve("listed");
     expect(found.local && found.runner).toBe(listed);
     expect(found.controller.isLocal).toBe(true);
@@ -554,7 +557,7 @@ describe("serializers", () => {
   };
 
   it("shapes runner info: no file, epoch times, hosts only when exposed", () => {
-    const info: RemoteRunnerInfo = {
+    const info: SharedRunnerInfo = {
       id: "cleanup",
       namespace: "api-sources",
       isLocal: true,
@@ -615,9 +618,9 @@ describe("serializers", () => {
     expect(hidden.runningOn).toEqual({ runId: "run-1", since: 1 });
 
     // A runner only another process registered: the backend view alone.
-    const { local: _local, file: _file, ...remoteOnly } = info;
+    const { local: _local, file: _file, ...nonLocalOnly } = info;
     const remote = toRunnerInfoDto(
-      { ...remoteOnly, isLocal: false, executionMode: undefined },
+      { ...nonLocalOnly, isLocal: false, executionMode: undefined },
       req,
       { ...defaults, exposeRunnerFiles: true },
     );

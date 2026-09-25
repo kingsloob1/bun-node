@@ -284,7 +284,7 @@ export interface RunnerConfigValues {
 export interface RunnerConfigPatch {
   /**
    * Where runs execute, from the *next* run on: a run already in flight keeps
-   * the mode it started with. Refused when the owner's `remoteConfig`
+   * the mode it started with. Refused when the owner's `allowedOverrides`
    * does not permit it.
    */
   executionMode?: ExecutionMode | null;
@@ -326,7 +326,7 @@ export interface RunnerConfigInfo {
    * refused is still listed — {@link RunnerConfigInfo.error} says why.
    */
   overridden: RunnerConfigKey[];
-  /** The execution modes the owner's code permits (its `remoteConfig.executionModes`). */
+  /** The execution modes the owner's code permits (its `allowedOverrides.executionModes`). */
   allowed?: ExecutionMode[];
   /** The override's version; `0` when nothing is stored. */
   seq: number;
@@ -351,7 +351,7 @@ export interface RunnerConfigInfo {
 }
 
 /** What a remote controller may change about a runner. */
-export interface RunnerRemoteConfigOptions {
+export interface RunnerAllowedOverrides {
   /**
    * The execution modes an override may choose. Defaults to all three, so a
    * code author forbids `in-process` on a shared API process by listing only
@@ -375,21 +375,21 @@ export interface TruncatedRunResult {
 }
 
 /**
- * A run record as a {@link RemoteRunner} reads it: `result` typed as the
+ * A run record as a {@link RunnerController} reads it: `result` typed as the
  * runner's result — or the marker stored when it was too large to keep.
  */
-export type RemoteRunRecord<TResult = unknown> = Omit<RunRecord, "result"> & {
+export type TypedRunRecord<TResult = unknown> = Omit<RunRecord, "result"> & {
   /** The handler's return value, or the marker `maxResultBytes` left in its place. */
   result?: TResult | TruncatedRunResult;
 };
 
 /**
- * A page of run history as a {@link RemoteRunner} reads it: the records typed
- * as {@link RemoteRunRecord}, beside the whole history's size.
+ * A page of run history as a {@link RunnerController} reads it: the records typed
+ * as {@link TypedRunRecord}, beside the whole history's size.
  */
-export interface RemoteRunHistoryPage<TResult = unknown> {
+export interface TypedRunHistoryPage<TResult = unknown> {
   /** The page's records, in the order asked for. */
-  records: RemoteRunRecord<TResult>[];
+  records: TypedRunRecord<TResult>[];
   /** How many records the history holds in total, not just on this page. */
   total: number;
   /**
@@ -408,7 +408,7 @@ export interface RemoteRunHistoryPage<TResult = unknown> {
  * started; a runner last started by a version that did not persist them
  * reports them as `undefined`.
  */
-export interface RemoteRunnerInfo<TResult = unknown> {
+export interface SharedRunnerInfo<TResult = unknown> {
   /** The runner's id. */
   id: string;
   /** The namespace it belongs to. */
@@ -454,7 +454,7 @@ export interface RemoteRunnerInfo<TResult = unknown> {
   /** Lifetime counters. */
   stats: RunnerStats;
   /** The most recent run. */
-  lastRun?: RemoteRunRecord<TResult>;
+  lastRun?: TypedRunRecord<TResult>;
   /** The most recent failure. */
   lastError?: { name: string; message: string };
   /** When its persisted state last changed, in epoch milliseconds. */
@@ -813,7 +813,7 @@ export interface BunRunnerOptions<TArgs = unknown> {
   publishGate?: () => Promise<void>;
   /**
    * Subscribe to `control` events, so a change made through
-   * `BunRunnerManager.remote()` in another process — pause, resume, a new
+   * `BunRunnerManager.controller()` in another process — pause, resume, a new
    * schedule, a configuration override, a queued trigger — applies within the
    * driver's event latency (tens of milliseconds on every backend) instead of
    * at the next `syncInterval`.
@@ -824,17 +824,17 @@ export interface BunRunnerOptions<TArgs = unknown> {
    * query every few dozen milliseconds **per runner**. `true` subscribes on
    * every backend and `false` on none; the sync adopts every change either
    * way, so the choice is about latency, never about whether remote control
-   * works. It is the rule `BunQueueWorker` already resolves its
-   * `remoteControl.subscribe` with.
+   * works. It is the rule `BunQueueWorker` already resolves the `subscribe` of
+   * its own `control` option with.
    */
-  remoteControl?: boolean | "auto";
+  control?: boolean | "auto";
   /**
    * What a remote controller may change about this runner's executor and
    * overlap settings. Only `executionModes` today; it defaults to all three,
    * and the owner persists it so a controller elsewhere can refuse a mode
    * before writing it.
    */
-  remoteConfig?: RunnerRemoteConfigOptions;
+  allowedOverrides?: RunnerAllowedOverrides;
   /** Child-process options, for `executionMode: "spawn"`. */
   spawn?: SpawnOptions;
   /** Worker options, for `executionMode: "worker"`. */
@@ -877,7 +877,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
    * (Redis) or local (memory), `false` where they are polled (SQL, MongoDB,
    * the file driver).
    */
-  remoteControl: boolean;
+  control: boolean;
   /** Run-log capture, with `true`/`false` expanded and every cap filled in. */
   captureLogs: ResolvedRunLogCaptureOptions;
   /**
@@ -895,7 +895,7 @@ export interface ResolvedRunnerOptions<TArgs = unknown> extends Required<
   /** Driver config for children, when one is available. */
   childDriver?: DriverConfig;
   /** Remote-configuration limits, with the execution-mode allow-list filled in. */
-  remoteConfig: Required<RunnerRemoteConfigOptions>;
+  allowedOverrides: Required<RunnerAllowedOverrides>;
   /** Child-process options with defaults applied. */
   spawn: Required<Pick<SpawnOptions, "stdout" | "stderr" | "startTimeout">> &
     SpawnOptions;

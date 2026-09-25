@@ -1603,7 +1603,7 @@ export interface WorkerConfigInfo {
 export interface WorkerControlInfo {
   /**
    * Whether it listens for control at all: it was started with
-   * `remoteControl`, and its driver can store the entries.
+   * `control`, and its driver can store the entries.
    */
   enabled: boolean;
   /**

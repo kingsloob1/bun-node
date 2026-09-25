@@ -17,7 +17,7 @@ import {
 /**
  * The runner routes over `fetch()`, with `validateResponses` on. `nightly` is
  * registered in this process; `remote` exists only as state another process
- * would have persisted, and is reached through `manager.remote(id)`.
+ * would have persisted, and is reached through `manager.controller(id)`.
  */
 
 afterEach(() => {
@@ -51,7 +51,7 @@ async function withRunners(overrides = {}) {
  * in the process, which pays for importing the file.
  */
 async function runsRecorded(jobs: BunJobs, id: string, count: number) {
-  const controller = await jobs.runners.remote(id);
+  const controller = await jobs.runners.controller(id);
   await waitFor(async () => {
     const history = await controller.history();
     return history.filter((run) => run.status !== "running").length >= count;
@@ -114,7 +114,7 @@ describe("listing and reading", () => {
 
   it("says in the list which runners are paused, remote ones included (UI-G16)", async () => {
     const h = await withRunners();
-    await (await h.jobs.runners.remote("remote")).pause();
+    await (await h.jobs.runners.controller("remote")).pause();
 
     const listed = await h.call("GET", "/runners");
     expect(listed.status).toBe(200);
@@ -976,14 +976,12 @@ describe("pruning and docs", () => {
       ["/runners/{runner}/resume", "post"],
       ["/runners/{runner}/schedule", "put"],
     ] as const) {
-      expect(paths[path]![method]!.description).toContain(
-        "remoteControl: true",
-      );
+      // Backticked, because bare `control` appears throughout unrelated
+      // prose: the option's own spelling is what has to be there.
+      expect(paths[path]![method]!.description).toContain("`control: true`");
       // And what the default now does on its own, which is the part an
       // operator reading "30s" would otherwise take as the only answer.
-      expect(paths[path]![method]!.description).toContain(
-        'remoteControl: "auto"',
-      );
+      expect(paths[path]![method]!.description).toContain('`control: "auto"`');
       expect(paths[path]![method]!.description).toContain("30s");
     }
   });

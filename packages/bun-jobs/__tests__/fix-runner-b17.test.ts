@@ -24,7 +24,7 @@ import { testNamespace, waitFor } from "./helpers";
 
 /**
  * B17: a runner built from a driver *instance* published every mode in
- * `remoteConfig.executionModes` as `allowed`, so the management API (and the
+ * `allowedOverrides.executionModes` as `allowed`, so the management API (and the
  * UI) accepted `worker` or `spawn` — which the owner then always refused,
  * having no driver config to hand a child. It now publishes only the modes it
  * can adopt, and a controller refuses the rest before writing anything.
@@ -62,7 +62,7 @@ async function owner(
     driver,
     file: ECHO_HANDLER,
     executionMode: options.executionMode ?? "in-process",
-    remoteConfig: {
+    allowedOverrides: {
       executionModes: options.executionModes ?? ["in-process", "worker"],
     },
     ...(options.childDriver ? { childDriver: options.childDriver } : {}),
@@ -139,7 +139,7 @@ describe("B17: allowed lists only the modes an owner can adopt", () => {
       driver,
       logger: noopLogger,
     });
-    const remote = await manager.remote("b17");
+    const remote = await manager.controller("b17");
     await expect(
       remote.updateConfig({ executionMode: "worker" }),
     ).rejects.toThrow(ConfigError);
@@ -198,7 +198,7 @@ describe("B17: the management API refuses up front", () => {
       id: "b17",
       file: ECHO_HANDLER,
       executionMode: "in-process",
-      remoteConfig: { executionModes: ["in-process", "worker"] },
+      allowedOverrides: { executionModes: ["in-process", "worker"] },
     });
 
     const res = await h.call("PUT", "/runners/b17/config", body);

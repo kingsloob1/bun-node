@@ -14,7 +14,7 @@ import {
   MemoryDriver,
   readWorkerConfig,
   readWorkerStop,
-  RemoteWorker,
+  WorkerController,
   writeWorkerConfig,
   writeWorkerControl,
   writeWorkerStop,
@@ -55,7 +55,7 @@ function makeWorker(
   const worker = new BunQueueWorker<unknown, unknown>("mail", processor, {
     namespace: ns,
     driver,
-    remoteControl: true,
+    control: true,
     reportInterval: 200,
     pollInterval: 10,
     waitToExit: false,
@@ -323,7 +323,11 @@ describe("remote control", () => {
     void worker.run();
     await waitFor(() => worker.isRunning, { message: "never started" });
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     // The controller reads the registry, so wait until the worker is in it.
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "the worker never registered",
@@ -364,7 +368,11 @@ describe("remote control", () => {
     void one.run();
     void two.run();
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length === 2, {
       message: "both workers never registered",
     });
@@ -635,7 +643,11 @@ describe("how long a stop lasts", () => {
     void first.run();
     await waitFor(() => first.isRunning, { message: "never started" });
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
@@ -670,7 +682,11 @@ describe("how long a stop lasts", () => {
     void first.run();
     await waitFor(() => first.isRunning, { message: "never started" });
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
@@ -696,7 +712,7 @@ describe("how long a stop lasts", () => {
     });
 
     // And starting it clears the record, so it stays started.
-    const controller = new RemoteWorker({
+    const controller = new WorkerController({
       namespace: ns,
       queue: "mail",
       driver,
@@ -724,7 +740,11 @@ describe("how long a stop lasts", () => {
     void worker.run();
     await waitFor(() => worker.isRunning, { message: "never started" });
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
@@ -749,7 +769,7 @@ describe("delivery", () => {
     const driver = new MemoryDriver();
     const ns = testNamespace("poll");
     const worker = makeWorker(driver, ns, async () => null, {
-      remoteControl: { subscribe: false, interval: 100 },
+      control: { subscribe: false, interval: 100 },
     });
     void worker.run();
     await waitFor(() => worker.isRunning, { message: "never started" });
@@ -771,7 +791,7 @@ describe("delivery", () => {
     const ns = testNamespace("fallback");
     const worker = makeWorker(driver, ns, async () => null, {
       // Neither a subscription nor a control poll: the report is all there is.
-      remoteControl: { subscribe: false, interval: 3_600_000 },
+      control: { subscribe: false, interval: 3_600_000 },
       reportInterval: 1_000,
     });
     void worker.run();
@@ -791,7 +811,7 @@ describe("delivery", () => {
     const driver = new MemoryDriver();
     const ns = testNamespace("off");
     const worker = makeWorker(driver, ns, async () => null, {
-      remoteControl: false,
+      control: false,
       concurrency: 2,
     });
     void worker.run();
@@ -847,7 +867,11 @@ describe("the controller's own reads", () => {
     });
     void worker.run();
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
@@ -885,7 +909,11 @@ describe("the controller's own reads", () => {
   it("refuses a write whose expectedSeq has moved on", async () => {
     const driver = new MemoryDriver();
     const ns = testNamespace("contended");
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await driver.connect();
     await driver.ensureQueue({ ns, queue: "mail" });
 
@@ -921,12 +949,12 @@ describe("the controller's own reads", () => {
       pollInterval: 10,
       waitToExit: false,
       // Neither delivery path: only the controller's direct nudge can carry it.
-      remoteControl: { subscribe: false, interval: 3_600_000 },
+      control: { subscribe: false, interval: 3_600_000 },
     });
     void worker.run();
     await waitFor(() => worker.isRunning, { message: "never started" });
 
-    const remote = jobs.workers.remote("mail");
+    const remote = jobs.workers.controller("mail");
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "never registered",
     });
@@ -1026,7 +1054,11 @@ describe("a remote stop's abandon timeout", () => {
     const job = await queue.add("slow", {});
     await started.promise;
 
-    const remote = new RemoteWorker({ namespace: ns, queue: "mail", driver });
+    const remote = new WorkerController({
+      namespace: ns,
+      queue: "mail",
+      driver,
+    });
     await waitFor(async () => (await remote.list()).length > 0, {
       message: "the worker never registered",
     });

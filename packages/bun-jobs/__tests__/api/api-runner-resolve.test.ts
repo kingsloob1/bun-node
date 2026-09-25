@@ -130,7 +130,7 @@ describe("runner lookup after the discovery cache was filled", () => {
     await registerRunnerElsewhere(jobs, "known");
 
     // One read fills the cache.
-    expect(await source.list()).toEqual({ local: [], remote: ["known"] });
+    expect(await source.list()).toEqual({ local: [], nonLocal: ["known"] });
     expect(reads()).toBe(1);
 
     // A miss on the cached discovery spends the window's one re-read...

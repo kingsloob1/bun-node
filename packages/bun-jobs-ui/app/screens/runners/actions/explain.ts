@@ -10,7 +10,7 @@ export type SkipReason = Extract<
 
 /**
  * A skipped trigger's reason in words. Verified against
- * `BunRunner.trigger()` / `RemoteRunner.trigger()`: `busy`, `lock-held` and
+ * `BunRunner.trigger()` / `RunnerController.trigger()`: `busy`, `lock-held` and
  * `max-concurrency` are skips only because the runner does not queue
  * triggers (`queueRuns: false`); with queueing on they come back `queued`.
  */
@@ -64,7 +64,7 @@ export function explainRunnerError(
     case "RUNNER_NOT_CONFIGURABLE":
       return "This runner cannot be configured from the API yet: no process running it has started since remote configuration shipped, so a setting would be stored and never adopted. Restart the runner on the current version, or change its settings where the runner is defined.";
     case "CONFIG_NOT_ALLOWED":
-      return "The runner's own code does not permit that setting — usually an execution mode outside its `remoteConfig.executionModes`. Choose one of the modes offered, or widen the list where the runner is defined.";
+      return "The runner's own code does not permit that setting — usually an execution mode outside its `allowedOverrides.executionModes`. Choose one of the modes offered, or widen the list where the runner is defined.";
     case "RUNNER_NOT_FOUND":
       return action === "clearHistory"
         ? "The runner no longer exists in this namespace (it was unregistered, or its state was removed), so it has no history left to clear."

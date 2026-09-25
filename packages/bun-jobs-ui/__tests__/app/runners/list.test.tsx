@@ -88,7 +88,7 @@ describe("the runner list screen", () => {
     );
 
     const remote = within(table).getByTestId("runner-row-billing");
-    expect(remote.textContent).toContain("Remote");
+    expect(remote.textContent).toContain("Other process");
     expect(remote.textContent).not.toContain("Idle");
     expect(within(remote).getByRole("link").textContent).toBe("billing");
 
@@ -103,7 +103,7 @@ describe("the runner list screen", () => {
         .getAttribute("href"),
     ).toBe(`/jobs/runners/${AWKWARD_RUNNER_ENCODED}`);
     expect(page().getByTestId("runners-count").textContent).toBe(
-      "2 local runners, 2 remote runners",
+      "2 local runners, 2 runners in other processes",
     );
   });
 

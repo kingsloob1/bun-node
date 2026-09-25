@@ -161,7 +161,7 @@ function forceSuite(connect: () => Promise<JobsDriver>): void {
     expectForced(await popTrigger(driver, namespace));
   });
 
-  it("RemoteRunner: records force on a trigger queued remotely", async () => {
+  it("RunnerController: records force on a trigger queued remotely", async () => {
     const { driver, namespace } = await setup();
     const owner = new BunRunnerManager({
       namespace,
@@ -185,7 +185,7 @@ function forceSuite(connect: () => Promise<JobsDriver>): void {
       driver,
       logger: noopLogger,
     });
-    const remote = await observer.remote(ID);
+    const remote = await observer.controller(ID);
 
     expect((await remote.trigger()).outcome).toBe("queued");
     expectUnforced(await popTrigger(driver, namespace));
