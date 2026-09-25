@@ -1012,9 +1012,29 @@ check(
   /driver config/.test(keysRunner.config.error?.message ?? ""),
   keysRunner.config.error,
 );
+// Another process reads what the owner has *stored*, and the owner stores its
+// refusal only after adopting it: it sets the error in memory, then — because
+// this override moves the run mode from `parallel` to `single` — moves its
+// local trigger queue into the driver's, and only then persists. So the
+// owner's own view, checked above, runs ahead of the store by two driver round
+// trips, and a read from another process made the moment the owner has refused
+// can find nothing stored yet. That is the documented contract, not a gap in
+// it: `configured` announces that *this* owner adopted a change, and
+// `RunnerController.config()` reports what the owners persisted.
+//
+// So wait on what the other process sees, then assert it. The wait is for the
+// refusal to be stored at all; its keys are checked once, after, so a stored
+// refusal naming the wrong settings still fails here rather than being waited
+// out.
+const keysController = await admin.runners.controller("keys-report");
+await waitFor(
+  "another process to see the stored refusal",
+  async () => (await keysController.config())?.error !== undefined,
+  WAIT,
+);
 checkEqual(
   "  another process reads the same keys (RunnerController.config())",
-  (await (await admin.runners.controller("keys-report")).config())?.error?.keys,
+  (await keysController.config())?.error?.keys,
   ["executionMode"],
 );
 // The API finds a runner another context owns through its cached discovery
