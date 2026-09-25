@@ -179,6 +179,9 @@ describe("the contract's import graph", () => {
       expect([...loaded.WORKER_STOP_PERSISTENCE]).toEqual([
         ...Contract.WORKER_STOP_PERSISTENCE,
       ]);
+      expect([...loaded.WORKER_TARGET_KINDS]).toEqual([
+        ...Contract.WORKER_TARGET_KINDS,
+      ]);
       expect([...loaded.WORKER_CONFIG_KEYS]).toEqual([
         ...Contract.WORKER_CONFIG_KEYS,
       ]);
@@ -855,6 +858,9 @@ describe("one definition of each constant", () => {
     ]);
     expect([...Contract.WORKER_STOP_PERSISTENCE]).toEqual([
       ...Workers.WORKER_STOP_PERSISTENCE,
+    ]);
+    expect([...Contract.WORKER_TARGET_KINDS]).toEqual([
+      ...Workers.WORKER_TARGET_KINDS,
     ]);
     // Every bound the runtime enforces is the one a UI would show, to the
     // number: a copy that merely has the same keys is not enough.

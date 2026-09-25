@@ -7,6 +7,7 @@ import {
   WORKER_CONTROL_ACTIONS,
   WORKER_STATES,
   WORKER_STOP_PERSISTENCE,
+  WORKER_TARGET_KINDS,
 } from "../../shared/workers";
 import { s } from "../schema/builder";
 
@@ -143,6 +144,39 @@ export const WorkerControlSchema = s.named(
   }),
 );
 
+/** Where a worker's attempts run, as the contract's `WorkerTargetInfoDto`. */
+export const WorkerTargetInfoSchema = s.named(
+  "WorkerTargetInfo",
+  s.object(
+    {
+      kind: s.enum(WORKER_TARGET_KINDS, {
+        description:
+          'Where the attempts run: `"in-process"`, `"worker-thread"`, `"child-process"`, or `"custom"` (a target the application supplied). Show a kind you do not know as the raw string: a later server may add one.',
+      }),
+      processor: s.enum(["function", "file"] as const, {
+        description:
+          'Whether the attempts run a function or a processor file. The pairs that occur: `"in-process"` with `"function"` or `"file"`; `"worker-thread"` and `"child-process"` with `"file"` only (a function cannot be sent to a thread or a process); `"custom"` with `"function"` or `"file"`.',
+      }),
+      name: s.optional(
+        s.string({
+          description:
+            'For `"custom"`: the target\'s own name. Absent for every other kind.',
+        }),
+      ),
+      file: s.optional(
+        s.string({
+          description:
+            "For a file processor: the absolute path it resolved to. Omitted unless `serialize.exposeProcessorFiles` is on.",
+        }),
+      ),
+    },
+    {
+      description:
+        "Where a worker's attempts run, and whether it runs a function or a file — the worker record's `target`. Absent on an older worker, and absent is **not** `\"in-process\"`: it means too old to say, so show it as unknown, never as the default. Unrelated to the `target` of a worker event's envelope, which is the queue name.",
+    },
+  ),
+);
+
 /**
  * A worker consuming a queue. Mirrors `WorkerDto`: `host` and `pid` are
  * omitted when `serialize.exposeHosts` is off, and `state`, `key`, `config`
@@ -209,6 +243,7 @@ export const WorkerSchema = s.named(
           'Whether this worker **takes part in** the queue\'s housekeeping sweeps — the minute pass: pruning expired results, healing repeat series, sweeping stale queue state — which is what its `maintenance` option decides. Taking part, not performing: the minute pass is leased, so on a queue of five `true` workers exactly one holds the lease on any given pass and the rest stand down — do not show it as "sweeping now". It says nothing about liveness: promoting delayed jobs, recovering stalled ones and healing flows happen on every worker and cannot be turned off. Absent on an older worker, and absent is **not** `false`: it means too old to say — so a queue counts as having no sweeper only when at least one live worker reports `false` and none reports `true`, never merely because none reports it at all.',
       }),
     ),
+    target: s.optional(WorkerTargetInfoSchema),
     config: s.optional(WorkerConfigSchema),
     control: s.optional(WorkerControlSchema),
     host: s.optional(

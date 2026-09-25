@@ -460,6 +460,15 @@ checkEqual(
   listed!.expiresAt - listed!.heartbeatAt,
   3 * 200,
 );
+// Where its attempts run, as the worker resolved its `target` option: this one
+// took the default and was given a function, so `"in-process"` running a
+// `"function"`. A worker given a processor file reports `"file"`, and one on
+// another thread or in a child process `"worker-thread"` / `"child-process"`.
+checkEqual(
+  "target: the default, in-process, running a function",
+  listed?.target,
+  { kind: "in-process", processor: "function" },
+);
 
 /* ------------------------------------------------------------------ */
 step("listWorkers: the record follows the worker");

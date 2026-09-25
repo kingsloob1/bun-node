@@ -1,7 +1,7 @@
 /**
- * Option tour: `isolation` and `isolationOptions` — a worker running a
- * processor *file* in-process, in a `Worker`, or in a child process, each
- * behaviour asserted.
+ * Option tour: `target` — a worker running a processor *file* on each local
+ * kind (`"in-process"`, `"worker-thread"`, `"child-process"`), each behaviour
+ * asserted.
  *
  * ```bash
  * bun 10-options/worker-isolation.ts
@@ -10,10 +10,19 @@
  *
  * Worth knowing:
  *
+ * - A target is the string, or `{ kind, ...tuning }`, and each kind takes only
+ *   its own tuning: `"in-process"` none, `"worker-thread"` `closeTimeout` and
+ *   `worker`, `"child-process"` `closeTimeout`, `killTimeout` and `spawn`.
+ *   Tuning for the wrong kind is a type error, and a `ConfigError` from plain
+ *   JavaScript (step 8).
+ * - Runners and workers name the same two mechanisms differently: a runner's
+ *   `executionMode` is `"worker"` / `"spawn"`, a worker's `target` is
+ *   `"worker-thread"` / `"child-process"`, and the attempt's own process still
+ *   sees `BUN_JOBS_MODE=worker` / `spawn`. Step 1 asserts that last part.
  * - The file default-exports the same `(job, ctx)` function a function
  *   processor is; `defineProcessor` types it. It may be named by an absolute
- *   path, a path relative to `isolationOptions.spawn.cwd` (else the working
- *   directory), a `URL` or a `file://` string.
+ *   path, a path relative to a `"child-process"` target's `spawn.cwd` (else
+ *   the working directory), a `URL` or a `file://` string.
  * - The worker keeps the driver. In a child, `job.updateProgress`, `job.log`,
  *   `job.touch`/`extendLock`, `ctx.log` and `ctx.heartbeat` travel to the
  *   worker and are answered from there; every other operation that changes the
@@ -28,19 +37,20 @@
  *   or not: the worker waits for whatever the attempt still has in flight
  *   before it writes the completion or the failure. The wait is bounded, and
  *   step 3 demonstrates both halves of that.
- * - `job.fail(reason)` works in every mode: the child keeps the reason and
+ * - `job.fail(reason)` works on every target: the child keeps the reason and
  *   reports it as the attempt's error when the processor settles, so the job
  *   goes to `dead` exactly as it would in-process.
  * - The worker owns the attempt's `timeout`: the job dies at the deadline.
- *   Under `"spawn"` the child is then asked to close, sent `SIGTERM`
- *   `closeTimeout` later, and `SIGKILL` `killTimeout` after that — the only
- *   mode where a processor that ignores its signal is stopped for certain.
+ *   On a `"child-process"` target the child is then asked to close, sent
+ *   `SIGTERM` `closeTimeout` later, and `SIGKILL` `killTimeout` after that —
+ *   the only target where a processor that ignores its signal is stopped for
+ *   certain.
  */
 import type {
-  IsolationMode,
-  IsolationOptions,
   JobsDriver,
+  LocalWorkerTarget,
   LoggerLike,
+  WorkerTargetMode,
 } from "@kingsleyweb/bun-jobs";
 import type { FailData } from "./processors/isolation-fail";
 import type { HangData } from "./processors/isolation-hang";
@@ -64,7 +74,7 @@ import { exampleDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
-title("Worker isolation");
+title("Worker targets");
 
 /** A bare log sink: one of the shapes a `logger` option accepts. */
 type LogSink = Extract<LoggerLike, (...args: never[]) => unknown>;
@@ -124,26 +134,40 @@ function isAlive(pid: number): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-step("1. Each mode runs the file, and the job channel reaches the worker");
+step("1. Each target runs the file, and the job channel reaches the worker");
 
-/** How one mode is set up. */
-interface ModeCase {
-  /** Where each attempt runs. */
-  mode: IsolationMode;
+/**
+ * What an attempt's own process sees in `BUN_JOBS_MODE` on each target, in
+ * the *runner's* spelling, not the target's. Runners and workers name the
+ * same two mechanisms differently: a runner's `executionMode` is `"worker"` /
+ * `"spawn"`, a worker's `target` is `"worker-thread"` / `"child-process"`, and
+ * the attempt's own process still sees `BUN_JOBS_MODE=worker` / `spawn`.
+ * In-process nothing sets it.
+ */
+const BUN_JOBS_MODE_ON: Record<WorkerTargetMode, string | null> = {
+  "in-process": null,
+  "worker-thread": "worker",
+  "child-process": "spawn",
+};
+
+/** How one target is set up. */
+interface TargetCase {
+  /**
+   * Where each attempt runs, with its kind's own tuning: `"in-process"` takes
+   * none, so a `closeTimeout` there would be a type error.
+   */
+  target: LocalWorkerTarget;
   /** The processor file, in one of the forms a worker accepts. */
   processor: string | URL;
-  /** The worker's `isolationOptions`. */
-  options: IsolationOptions;
 }
 
-const cases: ModeCase[] = [
-  // An absolute path. `isolationOptions` do not apply in-process.
-  { mode: "in-process", processor: reportFile, options: {} },
+const cases: TargetCase[] = [
+  // An absolute path. In-process there is nothing to tune.
+  { target: { kind: "in-process" }, processor: reportFile },
   // A URL.
   {
-    mode: "worker",
-    processor: new URL("./processors/isolation-report.ts", import.meta.url),
-    options: {
+    target: {
+      kind: "worker-thread",
       closeTimeout: 2_000,
       worker: {
         smol: true,
@@ -152,12 +176,12 @@ const cases: ModeCase[] = [
         argv: ["--from-worker-argv"],
       },
     },
+    processor: new URL("./processors/isolation-report.ts", import.meta.url),
   },
   // A relative path, resolved against `spawn.cwd`.
   {
-    mode: "spawn",
-    processor: "./isolation-report.ts",
-    options: {
+    target: {
+      kind: "child-process",
       closeTimeout: 2_000,
       killTimeout: 1_000,
       spawn: {
@@ -166,10 +190,12 @@ const cases: ModeCase[] = [
         args: ["--from-spawn-args"],
       },
     },
+    processor: "./isolation-report.ts",
   },
 ];
 
-for (const { mode, processor, options } of cases) {
+for (const { target, processor } of cases) {
+  const mode = target.kind;
   const queueName = `report-${mode}`;
   const queue = new BunQueue<ReportData, Report>(queueName, {
     namespace,
@@ -179,8 +205,7 @@ for (const { mode, processor, options } of cases) {
     namespace,
     driver,
     logger,
-    isolation: mode,
-    isolationOptions: options,
+    target,
     ...fast,
   });
   const progress: unknown[] = [];
@@ -194,7 +219,7 @@ for (const { mode, processor, options } of cases) {
     { label: mode },
     { removeOnComplete: false },
   );
-  // The state flip need not be the last write. In an isolated mode every
+  // The state flip need not be the last write. Off the worker's thread every
   // `job.updateProgress` is a message to the worker, so the value is written
   // by the worker rather than by the processor — and a version without the
   // ordering step 2 asserts could write it *after* the completion, leaving a
@@ -204,7 +229,7 @@ for (const { mode, processor, options } of cases) {
   // that write, whatever version they run against. The processor sends two
   // updates, and the stored value must be the later of them; *which* values
   // they are is what the checks assert, so nothing is assumed here. All three
-  // modes share this wait.
+  // targets share this wait.
   await waitFor(
     `the ${mode} report to complete, with its last progress written`,
     async () => {
@@ -227,26 +252,31 @@ for (const { mode, processor, options } of cases) {
   });
 
   checkEqual(`${mode}: returns the processor's result`, report.jobId, job.id);
-  if (mode === "spawn") {
+  if (mode === "child-process") {
     check(`${mode}: another process`, report.pid !== process.pid, report.pid);
   } else {
     checkEqual(`${mode}: this process`, report.pid, process.pid);
   }
-  checkEqual(`${mode}: isMainThread`, report.isMainThread, mode !== "worker");
+  checkEqual(
+    `${mode}: isMainThread`,
+    report.isMainThread,
+    mode !== "worker-thread",
+  );
+  // The runner's spelling, not the target's: `worker` / `spawn`.
   checkEqual(
     `${mode}: BUN_JOBS_CHILD / BUN_JOBS_MODE`,
     [report.child, report.mode],
-    mode === "in-process" ? [null, null] : ["1", mode],
+    [mode === "in-process" ? null : "1", BUN_JOBS_MODE_ON[mode]],
   );
 
-  if (mode === "worker") {
+  if (mode === "worker-thread") {
     checkEqual(`${mode}: worker.env`, report.env, "from worker.env");
     check(
       `${mode}: worker.argv becomes process.argv`,
       report.argv.includes("--from-worker-argv"),
       report.argv,
     );
-  } else if (mode === "spawn") {
+  } else if (mode === "child-process") {
     checkEqual(`${mode}: spawn.env`, report.env, "from spawn.env");
     checkEqual(`${mode}: spawn.cwd`, report.cwd, processors);
     check(
@@ -313,7 +343,7 @@ step("2. An awaited updateProgress is written before the completion is");
 // earliest moment a reader could look — and asserts that read already carries
 // the value the processor reported last.
 //
-// That is the ordering an isolated worker guarantees. A child's
+// That is the ordering a worker guarantees off its own thread. A child's
 // `job.updateProgress` is *sent*, not asked: awaiting it does not mean the
 // driver has the value, it means the worker has it and will write it — in the
 // order the processor reported it, and before it records how the job ended. So
@@ -338,7 +368,7 @@ const BURST = 10;
 /** How many of those jobs run at once, so their writes contend. */
 const TOGETHER = 10;
 
-for (const mode of ["worker", "spawn"] as const) {
+for (const mode of ["worker-thread", "child-process"] as const) {
   const queueName = `ordered-${mode}`;
   const queue = new BunQueue<ReportData, Report>(queueName, {
     namespace,
@@ -350,8 +380,7 @@ for (const mode of ["worker", "spawn"] as const) {
     // Collected rather than printed: ten processors each log a line, and the
     // step is about the writes, not the logging.
     logger,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 2_000 },
+    target: { kind: mode, closeTimeout: 2_000 },
     concurrency: TOGETHER,
     ...fast,
   });
@@ -427,9 +456,9 @@ step("3. A deadline keeps that ordering, and so does a write nobody awaited");
 //
 // - A job that hits its `opts.timeout` has its run abandoned rather than waited
 //   for — the whole point of a deadline is not to wait — and here it is
-//   abandoned *inside* a progress write, in `"in-process"` mode, where there is
-//   no job channel to blame: the processor is calling the driver itself. The
-//   value still lands before the failure record.
+//   abandoned *inside* a progress write, on an `"in-process"` target, where
+//   there is no job channel to blame: the processor is calling the driver
+//   itself. The value still lands before the failure record.
 // - A child that calls `job.log()` and never awaits it has returned while the
 //   line is still on its way. The completion write is the one the worker
 //   deliberately does not wait for either, so this is the ordinary happy path's
@@ -535,7 +564,7 @@ const held: JobsDriver = new Proxy(driver, {
       namespace,
       driver: held,
       logger,
-      isolation: "in-process",
+      target: "in-process",
       ...fast,
     },
   );
@@ -599,8 +628,7 @@ const held: JobsDriver = new Proxy(driver, {
       namespace,
       driver: held,
       logger,
-      isolation: "spawn",
-      isolationOptions: { closeTimeout: 2_000 },
+      target: { kind: "child-process", closeTimeout: 2_000 },
       lockDuration: WRITE_LOCK,
       ...fast,
     },
@@ -635,7 +663,7 @@ const held: JobsDriver = new Proxy(driver, {
     ...atCompletion,
   });
   checkEqual(
-    "spawn: a log line the child never waited for is stored before the completion record",
+    "child-process: a log line the child never waited for is stored before the completion record",
     atCompletion,
     { logs: ["sent, never waited for"], count: 1 },
   );
@@ -676,8 +704,7 @@ const beating = new BunQueueWorker<ReportData, Report>(
   {
     namespace,
     driver,
-    isolation: "spawn",
-    isolationOptions: { closeTimeout: 2_000 },
+    target: { kind: "child-process", closeTimeout: 2_000 },
     lockDuration: 3_000,
     heartbeatInterval: 60_000,
     // The same cadence as the sweeper beside it: the checks below need a sweep
@@ -746,7 +773,7 @@ const isolatedOnly = [
   "enable",
 ];
 
-for (const mode of ["spawn", "worker", "in-process"] as const) {
+for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
   const queueName = `unavailable-${mode}`;
   const queue = new BunQueue<UnavailableData, Unavailable>(queueName, {
     namespace,
@@ -758,8 +785,9 @@ for (const mode of ["spawn", "worker", "in-process"] as const) {
     {
       namespace,
       driver,
-      isolation: mode,
-      isolationOptions: { closeTimeout: 2_000 },
+      // Built per kind: `"in-process"` takes no tuning, so it gets none.
+      target:
+        mode === "in-process" ? mode : { kind: mode, closeTimeout: 2_000 },
       ...fast,
     },
   );
@@ -805,14 +833,13 @@ step("6. Errors cross the boundary and still decide retries; so does fail()");
 
 const failFile = join(processors, "isolation-fail.ts");
 
-for (const mode of ["spawn", "worker"] as const) {
+for (const mode of ["child-process", "worker-thread"] as const) {
   const queueName = `fail-${mode}`;
   const queue = new BunQueue<FailData>(queueName, { namespace, driver });
   const worker = new BunQueueWorker<FailData>(queueName, failFile, {
     namespace,
     driver,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 2_000 },
+    target: { kind: mode, closeTimeout: 2_000 },
     ...fast,
   });
   const dead: string[] = [];
@@ -850,14 +877,13 @@ for (const mode of ["spawn", "worker"] as const) {
 // reported as the attempt's error when the processor settles.
 const jobFailFile = join(processors, "isolation-job-fail.ts");
 
-for (const mode of ["spawn", "worker"] as const) {
+for (const mode of ["child-process", "worker-thread"] as const) {
   const queueName = `job-fail-${mode}`;
   const queue = new BunQueue<JobFailData>(queueName, { namespace, driver });
   const worker = new BunQueueWorker<JobFailData>(queueName, jobFailFile, {
     namespace,
     driver,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 2_000 },
+    target: { kind: mode, closeTimeout: 2_000 },
     ...fast,
   });
   /** Local `dead` events, by job id, with their error's message. */
@@ -940,7 +966,7 @@ for (const mode of ["spawn", "worker"] as const) {
 }
 
 /* ------------------------------------------------------------------ */
-step("7. timeout stops a spawned processor that ignores its signal");
+step("7. timeout stops a child-process processor that ignores its signal");
 
 const hangFile = join(processors, "isolation-hang.ts");
 
@@ -950,9 +976,9 @@ interface Escalation {
   label: string;
   /** What the job carries. */
   data: HangData;
-  /** `isolationOptions.closeTimeout`. */
+  /** The `"child-process"` target's `closeTimeout`. */
   closeTimeout: number;
-  /** `isolationOptions.killTimeout`. */
+  /** The `"child-process"` target's `killTimeout`. */
   killTimeout: number;
 }
 
@@ -978,8 +1004,8 @@ for (const [index, escalation] of escalations.entries()) {
   const worker = new BunQueueWorker<HangData>(queueName, hangFile, {
     namespace,
     driver,
-    isolation: "spawn",
-    isolationOptions: {
+    target: {
+      kind: "child-process",
       closeTimeout: escalation.closeTimeout,
       killTimeout: escalation.killTimeout,
     },
@@ -1062,44 +1088,84 @@ for (const [index, escalation] of escalations.entries()) {
 step("8. Configuration errors");
 
 await checkRejects(
-  'a function processor with isolation: "spawn"',
+  'a function processor with target: "child-process"',
   () =>
     new BunQueueWorker("config", async () => null, {
       namespace,
       driver,
-      isolation: "spawn",
+      target: "child-process",
     }),
   { name: "ConfigError", code: "CONFIG", message: /needs a processor file/ },
 );
 await checkRejects(
-  'a function processor with isolation: "worker"',
+  'a function processor with target: "worker-thread"',
   () =>
     new BunQueueWorker("config", async () => null, {
       namespace,
       driver,
-      isolation: "worker",
+      target: "worker-thread",
     }),
   { name: "ConfigError", code: "CONFIG", message: /needs a processor file/ },
 );
 const inProcessFunction = new BunQueueWorker("config", async () => null, {
   namespace,
   driver,
-  isolation: "in-process",
+  target: "in-process",
 });
 checkEqual(
-  'a function processor with isolation: "in-process" is fine',
+  'a function processor with target: "in-process" is fine',
   inProcessFunction.isRunning,
   false,
 );
 await checkRejects(
-  "an isolation mode that does not exist",
+  "a target that does not exist",
   () =>
     new BunQueueWorker("config", reportFile, {
       namespace,
       driver,
-      isolation: "thread" as IsolationMode,
+      // @ts-expect-error -- not a target, to the type or to the worker
+      target: "thread",
     }),
-  { name: "ConfigError", message: /isolation must be/ },
+  {
+    name: "ConfigError",
+    message:
+      /target must be "in-process", "worker-thread" or "child-process", not "thread"/,
+  },
+);
+// A runner's spelling is the likeliest wrong value, so it gets its own hint.
+await checkRejects(
+  'a runner\'s executionMode, "spawn", as a target',
+  () =>
+    new BunQueueWorker("config", reportFile, {
+      namespace,
+      driver,
+      // @ts-expect-error -- a runner's spelling: a worker's is "child-process"
+      target: "spawn",
+    }),
+  {
+    name: "ConfigError",
+    message:
+      /"spawn" is a runner's executionMode; a worker's is "child-process"/,
+  },
+);
+// Each kind takes only its own tuning: `spawn` belongs to "child-process".
+await checkRejects(
+  'tuning for another kind: spawn on a "worker-thread" target',
+  () =>
+    new BunQueueWorker("config", reportFile, {
+      namespace,
+      driver,
+      target: {
+        kind: "worker-thread",
+        // @ts-expect-error -- `spawn` is "child-process" tuning
+        spawn: { cwd: processors },
+      },
+    }),
+  {
+    name: "ConfigError",
+    message:
+      /target \{ kind: "worker-thread" \} does not take spawn: it takes closeTimeout, worker/,
+  },
 );
 await checkRejects(
   "a processor file that does not resolve",
@@ -1107,7 +1173,7 @@ await checkRejects(
     new BunQueueWorker("config", "./no/such/processor.ts", {
       namespace,
       driver,
-      isolation: "spawn",
+      target: "child-process",
     }),
   { name: "ConfigError", message: /Cannot resolve the processor file/ },
 );
@@ -1118,28 +1184,28 @@ step("9. jobs.worker(name, file, options) through BunJobs");
 const jobs = new BunJobs({ namespace, driver, logger });
 
 const viaUrl = jobs.worker<ReportData, Report>(
-  "via-bunjobs-spawn",
+  "via-bunjobs-child-process",
   pathToFileURL(reportFile).href,
-  { isolation: "spawn", isolationOptions: { closeTimeout: 2_000 }, ...fast },
+  { target: { kind: "child-process", closeTimeout: 2_000 }, ...fast },
 );
 const viaPath = jobs.worker<ReportData, Report>(
-  "via-bunjobs-worker",
+  "via-bunjobs-worker-thread",
   reportFile,
-  { isolation: "worker", isolationOptions: { closeTimeout: 2_000 }, ...fast },
+  { target: { kind: "worker-thread", closeTimeout: 2_000 }, ...fast },
 );
 void viaUrl.run();
 void viaPath.run();
 
-const spawnQueue = jobs.queue<ReportData, Report>("via-bunjobs-spawn");
-const workerQueue = jobs.queue<ReportData, Report>("via-bunjobs-worker");
+const spawnQueue = jobs.queue<ReportData, Report>("via-bunjobs-child-process");
+const workerQueue = jobs.queue<ReportData, Report>("via-bunjobs-worker-thread");
 const spawned = await spawnQueue.add(
   "report",
-  { label: "bunjobs-spawn" },
+  { label: "bunjobs-child-process" },
   { removeOnComplete: false },
 );
 const threaded = await workerQueue.add(
   "report",
-  { label: "bunjobs-worker" },
+  { label: "bunjobs-worker-thread" },
   { removeOnComplete: false },
 );
 await waitFor(
@@ -1153,6 +1219,8 @@ const spawnReport = (await spawnQueue.getJob(spawned.id))
   ?.returnValue as Report;
 const workerReport = (await workerQueue.getJob(threaded.id))
   ?.returnValue as Report;
+// `mode` is `BUN_JOBS_MODE`, in the runner's spelling: `spawn` for a
+// "child-process" target, `worker` for a "worker-thread" one.
 check(
   "a file:// string ran in a child process",
   spawnReport.pid !== process.pid && spawnReport.mode === "spawn",
@@ -1166,7 +1234,7 @@ checkEqual(
 checkEqual(
   "the job channel works through BunJobs too",
   await spawnQueue.getJobLogs(spawned.id),
-  { logs: ["hello from bunjobs-spawn", "second line"], count: 2 },
+  { logs: ["hello from bunjobs-child-process", "second line"], count: 2 },
 );
 
 await jobs.close();

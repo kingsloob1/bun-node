@@ -504,7 +504,7 @@ function isolatedJob(
     // how the job ended — not that the driver has it already. Acknowledging
     // each one would cost a round trip per update, and a processor that
     // reports per item makes thousands; the worker's barrier
-    // (`IsolatedProcessor.run`) buys the ordering that matters without one.
+    // (`FileTargetExecutor.run`) buys the ordering that matters without one.
     updateProgress: async (value: RunProgress) => {
       transport.send({ t: "progress", runId: ctx.runId, value });
     },

@@ -565,6 +565,7 @@ describe("resolveConfig: construction", () => {
     expect(config.serialize).toMatchObject({
       exposeStacks: false,
       exposeRunnerFiles: false,
+      exposeProcessorFiles: false,
       exposeHosts: true,
     });
     expect(config.runnerTriggerArgs).toBe(false);

@@ -1,8 +1,8 @@
 import type {
-  IsolationMode,
   QueueRef,
   Retention,
   RunProgress,
+  WorkerTargetMode,
 } from "../lib/index";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
@@ -13,7 +13,8 @@ import { testNamespace, waitFor } from "./helpers";
 /**
  * A job's progress must be written before its completion is.
  *
- * In an isolated mode the processor's `job.updateProgress()` is a message to
+ * In a worker-thread or child-process target the processor's
+ * `job.updateProgress()` is a message to
  * the worker, which owns the driver. That write used to be fired and
  * forgotten, so a slow driver could land it *after* the completion — and a
  * reader that waited for `state === "completed"` read the previous value.
@@ -74,7 +75,7 @@ afterEach(async () => {
 });
 
 /** A queue and a worker running `file` in `mode`, on the slow driver. */
-function setup(mode: IsolationMode, file: string) {
+function setup(mode: WorkerTargetMode, file: string) {
   const driver = new SlowProgressMemoryDriver();
   const namespace = testNamespace();
   const queue = new BunQueue("progress-order", {
@@ -87,8 +88,12 @@ function setup(mode: IsolationMode, file: string) {
     driver,
     logger: noopLogger,
     pollInterval: 5,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 200, killTimeout: 200 },
+    target:
+      mode === "child-process"
+        ? { kind: mode, closeTimeout: 200, killTimeout: 200 }
+        : mode === "worker-thread"
+          ? { kind: mode, closeTimeout: 200 }
+          : mode,
     waitToExit: false,
   });
   closers.push(
@@ -99,7 +104,7 @@ function setup(mode: IsolationMode, file: string) {
   return { driver, queue, worker };
 }
 
-for (const mode of ["spawn", "worker", "in-process"] as const) {
+for (const mode of ["child-process", "worker-thread", "in-process"] as const) {
   describe(`progress ordering: ${mode}`, () => {
     it("has written the last progress before the job reads completed", async () => {
       const { driver, queue } = setup(mode, "job-progress-final");

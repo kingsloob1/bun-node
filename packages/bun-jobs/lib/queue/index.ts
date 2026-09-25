@@ -24,12 +24,6 @@ export {
  */
 export type { JobDefinition, JobDefinitionOptions } from "./definitions";
 export { JobDefinitions } from "./definitions";
-export {
-  defineProcessor,
-  IsolatedProcessor,
-  type IsolationMode,
-  type IsolationOptions,
-} from "./isolation";
 export { Job } from "./Job";
 export type { JobEvent, JobHooks, JobUpdate } from "./Job";
 export { JobBuilder, type JobBuilderOptions } from "./JobBuilder";
@@ -212,3 +206,17 @@ export {
   type WorkerControlResult,
   type WorkerSelector,
 } from "./WorkerController";
+export {
+  type ChildProcessTarget,
+  defineProcessor,
+  defineProcessors,
+  type InProcessTarget,
+  type LocalWorkerTarget,
+  type WorkerTarget,
+  type WorkerTargetAttempt,
+  type WorkerTargetContext,
+  type WorkerTargetExecutor,
+  type WorkerTargetFactory,
+  type WorkerTargetMode,
+  type WorkerThreadTarget,
+} from "./workerTarget";

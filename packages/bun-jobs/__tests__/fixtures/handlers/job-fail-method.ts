@@ -2,7 +2,7 @@ import type { RunProgress } from "../../../lib/index";
 import { defineProcessor } from "../../../lib/index";
 
 /**
- * Calls `job.fail()` in the ways the isolation tests compare across modes,
+ * Calls `job.fail()` in the ways the target tests compare across kinds,
  * chosen by the job's name, and reports what `fail()` answered through
  * `updateProgress` before settling:
  *

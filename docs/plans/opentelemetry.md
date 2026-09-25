@@ -1044,12 +1044,12 @@ trace?: TraceCarrier;
 
 `PROTOCOL_VERSION` (line 21) stays `1`: an added optional field is read by
 neither an older child nor an older parent, and both already tolerate absence.
-The field is set in `#buildContext` (`BunRunner.ts:1740`) and in
-`IsolatedProcessor.run`'s `runContext` (`lib/queue/isolation.ts:146-168`).
+The field is set in `#buildContext` (`BunRunner.ts:1764`) and in
+`FileTargetExecutor.run`'s `runContext` (`lib/queue/workerTarget.ts:604-627`).
 
-For an **isolated job** (`isolation.ts:130`) nothing extra is needed: the
-executor already sends `job: record` (line 175), and `record.trace` rides
-along in it.
+For a job on a worker-thread or child-process target (`FileTargetExecutor.run`,
+`workerTarget.ts:590`) nothing extra is needed: the executor already sends
+`job: record` (`workerTarget.ts:644`), and `record.trace` rides along in it.
 
 The child reads it in `lib/runner/bootstrap/child-runtime.ts`, and — if the
 child has its own SDK — starts a root span linked to it. **The child usually

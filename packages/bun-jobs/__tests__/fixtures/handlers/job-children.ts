@@ -1,8 +1,8 @@
 import { defineProcessor, UnrecoverableJobError } from "../../../lib/index";
 
 /**
- * One file for every job in a flow, so each runs wherever the worker isolates
- * it: `ok` reports its parent, `bad` fails for good, and the parent reports
+ * One file for every job in a flow, so each runs wherever the worker's target
+ * runs it: `ok` reports its parent, `bad` fails for good, and the parent reports
  * what it can read about its children.
  */
 export default defineProcessor<

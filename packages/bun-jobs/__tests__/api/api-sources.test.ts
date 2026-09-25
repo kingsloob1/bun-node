@@ -420,6 +420,7 @@ describe("serializers", () => {
   const defaults: ResolvedJobsApiSerializers = {
     exposeStacks: false,
     exposeRunnerFiles: false,
+    exposeProcessorFiles: false,
     exposeHosts: true,
   };
   const failure = {
@@ -719,8 +720,21 @@ describe("serializers", () => {
       startedAt: 1,
       heartbeatAt: 2,
       expiresAt: 3,
+      target: {
+        kind: "child-process" as const,
+        processor: "file" as const,
+        file: "/srv/app/jobs/resize.ts",
+      },
     };
-    expect(toWorkerDto(worker, { exposeHosts: true })).toEqual(worker);
+    // A round trip needs the processor file's path let through: it is the one
+    // field of `target` the default serializer withholds.
+    expect(
+      toWorkerDto(worker, { exposeHosts: true, exposeProcessorFiles: true }),
+    ).toEqual(worker);
+    expect(toWorkerDto(worker, { exposeHosts: true }).target).toEqual({
+      kind: "child-process",
+      processor: "file",
+    });
     expect(toWorkerDto(worker, { exposeHosts: false })).not.toHaveProperty(
       "host",
     );

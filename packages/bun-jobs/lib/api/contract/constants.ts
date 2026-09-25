@@ -464,6 +464,23 @@ export const WORKER_STOP_PERSISTENCE = ["process", "key"] as const;
 export type WorkerStopPersistence = (typeof WORKER_STOP_PERSISTENCE)[number];
 
 /**
+ * Every value a worker record's `target.kind` can take, for a reader to
+ * enumerate: the three local targets, and `"custom"` for a
+ * `WorkerTargetFactory`. A closed list a UI can switch on — though a reader
+ * meeting a kind it does not know should show the raw string, since a later
+ * version may add one.
+ */
+export const WORKER_TARGET_KINDS = [
+  "in-process",
+  "worker-thread",
+  "child-process",
+  "custom",
+] as const;
+
+/** One of {@link WORKER_TARGET_KINDS}. */
+export type WorkerTargetKind = (typeof WORKER_TARGET_KINDS)[number];
+
+/**
  * Every worker setting a config override may replace, in the order a form
  * should show them. Build the UI's form from this list, never a hand-written
  * one, so a setting added here appears without a UI change.

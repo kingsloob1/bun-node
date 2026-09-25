@@ -2,10 +2,10 @@ import type { SerializedError } from "@kingsleyweb/bun-common";
 import type {
   ClaimOptions,
   FailOutcome,
-  IsolationMode,
   JobRecord,
   QueueRef,
   RunProgress,
+  WorkerTargetMode,
 } from "../lib/index";
 import { join } from "node:path";
 import { noopLogger } from "@kingsleyweb/bun-common";
@@ -16,9 +16,9 @@ import { testNamespace, waitFor } from "./helpers";
 /**
  * A timed-out job's progress must be written before its failure record.
  *
- * `#process` runs an isolated attempt inside `withTimeout`, which rejects the
+ * `#process` runs an off-thread attempt inside `withTimeout`, which rejects the
  * moment the deadline passes and leaves the run to be abandoned — so the
- * barrier that `IsolatedProcessor.run()` keeps in its `finally`, where the
+ * barrier that `FileTargetExecutor.run()` keeps in its `finally`, where the
  * progress writes the child asked for are awaited, never runs on this path.
  * The worker went straight to the failure record, and a progress write still
  * in flight landed on top of a job that was already dead.
@@ -129,7 +129,7 @@ afterEach(async () => {
 });
 
 /** A queue and a worker running `file` in `mode`, on the deadline driver. */
-function setup(mode: IsolationMode, file: string) {
+function setup(mode: WorkerTargetMode, file: string) {
   const driver = new DeadlineProgressDriver();
   const namespace = testNamespace();
   const queue = new BunQueue("progress-timeout", {
@@ -142,8 +142,12 @@ function setup(mode: IsolationMode, file: string) {
     driver,
     logger: noopLogger,
     pollInterval: 5,
-    isolation: mode,
-    isolationOptions: { closeTimeout: 200, killTimeout: 200 },
+    target:
+      mode === "child-process"
+        ? { kind: mode, closeTimeout: 200, killTimeout: 200 }
+        : mode === "worker-thread"
+          ? { kind: mode, closeTimeout: 200 }
+          : mode,
     waitToExit: false,
   });
   closers.push(
@@ -187,7 +191,7 @@ async function runUntilDead(
   return { id: job.id, progressAtDeath };
 }
 
-for (const mode of ["spawn", "worker"] as const) {
+for (const mode of ["child-process", "worker-thread"] as const) {
   describe(`progress ordering on timeout: ${mode}`, () => {
     it("writes the progress the child reported before the failure record", async () => {
       const { driver, queue } = setup(mode, "job-progress-timeout");
@@ -213,7 +217,7 @@ for (const mode of ["spawn", "worker"] as const) {
 
 describe("progress ordering on timeout: drop after the deadline", () => {
   it("writes nothing a child sends once the attempt is over", async () => {
-    const { driver, queue } = setup("worker", "job-progress-chatty");
+    const { driver, queue } = setup("worker-thread", "job-progress-chatty");
     // The chatty child reports every 25ms; the point here is what happens to
     // the values it sends while it is being stopped, so the writes are quick.
     driver.instant = true;
@@ -231,7 +235,7 @@ describe("progress ordering on timeout: drop after the deadline", () => {
 
 describe("progress ordering on timeout: a driver that never answers", () => {
   it("records the failure without waiting for the write", async () => {
-    const { driver, queue } = setup("worker", "job-progress-timeout");
+    const { driver, queue } = setup("worker-thread", "job-progress-timeout");
     driver.hang = true;
 
     await runUntilDead(queue, "hanging");
