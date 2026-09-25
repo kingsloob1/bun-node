@@ -817,7 +817,7 @@ checkEqual(
 );
 
 /* ------------------------------------------------------------------ */
-step("Clearing from another process: RemoteRunner and the API");
+step("Clearing from another process: RunnerController and the API");
 
 // A second context on the same backend registers no runner: an admin service.
 const admin = new BunJobs({
@@ -825,7 +825,7 @@ const admin = new BunJobs({
   driver,
   logger: createTestLogger().logger,
 });
-const remote = await admin.runners.remote("history");
+const remote = await admin.runners.controller("history");
 checkEqual("the admin holds no local runner", remote.isLocal, false);
 
 const secondLive = await start(history, { tag: "second", hold: true });
@@ -838,7 +838,7 @@ checkEqual(
 );
 await checkRejects(
   "a remote runner the backend does not know",
-  () => admin.runners.remote("no-such-runner"),
+  () => admin.runners.controller("no-such-runner"),
   { name: "RunnerNotFoundError" },
 );
 

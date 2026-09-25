@@ -28,7 +28,7 @@
  *
  * - **Runner Settings…** (`PUT /runners/:runner/config`, opt-in
  *   `runners.configure`) sets the execution mode, run mode and max
- *   concurrency; the modes outside the runner's `remoteConfig.executionModes`
+ *   concurrency; the modes outside the runner's `allowedOverrides.executionModes`
  *   are not offered, and say so. A runner built from a driver instance alone
  *   is offered in-process only, and a PUT for worker is 409
  *   `CONFIG_NOT_ALLOWED`. Saved, the runner adopts it, and the summary
@@ -143,12 +143,12 @@ const HANDLER = new URL("./helpers/log-runner.ts", import.meta.url);
 
 /**
  * The runner whose settings are edited: `in-process` in its code, `worker`
- * also permitted by its `remoteConfig`, and a `childDriver` to hand a Worker,
+ * also permitted by its `allowedOverrides`, and a `childDriver` to hand a Worker,
  * so it can adopt a `worker` override.
  */
 const SETTINGS = "nightly-export";
 /**
- * The same `remoteConfig`, but built from the driver instance alone: with no
+ * The same `allowedOverrides`, but built from the driver instance alone: with no
  * config to hand a child, `worker` is not offered at all (`allowed` is
  * `["in-process"]`) and a PUT asking for it is refused with 409.
  */
@@ -281,7 +281,7 @@ async function startRunner(
       BunRunnerOptions<LogRunnerArgs>,
       | "executionMode"
       | "runMode"
-      | "remoteConfig"
+      | "allowedOverrides"
       | "captureLogs"
       | "childDriver"
     >
@@ -301,13 +301,13 @@ async function startRunner(
 }
 
 const settingsRunner = await startRunner(jobs, SETTINGS, {
-  remoteConfig: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker"] },
   // What a Worker would reach the backend with. Nothing here runs in one:
   // the override is only adopted, never exercised.
   childDriver: { type: "memory" },
 });
 const instanceBound = await startRunner(jobs, INSTANCE_BOUND, {
-  remoteConfig: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker"] },
 });
 const loggedRunner = await startRunner(jobs, LOGGED);
 const trimmedRunner = await startRunner(jobs, TRIMMED, {
@@ -995,7 +995,7 @@ try {
   step(`${INSTANCE_BOUND}: built from a driver instance, so no worker`);
 
   checkEqual(
-    "GET the runner → allowed: in-process only, though its remoteConfig names worker too",
+    "GET the runner → allowed: in-process only, though its allowedOverrides names worker too",
     (await read<RunnerBody>(full, `/runners/${INSTANCE_BOUND}`)).config.allowed,
     ["in-process"],
   );
@@ -2218,7 +2218,7 @@ try {
     "the screen says it is remote, and still offers Clear history…",
     (await openRunner(full, REMOTE)) &&
       (await view.evaluate<boolean>(
-        waitForSelector('[data-testid="runner-remote-hint"]'),
+        waitForSelector('[data-testid="runner-non-local-hint"]'),
       )) &&
       (await view.evaluate<boolean>(
         button(HISTORY_ACTIONS, "Clear history…", true),

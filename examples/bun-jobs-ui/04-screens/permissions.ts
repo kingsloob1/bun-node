@@ -1589,8 +1589,8 @@ const GATES = [
     when: ({ runner }) => runner !== undefined,
   },
   {
-    name: "runner: remote hint",
-    row: "Runner remote hint",
+    name: "runner: non-local hint",
+    row: "Runner non-local hint",
     map: "runner",
     anyMutation: ["runners.kill", "runners.resetStats"],
     when: ({ runner }) => runner?.isLocal === false,
@@ -4341,7 +4341,7 @@ checkEqual(
     "runner: N lines dropped": false,
     "runner: Resume…": false,
     "runner: Kill…": false,
-    "runner: remote hint": false,
+    "runner: non-local hint": false,
     // Its history pager: asked below with a fetch longer than one page.
     "runner: history pager": false,
   },
