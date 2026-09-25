@@ -1273,9 +1273,12 @@ summary();
  * sort answers `next: null`, and with a cursor it is the 400 above. On the
  * file driver (`addedByState` false) every one of those answers `next: null`.
  *
- * So neither "Active always walks" nor "Active never walks" is true, and the
- * step above asserts whichever its host reports rather than picking one. Which
- * the reader gets follows `features.addedByState` and Count total, and nothing
- * in the app special-cases a tab: the table walks whenever its page carries a
- * cursor.
+ * So neither "Active always walks" nor "Active never walks" is true. The step
+ * above does not simply follow whatever its host does, which would pass under
+ * either behaviour and so assert nothing: it **predicts** from
+ * `features.addedByState` and compares — `typeof page.next === "string"` must
+ * equal the flag — so a host that stopped walking a creation-ordered Active
+ * tab, or started walking a lock-expiry-ordered one, fails here. Nothing in
+ * the app special-cases a tab: the table walks whenever its page carries a
+ * cursor, and the flag is what decides whether one is minted.
  */
