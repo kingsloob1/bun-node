@@ -154,12 +154,19 @@ Four things follow, and each is visible on the screen:
   minute per job. The API mints no cursor there and refuses one, so the tab
   pages as it always has.
 - **A walked page may have no row numbers.** The range then counts the rows —
-  "20 rows" — instead of numbering them. On SQL and MongoDB the API does not
-  count the jobs before a walked page, because that count is an index scan of
-  exactly the size the offset would have walked, and paying it would make the
-  walk cost what the offset cost. Where the backend knows the position for
-  free the range is numbered as usual, and it is the position in the list *as
-  it is now*: after five jobs are taken, page two of a walk reads "6–15".
+  "20 rows" — instead of numbering them, and there is no page selector,
+  because nothing knows which page it is. **Whether a page is numbered is a
+  property of the answer, not of the backend**: the UI reads `page.offset` off
+  each page rather than deciding from the driver, because the same driver
+  numbers one page and not another. A driver reports the position only when
+  its seek already knew it — counting the jobs before a walked page is an
+  index scan of exactly the size the offset would have walked, and paying it
+  would make the walk cost what the offset cost. Today SQL and MongoDB never
+  number a walked page; memory and Redis always do, from the rank their seek
+  resolved; the file driver does when it can compare marker names (one state,
+  no filter) or when a total was asked for and counted them anyway. A numbered
+  walked page is the position in the list *as it is now*: after five jobs are
+  taken, page two of a walk reads "6–15".
 - **Changing a filter, the order, the state tab or "Count total" starts
   again.** A cursor belongs to one walk — its queue, states, sort and order —
   and one sent into another walk is refused with a message saying so, never a
