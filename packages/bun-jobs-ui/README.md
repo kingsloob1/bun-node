@@ -149,10 +149,15 @@ Four things follow, and each is visible on the screen:
 - **Every page mints a cursor, including a page you jumped to.** So a reader
   can go to page 7 and then walk on from it, which is the only way to have
   both a page number and a walk that loses nothing.
-- **The Active tab keeps the offset pager.** Its order is the lock expiry,
-  which every worker rewrites each time it renews a lock, several times a
-  minute per job. The API mints no cursor there and refuses one, so the tab
-  pages as it always has.
+- **The Active tab walks only when it is listed in creation order.** In
+  lock-expiry order — the backend's own order for active jobs — the key is
+  rewritten every time a worker renews a lock, several times a minute per job,
+  so the API mints no cursor there and refuses one, and the tab pages by
+  offset. In creation order the key never moves, and the tab walks like any
+  other. Which one a reader gets follows the rest of the table: creation order
+  wherever the backend records it (`features.addedByState`) and Count total is
+  off, lock-expiry order otherwise. The UI does not decide this per tab; it
+  walks whenever the page it was given carries a cursor.
 - **A walked page may have no row numbers.** The range then counts the rows —
   "20 rows" — instead of numbering them, and there is no page selector,
   because nothing knows which page it is. **Whether a page is numbered is a
