@@ -1,5 +1,5 @@
 /**
- * The process that owns the runner in `remote-control.ts`. Started by that
+ * The process that owns the runner in `controller.ts`. Started by that
  * example; everything arrives in the environment.
  *
  * It only starts the runner. Every pause, schedule change and run it goes

@@ -2,10 +2,10 @@
  * Controlling a runner another process owns — `BunRunnerManager.controller()`.
  *
  * ```bash
- * bun 07-runner/remote-control.ts                        # a shared SQLite file
- * EXAMPLE_DRIVER=file bun 07-runner/remote-control.ts
+ * bun 07-runner/controller.ts                        # a shared SQLite file
+ * EXAMPLE_DRIVER=file bun 07-runner/controller.ts
  * EXAMPLE_DRIVER=redis EXAMPLE_REDIS_URL=redis://localhost:6379/13 \
- *   bun 07-runner/remote-control.ts
+ *   bun 07-runner/controller.ts
  * ```
  *
  * `helpers/runner-owner.ts` runs as its own process and owns the runner. This
@@ -22,9 +22,9 @@
  *   adopts them at its next `syncInterval`. `control` defaults to
  *   `"auto"`: subscribed on a driver whose events are not polled (memory,
  *   Redis), not on one that would poll for them (SQL, MongoDB, file).
- * - **A remote trigger is queued**, and the owner drains it. The outcome is
+ * - **A trigger from another process is queued**, and the owner drains it. The outcome is
  *   `queued`, not `started`.
- * - **There is no remote kill.** Only the process executing a run can stop it.
+ * - **No other process can kill a run.** Only the process executing a run can stop it.
  */
 import type { CleanupArgs, CleanupResult } from "./handlers/cleanup";
 import process from "node:process";
@@ -32,7 +32,7 @@ import { BunRunnerManager, createDriver } from "@kingsleyweb/bun-jobs";
 import { crossProcessDriver, exampleNamespace } from "../shared/backend";
 import { show, step, title, waitFor } from "../shared/console";
 
-title("Remote runner control");
+title("Controlling a runner from another process");
 
 const config = crossProcessDriver();
 const namespace = exampleNamespace("remote-control");
@@ -169,7 +169,7 @@ show("history(1)[0]", {
 show("stats()", await cleanup.stats());
 
 /* ------------------------------------------------------------------ */
-step("Stop the owner; there is no remote kill");
+step("Stop the owner; no other process can kill its run");
 
 show("'kill' in the controller", "kill" in cleanup);
 owner.kill("SIGTERM");

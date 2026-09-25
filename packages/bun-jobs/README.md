@@ -1127,7 +1127,7 @@ published before `run()`, and every later change carries `previous`, a
 [`workers`](#events-and-jobsnotifier) option.
 
 Example:
-[`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
+[`10-options/cross-process-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/cross-process-control.ts).
 
 ### Stalled jobs
 
@@ -1826,7 +1826,7 @@ parent in `waiting-children` until its children settle.
   already buried the parent once does not bury the retried parent again.
 
   Example:
-  [`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
+  [`10-options/cross-process-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/cross-process-control.ts).
 
   A failed child that has since been removed counts as unsettled, so
   the flow heal fails the parent again (see below).
@@ -3081,7 +3081,7 @@ A `RunnerController` for a runner the backend does not know throws
 which is off by default. See [Routes](#routes).
 
 Example:
-[`10-options/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts).
+[`10-options/cross-process-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/cross-process-control.ts).
 
 ### BunRunnerManager
 
@@ -3176,7 +3176,7 @@ Limits:
 Examples:
 
 - [`07-runner/manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts)
-- [`07-runner/remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts)
+- [`07-runner/controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/controller.ts)
 
 ## Events and JobsNotifier
 
@@ -5311,7 +5311,7 @@ Each run uses its own namespace and purges it on exit.
 | | [`messages-progress-kill.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/messages-progress-kill.ts) | progress, logs and messages across a process boundary; `kill`; run timeouts |
 | | [`runner-enqueues-jobs.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/runner-enqueues-jobs.ts) | a spawned runner fanning work out as queue jobs with `jobsFromContext` |
 | | [`manager.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/manager.ts) | `jobs.runners`: `startAll`, `info`, state shared by a second instance, `remove` |
-| | [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/remote-control.ts) | `controller(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
+| | [`controller.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/07-runner/controller.ts) | `controller(id)`: pause, reschedule, resume and trigger a runner owned by another process (`helpers/runner-owner.ts`); `info`, `history`, `stats`; no remote kill |
 | | [`handlers/`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/07-runner/handlers) | `cleanup.ts`, `long-task.ts`, `nightly-report.ts`, `whoami.ts`: handler files written with `defineHandler` |
 | [`08-drivers`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-jobs/08-drivers) | [`choosing-a-driver.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/choosing-a-driver.ts) | every config shape, capabilities, one workload on each available backend |
 | | [`sqlite-and-schema-sync.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/08-drivers/sqlite-and-schema-sync.ts) | `SqlDriver` on SQLite, `tablePrefix`, `syncSchema` repairing a drifted schema |
@@ -5358,7 +5358,7 @@ script. That makes `bun run-all.ts` a test of every option on whichever backend
 | [`job-defaults.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/job-defaults.ts) | queue job defaults: the stored override and its precedence, propagation, the `applyJobDefaults()` walk and its refusals, and the four API routes with their opt-ins |
 | [`analytics-and-attribution.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/analytics-and-attribution.ts) | the `metrics` option, what is recorded, range resolution and every clamp reason, the analytics routes; `processedBy` and the worker filters; `countAdded()` and `sort: "createdAt"`, and their fallbacks per driver |
 | [`run-logs-and-clears.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/run-logs-and-clears.ts) | run-log capture per execution mode, the `logs` hint, the caps and redaction; clearing a job's log and a runner's history, on every driver |
-| [`remote-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/remote-control.ts) | `WorkerController` lifecycle and configuration, how long a stop lasts, the API's 409s, a runner's configuration changed by one owner and adopted by another; a buried flow retried in either order |
+| [`cross-process-control.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/cross-process-control.ts) | `WorkerController` lifecycle and configuration, how long a stop lasts, the API's 409s, a runner's configuration changed by one owner and adopted by another; a buried flow retried in either order |
 
 Supporting files for the tours:
 

@@ -4,15 +4,15 @@
  * flow retried in either order.
  *
  * ```bash
- * bun 10-options/remote-control.ts
+ * bun 10-options/cross-process-control.ts
  * EXAMPLE_DRIVER=postgres EXAMPLE_POSTGRES_URL=postgres://user:pass@localhost/jobs \
- *   bun 10-options/remote-control.ts
+ *   bun 10-options/cross-process-control.ts
  * ```
  *
  * "Another process" here is another `BunJobs` context on the same driver and
  * namespace, holding no workers or runners of its own: every call goes
  * through what the backend stores, exactly as it would across processes.
- * `07-runner/remote-control.ts` shows the runner half with a real second
+ * `07-runner/controller.ts` shows the runner half with a real second
  * process; this tour asserts the rules.
  *
  * The points that are easy to get wrong:
@@ -65,7 +65,7 @@ import { exampleDriver, exampleNamespace } from "../shared/backend";
 import { check, checkEqual, checkRejects, summary } from "../shared/check";
 import { show, step, title, waitFor } from "../shared/console";
 
-title("Option tour: remote control");
+title("Option tour: control from another process");
 
 /** Generous ceiling for anything a busy machine or a slow server stretches. */
 const WAIT = { timeout: 30_000, interval: 10 };
@@ -506,7 +506,10 @@ const unsubscribeDigest = await driver.subscribe(
   },
 );
 
-/** A publishing, remotely controllable worker on `digest`, not yet run. */
+/**
+ * A publishing worker on `digest` that another process can control
+ * (`control` on), not yet run.
+ */
 function digestWorker(
   service: string,
   options: Parameters<BunJobs["worker"]>[2] = {},
@@ -589,10 +592,11 @@ checkEqual(
 );
 await admin.workers.controller("digest").start({ id: parked.id });
 await statesFrom(parked, 2);
-checkEqual("started remotely, it is a transition", stepsOf(parked), [
-  "first:stopped",
-  "stopped->running",
-]);
+checkEqual(
+  "started from another process, it is a transition",
+  stepsOf(parked),
+  ["first:stopped", "stopped->running"],
+);
 checkEqual(
   "one first start per worker, and only one",
   [plain, early, parked].map(
@@ -833,7 +837,11 @@ for (const [label, patch, reason] of [
 }
 
 const remoteReport = await admin.runners.controller("report");
-checkEqual("from the admin, the runner is remote", remoteReport.isLocal, false);
+checkEqual(
+  "from the admin, the runner is not local",
+  remoteReport.isLocal,
+  false,
+);
 await remoteReport.updateConfig({
   concurrency: { runMode: "parallel", maxConcurrency: 3 },
 });
