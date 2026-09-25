@@ -157,7 +157,11 @@ Four things follow, and each is visible on the screen:
   other. Which one a reader gets follows the rest of the table: creation order
   wherever the backend records it (`features.addedByState`) and Count total is
   off, lock-expiry order otherwise. The UI does not decide this per tab; it
-  walks whenever the page it was given carries a cursor.
+  walks whenever the page it was given carries a cursor. The rule underneath
+  is about the **sort key, not the state**: a walk is refused only where its
+  key changes on its own. Delayed and Retrying walk although their run time
+  moves, because it moves only when a job actually retries — the same rare,
+  deliberate kind of change as an operator promoting a job.
 - **A walked page may have no row numbers.** The range then counts the rows —
   "20 rows" — instead of numbering them, and there is no page selector,
   because nothing knows which page it is. **Whether a page is numbered is a
