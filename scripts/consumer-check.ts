@@ -55,6 +55,7 @@ import {
 import { builtinModules } from "node:module";
 import { basename, join, relative, resolve } from "node:path";
 import process from "node:process";
+import ts from "typescript";
 
 /** One import spelling a consumer may write. */
 interface EntryConfig {
@@ -308,16 +309,30 @@ function classify(
   };
 }
 
-/** Bare specifiers (and `/// <reference types>`) in a declaration file. */
-function bareSpecifiers(text: string): string[] {
+/**
+ * The bare specifiers a declaration file really imports: `import`/`export …
+ * from`, `import x = require()`, `import("x")` type queries, side-effect
+ * imports, and `/// <reference types>` directives (which TypeScript honours
+ * only at the top of a file, so neither does this).
+ *
+ * TypeScript's own pre-processor reads them rather than a regex, because tsc
+ * copies JSDoc into the declarations it emits and a regex cannot tell code
+ * from prose: bun-jobs' `jobCursor.ts` has a doc comment reading
+ * `from "ordered by something creation cannot see"`, which a `\bfrom\s*"…"`
+ * pattern reported as an import of a package by that name. `preProcessFile`
+ * skips comments and the contents of string and template literals. Fixing the
+ * scanner rather than the sentence is deliberate: a leak guard that fires on
+ * prose gets routed around by rewording comments, and one people route around
+ * has stopped guarding.
+ *
+ * Relative specifiers are left out; they stay inside the package.
+ */
+export function bareSpecifiers(text: string): string[] {
+  const info = ts.preProcessFile(text, true, true);
   const found = new Set<string>();
-  const re =
-    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(["'])([^"'.][^"']*)\1/gm;
-  for (const m of text.matchAll(re)) found.add(m[2]!);
-  for (const m of text.matchAll(
-    /\/\/\/\s*<reference\s+types=(["'])([^"']+)\1/g,
-  ))
-    found.add(m[2]!);
+  for (const f of info.importedFiles)
+    if (!f.fileName.startsWith(".")) found.add(f.fileName);
+  for (const f of info.typeReferenceDirectives) found.add(f.fileName);
   return [...found];
 }
 
@@ -349,7 +364,7 @@ function walk(dir: string, suffix: string): string[] {
  * runtime environment, provided by `@types/bun` (itself an optional peer, so
  * a consumer without it is warned by the package manager).
  */
-function scanLeaks(installed: string, scoped: Set<string>): string[] {
+export function scanLeaks(installed: string, scoped: Set<string>): string[] {
   const pkg = JSON.parse(
     readFileSync(join(installed, "package.json"), "utf8"),
   ) as {
@@ -735,4 +750,5 @@ function compare(baseline: RunResult, now: RunResult): boolean {
   return newBroken.length > 0;
 }
 
-await main();
+// Run only as a command: the tests import the scanner without running a check.
+if (import.meta.main) await main();
