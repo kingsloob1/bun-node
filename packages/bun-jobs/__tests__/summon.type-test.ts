@@ -1,8 +1,9 @@
 /**
  * Compile-time assertions for a worker's `summon` option and
- * `summonedFromEnv()`: the modes are exactly the three approved spellings,
- * `mode` is the one required field, and the helper's answer — `undefined`
- * included — goes straight into the option. Checked by the tests typecheck
+ * `summonedFromArgs()`: `id` is the one required field (it is what makes a
+ * worker summoned), `mode` is optional and exactly the three approved
+ * spellings, and the helper's answer — `undefined` included — goes straight
+ * into the option. Checked by the tests typecheck
  * (`bun scripts/typecheck.ts`), not by `bun test`.
  *
  * Every `@ts-expect-error` below is a negative control: if the error ever
@@ -11,11 +12,13 @@
  */
 import type {
   BunQueueWorkerOptions,
-  SUMMON_ENV,
+  JobsApiConfig,
+  SUMMON_ARGS,
+  SummonedArgs,
   WorkerInfo,
   WorkerSummonProvenance,
 } from "../lib/index";
-import { summonedFromEnv } from "../lib/index";
+import { summonedFromArgs } from "../lib/index";
 
 /** `true` only when `A` and `B` are the same type, exactly. */
 type Equals<A, B> =
@@ -29,26 +32,31 @@ function assertTrue<T extends true>(_value?: T): void {}
 /** The options every case below shares. */
 const base = { namespace: "types" } satisfies BunQueueWorkerOptions;
 
-/* --- the modes ------------------------------------------------------------- */
+/* --- the shape ------------------------------------------------------------- */
 
 assertTrue<
   Equals<
     WorkerSummonProvenance["mode"],
-    "exit-on-idle" | "until-stopped" | "in-invocation"
+    "exit-on-idle" | "until-stopped" | "in-invocation" | undefined
   >
 >();
+assertTrue<Equals<WorkerSummonProvenance["id"], string>>();
 // The option, the record and the helper's answer are one shape.
 assertTrue<
   Equals<BunQueueWorkerOptions["summon"], WorkerSummonProvenance | undefined>
 >();
 assertTrue<Equals<WorkerInfo["summon"], WorkerSummonProvenance | undefined>>();
+assertTrue<
+  Equals<ReturnType<typeof summonedFromArgs>, SummonedArgs | undefined>
+>();
 
-export const modes: BunQueueWorkerOptions[] = [
-  { ...base, summon: { mode: "exit-on-idle" } },
-  { ...base, summon: { mode: "until-stopped", kind: "keda" } },
+export const shapes: BunQueueWorkerOptions[] = [
+  { ...base, summon: { id: "a1" } },
+  { ...base, summon: { id: "a1", mode: "exit-on-idle" } },
+  { ...base, summon: { id: "a1", mode: "until-stopped", kind: "keda" } },
   {
     ...base,
-    summon: { mode: "in-invocation", id: "a1", deadlineAt: 1_700_000_000_000 },
+    summon: { id: "a1", mode: "in-invocation", deadlineAt: 1_700_000_000_000 },
   },
 ];
 
@@ -57,6 +65,7 @@ export const modes: BunQueueWorkerOptions[] = [
 export const launch: BunQueueWorkerOptions = {
   ...base,
   summon: {
+    id: "a1",
     // @ts-expect-error `"launch"` is a summoner style, not a worker mode.
     mode: "launch",
   },
@@ -64,59 +73,64 @@ export const launch: BunQueueWorkerOptions = {
 export const inHandler: BunQueueWorkerOptions = {
   ...base,
   summon: {
+    id: "a1",
     // @ts-expect-error `"in-handler"` was renamed `"in-invocation"`.
     mode: "in-handler",
   },
 };
 
-// `mode` is required: a provenance with no mode says nothing about how to run.
-// @ts-expect-error `mode` is missing.
-export const noMode: BunQueueWorkerOptions = { ...base, summon: { id: "a1" } };
+// `id` is required: without it a worker is not summoned.
+export const noId: BunQueueWorkerOptions = {
+  ...base,
+  // @ts-expect-error `id` is missing.
+  summon: { mode: "exit-on-idle" },
+};
 
 // The old option name is gone.
 export const summoned: BunQueueWorkerOptions = {
   ...base,
   // @ts-expect-error the option is `summon`, not `summoned`.
-  summoned: { mode: "exit-on-idle" },
+  summoned: { id: "a1" },
 };
 
-/* --- summonedFromEnv ------------------------------------------------------- */
+/* --- summonedFromArgs ------------------------------------------------------ */
 
-const fromEnv = summonedFromEnv();
+const fromArgs = summonedFromArgs();
 
 // Its answer, `undefined` included, is what the option takes — the recipe's
-// one line, `summon: summonedFromEnv()`.
-export const recipe: BunQueueWorkerOptions = { ...base, summon: fromEnv };
+// one line, `summon: summonedFromArgs()`.
+export const recipe: BunQueueWorkerOptions = { ...base, summon: fromArgs };
 export const recipeWithArgs: BunQueueWorkerOptions = {
   ...base,
-  summon: summonedFromEnv({ BUN_JOBS_SUMMON_ID: "a1" }, []),
+  summon: summonedFromArgs(["--bun-jobs-summon-id=a1"]),
 };
 
 // It may be `undefined`, so a caller must narrow before reading a field.
-// @ts-expect-error `fromEnv` is possibly undefined.
-export const unguarded: string | undefined = fromEnv.queue;
-export const guarded: string | undefined = fromEnv?.queue;
+// @ts-expect-error `fromArgs` is possibly undefined.
+export const unguarded: string | undefined = fromArgs.queue;
+export const guarded: string | undefined = fromArgs?.queue;
 
 // The extras configure the worker; they are numbers and strings, not `any`.
-assertTrue<
-  Equals<NonNullable<typeof fromEnv>["maxLifetimeMs"], number | undefined>
->();
-assertTrue<
-  Equals<NonNullable<typeof fromEnv>["graceMs"], number | undefined>
->();
-assertTrue<
-  Equals<NonNullable<typeof fromEnv>["namespace"], string | undefined>
->();
+assertTrue<Equals<SummonedArgs["maxLifetimeMs"], number | undefined>>();
+assertTrue<Equals<SummonedArgs["graceMs"], number | undefined>>();
+assertTrue<Equals<SummonedArgs["namespace"], string | undefined>>();
 
-// Every key is under `BUN_JOBS_SUMMON_*`.
+// Every name is a `--bun-jobs-summon-*` argument, none an environment key.
 assertTrue<
   Equals<
-    (typeof SUMMON_ENV)[keyof typeof SUMMON_ENV] extends `BUN_JOBS_SUMMON_${string}`
+    (typeof SUMMON_ARGS)[keyof typeof SUMMON_ARGS] extends `--bun-jobs-summon-${string}`
       ? true
       : false,
     true
   >
 >();
+assertTrue<Equals<(typeof SUMMON_ARGS)["id"], "--bun-jobs-summon-id">>();
+
+/* --- the API switch -------------------------------------------------------- */
+
 assertTrue<
-  Equals<(typeof SUMMON_ENV)["namespace"], "BUN_JOBS_SUMMON_NAMESPACE">
+  Equals<
+    NonNullable<JobsApiConfig["serialize"]>["exposeSummonHandles"],
+    boolean | undefined
+  >
 >();

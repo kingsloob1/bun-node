@@ -993,9 +993,14 @@ export class BunQueueWorker<
       );
     }
     this.#reportInterval = reportInterval;
-    // Checked here, before any side effect, and needs the report interval: a
-    // summoned worker that never reports could never release its attempt.
-    this.#summon = resolveSummonProvenance(options.summon, reportInterval);
+    // Checked here, before any side effect, and needs the report interval and
+    // the driver: a summoned worker that never reports could never release
+    // its attempt.
+    this.#summon = resolveSummonProvenance(
+      options.summon,
+      reportInterval,
+      supportsWorkers(driver),
+    );
 
     this.#derivedConfig =
       options.heartbeatInterval === undefined ? ["heartbeatInterval"] : [];

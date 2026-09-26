@@ -265,40 +265,49 @@ export interface WorkerTargetInfo {
 /**
  * Where a summoned worker came from, as its heartbeat record carries it
  * (`WorkerInfo.summon`) and as `BunQueueWorkerOptions.summon` takes it.
- * Usually built by `summonedFromEnv()` from the `BUN_JOBS_SUMMON_*`
- * variables a summon passes.
+ * Usually built by `summonedFromArgs()` from the `--bun-jobs-summon-*=`
+ * command-line arguments a summon passes.
  *
  * A worker writes only these five fields, whatever else the object it was
- * given carries: `summonedFromEnv()`'s `namespace`, `queue`, `maxLifetimeMs`
- * and `graceMs` configure the worker and never reach the record.
+ * given carries: `summonedFromArgs()`'s `namespace`, `queue`,
+ * `maxLifetimeMs` and `graceMs` configure the worker and never reach the
+ * record. Nothing in it is defaulted: a field the summoner did not pass is
+ * absent.
  */
 export interface WorkerSummonProvenance {
   /**
-   * The summon attempt's id, when the platform could pass it. The controller
-   * releases the attempt whose id a live record carries.
+   * The summon attempt's id. Required: a worker counts as summoned only when
+   * it has one, and the controller releases the attempt whose id a live
+   * record carries.
    */
-  id?: string;
+  id: string;
   /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what a UI badge names. */
   kind?: string;
   /**
-   * The platform's own name for this unit (a Cloud Run execution, a Fly
-   * machine id), read from the platform's environment where it sets one.
-   * Infrastructure detail: the management API withholds it unless
-   * `serialize.exposeHosts` is on.
+   * The platform's own name for this unit (a task ARN, a Fly machine id),
+   * when the worker knows it. Infrastructure detail — an ECS task ARN
+   * contains the AWS account id — so the management API withholds it unless
+   * `serialize.exposeSummonHandles` is on (default `false`).
    */
   handle?: string;
   /**
-   * How the summoned worker runs: `"exit-on-idle"` (exits once the queue has
-   * been idle long enough), `"until-stopped"` (never exits on idle, for a
-   * platform that restarts an exited service) or `"in-invocation"` (lives
-   * inside one serverless invocation). A reader meeting a mode it does not
-   * know shows the raw string: a later version may add one.
+   * The mode **as requested by the summoner**: `"exit-on-idle"` (exit once
+   * the queue has been idle long enough), `"until-stopped"` (never exit on
+   * idle, for a platform that restarts an exited service) or
+   * `"in-invocation"` (live inside one serverless invocation). Absent when
+   * the summoner requested none — never defaulted. It is what was asked
+   * for, not what the worker is doing: the worker's own resolved mode is to
+   * be reported separately, from a getter on the running worker, the way
+   * the record's `sweeps` is written from what the worker actually arms. A
+   * reader meeting a mode it does not know shows the raw string: a later
+   * version may add one.
    */
-  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
+  mode?: "exit-on-idle" | "until-stopped" | "in-invocation";
   /**
-   * When the worker will stop at the latest, epoch ms, computed by the worker
-   * from its own clock at start (a summon passes a duration, never a
-   * timestamp). Absent when it has no deadline.
+   * The latest the worker should stop, epoch ms, **as requested by the
+   * summoner**: computed at start from the requested maximum lifetime, on
+   * the worker's own clock (a summon passes a duration, never a timestamp).
+   * Absent when none was requested — never defaulted.
    */
   deadlineAt?: number;
 }

@@ -730,7 +730,9 @@ export interface SummonCapabilities {
    * a pre-created Fly Machine or an ACA job whose override would replace its
    * secrets). With `"none"`, attempts are released by start time, not by id.
    */
-  passes: "env" | "argv" | "none";
+  // Revised 2026-09-26: identity travels only as arguments, so `"env"` is
+  // withdrawn (summon-compute.md §5.5).
+  passes: "argv" | "none";
   /**
    * The default in-flight TTL, in ms: cold start + Bun boot + driver connect +
    * one report. `SummonPolicy.bootBudget` overrides it. Every first-party
@@ -741,7 +743,7 @@ export interface SummonCapabilities {
   shutdown: {
     /** The stop signal: `"SIGTERM"` on most platforms, `"SIGINT"` on Fly by default, `"none"` for Lambda's in-invocation model. */
     signal: "SIGTERM" | "SIGINT" | "none";
-    /** The grace after the signal, in ms, as configured. Passed to the worker as `BUN_JOBS_SUMMON_GRACE_MS`. */
+    /** The grace after the signal, in ms, as configured. Passed to the worker as `--bun-jobs-summon-grace-ms` (summon-compute.md §5.5). */
     graceMs: number;
     /** The most the platform allows the grace to be raised to, when known. The UI shows it beside a too-short grace. */
     graceMaxMs?: number;
@@ -803,7 +805,7 @@ export type SummonDedupe =
 | `dedupe` | `request.dedupeKey` = `request.id` clipped to `maxLength` of `charset`, computed by the controller, so the provider never builds a key. **`request.id` never repeats**: it hashes the marker's random `epoch` with the version the claim writes, because a queue-state entry's version restarts at `1` after a delete or a purge, and a platform that remembers tokens (ECS, 24 h) would answer a repeated id `deduped` and start nothing (`summon-compute.md` §4.0 R6). A provider may rely on this | §4.6's fixed 64-character rule, and "that adapter shortens further" for Cloud Run |
 | `passes` | `"none"` → release by start time (§4.3 step 2) | §4.3, §7.3, §7.5 |
 | `bootBudgetMs` | default `until` for a pending attempt | §7.1 column |
-| `shutdown` | sets `BUN_JOBS_SUMMON_GRACE_MS`; `warn` when `graceMs` is below `runSummoned`'s `shutdownBuffer` | §5.2 ("the first-party adapters pass their platform's default") |
+| `shutdown` | passes `--bun-jobs-summon-grace-ms`; `warn` when `graceMs` is below `runSummoned`'s `shutdownBuffer` | §5.2 ("the first-party adapters pass their platform's default") |
 | `maxLifetimeMs`, `enforcesLifetime` | `ConfigError` for a `maxLifetime` above the cap; the status route says whether the cap is enforced | §4.5's list of platform caps |
 | `maxCountPerCall` | clamps `count` | — |
 
@@ -879,7 +881,7 @@ So [D]:
   by the host), no schema, and a summon facet whose `summon` wraps `invoke`
   (a `void` return still means `{ status: "started", handles: [] }`).
   Capabilities come from its options with the same defaults as before
-  (`style: "launch"`, `bootBudget: 180_000`, `passes: "env"`), plus
+  (`style: "launch"`, `bootBudget: 180_000`, `passes: "argv"`, revised from `"env"` on 2026-09-26, summon-compute.md §5.5), plus
   `dedupe: { kind: "none" }` and `shutdown: { signal: "SIGTERM", graceMs:
   10_000 }` unless given.
 - **A bare function** in `SummonPolicy.summoner` stays shorthand for
@@ -1683,7 +1685,7 @@ The checks, grouped [D]:
 | concurrency | 16 concurrent `summon`s with distinct ids: 16 units, no crash, no shared mutable state corrupted; 8 concurrent with one id on a `token` platform: one unit, the rest `deduped` | must |
 | errors | for each fault the fake can inject — `transient`, `throttled` (with a retry-after), `quota`, `auth`, `misconfigured`, `conflict`, `capacity-200` — the provider throws `ProviderError` of the right kind, or returns `unavailable` for `capacity-200`; `throttled` carries `retryAfterMs`; no raw `Error` escapes | must |
 | timeouts | the fake delays past the call's timeout: the provider rejects within 1 s of `ctx.signal` aborting and leaves no timer behind | must |
-| handoff | **end to end**: the kit runs a real `SummonController` on a shared SQLite or file driver; the fake "starts" a unit by calling the kit's `startUnit({ env, argv })`, which spawns the kit's fixture worker under `runSummoned`; the marker releases the attempt by id (`passes: "env"`/`"argv"`) or by start time (`"none"`) | must |
+| handoff | **end to end**: the kit runs a real `SummonController` on a shared SQLite or file driver; the fake "starts" a unit by calling the kit's `startUnit({ env, argv })`, which spawns the kit's fixture worker under `runSummoned`; the marker releases the attempt by id (`passes: "argv"`; `"env"` withdrawn 2026-09-26, summon-compute.md §5.5) or by start time (`"none"`) | must |
 | the CAS | two controllers in two processes race on one backlog: one `summon` call reaches the fake | must |
 | scale | `summon` with `target` twice leaves one count; `release({ target: 0 })` sets zero | must for `scale` |
 | status / cancel | when present: handles from `summon` are known to `status`; `cancel` moves a pending unit to `exited`/`unknown` | must when present |
@@ -2014,8 +2016,8 @@ Step by step, each step a heading, each with the code of one worked example
    token; answers versus errors.
 7. **Map errors**: one table from platform codes to `ProviderError` kinds,
    with the six kinds explained by what the controller does.
-8. **Hand over the summon id**: env, argv or nothing; how the worker's
-   `summonedFromEnv()` reads it; what release-by-start-time costs
+8. **Hand over the summon id**: argv or nothing (never env: summon-compute.md
+   §5.5); how the worker's `summonedFromArgs()` reads it; what release-by-start-time costs
    (`summon-compute.md` Q34).
 9. **Optional hooks**: `release`, `status`, `cancel`, `validate`.
 10. **Execute: the transport**: the two shapes; for the exchange shape,

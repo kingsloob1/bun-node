@@ -910,7 +910,11 @@ export {
 
 /* ------------------------------------------------------------------ *
  * Summoned workers: where a worker started on demand came from. A summoned
- * worker passes `summon: summonedFromEnv()`, and its heartbeat record says
+ * worker passes `summon: summonedFromArgs()`, and its heartbeat record says
  * so (`WorkerInfo.summon`, `WorkerDto.summon`).
  * ------------------------------------------------------------------ */
-export { SUMMON_ENV, summonedFromEnv } from "./summon/env";
+export {
+  SUMMON_ARGS,
+  type SummonedArgs,
+  summonedFromArgs,
+} from "./summon/args";

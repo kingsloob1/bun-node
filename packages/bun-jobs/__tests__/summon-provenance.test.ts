@@ -4,15 +4,14 @@ import type {
   JobsDriver,
   WorkerInfo,
   WorkerSummonProvenance,
-  WorkerTargetMode,
 } from "../lib/index";
+import type { ProbeReport } from "./fixtures/processes/spawnProbe";
 import { join } from "node:path";
 import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { toWorkerDto } from "../lib/api/serialize";
 import {
-  BunQueue,
   BunQueueWorker,
   BunRunner,
   CHILD_ENV,
@@ -20,22 +19,28 @@ import {
   createDriver,
   listWorkerRecords,
   MemoryDriver,
-  SUMMON_ENV,
-  summonedFromEnv,
+  SUMMON_ARGS,
+  summonedFromArgs,
 } from "../lib/index";
+import { parseSummonArgs } from "../lib/summon/args";
 import { testNamespace, waitFor } from "./helpers";
 import { crossProcessBackends } from "./helpers/backends";
 
 /**
  * Summon provenance (Phase 1.5, PR-2): a worker says it was summoned, by what
- * and until when, on its heartbeat record and through the management API; and
- * `summonedFromEnv()` builds that from the `BUN_JOBS_SUMMON_*` keys — except
- * inside a runner child, which inherits its parent's environment and must not
- * claim the parent's summon attempt.
+ * and until when, on its heartbeat record and through the management API;
+ * and `summonedFromArgs()` builds that from the `--bun-jobs-summon-*=`
+ * arguments a summon passes.
+ *
+ * Reworked after the bun-jobs session's review (2026-09-26): identity travels
+ * **only as arguments**, because an environment leaks to every descendant —
+ * `Bun.spawn` with no `env` passes the environment the process started with,
+ * whatever `process.env` says now. The descendant tests below prove the fix
+ * and carry the leak itself as their negative control.
  */
 
-const fixture = (name: string) =>
-  join(import.meta.dir, "fixtures", "handlers", `${name}.ts`);
+const fixture = (kind: "handlers" | "processes", name: string) =>
+  join(import.meta.dir, "fixtures", kind, `${name}.ts`);
 
 const closers: (() => Promise<unknown>)[] = [];
 
@@ -57,7 +62,7 @@ afterAll(async () => {
 /** Sets `vars` on `process.env` for the length of `body`, then restores them. */
 async function withEnv<T>(
   vars: Record<string, string>,
-  body: () => Promise<T>,
+  body: () => T | Promise<T>,
 ): Promise<T> {
   const before = new Map(
     Object.keys(vars).map((key) => [key, process.env[key]] as const),
@@ -76,43 +81,53 @@ async function withEnv<T>(
   }
 }
 
-/** Every summon key set, as a controller's summon would pass them. */
-const FULL_ENV = {
-  [SUMMON_ENV.id]: "attempt-1",
-  [SUMMON_ENV.kind]: "ecs",
-  [SUMMON_ENV.mode]: "until-stopped",
-  [SUMMON_ENV.namespace]: "shop",
-  [SUMMON_ENV.queue]: "emails",
-  [SUMMON_ENV.maxLifetimeMs]: "60000",
-  [SUMMON_ENV.graceMs]: "10000",
-};
+/** Every summon argument, as a controller's summon would pass them. */
+const FULL_ARGS = [
+  "bun",
+  "worker.ts",
+  `${SUMMON_ARGS.id}=attempt-1`,
+  `${SUMMON_ARGS.kind}=ecs`,
+  `${SUMMON_ARGS.mode}=until-stopped`,
+  `${SUMMON_ARGS.namespace}=shop`,
+  `${SUMMON_ARGS.queue}=emails`,
+  `${SUMMON_ARGS.maxLifetimeMs}=60000`,
+  `${SUMMON_ARGS.graceMs}=10000`,
+];
 
-/* --- summonedFromEnv ------------------------------------------------------- */
+/* --- summonedFromArgs ------------------------------------------------------ */
 
-describe("summonedFromEnv", () => {
-  it("names every key under BUN_JOBS_SUMMON_*", () => {
-    for (const key of Object.values(SUMMON_ENV)) {
-      expect(key.startsWith("BUN_JOBS_SUMMON_")).toBe(true);
+describe("summonedFromArgs", () => {
+  it("names every argument under --bun-jobs-summon-", () => {
+    for (const name of Object.values(SUMMON_ARGS)) {
+      expect(name.startsWith("--bun-jobs-summon-")).toBe(true);
     }
-    // Never the runner child's namespace key, whatever the summon passes.
-    expect(Object.values(SUMMON_ENV)).not.toContain(CHILD_ENV.namespace);
   });
 
-  it("is undefined when no summon key is set", () => {
-    expect(summonedFromEnv({}, [])).toBeUndefined();
+  it("is undefined when no summon id is on the command line", () => {
+    expect(summonedFromArgs([])).toBeUndefined();
+    expect(summonedFromArgs(["bun", "worker.ts", "--verbose"])).toBeUndefined();
+    // An empty id counts as absent.
+    expect(summonedFromArgs([`${SUMMON_ARGS.id}=`])).toBeUndefined();
+  });
+
+  it("keys summoned on the id: other summon arguments alone are not a summon", () => {
     expect(
-      summonedFromEnv({ PATH: "/usr/bin", HOME: "/root" }, [
-        "bun",
-        "worker.ts",
+      summonedFromArgs([
+        `${SUMMON_ARGS.kind}=ecs`,
+        `${SUMMON_ARGS.mode}=exit-on-idle`,
+        `${SUMMON_ARGS.queue}=emails`,
+        `${SUMMON_ARGS.maxLifetimeMs}=1000`,
       ]),
     ).toBeUndefined();
-    // An empty value counts as unset.
-    expect(summonedFromEnv({ [SUMMON_ENV.id]: "" }, [])).toBeUndefined();
+    // Negative control: the same arguments plus an id are one.
+    expect(
+      summonedFromArgs([`${SUMMON_ARGS.kind}=ecs`, `${SUMMON_ARGS.id}=a1`]),
+    ).toEqual({ id: "a1", kind: "ecs" });
   });
 
-  it("reads every key, and computes the deadline from its own clock", () => {
+  it("reads every argument, and computes the deadline from its own clock", () => {
     const before = Date.now();
-    const summon = summonedFromEnv(FULL_ENV, []);
+    const summon = summonedFromArgs(FULL_ARGS);
     const after = Date.now();
 
     expect(summon).toMatchObject({
@@ -126,212 +141,256 @@ describe("summonedFromEnv", () => {
     });
     expect(summon!.deadlineAt).toBeGreaterThanOrEqual(before + 60_000);
     expect(summon!.deadlineAt).toBeLessThanOrEqual(after + 60_000);
-    // Never read from the environment: see its doc comment.
     expect(summon).not.toHaveProperty("handle");
   });
 
-  it("defaults the mode to exit-on-idle, and leaves the rest absent", () => {
-    expect(summonedFromEnv({ [SUMMON_ENV.id]: "a1" }, [])).toEqual({
-      id: "a1",
-      mode: "exit-on-idle",
-    });
+  it("never invents a mode or a deadline the summoner did not pass", () => {
+    const summon = summonedFromArgs([`${SUMMON_ARGS.id}=a1`]);
+    expect(summon).toEqual({ id: "a1" });
+    expect(summon).not.toHaveProperty("mode");
+    expect(summon).not.toHaveProperty("deadlineAt");
   });
 
-  it("does not read the bare BUN_JOBS_NAMESPACE / BUN_JOBS_QUEUE keys", () => {
-    // The draft's names. The first is the runner child's `CHILD_ENV.namespace`,
-    // so it must never make a process look summoned.
+  it("reads only the = form, and the last of a repeated argument wins", () => {
     expect(
-      summonedFromEnv(
-        { BUN_JOBS_NAMESPACE: "shop", BUN_JOBS_QUEUE: "emails" },
-        [],
-      ),
-    ).toBeUndefined();
-  });
-
-  it("reads --bun-jobs-summon-*= arguments, with the environment winning", () => {
-    expect(
-      summonedFromEnv({}, [
-        "bun",
-        "worker.ts",
-        "--bun-jobs-summon-id=from-argv",
-        "--bun-jobs-summon-kind=render",
-        "--bun-jobs-summon-max-lifetime-ms=1000",
+      summonedFromArgs([
+        `${SUMMON_ARGS.id}=first`,
+        `${SUMMON_ARGS.id}=second`,
+        SUMMON_ARGS.kind,
+        "render",
       ]),
-    ).toMatchObject({
-      id: "from-argv",
-      kind: "render",
-      mode: "exit-on-idle",
-      maxLifetimeMs: 1_000,
-    });
-
-    const both = summonedFromEnv({ [SUMMON_ENV.id]: "from-env" }, [
-      "--bun-jobs-summon-id=from-argv",
-      "--bun-jobs-summon-kind=render",
-    ]);
-    expect(both).toMatchObject({ id: "from-env", kind: "render" });
-
-    // The last of a repeated argument wins; a bare flag is not the `=` form.
-    expect(
-      summonedFromEnv({}, [
-        "--bun-jobs-summon-id=first",
-        "--bun-jobs-summon-id=second",
-        "--bun-jobs-summon-kind",
-      ]),
-    ).toEqual({ id: "second", mode: "exit-on-idle" });
+    ).toEqual({ id: "second" });
+    // A bare flag followed by a value is not read.
+    expect(summonedFromArgs([SUMMON_ARGS.id, "a1"])).toBeUndefined();
   });
 
   it("refuses a malformed mode or duration rather than recording it", () => {
-    expect(() => summonedFromEnv({ [SUMMON_ENV.mode]: "launch" }, [])).toThrow(
-      ConfigError,
-    );
-    expect(() =>
-      summonedFromEnv({ [SUMMON_ENV.mode]: "in-handler" }, []),
-    ).toThrow(ConfigError);
+    const id = `${SUMMON_ARGS.id}=a1`;
+    for (const mode of ["launch", "in-handler", "service"]) {
+      expect(() =>
+        summonedFromArgs([id, `${SUMMON_ARGS.mode}=${mode}`]),
+      ).toThrow(ConfigError);
+    }
     for (const bad of ["5s", "-1", "1.5", "1e3", "abc"]) {
       expect(() =>
-        summonedFromEnv({ [SUMMON_ENV.maxLifetimeMs]: bad }, []),
+        summonedFromArgs([id, `${SUMMON_ARGS.maxLifetimeMs}=${bad}`]),
       ).toThrow(ConfigError);
-      expect(() => summonedFromEnv({ [SUMMON_ENV.graceMs]: bad }, [])).toThrow(
-        ConfigError,
-      );
+      expect(() =>
+        summonedFromArgs([id, `${SUMMON_ARGS.graceMs}=${bad}`]),
+      ).toThrow(ConfigError);
     }
-    // Every approved mode parses.
     for (const mode of ["exit-on-idle", "until-stopped", "in-invocation"]) {
-      expect(summonedFromEnv({ [SUMMON_ENV.mode]: mode }, [])?.mode).toBe(
+      expect(summonedFromArgs([id, `${SUMMON_ARGS.mode}=${mode}`])?.mode).toBe(
         mode as WorkerSummonProvenance["mode"],
       );
     }
   });
 
-  it("is undefined when the runner-child marker is set, and only then", () => {
-    const child = { ...FULL_ENV, [CHILD_ENV.marker]: "1" };
-    expect(summonedFromEnv(child, [])).toBeUndefined();
-    // Nor does an argument get past the guard.
-    expect(
-      summonedFromEnv({ [CHILD_ENV.marker]: "1" }, [
-        "--bun-jobs-summon-id=from-argv",
-      ]),
-    ).toBeUndefined();
-
-    // Negative controls: the same keys without the marker, or with a marker
-    // value the runner never writes, are a summoned process.
-    expect(summonedFromEnv(FULL_ENV, [])?.id).toBe("attempt-1");
-    expect(
-      summonedFromEnv({ ...FULL_ENV, [CHILD_ENV.marker]: "0" }, [])?.id,
-    ).toBe("attempt-1");
-  });
-
-  it("reads process.env and process.argv by default", async () => {
-    expect(process.env[CHILD_ENV.marker]).toBeUndefined();
+  it("never reads provenance from the environment", async () => {
     await withEnv(
-      { [SUMMON_ENV.id]: "defaults", [SUMMON_ENV.kind]: "fly" },
-      async () => {
-        expect(summonedFromEnv()).toEqual({
-          id: "defaults",
-          kind: "fly",
-          mode: "exit-on-idle",
-        });
+      {
+        BUN_JOBS_SUMMON_ID: "from-env",
+        BUN_JOBS_SUMMON_KIND: "ecs",
+        BUN_JOBS_SUMMON_MODE: "exit-on-idle",
+      },
+      () => {
+        expect(summonedFromArgs([])).toBeUndefined();
+        // The default argv is this test runner's, which carries no summon.
+        expect(summonedFromArgs()).toBeUndefined();
       },
     );
-    expect(summonedFromEnv()).toBeUndefined();
+  });
+
+  it("reads process.argv by default", () => {
+    const saved = process.argv;
+    process.argv = [...saved, `${SUMMON_ARGS.id}=from-argv`];
+    try {
+      expect(summonedFromArgs()).toEqual({ id: "from-argv" });
+    } finally {
+      process.argv = saved;
+    }
+    expect(summonedFromArgs()).toBeUndefined();
   });
 });
 
-/* --- inside a real runner child -------------------------------------------- */
+/* --- the runner-child marker, layer by layer ------------------------------- */
 
-/** The fixtures' report: what the child saw, and what it answered. */
-interface ChildReport {
-  /** `BUN_JOBS_CHILD` in the child. */
-  marker: string | null;
-  /** `BUN_JOBS_SUMMON_ID` in the child: proof the parent's key arrived. */
-  inherited: string | null;
-  /** `summonedFromEnv()` in the child. */
-  summon: unknown;
-  /** `summonedFromEnv()` over the child's env minus the marker. */
-  unmarked: { id?: string } | null;
-}
+describe("the runner-child marker: refuse-only defence in depth", () => {
+  const argv = [`${SUMMON_ARGS.id}=attempt-1`];
 
-/** What every child below must report, having inherited `attempt-1`. */
-function expectGuarded(report: ChildReport): void {
-  expect(report.marker).toBe("1");
-  // The key reached the child, so a null answer is the guard's doing...
-  expect(report.inherited).toBe("attempt-1");
-  expect(report.summon).toBeNull();
-  // ...as the negative control shows: without the marker it parses.
-  expect(report.unmarked?.id).toBe("attempt-1");
-}
+  it("refuses provenance when the marker is set, even with the arguments visible", () => {
+    // A `Worker` thread runs in its parent's process. Bun gives it an empty
+    // argv today; Node copies the parent's. This is the thread that *does*
+    // see the arguments, as it would under Node's semantics.
+    expect(parseSummonArgs(argv, "1")).toBeUndefined();
+  });
 
-describe("summonedFromEnv inside a runner child", () => {
-  const modes: ExecutionMode[] = ["spawn", "worker"];
+  it("negative control: without the marker layer, that thread would claim the attempt", () => {
+    expect(parseSummonArgs(argv, undefined)).toEqual({ id: "attempt-1" });
+    // A marker value the runner never writes refuses nothing.
+    expect(parseSummonArgs(argv, "0")).toEqual({ id: "attempt-1" });
+  });
 
-  for (const mode of modes) {
-    it(`answers undefined in a runner's ${mode} child that inherited the keys`, async () => {
-      await withEnv(FULL_ENV, async () => {
-        // The parent itself is summoned: the child inherits exactly that.
-        expect(summonedFromEnv()?.id).toBe("attempt-1");
+  it("summonedFromArgs reads the real marker from process.env", async () => {
+    expect(process.env[CHILD_ENV.marker]).toBeUndefined();
+    expect(summonedFromArgs(argv)?.id).toBe("attempt-1");
+    await withEnv({ [CHILD_ENV.marker]: "1" }, () => {
+      expect(summonedFromArgs(argv)).toBeUndefined();
+    });
+  });
 
-        const runner = new BunRunner({
-          id: `summon-${mode}`,
-          namespace: testNamespace(),
-          file: fixture("summon-env"),
-          executionMode: mode,
-          driver: new MemoryDriver(),
-          waitToExit: false,
-          logger: noopLogger,
-        } as BunRunnerOptions<any>);
-        closers.push(() => runner.stop({ force: true }));
-        await runner.start();
-
-        const settled = new Promise<ChildReport>((resolve, reject) => {
-          runner.once("finished", (_record, result) => {
-            resolve(result as ChildReport);
-          });
-          runner.once("failed", (_record, error) => reject(error));
-        });
-        await runner.trigger({});
-        expectGuarded(await settled);
+  it("the marker only refuses: it never makes an unsummoned process summoned", async () => {
+    for (const marker of ["0", "1"]) {
+      await withEnv({ [CHILD_ENV.marker]: marker }, () => {
+        expect(summonedFromArgs([])).toBeUndefined();
       });
+    }
+  });
+});
+
+/* --- a runner child's own arguments ---------------------------------------- */
+
+describe("a runner child's own arguments never read as a summon", () => {
+  const cases: {
+    mode: ExecutionMode;
+    options: Partial<BunRunnerOptions<any>>;
+  }[] = [
+    {
+      mode: "spawn",
+      options: { spawn: { args: [`${SUMMON_ARGS.id}=attempt-1`] } },
+    },
+    {
+      mode: "worker",
+      options: { worker: { argv: [`${SUMMON_ARGS.id}=attempt-1`] } },
+    },
+  ];
+
+  for (const { mode, options } of cases) {
+    it(`in a runner's ${mode} child`, async () => {
+      const runner = new BunRunner({
+        id: `summon-args-${mode}`,
+        namespace: testNamespace(),
+        file: fixture("handlers", "summon-args"),
+        executionMode: mode,
+        driver: new MemoryDriver(),
+        waitToExit: false,
+        logger: noopLogger,
+        ...options,
+      } as BunRunnerOptions<any>);
+      closers.push(() => runner.stop({ force: true }));
+      await runner.start();
+
+      const settled = new Promise<{
+        summon: unknown;
+        argv: string[];
+        marker: string | null;
+      }>((resolve, reject) => {
+        runner.once("finished", (_record, result) => {
+          resolve(result as never);
+        });
+        runner.once("failed", (_record, error) => reject(error));
+      });
+      await runner.trigger({});
+      const report = await settled;
+
+      // The child's own arguments do carry a summon id...
+      expect(report.argv).toContain(`${SUMMON_ARGS.id}=attempt-1`);
+      expect(report.marker).toBe("1");
+      // ...and the marker is what refuses it.
+      expect(report.summon).toBeNull();
     }, 20_000);
   }
+});
 
-  const targets: WorkerTargetMode[] = ["child-process", "worker-thread"];
+/* --- descendants of a summoned process ------------------------------------- */
 
-  for (const target of targets) {
-    it(`answers undefined in a worker target's ${target}`, async () => {
-      await withEnv(FULL_ENV, async () => {
-        const driver = new MemoryDriver();
-        const namespace = testNamespace();
-        const queue = new BunQueue("summon-target", { namespace, driver });
-        closers.push(() => queue.close());
-        const worker = new BunQueueWorker(
-          "summon-target",
-          fixture("job-summon-env"),
-          {
-            namespace,
-            driver,
-            target,
-            logger: noopLogger,
-            pollInterval: 10,
-            waitToExit: false,
-          },
-        );
-        closers.push(() => worker.close({ force: true }));
-        void worker.run();
+/** What `summoned-parent.ts` prints. */
+interface ParentReport {
+  /** `summonedFromArgs()` in the summoned parent itself. */
+  self: { id: string; kind?: string } | null;
+  /** `BUN_JOBS_SUMMON_ID` in the parent after it deleted it. */
+  envAfterDelete: string | null;
+  /** A `Bun.spawn` child of the main thread. */
+  mainThread: ProbeReport;
+  /** A `Bun.spawn` child of an in-process processor. */
+  inProcess: ProbeReport;
+  /** A worker-thread target's thread, and a `Bun.spawn` child of it. */
+  workerThread: {
+    here: unknown;
+    hereArgv: string[];
+    hereMarker: string | null;
+    spawned: ProbeReport;
+  };
+}
 
-        const job = await queue.add("probe", {}, { removeOnComplete: false });
-        let report: ChildReport | undefined;
-        await waitFor(
-          async () => {
-            const stored = await queue.getJob(job.id);
-            report = stored?.returnValue as ChildReport | undefined;
-            return stored?.state === "completed";
-          },
-          { timeout: 20_000, message: "the probe job never completed" },
-        );
-        expectGuarded(report!);
-      });
-    }, 30_000);
+/** Runs `summoned-parent.ts` once, as a summon would start it. */
+async function runSummonedParent(): Promise<ParentReport> {
+  const proc = Bun.spawn({
+    cmd: [
+      process.execPath,
+      fixture("processes", "summoned-parent"),
+      `${SUMMON_ARGS.id}=attempt-1`,
+      `${SUMMON_ARGS.kind}=ecs`,
+    ],
+    // Also in the parent's *startup* environment, which is what `Bun.spawn`
+    // with no `env` hands on: the old channel's leak, reproduced.
+    env: { ...process.env, BUN_JOBS_SUMMON_ID: "attempt-1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const code = await proc.exited;
+  if (code !== 0) {
+    throw new Error(`summoned-parent exited ${code}: ${err}`);
   }
+  return JSON.parse(out.trim().split("\n").at(-1)!) as ParentReport;
+}
+
+describe("descendants of a summoned process", () => {
+  let parent: Promise<ParentReport> | undefined;
+  /** The parent's report, run once for every case below. */
+  const report = () => (parent ??= runSummonedParent());
+
+  it("positive control: the parent itself is summoned, and deleted the variable", async () => {
+    const { self, envAfterDelete } = await report();
+    expect(self).toEqual({ id: "attempt-1", kind: "ecs" });
+    expect(envAfterDelete).toBeNull();
+  }, 60_000);
+
+  const spawned: [string, (r: ParentReport) => ProbeReport][] = [
+    ["from the main thread", (r) => r.mainThread],
+    ["from an in-process processor", (r) => r.inProcess],
+    ["from a worker-thread target's thread", (r) => r.workerThread.spawned],
+  ];
+
+  for (const [where, pick] of spawned) {
+    it(`a Bun.spawn child with no env, ${where}, is not summoned`, async () => {
+      const probe = pick(await report());
+      expect(probe.args).toBeNull();
+      // Arguments are not inherited: that is the fix, and the reason.
+      expect(probe.argv).toEqual([]);
+      // Nor did the marker do the work: the probe is not a runner child.
+      expect(probe.marker).toBeNull();
+    }, 60_000);
+
+    it(`negative control: the env channel would have leaked ${where}`, async () => {
+      // The draft read BUN_JOBS_SUMMON_ID. The parent deleted it, and the
+      // child still has it: `Bun.spawn` passed the startup environment.
+      expect(pick(await report()).legacyEnv).toBe("attempt-1");
+    }, 60_000);
+  }
+
+  it("the worker-thread target's thread itself is not summoned", async () => {
+    const thread = (await report()).workerThread;
+    expect(thread.here).toBeNull();
+    // Both layers hold independently here: Bun gives the thread no argv...
+    expect(thread.hereArgv).toEqual([]);
+    // ...and the thread carries the marker that would refuse it anyway.
+    expect(thread.hereMarker).toBe("1");
+  }, 60_000);
 });
 
 /* --- the heartbeat record -------------------------------------------------- */
@@ -376,12 +435,21 @@ function reporting(
   };
 }
 
+/** A memory driver that cannot store worker records (`supportsWorkers` false). */
+function recordlessDriver(): MemoryDriver {
+  const driver = new MemoryDriver();
+  for (const method of ["registerWorker", "getQueueState"]) {
+    Object.defineProperty(driver, method, { value: undefined });
+  }
+  return driver;
+}
+
 describe("summon: the heartbeat record", () => {
   it("writes the option on the first report, and on every report after", async () => {
     const summon = {
       id: "a1",
       kind: "ecs",
-      handle: "arn:task/1",
+      handle: "arn:aws:ecs:eu-west-1:123456789012:task/c/1",
       mode: "exit-on-idle" as const,
       deadlineAt: 1_900_000_000_000,
     };
@@ -393,29 +461,37 @@ describe("summon: the heartbeat record", () => {
     expect(later.summon).toEqual(summon);
   });
 
-  it("writes only the five provenance fields, not summonedFromEnv's extras", async () => {
-    const fromEnv = summonedFromEnv(FULL_ENV, [])!;
-    const { record } = reporting(new MemoryDriver(), fromEnv);
+  it("writes only the five provenance fields, not summonedFromArgs' extras", async () => {
+    const fromArgs = summonedFromArgs(FULL_ARGS)!;
+    const { record } = reporting(new MemoryDriver(), fromArgs);
 
     const { summon } = await record();
     expect(summon).toEqual({
       id: "attempt-1",
       kind: "ecs",
       mode: "until-stopped",
-      deadlineAt: fromEnv.deadlineAt!,
+      deadlineAt: fromArgs.deadlineAt!,
     });
     for (const extra of ["namespace", "queue", "maxLifetimeMs", "graceMs"]) {
       expect(summon).not.toHaveProperty(extra);
     }
   });
 
+  it("leaves a mode the summoner did not request absent on the record and DTO", async () => {
+    const { record } = reporting(new MemoryDriver(), { id: "a1" });
+    const info = await record();
+    expect(info.summon).toEqual({ id: "a1" });
+    expect("mode" in info.summon!).toBe(false);
+    const dto = toWorkerDto(info, { exposeHosts: true });
+    expect(dto.summon).toEqual({ id: "a1" });
+  });
+
   it("leaves summon off an unsummoned worker's record: absent, never defaulted", async () => {
-    for (const summon of [undefined, summonedFromEnv({}, [])]) {
+    for (const summon of [undefined, summonedFromArgs([])]) {
       const { record } = reporting(new MemoryDriver(), summon);
       const info = await record();
       expect("summon" in info).toBe(false);
-      const dto = toWorkerDto(info, { exposeHosts: true });
-      expect("summon" in dto).toBe(false);
+      expect("summon" in toWorkerDto(info, { exposeHosts: true })).toBe(false);
     }
   });
 
@@ -427,7 +503,7 @@ describe("summon: the heartbeat record", () => {
           namespace: testNamespace(),
           driver,
           reportInterval: 0,
-          summon: { mode: "exit-on-idle" },
+          summon: { id: "a1" },
         }),
     ).toThrow(ConfigError);
     // Negative control: the same worker without `summon` is fine.
@@ -440,16 +516,45 @@ describe("summon: the heartbeat record", () => {
     closers.push(() => plain.close({ force: true }));
   });
 
+  it("refuses summon on a driver that cannot store worker records", () => {
+    expect(
+      () =>
+        new BunQueueWorker("q", async () => null, {
+          namespace: testNamespace(),
+          driver: recordlessDriver(),
+          summon: { id: "a1" },
+        }),
+    ).toThrow(ConfigError);
+    // Negative controls: that driver without `summon`, and `summon` on an
+    // ordinary memory driver, are both fine.
+    const fine: [MemoryDriver, WorkerSummonProvenance | undefined][] = [
+      [recordlessDriver(), undefined],
+      [new MemoryDriver(), { id: "a1" }],
+    ];
+    for (const [driver, summon] of fine) {
+      const worker = new BunQueueWorker("q", async () => null, {
+        namespace: testNamespace(),
+        driver,
+        logger: noopLogger,
+        ...(summon === undefined ? {} : { summon }),
+      });
+      closers.push(() => worker.close({ force: true }));
+    }
+  });
+
   it("refuses a malformed summon option in the constructor", () => {
     const bad: unknown[] = [
-      { mode: "launch" },
-      { id: "a1" },
-      { mode: "exit-on-idle", id: "" },
-      { mode: "exit-on-idle", kind: 7 },
-      { mode: "exit-on-idle", deadlineAt: Number.NaN },
-      { mode: "exit-on-idle", deadlineAt: 1.5 },
-      { mode: "exit-on-idle", deadlineAt: -1 },
-      "exit-on-idle",
+      {},
+      { mode: "exit-on-idle" },
+      { id: "" },
+      { id: 7 },
+      { id: "a1", mode: "launch" },
+      { id: "a1", kind: "" },
+      { id: "a1", kind: 7 },
+      { id: "a1", deadlineAt: Number.NaN },
+      { id: "a1", deadlineAt: 1.5 },
+      { id: "a1", deadlineAt: -1 },
+      "a1",
       null,
     ];
     for (const summon of bad) {
@@ -479,7 +584,6 @@ describe("summon: the heartbeat record", () => {
         const { record, worker } = reporting(driver, summon);
 
         expect((await record()).summon).toEqual(summon);
-        // A closing worker removes its record, so nothing is left behind.
         await worker.close();
       },
       30_000,
@@ -504,39 +608,47 @@ describe("summon: WorkerDto", () => {
     expiresAt: 3,
     ...(summon === undefined ? {} : { summon }),
   });
+  const arn = "arn:aws:ecs:eu-west-1:123456789012:task/c/1";
 
-  it("withholds the platform handle unless exposeHosts is on", () => {
+  it("withholds the platform handle by default, even with exposeHosts on", () => {
     const info = record({
       id: "a1",
       kind: "ecs",
-      handle: "arn:task/1",
+      handle: arn,
       mode: "exit-on-idle",
       deadlineAt: 9,
     });
 
-    expect(toWorkerDto(info, { exposeHosts: false }).summon).toEqual({
-      id: "a1",
-      kind: "ecs",
-      mode: "exit-on-idle",
-      deadlineAt: 9,
-    });
     expect(toWorkerDto(info, { exposeHosts: true }).summon).toEqual({
       id: "a1",
       kind: "ecs",
-      handle: "arn:task/1",
       mode: "exit-on-idle",
       deadlineAt: 9,
     });
+    expect(
+      toWorkerDto(info, { exposeHosts: true, exposeSummonHandles: false })
+        .summon,
+    ).not.toHaveProperty("handle");
+  });
+
+  it("serves the handle with exposeSummonHandles, whatever exposeHosts says", () => {
+    const info = record({ id: "a1", handle: arn });
+    for (const exposeHosts of [true, false]) {
+      expect(
+        toWorkerDto(info, { exposeHosts, exposeSummonHandles: true }).summon,
+      ).toEqual({ id: "a1", handle: arn });
+    }
   });
 
   it("copies field by field, so nothing else on a stored summon leaks", () => {
     const info = record({
-      mode: "until-stopped",
+      id: "a1",
       secret: "x",
     } as unknown as WorkerSummonProvenance);
-    expect(toWorkerDto(info, { exposeHosts: true }).summon).toEqual({
-      mode: "until-stopped",
-    });
+    expect(
+      toWorkerDto(info, { exposeHosts: true, exposeSummonHandles: true })
+        .summon,
+    ).toEqual({ id: "a1" });
   });
 
   it("leaves summon off a record from an older worker", () => {

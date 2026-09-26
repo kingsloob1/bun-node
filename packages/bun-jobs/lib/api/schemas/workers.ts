@@ -182,12 +182,10 @@ export const WorkerSummonProvenanceSchema = s.named(
   "WorkerSummonProvenance",
   s.object(
     {
-      id: s.optional(
-        s.string({
-          description:
-            "The summon attempt's id, when the platform could pass it.",
-        }),
-      ),
+      id: s.string({
+        description:
+          "The summon attempt's id: always present on a summoned worker.",
+      }),
       kind: s.optional(
         s.string({
           description:
@@ -197,20 +195,19 @@ export const WorkerSummonProvenanceSchema = s.named(
       handle: s.optional(
         s.string({
           description:
-            "The platform's own name for the unit (a Cloud Run execution, a Fly machine id). Omitted unless `serialize.exposeHosts` is on.",
+            "The platform's own name for the unit (a task ARN, a Fly machine id). Omitted unless `serialize.exposeSummonHandles` is on (default off): an ECS task ARN contains the AWS account id.",
         }),
       ),
-      mode: s.enum(
-        ["exit-on-idle", "until-stopped", "in-invocation"] as const,
-        {
+      mode: s.optional(
+        s.enum(["exit-on-idle", "until-stopped", "in-invocation"] as const, {
           description:
-            'How it runs: `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`. Show a mode you do not know as the raw string: a later server may add one.',
-        },
+            'The mode as requested by the summoner: `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`. Absent when none was requested, never defaulted. Show a mode you do not know as the raw string: a later server may add one.',
+        }),
       ),
       deadlineAt: s.optional(
         s.integer({
           description:
-            "When it will stop at the latest, epoch ms. Absent when it has no deadline.",
+            "The latest it should stop, epoch ms, as requested by the summoner. Absent when none was requested, never defaulted.",
         }),
       ),
     },

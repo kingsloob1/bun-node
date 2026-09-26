@@ -1751,23 +1751,28 @@ export interface WorkerTargetInfoDto {
  * (`WorkerDto.summon`): what a Workers-page badge shows.
  */
 export interface WorkerSummonProvenanceDto {
-  /** The summon attempt's id, when the platform could pass it. */
-  id?: string;
+  /** The summon attempt's id: always present on a summoned worker. */
+  id: string;
   /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what the badge names. */
   kind?: string;
   /**
-   * The platform's own name for the unit (a Cloud Run execution, a Fly
-   * machine id). Infrastructure detail: omitted unless the server enables
-   * `serialize.exposeHosts`.
+   * The platform's own name for the unit (a task ARN, a Fly machine id).
+   * Infrastructure detail — an ECS task ARN contains the AWS account id — so
+   * omitted unless the server enables `serialize.exposeSummonHandles`
+   * (default `false`).
    */
   handle?: string;
   /**
-   * How it runs: `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`.
-   * Show a mode this client does not know as the raw string: a later server
-   * may add one.
+   * The mode **as requested by the summoner**: `"exit-on-idle"`,
+   * `"until-stopped"` or `"in-invocation"`. Absent when none was requested;
+   * never defaulted. Show a mode this client does not know as the raw
+   * string: a later server may add one.
    */
-  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
-  /** When it will stop at the latest, epoch ms. Absent when it has no deadline. */
+  mode?: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /**
+   * The latest it should stop, epoch ms, **as requested by the summoner**.
+   * Absent when none was requested; never defaulted.
+   */
   deadlineAt?: number;
 }
 
@@ -1922,8 +1927,9 @@ export interface WorkerDto {
    */
   target?: WorkerTargetInfoDto;
   /**
-   * Where it was summoned from: the attempt, the summoner's kind, the mode
-   * and the deadline (and the platform's handle with `serialize.exposeHosts`).
+   * Where it was summoned from: the attempt, the summoner's kind, and the
+   * mode and deadline the summoner requested (and the platform's handle with
+   * `serialize.exposeSummonHandles`).
    *
    * **Absent means one of two things, and a client cannot tell which:** the
    * worker was not summoned, or it is too old to say. So absence means "no

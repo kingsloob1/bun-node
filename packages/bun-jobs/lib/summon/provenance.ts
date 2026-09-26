@@ -2,27 +2,27 @@ import type { WorkerSummonProvenance } from "../shared/workers";
 import { ConfigError } from "../shared/errors";
 
 /**
- * A summoned worker's provenance: the modes it can run in, and the check
- * `BunQueueWorker`'s constructor applies to its `summon` option.
+ * A summoned worker's provenance: the modes a summoner can request, and the
+ * check `BunQueueWorker`'s constructor applies to its `summon` option.
  *
  * Internal. The public names are `WorkerSummonProvenance` (the shape) and
- * `summonedFromEnv()` (the usual way to build one).
+ * `summonedFromArgs()` (the usual way to build one).
  */
 
 /**
- * The modes a summoned worker runs in, in the order a reader should list
- * them. Internal: the public spelling is `WorkerSummonProvenance["mode"]`.
+ * The modes a summoner can request, in the order a reader should list them.
+ * Internal: the public spelling is `WorkerSummonProvenance["mode"]`.
  */
 export const SUMMON_MODES = [
   "exit-on-idle",
   "until-stopped",
   "in-invocation",
-] as const satisfies readonly WorkerSummonProvenance["mode"][];
+] as const satisfies readonly NonNullable<WorkerSummonProvenance["mode"]>[];
 
 /** Whether `value` is one of {@link SUMMON_MODES}. */
 export function isSummonMode(
   value: unknown,
-): value is WorkerSummonProvenance["mode"] {
+): value is NonNullable<WorkerSummonProvenance["mode"]> {
   return (
     typeof value === "string" &&
     (SUMMON_MODES as readonly string[]).includes(value)
@@ -32,7 +32,7 @@ export function isSummonMode(
 /** A string field of the provenance: absent, or a non-empty string. */
 function optionalText(
   summon: Record<string, unknown>,
-  field: "id" | "kind" | "handle",
+  field: "kind" | "handle",
 ): string | undefined {
   const value = summon[field];
   if (value === undefined) {
@@ -50,27 +50,32 @@ function optionalText(
 /**
  * Checks a worker's `summon` option and copies the five fields the record
  * carries, so the record is written from a resolved value rather than
- * whatever object the caller passed (`summonedFromEnv()` adds `namespace`,
+ * whatever object the caller passed (`summonedFromArgs()` adds `namespace`,
  * `queue`, `maxLifetimeMs` and `graceMs`, which must not reach the record).
  *
- * `undefined` stays `undefined`: an ordinary worker writes no `summon`, and
- * nothing is defaulted.
+ * `undefined` stays `undefined`: an ordinary worker writes no `summon`. And
+ * nothing inside one is defaulted either: a `mode` or `deadlineAt` the
+ * summoner did not request stays absent.
  *
- * @throws {ConfigError} on a malformed value, and when `reportInterval` is
- *   `0` — a worker that never reports can never release its attempt.
+ * @throws {ConfigError} on a malformed value (`id` is required: it is what
+ *   makes a worker summoned), and when the worker could never report — with
+ *   `reportInterval: 0`, or on a driver that cannot store worker records —
+ *   since then it could never release its attempt.
  */
 export function resolveSummonProvenance(
   /** The worker's `summon` option, as given. */
   summon: WorkerSummonProvenance | undefined,
   /** The worker's resolved `reportInterval`, in ms; `0` means it never reports. */
   reportInterval: number,
+  /** Whether the worker's driver can store worker records (`supportsWorkers`). */
+  storesWorkers: boolean,
 ): Readonly<WorkerSummonProvenance> | undefined {
   if (summon === undefined) {
     return undefined;
   }
   if (typeof summon !== "object" || summon === null || Array.isArray(summon)) {
     throw new ConfigError(
-      "summon must be the object summonedFromEnv() returns, or undefined",
+      "summon must be the object summonedFromArgs() returns, or undefined",
       { summon },
     );
   }
@@ -80,12 +85,26 @@ export function resolveSummonProvenance(
       { reportInterval },
     );
   }
+  if (!storesWorkers) {
+    throw new ConfigError(
+      "summon needs a heartbeat record: this driver cannot store worker records, so the summon attempt the worker came from can never be released",
+    );
+  }
 
   const given = summon as unknown as Record<string, unknown>;
-  if (!isSummonMode(given.mode)) {
+  const id = given.id;
+  if (typeof id !== "string" || id.length === 0) {
     throw new ConfigError(
-      `summon.mode must be one of ${SUMMON_MODES.map((mode) => `"${mode}"`).join(", ")}`,
-      { mode: given.mode },
+      "summon.id must be a non-empty string: the attempt id is what makes a worker summoned",
+      { id },
+    );
+  }
+
+  const mode = given.mode;
+  if (mode !== undefined && !isSummonMode(mode)) {
+    throw new ConfigError(
+      `summon.mode must be one of ${SUMMON_MODES.map((one) => `"${one}"`).join(", ")} when given`,
+      { mode },
     );
   }
 
@@ -104,15 +123,14 @@ export function resolveSummonProvenance(
 
   // Checked just above: absent, or a non-negative whole number.
   const deadline = deadlineAt as number | undefined;
-  const id = optionalText(given, "id");
   const kind = optionalText(given, "kind");
   const handle = optionalText(given, "handle");
 
   return Object.freeze({
-    ...(id === undefined ? {} : { id }),
+    id,
     ...(kind === undefined ? {} : { kind }),
     ...(handle === undefined ? {} : { handle }),
-    mode: given.mode,
+    ...(mode === undefined ? {} : { mode }),
     ...(deadline === undefined ? {} : { deadlineAt: deadline }),
   });
 }
