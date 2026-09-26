@@ -1,6 +1,8 @@
 import type { JobsDriver } from "../lib/index";
+import process from "node:process";
 import { noopLogger } from "@kingsleyweb/bun-common";
 import { afterEach, describe, expect, it } from "bun:test";
+import { readDemand } from "../lib/drivers/readApis";
 import {
   BunQueue,
   BunQueueWorker,
@@ -170,4 +172,62 @@ describe("BunQueue.getDemand", () => {
       exact: false,
     });
   });
+});
+
+describe("readDemand when the driver fails", () => {
+  /**
+   * A memory driver without `countDemand` whose `countJobs` and
+   * `isQueuePaused` both fail, the first either by rejecting or by throwing
+   * outright, as a non-`async` third-party method would.
+   */
+  function failing(sync: boolean): JobsDriver {
+    return new Proxy(new MemoryDriver(), {
+      get(target, property) {
+        if (property === "countDemand") {
+          return undefined;
+        }
+        if (property === "countJobs") {
+          return sync
+            ? () => {
+                throw new Error("down: countJobs");
+              }
+            : async () => {
+                throw new Error("down: countJobs");
+              };
+        }
+        if (property === "isQueuePaused") {
+          return async () => {
+            await Bun.sleep(5);
+            throw new Error("down: isQueuePaused");
+          };
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  // A controller polling a third-party driver through an outage catches the
+  // one rejection it is given. A second read left un-awaited behind it would
+  // reject with nobody listening, and an unhandled rejection ends a Bun
+  // process: a plain try/catch cannot see that, so the listener is the check.
+  for (const sync of [false, true]) {
+    it(`rejects once, leaving no rejection unhandled (${sync ? "a synchronous throw" : "a rejection"})`, async () => {
+      const unhandled: unknown[] = [];
+      const listen = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", listen);
+
+      try {
+        const q = { ns: testNamespace("demand-down"), queue: "q" };
+        await expect(readDemand(failing(sync), q)).rejects.toThrow(/^down: /);
+        // Long enough for the slower read to fail, and for its rejection to
+        // be reported if nothing awaited it.
+        await Bun.sleep(50);
+      } finally {
+        process.off("unhandledRejection", listen);
+      }
+
+      expect(unhandled).toEqual([]);
+    });
+  }
 });

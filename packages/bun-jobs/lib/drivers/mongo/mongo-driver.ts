@@ -4549,7 +4549,6 @@ export class MongoDriver implements JobsDriver {
     return sortWorkers(live);
   }
 
-  /** Every queue's state counts in the namespace, as one aggregation. */
   /**
    * One `countDocuments(filter, { limit: cap + 1 })` per figure and one
    * `find().sort({ runAt: 1 }).limit(1)` per scheduled state: seven round
@@ -4559,11 +4558,12 @@ export class MongoDriver implements JobsDriver {
    * A job claimed during it can be in neither, which `demand` does not mind
    * and `outstanding` shows until the next read.
    *
-   * - `stalled`: `{ state: "active", lockExpiresAt: { $lte: now } }` — **the
-   *   filter {@link MongoDriver.recoverStalled} selects by**, so exactly the
-   *   set it would recover. `$lte` never matches `null`, so a lockless
-   *   `active` document is not in it.
-   * - `active`: `{ state: "active" }`, as `countJobs` counts it (no predicate).
+   * - `active`, read first: `{ state: "active" }`, as `countJobs` counts it
+   *   (no predicate).
+   * - `stalled`, read next: `{ state: "active", lockExpiresAt: { $lte: now } }`
+   *   — **the filter {@link MongoDriver.recoverStalled} selects by**, so
+   *   exactly the set it would recover. `$lte` never matches `null`, so a
+   *   lockless `active` document is not in it.
    * - `dueNow`: `{ state, runAt: { $lte: now } }` for `delayed`, then `failed`.
    * - `waiting`: `{ state: "waiting" }`.
    * - `nextDueAt`: the least `runAt > now` of each scheduled state.
@@ -4592,12 +4592,18 @@ export class MongoDriver implements JobsDriver {
     const due: number[] = [];
 
     await runDemandReads(this, {
+      // `active` before `stalled`: a job recovered between the two is then in
+      // `active` and not `stalled`, rather than the reverse, so `stalled`
+      // never exceeds `active` and `active − stalled` in `outstanding` never
+      // goes negative. Both are still read before the due jobs and `waiting`,
+      // so D2's order, which keeps `demand` whole, is unchanged: the recovered
+      // job is counted again in `waiting`.
       active: async () => {
+        counts.active = await count({ state: "active" });
         counts.stalled = await count({
           state: "active",
           lockExpiresAt: { $lte: now },
         });
-        counts.active = await count({ state: "active" });
       },
       dueNow: async () => {
         for (const state of SCHEDULED) {
@@ -4628,6 +4634,7 @@ export class MongoDriver implements JobsDriver {
     );
   }
 
+  /** Every queue's state counts in the namespace, as one aggregation. */
   async countJobsByQueue(
     ns: string,
   ): Promise<Record<string, Record<JobState, number>>> {

@@ -1194,8 +1194,11 @@ export class BunQueue<
    * ```
    *
    * A few bounded reads on every driver in this package, never a scan of
-   * retained history, and it writes nothing: due jobs are counted where they
-   * stand, not promoted. A paused queue reports its backlog with `demand` and
+   * retained history. The driver's count writes nothing — due jobs are
+   * counted where they stand, not promoted, and nothing is recovered or
+   * published — but listing the live workers removes lapsed worker records on
+   * the drivers whose listing prunes (memory, SQL, MongoDB, and any driver
+   * keeping them in queue state), as `listWorkers()` does. A paused queue reports its backlog with `demand` and
    * `outstanding` at `0`. Each figure is counted up to `cap` (`10_000` by
    * default); past it the figure is `cap` and `capped` is `true`. On a
    * third-party driver without `countDemand` the figures are approximate and

@@ -5999,6 +5999,10 @@ export function driverContract(
         const now = Date.now();
         await activate(q, "lapsed-1", now - 60_000, 1_000);
         await activate(q, "lapsed-2", now - 50_000, 1_000);
+        // Its lock expires exactly at `now`: every sweep takes `<= now`, so a
+        // `<` anywhere in a mirror shows here and nowhere else.
+        await activate(q, "at-now", now - 1_000, 1_000);
+        expect((await driver.getJob(q, "at-now"))?.lockExpiresAt).toBe(now);
         await plantLockless(q, "lockless", now);
         await activate(q, "live", now - 1_000, 60_000);
 
@@ -6012,10 +6016,10 @@ export function driverContract(
 
         // Agreement, on every engine, whichever way it treats the lockless job.
         expect(before.stalled).toBe(recovered.length);
-        // Not vacuous: both lapsed jobs are recovered everywhere, the live one
-        // nowhere.
+        // Not vacuous: the lapsed jobs, and the one lapsing exactly now, are
+        // recovered everywhere, the live one nowhere.
         expect(recovered).toEqual(
-          expect.arrayContaining(["lapsed-1", "lapsed-2"]),
+          expect.arrayContaining(["lapsed-1", "lapsed-2", "at-now"]),
         );
         expect(recovered).not.toContain("live");
 

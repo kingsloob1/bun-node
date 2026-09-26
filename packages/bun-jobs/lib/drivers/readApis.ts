@@ -882,9 +882,13 @@ export async function runDemandReads(
  * ```
  *
  * which is right as a trigger and approximate as a count, and whose
- * `countJobs` may scan retained history. Listing the worker records drops
- * lapsed ones on a driver that keeps them in queue state, as every listing
- * does; the driver's own count writes nothing.
+ * `countJobs` may scan retained history.
+ *
+ * **Not a pure read.** The driver's `countDemand` writes nothing, but the
+ * worker count comes from {@link listWorkerRecords}, which removes lapsed
+ * worker records on the drivers whose listing prunes: memory, SQL and
+ * MongoDB (`deleteMany`), and every driver keeping the records in queue state.
+ * Only records already expired go; no job is touched.
  */
 export async function readDemand(
   driver: QueueDriver,
@@ -900,30 +904,39 @@ export async function readDemand(
   const cap = options.cap ?? DEFAULT_DEMAND_CAP;
   assertDemandCap(cap);
 
-  const pending = Promise.all([
-    driver.isQueuePaused(q),
-    supportsWorkers(driver)
-      ? listWorkerRecords(driver, q, now).then((live) => live.length)
-      : Promise.resolve(0),
+  // Every read is started inside one `Promise.all`, each through an async
+  // function so that even a synchronous throw becomes a rejection there. Read
+  // in sequence, a failure of the first awaited would leave the others'
+  // rejections unhandled — which ends a Bun process — while the caller was
+  // busy handling the first.
+  const native = typeof driver.countDemand === "function";
+  const [paused, workers, read] = await Promise.all([
+    (async () => await driver.isQueuePaused(q))(),
+    (async () =>
+      supportsWorkers(driver)
+        ? (await listWorkerRecords(driver, q, now)).length
+        : 0)(),
+    (async () =>
+      native
+        ? {
+            native: true as const,
+            counts: await driver.countDemand!(q, now, { cap }),
+          }
+        : {
+            native: false as const,
+            fallback: await Promise.all([
+              driver.countJobs(q),
+              driver.nextDelayedAt(q),
+            ]),
+          })(),
   ]);
 
-  let paused: boolean;
-  let workers: number;
   let counts: DemandCounts;
-  let exact: boolean;
 
-  if (typeof driver.countDemand === "function") {
-    [[paused, workers], counts] = await Promise.all([
-      pending,
-      driver.countDemand(q, now, { cap }),
-    ]);
-    exact = true;
+  if (read.native) {
+    counts = read.counts;
   } else {
-    const [byState, next] = await Promise.all([
-      driver.countJobs(q),
-      driver.nextDelayedAt(q),
-    ]);
-    [paused, workers] = await pending;
+    const [byState, next] = read.fallback;
     counts = capDemandCounts(
       {
         waiting: byState.waiting,
@@ -934,9 +947,9 @@ export async function readDemand(
       },
       cap,
     );
-    exact = false;
   }
 
+  const exact = native;
   const demand = paused ? 0 : counts.waiting + counts.dueNow + counts.stalled;
 
   return {
