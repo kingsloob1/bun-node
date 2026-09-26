@@ -40,7 +40,10 @@ import type {
   WorkerEventsOf,
 } from "./types";
 import type { WorkerControlEntry } from "./workerControl";
-import type { WorkerTargetExecutor } from "./workerTarget";
+import type {
+  WorkerTargetCloseOptions,
+  WorkerTargetExecutor,
+} from "./workerTarget";
 import process from "node:process";
 import {
   createDeferred,
@@ -1561,9 +1564,24 @@ export class BunQueueWorker<
   /**
    * Stops claiming, waits for jobs in flight, and releases what it owns.
    *
-   * A job still running at `timeout` has its signal aborted; its lock is then
-   * left to expire, so another worker recovers it as stalled rather than the
-   * job being lost.
+   * A job still running at `timeout` — or at once, with `force` — has its
+   * signal aborted, and is no longer waited for. What happens to its run then
+   * depends on where it runs:
+   *
+   * - **On a `"child-process"` or `"worker-thread"` target** the run is ended
+   *   for certain before `close()` returns. With `force` it is killed at once,
+   *   its cleanup skipped. When `timeout` runs out it is asked to stop first,
+   *   and given up to 4000 ms (`TARGET_CLOSE_GRACE`) to clean up and end; one
+   *   that has not is killed. Either way, a process exiting straight after
+   *   `close()` leaves nothing running behind it.
+   * - **In-process**, a processor that honours its signal ends; one that
+   *   ignores it cannot be stopped, and runs on while the process lives.
+   *
+   * A run that ends, killed or not, is recorded as a failed attempt, retried
+   * if it has attempts left, when that write lands before the worker's driver
+   * closes. Otherwise — and for a run that never ends — the job's lock is left
+   * to expire, and another worker recovers it as stalled rather than the job
+   * being lost.
    */
   async close(options?: { force?: boolean; timeout?: number }): Promise<void> {
     // Held for as long as closing takes, whatever `waitToExit` says. A caller
@@ -1624,10 +1642,13 @@ export class BunQueueWorker<
     if (options?.force) {
       this.#abandonActive();
 
-      // Deliberately no wait. A processor that ignores its signal must not
-      // hold shutdown hostage; its lock lapses and the stalled sweep returns
-      // the job to the queue, so the work is delayed rather than lost.
-      await this.#closeTarget();
+      // Deliberately no wait on the jobs themselves. A processor that ignores
+      // its signal must not hold shutdown hostage; its lock lapses and the
+      // stalled sweep returns the job to the queue, so the work is delayed
+      // rather than lost. A built-in target's runs are killed here, though,
+      // at once — `force` said not to wait, so they get no grace — because a
+      // child left running would outlive the process (#166).
+      await this.#closeTarget({ force: true });
       await this.#unregister();
       await this.#flushThroughput();
       await this.#metrics.close();
@@ -1699,13 +1720,18 @@ export class BunQueueWorker<
   }
 
   /**
-   * Releases what a custom target holds, once the attempts have settled or
-   * been abandoned. Bounded like a built-in target's stop, by
+   * Releases what the target holds, once the attempts have settled or been
+   * abandoned: a custom target's resources, or the built-in child-process and
+   * worker-thread target's runs still being killed, which it kills outright
+   * before anything here waits (#166). Bounded like a built-in target's stop, by
    * `DEFAULT_CLOSE_TIMEOUT`: the worker's own state has settled by now, so a
    * `close()` that never returns is logged and left behind rather than
    * allowed to hang the shutdown. A rejection is logged the same way.
    */
-  async #closeTarget(): Promise<void> {
+  async #closeTarget(
+    /** `{ force: true }` from a forced close, passed on; absent otherwise. */
+    options?: WorkerTargetCloseOptions,
+  ): Promise<void> {
     const target = this.#target;
     if (!target?.close) {
       return;
@@ -1713,7 +1739,9 @@ export class BunQueueWorker<
 
     try {
       const closed = await Promise.race([
-        Promise.resolve(target.close()).then(() => "closed" as const),
+        Promise.resolve(
+          options?.force ? target.close({ force: true }) : target.close(),
+        ).then(() => "closed" as const),
         sleep(DEFAULT_CLOSE_TIMEOUT, { unref: true }).then(
           () => "timeout" as const,
         ),

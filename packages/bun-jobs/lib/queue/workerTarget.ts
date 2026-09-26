@@ -230,8 +230,24 @@ export interface WorkerTargetExecutor {
    * stop: after `DEFAULT_CLOSE_TIMEOUT` (5000 ms) the worker logs a warning
    * and finishes closing without it, so a drain that never ends cannot hang a
    * shutdown. A rejection is logged the same way.
+   *
+   * `options.force` is `true` when the caller asked for `worker.close({ force:
+   * true })` — not to wait — and absent otherwise. A target **may** honour it
+   * by skipping its own graceful wind-down (the built-in kinds kill their
+   * runs at once instead of asking them to stop first); one that ignores it
+   * keeps working, and is simply given the same bound either way.
    */
-  close?: () => void | Promise<void>;
+  close?: (options?: WorkerTargetCloseOptions) => void | Promise<void>;
+}
+
+/** What `worker.close()` tells a target's {@link WorkerTargetExecutor.close}. */
+export interface WorkerTargetCloseOptions {
+  /**
+   * `true` when the worker is closing with `force`: the caller asked it not
+   * to wait. Absent on an ordinary close, including one whose `timeout` ran
+   * out.
+   */
+  force?: boolean;
 }
 
 /** One attempt, as a {@link WorkerTargetExecutor} is handed it. */
@@ -538,6 +554,41 @@ function toLocalTarget(target: unknown): LocalWorkerTarget {
   return { ...(target as LocalWorkerTarget) };
 }
 
+/**
+ * How much sooner than the worker's bound on a target's `close()` the built-in
+ * target's deadline ends. See {@link TARGET_CLOSE_GRACE}.
+ */
+const TARGET_CLOSE_MARGIN = 1_000;
+
+/**
+ * How long the built-in target's `close()` waits for killed runs to be reaped:
+ * half the margin, so that wait too ends strictly inside the worker's bound.
+ */
+export const TARGET_CLOSE_REAP = TARGET_CLOSE_MARGIN / 2;
+
+/**
+ * How long the built-in target's `close()` lets a run still going unwind,
+ * after asking it to stop, before it kills it: 4000 ms.
+ *
+ * Three numbers, one timeline, all from `DEFAULT_CLOSE_TIMEOUT` (5000 ms), the
+ * bound the worker puts on a target's `close()`:
+ *
+ * - at `TARGET_CLOSE_GRACE` (4000 ms) anything still running is killed;
+ * - by `TARGET_CLOSE_GRACE + TARGET_CLOSE_REAP` (4500 ms) `close()` has
+ *   resolved, whether or not the killed children were seen reaped;
+ * - at `DEFAULT_CLOSE_TIMEOUT` (5000 ms) the worker would give up.
+ *
+ * The order matters because when the worker's bound wins, it stops waiting
+ * and forces nothing. A deadline at or past it could let `worker.close()`
+ * return, and the process exit, with the kill still pending: #166 by another
+ * route. The kill itself runs synchronously when the deadline fires, so the
+ * margin is not what makes it certain. It is the room for a timer a loaded
+ * machine fires late and a reap it delays — and the half left after the reap
+ * keeps a close that succeeded from racing the bound and being logged as one
+ * that "did not close".
+ */
+export const TARGET_CLOSE_GRACE = DEFAULT_CLOSE_TIMEOUT - TARGET_CLOSE_MARGIN;
+
 /** Who is running an attempt off-thread, for its context and diagnostics. */
 interface Runner {
   /** The namespace. */
@@ -567,6 +618,14 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
   #executor: Executor | undefined;
   /** The imported processor, for `"in-process"`: imported once, then reused. */
   #inProcess: Promise<IsolatedJobProcessor> | undefined;
+  /**
+   * Every run started and not yet ended, including one the worker has given
+   * up on: a timed-out attempt leaves the worker's books straight away, but
+   * its child is still being killed until its handle's `done` settles.
+   */
+  readonly #live = new Set<ExecutorHandle>();
+  /** Set by {@link close}; a run asked for after it is refused. */
+  #closed = false;
 
   constructor(
     /** The local target, in its object form. */
@@ -589,6 +648,13 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    */
   async run({ job, record, context }: WorkerTargetAttempt): Promise<unknown> {
     const target = this.#target;
+    if (this.#closed) {
+      // Only reachable through a claim still in flight when a forced close
+      // ran. Starting a child now would start one nothing will ever stop.
+      throw new Error(
+        `The ${target.kind} target of worker ${this.#runner.workerId} is closed`,
+      );
+    }
     if (target.kind === "in-process") {
       this.#inProcess ??= import(this.file).then((module: unknown) =>
         toHandler(module, this.file, "job"),
@@ -666,6 +732,8 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       },
     });
 
+    this.#live.add(handle);
+
     const stop = () => {
       handle.stop(String(signal.reason ?? "stop"));
     };
@@ -691,7 +759,105 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       );
     } finally {
       signal.removeEventListener("abort", stop);
+      this.#live.delete(handle);
     }
+  }
+
+  /**
+   * Stops every run still going, for `worker.close()`. By the time the worker
+   * calls this, an attempt it was waiting for has already ended; what is left
+   * is a run it gave up on — a timeout, a lost lock, a close out of patience —
+   * whose kill sequence (`closeTimeout`, then `SIGTERM`, then `killTimeout`,
+   * then `SIGKILL`) may still be running on timers.
+   *
+   * Those timers are unref'd and the child is too, so nothing keeps the
+   * process alive on the child's account: a process that exits straight after
+   * `worker.close()` used to lose them, and a child ignoring its signal
+   * outlived it, reparented and still running (#166). So this owns the end of
+   * every run itself.
+   *
+   * With `options.force` — the caller asked not to wait — every run is killed
+   * at once, synchronously, before this returns anything to await; the only
+   * wait is `TARGET_CLOSE_REAP` at most, to see them reaped. A child's cleanup
+   * is skipped, which is what `force` asks for.
+   *
+   * Otherwise, in three steps:
+   *
+   * 1. Each run is asked to stop, gracefully: a child gets its `close` and
+   *    the chance to clean up that `closeTimeout` exists to give it.
+   * 2. The runs get until {@link TARGET_CLOSE_GRACE} to end, and this
+   *    resolves as soon as they all have.
+   * 3. At the deadline, anything still running is killed — synchronously, in
+   *    the timer's own callback, before this resolves — and this waits, up
+   *    to `TARGET_CLOSE_REAP`, for it to be reaped. Nothing outlives it.
+   *
+   * The deadline ends before the worker's bound on this call, which forces
+   * nothing when it wins; see {@link TARGET_CLOSE_GRACE}. A child's own
+   * escalation may end it sooner, when its `closeTimeout` and `killTimeout`
+   * are shorter than the deadline.
+   */
+  close(options?: WorkerTargetCloseOptions): void | Promise<void> {
+    this.#closed = true;
+    if (this.#live.size === 0) {
+      return;
+    }
+
+    const live = [...this.#live];
+    // `done` never rejects: it resolves with how the run ended.
+    const ended = Promise.all(live.map(async (handle) => await handle.done));
+
+    if (options?.force) {
+      // Killed here, synchronously, before anything is awaited: a forced
+      // close is typically a shutdown hook's, and the process may exit on
+      // the very next line.
+      for (const handle of live) {
+        handle.stop("close", { force: true });
+      }
+      return this.#reaped(ended);
+    }
+
+    for (const handle of live) {
+      handle.stop("close");
+    }
+
+    return new Promise<void>((resolve) => {
+      // Ref'd, deliberately — unlike every timer in `spawn.ts`, which unrefs
+      // its escalation so a run never holds the process on its own account.
+      // Here that is the point: while `close()` is pending, this timer can be
+      // the only thing keeping the process alive, and an unref'd one would
+      // let it exit before the kill below ever ran.
+      const deadline = setTimeout(() => {
+        for (const handle of live) {
+          if (this.#live.has(handle)) {
+            handle.stop("close", { force: true });
+          }
+        }
+        void this.#reaped(ended).then(resolve);
+      }, TARGET_CLOSE_GRACE);
+
+      void ended.then(() => {
+        clearTimeout(deadline);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Resolves once killed runs have ended, or after `TARGET_CLOSE_REAP` at
+   * most. The kills are already sent; this is seeing the children reaped, so
+   * `close()` resolves with nothing alive. Its timer is ref'd for the same
+   * reason as the deadline's, and bounded so the wait ends strictly inside
+   * the worker's own bound.
+   */
+  async #reaped(ended: Promise<unknown>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      ended,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, TARGET_CLOSE_REAP);
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   /** The executor for this kind, built on first use. */
