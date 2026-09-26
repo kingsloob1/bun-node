@@ -238,6 +238,12 @@ export interface WorkerTargetExecutor {
    * by skipping its own graceful wind-down (the built-in kinds kill their
    * runs at once instead of asking them to stop first); one that ignores it
    * keeps working, and is simply given the same bound either way.
+   *
+   * The one exception to "once": a `worker.close({ force: true })` that
+   * escalates a graceful close while this is still pending calls it a second
+   * time, with `{ force: true }`, and waits for that call instead — the first
+   * one's result, rejection included, is dropped. A target that can cut its
+   * own graceful wind-down short should do so then.
    */
   close?: (options?: WorkerTargetCloseOptions) => void | Promise<void>;
 }
@@ -246,8 +252,8 @@ export interface WorkerTargetExecutor {
 export interface WorkerTargetCloseOptions {
   /**
    * `true` when the worker is closing with `force`: the caller asked it not
-   * to wait. Absent on an ordinary close, including one whose `timeout` ran
-   * out.
+   * to wait — from the start, or by escalating a graceful close. Absent on an
+   * ordinary close, including one whose `timeout` ran out.
    */
   force?: boolean;
 }
@@ -616,8 +622,32 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    * asking again and arming a second set of timers.
    */
   readonly #stopping = new Set<ExecutorHandle>();
+  /**
+   * The live runs already killed by {@link close} — at the grace deadline or
+   * by a force — so a force over that close kills none of them twice.
+   */
+  readonly #killed = new Set<ExecutorHandle>();
   /** Set by {@link close}; a run asked for after it is refused. */
   #closed = false;
+  /**
+   * The graceful close still waiting out its grace, if any: what it resolves
+   * (`done`), and `finish`, which ends its wait once `after` settles and
+   * clears its deadline. A forced close calls `finish` to take it over.
+   */
+  #graceful:
+    | {
+        /** The graceful close's promise, which a later call joins. */
+        done: Promise<void>;
+        /** Ends the graceful wait when `after` settles; runs once. */
+        finish: (after: Promise<unknown>) => void;
+      }
+    | undefined;
+
+  /**
+   * The forced close's wait for its kills to be reaped, once one has run. A
+   * later close returns it rather than killing anything a second time.
+   */
+  #forced: Promise<void> | undefined;
 
   constructor(
     /** The local target, in its object form. */
@@ -754,6 +784,7 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       signal.removeEventListener("abort", stop);
       this.#live.delete(handle);
       this.#stopping.delete(handle);
+      this.#killed.delete(handle);
     }
   }
 
@@ -789,9 +820,28 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
    * nothing when it wins; see {@link TARGET_CLOSE_GRACE}. A child's own
    * escalation may end it sooner, when its `closeTimeout` and `killTimeout`
    * are shorter than the deadline.
+   *
+   * **A force over a graceful close still pending** — `worker.close({ force:
+   * true })` escalating a graceful close — takes it over: the runs are killed
+   * at once, the grace deadline is cleared, and the graceful call resolves
+   * together with the forced one, once the kills are reaped. Called again
+   * after a force, this kills nothing twice: a later force returns the first
+   * one's wait, and a later graceful call joins whichever close is pending.
    */
   close(options?: WorkerTargetCloseOptions): void | Promise<void> {
     this.#closed = true;
+
+    if (options?.force) {
+      this.#forced ??= this.#kill();
+      return this.#forced;
+    }
+
+    if (this.#forced) {
+      return this.#forced;
+    }
+    if (this.#graceful) {
+      return this.#graceful.done;
+    }
     if (this.#live.size === 0) {
       return;
     }
@@ -800,16 +850,6 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
     // `done` never rejects: it resolves with how the run ended.
     const ended = Promise.all(live.map(async (handle) => await handle.done));
 
-    if (options?.force) {
-      // Killed here, synchronously, before anything is awaited: a forced
-      // close is typically a shutdown hook's, and the process may exit on
-      // the very next line.
-      for (const handle of live) {
-        handle.stop("close", { force: true });
-      }
-      return this.#reaped(ended);
-    }
-
     for (const handle of live) {
       if (!this.#stopping.has(handle)) {
         this.#stopping.add(handle);
@@ -817,7 +857,8 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       }
     }
 
-    return new Promise<void>((resolve) => {
+    let finish!: (after: Promise<unknown>) => void;
+    const done = new Promise<void>((resolve) => {
       // Ref'd, deliberately — unlike every timer in `spawn.ts`, which unrefs
       // its escalation so a run never holds the process on its own account.
       // Here that is the point: while `close()` is pending, this timer can be
@@ -826,17 +867,63 @@ export class FileTargetExecutor implements WorkerTargetExecutor {
       const deadline = setTimeout(() => {
         for (const handle of live) {
           if (this.#live.has(handle)) {
-            handle.stop("close", { force: true });
+            this.#forceStop(handle);
           }
         }
-        void this.#reaped(ended).then(resolve);
+        finish(this.#reaped(ended));
       }, TARGET_CLOSE_GRACE);
 
-      void ended.then(() => {
+      let finished = false;
+      finish = (after) => {
+        if (finished) {
+          return;
+        }
+        finished = true;
         clearTimeout(deadline);
-        resolve();
-      });
+        void after.then(() => {
+          if (this.#graceful?.done === done) {
+            this.#graceful = undefined;
+          }
+          resolve();
+        });
+      };
     });
+    this.#graceful = { done, finish };
+    void ended.then(() => finish(Promise.resolve()));
+    return done;
+  }
+
+  /**
+   * The forced close: kills every run still going, synchronously, and takes
+   * over a graceful close still waiting out its grace, which then resolves
+   * with this one. Resolves once the kills are reaped, or after
+   * `TARGET_CLOSE_REAP` at most.
+   */
+  #kill(): Promise<void> {
+    const live = [...this.#live];
+    // Killed here, synchronously, before anything is awaited: a forced
+    // close is typically a shutdown hook's, and the process may exit on
+    // the very next line.
+    for (const handle of live) {
+      this.#forceStop(handle);
+    }
+    const reaped =
+      live.length === 0
+        ? Promise.resolve()
+        : this.#reaped(
+            Promise.all(live.map(async (handle) => await handle.done)),
+          );
+    this.#graceful?.finish(reaped);
+    return reaped;
+  }
+
+  /** Kills one run outright, unless this close has already killed it. */
+  #forceStop(handle: ExecutorHandle): void {
+    if (this.#killed.has(handle)) {
+      return;
+    }
+    this.#killed.add(handle);
+    handle.stop("close", { force: true });
   }
 
   /**
