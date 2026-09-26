@@ -35,13 +35,12 @@ export interface Report {
   isMainThread: boolean;
   /**
    * `BUN_JOBS_CHILD`, set to `"1"` on a `"worker-thread"` or `"child-process"`
-   * target (by the runner's worker and spawn executors, which they share).
+   * target (by the runner's worker-thread and child-process executors, which they share).
    */
   child: string | null;
   /**
-   * `BUN_JOBS_MODE`, the executor that started it, in the runner's spelling:
-   * `"worker"` on a `"worker-thread"` target, `"spawn"` on a `"child-process"`
-   * one, unset in-process.
+   * `BUN_JOBS_MODE`, the executor that started it, in the target's own word:
+   * `"worker-thread"` or `"child-process"`, unset in-process.
    */
   mode: string | null;
   /**

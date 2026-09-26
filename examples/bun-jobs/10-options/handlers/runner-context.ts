@@ -67,6 +67,11 @@ export interface ContextReport {
   argv: string[];
   /** `EXAMPLE_OPTION_ENV` from the environment, or `null`. */
   env: string | null;
+  /**
+   * `BUN_JOBS_MODE` from the environment, or `null`: set by the executor that
+   * started a `child-process` or `worker-thread` run, unset in-process.
+   */
+  bunJobsMode: string | null;
 }
 
 export default defineHandler<ContextArgs, ContextReport>(async (ctx) => {
@@ -116,5 +121,6 @@ export default defineHandler<ContextArgs, ContextReport>(async (ctx) => {
     cwd: process.cwd(),
     argv: [...process.argv],
     env: process.env.EXAMPLE_OPTION_ENV ?? null,
+    bunJobsMode: process.env.BUN_JOBS_MODE ?? null,
   };
 });

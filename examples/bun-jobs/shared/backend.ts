@@ -149,7 +149,7 @@ export function exampleDriver(): DriverConfig {
  *
  * What `EXAMPLE_DRIVER` asks for, except that the memory default — which
  * lives inside one process — is swapped for a temporary SQLite file. Used by
- * the examples that spawn a child: a runner in `spawn` mode, a consumer that
+ * the examples that spawn a child: a runner in `child-process` mode, a consumer that
  * is killed mid-job, a producer and consumers in separate processes.
  */
 export function crossProcessDriver(): DriverConfig {

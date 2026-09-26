@@ -30,7 +30,7 @@
  *   `runners.configure`) sets the execution mode, run mode and max
  *   concurrency; the modes outside the runner's `allowedOverrides.executionModes`
  *   are not offered, and say so. A runner built from a driver instance alone
- *   is offered in-process only, and a PUT for worker is 409
+ *   is offered in-process only, and a PUT for worker-thread is 409
  *   `CONFIG_NOT_ALLOWED`. Saved, the runner adopts it, and the summary
  *   marks each overridden row with what the code asks for instead. "Reset to
  *   code defaults" (`DELETE …/config`) drops every override. An override the
@@ -142,20 +142,20 @@ const CSRF = "x-bun-jobs-csrf";
 const HANDLER = new URL("./helpers/log-runner.ts", import.meta.url);
 
 /**
- * The runner whose settings are edited: `in-process` in its code, `worker`
- * also permitted by its `allowedOverrides`, and a `childDriver` to hand a Worker,
- * so it can adopt a `worker` override.
+ * The runner whose settings are edited: `in-process` in its code,
+ * `worker-thread` also permitted by its `allowedOverrides`, and a
+ * `childDriver` to hand a Worker, so it can adopt a `worker-thread` override.
  */
 const SETTINGS = "nightly-export";
 /**
  * The same `allowedOverrides`, but built from the driver instance alone: with no
- * config to hand a child, `worker` is not offered at all (`allowed` is
+ * config to hand a child, `worker-thread` is not offered at all (`allowed` is
  * `["in-process"]`) and a PUT asking for it is refused with 409.
  */
 const INSTANCE_BOUND = "instance-bound";
 /**
  * A runner whose owner refuses a stored override: another context, with a
- * `childDriver`, adopts `worker`; redeployed here from the driver instance
+ * `childDriver`, adopts `worker-thread`; redeployed here from the driver instance
  * alone, the runner cannot, so it keeps its code's mode and reports why.
  */
 const REDEPLOYED = "redeployed-export";
@@ -301,13 +301,13 @@ async function startRunner(
 }
 
 const settingsRunner = await startRunner(jobs, SETTINGS, {
-  allowedOverrides: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
   // What a Worker would reach the backend with. Nothing here runs in one:
   // the override is only adopted, never exercised.
   childDriver: { type: "memory" },
 });
 const instanceBound = await startRunner(jobs, INSTANCE_BOUND, {
-  allowedOverrides: { executionModes: ["in-process", "worker"] },
+  allowedOverrides: { executionModes: ["in-process", "worker-thread"] },
 });
 const loggedRunner = await startRunner(jobs, LOGGED);
 const trimmedRunner = await startRunner(jobs, TRIMMED, {
@@ -872,11 +872,11 @@ try {
       (await view.evaluate<boolean>(waitForSelector(DIALOG))),
   );
   check(
-    "spawn is not offered, and the dialog says why",
+    "child-process is not offered, and the dialog says why",
     await view.evaluate<boolean>(
       textIncludes(
         `${DIALOG} [data-testid="config-modes-limited"]`,
-        "spawn is not offered: this runner's code permits only worker, in-process",
+        "child-process is not offered: this runner's code permits only worker-thread, in-process",
       ),
     ),
   );
@@ -887,9 +887,9 @@ try {
     ),
   );
   check(
-    "Execution mode → worker",
+    "Execution mode → worker-thread",
     await view.evaluate<boolean>(
-      chooseOption(DIALOG, "Execution mode", "worker"),
+      chooseOption(DIALOG, "Execution mode", "worker-thread"),
     ),
   );
   check(
@@ -897,7 +897,7 @@ try {
     await view.evaluate<boolean>(
       textIncludes(
         `${DIALOG} [data-testid="config-warning-execution-mode"]`,
-        "worker applies from the next run",
+        "worker-thread applies from the next run",
       ),
     ),
   );
@@ -921,7 +921,7 @@ try {
   });
   const configured = await read<RunnerBody>(full, `/runners/${SETTINGS}`);
   checkEqual(
-    "GET the runner → overridden: all three, adopted, in force: worker, parallel, 3",
+    "GET the runner → overridden: all three, adopted, in force: worker-thread, parallel, 3",
     [
       [...configured.config.overridden].sort(),
       configured.config.effective,
@@ -929,20 +929,24 @@ try {
     ],
     [
       ["executionMode", "maxConcurrency", "runMode"],
-      { executionMode: "worker", runMode: "parallel", maxConcurrency: 3 },
-      ["worker", "parallel", 3],
+      {
+        executionMode: "worker-thread",
+        runMode: "parallel",
+        maxConcurrency: 3,
+      },
+      ["worker-thread", "parallel", 3],
     ],
   );
   checkEqual(
     'adopted, the summary rows read "Overridden here; its code asks for …"',
     [
-      await runnerRow("Execution mode", 'row.value === "worker"'),
+      await runnerRow("Execution mode", 'row.value === "worker-thread"'),
       await runnerRow("Run mode", 'row.value === "parallel"'),
       await runnerRow("Max concurrency", 'row.value === "3"'),
     ],
     [
       {
-        value: "worker",
+        value: "worker-thread",
         hint: "Overridden here; its code asks for in-process",
       },
       { value: "parallel", hint: "Overridden here; its code asks for single" },
@@ -992,10 +996,10 @@ try {
   );
 
   /* ---------------------------------------------------------------- */
-  step(`${INSTANCE_BOUND}: built from a driver instance, so no worker`);
+  step(`${INSTANCE_BOUND}: built from a driver instance, so no worker-thread`);
 
   checkEqual(
-    "GET the runner → allowed: in-process only, though its allowedOverrides names worker too",
+    "GET the runner → allowed: in-process only, though its allowedOverrides names worker-thread too",
     (await read<RunnerBody>(full, `/runners/${INSTANCE_BOUND}`)).config.allowed,
     ["in-process"],
   );
@@ -1008,7 +1012,7 @@ try {
       (await view.evaluate<boolean>(waitForSelector(DIALOG))),
   );
   checkEqual(
-    "its Execution mode offers in-process alone: neither worker nor spawn",
+    "its Execution mode offers in-process alone: neither worker-thread nor child-process",
     await view.evaluate<string[] | null>(
       `new Promise((resolve) => {
         const deadline = Date.now() + 10000;
@@ -1043,14 +1047,14 @@ try {
   const forced = await fetch(`${full.api}/runners/${INSTANCE_BOUND}/config`, {
     method: "PUT",
     headers: { "content-type": "application/json", [CSRF]: "1" },
-    body: JSON.stringify({ executionMode: "worker" }),
+    body: JSON.stringify({ executionMode: "worker-thread" }),
   });
   const forcedBody = (await forced.json()) as {
     code?: string;
     context?: { allowed?: string[] };
   };
   checkEqual(
-    'a direct PUT {"executionMode":"worker"} → 409 CONFIG_NOT_ALLOWED, context.allowed ["in-process"]',
+    'a direct PUT {"executionMode":"worker-thread"} → 409 CONFIG_NOT_ALLOWED, context.allowed ["in-process"]',
     [forced.status, forcedBody.code, forcedBody.context?.allowed],
     [409, "CONFIG_NOT_ALLOWED", ["in-process"]],
   );
@@ -1065,7 +1069,7 @@ try {
   step(`${REDEPLOYED}: an override its owner refuses`);
 
   // Before: registered in another context that can hand a Worker a backend,
-  // it adopts worker, parallel, 2.
+  // it adopts worker-thread, parallel, 2.
   const before = await startRunner(remote, REDEPLOYED, {
     childDriver: { type: "memory" },
   });
@@ -1074,16 +1078,16 @@ try {
     method: "PUT",
     headers: { "content-type": "application/json", [CSRF]: "1" },
     body: JSON.stringify({
-      executionMode: "worker",
+      executionMode: "worker-thread",
       concurrency: { runMode: "parallel", maxConcurrency: 2 },
     }),
   });
   checkEqual("the PUT is accepted (200)", stored.status, 200);
   await waitFor(
-    "the first owner to adopt worker",
+    "the first owner to adopt worker-thread",
     () =>
       before.config.appliedSeq === before.config.seq &&
-      before.config.effective.executionMode === "worker",
+      before.config.effective.executionMode === "worker-thread",
   );
   // After a redeploy, built here from the driver instance alone.
   await before.stop({ force: true });
@@ -1094,7 +1098,7 @@ try {
   });
   const redeployed = await read<RunnerBody>(full, `/runners/${REDEPLOYED}`);
   checkEqual(
-    "GET the runner → all three still stored, worker dropped from what runs, and why",
+    "GET the runner → all three still stored, worker-thread dropped from what runs, and why",
     [
       [...redeployed.config.overridden].sort(),
       redeployed.config.effective,
@@ -1103,7 +1107,7 @@ try {
     [
       ["executionMode", "maxConcurrency", "runMode"],
       { executionMode: "in-process", runMode: "parallel", maxConcurrency: 2 },
-      'executionMode "worker" needs a driver config for the child, and this runner was built from a driver instance',
+      'executionMode "worker-thread" needs a driver config for the child, and this runner was built from a driver instance',
     ],
   );
   checkEqual(
@@ -1150,15 +1154,15 @@ try {
   // runner's code asks for. Before the refusal named its keys, a row whose
   // value matched the code's read as refused; `keys` says it was adopted.
   // Only `concurrency` is sent: the API now knows this owner allows
-  // in-process alone, so a PUT naming worker would be 409 up front, and the
-  // stored worker is left as it is.
+  // in-process alone, so a PUT naming worker-thread would be 409 up front, and
+  // the stored worker-thread is left as it is.
   const equal = await fetch(`${full.api}/runners/${REDEPLOYED}/config`, {
     method: "PUT",
     headers: { "content-type": "application/json", [CSRF]: "1" },
     body: JSON.stringify({ concurrency: { runMode: "single" } }),
   });
   checkEqual(
-    "PUT concurrency runMode single (the code's own), worker still stored → 200",
+    "PUT concurrency runMode single (the code's own), worker-thread still stored → 200",
     equal.status,
     200,
   );

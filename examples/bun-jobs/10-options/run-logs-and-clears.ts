@@ -14,10 +14,11 @@
  *
  * The points that are easy to get wrong:
  *
- * - **Where a line comes from depends on the execution mode.** A `spawn` run
- *   is captured from its pipes, so `process.stdout.write` lands too; a
- *   `worker` or `in-process` run has no pipes, so its `console` is captured
- *   instead and a raw write escapes. `ctx.log()` lands everywhere.
+ * - **Where a line comes from depends on the execution mode.** A
+ *   `child-process` run is captured from its pipes, so `process.stdout.write`
+ *   lands too; a `worker-thread` or `in-process` run has no pipes, so its
+ *   `console` is captured instead and a raw write escapes. `ctx.log()` lands
+ *   everywhere.
  * - **An in-process run shares the host's console**, so capture is attributed
  *   by async context: two runs at once each get their own lines, and the
  *   host's own `console.log` is never captured.
@@ -255,9 +256,9 @@ for (const mode of EXECUTION_MODES as readonly ExecutionMode[]) {
     texts(page, "stderr"),
   );
   checkEqual(
-    `${mode}: process.stdout.write is captured ${mode === "spawn" ? "from the pipe" : "nowhere: it escapes"}`,
+    `${mode}: process.stdout.write is captured ${mode === "child-process" ? "from the pipe" : "nowhere: it escapes"}`,
     texts(page, "stdout").includes(`${mode} process.stdout.write`),
-    mode === "spawn",
+    mode === "child-process",
   );
   checkEqual(
     `${mode}: the record's logLines is what the store holds`,
@@ -272,9 +273,9 @@ for (const mode of EXECUTION_MODES as readonly ExecutionMode[]) {
     );
   }
   checkEqual(
-    `${mode}: the output event carries ${mode === "spawn" ? "the piped chunks" : "nothing: captured console lines are not output"}`,
+    `${mode}: the output event carries ${mode === "child-process" ? "the piped chunks" : "nothing: captured console lines are not output"}`,
     output.includes(`${mode} console.log`),
-    mode === "spawn",
+    mode === "child-process",
   );
 }
 

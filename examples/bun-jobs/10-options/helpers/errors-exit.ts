@@ -1,7 +1,7 @@
 /**
  * A runner handler that ends its own process before reporting anything — the
- * case `ChildExitError` describes. Used by `10-options/errors.ts` in `spawn`
- * mode; not meant to be run alone.
+ * case `ChildExitError` describes. Used by `10-options/errors.ts` in
+ * `child-process` mode; not meant to be run alone.
  */
 import process from "node:process";
 import { defineHandler } from "@kingsleyweb/bun-jobs";
