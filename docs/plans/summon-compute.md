@@ -57,6 +57,17 @@ specifies **the close rule** (graceful while the budget covers it, `force`
 otherwise, with Fly and Railway worked through); Q38 is narrowed; PR-4 depends
 on #166's `force` option specifically.
 
+**Updated 2026-09-26: the identity channel is arguments only** (the bun-jobs session's review of #178, 2026-09-26,
+and the user's decisions the same day). `Bun.spawn` with no `env` hands a
+child the environment the process *started* with, so summon identity in the
+environment leaked to every `Bun.spawn` descendant. Identity now travels only
+as `--bun-jobs-summon-*=` arguments: `summonedFromArgs()` and `SUMMON_ARGS`
+replace `summonedFromEnv()` and `SUMMON_ENV` (S8 superseded). Also: `id` is
+what makes a worker summoned; `mode` is never defaulted; the handle has its own
+API switch, `exposeSummonHandles` (default `false`); `summon` on a driver that
+cannot store worker records is a `ConfigError`; PR-3 gains **claim-once**. See
+§5.5; the open questions are Q42 and Q43.
+
 **Updated 2026-09-26: Railway VMs, researched 2026-09-26 (user-prompted).**
 A fourth evidence file, [`railway-vms-2026-09.md`](evidence/summon-compute/railway-vms-2026-09.md),
 covers Railway's VM products, which `paas-ssh.md` did not examine. Its tags are
@@ -302,13 +313,14 @@ coverage.
 
 **A controller in a summoned worker's process is inert by default.** An app
 that builds its `BunJobs` in a shared module would otherwise summon from inside
-the worker it summoned. When `summonedFromEnv()` (§5.3) finds a summon id,
+the worker it summoned. When `summonedFromArgs()` (§5.5) finds a summon id,
 `BunJobs` creates controllers disabled unless `summon.fromSummoned: true`
-[D]. **Children inherit the variables** — a runner child or a
-`"child-process"`/`"worker-thread"` target is started with `...process.env`
-(`runner/executors/spawn.ts:106-114`, `runner/executors/worker.ts:72-80`)
-[S] — so `summonedFromEnv()` also answers `undefined` inside a runner child
-(`BUN_JOBS_CHILD === "1"`, `isRunnerChild()`, `runner/protocol.ts:213`) [D].
+[D]. **Revised 2026-09-26 (§5.5):** identity is on the command line, which no
+descendant inherits, so a summoned worker's descendants read as *not
+summoned*, and this rule does not reach them. Whether it should, and how they
+would know, is Q42. `summonedFromArgs()` still answers `undefined` inside a
+runner child (`BUN_JOBS_CHILD === "1"`, `runner/protocol.ts:213`), as a
+refuse-only guard [D].
 
 ### 3.3 The one-shot form
 
@@ -372,7 +384,7 @@ everything else was read.**
 | demand reading (`readDemand`, the fallback formula) | `lib/drivers/readApis.ts` beside `listWorkerRecords` (`:667`) [S] | `./lib/drivers`; the public read is `queue.getDemand()` (S10) |
 | `countDemand` driver method | each driver, contract in `lib/drivers/driver.ts` | — |
 | the marker (reserved entry `__win:summon`, S14) | `lib/summon/marker.ts`, written with `setReservedState` (`queue/windows.ts:79-92`) [S] | not exported |
-| `runSummoned` (S4), `summonedFromEnv`, `SUMMON_ENV` (S8) | `lib/summon/worker.ts`, `lib/summon/env.ts` | root |
+| `runSummoned` (S4), `summonedFromArgs`, `SUMMON_ARGS` (S8, superseded 2026-09-26, §5.5) | `lib/summon/worker.ts`, `lib/summon/args.ts` | root |
 | first-party providers | `lib/providers/{aws,google,azure,fly,render,ssh}.ts`, importing only the public entries (plugins §5) | `./providers/*` subpaths (§8.4) |
 | signing helpers | `lib/provider/auth/{sigv4,aws-credentials,google-token,azure-token,jwt}.ts` | `./provider/auth`, public (plugins §6.4) |
 
@@ -632,6 +644,10 @@ attempt id** [I, aws §1 item 5]. Concretely:
   byte-identical, and unique across claims even after the marker is deleted
   or the namespace purged, which the `epoch` is for (§4.0 R6; the draft hashed
   the version alone).
+- **Superseded 2026-09-26 (§5.5): identity travels only in `request.argv`**,
+  as `--bun-jobs-summon-*=` arguments; `request.env` carries the policy's
+  static `env` and no summon identity. The paragraph below is the draft's, kept
+  for the record.
 - `request.env` carries only `BUN_JOBS_SUMMON_ID`, `BUN_JOBS_SUMMON_KIND`,
   the namespace, the queue, `BUN_JOBS_SUMMON_MODE` and
   `BUN_JOBS_SUMMON_MAX_LIFETIME_MS` (a *duration*), plus the policy's static
@@ -795,9 +811,9 @@ export interface SummonRequest {
   queue: string;
   /**
    * This attempt's id, deterministic for one marker claim (§4.6), so a retried
-   * call is identical. Reaches the worker as `BUN_JOBS_SUMMON_ID`, and comes
-   * back on its heartbeat record as `summon.id`, which is how the attempt is
-   * released.
+   * call is identical. Reaches the worker as `--bun-jobs-summon-id=` in
+   * `argv` (§5.5), and comes back on its heartbeat record as `summon.id`,
+   * which is how the attempt is released.
    */
   id: string;
   /**
@@ -820,14 +836,15 @@ export interface SummonRequest {
   /** Why the check ran. */
   reason: SummonReason;
   /**
-   * Environment for the summoned worker, for platforms that pass env per run.
-   * A pure function of `id` and the policy's static `env`: never a timestamp.
-   * {@link SUMMON_ENV} names the keys.
+   * Environment for the summoned worker, for platforms that pass env per run:
+   * the policy's static `env` only, never a timestamp. **Never summon
+   * identity** (§5.5): an environment leaks to every descendant.
    */
   env: Readonly<Record<string, string>>;
   /**
-   * The same values as `--bun-jobs-summon-*=` arguments, for platforms that
-   * take only a command line (Render's `startCommand`).
+   * The summon's identity as `--bun-jobs-summon-*=` arguments
+   * ({@link SUMMON_ARGS}): **the only channel for it** (§5.5). A platform that
+   * cannot pass arguments passes no identity (`passes: "none"`).
    */
   argv: readonly string[];
   /**
@@ -911,8 +928,12 @@ export function defineSummoner(options: {
   style?: "launch" | "scale" | "wake";
   /** The in-flight TTL in ms. Defaults to `180_000`: a conservative guess, since nothing was measured. */
   bootBudget?: number;
-  /** How the platform passes per-attempt values. Defaults to `"env"`. */
-  passes?: "env" | "argv" | "none";
+  /**
+   * How the platform passes per-attempt values. **Revised 2026-09-26 (§5.5):
+   * `"argv"` or `"none"`**; the draft's `"env"` is withdrawn, and the default
+   * becomes `"argv"`.
+   */
+  passes?: "argv" | "none";
   /** How the platform dedupes. Defaults to `{ kind: "none" }`: the marker is the whole guard. */
   dedupe?: SummonDedupe;
   /** The stop signal and grace. Defaults to `{ signal: "SIGTERM", graceMs: 10_000 }`. */
@@ -1022,7 +1043,7 @@ export interface SummonPolicy {
   env?: Record<string, string>;
   /**
    * Whether a controller may run in a process that was itself summoned
-   * (`BUN_JOBS_SUMMON_ID` set). Defaults to `false`, so a shared config
+   * (`summonedFromArgs()` finds an id). Defaults to `false`, so a shared config
    * module cannot make a worker summon more workers (§3.2).
    */
   fromSummoned?: boolean;
@@ -1209,7 +1230,7 @@ worker's own claim polling [I].
 | systemd unit | `KillSignal=`, SIGTERM by default | `TimeoutStopSec=` | recipe, §7.6 |
 
 The worker cannot learn the grace from the platform. The first-party adapters
-pass their platform's default as `BUN_JOBS_SUMMON_GRACE_MS` where they set env,
+pass their platform's default as `--bun-jobs-summon-grace-ms` where they pass arguments,
 and the recipe says to set `grace` explicitly otherwise [D]. **Every
 first-party worker recipe also tells the user to raise the platform's grace
 where it can be raised**: Fly `kill_timeout = 300` with `kill_signal =
@@ -1223,57 +1244,13 @@ it runs the job twice.
 The names were approved on 2026-09-25 (§13.9): `runSummoned` (S4, was
 `drainAndExit`), its modes `"exit-on-idle"`, `"until-stopped"` and
 `"in-invocation"` (S5), its options with `idleFor` (S6, was `idleTimeout`),
-`SummonedExit` (S7, was `DrainExit`), `SUMMON_ENV` and `summonedFromEnv` with
-every key under `BUN_JOBS_SUMMON_*` (S8), and `WorkerSummonProvenance`
-(S15).
+`SummonedExit` (S7, was `DrainExit`), `WorkerSummonProvenance` (S15), and
+`SUMMON_ARGS` and `summonedFromArgs` (S8 as superseded on 2026-09-26: §5.5
+has the channel, and PR-2's code has the shapes).
 
 ```ts
-/** The environment keys a summon passes, and `summonedFromEnv` reads. */
-export const SUMMON_ENV = {
-  /** The attempt id; comes back on the heartbeat record. */
-  id: "BUN_JOBS_SUMMON_ID",
-  /** The summoner's kind. */
-  kind: "BUN_JOBS_SUMMON_KIND",
-  /** `"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`. */
-  mode: "BUN_JOBS_SUMMON_MODE",
-  /** The namespace to consume. Not `BUN_JOBS_NAMESPACE`, which is the runner's `CHILD_ENV.namespace` (§4.0 R19). */
-  namespace: "BUN_JOBS_SUMMON_NAMESPACE",
-  /** The queue to consume. */
-  queue: "BUN_JOBS_SUMMON_QUEUE",
-  /** The longest the worker may live, as a duration in ms (never a timestamp, §4.6). */
-  maxLifetimeMs: "BUN_JOBS_SUMMON_MAX_LIFETIME_MS",
-  /** The platform's grace after the stop signal, in ms, when the adapter knows it. */
-  graceMs: "BUN_JOBS_SUMMON_GRACE_MS",
-} as const;
-
-/** Where a summoned worker came from, as its heartbeat record carries it. */
-export interface WorkerSummonProvenance {
-  /** The attempt id, when the platform could pass it. */
-  id?: string;
-  /** The summoner's kind, e.g. `"ecs"`. */
-  kind?: string;
-  /**
-   * The platform's own name for this unit, read from the platform's env where
-   * it provides one: `CLOUD_RUN_EXECUTION` on Cloud Run jobs [V~, google-azure
-   * §3.2]. Others are unverified and read only when present.
-   */
-  handle?: string;
-  /** The worker mode. */
-  mode: "exit-on-idle" | "until-stopped" | "in-invocation";
-  /** When the worker will stop at the latest, epoch ms, computed by the worker at start. */
-  deadlineAt?: number;
-}
-
-/**
- * The summon provenance in the environment and argv, or `undefined` when this
- * process was not summoned. Reads {@link SUMMON_ENV} and the matching
- * `--bun-jobs-summon-*=` arguments (for platforms that pass only a command
- * line).
- */
-export function summonedFromEnv(
-  env?: Record<string, string | undefined>,
-  argv?: readonly string[],
-): (WorkerSummonProvenance & { namespace?: string; queue?: string; maxLifetimeMs?: number; graceMs?: number }) | undefined;
+// SUMMON_ARGS, WorkerSummonProvenance and summonedFromArgs() shipped in PR-2
+// (lib/summon/args.ts, shared/workers.ts); §5.5 gives the channel and the rules.
 
 /** How a summoned worker drains and stops. */
 export interface RunSummonedOptions {
@@ -1305,7 +1282,7 @@ export interface RunSummonedOptions {
    * How long the platform waits after its stop signal before SIGKILL, in ms.
    * After a signal the worker closes gracefully only if the budget covers the
    * target's close and `tailReserve`, and with `force` otherwise (§5.3, the
-   * close rule). Defaults to `BUN_JOBS_SUMMON_GRACE_MS`, else `10_000` (Cloud
+   * close rule). Defaults to `--bun-jobs-summon-grace-ms`, else `10_000` (Cloud
    * Run's figure, the shortest common non-zero one).
    */
   grace?: number;
@@ -1497,11 +1474,12 @@ On `BunQueueWorkerOptions` (`queue/types.ts:910`) [D] — the option is
 /**
  * Where this worker was summoned from, written on its heartbeat record as
  * `summon` so the controller can release the attempt and the Workers page can
- * show a badge. Pass `summonedFromEnv()`. Absent for an ordinary worker.
- * With `reportInterval: 0` it is a `ConfigError`: a worker that never reports
- * can never release its attempt (§4.0 R3).
+ * show a badge. Pass `summonedFromArgs()`. Absent for an ordinary worker.
+ * A `ConfigError` whenever the worker could never report — `reportInterval:
+ * 0` (§4.0 R3), or a driver that cannot store worker records (added
+ * 2026-09-26) — since it could never release its attempt.
  */
-summon?: WorkerSummonProvenance;
+summon?: WorkerSummonProvenance | undefined;
 ```
 
 On `WorkerInfo` (`drivers/driver.ts:1427-1591`, beside Phase 1's `target`,
@@ -1509,9 +1487,11 @@ On `WorkerInfo` (`drivers/driver.ts:1427-1591`, beside Phase 1's `target`,
 
 ```ts
 /**
- * Set when the worker was summoned: the attempt id, the summoner's kind, the
- * platform's handle, the mode and the deadline. Absent on an ordinary worker,
- * and on a record from before this existed.
+ * Set when the worker was summoned: the attempt id (required), the
+ * summoner's kind, the platform's handle, and the mode and deadline **as the
+ * summoner requested them** — each absent when not requested, never
+ * defaulted. Absent on an ordinary worker, and on a record from before this
+ * existed.
  */
 summon?: WorkerSummonProvenance;
 ```
@@ -1535,17 +1515,19 @@ touched for `target`: `WorkerDto` (`api/contract/types.ts:1789-1898`),
 `DeepEqual` drift assertion in `__tests__/api/api-contract.type-test.ts`, the
 round trip in `__tests__/api/api-sources.test.ts`, and the OpenAPI component
 list pinned in `__tests__/api/api-workers.test.ts`. `summon.handle` is
-infrastructure (a task ARN), so the serializer withholds it unless
-`exposeHosts` is on, as §9.2 says [D].
+infrastructure — an ECS task ARN contains the AWS account id — so the
+serializer withholds it unless the new `serialize.exposeSummonHandles` is on
+(default `false`). **Revised 2026-09-26:** the draft gated it on `exposeHosts`,
+which defaults to `true` [D, the bun-jobs session's review of #178, 2026-09-26].
 
 The recipe:
 
 ```ts
 // worker.ts: the one file every summoned platform runs
-import { BunJobs, runSummoned, summonedFromEnv } from "@kingsleyweb/bun-jobs";
+import { BunJobs, runSummoned, summonedFromArgs } from "@kingsleyweb/bun-jobs";
 import { handlers } from "./jobs";
 
-const summon = summonedFromEnv();
+const summon = summonedFromArgs();   // --bun-jobs-summon-*= on the command line
 const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver: { url: process.env.JOBS_URL! } });
 const worker = jobs.worker(summon?.queue ?? "emails", handlers, {
   summon,                    // provenance on the record → the controller releases the attempt
@@ -1559,7 +1541,9 @@ And for default Lambda, where the worker must live **inside** one invocation
 
 ```ts
 export const handler = async (_event: unknown, context: { getRemainingTimeInMillis(): number }) => {
-  const worker = jobs.worker("emails", handlers, { summon: summonedFromEnv() });
+  // A Lambda invocation has no command line: its provenance comes from the
+  // invoke payload, whose reader PR-3/1.5c defines (Q43).
+  const worker = jobs.worker("emails", handlers, { summon: summonFromEvent(_event) });
   return await runSummoned(worker, {
     mode: "in-invocation",
     deadline: () => Date.now() + context.getRemainingTimeInMillis(),
@@ -1571,6 +1555,75 @@ Construct the worker in the handler, never at module scope. A worker built
 during Init would outlive the invocation into a freeze [V/I, aws §2]. Under
 Lambda MicroVMs it would also share its id and lock token across every
 restored VM [V, aws §4.7].
+
+
+### 5.5 The identity channel: arguments only (revised 2026-09-26)
+
+**The finding** (the bun-jobs session's review of #178, 2026-09-26, reproduced by the coordinator
+on Bun 1.4.3). `Bun.spawn` with **no `env`** passes the process's environment
+**as it was at startup**, ignoring the live `process.env`. A program that read
+`BUN_JOBS_SUMMON_ID` and then deleted it still had a `Bun.spawn` child see it;
+with `env: process.env`, or through `node:child_process`, it was unset.
+**Command-line arguments are not inherited at all** (control: the child's
+argv was `[]`). So the draft's env channel leaked the summon identity to every
+`Bun.spawn` descendant — from an in-process processor, from a worker-thread
+target's thread, from user code — and each would have claimed the attempt.
+The `BUN_JOBS_CHILD` guard covered only bun-jobs' own executors' direct
+children, and reading-then-deleting cannot fix a leak of the startup
+environment. PR-2's tests reproduce it as their negative control [M].
+
+**The user's decisions (2026-09-26)** [D]:
+
+1. **Identity travels only as command-line arguments**,
+   `--bun-jobs-summon-<key>=<value>` (`SUMMON_ARGS`: `id`, `kind`, `mode`,
+   `namespace`, `queue`, `max-lifetime-ms`, `grace-ms`). The environment is
+   never read for provenance. `summonedFromEnv()` → **`summonedFromArgs(argv
+   = process.argv)`**, `SUMMON_ENV` → **`SUMMON_ARGS`**. This supersedes S8's
+   keys (§13.9).
+2. **`handle` has its own API switch, `exposeSummonHandles`, default
+   `false`**, beside `exposeRunnerFiles`/`exposeProcessorFiles`, and is not
+   gated on `exposeHosts` (default `true`), because an ECS task ARN contains
+   the AWS account id.
+
+**And the review's agreed fixes** [D]:
+
+- **`id` makes a worker summoned.** Without `--bun-jobs-summon-id=`,
+  `summonedFromArgs()` is `undefined` whatever other arguments say, and
+  `WorkerSummonProvenance.id` is required.
+- **`mode` and `deadlineAt` are "as requested by the summoner"** and never
+  defaulted: absent when not requested, per the rule behind `target` and
+  `sweeps`. PR-4 reports the worker's own resolved mode through a getter, the
+  way `#report` writes `sweeps` from what the worker actually arms.
+- **`summon` on a driver that cannot store worker records
+  (`!supportsWorkers`) is a `ConfigError`**, like `reportInterval: 0`: either
+  way the worker could never report, so never release its attempt.
+- **The `BUN_JOBS_CHILD` check stays, refuse-only** (amended the same day).
+  A `Worker` thread runs in its parent's process; Bun 1.4.3 gives it an empty
+  `process.argv` and `Bun.argv` (measured), but **Node copies the parent's
+  argv into a worker by default**. If Bun ever adopted that, every
+  worker-thread target would claim its parent's attempt. So
+  `summonedFromArgs()` returns `undefined` when `BUN_JOBS_CHILD === "1"`,
+  whatever the arguments say: the environment is read only to refuse
+  provenance, never to grant it, so it cannot reintroduce the leak. It also
+  keeps a runner child's own arguments from reading as a summon.
+
+**Consequences for the providers** [I, to be settled per provider in 1.5p
+and 1.5c–e]:
+
+- `passes` becomes `"argv" | "none"`. Each launch API must be re-read for a
+  per-run argument override (ECS `containerOverrides.command`, Cloud Run jobs'
+  and ACA jobs' per-execution args, Render's `startCommand`, SSH's command
+  line) [U per platform]. One without it passes `"none"` and is released by
+  start time (§4.3 step 2), as Fly already is.
+- **Lambda has no command line**: its identity must come from the invoke
+  payload (Q43).
+- `request.env` keeps the policy's static `env` only.
+
+**Claim-once, added to PR-3** [D]. With arguments a platform double-start can
+still start two processes with the same id. PR-3 adds **claim-once**: the
+first process to atomically claim an attempt id wins; a second claimant
+(a platform double-start, or any descendant that somehow sees the arguments)
+loses and runs unsummoned. PR-2 does not build it.
 
 ---
 
@@ -2041,8 +2094,8 @@ whether your use case is allowed, ask us before deploying" [V, railway-vms
   - `ConflictException` maps to `deduped`. The `__type` error-body shape is
     [U, aws §4.1] until the first live call.
 - **Shutdown**: SIGTERM, then `stopTimeout` (30 s default, 120 s max)
-  [V, aws §4.1]. The adapter sets `BUN_JOBS_SUMMON_GRACE_MS` from its
-  `stopTimeout` option.
+  [V, aws §4.1]. The adapter passes `--bun-jobs-summon-grace-ms` (§5.5) from
+  its `stopTimeout` option.
 - **Quotas that bite first**: Fargate On-Demand vCPU is **6** on a new account
   [V, aws §1 item 4]. `RunTask` burst is 100, refilling 40/s [V, aws §4.1].
 - **Sketch**: `aws.md` §4.1, verbatim apart from two changes. `r.dedupeKey`
@@ -2103,9 +2156,10 @@ Sketch: `paas-ssh.md` §5.1. Walk a **pool of pre-created Machines**:
 
 The pool size is the concurrency ceiling by construction [I, paas-ssh §5.1].
 `passes: "none"`: Machine env is fixed at create, and per-start overrides are
-[U] (Q27). So attempts release by start time (§4.3), and
-`summonedFromEnv()` reads `FLY_MACHINE_ID` as the handle *when present*. That
-variable name is [U].
+[U] (Q27). So attempts release by start time (§4.3). The handle
+(`FLY_MACHINE_ID`, name [U]) is not read by `summonedFromArgs()`, which reads
+no environment (§5.5); the recipe passes it itself (`{ ...summon, handle }`)
+when it has an id to go with it.
 
 - **Rate limits**: 1 request per second per action per Machine, burst 3
   [V, paas-ssh §5.1].
@@ -2154,9 +2208,9 @@ body**. The response is `200 { name, id }` or `202` with a `Location` header
 Sketch in `paas-ssh.md` §4.2. It calls `POST /v1/services/{id}/jobs` with a
 `startCommand`.
 
-- There is no env override, so the attempt travels in `request.argv`
-  (`--bun-jobs-summon-id=…`), and `summonedFromEnv()` reads argv
-  [V/I, paas-ssh §4.2].
+- The attempt travels in `request.argv` (`--bun-jobs-summon-id=…`) through
+  `startCommand`, and `summonedFromArgs()` reads it [V/I, paas-ssh §4.2]. Since
+  2026-09-26 that is every provider's channel (§5.5).
 - `429` becomes `unavailable` with `retryAfterMs` from `Ratelimit-Reset`. The
   limit is 100/min for `POST /v1/jobs` [V].
 - Gotcha for the README: the job runs the base service's **last successful
@@ -2173,8 +2227,9 @@ and throws a `ConfigError` if it is missing [I, paas-ssh §7.1].
   `IdentitiesOnly=yes`, `ConnectTimeout=10`, and optional `ControlMaster` on
   POSIX [V, paas-ssh §7.3].
 - **Remote command**: `systemd-run --user --unit=bun-jobs-<ns>-<queue>
-  --collect -p RuntimeMaxSec=<maxLifetime> -E BUN_JOBS_SUMMON_ID=… /abs/bun
-  worker.ts`.
+  --collect -p RuntimeMaxSec=<maxLifetime> /abs/bun worker.ts
+  --bun-jobs-summon-id=…`. Identity as arguments, not `-E` environment
+  (§5.5).
 - **Answers**: a second start fails with "already loaded", exit 1 [M,
   paas-ssh §4.4]. That maps to `already-running`. Exit 255 maps to `failed`
   [V, paas-ssh §7.1].
@@ -2357,7 +2412,7 @@ packed tarball, are in plugins §11.1:
 
 ```jsonc
 { "spelling": "@kingsleyweb/bun-jobs/summon",
-  "values": ["SummonController", "defineSummoner", "runSummoned", "summonedFromEnv", "SUMMON_ENV"],
+  "values": ["SummonController", "defineSummoner", "runSummoned", "summonedFromArgs", "SUMMON_ARGS"],
   "types": ["SummonPolicy", "Summoner", "SummonRequest", "SummonResult", "QueueDemand", "RunSummonedOptions", "SummonedExit"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/aws",    "values": ["ecsRunTask", "lambdaInvoke"] },
 { "spelling": "@kingsleyweb/bun-jobs/providers/google", "values": ["cloudRunJob", "cloudRunWorkerPool"] },
@@ -2415,8 +2470,9 @@ It logs through the structured `Logger` (`logger.warn("…", { queue, id, kind
 shows:
 
 - a badge naming the kind (`ecs`, `fly`);
-- the platform handle, shown only behind the existing `exposeHosts`-style
-  switch, because a task ARN is infrastructure;
+- the platform handle, shown only with `serialize.exposeSummonHandles`
+  (default `false`; added 2026-09-26, §5.5), because a task ARN is
+  infrastructure and carries the AWS account id;
 - the deadline.
 
 A summoned worker is otherwise an ordinary worker. The Phase 0
@@ -2530,7 +2586,7 @@ say which choice incurs which line.
   `fakePlatform({ coldStartMs, fail?, neverRegister?, crashAfterMs?, passes,
   style })`, a real `Summoner`. On `summon()`, after `coldStartMs`, it
   `Bun.spawn`s `bun __tests__/fixtures/summoned-worker.ts` with
-  `request.env`. That fixture runs `runSummoned` against a **shared** driver.
+  `request.argv` (§5.5). That fixture runs `runSummoned` against a **shared** driver.
   - Which driver: SQLite or file on one host, and Redis or Postgres when their
     URLs are set, skipping visibly under the repo's existing rule.
   - Failure injection: throws, `unavailable`, a start that never registers, a
@@ -2785,6 +2841,16 @@ plan unless it says so.
     lever exists; making it a `runSummoned` default would change the
     queue's sweep cadence for every worker on it. Recommended: document, do
     not default.
+42. **Q42** **Should a summoned worker's descendants treat a
+    `SummonController` as inert, and how would they know?** Raised by
+    the bun-jobs session's review of #178, 2026-09-26, for PR-3. Under the argument channel (§5.5) a
+    descendant has no provenance: `summonedFromArgs()` answers `undefined`,
+    which means "not summoned", so §3.2's `fromSummoned` rule does not reach
+    it, and a descendant building a `BunJobs` with `summon` configured would
+    summon. Not solved in PR-2.
+43. **Q43** **Lambda's identity channel.** An invocation has no command line,
+    so a Lambda worker's provenance must come from the invoke payload. Which
+    field, and which helper reads it, is for PR-3/1.5c (§5.5).
 
 ### 12.3 Risks
 
@@ -2850,7 +2916,7 @@ replaces the stand-in with the public ones (unchanged from the draft).
 | PR | Sub-phase | What it ships to users | Depends on | Implements | Effort | Hot path? |
 |---|---|---|---|---|---|---|
 | **PR-1** `countDemand` | 1.5a | `queue.getDemand()` [S10]: an exact, bounded demand reading on all five drivers, and the optional driver method for third-party drivers | **#166 merged** (sequencing, not code) | **the bun-jobs session**; the features session reviews | ~4.5 d | no |
-| **PR-2** provenance | 1.5a | a worker can record where it was summoned from; `WorkerDto.summon`; `summonedFromEnv()` | nothing | **the features session**; the bun-jobs session reviews | ~1.5 d | no |
+| **PR-2** provenance | 1.5a | a worker can record where it was summoned from; `WorkerDto.summon`; `summonedFromArgs()`; `exposeSummonHandles` | nothing | **the features session**; the bun-jobs session reviews | ~1.5 d | no |
 | **PR-3** controller | 1.5a | `SummonController`, `defineSummoner({ invoke })`, `BunJobs.summon`: summoning end to end on any platform | PR-1, PR-2 | **the features session**; the bun-jobs session reviews | ~6 d | **yes** |
 | **PR-4** `runSummoned` | 1.5a | the worker half: one file runs a summoned worker, handles signals, exits 0 | **#166 merged, including its `close({ force })` pass-through**, PR-1, PR-2 | **the features session**; the bun-jobs session reviews (it owns the close path #166 changes) | ~2.5 d | no |
 | **PR-5** depth endpoint | 1.5b | `GET /queues/:queue/demand`, `GET /demand`, Prometheus: KEDA, ACA event jobs, CREMA and GKE can scale on bun-jobs | PR-1 | **the features session**; the bun-jobs session reviews | ~2 d | no |
@@ -2966,18 +3032,27 @@ run-all.ts` in `examples/bun-jobs-ui`.
   `queue/types.ts` (the option); `queue/BunQueueWorker.ts` — constructor
   validation only (the `reportInterval: 0` `ConfigError`, beside
   `resolveWorkerTarget`, `:917-920`) and `#report` (`:4177-4210`), **not** the
-  close path; `lib/summon/env.ts` (`SUMMON_ENV`, `summonedFromEnv` [S8],
-  exported from the root; no `lib/summon/index.ts` yet, so no new `exports`
-  key); the API: `WorkerDto.summon` (`api/contract/types.ts`), `WorkerSchema`
-  (`api/schemas/workers.ts`), `toWorkerDto` (`api/serialize.ts`, `handle`
-  withheld without `exposeHosts`).
+  close path; `lib/summon/args.ts` (`SUMMON_ARGS`, `summonedFromArgs` [S8 as
+  superseded, §5.5], exported from the root; no `lib/summon/index.ts` yet, so
+  no new `exports` key); the API: `WorkerDto.summon` (`api/contract/types.ts`),
+  `WorkerSchema` (`api/schemas/workers.ts`), `toWorkerDto` (`api/serialize.ts`,
+  `handle` withheld unless `serialize.exposeSummonHandles`, a new switch in
+  `api/config.ts`, default `false`).
 - **Ships.** A worker says it was summoned, by what and until when; the
-  Workers API shows it; `summonedFromEnv()` for any recipe, including a
-  KEDA-launched worker.
+  Workers API shows it; `summonedFromArgs()` for any recipe that can pass
+  arguments.
 - **Tests.** The record carries `summon` on the first report; `reportInterval:
-  0` with `summon` throws; `summonedFromEnv()` reads env and argv, and answers
-  `undefined` in a runner child; the drift assertions and round trip Phase 1
-  extended for `target` (§5.4), extended again; `handle` withheld and shown.
+  0` and a driver without worker records each throw with `summon`;
+  `summonedFromArgs()` is keyed on the id, never defaults `mode`, and never
+  reads the environment; a `Bun.spawn` child with no `env` — from the main
+  thread, an in-process processor and a worker-thread target's thread — is not
+  summoned, with the env channel's leak as the negative control; the
+  worker-thread target's thread itself is not summoned; the marker refuses
+  even with the arguments visible (negative control: without it they are
+  claimed); a runner child's own arguments never read as a summon; the drift
+  assertions and round trip Phase 1 extended for `target` (§5.4), extended
+  again; `handle` hidden by default and served with `exposeSummonHandles`.
+- **Reworked 2026-09-26** after the bun-jobs session's review of #178, 2026-09-26 (§5.5).
 - **Owners.** Implemented by **the features session**, reviewed by the
   bun-jobs session; the UI session is told (a new `WorkerDto` field;
   rendering is 1.5f).
@@ -2993,8 +3068,13 @@ run-all.ts` in `examples/bun-jobs-ui`.
   The `summon` event is emitted **locally** here; putting it on the wire is
   PR-6's, because that changes the contract.
 - **Ships.** Summoning end to end, for any platform, through `defineSummoner`
-  or a bare function; the worker entry passes `summon: summonedFromEnv()` and
+  or a bare function; the worker entry passes `summon: summonedFromArgs()` and
   exits however it likes until PR-4.
+- **Claim-once (added 2026-09-26, §5.5).** The first process to atomically
+  claim an attempt id wins; any later claimant — a platform double-start, or a
+  descendant that sees the arguments — loses and runs unsummoned. Tests: two
+  processes with the same id, exactly one summoned record; the loser runs
+  unsummoned. PR-3 also answers Q42.
 - **Tests.** `__tests__/helpers/summon.ts`'s fake platform spawning
   `__tests__/fixtures/summoned-worker.ts` on SQLite and the file driver (Redis
   and Postgres when their URLs are set), and §11.1's controller cases except
@@ -3197,7 +3277,7 @@ same tree: 0.
 | S5 | its modes | `"exit-on-idle" \| "until-stopped" \| "in-invocation"` | `"launch" \| "service" \| "in-handler"` | The modes say what the worker does; `"launch"` is already a value of `SummonCapabilities.style`, a different axis (a launch-style Lambda runs the in-invocation mode). `WorkerSummonProvenance.mode` and `BUN_JOBS_SUMMON_MODE` carry the same three values | unused; `"launch"` in use as a style (plugins §7.1) |
 | S6 | its options | `idleFor`, `idleCheckInterval`, `deadline`, `shutdownBuffer`, `grace`, `tailReserve`, `signals`, `pauseSignals`, `exit`, `logger` | `idleTimeout` | `idleTimeout` is Bun.serve's HTTP idle timeout **in seconds** throughout bun-common and bun-nest (`BunHttpAdapter.ts`, `BunWebSocket.ts`, 6 hits); this one is milliseconds and means something else. The rest are kept | `idleFor`, `idleCheckInterval`, `shutdownBuffer`, `tailReserve`, `pauseSignals` unused; `grace` only in prose |
 | S7 | its result | `SummonedExit` | `DrainExit` | Follows S4 | unused |
-| S8 | env helpers and keys | `summonedFromEnv()`, `SUMMON_ENV`; keys `BUN_JOBS_SUMMON_ID`, `…_KIND`, `…_MODE`, `…_NAMESPACE`, `…_QUEUE`, `…_MAX_LIFETIME_MS`, `…_GRACE_MS` | keys `BUN_JOBS_NAMESPACE`, `BUN_JOBS_QUEUE` | Every key under one prefix: `BUN_JOBS_NAMESPACE` is already `CHILD_ENV.namespace` (`runner/protocol.ts:31`), exported from the root (`lib/index.ts:702`) and set on every runner and file-target child (§4.0 R19). `summonedFromEnv()` reads only `BUN_JOBS_SUMMON_*`, and answers `undefined` inside a runner child, which inherits its parent's env | `BUN_JOBS_SUMMON` prefix unused; `summonedFromEnv`, `SUMMON_ENV` unused |
+| S8 | env helpers and keys — **superseded 2026-09-26** | `summonedFromEnv()`, `SUMMON_ENV`; keys `BUN_JOBS_SUMMON_ID`, `…_KIND`, `…_MODE`, `…_NAMESPACE`, `…_QUEUE`, `…_MAX_LIFETIME_MS`, `…_GRACE_MS` | keys `BUN_JOBS_NAMESPACE`, `BUN_JOBS_QUEUE` | Every key under one prefix: `BUN_JOBS_NAMESPACE` is already `CHILD_ENV.namespace` (`runner/protocol.ts:31`), exported from the root (`lib/index.ts:702`) and set on every runner and file-target child (§4.0 R19). `summonedFromEnv()` reads only `BUN_JOBS_SUMMON_*`, and answers `undefined` inside a runner child, which inherits its parent's env | `BUN_JOBS_SUMMON` prefix unused; `summonedFromEnv`, `SUMMON_ENV` unused. **Superseded 2026-09-26 (§5.5):** identity travels only as arguments, so the helper is `summonedFromArgs()` and the names are `SUMMON_ARGS`, `--bun-jobs-summon-<key>=` (the bun-jobs session's review of #178, 2026-09-26; the user's decision) |
 | S9 | the driver method and its answer | `countDemand`, `DemandCounts` | (kept) | `readDemand` is the helper above it; "claimable" is wrong for `stalled`, which needs a sweep first | unused |
 | S10 | the public demand read | `queue.getDemand()` (added); `QueueDemand`, `readDemand` internal | no public method | Matches `getLimits()`/`getJob()`, so PR-1 ships something usable on its own | `getDemand` unused |
 | S11 | the routes | `GET /queues/:queue/demand`, `GET /demand` | (kept) | "Demand" is the figure's name everywhere else | `/demand` unused |

@@ -566,6 +566,7 @@ describe("resolveConfig: construction", () => {
       exposeStacks: false,
       exposeRunnerFiles: false,
       exposeProcessorFiles: false,
+      exposeSummonHandles: false,
       exposeHosts: true,
     });
     expect(config.runnerTriggerArgs).toBe(false);

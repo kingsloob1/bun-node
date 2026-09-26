@@ -421,6 +421,7 @@ describe("serializers", () => {
     exposeStacks: false,
     exposeRunnerFiles: false,
     exposeProcessorFiles: false,
+    exposeSummonHandles: false,
     exposeHosts: true,
   };
   const failure = {
@@ -725,11 +726,22 @@ describe("serializers", () => {
         processor: "file" as const,
         file: "/srv/app/jobs/resize.ts",
       },
+      summon: {
+        id: "attempt-1",
+        kind: "fly",
+        handle: "e7843d0f",
+        mode: "until-stopped" as const,
+        deadlineAt: 1_900_000_000_000,
+      },
     };
-    // A round trip needs the processor file's path let through: it is the one
-    // field of `target` the default serializer withholds.
+    // A round trip needs the processor file's path and the summon handle let
+    // through: they are the fields the default serializer withholds.
     expect(
-      toWorkerDto(worker, { exposeHosts: true, exposeProcessorFiles: true }),
+      toWorkerDto(worker, {
+        exposeHosts: true,
+        exposeProcessorFiles: true,
+        exposeSummonHandles: true,
+      }),
     ).toEqual(worker);
     expect(toWorkerDto(worker, { exposeHosts: true }).target).toEqual({
       kind: "child-process",
@@ -738,5 +750,13 @@ describe("serializers", () => {
     expect(toWorkerDto(worker, { exposeHosts: false })).not.toHaveProperty(
       "host",
     );
+    // `summon.handle` has its own switch, off by default, whatever
+    // `exposeHosts` says: an ECS task ARN carries the AWS account id.
+    expect(toWorkerDto(worker, { exposeHosts: true }).summon).toEqual({
+      id: "attempt-1",
+      kind: "fly",
+      mode: "until-stopped",
+      deadlineAt: 1_900_000_000_000,
+    });
   });
 });

@@ -2009,6 +2009,44 @@ management API serves only with `serialize.exposeProcessorFiles`. Optional like
 the rest, and **absent is not `"in-process"`**: a record from before the field
 means the worker is too old to say.
 
+**`summon` says where a summoned worker came from**: the summon attempt's
+`id` (always present: it is what makes a worker summoned), the summoner's
+`kind` (`"ecs"`, `"fly"`), the platform's `handle`, and the `mode`
+(`"exit-on-idle"`, `"until-stopped"` or `"in-invocation"`) and `deadlineAt`
+**as the summoner requested them** — each absent when not requested, never
+defaulted. It is written from the worker's `summon` option, which is what
+`summonedFromArgs()` builds from the `--bun-jobs-summon-*=` command-line
+arguments a summon passes (`SUMMON_ARGS`):
+
+```ts
+import { BunJobs, summonedFromArgs } from "@kingsleyweb/bun-jobs";
+
+const summon = summonedFromArgs(); // undefined unless this process was summoned
+const jobs = new BunJobs({ namespace: summon?.namespace ?? "shop", driver });
+const worker = jobs.worker(summon?.queue ?? "emails", handlers, { summon });
+await worker.run();
+```
+
+**Arguments, not environment variables, by design.** An environment leaks to
+every descendant — `Bun.spawn` with no `env` passes the environment the
+process *started* with, so even deleting a variable after reading it does not
+stop a child a processor spawns from inheriting it — while arguments reach
+only the process they were given to. A process is summoned only when
+`--bun-jobs-summon-id=` is present. Inside a runner or worker-target child
+(`BUN_JOBS_CHILD=1`) the answer is always `undefined`: that marker is the one
+variable read, and only ever to refuse, as defence in depth — Bun gives a
+`Worker` thread an empty `argv` (Node copies the parent's), and bun-jobs does
+not rely on that alone.
+
+A malformed argument throws a `ConfigError`, and so does `summon` on a worker
+that could never report — `reportInterval: 0`, or a driver that cannot store
+worker records — since it could never release its attempt. The management API
+serves `handle` only with `serialize.exposeSummonHandles` (default `false`,
+and independent of `exposeHosts`): an ECS task ARN contains the AWS account
+id. **Absent `summon` means one of two things**: the worker was not summoned,
+or it is too old to say. Nothing tells them apart, so a reader shows no badge
+rather than claiming either.
+
 Examples:
 
 - [`10-options/read-apis.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-jobs/10-options/read-apis.ts)

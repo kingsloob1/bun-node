@@ -806,14 +806,19 @@ export function isWorkerStale(
 
 /**
  * Shapes a worker; host and pid only with `exposeHosts`, a processor file's
- * path only with `exposeProcessorFiles` (off when not given), and `stale`
- * computed here because the record carries the heartbeat rather than the
- * verdict.
+ * path only with `exposeProcessorFiles` and a summon's platform `handle` only
+ * with `exposeSummonHandles` (both off when not given), and `stale` computed
+ * here because the record carries the heartbeat rather than the verdict.
  */
 export function toWorkerDto(
   worker: WorkerInfoLike,
   options: Pick<ResolvedJobsApiSerializers, "exposeHosts"> &
-    Partial<Pick<ResolvedJobsApiSerializers, "exposeProcessorFiles">>,
+    Partial<
+      Pick<
+        ResolvedJobsApiSerializers,
+        "exposeProcessorFiles" | "exposeSummonHandles"
+      >
+    >,
   now: number = Date.now(),
 ): WorkerDto {
   const stale = isWorkerStale(worker, now);
@@ -878,6 +883,25 @@ export function toWorkerDto(
       ...(options.exposeProcessorFiles && worker.target.file !== undefined
         ? { file: worker.target.file }
         : {}),
+    };
+  }
+  // And for `summon`: absent is "not summoned, or too old to say", never a
+  // default, and so is each optional field inside it. Field by field, so the
+  // platform's handle goes out only with `exposeSummonHandles` — never merely
+  // with `exposeHosts`, which is on by default, since an ECS task ARN carries
+  // the AWS account id.
+  if (worker.summon !== undefined) {
+    const summon = worker.summon;
+    dto.summon = {
+      id: summon.id,
+      ...(summon.kind === undefined ? {} : { kind: summon.kind }),
+      ...(options.exposeSummonHandles && summon.handle !== undefined
+        ? { handle: summon.handle }
+        : {}),
+      ...(summon.mode === undefined ? {} : { mode: summon.mode }),
+      ...(summon.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: summon.deadlineAt }),
     };
   }
   if (worker.config !== undefined) {

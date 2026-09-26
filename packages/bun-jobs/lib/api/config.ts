@@ -190,6 +190,13 @@ export interface JobsApiSerializers {
    */
   exposeProcessorFiles?: boolean;
   /**
+   * Include a summoned worker's platform handle, `summon.handle` on a worker
+   * record (a task ARN, a machine id). Defaults to `false`, and deliberately
+   * not tied to `exposeHosts` (which defaults to `true`): an ECS task ARN
+   * contains the AWS account id. Off, the rest of `summon` is still served.
+   */
+  exposeSummonHandles?: boolean;
+  /**
    * Include host/pid on workers, run records, `runningOn` and a job's
    * `processedBy`; off, the worker listing's `host` filter is refused too.
    * Defaults to `true` (operators need it).
@@ -742,6 +749,7 @@ export type ResolvedJobsApiSerializers = JobsApiSerializers &
         | "exposeStacks"
         | "exposeRunnerFiles"
         | "exposeProcessorFiles"
+        | "exposeSummonHandles"
         | "exposeHosts"
       >
     >
@@ -1488,6 +1496,7 @@ export function resolveConfig(config: JobsApiConfig): ResolvedJobsApiConfig {
       exposeStacks: serialize.exposeStacks ?? false,
       exposeRunnerFiles: serialize.exposeRunnerFiles ?? false,
       exposeProcessorFiles: serialize.exposeProcessorFiles ?? false,
+      exposeSummonHandles: serialize.exposeSummonHandles ?? false,
       exposeHosts: serialize.exposeHosts ?? true,
     },
     runnerTriggerArgs: config.runnerTriggerArgs ?? false,

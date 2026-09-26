@@ -115,6 +115,7 @@ import type {
   workerListQuerySchema,
   WorkerListSchema,
   WorkerSchema,
+  WorkerSummonProvenanceSchema,
   WorkerTargetInfoSchema,
 } from "../../lib/api/schemas/workers";
 import type * as Server from "../../lib/api/serialize";
@@ -546,6 +547,21 @@ export type WorkerTargetInfoOk = Expect<
 >;
 export type WorkerTargetFieldOk = Expect<
   Equal<Contract.WorkerDto["target"], Contract.WorkerTargetInfoDto | undefined>
+>;
+// The record's `summon`, the same way: the component and the contract type
+// agree, and the field is optional — absent is "not summoned, or too old to
+// say", never a default.
+export type WorkerSummonProvenanceOk = Expect<
+  DeepEqual<
+    Contract.WorkerSummonProvenanceDto,
+    Infer<typeof WorkerSummonProvenanceSchema>
+  >
+>;
+export type WorkerSummonFieldOk = Expect<
+  Equal<
+    Contract.WorkerDto["summon"],
+    Contract.WorkerSummonProvenanceDto | undefined
+  >
 >;
 export type WorkerListOk = Expect<
   DeepEqual<Contract.WorkerListDto, Infer<typeof WorkerListSchema>>
@@ -1519,6 +1535,13 @@ export type WorkerTargetKindTypeOk = Expect<
 // The runtime record's `target` and the contract's are one shape.
 export type WorkerTargetInfoRuntimeOk = Expect<
   DeepEqual<Workers.WorkerTargetInfo, Contract.WorkerTargetInfoDto>
+>;
+// And `summon`: the record's, the option's and the contract's are one shape.
+export type WorkerSummonProvenanceRuntimeOk = Expect<
+  DeepEqual<Workers.WorkerSummonProvenance, Contract.WorkerSummonProvenanceDto>
+>;
+export type WorkerSummonRootOk = Expect<
+  Equal<Root.WorkerSummonProvenance, Workers.WorkerSummonProvenance>
 >;
 /**
  * And the worker payloads the socket sends are the driver's own: no error is

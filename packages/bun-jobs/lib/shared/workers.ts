@@ -262,5 +262,55 @@ export interface WorkerTargetInfo {
   file?: string;
 }
 
+/**
+ * Where a summoned worker came from, as its heartbeat record carries it
+ * (`WorkerInfo.summon`) and as `BunQueueWorkerOptions.summon` takes it.
+ * Usually built by `summonedFromArgs()` from the `--bun-jobs-summon-*=`
+ * command-line arguments a summon passes.
+ *
+ * A worker writes only these five fields, whatever else the object it was
+ * given carries: `summonedFromArgs()`'s `namespace`, `queue`,
+ * `maxLifetimeMs` and `graceMs` configure the worker and never reach the
+ * record. Nothing in it is defaulted: a field the summoner did not pass is
+ * absent.
+ */
+export interface WorkerSummonProvenance {
+  /**
+   * The summon attempt's id. Required: a worker counts as summoned only when
+   * it has one, and the controller releases the attempt whose id a live
+   * record carries.
+   */
+  id: string;
+  /** The summoner's kind, e.g. `"ecs"` or `"fly"`: what a UI badge names. */
+  kind?: string;
+  /**
+   * The platform's own name for this unit (a task ARN, a Fly machine id),
+   * when the worker knows it. Infrastructure detail — an ECS task ARN
+   * contains the AWS account id — so the management API withholds it unless
+   * `serialize.exposeSummonHandles` is on (default `false`).
+   */
+  handle?: string;
+  /**
+   * The mode **as requested by the summoner**: `"exit-on-idle"` (exit once
+   * the queue has been idle long enough), `"until-stopped"` (never exit on
+   * idle, for a platform that restarts an exited service) or
+   * `"in-invocation"` (live inside one serverless invocation). Absent when
+   * the summoner requested none — never defaulted. It is what was asked
+   * for, not what the worker is doing: the worker's own resolved mode is to
+   * be reported separately, from a getter on the running worker, the way
+   * the record's `sweeps` is written from what the worker actually arms. A
+   * reader meeting a mode it does not know shows the raw string: a later
+   * version may add one.
+   */
+  mode?: "exit-on-idle" | "until-stopped" | "in-invocation";
+  /**
+   * The latest the worker should stop, epoch ms, **as requested by the
+   * summoner**: computed at start from the requested maximum lifetime, on
+   * the worker's own clock (a summon passes a duration, never a timestamp).
+   * Absent when none was requested — never defaulted.
+   */
+  deadlineAt?: number;
+}
+
 /** How a worker hears about a control change. */
 export type WorkerControlMode = "subscribe" | "poll";

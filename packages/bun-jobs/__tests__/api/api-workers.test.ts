@@ -1151,6 +1151,7 @@ describe("the documents", () => {
       "WorkerControlResult",
       "WorkerState",
       "WorkerStopPersistence",
+      "WorkerSummonProvenance",
       "WorkerTargetInfo",
     ]);
 
@@ -1252,5 +1253,70 @@ describe("a worker's target", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).not.toHaveProperty("target");
+  });
+});
+
+describe("a worker's summon", () => {
+  const summon = {
+    id: "attempt-1",
+    kind: "ecs",
+    handle: "arn:aws:ecs:eu-west-1:1:task/c/abc",
+    mode: "exit-on-idle" as const,
+    deadlineAt: 1_900_000_000_000,
+  };
+
+  it("serves summon without the platform handle by default, exposeHosts on", async () => {
+    const jobs = jobsContext("api-workers-summon");
+    const h = harness({ jobs });
+    await putWorker(jobs, { summon });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+    const list = await h.call("GET", "/workers");
+
+    const { handle: _handle, ...withoutHandle } = summon;
+    expect(one.status).toBe(200);
+    expect(one.body.summon).toEqual(withoutHandle);
+    expect(list.body.items[0].summon).toEqual(withoutHandle);
+    // The host is served (exposeHosts defaults on); the ARN, with its
+    // account id, is not.
+    expect(one.body).toHaveProperty("host");
+    expect(one.text).not.toContain("arn:aws:ecs");
+    expect(list.text).not.toContain("arn:aws:ecs");
+  });
+
+  it("serves the handle with exposeSummonHandles, even with exposeHosts off", async () => {
+    const jobs = jobsContext("api-workers-summon-handles");
+    const h = harness({
+      jobs,
+      serialize: { exposeSummonHandles: true, exposeHosts: false },
+    });
+    await putWorker(jobs, { summon });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(one.status).toBe(200);
+    expect(one.body.summon).toEqual(summon);
+    expect(one.body).not.toHaveProperty("host");
+  });
+
+  it("serves a summon with no requested mode without one", async () => {
+    const jobs = jobsContext("api-workers-summon-nomode");
+    const h = harness({ jobs });
+    await putWorker(jobs, { summon: { id: "attempt-2" } });
+
+    const one = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(one.body.summon).toEqual({ id: "attempt-2" });
+  });
+
+  it("leaves summon off a record without one: absent, never defaulted", async () => {
+    const jobs = jobsContext("api-workers-summon-none");
+    const h = harness({ jobs });
+    await putWorker(jobs);
+
+    const res = await h.call("GET", "/queues/mail/workers/mail.1");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("summon");
   });
 });
