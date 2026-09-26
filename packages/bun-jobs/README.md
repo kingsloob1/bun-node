@@ -2038,7 +2038,9 @@ and `child-process` with `"file"` only, and `custom` with either. A custom
 target adds its `name`, and a file processor its resolved `file` — which the
 management API serves only with `serialize.exposeProcessorFiles`. Optional like
 the rest, and **absent is not `"in-process"`**: a record from before the field
-means the worker is too old to say.
+means the worker is too old to say. In its own process the worker says the same
+as `worker.target`, from the constructor on: the very object the record
+carries, frozen, `file` included.
 
 **`summon` says where a summoned worker came from**: the summon attempt's
 `id` (always present: it is what makes a worker summoned), the summoner's
