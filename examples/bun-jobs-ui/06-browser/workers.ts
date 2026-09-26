@@ -44,8 +44,12 @@
  *   `worker-config`, `worker-setting-<setting>`, `worker-config-offline`,
  *   `worker-config-stored`, `worker-config-none-stored`, `worker-analytics`,
  *   `worker-jobs`, `worker-jobs-range`, `worker-jobs-no-range`,
- *   `jobs-processed-by-key` and `job-processed-by-key`. A worker's buttons are
- *   in `[role="group"][aria-label="Actions for worker <id>"]`.
+ *   `jobs-processed-by-key`, `job-processed-by-key`, and the Target card's
+ *   `worker-target`, `worker-target-kind`, `worker-target-processor`,
+ *   `worker-target-predates`, `worker-target-differs` and
+ *   `worker-target-group`. A worker's buttons are in
+ *   `[role="group"][aria-label="Actions for worker <id>"]`, and its target
+ *   badge is the State cell's `.badge.worker-target`.
  * - **The refusal needs a view older than the worker.** The row offers only
  *   what the worker's state takes, so a 409 happens to a real user only when
  *   somebody else changed the worker after the page last read it. This host
@@ -89,6 +93,17 @@
  * - **The heartbeat's round trip is a tooltip, never a column**, in every
  *   worker table including the queue's panel: appended under the Heartbeat
  *   cell's ISO instant, and absent altogether on a worker reporting none.
+ * - **Where a worker runs is a badge, and absent says nothing.** Every
+ *   worker table puts a target badge in the State cell, after the state and
+ *   its conditions: "In process" for every worker here, since each runs a
+ *   function in its own process. A record written without `target` gets no
+ *   badge at all, never "In process", which is only the default. So a State
+ *   cell's whole text is not the state; the state is its first badge that is
+ *   not the target. The worker page's Target card states one target once,
+ *   lists each with its instances where they differ, and shows "—" with a
+ *   line saying so for an instance too old to report. This API does not set
+ *   `serialize.exposeProcessorFiles`, and these workers run no file, so no
+ *   File row appears.
  * - **The housekeeping note needs a worker that said no, not one that said
  *   nothing.** A queue's Workers panel says nobody runs the queue's
  *   housekeeping sweeps only where a live worker reports `sweeps: false` and
@@ -755,6 +770,106 @@ function cellTitle(id: string, header: string): string {
   })()`);
 }
 
+/** A worker row's State cell, read badge by badge (see {@link STATE_CELLS}). */
+interface StateCell {
+  /** The state badge's text: "Running", "Paused", "Stopping", …. */
+  state: string | null;
+  /** The badges after it that are not the target: "Change pending", "Not reporting". */
+  conditions: string[];
+  /**
+   * The target badge's whole text, its visually hidden "Runs in: " prefix
+   * included (what a screen reader hears), or `null` when the row shows none.
+   */
+  target: string | null;
+  /** The target badge's tooltip, or `null` without a badge. */
+  targetTitle: string | null;
+}
+
+/**
+ * Page-side: every worker row's State cell as `[id, StateCell]`.
+ *
+ * The cell holds several badges, so its whole text is not the state: the
+ * target badge sits in it too, after the others, with a visually hidden
+ * "Runs in: " that `textContent` includes. The UI marks the target badge with
+ * the class `worker-target` and gives the state badge no marker of its own
+ * (`StateCell` in `app/screens/workers/WorkerTable.tsx`), so the state is the
+ * cell's first badge that is not the target — which is how the UI's own test
+ * reads it (`__tests__/app/workers/target.test.tsx`).
+ */
+const STATE_CELLS = `[...document.querySelectorAll('tr[data-testid^="worker-row-"]')].map((row) => {
+  const headers = [...row.closest("table").querySelectorAll("thead th")].map((th) => th.textContent.trim());
+  const cell = row.children[headers.indexOf("State")];
+  const badges = cell ? [...cell.querySelectorAll(".badge:not(.worker-target)")].map((badge) => badge.textContent.trim()) : [];
+  const target = cell ? cell.querySelector(".badge.worker-target") : null;
+  return [row.dataset.testid.slice("worker-row-".length), {
+    state: badges[0] ?? null,
+    conditions: badges.slice(1),
+    target: target ? target.textContent : null,
+    targetTitle: target ? target.getAttribute("title") : null,
+  }];
+})`;
+
+/** A worker page's Target card, as {@link targetCard} reads it. */
+interface TargetCardView {
+  /** The note that the target comes from the code, not a setting. */
+  note: string | null;
+  /** The labels of its facts, in order ("Runs in", "Processor", …); empty for the mixed-targets table. */
+  labels: string[];
+  /** "Runs in": the kind in plain words, or "—" for an instance too old to say. */
+  kind: string | null;
+  /** "Processor": "Function" or "File". */
+  processor: string | null;
+  /** A custom target's name. */
+  name: string | null;
+  /** The processor file's path, only when the API sends it. */
+  file: string | null;
+  /** The line saying the instance predates target reporting. */
+  predates: string | null;
+  /** Whether it says the instances run different targets. */
+  differs: boolean;
+  /** The mixed-targets table's column headers. */
+  headers: string[];
+  /** One entry per target: `[Runs in, Processor, "N instance(s)", ids sorted]`, sorted by Runs in (code unit order, so "—" last). */
+  groups: [string, string, string, string[]][];
+}
+
+/**
+ * Page-side: the worker page's Target card (`data-testid="worker-target"`),
+ * once it shows one fact or the mixed-targets table.
+ */
+function targetCard(): string {
+  return poll(`(() => {
+    const card = document.querySelector('[data-testid="worker-target"]');
+    if (!card || !card.querySelector('[data-testid="worker-target-kind"], [data-testid="worker-target-differs"]')) return null;
+    const text = (id) => card.querySelector(\`[data-testid="\${id}"]\`)?.textContent.trim() ?? null;
+    return {
+      note: card.querySelector("p.muted")?.textContent.trim() ?? null,
+      labels: [...card.querySelectorAll(".kv-label")].map((label) => label.textContent.trim()),
+      kind: text("worker-target-kind"),
+      processor: text("worker-target-processor"),
+      name: text("worker-target-name"),
+      file: text("worker-target-file"),
+      predates: text("worker-target-predates"),
+      differs: card.querySelector('[data-testid="worker-target-differs"]') !== null,
+      headers: [...card.querySelectorAll("thead th")].map((th) => th.textContent.trim()),
+      groups: [...card.querySelectorAll('[data-testid="worker-target-group"]')].map((row) => {
+        const cells = [...row.children];
+        const instances = cells[cells.length - 1];
+        return [
+          cells[0].textContent.trim(),
+          cells[1].textContent.trim(),
+          instances.textContent.split(":")[0].trim(),
+          [...instances.querySelectorAll("code")].map((code) => code.textContent.trim()).sort(),
+        ];
+      }).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+    };
+  })()`);
+}
+
+/** What the Target card says above an in-process target's facts (`TARGET_FIXED_NOTE` in `app/screens/workers/target.ts`). */
+const TARGET_NOTE =
+  "Set in the worker's code when it was built; changing it is a redeploy, not a setting.";
+
 /** The units the UI steps a size through, each 1024× the one before (`app/format.ts`). */
 const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const;
 
@@ -869,10 +984,13 @@ try {
     await view.evaluate<[string, Record<string, string>][]>(WORKER_ROWS),
   );
   const apiRecord = every.find((worker) => worker.id === ids.apiEmails)!;
+  const stateCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
   checkEqual(
     "api.emails.send's row: Paused, its Completed and Failed as the API counts them",
     [
-      rows[ids.apiEmails]?.State,
+      stateCells[ids.apiEmails]?.state,
       rows[ids.apiEmails]?.Completed,
       rows[ids.apiEmails]?.Failed,
     ],
@@ -882,6 +1000,28 @@ try {
     "which are its own work: 3 completed, 1 failed attempt",
     [apiRecord.completed, apiRecord.failed],
     [3, 1],
+  );
+  // Where each worker's attempts run: all five run a function in their own
+  // process (the replica too — its process is a child of this one, but its
+  // worker runs in process within it), so each reports `in-process`, and the
+  // badge beside the state says so in plain words.
+  checkEqual(
+    "each row's target badge says where the API reports its attempts run: In process, all five",
+    Object.values(ids).map((id) => [
+      every.find((worker) => worker.id === id)?.target?.kind,
+      stateCells[id]?.target,
+    ]),
+    Object.values(ids).map(() => ["in-process", "Runs in: In process"]),
+  );
+  checkEqual(
+    "its tooltip says it is how the worker was built, not a setting; and it is a badge in the State cell, not a column of its own",
+    [
+      stateCells[ids.apiEmails]?.targetTitle?.includes("not a setting"),
+      (await view.evaluate<string[] | null>(headersOf(ids.apiEmails)))?.some(
+        (header) => header.startsWith("Runs in"),
+      ),
+    ],
+    [true, false],
   );
   checkEqual(
     "each row links its key to the worker page; both mailer instances to the same one",
@@ -1326,6 +1466,35 @@ try {
       [hostname(), String(replica.pid), "PauseStop…Settings…"],
     ],
   );
+  const instanceCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
+  checkEqual(
+    "the Instances table carries the target badge too: both run in process",
+    [ids.mailer, ids.replica].map((id) => instanceCells[id]?.target),
+    ["Runs in: In process", "Runs in: In process"],
+  );
+  // One target for every instance, so the card states it once. The File row
+  // is absent: this API is built without `serialize.exposeProcessorFiles`,
+  // and these workers run a function, so there is no path to send either
+  // way. The row appearing only when the API sends it is the UI's own
+  // integration test's to show (`worker-target.integration.test.ts`).
+  checkEqual(
+    "the Target card: in process, a function, no name, no file, and a note that it is set in the code, not a setting",
+    await view.evaluate<TargetCardView | null>(targetCard()),
+    {
+      note: TARGET_NOTE,
+      labels: ["Runs in", "Processor"],
+      kind: "In process",
+      processor: "Function",
+      name: null,
+      file: null,
+      predates: null,
+      differs: false,
+      headers: [],
+      groups: [],
+    },
+  );
 
   /** Page-side: a setting's row as `[running with, code asks for, source]`. */
   const setting = (name: string) =>
@@ -1454,6 +1623,16 @@ try {
         ["Pause", "Stop…", "Settings…"],
       ],
     ],
+  );
+  const panelCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
+  checkEqual(
+    "and a queue's Workers panel carries the target badge, as the Workers page does",
+    [ids.apiEmails, ids.mailer, ids.replica].map(
+      (id) => panelCells[id]?.target,
+    ),
+    ["Runs in: In process", "Runs in: In process", "Runs in: In process"],
   );
   check(
     "clicking api.emails.send's link opens its worker page",
@@ -1752,8 +1931,9 @@ try {
   step('A worker from before the fields: "—" rather than 0 B, and no column');
 
   /**
-   * A heartbeat record as a worker older than these two fields wrote it: every
-   * field such a worker reported, and neither `rssBytes` nor `heartbeatRttMs`.
+   * A heartbeat record as a worker older than these fields wrote it: every
+   * field such a worker reported, and none of `rssBytes`, `heartbeatRttMs`
+   * or `target`.
    * Written straight to the driver, because no current worker can write one.
    */
   function olderRecord(options: {
@@ -1829,6 +2009,51 @@ try {
     ),
     ["—", true],
   );
+  // The target, whose absence means "too old to say", never "in process":
+  // the older instance has no badge at all, while the real instance beside
+  // it in the same table has its own.
+  const olderCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
+  checkEqual(
+    "no target reported, no badge — never In process, which is only the default; the live instance beside it still says In process",
+    [
+      olderDto !== undefined && "target" in olderDto,
+      olderCells[olderInstance.id]?.target,
+      Object.values(olderRows[olderInstance.id] ?? {}).some((cell) =>
+        cell.includes("In process"),
+      ),
+      olderCells[ids.mailer]?.target,
+    ],
+    [false, null, false, "Runs in: In process"],
+  );
+  // Two targets among the key's instances — the two that report one, and the
+  // one that predates reporting — so the card lists each with its instances
+  // rather than the first instance's alone.
+  checkEqual(
+    "the Target card, where the instances differ: one row per target, with the instances reporting each, and a dash for the one too old to say",
+    await view.evaluate<TargetCardView | null>(targetCard()),
+    {
+      note: TARGET_NOTE,
+      labels: [],
+      kind: null,
+      processor: null,
+      name: null,
+      file: null,
+      predates: null,
+      differs: true,
+      headers: ["Runs in", "Processor", "Instances"],
+      groups: [
+        [
+          "In process",
+          "Function",
+          "2 instances",
+          [ids.mailer, ids.replica].sort(),
+        ],
+        ["—", "—", "1 instance", [olderInstance.id]],
+      ],
+    },
+  );
   const dashTitle =
     (
       await view.evaluate<{ title: string | null } | null>(
@@ -1860,6 +2085,32 @@ try {
     headersOf(olderAlone.id),
   );
   show("a table of older workers only, its columns", aloneHeaders);
+  const aloneCells = Object.fromEntries(
+    await view.evaluate<[string, StateCell][]>(STATE_CELLS),
+  );
+  checkEqual(
+    "its one instance predates target reporting: no badge, and the Target card says so with a dash, never In process",
+    [
+      aloneCells[olderAlone.id]?.target,
+      await view.evaluate<TargetCardView | null>(targetCard()),
+    ],
+    [
+      null,
+      {
+        note: TARGET_NOTE,
+        labels: ["Runs in"],
+        kind: "—",
+        processor: null,
+        name: null,
+        file: null,
+        predates:
+          "This worker predates target reporting, so it does not say where its attempts run.",
+        differs: false,
+        headers: [],
+        groups: [],
+      },
+    ],
+  );
   check(
     "a table whose every worker reports none has no Memory column at all, though the page asks for one",
     aloneHeaders !== null &&
@@ -2698,12 +2949,14 @@ try {
     (await record(ids.exports))?.control?.pending,
     true,
   );
+  // The State cell's badges bar the target (`.worker-target`), which sits
+  // after them and says nothing about the worker's condition.
   checkEqual(
     "the instance row: Stopping, and Change pending",
     await view.evaluate<unknown>(
       poll(`(() => {
         const row = document.querySelector('[data-testid="worker-row-${ids.exports}"]');
-        const badges = row ? [...row.querySelectorAll(".badge")].map((badge) => badge.textContent.trim()) : [];
+        const badges = row ? [...row.querySelectorAll(".badge:not(.worker-target)")].map((badge) => badge.textContent.trim()) : [];
         return badges.includes("Stopping") ? badges : null;
       })()`),
     ),
