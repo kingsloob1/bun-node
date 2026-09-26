@@ -96,7 +96,11 @@ describe("the target badge in a worker table", () => {
     }
     // It sits in the State cell, after the state itself.
     const cell = badgeOf(list, "w-child-process")!.closest("td")!;
-    expect(cell.querySelector(".badge")!.textContent).toBe("Running");
+    const badges = [...cell.querySelectorAll(".badge")];
+    expect(badges.at(-1)).toBe(badgeOf(list, "w-child-process")!);
+    expect(within(cell).getByTestId("worker-state").textContent).toBe(
+      "Running",
+    );
     // Never a runner's vocabulary.
     expect(list.textContent).not.toMatch(/\bspawn\b/i);
   });
@@ -144,6 +148,29 @@ describe("the target badge in a worker table", () => {
     expect(badgeOf(list, "w-new")!.textContent).toBe("Runs in: Worker thread");
   });
 
+  it("leaves the state badge findable by name, holding the state alone, beside every other badge", async () => {
+    const now = Date.now();
+    const list = await openList([
+      workerFixture({
+        id: "w-busy",
+        state: "paused",
+        paused: true,
+        control: { ...workerFixture().control!, pending: true },
+        stale: true,
+        expiresAt: now - 1_000,
+        target: target("child-process"),
+      }),
+    ]);
+    const row = await within(list).findByTestId("worker-row-w-busy");
+    // Four badges in one cell: the state, Change pending, Not reporting and
+    // the target. The state is the one named, and its text is the state only.
+    expect(row.querySelectorAll("td .badge")).toHaveLength(4);
+    const states = within(row).getAllByTestId("worker-state");
+    expect(states).toHaveLength(1);
+    expect(states[0]!.textContent).toBe("Paused");
+    expect(states[0]!.classList.contains("worker-target")).toBe(false);
+  });
+
   it("appears in a worker page's Instances table too", async () => {
     await openWorkerPage([
       workerFixture({ id: "api.emails.a1", target: target("child-process") }),
@@ -152,6 +179,11 @@ describe("the target badge in a worker table", () => {
     expect(badgeOf(instances, "api.emails.a1")!.textContent).toBe(
       "Runs in: Child process",
     );
+    expect(
+      within(
+        within(instances).getByTestId("worker-row-api.emails.a1"),
+      ).getByTestId("worker-state").textContent,
+    ).toBe("Running");
   });
 });
 

@@ -18,6 +18,11 @@ export interface BadgeProps {
   title?: string;
   /** Extra class names. */
   className?: string;
+  /**
+   * `data-testid` for the badge, when a test or an example must find this one
+   * among several — by what it is, rather than by its position.
+   */
+  testId?: string;
   /** The text. */
   children: ReactNode;
 }
@@ -27,12 +32,14 @@ export function Badge({
   tone = "neutral",
   title,
   className,
+  testId,
   children,
 }: BadgeProps) {
   return (
     <span
       className={cx("badge", `badge-${tone}`, className)}
       title={title}
+      data-testid={testId}
     >
       {children}
     </span>
