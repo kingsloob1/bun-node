@@ -7,6 +7,7 @@ import type {
   Overview,
   Permissions,
   ProblemDto,
+  QueueDemandDto,
   QueueList,
   QueueThroughput,
   RunnersAnalyticsDto,
@@ -450,5 +451,30 @@ export function workersAnalyticsFixture(
           })),
         }
       : {}),
+  };
+}
+
+/**
+ * `GET /queues/:queue/demand`: an exact, uncapped reading of an unpaused
+ * queue with work to claim and one delayed job still ahead.
+ */
+export function demandFixture(
+  overrides: Partial<QueueDemandDto> = {},
+): QueueDemandDto {
+  return {
+    queue: "emails",
+    at: Date.now() - 2_000,
+    paused: false,
+    waiting: 1200,
+    dueNow: 3,
+    stalled: 1,
+    active: 5,
+    workers: 2,
+    nextDueAt: Date.now() + 90_000,
+    demand: 1204,
+    outstanding: 1208,
+    capped: false,
+    exact: true,
+    ...overrides,
   };
 }

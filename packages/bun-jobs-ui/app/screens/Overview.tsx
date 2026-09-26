@@ -7,11 +7,12 @@ import type {
   JobsBucketDto,
   JobsTotalsDto,
   Overview,
+  QueueDemandDto,
   QueueSummaryDto,
 } from "../api/types";
 import type { SectionProps } from "./overview/sections";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useDeferredValue, useId } from "react";
+import { useDeferredValue, useId, useMemo } from "react";
 import { AnalyticsError } from "../analytics/AnalyticsError";
 import { RangeCaption } from "../analytics/RangeCaption";
 import { RangePicker } from "../analytics/RangePicker";
@@ -25,6 +26,7 @@ import {
   isRangeNotRetained,
 } from "../api/analytics";
 import { JOB_STATES } from "../api/contract";
+import { demandKeys, listQueueDemand } from "../api/demand";
 import { queryKeys } from "../api/queryKeys";
 import { Badge } from "../components/Badge";
 import { Card } from "../components/Card";
@@ -50,6 +52,7 @@ import { useQueryParam } from "../routing";
 import { AddedByStateGroup, RunnersSection, WorkersSection } from "./lazy";
 import { useAnalyticsGate } from "./overview/gate";
 import { useOverviewLive } from "./queues/live";
+import { demandFigureHint, formatDemandFigure } from "./queues/panels/demand";
 import "./overview/sections.css";
 
 /** Most per-queue analytics requests in flight at once, however many rows are visible. */
@@ -324,10 +327,32 @@ export interface QueueTableProps {
   sparklines: boolean;
   /** The range each sparkline covers; required when `sparklines` is on. */
   range?: TimeRange;
+  /**
+   * The Demand column's readings, by queue name. Absent: no column
+   * (`features.demand` off). `readings` is `undefined` while loading.
+   */
+  demand?: QueueDemandColumn;
 }
 
+/** What the Overview queue table's Demand column shows. */
+export interface QueueDemandColumn {
+  /** Each row's reading, by queue name, or `undefined` while the read is in flight. */
+  readings: ReadonlyMap<string, QueueDemandDto> | undefined;
+  /** The read's failure, if it failed. */
+  error: Error | null;
+}
+
+/** The Demand column header's tooltip. */
+const DEMAND_COLUMN_HINT =
+  "Work a worker could claim now: waiting, due now and stalled; 0 while the queue is paused. What a scaler polls. ≥ marks a lower bound, ≈ an approximate figure. Open a queue's Demand panel for the rest.";
+
 /** Queues with their per-state counts. */
-export function QueueTable({ items, sparklines, range }: QueueTableProps) {
+export function QueueTable({
+  items,
+  sparklines,
+  range,
+  demand,
+}: QueueTableProps) {
   const withSparklines = sparklines && range !== undefined;
   return (
     <Table label="Queues">
@@ -349,6 +374,15 @@ export function QueueTable({ items, sparklines, range }: QueueTableProps) {
           >
             Total
           </th>
+          {demand && (
+            <th
+              scope="col"
+              className="num"
+              title={DEMAND_COLUMN_HINT}
+            >
+              Demand
+            </th>
+          )}
           {withSparklines && <th scope="col">Throughput</th>}
         </tr>
       </thead>
@@ -382,6 +416,12 @@ export function QueueTable({ items, sparklines, range }: QueueTableProps) {
               />
             ))}
             <td className="num total">{formatNumber(queue.total)}</td>
+            {demand && (
+              <DemandCell
+                queue={queue.name}
+                demand={demand}
+              />
+            )}
             {withSparklines && (
               <td>
                 <QueueSparkline
@@ -394,6 +434,74 @@ export function QueueTable({ items, sparklines, range }: QueueTableProps) {
         ))}
       </tbody>
     </Table>
+  );
+}
+
+/**
+ * A row's demand, linked to the queue's Demand panel: the figure as its
+ * answer qualifies it (≥, ≈), "—" for a queue the answer left out (the API
+ * omits one the caller cannot read, never errors), and a muted word while
+ * loading or after a failure.
+ */
+function DemandCell({
+  queue,
+  demand,
+}: {
+  /** The row's queue. */
+  queue: string;
+  /** The column's readings. */
+  demand: QueueDemandColumn;
+}) {
+  if (demand.readings === undefined) {
+    return (
+      <td className="num demand">
+        {demand.error ? (
+          <span
+            className="muted"
+            title={demand.error.message}
+          >
+            unavailable
+          </span>
+        ) : (
+          <span
+            className="muted"
+            aria-label="Loading demand"
+          >
+            …
+          </span>
+        )}
+      </td>
+    );
+  }
+  const reading = demand.readings.get(queue);
+  if (reading === undefined) {
+    return (
+      <td
+        className="num demand muted"
+        title="The demand read did not include this queue."
+      >
+        —
+      </td>
+    );
+  }
+  const hint = [
+    reading.paused ? "Paused: a paused queue demands nothing." : undefined,
+    demandFigureHint(reading, "demand"),
+  ]
+    .filter((part) => part !== undefined)
+    .join(" ");
+  return (
+    <td
+      className={`num demand${reading.demand === 0 ? " zero" : ""}`}
+      data-testid={`queue-demand-${queue}`}
+    >
+      <Link
+        to={`/queues/${encodeURIComponent(queue)}?panel=demand`}
+        title={hint === "" ? undefined : hint}
+      >
+        {formatDemandFigure(reading, "demand")}
+      </Link>
+    </td>
   );
 }
 
@@ -436,6 +544,29 @@ function QueuesCard({ range, picker }: SectionProps) {
   // truncated), so the page is cut here rather than asked for: the filter, the
   // poll and the permissions are untouched.
   const page = useClientPage(queues.data?.items ?? [], QUEUE_PAGE_SIZE);
+  // One `GET /demand` for the page on screen, not per row and not for every
+  // queue: turning a page reads that page's demand.
+  const demandOn = useFeature("demand");
+  const pageNames = useMemo(
+    () => page.rows.map((queue) => queue.name),
+    [page.rows],
+  );
+  const demand = useQuery({
+    queryKey: demandKeys.list(pageNames),
+    queryFn: ({ signal }) => listQueueDemand(api, pageNames, signal),
+    enabled: demandOn && pageNames.length > 0,
+    refetchInterval,
+    placeholderData: keepPreviousData,
+  });
+  const demandReadings = useMemo(
+    () =>
+      demand.data === undefined
+        ? undefined
+        : new Map(
+            demand.data.queues.map((reading) => [reading.queue, reading]),
+          ),
+    [demand.data],
+  );
 
   return (
     <Card
@@ -491,6 +622,11 @@ function QueuesCard({ range, picker }: SectionProps) {
             items={page.rows}
             sparklines={throughput && canMetrics && analytics !== null}
             range={range}
+            demand={
+              demandOn
+                ? { readings: demandReadings, error: demand.error }
+                : undefined
+            }
           />
           {page.paged && (
             <Pager
