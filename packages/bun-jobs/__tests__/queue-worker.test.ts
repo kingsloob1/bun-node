@@ -239,17 +239,22 @@ describe("BunQueueWorker: failure", () => {
 
   it("aborts an attempt that outlives its timeout", async () => {
     let aborted = false;
+    let settled = false;
 
     const { queue, worker } = makePair(async (_job, ctx) => {
-      const until = Date.now() + 2000;
-      while (Date.now() < until) {
-        if (ctx.signal.aborted) {
-          aborted = true;
-          throw new Error("aborted");
+      try {
+        const until = Date.now() + 2000;
+        while (Date.now() < until) {
+          if (ctx.signal.aborted) {
+            aborted = true;
+            throw new Error("aborted");
+          }
+          await Bun.sleep(5);
         }
-        await Bun.sleep(5);
+        return null;
+      } finally {
+        settled = true;
       }
-      return null;
     });
 
     void worker.run();
@@ -259,6 +264,12 @@ describe("BunQueueWorker: failure", () => {
       timeout: 5000,
     });
 
+    // The worker records a timed-out attempt without waiting for the run —
+    // the point of a deadline is not to wait — so `dead` can be visible while
+    // the processor is still asleep between its checks (#171). Let it finish
+    // before asking what it saw: aborted, it stops at once; never aborted, it
+    // runs out its two seconds and the assertion below says so.
+    await waitFor(() => settled, { timeout: 3000 });
     expect(aborted).toBe(true);
     expect((await queue.getJob(added.id))?.failedReason?.name).toBe(
       "JobTimeoutError",
