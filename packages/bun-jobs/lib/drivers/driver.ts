@@ -1532,7 +1532,11 @@ export interface WorkerInfo {
   pid: number;
   /** How many jobs it runs at once. */
   concurrency: number;
-  /** How many jobs it was running at its last report. */
+  /**
+   * How many attempts it was running at its last report. Counted per attempt,
+   * like its concurrency: a job whose abandoned attempt is still running
+   * beside its recovered one counts twice, because both hold a slot.
+   */
   active: number;
   /**
    * Whether it was locally paused at its last report. Kept for compatibility

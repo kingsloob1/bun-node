@@ -324,6 +324,34 @@ function heldLock(record: JobRecord): string {
   return record.lockToken ?? "";
 }
 
+/**
+ * One claim of one job, running on this worker — the key of every piece of
+ * per-attempt state the worker keeps (`#active`, `#aborts`, `#heartbeats`).
+ *
+ * **Keyed per attempt, never by job id.** The same worker can hold two
+ * attempts at one job: at a concurrency above one, its own stalled sweep can
+ * hand back a job whose abandoned attempt is still running, and a free slot
+ * claims it again. Keyed by id, the second attempt's entries overwrote the
+ * first's, and the first's cleanup then deleted the second's — clearing its
+ * heartbeat (so it stalled again and died), dropping it from the in-flight
+ * count (so the worker ran more than its concurrency), from what `close()`
+ * waits for, and from what a forced close aborts; and a limiter charge was
+ * released once for two attempts. An object per claimed record cannot
+ * collide, even for a batch that shares one lock token.
+ */
+interface Attempt {
+  /** The job as this claim took it; its `lockToken` is this claim's own. */
+  readonly record: JobRecord;
+  /**
+   * Whether this claim was charged to a limiter reservation, so that its end
+   * is exactly one release — and cleared by that release. A job claimed while
+   * the queue had no limits was never counted, and releasing it anyway took
+   * it off a lease still holding jobs that were, so limits set again later
+   * under-counted this worker and admitted more than their cap (B7).
+   */
+  reserved: boolean;
+}
+
 /** How a stored `completed` or `dead` job ended. */
 function settledOutcome(record: JobRecord): SettledOutcome {
   return record.state === "completed"
@@ -666,14 +694,6 @@ export class BunQueueWorker<
   readonly #workerRef: { key: string; host: string; pid: number };
   readonly #limiter: QueueLimiter | undefined;
   /**
-   * Ids of the running jobs claimed under a limiter reservation — the only
-   * ones whose end is a release. A job claimed while the queue had no limits
-   * was never counted, and releasing it anyway took it off a lease still
-   * holding jobs that were counted, so limits set again later under-counted
-   * this worker and admitted more than their cap (B7).
-   */
-  readonly #reservedIds = new Set<string>();
-  /**
    * The queue's stored job defaults as this worker last read them — read
    * only to build a repeat series' next occurrence, trusted for
    * `jobDefaultsRefreshInterval`.
@@ -745,16 +765,20 @@ export class BunQueueWorker<
    * wait in a row: the first is usually a job that arrived a moment ago.
    */
   #instantIdle = false;
-  /** Jobs in flight, by id. */
-  readonly #active = new Map<string, Promise<void>>();
+  /**
+   * Attempts in flight, by {@link Attempt} — not by job id, so two attempts
+   * at the same job both count against the concurrency and `close()` waits
+   * for both.
+   */
+  readonly #active = new Map<Attempt, Promise<void>>();
   /**
    * Fired each time a running job leaves `#active`, so a full or limited
    * worker waits on one signal rather than on every running job's promise —
    * those left a reaction per wait on each still-running job (B1).
    */
   readonly #slotFreed = new Pulse();
-  /** Controllers for the jobs in flight, so they can be aborted. */
-  readonly #aborts = new Map<string, AbortController>();
+  /** Controllers for the attempts in flight, so they can be aborted. */
+  readonly #aborts = new Map<Attempt, AbortController>();
   /** Completion writes still in flight, so `close()` does not abandon one. */
   readonly #settling = new Set<Promise<void>>();
   /** Publishes still in flight, which `close()` waits for. */
@@ -866,8 +890,8 @@ export class BunQueueWorker<
    */
   #nextDue: { at: number | null; epoch: number } | undefined;
   /**
-   * Each running job's lock renewal, by job id: the timer, and what it needs
-   * to renew with.
+   * Each running attempt's lock renewal, by {@link Attempt}: the timer, and
+   * what it needs to renew with.
    *
    * The record and the controller are kept beside the timer because a
    * configuration change has to re-arm every renewal in flight — at the new
@@ -875,7 +899,7 @@ export class BunQueueWorker<
    * only do that if it can call `#heartbeat` for a job it did not start.
    */
   readonly #heartbeats = new Map<
-    string,
+    Attempt,
     {
       /** The renewal timer. */
       timer: ReturnType<typeof setInterval>;
@@ -1237,7 +1261,12 @@ export class BunQueueWorker<
     }
   }
 
-  /** How many jobs are in flight. */
+  /**
+   * How many attempts are in flight, which is what the concurrency caps.
+   * Usually one per job; two for a job whose abandoned attempt — its lock
+   * lapsed and the stalled sweep handed it back — is still running beside the
+   * attempt that claimed it again, since both hold a slot.
+   */
   get activeCount(): number {
     return this.#active.size;
   }
@@ -2198,17 +2227,14 @@ export class BunQueueWorker<
         }
       }
 
-      if (reserved) {
-        this.#reservedIds.add(record.id);
-      }
-
-      const running = this.#process(record).finally(() => {
-        this.#active.delete(record.id);
-        this.#aborts.delete(record.id);
+      const attempt: Attempt = { record, reserved };
+      const running = this.#process(attempt).finally(() => {
+        this.#active.delete(attempt);
+        this.#aborts.delete(attempt);
         this.#slotFreed.notify();
       });
 
-      this.#active.set(record.id, running);
+      this.#active.set(attempt, running);
     }
 
     return records.length;
@@ -2328,8 +2354,9 @@ export class BunQueueWorker<
     return known.at !== null && known.at <= now ? undefined : known.at;
   }
 
-  /** Runs one job and records how it ended. */
-  async #process(record: JobRecord): Promise<void> {
+  /** Runs one attempt at a job and records how it ended. */
+  async #process(attempt: Attempt): Promise<void> {
+    const { record } = attempt;
     /** The reason the processor gave `job.fail()`, which settles the attempt. */
     let failedWith: UnrecoverableJobError | undefined;
     /** Whether the processor has returned or thrown, so `fail()` is too late. */
@@ -2367,13 +2394,13 @@ export class BunQueueWorker<
       },
       onEvent: async (event) => await this.#onJobEvent(event),
     });
-    this.#aborts.set(record.id, controller);
+    this.#aborts.set(attempt, controller);
 
     const heartbeat = setInterval(() => {
       void this.#heartbeat(record, controller);
     }, this.#options.heartbeatInterval);
     heartbeat.unref?.();
-    this.#heartbeats.set(record.id, { timer: heartbeat, record, controller });
+    this.#heartbeats.set(attempt, { timer: heartbeat, record, controller });
 
     // Built on first use: most processors never log, and a child logger is an
     // object and a copy of its bindings for every job.
@@ -2463,9 +2490,10 @@ export class BunQueueWorker<
       // The map's timer, not `heartbeat`: a configuration change may have
       // replaced it, and clearing the one this call created would leave the
       // replacement renewing a lock for a job that has finished.
-      clearInterval(this.#heartbeats.get(record.id)?.timer ?? heartbeat);
-      this.#heartbeats.delete(record.id);
-      if (this.#reservedIds.delete(record.id)) {
+      clearInterval(this.#heartbeats.get(attempt)?.timer ?? heartbeat);
+      this.#heartbeats.delete(attempt);
+      if (attempt.reserved) {
+        attempt.reserved = false;
         this.#limiter?.release(record.name);
       }
     }
@@ -4210,14 +4238,14 @@ export class BunQueueWorker<
    * `lockDuration` can pass before the new timer's first tick.
    */
   #rearmJobHeartbeats(): void {
-    for (const [id, running] of this.#heartbeats) {
+    for (const [attempt, running] of this.#heartbeats) {
       clearInterval(running.timer);
 
       const timer = setInterval(() => {
         void this.#heartbeat(running.record, running.controller);
       }, this.#options.heartbeatInterval);
       timer.unref?.();
-      this.#heartbeats.set(id, { ...running, timer });
+      this.#heartbeats.set(attempt, { ...running, timer });
 
       void this.#heartbeat(running.record, running.controller);
     }
