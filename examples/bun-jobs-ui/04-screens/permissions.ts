@@ -1748,6 +1748,32 @@ const GATES = [
       workerTableMemory === true &&
       workerTable?.some((worker) => worker.rssBytes !== undefined) === true,
   },
+  {
+    // A badge in the State cell of every worker table — the Workers page, a
+    // queue's Workers panel and a worker page's Instances table — so, unlike
+    // the Memory column, no table opts out, and it is the row's own worker
+    // that decides, like "Change pending" beside it. **Absent is not
+    // "in-process"**: a worker too old to report `target` has said nothing,
+    // so it gets no badge at all, never the default's.
+    name: "worker table: target badge",
+    row: "Workers table target badge (the Workers page, a queue's Workers panel and a worker page's Instances table)",
+    map: "worker",
+    when: ({ worker }) => worker?.target !== undefined,
+  },
+  {
+    // Rendered with the Instances card, from the same one listing, so it has
+    // exactly the Instances' needs on the queue's answer — restated here and
+    // held equal to them by the sameAs check. No `when`: with no live
+    // instance it still shows, saying the target is known once one reports;
+    // an instance too old to report shows "—", which `06-browser/workers.ts`
+    // asserts on the real page.
+    name: "worker page: Target card",
+    row: "Worker page Target card",
+    map: "queue",
+    on: "worker page: route",
+    sameAs: "worker page: instances",
+    reads: ["workers.list"],
+  },
   // The three worker tables page at their own sizes, and each pager belongs to
   // the table it pages, not to the screen around it.
   {
@@ -3810,6 +3836,7 @@ checkEqual("audit: reads only", onMaps(gates.audit, "boot", "queue"), {
   "panel=job-defaults": true,
   "job: Processed by": true,
   "worker page: instances": true,
+  "worker page: Target card": true,
   "worker page: throughput and busyness": true,
   "worker page: jobs": true,
 });
@@ -4912,6 +4939,45 @@ checkEqual(
   ],
   [true, false, false],
 );
+// The target badge: the row's own worker decides, on every worker table.
+// Both real workers run a function in their own process, so both report
+// `in-process`; the worker too old to say is the mailer's own DTO with the
+// field taken out, the way the Memory column's case is made above.
+checkEqual(
+  "both report where their attempts run: in process, a function",
+  [mailer, auditor].map((worker) => worker.target),
+  [
+    { kind: "in-process", processor: "function" },
+    { kind: "in-process", processor: "function" },
+  ],
+);
+/** `worker` as one too old to report a target wrote it: no `target` at all. */
+function withoutTarget(worker: WorkerDto): WorkerDto {
+  const { target: _target, ...rest } = worker;
+  return rest;
+}
+/**
+ * The badge's gate on each worker table, for `mailer` and `auditor` as `make`
+ * makes them: the Workers page (untargeted map), mail's Workers panel, audit's
+ * (read-only) Workers panel, and a worker page's Instances table.
+ */
+function targetBadge(make: (worker: WorkerDto) => WorkerDto): boolean[] {
+  const [mail, audit] = [make(mailer), make(auditor)];
+  return [
+    workerRow(mail, boot, [mail, audit], { workerTableMemory: true }),
+    workerRow(mail, maps.mail!, [mail], { workerTableQueuePanel: true }),
+    workerRow(audit, maps.audit!, [audit], { workerTableQueuePanel: true }),
+    workerRow(mail, maps.mail!, [mail], { workerTableMemory: true }),
+  ].map((set) => set["worker table: target badge"]);
+}
+checkEqual(
+  "the target badge: on all three worker tables for a worker reporting target, read-only audit's panel included; on none of them for one too old to report it (absent is not in-process)",
+  [targetBadge((worker) => worker), targetBadge(withoutTarget)],
+  [
+    [true, true, true, true],
+    [false, false, false, false],
+  ],
+);
 // The housekeeping note, on a queue's Workers panel. Both workers here take
 // part in housekeeping (`maintenance` defaults to on), so the panel is quiet;
 // the cases that matter are derived from their real DTOs, the way the Memory
@@ -5137,6 +5203,39 @@ checkEqual(
     await workerPage("payroll", "anyone"),
   ],
   [undefined, [true, false, true, false, false, false, false, false, false]],
+);
+
+/** A worker page's Instances card and its Target card, in that order. */
+async function instancesAndTarget(
+  queue: string,
+  key: string,
+): Promise<boolean[]> {
+  const set = screenGates({
+    meta,
+    sections,
+    boot,
+    queue: maps[queue]!,
+    workerPage: await workerPageOf(queue, key),
+  });
+  return [set["worker page: instances"], set["worker page: Target card"]];
+}
+checkEqual(
+  "the Target card: wherever the Instances card is, a key with no live instance included (it says the target is known once one reports), and hidden with it on payroll",
+  [
+    await instancesAndTarget("mail", "mailer"),
+    await instancesAndTarget("audit", "auditor"),
+    await instancesAndTarget("payroll", "anyone"),
+    [
+      (await workerPageOf("mail", "nobody-runs-this"))?.instances.length,
+      ...(await instancesAndTarget("mail", "nobody-runs-this")),
+    ],
+  ],
+  [
+    [true, true],
+    [true, true],
+    [false, false],
+    [0, true, true],
+  ],
 );
 
 // An override stored for a key no worker carries now: a worker page with no
