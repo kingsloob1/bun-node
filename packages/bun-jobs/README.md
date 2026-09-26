@@ -989,6 +989,18 @@ Example:
   safe to await in a `SIGTERM` handler. A `close()` that lands while `run()`
   is still connecting ends the startup there: nothing is armed, no `ready` is
   emitted, and `run()` resolves.
+- `worker.close({ force: true })` while a graceful `close()` is under way
+  **escalates** it — a second `SIGTERM`, or a shutdown's backstop. From then
+  on it is a forced close at whatever step it had reached: jobs still running
+  are aborted, the target is closed with `{ force: true }` (a built-in
+  `child-process` or `worker-thread` target kills its runs at once, even in
+  the middle of its graceful close, instead of at the end of the 4000 ms
+  grace), and nothing a forced close would not wait for is waited for. Both
+  calls resolve once the close has finished; neither rejects because a
+  graceful step was cut short. A force during a forced close, and a `close()`
+  without `force` during any close, change nothing, and also resolve once the
+  close has finished — on a worker that never ran as well. A later call's
+  `timeout` is ignored: `force` is the way to cut a graceful close short.
 - `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
   claiming and running its background passes — liveness and housekeeping
   alike — drains its jobs in flight, and keeps
@@ -2555,7 +2567,11 @@ export const worker = new BunQueueWorker("renders", renderFrame, {
 - **`close()` is optional and bounded.** It is called once from
   `worker.close()`, after the attempts have settled or been abandoned; one that
   has not returned after 5 seconds (`DEFAULT_CLOSE_TIMEOUT`, the built-in
-  kinds' `closeTimeout`) is logged as a warning and left behind.
+  kinds' `closeTimeout`) is logged as a warning and left behind. The one
+  exception to "once": a `worker.close({ force: true })` that escalates a
+  graceful close while its `close()` is still pending calls it again, with
+  `{ force: true }`, and stops waiting for the first call — whose result,
+  rejection included, is dropped.
 - `name` (1 to 64 characters) is what the heartbeat record reports as
   `target.name`, with `kind: "custom"`.
 
