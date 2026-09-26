@@ -256,11 +256,11 @@ describe("a runner child's own arguments never read as a summon", () => {
     options: Partial<BunRunnerOptions<any>>;
   }[] = [
     {
-      mode: "spawn",
+      mode: "child-process",
       options: { spawn: { args: [`${SUMMON_ARGS.id}=attempt-1`] } },
     },
     {
-      mode: "worker",
+      mode: "worker-thread",
       options: { worker: { argv: [`${SUMMON_ARGS.id}=attempt-1`] } },
     },
   ];
