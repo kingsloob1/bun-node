@@ -139,6 +139,10 @@ function heartbeatHint(worker: WorkerDto): string | undefined {
  * present-or-nothing rule, and a badge costs a queue's narrow Workers panel no
  * column. It sits after them, in the neutral tone, and its tooltip says it is
  * how the worker was built, so it does not read as a condition.
+ *
+ * The state badge carries `data-testid="worker-state"`, so a test or example
+ * reads the state by name. Picking it by position would silently read
+ * whichever badge a later change put first.
  */
 function StateCell({ worker }: { worker: WorkerDto }) {
   const badge = STATE_BADGE[workerState(worker)];
@@ -147,6 +151,7 @@ function StateCell({ worker }: { worker: WorkerDto }) {
       <Badge
         tone={badge.tone}
         title={badge.hint}
+        testId="worker-state"
       >
         {badge.label}
       </Badge>{" "}
