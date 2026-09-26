@@ -867,6 +867,13 @@ export class BunQueueWorker<
   #running = false;
   /** Whether `close()` has been called. */
   #closing = false;
+  /**
+   * Whether `close()` has closed the driver this worker owns. Read by a
+   * `run()` that the close overtook during startup: a forced close does not
+   * wait for it, so the driver may have been closed before a connect that
+   * was already under way opened it again.
+   */
+  #driverClosed = false;
   /** Whether this worker is locally paused. */
   #paused = false;
   /** Resolves when the claim loop has stopped. */
@@ -1379,10 +1386,21 @@ export class BunQueueWorker<
   /**
    * Consumes until closed. Resolves when the loop has stopped and every job
    * in flight has settled, so a supervising process can simply await it.
+   *
+   * A `close()` that lands while this is still starting — connecting,
+   * creating the queue, reading its control entries — ends it there, and it
+   * resolves: nothing is armed, no `ready` is emitted, and the process is not
+   * held. On a worker already closed it resolves at once and does nothing: a
+   * closed worker is not restarted.
    */
   async run(): Promise<void> {
     if (this.#running) {
       return await this.#stopped.promise;
+    }
+    // A closed worker stays closed (`#closing` is never reset), so running it
+    // again would only open a connection for the startup checks to abandon.
+    if (this.#closing) {
+      return;
     }
 
     this.#running = true;
@@ -1390,15 +1408,32 @@ export class BunQueueWorker<
 
     try {
       await this.driver.connect();
-      await this.driver.ensureQueue(this.ref);
+      // Each startup await is re-checked against a close that landed during
+      // it, and a closed worker goes no further: `close()` has already
+      // cleared the timers, so anything armed after it would outlive it.
+      if (!this.#closing) {
+        await this.driver.ensureQueue(this.ref);
+      }
     } catch (error) {
-      // Never started, so nothing will ever stop: without this, `#running`
-      // stayed true and `#stopped` never resolved, and a later `close()` —
-      // which waits for the loop to stop — hung for good. A `run()` called
-      // again tries to connect again rather than joining a dead start.
-      this.#running = false;
-      this.#stopped.resolve();
-      throw error;
+      if (!this.#closing) {
+        // Never started, so nothing will ever stop: without this, `#running`
+        // stayed true and `#stopped` never resolved, and a later `close()` —
+        // which waits for the loop to stop — hung for good. A `run()` called
+        // again tries to connect again rather than joining a dead start.
+        this.#running = false;
+        this.#stopped.resolve();
+        throw error;
+      }
+      // A close was asked for, and most likely caused this — a forced close
+      // shuts the driver under the connect. Either way the worker was never
+      // going to start, so `run()` ends the way a close ends it.
+      this.#logger.debug("Startup failed after close() was called", {
+        error,
+      });
+    }
+
+    if (this.#closing) {
+      return await this.#abandonStart();
     }
 
     this.#armMaintenance();
@@ -1414,6 +1449,11 @@ export class BunQueueWorker<
     // Before the loop turns, never after: a worker whose stop was recorded
     // against its key must not claim one job on the way to finding that out.
     await this.#adoptControl({ initial: true });
+    if (this.#closing) {
+      // What startup armed above, `close()` has cleared; this goes no
+      // further, so no `ready`, no announced state and no hold on the process.
+      return await this.#abandonStart();
+    }
     this.#armControl();
     // The first announcement, once startup has settled what the worker is —
     // `running`, `paused`, or `stopped` by a stop recorded against its key —
@@ -1430,6 +1470,28 @@ export class BunQueueWorker<
     this.#holdProcess();
     void this.#loop();
     return await this.#stopped.promise;
+  }
+
+  /**
+   * Ends a `run()` that a `close()` overtook during startup, before the claim
+   * loop was started: stands down as the loop's own exit would, so a graceful
+   * close waiting for it carries on.
+   *
+   * A forced close does not wait, and may already have closed the driver —
+   * possibly before a connect it could not cancel opened it again, which
+   * would keep the process alive for good. So an owned driver the close has
+   * closed is closed once more. A graceful close is still waiting here, and
+   * closes the driver itself after.
+   */
+  async #abandonStart(): Promise<void> {
+    if (this.#ownsDriver && this.#driverClosed) {
+      await this.driver.close().catch((error: unknown) => {
+        this.#logger.debug("Could not close the driver again", { error });
+      });
+    }
+
+    this.#running = false;
+    this.#stopped.resolve();
   }
 
   /** Stops claiming. Jobs in flight are left to finish. */
@@ -1739,6 +1801,7 @@ export class BunQueueWorker<
 
       if (this.#ownsDriver) {
         await this.driver.close();
+        this.#driverClosed = true;
       }
 
       this.#running = false;
@@ -1791,6 +1854,7 @@ export class BunQueueWorker<
 
     if (this.#ownsDriver) {
       await this.driver.close();
+      this.#driverClosed = true;
     }
 
     this.#running = false;

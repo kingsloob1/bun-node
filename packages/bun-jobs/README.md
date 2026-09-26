@@ -986,7 +986,9 @@ Example:
   jobs. A job still running at `timeout` has its signal aborted, and its lock
   is left to expire, so another worker recovers it as stalled instead of the
   job being lost. `close()` holds the process open until it finishes, so it is
-  safe to await in a `SIGTERM` handler.
+  safe to await in a `SIGTERM` handler. A `close()` that lands while `run()`
+  is still connecting ends the startup there: nothing is armed, no `ready` is
+  emitted, and `run()` resolves.
 - `worker.stop({ timeout?, reason? })` parks the worker instead: it stops
   claiming and running its background passes — liveness and housekeeping
   alike — drains its jobs in flight, and keeps
