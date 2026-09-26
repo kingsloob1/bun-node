@@ -1181,7 +1181,12 @@ export interface JobRecord {
   failedReason: SerializedError | null;
   /** Recent failures, newest first, capped by `keepStacktraces`. */
   stacktrace: SerializedError[];
-  /** Token of the worker holding the job, while active. */
+  /**
+   * The lock of the claim holding the job, while active: the
+   * {@link ClaimOptions.token} it was claimed under. A worker draws a fresh
+   * one for every claim, so the same worker claiming the job again holds a
+   * different lock, and the earlier claim's writes no longer match.
+   */
   lockToken: string | null;
   /** When that lock expires, in epoch milliseconds. */
   lockExpiresAt: number | null;
@@ -1258,7 +1263,11 @@ export interface ClaimOptions {
    * {@link DriverCapabilities.jobAttribution} may ignore it.
    */
   worker?: { key: string; host: string; pid: number };
-  /** The lock token to stamp on the job. */
+  /**
+   * The lock token to stamp on the job, which the holder's extend, complete
+   * and fail writes must then carry. `BunQueueWorker` draws a fresh one for
+   * every claim call; jobs taken in one batch share it.
+   */
   token: string;
   /** How long the claim's lock lives, in milliseconds. */
   lockMs: number;
@@ -1496,8 +1505,8 @@ export interface WorkerInfo {
   /**
    * The worker's id: its **incarnation**, unique among live workers and new
    * every time the process starts, unless the worker was given an explicit
-   * one. Load-bearing — it names the heartbeat record, the lock token and the
-   * limiter's lease — so two live workers must never share it.
+   * one. Load-bearing — it names the heartbeat record and the limiter's lease
+   * — so two live workers must never share it.
    */
   id: string;
   /**

@@ -20,6 +20,13 @@ import type { QueueDriver, QueueRef, Retention } from "./driver";
 export interface PendingCompletion {
   /** The job's id. */
   id: string;
+  /**
+   * The lock this job was claimed under, which the write must match. Defaults
+   * to the batcher's own `token`; a completion with neither fails. A worker
+   * mints a token per claim, so completions arriving together may carry
+   * different ones — each is written under its own.
+   */
+  token?: string;
   /** What its processor returned. */
   result: unknown;
   /** What should become of the record. */
@@ -36,8 +43,8 @@ export class CompletionBatcher {
   readonly #driver: QueueDriver;
   /** The queue they belong to. */
   readonly #ref: QueueRef;
-  /** The token they were claimed under. */
-  readonly #token: string;
+  /** The token a completion that names none was claimed under, if any. */
+  readonly #token: string | undefined;
   /** Completions that have not been written yet. */
   #pending: PendingCompletion[] = [];
   /**
@@ -52,8 +59,12 @@ export class CompletionBatcher {
     driver: QueueDriver,
     /** The queue they belong to. */
     ref: QueueRef,
-    /** The token they were claimed under. */
-    token: string,
+    /**
+     * The token a completion that names none was claimed under. Optional:
+     * a caller whose claims each carry their own token passes it on every
+     * {@link PendingCompletion} instead.
+     */
+    token?: string,
   ) {
     this.#driver = driver;
     this.#ref = ref;
@@ -102,8 +113,42 @@ export class CompletionBatcher {
     }
   }
 
-  /** Writes one batch, telling each completion how it went. */
+  /**
+   * Writes one batch, telling each completion how it went.
+   *
+   * The plural write takes one token for all its jobs, so the batch is split
+   * by token first. Completions from one claim share it; a job claimed again
+   * later has a different one, and writing it under another claim's token is
+   * exactly the mistake the guard exists to refuse.
+   */
   async #write(batch: PendingCompletion[]): Promise<void> {
+    const byToken = new Map<string, PendingCompletion[]>();
+
+    for (const one of batch) {
+      const token = one.token ?? this.#token;
+
+      if (token === undefined) {
+        one.fail(
+          new Error(`No lock token for the completion of job ${one.id}`),
+        );
+        continue;
+      }
+
+      const group = byToken.get(token);
+      if (group) {
+        group.push(one);
+      } else {
+        byToken.set(token, [one]);
+      }
+    }
+
+    for (const [token, group] of byToken) {
+      await this.#writeGroup(token, group);
+    }
+  }
+
+  /** Writes completions that share one token. */
+  async #writeGroup(token: string, batch: PendingCompletion[]): Promise<void> {
     // A lone completion is the idle case, and the singular call is what every
     // driver optimises. Taking the plural path for one job can be slower.
     if (batch.length === 1 || !this.#driver.completeJobs) {
@@ -112,7 +157,7 @@ export class CompletionBatcher {
           const kept = await this.#driver.completeJob(
             this.#ref,
             one.id,
-            this.#token,
+            token,
             one.result,
             one.retention,
             Date.now(),
@@ -129,7 +174,7 @@ export class CompletionBatcher {
       const settled = new Set(
         await this.#driver.completeJobs(
           this.#ref,
-          this.#token,
+          token,
           batch.map((one) => ({
             id: one.id,
             result: one.result,

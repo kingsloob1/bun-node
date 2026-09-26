@@ -40,6 +40,7 @@ import {
   SECOND_BUCKET_MS,
 } from "../../lib/api/contract/constants";
 import {
+  claimJobBatch,
   countAdded,
   countAddedByScan,
   emptyAddedCounts,
@@ -3097,6 +3098,107 @@ export function driverContract(
         expect((await driver.getJob(q, "stalls"))?.state).toBe("dead");
 
         await driver.removeJob(q, "stalls");
+      });
+
+      it("shuts a stalled claim out once the job is claimed again under a new token", async () => {
+        // A worker draws a fresh token for every claim (#187). What makes that
+        // enough is this: once a job is claimed again under another token,
+        // nothing written under the first — extend, complete, fail, bury —
+        // matches it any more. Two jobs, so a batch claim's shared token is
+        // covered too, on the plural path where the driver has one.
+        const q = scope("reclaimed-token");
+        const now = Date.now();
+        const first = newToken();
+        const second = newToken();
+        await driver.addJob(q, makeJob({ id: "r1", runAt: now }));
+        await driver.addJob(q, makeJob({ id: "r2", runAt: now }));
+
+        const taken = await claimJobBatch(
+          driver,
+          q,
+          { workerId: "w", token: first, lockMs: 10, now },
+          2,
+        );
+        expect(taken.map((job) => [job.id, job.lockToken]).sort()).toEqual([
+          ["r1", first],
+          ["r2", first],
+        ]);
+
+        const swept = await driver.recoverStalled(q, now + 1000, 5, 10);
+        expect(swept.requeued.sort()).toEqual(["r1", "r2"]);
+
+        const retaken = await claimJobBatch(
+          driver,
+          q,
+          { workerId: "w", token: second, lockMs: 60_000, now: now + 1000 },
+          2,
+        );
+        expect(retaken.map((job) => [job.id, job.lockToken]).sort()).toEqual([
+          ["r1", second],
+          ["r2", second],
+        ]);
+
+        const later = now + 1001;
+        expect(await driver.extendJobLock(q, "r1", first, 60_000, later)).toBe(
+          false,
+        );
+        expect(
+          await driver.completeJob(q, "r1", first, "stale", false, later),
+        ).toBe(false);
+        expect(
+          await driver.failJob(
+            q,
+            "r1",
+            first,
+            serializeError(new Error("stale")),
+            { retry: false, retention: false },
+            later,
+            5,
+          ),
+        ).toBe(false);
+        if (driver.completeJobs) {
+          expect(
+            await driver.completeJobs(
+              q,
+              first,
+              [{ id: "r2", result: "stale", retention: false }],
+              later,
+            ),
+          ).toEqual([]);
+        }
+        if (driver.buryJob) {
+          expect(
+            await driver.buryJob(
+              q,
+              "r2",
+              serializeError(new Error("stale")),
+              { retention: false, keepStacktraces: 5, token: first },
+              later,
+            ),
+          ).toBeNull();
+        }
+
+        for (const id of ["r1", "r2"]) {
+          expect(await driver.getJob(q, id)).toMatchObject({
+            state: "active",
+            lockToken: second,
+            returnValue: null,
+          });
+        }
+
+        expect(
+          await driver.completeJob(q, "r1", second, "fresh", false, later),
+        ).toBe(true);
+        expect(
+          await driver.completeJob(q, "r2", second, "fresh", false, later),
+        ).toBe(true);
+        for (const id of ["r1", "r2"]) {
+          expect(await driver.getJob(q, id)).toMatchObject({
+            state: "completed",
+            returnValue: "fresh",
+          });
+          await driver.removeJob(q, id);
+        }
       });
 
       it("refuses to remove an active job", async () => {

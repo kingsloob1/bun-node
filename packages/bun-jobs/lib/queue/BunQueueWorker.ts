@@ -84,7 +84,7 @@ import {
   UnrecoverableJobError,
 } from "../shared/errors";
 import { queueEvent, workerEvent } from "../shared/events";
-import { HOST, newId, newToken } from "../shared/ids";
+import { HOST, newClaimToken, newId, newToken } from "../shared/ids";
 import { assertNamespace, assertSegment } from "../shared/keys";
 import { createJobsLogger } from "../shared/logger";
 import { Pulse, waitForAny } from "../shared/wait";
@@ -313,6 +313,16 @@ type SettledOutcome =
       /** Its own reason, not yet wrapped for the parent. */
       error: SerializedError;
     };
+
+/**
+ * The lock `record`'s attempt holds: the token its own claim stamped, which
+ * {@link BunQueueWorker}'s claim pass sets on every record it takes. Never the
+ * worker's — see `newClaimToken`. The fallback never matches a held lock, so a
+ * record that somehow has none is refused rather than settled.
+ */
+function heldLock(record: JobRecord): string {
+  return record.lockToken ?? "";
+}
 
 /** How a stored `completed` or `dead` job ended. */
 function settledOutcome(record: JobRecord): SettledOutcome {
@@ -635,8 +645,14 @@ export class BunQueueWorker<
   readonly #ownsDriver: boolean;
   /** Logger bound to this worker. */
   readonly #logger: Logger;
-  /** The lock token every claim by this worker carries. */
-  readonly #token: string;
+  /**
+   * This worker's identity on the events it publishes (`origin`), stable for
+   * its whole life. **Not a lock**: every claim mints its own token (see
+   * {@link #claimUpToConcurrency}), because a lock shared by all of a
+   * worker's claims let an abandoned attempt settle, renew or fail the same
+   * worker's later claim of the same job (#187).
+   */
+  readonly #origin: string;
   /** Named backoff strategies, for jobs that name one. */
   readonly #backoffs: BackoffStrategies;
   /**
@@ -961,13 +977,13 @@ export class BunQueueWorker<
         this.processStartedAt,
         ++workerSerial,
       )}`;
-    this.#token = newToken(this.id);
+    this.#origin = newToken(this.id);
     this.#workerRef = { key: this.key, host: HOST, pid: process.pid };
 
     const { driver, owned } = resolveDriver(options.driver, options.metrics);
     this.driver = driver;
     this.#ownsDriver = owned;
-    this.#completions = new CompletionBatcher(driver, this.ref, this.#token);
+    this.#completions = new CompletionBatcher(driver, this.ref);
 
     const lockDuration = options.lockDuration ?? DEFAULT_LOCK_DURATION;
     this.#concurrency = Math.max(1, options.concurrency ?? 1);
@@ -1999,7 +2015,7 @@ export class BunQueueWorker<
             ns: this.namespace,
             target,
             type,
-            origin: this.#token,
+            origin: this.#origin,
           },
           payload,
         ),
@@ -2081,6 +2097,13 @@ export class BunQueueWorker<
       return 0;
     }
 
+    // A lock of this claim's own, drawn now — never the worker's, and never
+    // anything computed before this call. The same worker re-claiming a job
+    // its own sweep took back must not share a token with the abandoned claim,
+    // whose completion is not awaited and can land late: sharing one let that
+    // completion record the abandoned result over the recovered one (#187).
+    // `newClaimToken` says why it is random rather than a counter.
+    const token = newClaimToken(this.id);
     let records: JobRecord[];
 
     try {
@@ -2090,7 +2113,7 @@ export class BunQueueWorker<
         {
           workerId: this.id,
           worker: this.#workerRef,
-          token: this.#token,
+          token,
           lockMs: this.#options.lockDuration,
           now,
           ...(reservation && reservation.excludeNames.length > 0
@@ -2125,6 +2148,16 @@ export class BunQueueWorker<
     if (records.length > 0 && this.#closing) {
       await this.#declineClaimed(records, reservation, false);
       return 0;
+    }
+
+    // Every driver reports the token its claim stamped, and every write this
+    // attempt makes — heartbeat, lock extension, completion, failure, and the
+    // processor's own `extendLock()` and `fail()` — reads it off the record.
+    // The claim's own value is what the driver stored, so it is the one kept:
+    // a driver that reported something else would otherwise have its jobs
+    // settle under a lock nobody holds.
+    for (const record of records) {
+      record.lockToken = token;
     }
 
     if (reservation) {
@@ -2554,7 +2587,7 @@ export class BunQueueWorker<
    */
   async #expireLock(record: JobRecord): Promise<void> {
     await this.driver
-      .extendJobLock(this.ref, record.id, this.#token, 0, Date.now())
+      .extendJobLock(this.ref, record.id, heldLock(record), 0, Date.now())
       .catch(() => false);
   }
 
@@ -2602,6 +2635,7 @@ export class BunQueueWorker<
 
     this.#completions.add({
       id: record.id,
+      token: heldLock(record),
       result: stored,
       retention: completionRetention,
       settle: (kept) => {
@@ -2616,7 +2650,7 @@ export class BunQueueWorker<
             await this.driver.completeJob(
               this.ref,
               record.id,
-              this.#token,
+              heldLock(record),
               stored,
               completionRetention,
               Date.now(),
@@ -3370,7 +3404,7 @@ export class BunQueueWorker<
             await this.driver.failJob(
               this.ref,
               record.id,
-              this.#token,
+              heldLock(record),
               serialized,
               { retry: true, runAt },
               now,
@@ -3404,7 +3438,7 @@ export class BunQueueWorker<
           await this.driver.failJob(
             this.ref,
             record.id,
-            this.#token,
+            heldLock(record),
             serialized,
             {
               retry: false,
@@ -3551,7 +3585,7 @@ export class BunQueueWorker<
       const held = await this.driver.extendJobLock(
         this.ref,
         record.id,
-        this.#token,
+        heldLock(record),
         this.#options.lockDuration,
         Date.now(),
       );
@@ -4211,7 +4245,7 @@ export class BunQueueWorker<
               ns: this.namespace,
               target: this.queueName,
               type,
-              origin: this.#token,
+              origin: this.#origin,
             },
             payload,
           ),
