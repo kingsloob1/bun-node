@@ -34,12 +34,12 @@ function configFixture(
 ): RunnerConfigDto {
   return {
     effective: {
-      executionMode: "worker",
+      executionMode: "worker-thread",
       runMode: "parallel",
       maxConcurrency: 4,
     },
     code: {
-      executionMode: "spawn",
+      executionMode: "child-process",
       runMode: "single",
       maxConcurrency: null,
     },
@@ -65,12 +65,12 @@ function unoverridden(
 ): Partial<RunnerConfigDto> {
   return {
     effective: {
-      executionMode: "spawn",
+      executionMode: "child-process",
       runMode: "parallel",
       maxConcurrency: 4,
     },
     code: {
-      executionMode: "spawn",
+      executionMode: "child-process",
       runMode: "parallel",
       maxConcurrency: 4,
     },
@@ -181,11 +181,11 @@ describe("whether the settings editor is offered", () => {
 describe("the settings editor: what it shows", () => {
   it("prefills what is in force and names what the code asks for", async () => {
     const { dialog } = await openSettings();
-    expect(control(dialog, "Execution mode").value).toBe("worker");
+    expect(control(dialog, "Execution mode").value).toBe("worker-thread");
     expect(control(dialog, "Run mode").value).toBe("parallel");
     expect(control(dialog, "Max concurrency").value).toBe("4");
     expect(field(dialog, "Execution mode").textContent).toContain(
-      "code asks for spawn",
+      "code asks for child-process",
     );
     expect(field(dialog, "Run mode").textContent).toContain(
       "code asks for single",
@@ -234,28 +234,64 @@ describe("the settings editor: what it shows", () => {
 
   it("offers only the modes the runner's code allows, and says why the rest are absent", async () => {
     const { dialog } = await openSettings({
-      runner: configurable({ allowed: ["worker", "in-process"] }),
+      runner: configurable({ allowed: ["worker-thread", "in-process"] }),
     });
     const options = Array.from(
       control(dialog, "Execution mode").querySelectorAll("option"),
       (option) => option.getAttribute("value"),
     );
-    expect(options).toEqual(["worker", "in-process"]);
+    expect(options).toEqual(["worker-thread", "in-process"]);
     const note = within(dialog).getByTestId("config-modes-limited");
-    expect(note.textContent).toContain("spawn");
+    expect(note.textContent).toContain("child-process");
     expect(note.textContent).toContain("allowedOverrides.executionModes");
     expect(note.textContent).toContain("CONFIG_NOT_ALLOWED");
   });
 
   it("keeps the mode in force selectable even when the code no longer allows it", async () => {
     const { dialog } = await openSettings({
-      runner: configurable({ allowed: ["spawn"] }),
+      runner: configurable({ allowed: ["child-process"] }),
     });
     const options = Array.from(
       control(dialog, "Execution mode").querySelectorAll("option"),
       (option) => option.getAttribute("value"),
     );
-    expect(options).toEqual(["worker", "spawn"]);
+    expect(options).toEqual(["worker-thread", "child-process"]);
+  });
+
+  it("labels each mode in the words of a worker's target, never a runner's old spelling", async () => {
+    const { dialog } = await openSettings();
+    const labels = Array.from(
+      control(dialog, "Execution mode").querySelectorAll("option"),
+      (option) => option.textContent,
+    );
+    expect(labels).toEqual([
+      "child-process — a child process per run",
+      "worker-thread — a Worker thread per run",
+      "in-process — in the runner's own process",
+    ]);
+    expect(dialog.textContent).not.toMatch(/\bspawn\b/);
+  });
+
+  it("shows a mode in force that this build does not know as its raw string, not a blank option", async () => {
+    // A newer server's mode: the contract's type cannot name it.
+    const future =
+      "remote-pool" as RunnerConfigDto["effective"]["executionMode"];
+    const { dialog } = await openSettings({
+      runner: configurable({
+        effective: {
+          executionMode: future,
+          runMode: "parallel",
+          maxConcurrency: 4,
+        },
+      }),
+    });
+    const picker = control(dialog, "Execution mode");
+    const option = picker.querySelector<HTMLOptionElement>(
+      'option[value="remote-pool"]',
+    );
+    expect(option).not.toBeNull();
+    expect(option!.textContent).toBe("remote-pool");
+    expect(picker.value).toBe("remote-pool");
   });
 
   it("shows an override the owner has not adopted yet as pending", async () => {
@@ -284,13 +320,13 @@ describe("the settings editor: what it shows", () => {
       runner: configurable({
         error: {
           at: NOW - 30_000,
-          message: "worker mode needs a bundled file",
+          message: "worker-thread mode needs a bundled file",
           keys: ["executionMode"],
         },
       }),
     });
     const refused = within(dialog).getByTestId("config-refused").textContent;
-    expect(refused).toContain("worker mode needs a bundled file");
+    expect(refused).toContain("worker-thread mode needs a bundled file");
     // It names the setting refused, from `error.keys`.
     expect(refused).toContain("The owner refused Execution mode");
   });
@@ -345,7 +381,7 @@ describe("the settings editor: the warnings", () => {
   });
 
   it("warns about the code's values when an override is dropped", async () => {
-    // The code asks for spawn and single: dropping both overrides changes
+    // The code asks for child-process and single: dropping both overrides changes
     // the execution mode and turns overlap off, so both warnings apply.
     const { dialog } = await openSettings();
     fireEvent.click(
@@ -361,7 +397,7 @@ describe("the settings editor: the warnings", () => {
     );
     expect(
       within(dialog).getByTestId("config-warning-execution-mode").textContent,
-    ).toContain("spawn applies from the next run");
+    ).toContain("child-process applies from the next run");
     expect(within(dialog).getByTestId("config-warning-to-single")).toBeTruthy();
   });
 });
@@ -416,7 +452,7 @@ describe("the settings editor: saving", () => {
         within(dialog).getByTestId("config-source-execution-mode"),
       ).getByRole("button", { name: "Use the code default" }),
     );
-    expect(control(dialog, "Execution mode").value).toBe("spawn");
+    expect(control(dialog, "Execution mode").value).toBe("child-process");
     fireEvent.click(dialogButton(dialog, "Save settings"));
     await toastSays("Saved the settings of nightly");
     expect(sentConfig(calls)).toEqual({ executionMode: null });
@@ -427,10 +463,10 @@ describe("the settings editor: saving", () => {
       runner: configurable(unoverridden()),
       handlers: saveHandler(),
     });
-    set(dialog, "Execution mode", "worker");
+    set(dialog, "Execution mode", "worker-thread");
     fireEvent.click(dialogButton(dialog, "Save settings"));
     await toastSays("Saved the settings of nightly");
-    expect(sentConfig(calls)).toEqual({ executionMode: "worker" });
+    expect(sentConfig(calls)).toEqual({ executionMode: "worker-thread" });
   });
 
   it("cannot be saved with nothing changed", async () => {
@@ -595,7 +631,7 @@ describe("the runner summary's override rows", () => {
       />,
     );
     expect(summaryValue("Execution mode")).toContain(
-      "Overridden here; its code asks for spawn",
+      "Overridden here; its code asks for child-process",
     );
     expect(summaryValue("Run mode")).not.toContain("Overridden");
     expect(summaryValue("Settings override")).toBe("Execution mode");
@@ -610,7 +646,7 @@ describe("the runner summary's override rows", () => {
         runner={configurable(
           unoverridden({
             effective: {
-              executionMode: "spawn",
+              executionMode: "child-process",
               runMode: "single",
               maxConcurrency: 4,
             },
@@ -619,7 +655,7 @@ describe("the runner summary's override rows", () => {
             appliedSeq: 3,
             error: {
               at: 1,
-              message: 'executionMode "worker" needs a driver config',
+              message: 'executionMode "worker-thread" needs a driver config',
               keys: ["executionMode"],
             },
           }),
@@ -643,12 +679,12 @@ describe("the runner summary's override rows", () => {
         runner={configurable(
           unoverridden({
             effective: {
-              executionMode: "spawn",
+              executionMode: "child-process",
               runMode: "single",
               maxConcurrency: null,
             },
             code: {
-              executionMode: "spawn",
+              executionMode: "child-process",
               runMode: "single",
               maxConcurrency: null,
             },
@@ -657,7 +693,7 @@ describe("the runner summary's override rows", () => {
             appliedSeq: 3,
             error: {
               at: 1,
-              message: 'executionMode "worker" needs a driver config',
+              message: 'executionMode "worker-thread" needs a driver config',
               keys: ["executionMode"],
             },
           }),
@@ -679,7 +715,7 @@ describe("the runner summary's override rows", () => {
         runner={configurable(
           unoverridden({
             effective: {
-              executionMode: "spawn",
+              executionMode: "child-process",
               runMode: "single",
               maxConcurrency: 4,
             },

@@ -92,7 +92,9 @@ export function ConfigEditorDialog({
   const codeCap = codeValue(config, "maxConcurrency");
   const failure = save.error ?? reset.error;
   // The mode in force can be one the code no longer permits; keep it
-  // selectable so the picker never silently shows a different runner.
+  // selectable so the picker never silently shows a different runner. A mode
+  // this build has no label for (a newer server's) has an undefined label at
+  // runtime, and `Select` shows such an option by its value: raw, not blank.
   const modeOptions = (
     modes.includes(form.executionMode) ? modes : [form.executionMode, ...modes]
   ).map((mode) => ({ value: mode, label: EXECUTION_MODE_LABELS[mode] }));
